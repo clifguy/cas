@@ -61,6 +61,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_mcp_unauth",
         "edge_browser_redirect",
         "edge_cors_preflight",
+        "edge_dcr_registration",
         "mcp_admin",
         "mcp_roundtrip",
         "edge_authn_backend",
@@ -636,6 +637,89 @@ def test_cors_preflight_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_cors_preflight"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_cors_preflight") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _dcr_stub(
+    with_redirect_uris: bool = True,
+    qualified_scope: bool = True,
+    status: int = 201,
+    discovery_status: int = 200,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the DCR-registration check: ``POST /register`` answers ``status``
+    with a body that (optionally) carries a non-empty ``redirect_uris`` array and
+    a (optionally) resource-qualified ``scope``; the discovery doc answers
+    ``discovery_status`` (200 = edge live). Toggling either field off reproduces a
+    production regression the check must catch.
+    """
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            return discovery_status, (_DISCOVERY_BODY if discovery_status == 200 else "{}"), {}
+        if method == "POST" and p == "/register":
+            fields = ['"client_id": "NV"', '"token_endpoint_auth_method": "none"']
+            if with_redirect_uris:
+                fields.append('"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]')
+            scope = "api://sage-app-id/Sage.Access" if qualified_scope else "Sage.Access"
+            fields.append(f'"scope": "{scope}"')
+            return status, "{" + ", ".join(fields) + "}", {}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_dcr_registration_passes() -> None:
+    """A /register 201 whose body carries a non-empty redirect_uris array and a
+    resource-qualified scope, edge live -> edge_dcr_registration PASS. The source
+    of the deferred DCR sign-in leg #218/#223 left unverified.
+    """
+    with serve(_dcr_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_dcr_registration"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_dcr_registration") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_dcr_registration_missing_redirect_uris_fails() -> None:
+    """THE reported regression: /register returns a correct 201 + client_id but no
+    redirect_uris, so a standards MCP client's registration-response parse throws
+    ("couldn't register") before /authorize. The check must FAIL on this body, not
+    pass on the 201.
+    """
+    with serve(_dcr_stub(with_redirect_uris=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_dcr_registration"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_dcr_registration") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_dcr_registration_bare_scope_fails() -> None:
+    """A /register 201 that advertises the bare "Sage.Access" scope must FAIL --
+    Entra can't bind the unqualified scope to the SAGE resource and rejects
+    /authorize (AADSTS650053). Proves the check asserts on scope qualification,
+    not merely on a 2xx + redirect_uris.
+    """
+    with serve(_dcr_stub(qualified_scope=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_dcr_registration"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_dcr_registration") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_dcr_registration_dead_edge_fails() -> None:
+    """Discovery doc broken (404): a well-formed /register body must NOT be
+    credited -- the discovery-200 control rejects it (the blanket-edge
+    coincidental-pass trap).
+    """
+    with serve(_dcr_stub(discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_dcr_registration"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_dcr_registration") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

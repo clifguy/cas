@@ -10,6 +10,21 @@
             PKCE public client (authorization-code + PKCE, no secret) and never
             receives one.
 
+            The response MUST carry redirect_uris. An RFC 7591 client parses this
+            response against its full client-information schema, in which
+            redirect_uris is a required, non-empty array of valid URLs (the MCP
+            reference client's OAuthClientInformationFullSchema — a strict parse
+            that throws if the field is absent). Omitting it makes a standards
+            client report "couldn't register" before it ever reaches /authorize,
+            even though the 201 and client_id are correct. The client uses its
+            OWN redirect_uri at /authorize, not this echoed set, so the value here
+            only has to satisfy that parse; we return the two callbacks actually
+            registered on the mcp client in Entra — the hosted-surface HTTPS
+            callback and the loopback the CLI/native surface uses. Keep this set
+            in step with the redirect URIs registered in
+            deploy/bootstrap/entra-app-registrations.sh; both are protocol
+            constants of the MCP client, not per-tenant coordinates.
+
             There is deliberately no <base /> here, matching the discovery and
             authorization-server operations: the registration call is
             unauthenticated by design (the client has no token yet at this step).
@@ -40,6 +55,7 @@
             </set-header>
             <set-body>{
   "client_id": "{{mcp-client-id}}",
+  "redirect_uris": ["https://claude.ai/api/mcp/auth_callback", "http://localhost/callback"],
   "token_endpoint_auth_method": "none",
   "grant_types": ["authorization_code"],
   "response_types": ["code"],

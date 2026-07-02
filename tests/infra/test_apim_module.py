@@ -21,11 +21,13 @@ matchers fail on the regressions they target.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Final
+from urllib.parse import urlparse
 
 import pytest
 
@@ -794,6 +796,71 @@ def test_apim_register_policy_serves_static_client_unauthenticated() -> None:
         "the /register operation inbound must not call <base/> — that would inherit "
         "the API-level validate-jwt and 401 the unauthenticated registration call"
     )
+
+
+def _set_body_json(policy_path: Path) -> dict[str, object]:
+    """Parse the JSON document a return-response ``<set-body>`` emits, with APIM
+    named-value tokens (``{{...}}``) neutralised to a placeholder so the body is
+    valid JSON. Lets a test assert on the *shape* the edge actually returns.
+    """
+    xml = policy_path.read_text(encoding="utf-8")
+    match = re.search(r"<set-body>(.*?)</set-body>", xml, re.S)
+    assert match, f"{policy_path.name}: no <set-body> to parse"
+    neutralised = re.sub(r"\{\{[^}]+\}\}", "NV", match.group(1))
+    parsed = json.loads(neutralised)
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def test_apim_register_response_carries_valid_redirect_uris() -> None:
+    """The ``/register`` response must carry a non-empty ``redirect_uris`` array
+    of parseable http(s) URLs.
+
+    An RFC 7591 client parses this response against its full client-information
+    schema, in which ``redirect_uris`` is a required, non-empty array of valid
+    URLs (the MCP reference client's ``OAuthClientInformationFullSchema`` — a
+    strict parse that throws when the field is absent). A response that omits it
+    makes a standards MCP client (Claude Desktop, the claude.ai connector) report
+    "couldn't register" before it ever reaches ``/authorize``, even though the
+    201 and the echoed client_id are correct.
+    """
+    body = _set_body_json(REGISTER_OP_POLICY)
+    uris = body.get("redirect_uris")
+    assert isinstance(uris, list) and uris, (
+        "the /register response must carry a non-empty redirect_uris array — the "
+        "MCP client's registration-response schema requires it, and omitting it "
+        "fails the client's strict parse before /authorize"
+    )
+    for uri in uris:
+        assert isinstance(uri, str), "each redirect_uris entry must be a string URL"
+        parsed = urlparse(uri)
+        assert parsed.scheme in {"http", "https"} and parsed.netloc, (
+            f"redirect_uris entry {uri!r} must be a parseable http(s) URL "
+            "(the client validates each against a safe-URL schema)"
+        )
+
+
+def test_apim_advertised_scopes_are_resource_qualified() -> None:
+    """Every edge-advertised scope must be the resource-qualified
+    ``{{sage-audience}}/Sage.Access``, never the bare ``Sage.Access``.
+
+    A standards MCP client composes its ``/authorize`` scope parameter directly
+    from the advertised value. A bare scope name leaves Entra unable to resolve
+    which resource it belongs to; it defaults to Microsoft Graph and rejects the
+    request (AADSTS650053: the scope "doesn't exist on the resource"). The
+    resource-qualified form binds the scope to the SAGE audience the APIM
+    validate-jwt and the SAGE backend expect.
+    """
+    for policy in (DISCOVERY_OP_POLICY, AS_METADATA_OP_POLICY, REGISTER_OP_POLICY):
+        xml = policy.read_text(encoding="utf-8")
+        assert "{{sage-audience}}/Sage.Access" in xml, (
+            f"{policy.name}: the advertised scope must be resource-qualified "
+            "({{sage-audience}}/Sage.Access), not the bare scope name"
+        )
+        assert '"Sage.Access"' not in xml and "'Sage.Access'" not in xml, (
+            f"{policy.name}: the bare, unqualified 'Sage.Access' scope must not "
+            "appear — Entra can't resolve it to the SAGE resource"
+        )
 
 
 def test_apim_declares_mcp_client_id_named_value() -> None:
