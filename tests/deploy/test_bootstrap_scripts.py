@@ -239,6 +239,57 @@ def test_entra_script_provisions_group_idempotently() -> None:
     )
 
 
+def test_entra_script_shares_default_access_role_id() -> None:
+    """The default-access app-role id is computed once and reused by every
+    client-gating step (BFF and public MCP client alike) — no GUID-shaped
+    literal, and no duplicated computation to drift out of sync.
+    """
+    text = _text(ENTRA)
+    assert text.count("DEFAULT_ACCESS_APP_ROLE_ID=") == 1, (
+        "the default-access app-role id must be computed exactly once and reused"
+    )
+    assert text.count("${DEFAULT_ACCESS_APP_ROLE_ID}") >= 2, (
+        "both the BFF and MCP-client gates must reference the shared "
+        "DEFAULT_ACCESS_APP_ROLE_ID"
+    )
+
+
+def test_entra_script_gates_bff_on_group() -> None:
+    """The BFF confidential client is gated by the same provisioning group as
+    the public MCP client (CAS-ADR-044): its service principal requires
+    app-role assignment, and the provisioning group is assigned to it before
+    the requirement engages, so the gate never locks out an empty allowlist.
+    """
+    text = _text(ENTRA)
+    assert text.count("appRoleAssignmentRequired") >= 2, (
+        "entra script must gate both the BFF and the public MCP client on "
+        "appRoleAssignmentRequired"
+    )
+    assert "appRoleAssignedTo" in text, (
+        "entra script must assign the provisioning group to the BFF's "
+        "default-access app role via the servicePrincipals appRoleAssignedTo endpoint"
+    )
+    # Anchor on the request body, never prose: the assignment carries the
+    # principalId/resourceId/appRoleId triple, targeting the shared group. The
+    # body is a multi-line JSON literal, so window a few lines after the
+    # endpoint reference rather than requiring all three keys on one line.
+    lines = text.splitlines()
+    idx = next(i for i, line in enumerate(lines) if "appRoleAssignedTo" in line)
+    block = "\n".join(lines[idx : idx + 8])
+    assert "principalId" in block and "resourceId" in block and "appRoleId" in block, (
+        "the BFF assignment body must carry the principalId/resourceId/appRoleId triple"
+    )
+    assert "PROVISIONING_GROUP_ID" in block, (
+        "the BFF assignment must target PROVISIONING_GROUP_ID"
+    )
+    # Fail safe on a live tenant: assign the group BEFORE requiring assignment,
+    # so a fresh tenant is never locked out by an empty allowlist.
+    assert text.index("appRoleAssignedTo") < text.index("appRoleAssignmentRequired"), (
+        "the BFF's group assignment must precede appRoleAssignmentRequired, so the "
+        "gate never engages before its allowlist exists"
+    )
+
+
 def test_entra_script_gates_public_client_on_group() -> None:
     """The public MCP client is gated by the same provisioning group as the
     browser client (CAS-ADR-044): its service principal requires app-role
