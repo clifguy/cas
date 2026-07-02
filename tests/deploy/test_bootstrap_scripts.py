@@ -222,6 +222,34 @@ def test_entra_script_creates_public_client_registration() -> None:
     )
 
 
+def test_entra_script_registers_mcp_loopback_redirect() -> None:
+    """The public MCP client registers the Desktop loopback redirect
+    (``http://localhost/callback``) alongside its primary env-resolved redirect
+    URI, so a re-bootstrap converges on the full canonical set and never drops the
+    loopback a browser-context Desktop client needs for its auth-code/PKCE callback
+    (CAS-ADR-042). ``--public-client-redirect-uris`` is a declarative full-set
+    replace, so both must be passed together on every invocation.
+    """
+    text = _text(ENTRA)
+    assert "http://localhost/callback" in text, (
+        "entra script must register the Desktop loopback redirect http://localhost/callback "
+        "on the public MCP client, so a re-bootstrap does not drop the URI added live"
+    )
+    redirect_lines = [
+        line
+        for line in text.splitlines()
+        if "--public-client-redirect-uris" in line and not line.lstrip().startswith("#")
+    ]
+    assert redirect_lines, "entra script must pass --public-client-redirect-uris"
+    assert all(
+        "MCP_CLIENT_REDIRECT_URI" in line and "localhost/callback" in line
+        for line in redirect_lines
+    ), (
+        "every --public-client-redirect-uris invocation (create and update) must register "
+        "both the primary ${MCP_CLIENT_REDIRECT_URI} and the http://localhost/callback loopback"
+    )
+
+
 def test_entra_script_provisions_group_idempotently() -> None:
     """The Entra script provisions the single ADR-044 provisioning group
     lookup-then-create, so it converges regardless of whether a companion

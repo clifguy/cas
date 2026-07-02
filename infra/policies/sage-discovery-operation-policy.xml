@@ -19,6 +19,25 @@
             literal — the encoding the loadTextContent -> ARM -> APIM round-trip
             corrupts. Environment coordinates arrive as APIM named values ({{...}}).
         -->
+        <!--
+            CORS (CAS-ADR-042): this anonymous operation omits <base />, so it
+            never runs the API-level <cors>. It carries its own so the actual
+            response a browser reads cross-origin returns Access-Control-Allow-*.
+        -->
+        <cors allow-credentials="false">
+            <allowed-origins>
+                <origin>*</origin>
+            </allowed-origins>
+            <allowed-methods>
+                <method>GET</method>
+                <method>POST</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Authorization</header>
+                <header>Content-Type</header>
+            </allowed-headers>
+        </cors>
         <return-response>
             <set-status code="200" reason="OK" />
             <set-header name="Content-Type" exists-action="override">

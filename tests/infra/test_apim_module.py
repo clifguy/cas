@@ -1324,3 +1324,122 @@ def test_literal_operation_detector_controls() -> None:
     assert not _declares_literal_operation(wrong_method, "/register", "POST")
     assert not _declares_literal_operation(loop_form, "/register", "POST")
     assert not _declares_literal_operation(commented, "/register", "POST")
+
+
+# ---------------------------------------------------------------------------
+# CORS preflight (CAS-ADR-042 / CAS-ADR-034)
+# ---------------------------------------------------------------------------
+#
+# APIM runs validate-jwt on every method — including the CORS preflight OPTIONS —
+# so a browser-context MCP client's preflight 401s before the JWT gate can be
+# skipped, no Access-Control-Allow-* headers ever return, and the browser blocks
+# the real call. The fix answers the preflight anonymously with a <cors> policy
+# placed AHEAD of validate-jwt in the API-level inbound (all preflights route to
+# the catch-all operation, which runs that policy), and repeats the <cors> block
+# on the dedicated anonymous operations so their own actual responses carry the
+# Allow-Origin header a browser needs to read them (CAS-ADR-042 / CAS-ADR-034).
+
+# The anonymous operations whose actual GET/POST responses a browser client must
+# read cross-origin. /health is excluded: it is a liveness probe, never fetched
+# from a browser origin.
+_ANONYMOUS_OP_POLICIES: Final[tuple[Path, ...]] = (
+    REGISTER_OP_POLICY,
+    DISCOVERY_OP_POLICY,
+    AS_METADATA_OP_POLICY,
+)
+
+
+def _cors_block(policy: str) -> str:
+    """Return the live text of the first ``<cors>...</cors>`` block (XML comments
+    stripped first, so a comment naming ``<cors>`` cannot satisfy a gate).
+
+    Empty string when no live ``<cors>`` element is present — the current,
+    pre-fix state of every policy.
+    """
+    match = re.search(r"<cors\b.*?</cors>", _strip_xml_comments(policy), re.DOTALL)
+    return match.group(0) if match else ""
+
+
+def _cors_precedes_validate_jwt(inbound: str) -> bool:
+    """True iff a live ``<cors>`` element is present in ``inbound`` AND appears
+    before ``<validate-jwt>``.
+
+    Position is load-bearing: a ``<cors>`` after ``validate-jwt`` never runs on a
+    preflight the JWT gate has already 401'd, so it would not answer the preflight
+    anonymously. ``inbound`` is expected to be the comment-stripped body from
+    ``_inbound_section``.
+    """
+    cors = inbound.find("<cors")
+    jwt = inbound.find("<validate-jwt")
+    return cors != -1 and jwt != -1 and cors < jwt
+
+
+def test_apim_api_policy_answers_cors_preflight_before_jwt() -> None:
+    """The API-level inbound answers the CORS preflight ahead of the JWT gate.
+
+    All preflight ``OPTIONS`` (to ``/register``, ``/mcp``, anything) fall through
+    to the catch-all ``/{*path}`` operation, which runs this policy. A ``<cors>``
+    positioned before ``<validate-jwt>`` short-circuits the preflight anonymously;
+    placed after (or absent), the preflight 401s — the live browser-client failure.
+    """
+    inbound = _inbound_section(API_POLICY.read_text(encoding="utf-8"))
+    assert _cors_precedes_validate_jwt(inbound), (
+        "the API-level inbound must carry a <cors> element BEFORE <validate-jwt> so the "
+        "preflight OPTIONS is answered anonymously ahead of the JWT gate"
+    )
+
+
+def test_apim_cors_allows_oauth_client_headers() -> None:
+    """The API-level ``<cors>`` admits the request headers and methods a
+    browser-context OAuth/MCP client sends.
+
+    The preflight advertises ``Authorization`` and ``Content-Type`` request
+    headers; omitting either fails the preflight even when the status is 2xx. The
+    OAuth/MCP legs are ``GET`` (discovery), ``POST`` (``/register``, ``/mcp``),
+    and the preflight ``OPTIONS`` itself.
+    """
+    cors = _cors_block(API_POLICY.read_text(encoding="utf-8"))
+    assert cors, "the API-level policy must carry a <cors> block"
+    for header in ("Authorization", "Content-Type"):
+        assert f"<header>{header}</header>" in cors, (
+            f"the <cors> allowed-headers must admit {header!r} (a browser MCP client "
+            "sends it on the preflight)"
+        )
+    for method in ("GET", "POST", "OPTIONS"):
+        assert f"<method>{method}</method>" in cors, (
+            f"the <cors> allowed-methods must admit {method!r}"
+        )
+
+
+@pytest.mark.parametrize("policy_path", _ANONYMOUS_OP_POLICIES, ids=lambda p: p.name)
+def test_apim_anonymous_operations_carry_cors(policy_path: Path) -> None:
+    """Each anonymous operation policy carries its own ``<cors>``.
+
+    The dedicated ``/register`` and ``.well-known/*`` operations omit ``<base/>``
+    (that is how they skip ``validate-jwt``), so the API-level ``<cors>`` is never
+    evaluated for them. Without a ``<cors>`` of their own, their actual GET/POST
+    responses carry no ``Access-Control-Allow-Origin`` and a browser cannot read
+    them — the coverage AC-2 requires beyond the catch-all preflight.
+    """
+    inbound = _inbound_section(policy_path.read_text(encoding="utf-8"))
+    assert "<cors" in inbound, (
+        f"{policy_path.name} must carry a <cors> element in its inbound so the anonymous "
+        "operation's actual response carries Access-Control-Allow-* for a browser client"
+    )
+
+
+def test_apim_cors_detector_controls() -> None:
+    """The CORS detectors fire on the regressions they target and clear on the
+    correct form — so the gates above cannot pass coincidentally.
+
+    ``_cors_precedes_validate_jwt`` must reject both a missing ``<cors>`` and a
+    ``<cors>`` that follows ``validate-jwt``; ``_cors_block`` must return "" when
+    no live ``<cors>`` is present and the block otherwise.
+    """
+    assert not _cors_precedes_validate_jwt("<base /><validate-jwt />"), "no <cors> -> False"
+    assert not _cors_precedes_validate_jwt("<validate-jwt /><cors />"), "<cors> after jwt -> False"
+    assert _cors_precedes_validate_jwt("<base /><cors /><validate-jwt />"), "correct order -> True"
+    assert _cors_block("<cors><allowed-origins><origin>*</origin></allowed-origins></cors>")
+    assert _cors_block("no cors here at all") == ""
+    # A comment naming <cors> must not satisfy the block detector.
+    assert _cors_block("<!-- add a <cors> element here -->") == ""
