@@ -60,6 +60,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_discovery",
         "edge_mcp_unauth",
         "edge_browser_redirect",
+        "edge_cors_preflight",
         "mcp_admin",
         "mcp_roundtrip",
         "edge_authn_backend",
@@ -199,6 +200,9 @@ def serve(responder: Responder) -> Iterator[str]:
 
         def do_POST(self) -> None:  # noqa: N802
             self._dispatch("POST")
+
+        def do_OPTIONS(self) -> None:  # noqa: N802 (CORS preflight)
+            self._dispatch("OPTIONS")
 
         def log_message(self, *_args: object) -> None:  # silence the stub
             return
@@ -553,6 +557,85 @@ def test_browser_redirect_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_browser_redirect"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_browser_redirect") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _cors_stub(
+    preflight_status: int, with_cors_headers: bool = True, discovery_status: int = 200
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the CORS-preflight check: a preflight ``OPTIONS`` (to any path)
+    answers ``preflight_status`` and, when ``with_cors_headers``, carries the
+    ``Access-Control-Allow-*`` headers APIM's ``<cors>`` policy emits; the
+    discovery doc answers ``discovery_status`` (200 = edge live).
+    """
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            return discovery_status, (_DISCOVERY_BODY if discovery_status == 200 else "{}"), {}
+        if method == "OPTIONS":
+            headers: dict[str, str] = {}
+            if with_cors_headers:
+                headers = {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+                    "Access-Control-Allow-Headers": "Authorization,Content-Type",
+                }
+            return preflight_status, "", headers
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_cors_preflight_passes() -> None:
+    """Preflight OPTIONS answers 2xx with Access-Control-Allow-* and the edge is
+    live -> edge_cors_preflight PASS. The deploy-verified source of criterion #6.
+    """
+    with serve(_cors_stub(preflight_status=200, with_cors_headers=True)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_cors_preflight"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_cors_preflight") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_cors_preflight_401_fails() -> None:
+    """THE preflight-gate regression: validate-jwt 401s the preflight OPTIONS and emits no
+    CORS headers, so the browser blocks the call. The check must FAIL -- catching
+    the exact production defect this ticket fixes, not passing on a bare status.
+    """
+    with serve(_cors_stub(preflight_status=401, with_cors_headers=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_cors_preflight"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_cors_preflight") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_cors_preflight_missing_headers_fails() -> None:
+    """A 2xx preflight that carries NO Access-Control-Allow-Origin must FAIL -- a
+    browser still blocks the call. Proves the check asserts on the CORS header,
+    not merely on a 2xx status (the coincidental-pass trap this criterion guards).
+    """
+    with serve(_cors_stub(preflight_status=200, with_cors_headers=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_cors_preflight"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_cors_preflight") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_cors_preflight_dead_edge_fails() -> None:
+    """Discovery doc broken (404): a CORS-carrying preflight must NOT be credited
+    -- the discovery-200 control rejects it (the blanket-edge coincidental-pass trap).
+    """
+    with serve(
+        _cors_stub(preflight_status=200, with_cors_headers=True, discovery_status=404)
+    ) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_cors_preflight"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_cors_preflight") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

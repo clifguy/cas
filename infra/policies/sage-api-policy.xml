@@ -2,6 +2,32 @@
     <inbound>
         <base />
         <!--
+            CORS preflight (CAS-ADR-042). A browser-context MCP/OAuth client
+            (Claude Desktop, the claude.ai connector) sends a preflight OPTIONS
+            before the real request. This <cors> sits AHEAD of validate-jwt so the
+            preflight is answered anonymously and short-circuited before the JWT
+            gate; otherwise validate-jwt 401s the tokenless preflight and the
+            browser blocks the call. Every preflight routes here through the
+            catch-all operation, so one API-level <cors> covers all paths.
+            allow-credentials is false because MCP clients authenticate with a
+            bearer token in the Authorization header, not cookies, so a wildcard
+            origin is valid.
+        -->
+        <cors allow-credentials="false">
+            <allowed-origins>
+                <origin>*</origin>
+            </allowed-origins>
+            <allowed-methods>
+                <method>GET</method>
+                <method>POST</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Authorization</header>
+                <header>Content-Type</header>
+            </allowed-headers>
+        </cors>
+        <!--
             SAGE public-edge default policy for the CAS cloud deployment profile
             (CAS-ADR-042). This is the catch-all pipeline for every surface that
             is not a dedicated operation: validate the Entra JWT (single issuer,

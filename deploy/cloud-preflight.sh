@@ -102,6 +102,7 @@ get_result() { eval "printf '%s' \"\${result_$1:-}\""; }
 # --------------------------------------------------------------------------- #
 HTTP_CODE=""
 HTTP_BODY=""
+HTTP_HEADERS=""
 HTTP_DIAG=""
 VAULT_FIRST_ID=""
 DETAIL_MSG=""
@@ -143,14 +144,15 @@ curl_exit_reason() { # curl-exit-code
 }
 
 # One probe attempt: sets HTTP_CODE (status, or 000 on a connection failure),
-# HTTP_BODY, and HTTP_DIAG (the decoded curl-exit reason on a 000, empty on a
-# real status -- so a downstream FAIL line can name *why* a 000 occurred). curl's
-# exit code is captured, not discarded. The HTTP client is seamable
-# (PREFLIGHT_CURL_CMD) so the gate can drive it offline; left at its default it
-# is plain curl.
+# HTTP_BODY, HTTP_HEADERS (the raw response-header block, so a check can assert on
+# a header such as Access-Control-Allow-Origin), and HTTP_DIAG (the decoded
+# curl-exit reason on a 000, empty on a real status -- so a downstream FAIL line
+# can name *why* a 000 occurred). curl's exit code is captured, not discarded. The
+# HTTP client is seamable (PREFLIGHT_CURL_CMD) so the gate can drive it offline;
+# left at its default it is plain curl.
 _curl_once() { # curl-arg...
   local code rc
-  if code="$($PREFLIGHT_CURL_CMD -sS -o "$WORKDIR/body" -w '%{http_code}' "$@" 2>/dev/null)"; then
+  if code="$($PREFLIGHT_CURL_CMD -sS -o "$WORKDIR/body" -D "$WORKDIR/headers" -w '%{http_code}' "$@" 2>/dev/null)"; then
     rc=0
   else
     rc=$?
@@ -163,6 +165,7 @@ _curl_once() { # curl-arg...
     HTTP_DIAG=""
   fi
   HTTP_BODY="$(cat "$WORKDIR/body" 2>/dev/null || true)"
+  HTTP_HEADERS="$(cat "$WORKDIR/headers" 2>/dev/null || true)"
 }
 
 # Probe with the warm-up retry. Returns as soon as any real status arrives;
@@ -209,6 +212,23 @@ http_post() { # url json-body [bearer-token]
   else
     _probe_with_warmup -H "Content-Type: application/json" --data "$data" "$url"
   fi
+}
+
+# A CORS preflight: an OPTIONS carrying the origin + request-method/-headers a
+# browser sends ahead of the real cross-origin call. Sets HTTP_CODE and
+# HTTP_HEADERS so a check can assert the preflight was answered with the
+# Access-Control-Allow-* headers (the preflight-CORS fix). The Origin is a placeholder --
+# the assertion is on the response headers, not the echoed origin.
+http_options() { # url
+  _probe_with_warmup -X OPTIONS \
+    -H "Origin: https://cors-probe.invalid" \
+    -H "Access-Control-Request-Method: POST" \
+    -H "Access-Control-Request-Headers: authorization,content-type" \
+    "$1"
+}
+
+_is_2xx() { # status-code
+  [ "$1" -ge 200 ] && [ "$1" -lt 300 ]
 }
 
 resolve_record() { # type name -> records, one per line
@@ -310,6 +330,32 @@ check_edge_browser_redirect() {
     return 1
   fi
   DETAIL_MSG="browser 302 but machine got $machine not 401 (blanket redirect, not Accept-routing)"
+  return 1
+}
+
+check_edge_cors_preflight() {
+  # A browser-context MCP client sends a CORS preflight OPTIONS before the real
+  # request; APIM must answer it anonymously (2xx + Access-Control-Allow-*) ahead
+  # of validate-jwt, or the browser blocks the call. Probe the anonymous
+  # /register and the authed /mcp -- both preflights route through the catch-all,
+  # so both must carry CORS headers. The discovery-200 control guards against
+  # crediting a preflight status on a dead edge.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); a preflight status is the blanket trap, not CORS handling"
+    return 1
+  fi
+  http_options "$SAGE_BASE_URL/register"
+  local reg_code="$HTTP_CODE" reg_hdrs="$HTTP_HEADERS"
+  http_options "$SAGE_BASE_URL/mcp"
+  local mcp_code="$HTTP_CODE" mcp_hdrs="$HTTP_HEADERS"
+  local reg_cors=no mcp_cors=no
+  printf '%s' "$reg_hdrs" | grep -qi 'access-control-allow-origin' && reg_cors=yes
+  printf '%s' "$mcp_hdrs" | grep -qi 'access-control-allow-origin' && mcp_cors=yes
+  if _is_2xx "$reg_code" && _is_2xx "$mcp_code" && [ "$reg_cors" = yes ] && [ "$mcp_cors" = yes ]; then
+    DETAIL_MSG="OPTIONS /register $reg_code and /mcp $mcp_code carry Access-Control-Allow-* (preflight answered before the JWT gate)"
+    return 0
+  fi
+  DETAIL_MSG="preflight not answered: /register $reg_code (cors=$reg_cors), /mcp $mcp_code (cors=$mcp_cors) -- validate-jwt still gating the preflight OPTIONS"
   return 1
 }
 
@@ -599,6 +645,9 @@ register edge_mcp_unauth check_edge_mcp_unauth \
 register edge_browser_redirect check_edge_browser_redirect \
   "a browser (Accept: text/html) is 302-redirected to the CAS app" \
   "the machine Accept must still 401 with the discovery-200 control held, proving Accept-routing not a blanket redirect"
+register edge_cors_preflight check_edge_cors_preflight \
+  "OPTIONS /register and /mcp answer 2xx with Access-Control-Allow-* (preflight answered before the JWT gate)" \
+  "a 2xx without the CORS header, or the preflight-specific 401, is the coincidental-pass trap; credited only with the discovery-200 control held"
 register mcp_admin check_mcp_admin \
   "/mcp_admin 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"

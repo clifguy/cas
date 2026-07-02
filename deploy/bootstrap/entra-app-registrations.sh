@@ -133,16 +133,20 @@ az rest --method PATCH \
 # id back to a default MCP client, since Entra offers no real Dynamic Client
 # Registration (CAS-ADR-042). --public-client-redirect-uris registers
 # the public-client platform (never --web-redirect-uris, which implies a
-# confidential client that would need a secret).
+# confidential client that would need a secret). The set carries both the
+# env-resolved primary redirect and the http://localhost/callback loopback a
+# browser-context Desktop client uses for its auth-code/PKCE callback; the flag
+# is a declarative full-set replace, so registering both here keeps a re-bootstrap
+# from dropping the loopback.
 MCP_CLIENT_APP_ID="$(az ad app list --display-name cas-mcp-client --query '[0].appId' -o tsv)"
 if [ -z "${MCP_CLIENT_APP_ID}" ]; then
   MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
     --sign-in-audience AzureADMyOrg \
-    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" \
+    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" "http://localhost/callback" \
     --query appId -o tsv)"
 else
   az ad app update --id "${MCP_CLIENT_APP_ID}" \
-    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}"
+    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" "http://localhost/callback"
 fi
 MCP_CLIENT_SP_ID="$(az ad sp create --id "${MCP_CLIENT_APP_ID}" --query id -o tsv 2>/dev/null || \
   az ad sp show --id "${MCP_CLIENT_APP_ID}" --query id -o tsv)"

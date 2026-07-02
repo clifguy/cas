@@ -248,11 +248,11 @@ MCP_CLIENT_APP_ID="$(az ad app list --display-name cas-mcp-client --query '[0].a
 if [ -z "$MCP_CLIENT_APP_ID" ]; then
   MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
     --sign-in-audience AzureADMyOrg \
-    --public-client-redirect-uris "<MCP_CLIENT_REDIRECT_URI>" \
+    --public-client-redirect-uris "<MCP_CLIENT_REDIRECT_URI>" "http://localhost/callback" \
     --query appId -o tsv)"
 else
   az ad app update --id "$MCP_CLIENT_APP_ID" \
-    --public-client-redirect-uris "<MCP_CLIENT_REDIRECT_URI>"
+    --public-client-redirect-uris "<MCP_CLIENT_REDIRECT_URI>" "http://localhost/callback"
 fi
 MCP_CLIENT_SP_ID="$(az ad sp create --id "$MCP_CLIENT_APP_ID" --query id -o tsv 2>/dev/null || \
   az ad sp show --id "$MCP_CLIENT_APP_ID" --query id -o tsv)"
@@ -260,7 +260,11 @@ MCP_CLIENT_SP_ID="$(az ad sp create --id "$MCP_CLIENT_APP_ID" --query id -o tsv 
 
 `--public-client-redirect-uris` registers the public-client redirect-uri
 platform — never `--web-redirect-uris`, which implies a confidential client that
-would need a secret the PKCE flow does not use.
+would need a secret the PKCE flow does not use. The set carries two URIs: the
+env-resolved `<MCP_CLIENT_REDIRECT_URI>` primary and the `http://localhost/callback`
+loopback a browser-context Desktop client uses for its auth-code/PKCE callback.
+The flag is a declarative full-set replace, so registering both together keeps a
+re-run from dropping the loopback.
 
 Grant the same delegated `Sage.Access` scope the BFF holds, then admin-consent
 it — permission add and consent are identical to the BFF step above:
