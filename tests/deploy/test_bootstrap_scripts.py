@@ -250,6 +250,43 @@ def test_entra_script_registers_mcp_loopback_redirect() -> None:
     )
 
 
+def test_entra_script_declares_both_sage_identifier_uris() -> None:
+    """The SAGE resource server declares BOTH identifier URIs in one update: the
+    ``api://<app-id>`` audience URI and the ``https://<SAGE_PUBLIC_HOSTNAME>``
+    custom-domain identity, with the hostname arriving as required environment.
+
+    The https identity is what lets the edge-advertised
+    ``{{sage-resource-url}}/Sage.Access`` scope resolve to this app: an MCP
+    client sends an RFC 8707 ``resource`` parameter (its server URL) with
+    ``/authorize``, and Entra rejects the request pre-authentication when that
+    parameter is not consistent with the requested scope's resource
+    (AADSTS9010010, ``invalid_target``) — an api://-prefixed scope can never
+    match the client's https server URL. ``--identifier-uris`` is a declarative
+    full-set replace, so both URIs must be passed together on every invocation
+    or a re-bootstrap drops one.
+    """
+    text = _text(ENTRA)
+    assert re.search(r':\s*"\$\{SAGE_PUBLIC_HOSTNAME:\?', text), (
+        "entra script must require SAGE_PUBLIC_HOSTNAME in the environment "
+        "(the public sage custom domain the https identifier URI is built from)"
+    )
+    uri_invocations = re.findall(
+        r"--identifier-uris[^\n]*(?:\\\n[^\n]*)*", text
+    )
+    assert uri_invocations, "entra script must pass --identifier-uris"
+    for invocation in uri_invocations:
+        flat = invocation.replace("\\\n", " ")
+        assert "api://${SAGE_APP_ID}" in flat, (
+            "every --identifier-uris invocation must keep the api://<app-id> "
+            "audience URI (the BFF OBO and preflight token target)"
+        )
+        assert "https://${SAGE_PUBLIC_HOSTNAME}" in flat, (
+            "every --identifier-uris invocation must declare the https "
+            "custom-domain identity — the flag is a full-set replace, so omitting "
+            "it here regresses the tenant to AADSTS9010010 at /authorize"
+        )
+
+
 def test_entra_script_provisions_group_idempotently() -> None:
     """The Entra script provisions the single ADR-044 provisioning group
     lookup-then-create, so it converges regardless of whether a companion

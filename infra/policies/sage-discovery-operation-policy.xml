@@ -12,6 +12,20 @@
             /.well-known/oauth-authorization-server, and only the facade's copy
             advertises a registration_endpoint (Entra's real AS metadata has none).
 
+            resource and the scope prefix are BOTH {{sage-resource-url}} (the
+            sage custom domain), and that same identity must be registered as an
+            identifier URI on the Entra resource app (the bootstrap declares it).
+            Two independent checks require this coherence: (1) the client rejects
+            a resource that does not match the server origin it connected to
+            (RFC 9728 confused-deputy protection — the reference client throws
+            "Protected resource ... does not match expected" on a mismatch);
+            (2) the client sends an RFC 8707 resource parameter to /authorize
+            composed from this document, and Entra pre-auth requires that
+            parameter to be consistent with the requested scope's resource — an
+            api://<app-id>-prefixed scope against an https resource fails
+            AADSTS9010010 (invalid_target) before the login page ever renders.
+            Verified live on cor-prod.
+
             There is deliberately no <base /> here: omitting it skips the
             API-level inbound policy (validate-jwt), so the document is reachable
             without a token. And because routing is by operation (a literal
@@ -46,7 +60,7 @@
             <set-body>{
   "resource": "{{sage-resource-url}}",
   "authorization_servers": ["{{sage-resource-url}}"],
-  "scopes_supported": ["{{sage-audience}}/Sage.Access"],
+  "scopes_supported": ["{{sage-resource-url}}/Sage.Access"],
   "bearer_methods_supported": ["header"]
 }</set-body>
         </return-response>

@@ -25,6 +25,12 @@ AUTH_CALLBACK_PATH="${AUTH_CALLBACK_PATH:-auth/callback}"
 # more than one.
 : "${MCP_CLIENT_REDIRECT_URI:?set MCP_CLIENT_REDIRECT_URI to the MCP client registered redirect URI (see docs/process/entra-app-registrations.md)}"
 
+# The public SAGE hostname (the sage custom domain, e.g. sage.<base-domain>).
+# Registered below as an https identifier URI on the resource server so the
+# {{sage-resource-url}}/Sage.Access scope the edge advertises resolves to this
+# app. Must sit under a domain verified in the tenant.
+: "${SAGE_PUBLIC_HOSTNAME:?set SAGE_PUBLIC_HOSTNAME to the public SAGE hostname (e.g. sage.<base-domain>)}"
+
 # 1. SAGE resource-server registration (lookup-then-create keeps it idempotent).
 SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
   --query '[0].appId' -o tsv)"
@@ -32,7 +38,18 @@ if [ -z "${SAGE_APP_ID}" ]; then
   SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
-az ad app update --id "${SAGE_APP_ID}" --identifier-uris "api://${SAGE_APP_ID}"
+# Two identifier URIs, declared together (the flag is a declarative full-set
+# replace, so a re-run keeps both): the api://<app-id> audience URI the BFF OBO
+# exchange and the deploy preflight token target, and the https custom-domain
+# identity the MCP edge advertises as its scope prefix. The https form exists
+# because an MCP client sends an RFC 8707 resource parameter (its server URL)
+# with /authorize, and Entra pre-auth requires that parameter to be consistent
+# with the requested scope's resource -- an api://-prefixed scope against the
+# client's https resource fails AADSTS9010010 (invalid_target). The https
+# identifier URI requires its host under a tenant-verified domain; az fails
+# loudly here if it is not.
+az ad app update --id "${SAGE_APP_ID}" \
+  --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}"
 az ad sp create --id "${SAGE_APP_ID}" 2>/dev/null || true
 
 # Expose the single delegated scope and app role that authorize both the REST

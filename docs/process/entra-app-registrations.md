@@ -68,12 +68,16 @@ You will also choose placeholders that downstream work fixes concretely:
 - `<MCP_CLIENT_REDIRECT_URI>` — the public MCP client's registered redirect URI
   (a loopback or custom-scheme callback, not a CAS-controlled hostname); resolved
   against the chosen default MCP client's current documentation, not fixed here.
+- `<SAGE_PUBLIC_HOSTNAME>` — the public SAGE hostname (the sage custom domain,
+  `sage.<base-domain>`), registered as an https identifier URI on the resource
+  server. Its host must sit under a domain verified in the tenant.
 
 ## 1. SAGE resource-server registration
 
-Create (or reuse) the application, give it an application ID URI of the form
-`api://<SAGE_APP_ID>`, and create its service principal. The lookup-then-create
-guard makes the step idempotent.
+Create (or reuse) the application, give it **two** identifier URIs — the
+`api://<SAGE_APP_ID>` audience URI and the `https://<SAGE_PUBLIC_HOSTNAME>`
+custom-domain identity — and create its service principal. The
+lookup-then-create guard makes the step idempotent.
 
 ```bash
 SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
@@ -83,9 +87,26 @@ if [ -z "$SAGE_APP_ID" ]; then
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
 
-az ad app update --id "$SAGE_APP_ID" --identifier-uris "api://${SAGE_APP_ID}"
+az ad app update --id "$SAGE_APP_ID" \
+  --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
+
+The two identifier URIs serve different callers. `api://<SAGE_APP_ID>` is the
+audience the BFF's on-behalf-of exchange and the deploy preflight token target.
+The **https custom-domain identity** exists for the MCP edge: the facade
+advertises `https://<SAGE_PUBLIC_HOSTNAME>/Sage.Access` as its scope, because a
+standards MCP client sends an RFC 8707 `resource` parameter (its server URL)
+with `/authorize`, and Entra rejects the request pre-authentication when that
+parameter is not consistent with the requested scope's resource
+(`AADSTS9010010`, `invalid_target`) — an `api://`-prefixed scope can never match
+the client's https server URL. The client independently requires the advertised
+resource to match the server origin it connected to (RFC 9728), so the https
+identity must be the custom domain itself. `--identifier-uris` is a declarative
+full-set replace: declare both together so a re-run cannot drop either. The
+https form requires its host under a tenant-verified domain; `az` fails loudly
+if it is not. Tokens are unaffected either way — a v2 access token carries the
+bare app-id GUID as its `aud` no matter which identifier form the scope used.
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and

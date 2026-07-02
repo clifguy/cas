@@ -12,6 +12,14 @@
             exchange never traverse the facade and tokens stay signed by Entra
             exactly as today.
 
+            scopes_supported is prefixed with {{sage-resource-url}} (the sage
+            custom domain, registered as an identifier URI on the Entra resource
+            app), not the api://<app-id> audience URI: Entra pre-auth requires
+            the client's RFC 8707 resource parameter to be consistent with the
+            requested scope's resource (AADSTS9010010 otherwise). The minted v2
+            access token still carries the bare app-id GUID as its aud, which
+            validate-jwt already admits. Full rationale in the discovery policy.
+
             There is deliberately no <base /> here: omitting it skips the
             API-level inbound policy (validate-jwt), so the document is reachable
             without a token, matching the discovery operation.
@@ -50,7 +58,7 @@
   "grant_types_supported": ["authorization_code"],
   "code_challenge_methods_supported": ["S256"],
   "token_endpoint_auth_methods_supported": ["none"],
-  "scopes_supported": ["{{sage-audience}}/Sage.Access"]
+  "scopes_supported": ["{{sage-resource-url}}/Sage.Access"]
 }</set-body>
         </return-response>
     </inbound>
