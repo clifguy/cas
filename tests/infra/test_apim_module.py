@@ -66,6 +66,16 @@ _CATCH_ALL_URL_TEMPLATE: Final[str] = "/{*path}"
 _DISCOVERY_PATH: Final[str] = "/.well-known/oauth-protected-resource"
 _HEALTH_PATH: Final[str] = "/health"
 
+# The DCR-compatibility facade (CAS-ADR-042): two more dedicated,
+# unauthenticated operations. The authorization-server metadata doc advertises
+# Entra's real authorize/token endpoints plus a registration_endpoint pointing
+# at the facade's own /register; /register answers every registration attempt
+# with the single pre-provisioned public client id — no dynamic registration
+# ever occurs.
+_AS_METADATA_PATH: Final[str] = "/.well-known/oauth-authorization-server"
+_REGISTER_PATH: Final[str] = "/register"
+_MCP_CLIENT_ID_NAMED_VALUE: Final[str] = "mcp-client-id"
+
 # The browser-redirect contract on the catch-all <on-error> 401 branch: a
 # tokenless human browser (Accept: text/html) is 302'd to the CAS app via the
 # {{cas-app-url}} named value, while every machine client keeps the byte-identical
@@ -80,11 +90,13 @@ _WWW_AUTH_CHALLENGE: Final[str] = (
     'Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"'
 )
 
-# Policy XML files under infra/policies/: the API-level policy plus the two
+# Policy XML files under infra/policies/: the API-level policy plus the
 # operation-scoped policies the dedicated operations load.
 API_POLICY: Final[Path] = POLICIES_DIR / "sage-api-policy.xml"
 DISCOVERY_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-discovery-operation-policy.xml"
 HEALTH_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-health-operation-policy.xml"
+AS_METADATA_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-authorization-server-operation-policy.xml"
+REGISTER_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-register-operation-policy.xml"
 
 # The Entra authority host belongs in the versioned policy XML (loaded via
 # loadTextContent, which the Bicep linter does not introspect), never in a
@@ -316,6 +328,27 @@ def _declares_literal_get_operation(text: str, url_template: str) -> bool:
     esc = re.escape(url_template)
     forward = re.search(r"method:\s*'GET'[^{}]*?urlTemplate:\s*'" + esc + r"'", stripped)
     backward = re.search(r"urlTemplate:\s*'" + esc + r"'[^{}]*?method:\s*'GET'", stripped)
+    return bool(forward or backward)
+
+
+def _declares_literal_operation(text: str, url_template: str, method: str) -> bool:
+    """True iff a dedicated ``method: '<method>'`` operation with ``urlTemplate:
+    '<url_template>'`` is declared (the two co-occurring within one ``{...}``
+    properties block, order-independent), after stripping line comments.
+
+    Generalizes ``_declares_literal_get_operation`` to an arbitrary verb — the
+    DCR facade's ``/register`` operation is a dedicated ``POST``, not a
+    ``GET``, so a GET-only detector would silently pass a mis-declared operation.
+    """
+    stripped = _strip_line_comments(text)
+    esc = re.escape(url_template)
+    method_esc = re.escape(method)
+    forward = re.search(
+        r"method:\s*'" + method_esc + r"'[^{}]*?urlTemplate:\s*'" + esc + r"'", stripped
+    )
+    backward = re.search(
+        r"urlTemplate:\s*'" + esc + r"'[^{}]*?method:\s*'" + method_esc + r"'", stripped
+    )
     return bool(forward or backward)
 
 
@@ -640,6 +673,26 @@ def test_apim_declares_health_operation() -> None:
     )
 
 
+def test_apim_declares_authorization_server_operation() -> None:
+    """The DCR facade's authorization-server metadata is served by its own
+    dedicated GET operation (``/.well-known/oauth-authorization-server``), the
+    same round-trip-safe shape as the discovery and /health operations.
+    """
+    assert _declares_literal_operation(
+        APIM.read_text(encoding="utf-8"), _AS_METADATA_PATH, "GET"
+    ), f"apim.bicep must declare a dedicated GET operation with urlTemplate '{_AS_METADATA_PATH}'"
+
+
+def test_apim_declares_register_operation() -> None:
+    """The DCR facade's static registration response is served by its own
+    dedicated POST operation (``/register``) — a GET here would never match the
+    client's registration request.
+    """
+    assert _declares_literal_operation(APIM.read_text(encoding="utf-8"), _REGISTER_PATH, "POST"), (
+        f"apim.bicep must declare a dedicated POST operation with urlTemplate '{_REGISTER_PATH}'"
+    )
+
+
 def test_apim_discovery_operation_policy_serves_doc_unauthenticated() -> None:
     """The discovery operation's policy returns the protected-resource-metadata
     document directly (return-response) and does NOT validate the JWT, so the
@@ -652,16 +705,114 @@ def test_apim_discovery_operation_policy_serves_doc_unauthenticated() -> None:
     assert "authorization_servers" in xml and "scopes_supported" in xml, (
         "the resource-metadata document must carry authorization_servers and scopes_supported"
     )
-    assert "{{sage-resource-url}}" in xml and "{{entra-tenant-id}}" in xml, (
-        "the metadata document must interpolate the sage-resource-url and "
-        "entra-tenant-id named values"
-    )
     assert "validate-jwt" not in inbound, (
         "the discovery operation must not validate the JWT (the doc is unauthenticated)"
     )
     assert "<base" not in inbound, (
         "the discovery operation inbound must not call <base/> — that would inherit the "
         "API-level validate-jwt and 401 the unauthenticated discovery doc"
+    )
+
+
+def test_apim_discovery_authorization_servers_point_at_facade() -> None:
+    """The protected-resource-metadata's ``authorization_servers`` points at the
+    facade's own authorization-server metadata (``{{sage-resource-url}}``), not
+    directly at the raw Entra issuer.
+
+    A default MCP client resolves ``authorization_servers`` and fetches *that*
+    URL's ``/.well-known/oauth-authorization-server``. Pointing straight at
+    Entra hands the client Entra's real AS metadata — which carries no
+    ``registration_endpoint`` — and the DCR leg this ticket exists to unblock
+    dead-ends exactly as it does today.
+    """
+    xml = DISCOVERY_OP_POLICY.read_text(encoding="utf-8")
+    assert "{{sage-resource-url}}" in xml, (
+        "the resource-metadata authorization_servers must interpolate {{sage-resource-url}} "
+        "(the facade), not the raw Entra issuer"
+    )
+    assert _ENTRA_AUTHORITY_HOST not in xml, (
+        f"the discovery doc must not reference {_ENTRA_AUTHORITY_HOST} directly — "
+        "authorization_servers must route through the facade's own AS metadata"
+    )
+
+
+def test_apim_as_metadata_policy_serves_doc_unauthenticated() -> None:
+    """The authorization-server metadata operation returns Entra's real
+    authorize/token/JWKS endpoints plus the facade's ``registration_endpoint``,
+    unauthenticated (no JWT, no ``<base/>``) — the discovery leg of the DCR facade.
+    """
+    xml = AS_METADATA_OP_POLICY.read_text(encoding="utf-8")
+    inbound = _inbound_section(xml)
+    assert "<return-response" in inbound, "the AS metadata operation must serve a return-response"
+    for field in (
+        "authorization_endpoint",
+        "token_endpoint",
+        "jwks_uri",
+        "registration_endpoint",
+        "code_challenge_methods_supported",
+    ):
+        assert field in xml, f"the AS metadata document must carry {field!r}"
+    assert "{{entra-tenant-id}}" in xml and "{{sage-resource-url}}" in xml, (
+        "the AS metadata document must interpolate entra-tenant-id (the real Entra "
+        "endpoints) and sage-resource-url (the facade's own registration_endpoint)"
+    )
+    assert '"registration_endpoint": "{{sage-resource-url}}/register"' in xml, (
+        "registration_endpoint must resolve to the facade's own /register path"
+    )
+    assert "validate-jwt" not in inbound, (
+        "the AS metadata operation must not validate the JWT (unauthenticated discovery)"
+    )
+    assert "<base" not in inbound, (
+        "the AS metadata operation inbound must not call <base/> — that would inherit "
+        "the API-level validate-jwt and 401 the unauthenticated discovery doc"
+    )
+
+
+def test_apim_register_policy_serves_static_client_unauthenticated() -> None:
+    """The ``/register`` operation answers every registration attempt with the
+    single pre-provisioned public client id and ``token_endpoint_auth_method:
+    none`` — no dynamic registration occurs, and no secret is ever minted.
+    """
+    xml = REGISTER_OP_POLICY.read_text(encoding="utf-8")
+    inbound = _inbound_section(xml)
+    assert "<return-response" in inbound, "the /register operation must serve a return-response"
+    assert "{{" + _MCP_CLIENT_ID_NAMED_VALUE + "}}" in xml, (
+        f"the registration response must interpolate the {{{{{_MCP_CLIENT_ID_NAMED_VALUE}}}}} "
+        "named value"
+    )
+    assert '"token_endpoint_auth_method": "none"' in xml, (
+        "the static registration response must declare token_endpoint_auth_method: none "
+        "(a public client, no secret)"
+    )
+    assert "client_secret" not in xml, (
+        "the static registration response must never mint or echo a client_secret"
+    )
+    assert "validate-jwt" not in inbound, (
+        "the /register operation must not validate the JWT (unauthenticated registration)"
+    )
+    assert "<base" not in inbound, (
+        "the /register operation inbound must not call <base/> — that would inherit "
+        "the API-level validate-jwt and 401 the unauthenticated registration call"
+    )
+
+
+def test_apim_declares_mcp_client_id_named_value() -> None:
+    """apim.bicep declares the ``mcp-client-id`` named value from an
+    ``mcpClientId`` parameter — the pre-provisioned public client id the
+    ``/register`` facade echoes back, never a literal GUID.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+mcpClientId\s+string", text), (
+        "apim.bicep must take an `mcpClientId` string parameter"
+    )
+    assert f"name: '{_MCP_CLIENT_ID_NAMED_VALUE}'" in text, (
+        f"apim.bicep must declare a '{_MCP_CLIENT_ID_NAMED_VALUE}' named value"
+    )
+    assert re.search(r"value:\s*mcpClientId", text), (
+        "the mcp-client-id named value must come from the mcpClientId parameter"
+    )
+    assert not _GUID_RE.search(APIM.read_text(encoding="utf-8")), (
+        "apim.bicep must not hardcode the mcp client id as a literal GUID"
     )
 
 
@@ -801,21 +952,20 @@ def test_main_bicep_passes_cas_app_url_to_apim() -> None:
 
 
 def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
-    """Both dedicated operation policies are loaded from versioned XML under
+    """Every dedicated operation policy is loaded from versioned XML under
     infra/policies/ via loadTextContent — the same discipline as the API-level
-    policy, extended to operation scope.
+    policy, extended to operation scope (discovery, /health, and the DCR
+    facade's authorization-server metadata and /register).
     """
     loaded_names = {Path(p).name for p in _loaded_policy_paths(APIM.read_text(encoding="utf-8"))}
-    assert DISCOVERY_OP_POLICY.name in loaded_names, (
-        f"apim.bicep must loadTextContent the discovery operation policy "
-        f"'{DISCOVERY_OP_POLICY.name}'"
-    )
-    assert HEALTH_OP_POLICY.name in loaded_names, (
-        f"apim.bicep must loadTextContent the /health operation policy '{HEALTH_OP_POLICY.name}'"
-    )
-    assert DISCOVERY_OP_POLICY.is_file() and HEALTH_OP_POLICY.is_file(), (
-        "both operation policy XML files must exist under infra/policies/"
-    )
+    op_policies = (DISCOVERY_OP_POLICY, HEALTH_OP_POLICY, AS_METADATA_OP_POLICY, REGISTER_OP_POLICY)
+    for policy in op_policies:
+        assert policy.name in loaded_names, (
+            f"apim.bicep must loadTextContent the operation policy '{policy.name}'"
+        )
+        assert policy.is_file(), (
+            f"operation policy XML must exist under infra/policies/: {policy.name}"
+        )
 
 
 def test_apim_policy_routes_admin_mount_through_jwt() -> None:
@@ -1143,3 +1293,34 @@ def test_literal_get_operation_detector_controls() -> None:
         "properties: {\n  method: method\n  urlTemplate: '/health'\n}\n"
     )
     assert not _declares_literal_get_operation(cross, "/health")
+
+
+def test_literal_operation_detector_controls() -> None:
+    """``_declares_literal_operation`` generalizes the GET-only detector to an
+    arbitrary verb: fires on a dedicated ``POST`` operation carrying the target
+    urlTemplate, clears when the method is wrong (the DCR facade's ``/register``
+    must be POST, not GET — a mis-declared GET would silently 404 every real
+    registration attempt), clears on the loop form, and clears on a comment.
+    """
+    post_op = (
+        "resource op 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {\n"
+        "  properties: {\n"
+        "    method: 'POST'\n"
+        "    urlTemplate: '/register'\n"
+        "  }\n"
+        "}\n"
+    )
+    wrong_method = (
+        "resource op 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {\n"
+        "  properties: {\n"
+        "    method: 'GET'\n"
+        "    urlTemplate: '/register'\n"
+        "  }\n"
+        "}\n"
+    )
+    loop_form = "    method: method\n    urlTemplate: '/register'\n"
+    commented = "// method: 'POST'\n// urlTemplate: '/register'\n"
+    assert _declares_literal_operation(post_op, "/register", "POST")
+    assert not _declares_literal_operation(wrong_method, "/register", "POST")
+    assert not _declares_literal_operation(loop_form, "/register", "POST")
+    assert not _declares_literal_operation(commented, "/register", "POST")

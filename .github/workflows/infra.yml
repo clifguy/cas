@@ -94,6 +94,7 @@ jobs:
       SAGE_AUDIENCE: ${{ vars.SAGE_AUDIENCE }}
       PUBLISHER_EMAIL: ${{ vars.PUBLISHER_EMAIL }}
       BFF_OIDC_CLIENT_ID: ${{ vars.BFF_OIDC_CLIENT_ID }}
+      MCP_CLIENT_ID: ${{ vars.MCP_CLIENT_ID }}
       BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
       POSTGRES_AAD_ADMIN_OBJECT_ID: ${{ vars.POSTGRES_AAD_ADMIN_OBJECT_ID }}
       POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: ${{ vars.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME }}
@@ -125,6 +126,7 @@ jobs:
               publisherEmail="$PUBLISHER_EMAIL" \
               imageTag="$IMAGE_TAG" \
               bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
+              mcpClientId="$MCP_CLIENT_ID" \
               baseDomain="$BASE_DOMAIN" \
               postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
               postgresAadAdminPrincipalName="$POSTGRES_AAD_ADMIN_PRINCIPAL_NAME" \
@@ -145,6 +147,7 @@ jobs:
               publisherEmail="$PUBLISHER_EMAIL" \
               imageTag="$IMAGE_TAG" \
               bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
+              mcpClientId="$MCP_CLIENT_ID" \
               baseDomain="$BASE_DOMAIN" \
               postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
               postgresAadAdminPrincipalName="$POSTGRES_AAD_ADMIN_PRINCIPAL_NAME" \

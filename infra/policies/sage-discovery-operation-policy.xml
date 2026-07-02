@@ -6,6 +6,12 @@
             document directly at the edge for the unauthenticated discovery
             handshake (RFC 9728 / the MCP authorization profile).
 
+            authorization_servers points at this facade's own authorization-server
+            metadata (CAS-ADR-042), not directly at the raw Entra issuer:
+            a default MCP client fetches that URL's own
+            /.well-known/oauth-authorization-server, and only the facade's copy
+            advertises a registration_endpoint (Entra's real AS metadata has none).
+
             There is deliberately no <base /> here: omitting it skips the
             API-level inbound policy (validate-jwt), so the document is reachable
             without a token. And because routing is by operation (a literal
@@ -20,7 +26,7 @@
             </set-header>
             <set-body>{
   "resource": "{{sage-resource-url}}",
-  "authorization_servers": ["https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0"],
+  "authorization_servers": ["{{sage-resource-url}}"],
   "scopes_supported": ["Sage.Access"],
   "bearer_methods_supported": ["header"]
 }</set-body>

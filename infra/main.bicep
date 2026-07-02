@@ -40,6 +40,9 @@ param imageTag string
 @description('Application (client) id of the CAS BFF confidential client registration (supplied at deploy time).')
 param bffOidcClientId string
 
+@description('Application (client) id of the pre-provisioned public MCP client (auth-code + PKCE, no secret) the DCR-compatibility facade registers back at /register (supplied at deploy time, CAS-ADR-042).')
+param mcpClientId string
+
 @description('Claude model identifier the hosted abstraction provider generates abstracts with.')
 param abstractionModel string = 'claude-haiku-4-5'
 
@@ -107,6 +110,7 @@ module apim 'modules/apim.bicep' = {
     tags: tags
     sageBackendHostname: containerApps.outputs.sageFqdn
     sageAudience: sageAudience
+    mcpClientId: mcpClientId
     casAppUrl: 'https://${casHostname}'
     publisherEmail: publisherEmail
     apimSku: apimSku

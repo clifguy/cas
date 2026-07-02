@@ -1,0 +1,40 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for POST /register (CAS-ADR-042).
+            Answers every Dynamic Client Registration attempt (RFC 7591) with the
+            single pre-provisioned public client id -- Entra offers no real DCR,
+            so this static response lets a standards-default MCP client complete
+            its discovery-then-register leg without any registration actually
+            occurring. token_endpoint_auth_method is "none": the client is a
+            PKCE public client (authorization-code + PKCE, no secret) and never
+            receives one.
+
+            There is deliberately no <base /> here, matching the discovery and
+            authorization-server operations: the registration call is
+            unauthenticated by design (the client has no token yet at this step).
+        -->
+        <return-response>
+            <set-status code="201" reason="Created" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>{
+  "client_id": "{{mcp-client-id}}",
+  "token_endpoint_auth_method": "none",
+  "grant_types": ["authorization_code"],
+  "response_types": ["code"],
+  "scope": "Sage.Access"
+}</set-body>
+        </return-response>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

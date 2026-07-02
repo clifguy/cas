@@ -184,6 +184,91 @@ def test_entra_script_emits_parameter_coordinates() -> None:
     assert "bffOidcClientId" in echoed, "entra script must echo the bffOidcClientId coordinate"
 
 
+def test_entra_script_creates_public_client_registration() -> None:
+    """The Entra script provisions a third registration for the MCP client:
+    auth-code + PKCE, no secret (CAS-ADR-042). It follows the same
+    lookup-then-create idempotency guard as the SAGE and BFF registrations, uses
+    the public-client redirect-uri platform (never the confidential/web one a
+    secret-bearing client would use), creates its service principal, and is
+    granted + admin-consented the same delegated SAGE.Access scope.
+    """
+    text = _text(ENTRA)
+    assert "az ad app list" in text and "az ad app create" in text, (
+        "entra script must look up existing registrations before creating one"
+    )
+    # A third lookup-then-create pair distinct from the SAGE/BFF ones above:
+    # at least three list/create/emptiness-guard occurrences in total.
+    assert text.count("az ad app list") >= 3, (
+        "entra script must look up a third registration (the public MCP client)"
+    )
+    assert text.count("az ad app create") >= 3, (
+        "entra script must create a third registration (the public MCP client)"
+    )
+    assert len(re.findall(r"if\s+\[\s+-z\s+", text)) >= 3, (
+        "the public-client create must be guarded by its own emptiness test"
+    )
+    assert "--public-client-redirect-uris" in text, (
+        "the MCP client must register via --public-client-redirect-uris "
+        "(auth-code + PKCE, no secret) — not --web-redirect-uris"
+    )
+    assert text.count("az ad sp create") >= 2, (
+        "entra script must create a service principal for the public MCP client too"
+    )
+    assert text.count("az ad app permission add") >= 2, (
+        "the public MCP client must be granted the delegated SAGE.Access scope"
+    )
+    assert text.count("az ad app permission admin-consent") >= 2, (
+        "the public MCP client's permission grant must be admin-consented"
+    )
+
+
+def test_entra_script_provisions_group_idempotently() -> None:
+    """The Entra script provisions the single ADR-044 provisioning group
+    lookup-then-create, so it converges regardless of whether a companion
+    bootstrap step already created the group on a prior run (whichever lands
+    first creates it; the other reconciles).
+    """
+    text = _text(ENTRA)
+    assert "az ad group list" in text, "entra script must look up an existing provisioning group"
+    assert "az ad group create" in text, "entra script must create the provisioning group"
+    assert text.index("az ad group list") < text.index("az ad group create"), (
+        "entra script must look up the group before creating it (idempotent guard)"
+    )
+    assert re.search(r"if\s+\[\s+-z\s+.*\n(?:.*\n){0,4}?.*az ad group create", text), (
+        "the group create must be guarded by an emptiness test on the lookup result"
+    )
+
+
+def test_entra_script_gates_public_client_on_group() -> None:
+    """The public MCP client is gated by the same provisioning group as the
+    browser client (CAS-ADR-044): its service principal requires app-role
+    assignment, and the provisioning group is assigned to it.
+    """
+    text = _text(ENTRA)
+    assert "appRoleAssignmentRequired" in text, (
+        "entra script must set appRoleAssignmentRequired on the public MCP client's "
+        "service principal"
+    )
+    assert "true" in re.search(r"appRoleAssignmentRequired[^\n]*", text).group(0), (
+        "appRoleAssignmentRequired must be set to true"
+    )
+    assert "appRoleAssignments" in text, (
+        "entra script must assign the provisioning group to the public MCP client's "
+        "default-access app role"
+    )
+
+
+def test_entra_script_emits_mcp_client_id_coordinate() -> None:
+    """The Entra script emits the ``mcpClientId`` coordinate for the public MCP
+    client it created, alongside sageAudience and bffOidcClientId, so the
+    operator pastes it straight into the parameter set.
+    """
+    echoed = "\n".join(
+        line.strip() for line in _text(ENTRA).splitlines() if line.lstrip().startswith("echo")
+    )
+    assert "mcpClientId" in echoed, "entra script must echo the mcpClientId coordinate"
+
+
 def test_kv_secrets_script_reads_secrets_from_env_not_args() -> None:
     """Every secret and certificate password the Key Vault loader passes is an
     environment-variable expansion, never a literal, and the variables are
