@@ -29,6 +29,9 @@ document_types:
       description: Catch-all document type.
       source_types:
         - markdown
+    - value: misc
+      label: Miscellaneous
+      description: Default document type applied when ingest resolves no explicit type.
 lifecycle:
   base_states_required: true
   states:
