@@ -4,7 +4,7 @@
 // outer wrapper + per-operation rows. Each row is its own state
 // machine (idle → confirming → running → done). Operations:
 //   - ReabstractOperation: SSE-streamed Qwen3 reabstract.
-//   - OptimizeOperation: synchronous LanceDB content-store compaction.
+//   - OptimizeOperation: synchronous content-store compaction (vector database).
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
@@ -375,8 +375,8 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
         <h3 style={{ margin: 0, fontSize: 15 }}>Optimize content store</h3>
       </div>
       <p style={{ margin: '0 0 12px', fontSize: 13, color: '#666' }}>
-        Compact LanceDB tables and prune old dataset versions. Reclaims disk
-        space; the latest version is never removed.
+        Compact the vector database's tables and prune old dataset versions.
+        Reclaims disk space; the latest version is never removed.
       </p>
 
       {opError && (
@@ -436,7 +436,7 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
       {phase === 'confirming' && (
         <div data-testid="optimize-confirm" style={confirmPanelStyle}>
           <p style={{ margin: '0 0 8px', fontSize: 13 }}>
-            Compact this vault's LanceDB tables
+            Compact this vault's vector database tables
             {parsed > 0 ? (
               <>
                 {' '}

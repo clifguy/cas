@@ -332,7 +332,7 @@ const exampleDocuments: Document[] = [
     source_modified_at: '2026-04-02T14:50:00Z',
     semantic_abstract: null,
     pipeline_status: 'failed',
-    pipeline_error: 'Indexing failed: LanceDB write timeout after 30s',
+    pipeline_error: 'Indexing failed: vector database write timeout after 30s',
     tier3_metadata: null,
   },
   {

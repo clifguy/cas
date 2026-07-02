@@ -64,10 +64,11 @@ export async function getDeferredCount(vaultId: string): Promise<number> {
 }
 
 /**
- * Compact the vault's LanceDB content store. Synchronous JSON POST: the
- * backend optimize call blocks until LanceDB returns, then sends the
- * pre/post snapshot back in one shot. `cleanupOlderThanDays` defaults to
- * 7 (LanceDB's own default); 0 prunes every version except the latest.
+ * Compact the vault's vector database content store. Synchronous JSON POST:
+ * the backend optimize call blocks until the store returns, then sends the
+ * pre/post snapshot back in one shot. `cleanupOlderThanDays` defaults to 7
+ * (the embedded backend's own default); 0 prunes every version except the
+ * latest.
  */
 export async function startOptimizeContentStore(
   vaultId: string,
