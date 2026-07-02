@@ -1,10 +1,12 @@
 """Structural and identity-hygiene gate for the Entra app-registration runbook.
 
 Locks the shape of ``docs/process/entra-app-registrations.md`` — the one-time,
-hand-run procedure that provisions the two Microsoft Entra app registrations the
-cloud authentication model depends on: SAGE as an OAuth resource server, and the
+hand-run procedure that provisions the three Microsoft Entra app registrations
+the cloud authentication model depends on: SAGE as an OAuth resource server, the
 CAS backend-for-frontend as a confidential client that calls SAGE on-behalf-of an
-interactive user. The cloud auth model these registrations realize is recorded in
+interactive user, and the public MCP client as a PKCE public client — and the
+single provisioning-group sign-in gate (CAS-ADR-044) both interactive clients
+share. The cloud auth model these registrations realize is recorded in
 CAS-ADR-042; its concrete binding roster lives in the SAGE Deployment Profile
 Bindings steering document.
 
@@ -161,6 +163,56 @@ def test_runbook_documents_provisioning_group() -> None:
         "runbook must note that group-membership add/remove is ongoing operational "
         "churn, distinct from the one-time idempotent bootstrap"
     )
+
+
+def test_provisioning_group_gates_bff() -> None:
+    """The runbook documents the BFF sign-in gate: the provisioning group is
+    assigned to the BFF service principal's default-access role, and the
+    service principal then requires app-role assignment — the same shape the
+    public MCP client's gate uses (CAS-ADR-044).
+
+    Anchored on the codified command and JSON forms, not prose, so the runbook
+    and ``deploy/bootstrap/entra-app-registrations.sh`` cannot drift to
+    documented-but-not-codified (or the reverse), exactly as the
+    ``requestedAccessTokenVersion`` pair is locked.
+    """
+    text = _runbook_text()
+    assert "appRoleAssignedTo" in text, (
+        "runbook must show the BFF's group assignment to the default-access role"
+    )
+    assert re.search(r'appRoleAssignmentRequired\\?"\s*:\s*true', text), (
+        'runbook must show "appRoleAssignmentRequired": true in a service-principal PATCH body'
+    )
+    # The BFF's gate must be documented as assign-before-require: the fail-closed
+    # ordering rationale must accompany the BFF section, not just the MCP one.
+    assert "fails closed" in text.lower() or "fail closed" in text.lower(), (
+        "runbook must state the BFF gate fails closed on an empty provisioning group"
+    )
+
+
+def test_provisioning_users_operational_note() -> None:
+    """Membership add/remove is documented as ongoing operational churn, distinct
+    from the one-time idempotent bootstrap — onboarding and offboarding are
+    directory-group edits, never a script re-run.
+
+    Scoped to the "Provisioning users" subsection so a membership mention
+    elsewhere in the runbook cannot satisfy the gate.
+    """
+    text = _runbook_text()
+    match = re.search(
+        r"^#{2,3}\s+Provisioning users.*?(?=^#{2,3}\s|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, 'runbook must carry a "Provisioning users" subsection'
+    section = match.group(0)
+    assert "az ad group member add" in section, "the note must show the member-add command"
+    assert "az ad group member remove" in section, "the note must show the member-remove command"
+    lowered = section.lower()
+    assert "one-time" in lowered and "operational" in lowered, (
+        "the note must distinguish ongoing operational churn from the one-time bootstrap"
+    )
+    assert "re-run" in lowered, "the note must state membership edits are not a bootstrap re-run"
 
 
 def test_uniform_single_issuer_documented() -> None:

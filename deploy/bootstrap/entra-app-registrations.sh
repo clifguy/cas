@@ -3,8 +3,9 @@
 # depends on (CAS-ADR-042): SAGE as an OAuth resource server, the CAS BFF as a
 # confidential client that calls SAGE on-behalf-of an interactive user, and the
 # public MCP client (auth-code + PKCE, no secret) the DCR-compatibility facade
-# registers back at /register (CAS-ADR-042). This is the executable substance
-# of docs/process/entra-app-registrations.md.
+# registers back at /register (CAS-ADR-042) -- then gate both clients' sign-in
+# on membership in the single SAGE access-provisioning group (CAS-ADR-044).
+# This is the executable substance of docs/process/entra-app-registrations.md.
 #
 # One-time per tenant, run by an operator with directory-admin rights. Idempotent:
 # every create is guarded by a lookup, and the scope/role ids are stable across
@@ -70,11 +71,10 @@ az rest --method PATCH \
   }"
 
 # 2. The single SAGE access-provisioning group (CAS-ADR-044): binary membership,
-# uniform across every interactive surface (browser and agent alike). A
-# companion bootstrap step assigns this same group to the browser client's
-# default-access role; this script assigns it to the public MCP client's.
-# Lookup-then-create so either step converges regardless of which one runs
-# first on a fresh tenant.
+# uniform across every interactive surface (browser and agent alike). Every
+# client-gating step below assigns this same group to its own service
+# principal's default-access role; lookup-then-create so whichever step runs
+# first on a fresh tenant creates it, the rest reconcile.
 PROVISIONING_GROUP_NAME="${PROVISIONING_GROUP_NAME:-cas-sage-users}"
 PROVISIONING_GROUP_ID="$(az ad group list --display-name "${PROVISIONING_GROUP_NAME}" \
   --query '[0].id' -o tsv)"
@@ -82,6 +82,13 @@ if [ -z "${PROVISIONING_GROUP_ID}" ]; then
   PROVISIONING_GROUP_ID="$(az ad group create --display-name "${PROVISIONING_GROUP_NAME}" \
     --mail-nickname "${PROVISIONING_GROUP_NAME}" --query id -o tsv)"
 fi
+
+# The default-access app role id is the well-known all-zero Microsoft Graph
+# sentinel used to assign a principal to an application that defines no custom
+# app roles -- built from repeated '0's rather than written as a literal so
+# this durable script carries no GUID-shaped literal. Computed once, reused by
+# every client-gating step below.
+DEFAULT_ACCESS_APP_ROLE_ID="$(printf '0%.0s' {1..8})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..12})"
 
 # 3. CAS BFF confidential-client registration (lookup-then-create).
 BFF_APP_ID="$(az ad app list --display-name cas-bff --query '[0].appId' -o tsv)"
@@ -94,7 +101,8 @@ else
   az ad app update --id "${BFF_APP_ID}" \
     --web-redirect-uris "https://${BFF_HOSTNAME}/${AUTH_CALLBACK_PATH}"
 fi
-az ad sp create --id "${BFF_APP_ID}" 2>/dev/null || true
+BFF_SP_ID="$(az ad sp create --id "${BFF_APP_ID}" --query id -o tsv 2>/dev/null || \
+  az ad sp show --id "${BFF_APP_ID}" --query id -o tsv)"
 
 # Grant the BFF the delegated API permission onto SAGE, then admin-consent it —
 # this is what makes the on-behalf-of exchange possible.
@@ -102,6 +110,23 @@ az ad app permission add --id "${BFF_APP_ID}" \
   --api "${SAGE_APP_ID}" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
 az ad app permission admin-consent --id "${BFF_APP_ID}"
+
+# Gate the BFF on the single provisioning group (CAS-ADR-044): assign the
+# group to its default-access role, then require app-role assignment -- in
+# that order, so the gate never engages before its allowlist exists.
+az rest --method POST \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}/appRoleAssignedTo" \
+  --headers 'Content-Type=application/json' \
+  --body "{
+    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+    \"resourceId\": \"${BFF_SP_ID}\",
+    \"appRoleId\": \"${DEFAULT_ACCESS_APP_ROLE_ID}\"
+  }" || true  # tolerate an already-present assignment on re-run
+
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}" \
+  --headers 'Content-Type=application/json' \
+  --body '{"appRoleAssignmentRequired": true}'
 
 # 4. Public MCP client registration (lookup-then-create): auth-code + PKCE, no
 # secret -- the DCR-compatibility facade's /register operation echoes this app
@@ -130,16 +155,12 @@ az ad app permission admin-consent --id "${MCP_CLIENT_APP_ID}"
 
 # Gate the public client on the single provisioning group (CAS-ADR-044): require
 # app-role assignment on its service principal, then assign the group to its
-# default-access role. The default-access app role id is the well-known
-# all-zero Microsoft Graph sentinel used to assign a principal to an application
-# that defines no custom app roles -- built from repeated '0's rather than
-# written as a literal so this durable script carries no GUID-shaped literal.
+# default-access role.
 az rest --method PATCH \
   --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}" \
   --headers 'Content-Type=application/json' \
   --body '{"appRoleAssignmentRequired": true}'
 
-DEFAULT_ACCESS_APP_ROLE_ID="$(printf '0%.0s' {1..8})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..12})"
 az rest --method POST \
   --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}/appRoleAssignments" \
   --headers 'Content-Type=application/json' \

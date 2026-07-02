@@ -14,10 +14,14 @@ that model:
   through the DCR-compatibility facade at the SAGE edge (CAS-ADR-042), since
   Entra offers no real Dynamic Client Registration (RFC 7591).
 
-This runbook is the procedure that creates those three registrations. The concrete
-auth binding for the `cloud` profile is enumerated in the *SAGE Deployment
-Profile Bindings* steering document (the binding roster CAS-ADR-042 points to);
-this file is the operational how-to, not the binding record.
+Both interactive clients — the BFF and the public MCP client — gate sign-in on
+membership in a single provisioning group (CAS-ADR-044).
+
+This runbook is the procedure that creates those registrations and the sign-in
+gate. The concrete auth binding for the `cloud` profile is enumerated in the
+*SAGE Deployment Profile Bindings* steering document (the binding roster
+CAS-ADR-042 points to); this file is the operational how-to, not the binding
+record.
 
 Auth is **profile-gated**: the `local` profile runs with no auth at all, so these
 registrations matter only to the `cloud` profile.
@@ -137,10 +141,9 @@ Leaving the setting unset regresses a re-provisioned tenant to v1 tokens and a
 
 A single directory security group gates SAGE access: membership is **binary**
 and **SAGE-wide**, enforced uniformly across every interactive surface — the
-browser client and the public MCP client alike (CAS-ADR-044). The bootstrap step
-that gates the browser client's sign-in on this group and this registration's
-public-client gate both provision the **same** group, lookup-then-create;
-whichever runs first on a fresh tenant creates it, the other reconciles.
+browser client and the public MCP client alike (CAS-ADR-044). Every
+client-gating step below (§3, §4) assigns this **same** group, lookup-then-create;
+whichever step runs first on a fresh tenant creates it, the others reconcile.
 
 ```bash
 PROVISIONING_GROUP_NAME="${PROVISIONING_GROUP_NAME:-cas-sage-users}"
@@ -152,10 +155,22 @@ if [ -z "$PROVISIONING_GROUP_ID" ]; then
 fi
 ```
 
-Group **membership** (adding or removing a user) is ongoing operational churn,
-not part of this one-time, idempotent bootstrap — an operator manages it directly
-in Entra as people join or leave the group, the same way membership on any
-directory security group is managed.
+### Provisioning users
+
+Onboarding and offboarding are **membership edits** on the provisioning group —
+ongoing operational churn, distinct from the one-time, idempotent bootstrap
+above. Do not re-run this procedure to provision a user: a bootstrap re-run
+reconciles directory objects, it does not manage people. A single membership
+edit is the whole of onboarding or offboarding — no code change, no
+redeployment:
+
+```bash
+az ad group member add --group cas-sage-users --member-id <USER_OBJECT_ID>
+az ad group member remove --group cas-sage-users --member-id <USER_OBJECT_ID>
+```
+
+Resolve `<USER_OBJECT_ID>` at run time, for example
+`az ad user show --id <USER_PRINCIPAL_NAME> --query id -o tsv`.
 
 ## 3. CAS BFF confidential-client registration
 
@@ -173,7 +188,8 @@ else
   az ad app update --id "$BFF_APP_ID" \
     --web-redirect-uris "https://<BFF_HOSTNAME>/<AUTH_CALLBACK_PATH>"
 fi
-az ad sp create --id "$BFF_APP_ID" 2>/dev/null || true
+BFF_SP_ID="$(az ad sp create --id "$BFF_APP_ID" --query id -o tsv 2>/dev/null || \
+  az ad sp show --id "$BFF_APP_ID" --query id -o tsv)"
 ```
 
 Grant the BFF the delegated API permission onto the SAGE resource server, then
@@ -192,6 +208,31 @@ On-behalf-of (OBO) requires the BFF to authenticate as a confidential client,
 which means a client secret or certificate. Custody of that credential (Key Vault
 plus a managed identity) is handled by the secrets capability of the cloud
 profile, not by this registration step — do **not** store a secret in the repo.
+
+Gate the BFF on the single provisioning group (CAS-ADR-044): assign the group to
+its default-access role, then require app-role assignment — in that order, so
+the gate never engages before its allowlist exists.
+
+```bash
+az rest --method POST \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}/appRoleAssignedTo" \
+  --headers 'Content-Type=application/json' \
+  --body "{
+    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+    \"resourceId\": \"${BFF_SP_ID}\",
+    \"appRoleId\": \"<default-access app role id>\"
+  }"
+
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}" \
+  --headers 'Content-Type=application/json' \
+  --body '{"appRoleAssignmentRequired": true}'
+```
+
+The gate fails closed on a fresh tenant: until the provisioning group has at
+least one member, this switch refuses every sign-in, including the operator's —
+populate initial membership as part of the same bootstrap sitting (see
+*Provisioning users* in §2 above).
 
 ## 4. Public MCP client registration (auth-code + PKCE, no secret)
 
