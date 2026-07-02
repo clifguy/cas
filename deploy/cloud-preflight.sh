@@ -359,6 +359,39 @@ check_edge_cors_preflight() {
   return 1
 }
 
+check_edge_dcr_registration() {
+  # A standards MCP client (Claude Desktop, the claude.ai connector) POSTs a DCR
+  # request to /register and parses the response against its full
+  # client-information schema before it ever reaches /authorize. Two fields in
+  # that response gate the sign-in, and both slipped past the earlier gates:
+  #   * redirect_uris -- a required, non-empty array in the client's parse; a
+  #     response that omits it makes the client report "couldn't register" on a
+  #     correct 201 with a valid client_id (the exact failure this check exists
+  #     to catch).
+  #   * scope -- must be the resource-qualified api://<audience>/Sage.Access; the
+  #     bare "Sage.Access" leaves Entra unable to bind the scope to SAGE and it
+  #     rejects /authorize (AADSTS650053).
+  # The discovery-200 control guards against crediting a response shape on a dead
+  # edge. This is a read-only probe: the facade registers nothing, so the POST has
+  # no side effect.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); a /register body shape is the blanket trap, not real DCR handling"
+    return 1
+  fi
+  http_post "$SAGE_BASE_URL/register" \
+    '{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}'
+  local code="$HTTP_CODE" body="$HTTP_BODY"
+  local ruris=no scope_ok=no
+  printf '%s' "$body" | grep -qE '"redirect_uris"[[:space:]]*:[[:space:]]*\[[[:space:]]*"' && ruris=yes
+  printf '%s' "$body" | grep -qE '"scope"[[:space:]]*:[[:space:]]*"[^"]*/Sage\.Access"' && scope_ok=yes
+  if _is_2xx "$code" && [ "$ruris" = yes ] && [ "$scope_ok" = yes ]; then
+    DETAIL_MSG="/register $code returns non-empty redirect_uris and a resource-qualified scope (a standards MCP client can complete DCR)"
+    return 0
+  fi
+  DETAIL_MSG="/register $code with redirect_uris=$ruris scope_qualified=$scope_ok -- a standards MCP client would fail its registration parse or bind the scope to the wrong resource"
+  return 1
+}
+
 check_mcp_admin() {
   http_get "$SAGE_BASE_URL/mcp_admin"
   local unauth="$HTTP_CODE"
@@ -648,6 +681,9 @@ register edge_browser_redirect check_edge_browser_redirect \
 register edge_cors_preflight check_edge_cors_preflight \
   "OPTIONS /register and /mcp answer 2xx with Access-Control-Allow-* (preflight answered before the JWT gate)" \
   "a 2xx without the CORS header, or the preflight-specific 401, is the coincidental-pass trap; credited only with the discovery-200 control held"
+register edge_dcr_registration check_edge_dcr_registration \
+  "POST /register returns a non-empty redirect_uris array and a resource-qualified scope (a standards MCP client completes DCR then binds the scope to SAGE)" \
+  "a 2xx whose body omits redirect_uris or advertises the bare 'Sage.Access' is the coincidental-pass trap; credited only with the discovery-200 control held"
 register mcp_admin check_mcp_admin \
   "/mcp_admin 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"

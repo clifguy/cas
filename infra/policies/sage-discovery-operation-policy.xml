@@ -46,7 +46,7 @@
             <set-body>{
   "resource": "{{sage-resource-url}}",
   "authorization_servers": ["{{sage-resource-url}}"],
-  "scopes_supported": ["Sage.Access"],
+  "scopes_supported": ["{{sage-audience}}/Sage.Access"],
   "bearer_methods_supported": ["header"]
 }</set-body>
         </return-response>
