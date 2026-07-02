@@ -270,9 +270,7 @@ def test_entra_script_declares_both_sage_identifier_uris() -> None:
         "entra script must require SAGE_PUBLIC_HOSTNAME in the environment "
         "(the public sage custom domain the https identifier URI is built from)"
     )
-    uri_invocations = re.findall(
-        r"--identifier-uris[^\n]*(?:\\\n[^\n]*)*", text
-    )
+    uri_invocations = re.findall(r"--identifier-uris[^\n]*(?:\\\n[^\n]*)*", text)
     assert uri_invocations, "entra script must pass --identifier-uris"
     for invocation in uri_invocations:
         flat = invocation.replace("\\\n", " ")

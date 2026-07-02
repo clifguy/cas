@@ -99,8 +99,8 @@ advertises `https://<SAGE_PUBLIC_HOSTNAME>/Sage.Access` as its scope, because a
 standards MCP client sends an RFC 8707 `resource` parameter (its server URL)
 with `/authorize`, and Entra rejects the request pre-authentication when that
 parameter is not consistent with the requested scope's resource
-(`AADSTS9010010`, `invalid_target`) — an `api://`-prefixed scope can never match
-the client's https server URL. The client independently requires the advertised
+(`AADSTS9010010`, `invalid_target`) — a scope prefixed with `api://<SAGE_APP_ID>`
+can never match the client's https server URL. The client independently requires the advertised
 resource to match the server origin it connected to (RFC 9728), so the https
 identity must be the custom domain itself. `--identifier-uris` is a declarative
 full-set replace: declare both together so a re-run cannot drop either. The

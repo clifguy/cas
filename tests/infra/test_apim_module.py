@@ -894,9 +894,7 @@ def test_apim_resource_url_named_value_is_custom_domain() -> None:
     both — verified live on cor-prod.
     """
     text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
-    block = re.search(
-        r"name:\s*'sage-resource-url'.*?value:\s*([^\n]+)", text, re.S
-    )
+    block = re.search(r"name:\s*'sage-resource-url'.*?value:\s*([^\n]+)", text, re.S)
     assert block, "apim.bicep must declare the 'sage-resource-url' named value"
     value = block.group(1).strip()
     assert "sageCustomDomain" in value, (
