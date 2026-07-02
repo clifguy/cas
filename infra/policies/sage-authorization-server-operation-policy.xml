@@ -5,7 +5,7 @@
             (CAS-ADR-042). Serves the DCR-compatibility facade's
             authorization-server metadata: Entra's real authorization, token, and
             JWKS endpoints verbatim, plus a registration_endpoint that points at
-            this facade's own /register -- the leg Entra itself does not offer (no
+            this facade's own /register—the leg Entra itself does not offer (no
             Dynamic Client Registration, RFC 7591). Only discovery-and-registration
             is intercepted; authorization_endpoint and token_endpoint are the
             issuer's real endpoints, so the browser redirect and the token
