@@ -156,6 +156,14 @@ az ad app permission admin-consent --id "${MCP_CLIENT_APP_ID}"
 # Gate the public client on the single provisioning group (CAS-ADR-044): require
 # app-role assignment on its service principal, then assign the group to its
 # default-access role.
+#
+# This POSTs to the appRoleAssignments collection rather than appRoleAssignedTo
+# (used by the BFF gate above) -- documented as the *principal's* own collection,
+# which would suggest it requires principalId to equal this SP. Verified against
+# a live tenant: Graph accepts this body (principalId = group, resourceId = this
+# SP) on either collection. Don't swap to appRoleAssignedTo on the strength of the
+# documented contract alone -- the two are not proven equivalent in the other
+# direction, and this shape is confirmed working.
 az rest --method PATCH \
   --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}" \
   --headers 'Content-Type=application/json' \
