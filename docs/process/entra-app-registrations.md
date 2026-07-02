@@ -274,7 +274,16 @@ az ad app permission admin-consent --id "$MCP_CLIENT_APP_ID"
 
 Finally, gate the client on the single provisioning group (CAS-ADR-044): require
 app-role assignment on its service principal, then assign the group to its
-default-access app role — the same shape applied to the browser client.
+default-access app role — the same body shape applied to the browser client,
+though posted to the `appRoleAssignments` collection rather than
+`appRoleAssignedTo`. Documentation for `appRoleAssignments` describes it as the
+*principal's* own collection, which would suggest a POST here requires
+`principalId` to equal this SP — it doesn't turn out that way in practice: this
+call was verified against a live tenant, and Graph accepts the identical body
+(`principalId` = group, `resourceId` = this SP) on either collection. Don't
+switch this to `appRoleAssignedTo` on the strength of the documented contract
+alone without re-verifying live; the two collections aren't proven equivalent in
+the reverse direction.
 
 ```bash
 az rest --method PATCH \
