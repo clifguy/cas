@@ -43,7 +43,7 @@
   "token_endpoint_auth_method": "none",
   "grant_types": ["authorization_code"],
   "response_types": ["code"],
-  "scope": "Sage.Access"
+  "scope": "{{sage-audience}}/Sage.Access"
 }</set-body>
         </return-response>
     </inbound>
