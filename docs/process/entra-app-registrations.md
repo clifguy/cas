@@ -74,10 +74,11 @@ You will also choose placeholders that downstream work fixes concretely:
 
 ## 1. SAGE resource-server registration
 
-Create (or reuse) the application, give it **two** identifier URIs — the
-`api://<SAGE_APP_ID>` audience URI and the `https://<SAGE_PUBLIC_HOSTNAME>`
-custom-domain identity — and create its service principal. The
-lookup-then-create guard makes the step idempotent.
+Create (or reuse) the application, give it **four** identifier URIs — the
+`api://<SAGE_APP_ID>` audience URI, the `https://<SAGE_PUBLIC_HOSTNAME>`
+custom-domain identity, and the two MCP-mount forms of that identity — and
+create its service principal. The lookup-then-create guard makes the step
+idempotent.
 
 ```bash
 SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
@@ -88,25 +89,36 @@ if [ -z "$SAGE_APP_ID" ]; then
 fi
 
 az ad app update --id "$SAGE_APP_ID" \
-  --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}"
+  --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
 
-The two identifier URIs serve different callers. `api://<SAGE_APP_ID>` is the
+The identifier URIs serve different callers. `api://<SAGE_APP_ID>` is the
 audience the BFF's on-behalf-of exchange and the deploy preflight token target.
-The **https custom-domain identity** exists for the MCP edge: the facade
-advertises `https://<SAGE_PUBLIC_HOSTNAME>/Sage.Access` as its scope, because a
-standards MCP client sends an RFC 8707 `resource` parameter (its server URL)
-with `/authorize`, and Entra rejects the request pre-authentication when that
-parameter is not consistent with the requested scope's resource
-(`AADSTS9010010`, `invalid_target`) — a scope prefixed with `api://<SAGE_APP_ID>`
-can never match the client's https server URL. The client independently requires the advertised
-resource to match the server origin it connected to (RFC 9728), so the https
-identity must be the custom domain itself. `--identifier-uris` is a declarative
-full-set replace: declare both together so a re-run cannot drop either. The
-https form requires its host under a tenant-verified domain; `az` fails loudly
-if it is not. Tokens are unaffected either way — a v2 access token carries the
-bare app-id GUID as its `aud` no matter which identifier form the scope used.
+The **https identities** exist for the MCP edge: the facade advertises
+`https://<SAGE_PUBLIC_HOSTNAME>/Sage.Access` as its scope, and a standards MCP
+client sends an RFC 8707 `resource` parameter with `/authorize`. Entra rejects
+the request (`AADSTS9010010`, `invalid_target`) unless that parameter **is a
+registered identifier URI** of the scope's app — same-origin is not enough,
+verified live on cor-prod. What a client sends varies by implementation: the
+canonical server URI *including the mount path* (`https://<host>/mcp`, per the
+MCP authorization profile) or the PRM-advertised `resource` (the bare host a
+reference-SDK client echoes back) — so the bare host and each servable MCP
+mount are all registered. Scope prefix and resource may be *different*
+identifier URIs of the same app; Entra requires only same-app resolution. The
+client independently requires the advertised resource to match the server
+origin it connected to (RFC 9728), which is why the https identity is the
+custom domain rather than a made-up URI. `--identifier-uris` is a declarative
+full-set replace: declare all four together so a re-run cannot drop any. The
+https forms require their host under a tenant-verified domain; `az` fails
+loudly if it is not. Tokens are unaffected either way — a v2 access token
+carries the bare app-id GUID as its `aud` no matter which identifier form the
+scope used.
+
+> The mount list (`/mcp`, `/mcp_admin`) is a protocol constant of the SAGE MCP
+> surface, mirrored from the uvicorn mounts. Adding a new MCP mount means adding
+> its identifier URI here in the same change.
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and

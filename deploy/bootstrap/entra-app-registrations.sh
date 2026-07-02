@@ -38,18 +38,26 @@ if [ -z "${SAGE_APP_ID}" ]; then
   SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
-# Two identifier URIs, declared together (the flag is a declarative full-set
-# replace, so a re-run keeps both): the api://<app-id> audience URI the BFF OBO
-# exchange and the deploy preflight token target, and the https custom-domain
-# identity the MCP edge advertises as its scope prefix. The https form exists
-# because an MCP client sends an RFC 8707 resource parameter (its server URL)
-# with /authorize, and Entra pre-auth requires that parameter to be consistent
-# with the requested scope's resource -- an api://-prefixed scope against the
-# client's https resource fails AADSTS9010010 (invalid_target). The https
-# identifier URI requires its host under a tenant-verified domain; az fails
-# loudly here if it is not.
+# Four identifier URIs, declared together (the flag is a declarative full-set
+# replace, so a re-run keeps all of them): the api://<app-id> audience URI the
+# BFF OBO exchange and the deploy preflight token target, the https
+# custom-domain identity the MCP edge advertises as its scope prefix, and the
+# two MCP-mount forms of that identity. The https forms exist because an MCP
+# client sends an RFC 8707 resource parameter with /authorize and Entra rejects
+# the request (AADSTS9010010, invalid_target) unless that parameter IS a
+# registered identifier URI of the scope's app -- same-origin is not enough,
+# verified live. The client's resource value is its canonical server URI
+# INCLUDING the mount path (https://<host>/mcp per the MCP authorization
+# profile), so each servable mount must be registered alongside the bare host
+# (the PRM `resource` a reference-SDK client echoes back). Scope prefix and
+# resource may be different identifier URIs of the same app; only same-app
+# resolution is required. The mounts are protocol constants of the SAGE MCP
+# surface (sage.mcp_server / sage.mcp_server_admin), not per-tenant
+# coordinates. The https identifier URIs require their host under a
+# tenant-verified domain; az fails loudly here if it is not.
 az ad app update --id "${SAGE_APP_ID}" \
-  --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}"
+  --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
 az ad sp create --id "${SAGE_APP_ID}" 2>/dev/null || true
 
 # Expose the single delegated scope and app role that authorize both the REST
