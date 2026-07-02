@@ -25,6 +25,13 @@
             deploy/bootstrap/entra-app-registrations.sh; both are protocol
             constants of the MCP client, not per-tenant coordinates.
 
+            The scope is prefixed with {{sage-resource-url}} (the sage custom
+            domain, registered as an identifier URI on the Entra resource app),
+            not the api://<app-id> audience URI — Entra pre-auth requires the
+            client's RFC 8707 resource parameter to be consistent with the
+            requested scope's resource (AADSTS9010010 otherwise). Full rationale
+            in the discovery policy.
+
             There is deliberately no <base /> here, matching the discovery and
             authorization-server operations: the registration call is
             unauthenticated by design (the client has no token yet at this step).
@@ -59,7 +66,7 @@
   "token_endpoint_auth_method": "none",
   "grant_types": ["authorization_code"],
   "response_types": ["code"],
-  "scope": "{{sage-audience}}/Sage.Access"
+  "scope": "{{sage-resource-url}}/Sage.Access"
 }</set-body>
         </return-response>
     </inbound>

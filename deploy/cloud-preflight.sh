@@ -368,9 +368,10 @@ check_edge_dcr_registration() {
   #     response that omits it makes the client report "couldn't register" on a
   #     correct 201 with a valid client_id (the exact failure this check exists
   #     to catch).
-  #   * scope -- must be the resource-qualified api://<audience>/Sage.Access; the
-  #     bare "Sage.Access" leaves Entra unable to bind the scope to SAGE and it
-  #     rejects /authorize (AADSTS650053).
+  #   * scope -- must be resource-qualified (a "<resource>/Sage.Access" form);
+  #     the bare "Sage.Access" leaves Entra unable to bind the scope to SAGE and
+  #     it rejects /authorize (AADSTS650053). WHICH resource prefix is advertised
+  #     is gated separately by edge_resource_identity.
   # The discovery-200 control guards against crediting a response shape on a dead
   # edge. This is a read-only probe: the facade registers nothing, so the POST has
   # no side effect.
@@ -389,6 +390,46 @@ check_edge_dcr_registration() {
     return 0
   fi
   DETAIL_MSG="/register $code with redirect_uris=$ruris scope_qualified=$scope_ok -- a standards MCP client would fail its registration parse or bind the scope to the wrong resource"
+  return 1
+}
+
+check_edge_resource_identity() {
+  # The advertised OAuth identity must be the public SAGE host itself. Two
+  # independent mechanisms break on a mismatch: (1) an MCP client rejects a
+  # protected-resource-metadata `resource` that does not match the server origin
+  # it connected to (RFC 9728 confused-deputy protection -- the reference client
+  # throws "Protected resource ... does not match expected"); (2) the client
+  # composes its RFC 8707 `resource` authorize parameter from these documents,
+  # and Entra rejects the request pre-authentication when that parameter is not
+  # consistent with the requested scope's resource (AADSTS9010010,
+  # invalid_target). Advertising the internal *.azure-api.net gateway host, or
+  # an api://-form scope prefix, therefore fails a standards client before the
+  # login page ever renders -- and both reached prod because no gate compared
+  # the advertised identity against the public host. The discovery-200 control
+  # guards the blanket-edge trap.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); an advertised-identity match is the blanket trap, not identity coherence"
+    return 1
+  fi
+  # Regex-escape the dots in the base URL so the ERE matches the host literally.
+  local esc_base
+  esc_base="$(printf '%s' "$SAGE_BASE_URL" | sed 's/[.]/\\./g')"
+  http_get "$SAGE_BASE_URL/.well-known/oauth-protected-resource"
+  local prm_body="$HTTP_BODY"
+  local res_ok=no prm_scope_ok=no reg_scope_ok=no
+  printf '%s' "$prm_body" \
+    | grep -qE "\"resource\"[[:space:]]*:[[:space:]]*\"${esc_base}\"" && res_ok=yes
+  printf '%s' "$prm_body" \
+    | grep -qE "\"${esc_base}/Sage\.Access\"" && prm_scope_ok=yes
+  http_post "$SAGE_BASE_URL/register" \
+    '{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}'
+  printf '%s' "$HTTP_BODY" \
+    | grep -qE "\"scope\"[[:space:]]*:[[:space:]]*\"${esc_base}/Sage\.Access\"" && reg_scope_ok=yes
+  if [ "$res_ok" = yes ] && [ "$prm_scope_ok" = yes ] && [ "$reg_scope_ok" = yes ]; then
+    DETAIL_MSG="advertised resource, scopes_supported, and /register scope all carry $SAGE_BASE_URL (identity coherent with the public host)"
+    return 0
+  fi
+  DETAIL_MSG="advertised identity is not the public host: resource=$res_ok prm_scope=$prm_scope_ok register_scope=$reg_scope_ok -- a standards MCP client fails RFC 9728 origin validation or Entra rejects its resource parameter (AADSTS9010010)"
   return 1
 }
 
@@ -684,6 +725,9 @@ register edge_cors_preflight check_edge_cors_preflight \
 register edge_dcr_registration check_edge_dcr_registration \
   "POST /register returns a non-empty redirect_uris array and a resource-qualified scope (a standards MCP client completes DCR then binds the scope to SAGE)" \
   "a 2xx whose body omits redirect_uris or advertises the bare 'Sage.Access' is the coincidental-pass trap; credited only with the discovery-200 control held"
+register edge_resource_identity check_edge_resource_identity \
+  "the advertised resource, scopes_supported, and /register scope all carry the public SAGE base URL (RFC 9728 origin match; Entra accepts the client's RFC 8707 resource parameter)" \
+  "an internal-gateway resource or api://-form scope prefix is the coincidental-pass trap (both 200 fine at the edge yet fail a standards client); credited only with the discovery-200 control held"
 register mcp_admin check_mcp_admin \
   "/mcp_admin 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"

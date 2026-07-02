@@ -62,6 +62,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_browser_redirect",
         "edge_cors_preflight",
         "edge_dcr_registration",
+        "edge_resource_identity",
         "mcp_admin",
         "mcp_roundtrip",
         "edge_authn_backend",
@@ -169,8 +170,16 @@ Responder = Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]
 
 @contextmanager
 def serve(responder: Responder) -> Iterator[str]:
-    """Run a threaded stub HTTP server; yield its ``http://127.0.0.1:<port>``."""
+    """Run a threaded stub HTTP server; yield its ``http://127.0.0.1:<port>``.
+
+    Response bodies may carry a ``{{BASE_URL}}`` token, substituted with the
+    stub's own ``http://127.0.0.1:<port>`` before sending — the same shape as an
+    APIM named value. This lets a responder advertise the server's own identity
+    (which the host-coherence checks compare against ``SAGE_BASE_URL``) without
+    knowing the ephemeral port at definition time.
+    """
     port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def _dispatch(self, method: str) -> None:
@@ -186,6 +195,7 @@ def serve(responder: Responder) -> Iterator[str]:
                 )
             else:
                 status, text, headers = responder(method, self.path, body)
+            text = text.replace("{{BASE_URL}}", base_url)
             payload = text.encode("utf-8")
             self.send_response(status)
             for key, value in headers.items():
@@ -720,6 +730,103 @@ def test_dcr_registration_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_dcr_registration"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_dcr_registration") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _resource_identity_stub(
+    resource_matches: bool = True,
+    scope_matches: bool = True,
+    discovery_status: int = 200,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the advertised-identity check. When ``resource_matches`` /
+    ``scope_matches``, the discovery and /register bodies advertise the stub's
+    own base URL (via the ``{{BASE_URL}}`` seam); otherwise they advertise a
+    foreign internal-gateway host or the api://-form scope prefix — each a
+    production regression the check must catch.
+    """
+    resource = "{{BASE_URL}}" if resource_matches else "https://apim-foreign.azure-api.net"
+    scope_prefix = "{{BASE_URL}}" if scope_matches else "api://sage-app-id"
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            body = (
+                "{"
+                f'"resource": "{resource}", '
+                f'"authorization_servers": ["{resource}"], '
+                f'"scopes_supported": ["{scope_prefix}/Sage.Access"], '
+                '"bearer_methods_supported": ["header"]'
+                "}"
+            )
+            return discovery_status, (body if discovery_status == 200 else "{}"), {}
+        if method == "POST" and p == "/register":
+            body = (
+                "{"
+                '"client_id": "NV", '
+                '"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"], '
+                '"token_endpoint_auth_method": "none", '
+                f'"scope": "{scope_prefix}/Sage.Access"'
+                "}"
+            )
+            return 201, body, {}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_resource_identity_passes() -> None:
+    """Discovery resource, scopes_supported, and the /register scope all carry
+    the public base URL -> edge_resource_identity PASS: a standards MCP client
+    accepts the RFC 9728 origin match and Entra accepts its RFC 8707 resource
+    parameter.
+    """
+    with serve(_resource_identity_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_resource_identity"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_resource_identity") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_resource_identity_foreign_resource_fails() -> None:
+    """THE internal-gateway regression: the discovery doc advertises the
+    *.azure-api.net gateway host instead of the public custom domain. Every
+    endpoint answers 200, but a standards client rejects the RFC 9728 origin
+    mismatch — the check must FAIL rather than credit the healthy statuses.
+    """
+    with serve(_resource_identity_stub(resource_matches=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_resource_identity"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_resource_identity") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_resource_identity_api_form_scope_fails() -> None:
+    """THE api://-scope regression: the resource is the public host but the
+    advertised scope prefix is the api://<app-id> audience URI, which can never
+    be consistent with the client's https RFC 8707 resource parameter
+    (AADSTS9010010 pre-authentication). The check must FAIL on the scope leg
+    even though the resource leg matches.
+    """
+    with serve(_resource_identity_stub(scope_matches=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_resource_identity"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_resource_identity") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_resource_identity_dead_edge_fails() -> None:
+    """Discovery doc broken (404): coherent-looking bodies must NOT be credited
+    -- the discovery-200 control rejects them (the blanket-edge
+    coincidental-pass trap).
+    """
+    with serve(_resource_identity_stub(discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_resource_identity"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_resource_identity") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

@@ -840,27 +840,72 @@ def test_apim_register_response_carries_valid_redirect_uris() -> None:
         )
 
 
-def test_apim_advertised_scopes_are_resource_qualified() -> None:
-    """Every edge-advertised scope must be the resource-qualified
-    ``{{sage-audience}}/Sage.Access``, never the bare ``Sage.Access``.
+def test_apim_advertised_scopes_are_resource_url_qualified() -> None:
+    """Every edge-advertised scope must be ``{{sage-resource-url}}/Sage.Access``
+    — the https custom-domain identity — never the bare ``Sage.Access`` and
+    never the ``{{sage-audience}}`` (api://<app-id>) form.
 
     A standards MCP client composes its ``/authorize`` scope parameter directly
-    from the advertised value. A bare scope name leaves Entra unable to resolve
-    which resource it belongs to; it defaults to Microsoft Graph and rejects the
-    request (AADSTS650053: the scope "doesn't exist on the resource"). The
-    resource-qualified form binds the scope to the SAGE audience the APIM
-    validate-jwt and the SAGE backend expect.
+    from the advertised value, and sends an RFC 8707 ``resource`` parameter (its
+    server URL) alongside it. Each wrong form fails a different way, and each
+    reached production:
+
+    * the bare scope name leaves Entra unable to resolve which resource it
+      belongs to; it defaults to Microsoft Graph and rejects the request
+      (AADSTS650053: the scope "doesn't exist on the resource").
+    * the api://<app-id>-qualified form resolves, but can never be consistent
+      with the client's https ``resource`` parameter — Entra rejects the request
+      pre-authentication (AADSTS9010010, ``invalid_target``) before the login
+      page renders.
+
+    Only the {{sage-resource-url}} (https custom-domain) prefix satisfies both
+    Entra's resource↔scope consistency check and the client's own RFC 9728
+    origin validation; the custom domain is registered as an identifier URI on
+    the Entra resource app so the scope resolves.
     """
     for policy in (DISCOVERY_OP_POLICY, AS_METADATA_OP_POLICY, REGISTER_OP_POLICY):
         xml = policy.read_text(encoding="utf-8")
-        assert "{{sage-audience}}/Sage.Access" in xml, (
-            f"{policy.name}: the advertised scope must be resource-qualified "
-            "({{sage-audience}}/Sage.Access), not the bare scope name"
+        assert "{{sage-resource-url}}/Sage.Access" in xml, (
+            f"{policy.name}: the advertised scope must be qualified with the "
+            "https custom-domain identity ({{sage-resource-url}}/Sage.Access)"
         )
         assert '"Sage.Access"' not in xml and "'Sage.Access'" not in xml, (
             f"{policy.name}: the bare, unqualified 'Sage.Access' scope must not "
-            "appear — Entra can't resolve it to the SAGE resource"
+            "appear — Entra can't resolve it to the SAGE resource (AADSTS650053)"
         )
+        assert "{{sage-audience}}/Sage.Access" not in xml, (
+            f"{policy.name}: the api://-form ({{{{sage-audience}}}}) scope prefix "
+            "must not appear — it can never match the client's https RFC 8707 "
+            "resource parameter and Entra rejects /authorize pre-authentication "
+            "(AADSTS9010010, invalid_target)"
+        )
+
+
+def test_apim_resource_url_named_value_is_custom_domain() -> None:
+    """The ``sage-resource-url`` named value must be built from the
+    ``sageCustomDomain`` parameter — the public identity an MCP client connects
+    to — never the gateway's default ``*.azure-api.net`` address.
+
+    An MCP client validates that the protected-resource metadata's ``resource``
+    matches the server origin it connected to (RFC 9728 confused-deputy
+    protection: the reference client throws "Protected resource ... does not
+    match expected" on a mismatch), and composes its RFC 8707 ``resource``
+    authorize parameter from it. Advertising the internal gateway host breaks
+    both — verified live on cor-prod.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    block = re.search(r"name:\s*'sage-resource-url'.*?value:\s*([^\n]+)", text, re.S)
+    assert block, "apim.bicep must declare the 'sage-resource-url' named value"
+    value = block.group(1).strip()
+    assert "sageCustomDomain" in value, (
+        "sage-resource-url must be built from the sageCustomDomain parameter "
+        f"(the public host), got: {value}"
+    )
+    assert "gatewayUrl" not in value, (
+        "sage-resource-url must not advertise the gateway's default "
+        "*.azure-api.net address — an MCP client rejects a resource that does "
+        "not match the origin it connected to (RFC 9728)"
+    )
 
 
 def test_apim_declares_mcp_client_id_named_value() -> None:

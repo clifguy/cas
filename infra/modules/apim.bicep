@@ -119,8 +119,8 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
 
 // Named values carry the environment-specific coordinates the versioned policy
 // XML references as {{...}} tokens. The tenant is derived from the deployment
-// context; the audience is supplied; the resource URL is the gateway's own
-// public address (the resource_metadata location advertised to MCP clients).
+// context; the audience is supplied; the resource URL is the sage custom
+// domain (the resource_metadata location advertised to MCP clients).
 resource entraTenantIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'entra-tenant-id'
@@ -157,12 +157,20 @@ resource sageAudienceGuidNamedValue 'Microsoft.ApiManagement/service/namedValues
   }
 }
 
+// The public identity of the SAGE resource: the custom domain, NEVER the
+// gateway's default *.azure-api.net address. An MCP client validates that the
+// protected-resource metadata's `resource` matches the server URL it connected
+// to (RFC 9728 confused-deputy protection -- the reference client throws
+// "Protected resource ... does not match expected" on an origin mismatch), and
+// composes its RFC 8707 `resource` authorize parameter from it, which Entra
+// requires to be consistent with the requested scope (AADSTS9010010 otherwise).
+// Advertising the internal gateway host breaks both; verified live on cor-prod.
 resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'sage-resource-url'
   properties: {
     displayName: 'sage-resource-url'
-    value: apimService.properties.gatewayUrl
+    value: 'https://${sageCustomDomain}'
     secret: false
   }
 }
