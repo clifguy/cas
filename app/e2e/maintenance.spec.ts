@@ -85,7 +85,7 @@ test('optimize-content-store row triggers the backend and renders the report', a
   page,
 }) => {
   // C3: stub the optimize endpoint so the test doesn't actually touch
-  // LanceDB. A recognizable bytes_reclaimed value (2_500_000 -> "2.5 MB"
+  // the vector database. A recognizable bytes_reclaimed value (2_500_000 -> "2.5 MB"
   // humanized) makes a route mismatch (stub never fires) loudly visible.
   //
   // The API client uses relative paths that Vite proxies to the FastAPI

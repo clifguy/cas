@@ -663,7 +663,7 @@ export interface ReabstractSummaryEvent {
 
 export type ReabstractEvent = ReabstractProgressEvent | ReabstractSummaryEvent;
 
-// LanceDB content-store compaction report. Returned by
+// Vector-database content-store compaction report. Returned by
 // POST /sage_vaults/{vault_id}/admin/optimize-content-store.
 export interface OptimizeContentStoreReport {
   vault_id: string;

@@ -8,7 +8,7 @@ const STATE_STYLE: Record<BloatState, React.CSSProperties> = {
 };
 
 /**
- * Vault-health card for LanceDB content-store bloat. Surfaces the retained
+ * Vault-health card for vector-database content-store bloat. Surfaces the retained
  * dataset-version count and the small (un-compacted) fragment count as a
  * thresholded state rather than bare numbers, and points a drifting store at
  * the Maintenance-page optimize action.
