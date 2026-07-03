@@ -50,6 +50,7 @@ from sage.storage_binding import (
     VaultStorageHandle,
     VaultStorageProvisioner,
     build_stack_storage_provisioner,
+    resolved_storage_backend,
 )
 from sage.vault_source_binding import (
     VaultSourceStore,
@@ -934,6 +935,10 @@ async def initialize_services(
                 registry_service=registry_service,
                 content_store=content_store,
                 ingestion_service=ingestion_service,
+                # Resolve the backend the store was actually provisioned with
+                # (env override > config) so migrate_vault's SQLite path runs
+                # only for the embedded backend (CAS-ADR-042).
+                storage_backend=resolved_storage_backend(get_stack_config()),
             )
 
         # Bootstrap vault owner

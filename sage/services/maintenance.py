@@ -129,6 +129,7 @@ class MaintenanceService:
         content_store: ContentStore,
         ingestion_service: "IngestionService | None" = None,
         vault_dir: Path | None = None,
+        storage_backend: str = "embedded",
     ) -> None:
         self._vault_id = vault_id
         self._db_path = db_path
@@ -137,6 +138,13 @@ class MaintenanceService:
         self._registry_service = registry_service
         self._content_store = content_store
         self._ingestion = ingestion_service
+        # Durable-storage backend this vault is bound to (CAS-ADR-042).
+        # migrate_vault() branches on it: the SQLite detect-then-apply path is
+        # meaningful only for the embedded backend; Postgres schema is
+        # provisioned externally. Defaults to "embedded" so directly-constructed
+        # (non-production) instances keep the SQLite path; the production
+        # construction site passes the resolved backend explicitly.
+        self._storage_backend = storage_backend
         # vault_dir resolves where the audit log lives. Production
         # invocations through mcp_init don't pass it -- the canonical
         # ~/sage_vaults/<vault_id>/ location is derived on demand from
@@ -155,10 +163,18 @@ class MaintenanceService:
     async def migrate_vault(self) -> MigrationReport:
         """Apply pending schema migrations and reload the vault in-session.
 
-        Read-only pre-detect: enumerate which MIGRATION_PLAN columns and
-        BACKFILL_PLAN entries are pending, simulating the post-migration
-        schema on a temp copy so backfills that depend on newly-added
-        columns are surfaced. If nothing is pending, return an empty
+        Backend-aware (CAS-ADR-042). The detect-then-apply path below is a
+        SQLite-runtime flow; it runs only for the embedded backend. On a
+        Postgres-backed vault the schema is provisioned externally and
+        PostgresGraphStore.initialize(migrate=True) is a deliberate no-op, so
+        this method short-circuits that path -- it touches no local file and
+        reports no column/backfill work -- and still runs the backend-agnostic
+        tier3-uniqueness scan below.
+
+        Read-only pre-detect (embedded backend): enumerate which MIGRATION_PLAN
+        columns and BACKFILL_PLAN entries are pending, simulating the
+        post-migration schema on a temp copy so backfills that depend on
+        newly-added columns are surfaced. If nothing is pending, return an empty
         report without touching the running graph_store -- the
         idempotent no-op path.
 
@@ -187,33 +203,45 @@ class MaintenanceService:
         tier3 scan runs every call regardless of whether columns_added
         or backfills_applied are non-empty.
         """
-        pending_alters, pending_bfs = _detect_pending_work(self._db_path)
+        if self._storage_backend == "postgres":
+            # Backend-aware branch (CAS-ADR-042). A Postgres vault's schema is
+            # provisioned externally and PostgresGraphStore.initialize(migrate=
+            # True) is a deliberate port-symmetry no-op, so there is nothing for
+            # the SQLite detect-then-apply path to do. Skip it entirely --
+            # touching brain_root/graph.db would open (and create) a stray
+            # SQLite file that is not the real store -- and report no schema
+            # work. The tier3-uniqueness scan below reads through
+            # self._graph_store, not raw SQLite, so it still runs.
+            columns_added: list[MigrationReportEntry] = []
+            backfills_applied: list[str] = []
+        else:
+            pending_alters, pending_bfs = _detect_pending_work(self._db_path)
 
-        columns_added = [
-            MigrationReportEntry(table=m.table, column=m.column) for m in pending_alters
-        ]
-        backfills_applied = [b.name for b in pending_bfs]
+            columns_added = [
+                MigrationReportEntry(table=m.table, column=m.column) for m in pending_alters
+            ]
+            backfills_applied = [b.name for b in pending_bfs]
 
-        if columns_added or backfills_applied:
-            # Build-new-first: apply the migration through a fresh handle
-            # while self._graph_store stays open. SQLite WAL mode permits
-            # an idle reader connection to coexist with a brief EXCLUSIVE
-            # lock for ALTER TABLE, so the original graph_store does not
-            # need to be torn down pre-migration. If fresh.initialize
-            # raises, self._graph_store is untouched and the registry
-            # view remains live.
-            fresh = SqliteGraphStore(self._db_path)
-            try:
-                await fresh.initialize(migrate=True)
-            finally:
-                await fresh.close()
+            if columns_added or backfills_applied:
+                # Build-new-first: apply the migration through a fresh handle
+                # while self._graph_store stays open. SQLite WAL mode permits
+                # an idle reader connection to coexist with a brief EXCLUSIVE
+                # lock for ALTER TABLE, so the original graph_store does not
+                # need to be torn down pre-migration. If fresh.initialize
+                # raises, self._graph_store is untouched and the registry
+                # view remains live.
+                fresh = SqliteGraphStore(self._db_path)
+                try:
+                    await fresh.initialize(migrate=True)
+                finally:
+                    await fresh.close()
 
-            # Migration is durable on disk. The registry reload builds new
-            # services first and only tears down self._graph_store on
-            # success (per reload_vault_in_registry's atomicity contract);
-            # if reload raises, the old services -- including
-            # self._graph_store -- remain installed.
-            await self._registry_service.reload(self._vault_id, self._config)
+                # Migration is durable on disk. The registry reload builds new
+                # services first and only tears down self._graph_store on
+                # success (per reload_vault_in_registry's atomicity contract);
+                # if reload raises, the old services -- including
+                # self._graph_store -- remain installed.
+                await self._registry_service.reload(self._vault_id, self._config)
 
         activations, collisions = await self._activate_tier3_uniqueness()
 

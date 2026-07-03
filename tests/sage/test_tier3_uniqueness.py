@@ -30,6 +30,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from sage.adapters.stubs import StubGraphStore
 from sage.api.errors import (
     Tier3UniqueConstraintViolation,
     VaultConfigValidationError,
@@ -184,9 +185,11 @@ def sqlite_unique_keys_maintenance_service(
 ):
     """MaintenanceService pinned to SQLite.
 
-    ``migrate_vault`` is a SQLite-runtime schema-migration flow (it simulates
-    ALTERs on a throwaway sqlite db and inspects ``sqlite_master``) with no
-    Postgres analog in scope; tests that drive it run SQLite-only.
+    ``migrate_vault``'s detect-then-apply path is a SQLite-runtime flow (it
+    simulates ALTERs on a throwaway sqlite db and inspects ``sqlite_master``);
+    tests that exercise that path run SQLite-only. The Postgres analog is the
+    short-circuit no-op, covered by
+    ``test_t15_migrate_vault_postgres_backend_still_runs_tier3_scan``.
     """
     return MaintenanceService(
         vault_id="test_tier3_unique_vault",
@@ -845,6 +848,67 @@ async def test_t16_migration_is_idempotent(sqlite_unique_keys_maintenance_servic
     assert {(a.doc_type, a.field) for a in first.tier3_uniqueness_activations} == {
         (a.doc_type, a.field) for a in second.tier3_uniqueness_activations
     }
+
+
+class _Tier3SpyGraphStore(StubGraphStore):
+    """A StubGraphStore that records tier3-scan calls and reports a clean
+    portfolio, standing in for a PostgresGraphStore in a pure-unit test.
+
+    StubGraphStore's tier3 methods raise ``_unsupported`` by default; these
+    overrides make the scan observable without a live Postgres pool.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.chain_head_scans: list[tuple[str, str]] = []
+        self.index_ensures: list[tuple[str, str]] = []
+
+    async def find_chain_heads_with_tier3_value(
+        self, doc_type: str, field: str
+    ) -> list[tuple[object, list[str]]]:
+        self.chain_head_scans.append((doc_type, field))
+        return []  # no groups -> no collisions -> clean activation
+
+    async def ensure_tier3_unique_index(self, doc_type: str, field: str) -> None:
+        self.index_ensures.append((doc_type, field))
+
+
+async def test_t15_migrate_vault_postgres_backend_still_runs_tier3_scan(
+    unique_keys_config, tmp_vault_dir, stub_content_store
+):
+    """On the postgres backend, migrate_vault short-circuits the SQLite
+    detect-then-apply path but STILL runs the backend-agnostic tier3 scan.
+
+    Anti-coincidental: a fix that short-circuited the entire method (rather
+    than just the SQLite detect/apply) would leave the declared unique_keys
+    unactivated and the scan un-run -- the recorded scans and activations
+    below would both be empty.
+    """
+    spy = _Tier3SpyGraphStore()
+    db_path = tmp_vault_dir / "brain" / "graph.db"
+    maintenance = MaintenanceService(
+        vault_id="test_tier3_unique_vault",
+        db_path=db_path,
+        graph_store=spy,
+        config=unique_keys_config,
+        registry_service=None,
+        content_store=stub_content_store,
+        storage_backend="postgres",
+    )
+
+    report = await maintenance.migrate_vault()
+
+    # The tier3 scan ran against both declared unique_keys pairs...
+    assert ("ticket", "ticket_id") in spy.chain_head_scans
+    assert ("failure_record", "failure_id") in spy.chain_head_scans
+    # ...and, the portfolio being clean, both activated.
+    activated_pairs = {(a.doc_type, a.field) for a in report.tier3_uniqueness_activations}
+    assert ("ticket", "ticket_id") in activated_pairs
+    assert ("failure_record", "failure_id") in activated_pairs
+    # The SQLite detect-then-apply path was skipped entirely.
+    assert report.columns_added == []
+    assert report.backfills_applied == []
+    assert not db_path.exists()
 
 
 # ---------------------------------------------------------------------------

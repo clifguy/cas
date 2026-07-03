@@ -20,6 +20,7 @@ from sage.storage_binding import (
     EmbeddedVaultStorageProvisioner,
     PostgresVaultStorageProvisioner,
     build_stack_storage_provisioner,
+    resolved_storage_backend,
 )
 
 
@@ -301,3 +302,38 @@ def test_sto_007_local_postgres_binding_creates_extensions(monkeypatch):
     )
     assert isinstance(prov, PostgresVaultStorageProvisioner)
     assert prov._create_extensions is True
+
+
+def test_sto_008_resolved_storage_backend_returns_config_when_env_unset(monkeypatch):
+    """With the env override unset, `resolved_storage_backend` returns the
+    stack config's `storage_backend` key verbatim -- the single source of
+    truth the provisioner dispatch and the maintenance service both read."""
+    monkeypatch.delenv(STORAGE_BACKEND_ENV_VAR, raising=False)
+
+    assert resolved_storage_backend(SageCoreConfig()) == "postgres"
+    assert (
+        resolved_storage_backend(SageCoreConfig.model_validate({"storage_backend": "embedded"}))
+        == "embedded"
+    )
+
+
+def test_sto_009_resolved_storage_backend_env_override_wins(monkeypatch):
+    """The `SAGE_TEST_STORAGE_BACKEND` override takes precedence over the
+    config key, in both directions."""
+    embedded_cfg = SageCoreConfig.model_validate({"storage_backend": "embedded"})
+    postgres_cfg = SageCoreConfig.model_validate({"storage_backend": "postgres"})
+
+    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "postgres")
+    assert resolved_storage_backend(embedded_cfg) == "postgres"
+
+    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "embedded")
+    assert resolved_storage_backend(postgres_cfg) == "embedded"
+
+
+def test_sto_010_resolved_storage_backend_rejects_unknown(monkeypatch):
+    """An unrecognized backend fails loud rather than silently falling
+    through to the configured value -- a typo'd override must not point a
+    run at the wrong store."""
+    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "lancedb")
+    with pytest.raises(ValueError, match="lancedb"):
+        resolved_storage_backend(SageCoreConfig())

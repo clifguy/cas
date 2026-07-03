@@ -2063,6 +2063,13 @@ def register_sage_tools(
         pending, then reloads the vault in this MCP process's registry so
         subsequent operations observe the new schema.
 
+        Backend-aware: the detect-then-apply step above runs only for vaults on
+        the embedded (SQLite) store. When the vault's durable store is Postgres,
+        the schema is provisioned externally and there is nothing to migrate, so
+        the tool returns the empty no-op report (``columns_added`` and
+        ``backfills_applied`` both empty) without touching any local file — the
+        tier3 scan below still runs.
+
         Idempotent: a re-call against an already-migrated vault returns a
         MigrationReport with empty ``columns_added`` and ``backfills_applied``
         and no error; the registry reload is skipped on the no-op path.

@@ -259,6 +259,27 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         return VaultStorageHandle(graph_store=graph_store, content_store=content_store, pool=pool)
 
 
+def resolved_storage_backend(stack_config: SageCoreConfig) -> str:
+    """Return the durable-storage backend the active dispatch selects (CAS-ADR-042).
+
+    Single source of truth for the backend precedence: the
+    ``SAGE_TEST_STORAGE_BACKEND`` environment override is consulted before the
+    stack config's ``storage_backend`` key, so the test suite can pin the
+    embedded stores process-wide while the committed config selects Postgres.
+    An unrecognized value fails loud rather than silently falling through to the
+    configured backend. Consumed both by ``build_stack_storage_provisioner``
+    (which store pair to open) and by the maintenance service construction site
+    (which migration semantics the vault has), so the two never drift.
+    """
+    backend = os.environ.get(STORAGE_BACKEND_ENV_VAR) or stack_config.storage_backend
+    if backend not in _VALID_BACKENDS:
+        raise ValueError(
+            f"Unknown storage backend {backend!r} (from {STORAGE_BACKEND_ENV_VAR}); "
+            f"expected one of {_VALID_BACKENDS}."
+        )
+    return backend
+
+
 def build_stack_storage_provisioner(
     stack_config: SageCoreConfig, *, managed_identity: bool = False
 ) -> VaultStorageProvisioner:
@@ -287,12 +308,7 @@ def build_stack_storage_provisioner(
     embedded override still wins first, so the test suite never needs a managed
     identity.
     """
-    backend = os.environ.get(STORAGE_BACKEND_ENV_VAR) or stack_config.storage_backend
-    if backend not in _VALID_BACKENDS:
-        raise ValueError(
-            f"Unknown storage backend {backend!r} (from {STORAGE_BACKEND_ENV_VAR}); "
-            f"expected one of {_VALID_BACKENDS}."
-        )
+    backend = resolved_storage_backend(stack_config)
     if backend == "embedded":
         return EmbeddedVaultStorageProvisioner()
     if managed_identity:

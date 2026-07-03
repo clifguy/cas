@@ -28,7 +28,7 @@ import pytest
 
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.interfaces import Chunk
-from sage.adapters.stubs import StubContentStore
+from sage.adapters.stubs import StubContentStore, StubGraphStore
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, StalenessBasis
 from sage.models.schemas import (
@@ -1486,3 +1486,61 @@ async def test_optimize_content_store_rejects_negative_days(lancedb_vault):
     # The audit log must NOT be appended on a rejected call.
     audit_path = vault_dir / ".maintenance_log.jsonl"
     assert not audit_path.exists(), "audit log should not be written on a rejected call"
+
+
+# ---------------------------------------------------------------------------
+# Backend-aware migrate_vault (CAS-ADR-042): the SQLite detect-then-apply path
+# is meaningful only for the embedded backend. On a Postgres-backed vault the
+# schema is provisioned externally, so migrate_vault must short-circuit that
+# path entirely -- no local file, no raise, empty report -- while the
+# backend-agnostic tier3 scan still runs. The existing embedded-path tests
+# above (constructed without storage_backend, defaulting to "embedded") are the
+# regression guard for the other direction.
+# ---------------------------------------------------------------------------
+
+
+async def test_migrate_vault_postgres_backend_is_noop_without_touching_disk(tmp_path, monkeypatch):
+    """On a Postgres-backed vault, migrate_vault returns an empty
+    MigrationReport, raises nothing, creates no local graph.db, and never
+    constructs a SqliteGraphStore.
+
+    The Postgres schema is provisioned externally and
+    ``PostgresGraphStore.initialize(migrate=True)`` is a deliberate no-op, so
+    there is nothing for the SQLite detect-then-apply path to do. Touching
+    ``brain_root/graph.db`` at all would open (and create) a stray SQLite file
+    that is not the real store.
+    """
+    config = _minimal_config(tmp_path)
+    db_path = tmp_path / "graph.db"
+    assert not db_path.exists()
+
+    # Trip wire: constructing a SqliteGraphStore on the postgres branch is a
+    # regression (it is the crash surface on a real Postgres vault). Patch the
+    # name the service resolves so any construction fails loudly.
+    class _NoSqliteGraphStore:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("SqliteGraphStore must not be constructed on the postgres branch")
+
+    monkeypatch.setattr("sage.services.maintenance.SqliteGraphStore", _NoSqliteGraphStore)
+
+    maintenance = MaintenanceService(
+        vault_id=config.vault.id,
+        db_path=db_path,
+        graph_store=StubGraphStore(),
+        config=config,
+        registry_service=None,
+        content_store=StubContentStore(),
+        storage_backend="postgres",
+    )
+
+    report = await maintenance.migrate_vault()
+
+    assert report.vault_id == config.vault.id
+    assert report.columns_added == []
+    assert report.backfills_applied == []
+    assert report.tier3_uniqueness_activations == []
+    assert report.tier3_uniqueness_collisions == []
+    # Acceptance criterion: no brain_root/graph.db is created as a side effect.
+    # The detect path's first act (sqlite3.connect) would create this file, so
+    # its absence proves the SQLite path was never entered.
+    assert not db_path.exists()
