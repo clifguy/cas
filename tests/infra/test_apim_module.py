@@ -1633,19 +1633,28 @@ def test_apim_cors_allows_oauth_client_headers() -> None:
     The preflight advertises ``Authorization`` and ``Content-Type`` request
     headers; omitting either fails the preflight even when the status is 2xx. The
     OAuth/MCP legs are ``GET`` (discovery), ``POST`` (``/register``, ``/mcp``),
-    and the preflight ``OPTIONS`` itself.
+    and the preflight ``OPTIONS`` itself. The Streamable HTTP transport adds two
+    protocol headers a browser-context client sends after initialize
+    (``Mcp-Session-Id``, ``MCP-Protocol-Version``) and one response header the
+    client must be able to read (``Mcp-Session-Id``, via ``<expose-headers>``) —
+    a stateless server never mints a session id, but a client blocked from even
+    sending the header would break the moment the transport turns stateful.
     """
     cors = _cors_block(API_POLICY.read_text(encoding="utf-8"))
     assert cors, "the API-level policy must carry a <cors> block"
-    for header in ("Authorization", "Content-Type"):
+    for header in ("Authorization", "Content-Type", "Mcp-Session-Id", "MCP-Protocol-Version"):
         assert f"<header>{header}</header>" in cors, (
-            f"the <cors> allowed-headers must admit {header!r} (a browser MCP client "
-            "sends it on the preflight)"
+            f"the <cors> allowed-headers must admit {header!r} (a browser MCP client sends it)"
         )
     for method in ("GET", "POST", "OPTIONS"):
         assert f"<method>{method}</method>" in cors, (
             f"the <cors> allowed-methods must admit {method!r}"
         )
+    expose = re.search(r"<expose-headers>.*?</expose-headers>", cors, re.DOTALL)
+    assert expose is not None and "<header>Mcp-Session-Id</header>" in expose.group(0), (
+        "the <cors> block must expose Mcp-Session-Id so a browser-context MCP "
+        "client can read the session id off the initialize response"
+    )
 
 
 @pytest.mark.parametrize("policy_path", _ANONYMOUS_OP_POLICIES, ids=lambda p: p.name)

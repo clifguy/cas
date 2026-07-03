@@ -58,7 +58,7 @@ Configure them in your MCP client (e.g. Claude Code `settings.json`). The defaul
 
 Restart the client after editing files in the MCP import path — the running server holds the old import.
 
-For HTTP clients, the same partition is exposed over SSE by the `python -m sage` uvicorn process: `/mcp` serves the ordinary surface and `/mcp_admin` the maintenance (`admin_*`) surface, in one process that shares a single vault registry and abstraction model. The full surface is reached by connecting to both mounts.
+For HTTP clients, the same partition is exposed over the MCP Streamable HTTP transport by the `python -m sage` uvicorn process: `/mcp` serves the ordinary surface and `/mcp_admin` the maintenance (`admin_*`) surface, in one process that shares a single vault registry and abstraction model. The full surface is reached by connecting to both mounts.
 
 ## Status
 

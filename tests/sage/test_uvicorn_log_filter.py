@@ -1,14 +1,18 @@
-"""Drop uvicorn.access records for every MCP mount's /messages/ endpoint.
+"""Drop uvicorn.access records for every MCP mount's JSON-RPC endpoint.
 
-Verifies that the ``_DropMcpMessagesAccessLogs`` filter (a) drops
-records whose request path is the SSE message endpoint of any mounted
-MCP surface (ordinary ``/mcp/messages/`` and maintenance
-``/mcp_admin/messages/``), (b) keeps records for any other path
-(including the ``/sse`` stream-open on either mount), and (c) is
-defensive against unexpected ``record.args`` shapes (returns True so
-unrelated logs are never accidentally dropped). Also confirms the
-suppressed prefixes track the canonical mount list and that the filter
-is wired into ``UVICORN_LOG_CONFIG`` for the ``uvicorn.access`` logger.
+Over the Streamable HTTP transport every JSON-RPC message is a ``POST`` to
+the mount path itself, so each logical tool call produces access-log lines
+that carry no signal beyond what ``_LoggingFastMCP.call_tool`` already logs
+(the tool name lives in the request body, not the URL). Verifies that the
+``_DropMcpAccessLogs`` filter (a) drops records whose request path is exactly
+a mount path (with or without a query string), (b) keeps records for every
+other path — including paths that merely share the mount as a string prefix,
+so an unrelated ``/mcpfoo`` route or a stray ``/mcp/anything`` 404 stays
+visible, and (c) is defensive against unexpected ``record.args`` shapes
+(returns True so unrelated logs are never accidentally dropped). Also
+confirms the suppressed paths track the canonical mount list and that the
+filter is wired into ``UVICORN_LOG_CONFIG`` for the ``uvicorn.access``
+logger.
 """
 
 from __future__ import annotations
@@ -16,9 +20,9 @@ from __future__ import annotations
 import logging
 
 from sage.__main__ import (
-    _MCP_MESSAGE_PREFIXES,
+    _MCP_MOUNT_PATHS,
     UVICORN_LOG_CONFIG,
-    _DropMcpMessagesAccessLogs,
+    _DropMcpAccessLogs,
 )
 from sage.app import MCP_HTTP_MOUNTS
 
@@ -35,49 +39,52 @@ def _access_record(args: tuple | None) -> logging.LogRecord:
     )
 
 
-def test_filter_drops_mcp_messages_path():
-    f = _DropMcpMessagesAccessLogs()
-    rec = _access_record(("127.0.0.1:49260", "POST", "/mcp/messages/?session_id=abc", "1.1", 202))
+def test_filter_drops_exact_mount_path():
+    f = _DropMcpAccessLogs()
+    rec = _access_record(("127.0.0.1:49260", "POST", "/mcp", "1.1", 200))
     assert f.filter(rec) is False
 
 
-def test_filter_drops_mcp_admin_messages_path():
-    f = _DropMcpMessagesAccessLogs()
-    rec = _access_record(
-        ("127.0.0.1:54722", "POST", "/mcp_admin/messages/?session_id=e7f07ce8", "1.1", 202)
-    )
+def test_filter_drops_mount_path_with_query():
+    f = _DropMcpAccessLogs()
+    rec = _access_record(("127.0.0.1:49260", "POST", "/mcp?session_id=abc", "1.1", 200))
+    assert f.filter(rec) is False
+
+
+def test_filter_drops_admin_mount_path():
+    f = _DropMcpAccessLogs()
+    rec = _access_record(("127.0.0.1:54722", "POST", "/mcp_admin", "1.1", 200))
     assert f.filter(rec) is False
 
 
 def test_filter_keeps_other_paths():
-    f = _DropMcpMessagesAccessLogs()
-    for path in ("/docs", "/mcp/sse/", "/mcp_admin/sse/", "/api/something", "/"):
+    f = _DropMcpAccessLogs()
+    for path in ("/docs", "/mcpfoo", "/mcp/anything", "/mcp_admin/x", "/api/something", "/"):
         rec = _access_record(("127.0.0.1:49260", "GET", path, "1.1", 200))
         assert f.filter(rec) is True, f"should keep path {path!r}"
 
 
 def test_filter_keeps_records_with_unexpected_args():
-    f = _DropMcpMessagesAccessLogs()
+    f = _DropMcpAccessLogs()
 
     assert f.filter(_access_record(None)) is True
     assert f.filter(_access_record(("a", "b"))) is True
     assert f.filter(_access_record(("a", "b", 123))) is True
 
 
-def test_filter_prefixes_track_mount_list():
-    # The suppressed prefixes are derived from the canonical mount list, not
-    # hardcoded, so adding a mount auto-covers its /messages/ endpoint.
-    assert _MCP_MESSAGE_PREFIXES == tuple(f"{path}/messages/" for path, _ in MCP_HTTP_MOUNTS)
+def test_filter_paths_track_mount_list():
+    # The suppressed paths are derived from the canonical mount list, not
+    # hardcoded, so adding a mount auto-covers its JSON-RPC endpoint.
+    assert _MCP_MOUNT_PATHS == tuple(path for path, _ in MCP_HTTP_MOUNTS)
 
-    f = _DropMcpMessagesAccessLogs()
+    f = _DropMcpAccessLogs()
     for path, _surface in MCP_HTTP_MOUNTS:
-        rec = _access_record(
-            ("127.0.0.1:49260", "POST", f"{path}/messages/?session_id=x", "1.1", 202)
-        )
-        assert f.filter(rec) is False, f"should drop {path}/messages/ endpoint"
+        for logged in (path, f"{path}?x=1"):
+            rec = _access_record(("127.0.0.1:49260", "POST", logged, "1.1", 200))
+            assert f.filter(rec) is False, f"should drop {logged}"
 
 
 def test_filter_wired_into_uvicorn_access_logger():
-    assert "drop_mcp_messages" in UVICORN_LOG_CONFIG["filters"]
+    assert "drop_mcp_access" in UVICORN_LOG_CONFIG["filters"]
     access_cfg = UVICORN_LOG_CONFIG["loggers"]["uvicorn.access"]
-    assert "drop_mcp_messages" in access_cfg["filters"]
+    assert "drop_mcp_access" in access_cfg["filters"]

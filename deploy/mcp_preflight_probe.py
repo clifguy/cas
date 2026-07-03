@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
 """Headless MCP round-trip probe for the cloud preflight gate.
 
-Drives a real JSON-RPC handshake over the SAGE MCP HTTP+SSE transport so the
-post-deploy preflight can prove the maintenance and ordinary MCP surfaces are
-not merely reachable but actually *processing* requests through the edge.
+Drives a real JSON-RPC handshake over the SAGE MCP Streamable HTTP transport
+so the post-deploy preflight can prove the maintenance and ordinary MCP
+surfaces are not merely reachable but actually *processing* requests through
+the edge.
 
-The transport is the two-endpoint Server-Sent-Events form: a ``GET`` opens an
-event stream, the server's first event (``endpoint``) names a per-session
-``POST`` URL, JSON-RPC requests are POSTed there (each acknowledged ``202``), and
-every JSON-RPC *response* is delivered back on the open ``GET`` stream. A single
-POST is therefore not a round-trip; this probe opens the stream, reads the
-endpoint event, POSTs the requests, and correlates each response off the stream
-by its JSON-RPC id.
+The transport is the single-endpoint Streamable HTTP form -- the one a
+standards MCP client speaks: every JSON-RPC message is a ``POST`` to the mount
+URL itself (the byte-exact, slash-less path the edge's protected-resource
+metadata advertises as the OAuth resource), and the response arrives in the
+POST response body -- as a plain JSON document, or as a short SSE-framed body
+on a server that streams its POST responses; the probe accepts both framings.
+
+Redirects are refused, loudly. A ``3xx`` on the initialize POST is the
+signature of a backend that cannot serve the exact mount path (the
+trailing-slash-redirect class of failure) -- a real MCP client does not follow
+a POST redirect, so the probe must not either. Python's default urllib opener
+would silently follow a ``301/302/303`` and convert the POST into a GET,
+crediting whatever 200-shaped page it lands on; the probe installs a
+redirect-refusing opener so every ``3xx`` surfaces as a named
+``redirect_refused`` verdict instead.
 
 Two modes:
 
@@ -41,10 +50,7 @@ import argparse
 import json
 import os
 import sys
-import threading
-import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -53,7 +59,7 @@ _INITIALIZE: dict[str, Any] = {
     "id": 1,
     "method": "initialize",
     "params": {
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": "2025-06-18",
         "capabilities": {},
         "clientInfo": {"name": "cas-preflight", "version": "1.0"},
     },
@@ -70,100 +76,102 @@ _UNKNOWN_METHOD: dict[str, Any] = {
 }
 
 
-class _StreamState:
-    """Shared state between the SSE reader thread and the orchestrating thread."""
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Turn every 3xx into an ``HTTPError`` instead of following it.
 
-    def __init__(self) -> None:
-        self.cond = threading.Condition()
-        self.endpoint: str | None = None
-        self.responses: dict[Any, dict[str, Any]] = {}
-        self.closed = False
-
-
-def _read_stream(resp: Any, state: _StreamState) -> None:
-    """Consume the SSE event stream, recording the endpoint URL and every
-    JSON-RPC response (keyed by id) so the orchestrator can await them.
-
-    SSE framing: ``event:`` / ``data:`` lines, frames separated by a blank line.
-    The first frame is ``event: endpoint``; JSON-RPC responses arrive as
-    subsequent (``message``) frames. A frame with no ``event:`` line defaults to
-    a message.
+    The default handler follows redirects -- and downgrades a redirected POST
+    to a GET on 301/302/303 -- which would let a redirecting mount masquerade
+    as a served transport. Returning ``None`` makes urllib raise the original
+    3xx as an ``HTTPError``, which the caller names in its verdict.
     """
-    event: str | None = None
-    data_lines: list[str] = []
-    try:
-        for raw in resp:
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            if line == "":
-                if data_lines:
-                    _dispatch(event, "\n".join(data_lines), state)
-                event = None
-                data_lines = []
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
+def _parse_body(body: bytes, content_type: str) -> dict[str, Any] | None:
+    """Extract the JSON-RPC message from a POST response body.
+
+    ``application/json`` is the plain-document framing. ``text/event-stream``
+    is the framing of a server that streams its POST responses: scan the
+    ``data:`` lines for the first JSON object carrying an ``id``.
+    """
+    if content_type.startswith("application/json"):
+        try:
+            msg = json.loads(body)
+        except ValueError:
+            return None
+        return msg if isinstance(msg, dict) else None
+    if content_type.startswith("text/event-stream"):
+        for line in body.decode("utf-8", "replace").splitlines():
+            if not line.startswith("data:"):
                 continue
-            if line.startswith(":"):
-                continue  # SSE comment / heartbeat
-            if line.startswith("event:"):
-                event = line[len("event:") :].strip()
-            elif line.startswith("data:"):
-                data_lines.append(line[len("data:") :].lstrip())
-    except Exception:  # noqa: BLE001, S110 -- a broken stream is just a closed stream here
-        pass
-    finally:
-        with state.cond:
-            state.closed = True
-            state.cond.notify_all()
-
-
-def _dispatch(event: str | None, data: str, state: _StreamState) -> None:
-    with state.cond:
-        if event == "endpoint":
-            state.endpoint = data
-        else:
             try:
-                msg = json.loads(data)
+                msg = json.loads(line[len("data:") :].strip())
             except ValueError:
-                return
+                continue
             if isinstance(msg, dict) and msg.get("id") is not None:
-                state.responses[msg["id"]] = msg
-        state.cond.notify_all()
+                return msg
+    return None
 
 
-def _wait_endpoint(state: _StreamState, deadline: float) -> str | None:
-    with state.cond:
-        while state.endpoint is None and not state.closed:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            state.cond.wait(remaining)
-        return state.endpoint
+class _PostFailure(Exception):
+    """A POST that did not yield a JSON-RPC message; carries the verdict detail."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
-def _wait_response(state: _StreamState, rid: Any, deadline: float) -> dict[str, Any] | None:
-    with state.cond:
-        while rid not in state.responses and not state.closed:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            state.cond.wait(remaining)
-        return state.responses.get(rid)
+def _post(
+    url: str,
+    auth: dict[str, str],
+    payload: dict[str, Any],
+    timeout: float,
+    session_id: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """POST one JSON-RPC message; return ``(parsed_response, session_id)``.
 
-
-def _post(url: str, auth: dict[str, str], payload: dict[str, Any], timeout: float) -> None:
-    """Fire a JSON-RPC message at the session endpoint. The response is delivered
-    on the SSE stream, not here, so the ``202`` ack is all we read.
+    A notification (no ``id``) expects a bodyless ``202``-class ack and
+    returns ``(None, session_id)``. The session id is echoed back on every
+    subsequent request when the server minted one (a stateless server does
+    not; both are valid). Raises ``_PostFailure`` with a self-diagnosing
+    verdict fragment on any HTTP error -- including every refused ``3xx``.
     """
     headers = dict(auth)
     headers["Content-Type"] = "application/json"
+    headers["Accept"] = "application/json, text/event-stream"
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            r.read()
+        with _OPENER.open(req, timeout=timeout) as resp:
+            body = resp.read()
+            new_session = resp.headers.get("Mcp-Session-Id") or session_id
+            if payload.get("id") is None:
+                return None, new_session
+            msg = _parse_body(body, resp.headers.get("Content-Type", ""))
+            return msg, new_session
     except urllib.error.HTTPError as exc:
-        exc.read()
-    except Exception:  # noqa: BLE001, S110 -- a failed POST surfaces as a missing response downstream
-        pass
+        # Surface the response body, not just the status: an edge rejection
+        # (e.g. a 421 ``Invalid Host header``) names its own cause, so the
+        # verdict line is self-diagnosing. Collapse whitespace to one line and
+        # cap the length so the verdict stays a single key=value record. A
+        # refused redirect carries its own name plus the Location target.
+        if 300 <= exc.code < 400:
+            location = exc.headers.get("Location", "?") if exc.headers else "?"
+            raise _PostFailure(
+                f"post_status={exc.code} redirect_refused location={location}"
+            ) from exc
+        body_text = " ".join(exc.read().decode("utf-8", "replace").split())[:120]
+        raise _PostFailure(f"post_status={exc.code} post_body={body_text}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _PostFailure(f"post_error={type(exc).__name__}") from exc
 
 
 def _init_ok(msg: dict[str, Any] | None) -> bool:
@@ -202,68 +210,43 @@ def _emit(mode: str, mount: str, detail: str) -> None:
 def probe(base_url: str, mount: str, mode: str, timeout: float) -> int:
     """Run the probe; return an exit code (0 = all assertions held)."""
     mount = "/" + mount.strip("/")
-    sse_url = base_url.rstrip("/") + mount + "/sse"
+    url = base_url.rstrip("/") + mount
     token = os.environ.get("AUTH_TOKEN", "")
     auth: dict[str, str] = {"Authorization": f"Bearer {token}"} if token else {}
-    deadline = time.monotonic() + timeout
 
-    get_headers = dict(auth)
-    get_headers["Accept"] = "text/event-stream"
     try:
-        resp = urllib.request.urlopen(
-            urllib.request.Request(sse_url, headers=get_headers, method="GET"), timeout=timeout
-        )
-    except urllib.error.HTTPError as exc:
-        # Surface the response body, not just the status: an edge rejection
-        # (e.g. a 421 ``Invalid Host header``) names its own cause, so the
-        # verdict line is self-diagnosing. Collapse whitespace to one line and
-        # cap the length so the verdict stays a single key=value record.
-        body = " ".join(exc.read().decode("utf-8", "replace").split())[:120]
-        _emit(mode, mount, f"sse_status={exc.code} sse_body={body}")
-        return 1
-    except Exception as exc:  # noqa: BLE001
-        _emit(mode, mount, f"sse_open_error={type(exc).__name__}")
-        return 1
-
-    state = _StreamState()
-    reader = threading.Thread(target=_read_stream, args=(resp, state), daemon=True)
-    reader.start()
-    try:
-        endpoint = _wait_endpoint(state, deadline)
-        if not endpoint:
-            _emit(mode, mount, "no_endpoint_event")
-            return 1
-        messages_url = urllib.parse.urljoin(sse_url, endpoint)
-
-        _post(messages_url, auth, _INITIALIZE, timeout)
-        init = _wait_response(state, 1, deadline)
+        init, session_id = _post(url, auth, _INITIALIZE, timeout, None)
         if not _init_ok(init):
             _emit(mode, mount, "initialize=fail")
             return 1
         server = _server_name(init)
-        _post(messages_url, auth, _INITIALIZED, timeout)
+        try:
+            _post(url, auth, _INITIALIZED, timeout, session_id)
+        except _PostFailure:
+            # The initialized notification is best-effort: some servers close
+            # the ack early. The load-bearing assertions are the id-carrying
+            # round-trips before and after it.
+            pass
 
         if mode == "handshake":
             _emit(mode, mount, f"initialize=ok server={server}")
             return 0
 
-        _post(messages_url, auth, _TOOLS_LIST, timeout)
-        if not _tools_list_ok(_wait_response(state, 2, deadline)):
+        tools, session_id = _post(url, auth, _TOOLS_LIST, timeout, session_id)
+        if not _tools_list_ok(tools):
             _emit(mode, mount, "initialize=ok tools_list=fail")
             return 1
 
-        _post(messages_url, auth, _UNKNOWN_METHOD, timeout)
-        if not _is_error(_wait_response(state, 3, deadline)):
+        unknown, _ = _post(url, auth, _UNKNOWN_METHOD, timeout, session_id)
+        if not _is_error(unknown):
             _emit(mode, mount, "initialize=ok tools_list=ok negctrl=fail")
             return 1
 
         _emit(mode, mount, f"initialize=ok tools_list=ok negctrl=error server={server}")
         return 0
-    finally:
-        try:
-            resp.close()
-        except Exception:  # noqa: BLE001, S110 -- closing a spent stream best-effort
-            pass
+    except _PostFailure as failure:
+        _emit(mode, mount, failure.detail)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
