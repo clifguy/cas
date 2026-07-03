@@ -433,6 +433,36 @@ check_edge_resource_identity() {
   return 1
 }
 
+check_edge_advertises_offline_access() {
+  # The public MCP client requests the bare OIDC offline_access scope so Entra
+  # issues it a refresh token; without it a v2 access token (60-90 min) expires
+  # with no silent renewal, forcing a fresh /authorize round trip every hour or
+  # two (CAS-ADR-042). The edge must advertise offline_access in BOTH the
+  # protected-resource-metadata scopes_supported AND the /register scope string,
+  # or a standards client never asks for it. WHICH scope prefix carries the
+  # resource identity is gated by edge_resource_identity; this asserts the
+  # separate offline_access token specifically, so a regression that keeps
+  # Sage.Access intact while dropping offline_access is caught here rather than
+  # sliding through green. The discovery-200 control guards the blanket-edge trap.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); an offline_access advertisement is the blanket trap, not a real refresh-token scope"
+    return 1
+  fi
+  http_get "$SAGE_BASE_URL/.well-known/oauth-protected-resource"
+  local prm_ok=no reg_ok=no
+  printf '%s' "$HTTP_BODY" | grep -qE '"offline_access"' && prm_ok=yes
+  http_post "$SAGE_BASE_URL/register" \
+    '{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}'
+  printf '%s' "$HTTP_BODY" \
+    | grep -qE '"scope"[[:space:]]*:[[:space:]]*"[^"]*offline_access' && reg_ok=yes
+  if [ "$prm_ok" = yes ] && [ "$reg_ok" = yes ]; then
+    DETAIL_MSG="scopes_supported and the /register scope both advertise offline_access (a standards MCP client requests a refresh token)"
+    return 0
+  fi
+  DETAIL_MSG="offline_access advertisement missing: scopes_supported=$prm_ok register_scope=$reg_ok -- a standards MCP client won't request offline_access and its access token expires with no silent renewal"
+  return 1
+}
+
 check_edge_mount_discovery() {
   # Each MCP mount must steer a denied client to its RFC 9728 PATH-INSERTED
   # metadata document, and that document must advertise the PATH-CARRYING mount
@@ -771,6 +801,9 @@ register edge_dcr_registration check_edge_dcr_registration \
 register edge_resource_identity check_edge_resource_identity \
   "the advertised resource, scopes_supported, and /register scope all carry the public SAGE base URL (RFC 9728 origin match; Entra accepts the client's RFC 8707 resource parameter)" \
   "an internal-gateway resource or api://-form scope prefix is the coincidental-pass trap (both 200 fine at the edge yet fail a standards client); credited only with the discovery-200 control held"
+register edge_advertises_offline_access check_edge_advertises_offline_access \
+  "scopes_supported and the /register scope both advertise offline_access (the public MCP client requests a refresh token so its session survives past the access-token lifetime)" \
+  "offline_access dropped from either leg on a genuinely-live edge is the regression trap (Sage.Access stays intact so every other edge check is green); credited only with the discovery-200 control held"
 register edge_mount_discovery check_edge_mount_discovery \
   "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \
   "a bare-host resource is the coincidental-pass trap (200s fine, but serializes to a trailing-slash form Entra can neither match nor register -- AADSTS9010010); credited only with the discovery-200 control held"

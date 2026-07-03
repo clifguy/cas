@@ -314,16 +314,25 @@ The flag is a declarative full-set replace, so registering both together keeps a
 re-run from dropping the loopback.
 
 Grant the same delegated `Sage.Access` scope the BFF holds, and additionally grant
-`offline_access` so Entra issues this public client a **refresh token** — then
-admin-consent both in one call. Without `offline_access`, Entra's v2 endpoint mints
-an access token only; once it expires (a 60–90 min default lifetime) the client has
-no way to renew the session but a fresh `/authorize` round trip, which is why an
-idle MCP connection re-authorizes every hour or two instead of persisting.
-`offline_access` is a Microsoft Graph delegated permission — not a scope on the
-SAGE resource server — so it is granted against Graph's first-party service
-principal. Resolve Graph's app id and the `offline_access` scope id at run time
-rather than pasting the well-known GUIDs, the same no-literal discipline used for
-the all-zero role sentinel below.
+`offline_access` so Entra issues this public client a **refresh token**. Without
+`offline_access`, Entra's v2 endpoint mints an access token only; once it expires
+(a 60–90 min default lifetime) the client has no way to renew the session but a
+fresh `/authorize` round trip, which is why an idle MCP connection re-authorizes
+every hour or two instead of persisting. `offline_access` is a Microsoft Graph
+delegated permission — not a scope on the SAGE resource server — so it is granted
+against Graph's first-party service principal. Resolve Graph's app id and the
+`offline_access` scope id at run time rather than pasting the well-known GUIDs, the
+same no-literal discipline used for the all-zero role sentinel below.
+
+Admin-consent records the tenant consent for the `Sage.Access` grant, but it does
+**not** create the delegated consent grant for the Graph `offline_access` scope:
+verified live against the tenant, `az ad app permission admin-consent` returns 0
+yet no `oauth2PermissionGrant` for `offline_access` appears, so the client is left
+without a refresh token on a fresh bring-up. Follow the admin-consent with an
+explicit `az ad app permission grant … --scope offline_access` — the form that
+actually consents it, recording an `AllPrincipals` `oauth2PermissionGrant` for
+`offline_access` on the Graph resource. Graph's app id is reused from the run-time
+resolution above, so no GUID literal is pasted.
 
 ```bash
 az ad app permission add --id "$MCP_CLIENT_APP_ID" \
@@ -339,6 +348,12 @@ az ad app permission add --id "$MCP_CLIENT_APP_ID" \
   --api-permissions "${OFFLINE_ACCESS_SCOPE_ID}=Scope"
 
 az ad app permission admin-consent --id "$MCP_CLIENT_APP_ID"
+
+# admin-consent does not consent offline_access (it returns 0 but records no
+# grant for it); an explicit grant is required to actually consent it.
+az ad app permission grant --id "$MCP_CLIENT_APP_ID" \
+  --api "$GRAPH_APP_ID" \
+  --scope offline_access
 ```
 
 Finally, gate the client on the single provisioning group (CAS-ADR-044): require
