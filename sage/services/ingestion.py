@@ -517,7 +517,8 @@ class IngestionService:
             SupersedeTargetNotActiveError: predecessor is not active.
             IdenticalContentSupersedeError: new content matches predecessor.
             SourceFileNotFoundError: ``request.source`` does not resolve to
-                a readable file on disk.
+                a readable source on the vault-source store -- neither on the
+                local tree nor in the backing store.
             Tier3UniqueConstraintViolation: ``tier3_metadata`` carried a
                 value already in use on a doc_type with a ``unique``
                 constraint (CAS-ADR-031). ``force=True`` does
@@ -554,28 +555,46 @@ class IngestionService:
                     predecessor.lifecycle_status,
                 )
 
-        # Resolve source path: relative to storage_root, or absolute external
+        # Resolve the source through the vault-source store, not a raw local
+        # Path.exists() gate (CAS-ADR-043). Under a non-filesystem binding the
+        # retained bytes live in the backing store and are never mirrored on
+        # this process's local tree, so a relative source that names an
+        # already-retained document must resolve through the port even when
+        # nothing sits at storage_root/<source> on local disk.
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         source_input = Path(request.source)
 
-        if source_input.is_absolute():
-            source_path = source_input
-        else:
-            source_path = storage_root / request.source
-
-        if not source_path.exists():
-            raise SourceFileNotFoundError(request.source)
-
-        # Import external files into the vault (BH-053 through BH-057),
-        # retaining the source on the active profile's vault-source store so
-        # the copy is binding-agnostic (CAS-ADR-043).
-        source_path = source_path.resolve()
         from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
 
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
-        vault_relative = vault_source_store.retain_source(
-            self._config.vault.id, storage_root, source_path
-        )
+
+        if source_input.is_absolute():
+            # External file import: copy the caller's file into the vault,
+            # retaining it on the active profile's store (BH-053 through
+            # BH-057) so the copy is binding-agnostic.
+            if not source_input.exists():
+                raise SourceFileNotFoundError(request.source)
+            source_path = source_input.resolve()
+            vault_relative = vault_source_store.retain_source(
+                self._config.vault.id, storage_root, source_path
+            )
+        else:
+            # Relative source: a vault-relative path into the store. When the
+            # bytes are present on the local tree, retain in place / upload as
+            # usual; otherwise resolve presence through the port so a
+            # backend-resident source (the post-restart cloud condition) is
+            # projected rather than rejected as missing.
+            source_path = storage_root / request.source
+            if source_path.exists():
+                vault_relative = vault_source_store.retain_source(
+                    self._config.vault.id, storage_root, source_path.resolve()
+                )
+            elif vault_source_store.source_exists(
+                self._config.vault.id, storage_root, request.source
+            ):
+                vault_relative = request.source
+            else:
+                raise SourceFileNotFoundError(request.source)
 
         # Stage 1: Projection (synchronous). Merge vault-level adapter config
         # with the per-request config; per-request keys override vault keys
