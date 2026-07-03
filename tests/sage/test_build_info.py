@@ -128,6 +128,96 @@ def test_bld_006_missing_git_binary_returns_unknown(
 
 
 # --------------------------------------------------------------------------
+# Build-identity baked fallback — _identity_from_baked / _resolve_build_identity
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("abc1234", "abc1234"),  # short 7-hex
+        (
+            "0123456789abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef01234567",
+        ),  # full 40-hex
+        ("abc1234-dirty", "abc1234-dirty"),  # short + dirty
+        (" abc1234 ", "abc1234"),  # surrounding whitespace stripped
+    ],
+)
+def test_bld_029_identity_from_baked_accepts_valid(
+    raw: str, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_identity_from_baked reads the SAGE_BUILD_IDENTITY stamp and returns it
+    verbatim (surrounding whitespace stripped), accepting both a short 7-char
+    SHA and a full 40-char SHA, with or without the -dirty suffix."""
+    monkeypatch.setenv("SAGE_BUILD_IDENTITY", raw)
+    assert build_info._identity_from_baked() == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "abcdef",  # 6 hex chars, too short
+        "g" * 7,  # non-hex character
+        "a" * 41,  # 41 chars, too long
+        "abc1234; rm -rf",  # injection-like
+        "abc1234 dirty",  # space instead of the -dirty hyphen
+        "abc1234$(whoami)",  # injection-like
+    ],
+)
+def test_bld_030_identity_from_baked_rejects_malformed(
+    raw: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed, too-short, too-long, or injection-shaped stamp degrades to
+    UNKNOWN rather than raising or passing through verbatim."""
+    monkeypatch.setenv("SAGE_BUILD_IDENTITY", raw)
+    assert build_info._identity_from_baked() == build_info.UNKNOWN
+
+
+def test_bld_031_identity_from_baked_unset_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the stamp unset (the dev-box default), _identity_from_baked yields
+    UNKNOWN so resolution falls through unchanged."""
+    monkeypatch.delenv("SAGE_BUILD_IDENTITY", raising=False)
+    assert build_info._identity_from_baked() == build_info.UNKNOWN
+
+
+def test_bld_032_resolve_build_identity_prefers_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_resolve_build_identity honors live git over the baked stamp — the
+    dev-box path is never shadowed by an incidentally-set env var."""
+    monkeypatch.setattr(build_info, "_compute_build_identity", lambda *_a, **_k: "live1234")
+    monkeypatch.setattr(build_info, "_identity_from_baked", lambda: "baked999")
+    assert build_info._resolve_build_identity(Path("/unused")) == "live1234"
+
+
+def test_bld_033_resolve_build_identity_baked_wins_when_git_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When live git yields UNKNOWN (a repo-less container), the baked stamp is
+    consulted and used — the whole point of the fallback tier."""
+    monkeypatch.setattr(build_info, "_compute_build_identity", lambda *_a, **_k: build_info.UNKNOWN)
+    monkeypatch.setattr(build_info, "_identity_from_baked", lambda: "baked999")
+    assert build_info._resolve_build_identity(Path("/unused")) == "baked999"
+
+
+def test_bld_034_resolve_build_identity_both_tiers_unknown_degrades_not_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When both git and the baked stamp yield UNKNOWN, _resolve_build_identity
+    returns UNKNOWN rather than raising or returning an empty string."""
+    monkeypatch.setattr(build_info, "_compute_build_identity", lambda *_a, **_k: build_info.UNKNOWN)
+    monkeypatch.setattr(build_info, "_identity_from_baked", lambda: build_info.UNKNOWN)
+    assert build_info._resolve_build_identity(Path("/unused")) == build_info.UNKNOWN
+
+
+def test_bld_035_compose_with_baked_resolved_identity() -> None:
+    """_compose_version_with_build accepts a baked-tier-shaped identity value
+    exactly as it would a live-git one — the composer doesn't distinguish the
+    resolution source, only the value's presence/absence."""
+    assert build_info._compose_version_with_build("2.0.73", "0a97f22") == "2.0.73+0a97f22"
+
+
+# --------------------------------------------------------------------------
 # Renderer — _render_instructions
 # --------------------------------------------------------------------------
 

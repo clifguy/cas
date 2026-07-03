@@ -72,8 +72,10 @@ jobs:
         # tag honest. Requires the editable install above so `sage` imports.
         run: |
           SAGE_BUILD_VERSION="$(.venv/bin/python -c 'from sage import build_info as b; print(b.RELEASE_VERSION)')"
-          IMAGE_TAG="${SAGE_BUILD_VERSION}-${GITHUB_SHA:0:7}"
+          SAGE_BUILD_IDENTITY="${GITHUB_SHA:0:7}"
+          IMAGE_TAG="${SAGE_BUILD_VERSION}-${SAGE_BUILD_IDENTITY}"
           echo "sage_build_version=${SAGE_BUILD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sage_build_identity=${SAGE_BUILD_IDENTITY}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
@@ -81,10 +83,12 @@ jobs:
       - name: Build SAGE image
         env:
           SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          SAGE_BUILD_IDENTITY: ${{ steps.ver.outputs.sage_build_identity }}
         run: |
           docker buildx build \
             --platform linux/amd64 \
             --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
+            --build-arg "SAGE_BUILD_IDENTITY=${SAGE_BUILD_IDENTITY}" \
             --cache-from "type=gha,scope=sage-image" \
             --cache-to "type=gha,mode=max,scope=sage-image" \
             --load \
@@ -110,6 +114,7 @@ jobs:
           SAGE_TEST_DOCKER: "1"
           SAGE_TEST_IMAGE: "cas-sage:ci"
           SAGE_TEST_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          SAGE_TEST_IMAGE_IDENTITY: ${{ steps.ver.outputs.sage_build_identity }}
           SAGE_TEST_BFF_IMAGE: "cas-bff:ci"
           SAGE_TEST_BFF_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
           # Native amd64 runner; no cross-platform emulation overhead.

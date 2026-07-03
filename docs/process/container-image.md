@@ -11,15 +11,19 @@ runtime loads them with no HuggingFace egress.
 
 ## Build
 
-The build is repo-less (`.git` is excluded), so the runtime version comes from
-a build arg — pass the real release version (`MAJOR.MINOR.PATCH`). Derive it on
-the host from `sage.build_info.RELEASE_VERSION`, the single source the running
+The build is repo-less (`.git` is excluded), so the runtime version and build
+identity come from build args — pass the real release version
+(`MAJOR.MINOR.PATCH`) and the commit short SHA. Derive the version on the host
+from `sage.build_info.RELEASE_VERSION`, the single source the running
 container, CI, and the OpenAPI contract all share (PATCH is the commit distance
 since the last `vMAJOR.MINOR.0` tag — a bare `git describe --abbrev=0` reports
 only the tag floor and bakes the wrong version):
 
 ```sh
-docker build --build-arg SAGE_BUILD_VERSION="$(.venv/bin/python -c 'from sage import build_info as b; print(b.RELEASE_VERSION)')" -t cas-sage .
+docker build \
+  --build-arg SAGE_BUILD_VERSION="$(.venv/bin/python -c 'from sage import build_info as b; print(b.RELEASE_VERSION)')" \
+  --build-arg SAGE_BUILD_IDENTITY="$(git rev-parse --short=7 HEAD)" \
+  -t cas-sage .
 ```
 
 The image is architecture-agnostic at the Dockerfile level; the production
@@ -79,6 +83,7 @@ booting a half-configured stack.
 | Variable | Purpose | Default in image |
 |---|---|---|
 | `SAGE_BUILD_VERSION` | Baked release version reported by a `.git`-less image | build arg |
+| `SAGE_BUILD_IDENTITY` | Baked git short SHA reported by a `.git`-less image | build arg |
 | `SAGE_CONFIG_PATH` | Stack-config source (overrides the packaged default) | the baked smoke-minimal config |
 | `SAGE_VAULT_ROOT` | Vault discovery root (filesystem binding only) | `/var/lib/sage/vaults` |
 | `SAGE_KEY_VAULT_URI` | Key Vault data-plane URI the cloud profile reads secrets from | unset |
@@ -110,6 +115,10 @@ non-root, and no-MLX checks. It requires Docker:
 ```sh
 bash deploy/smoke.sh 1.0.41        # version arg is baked as SAGE_BUILD_VERSION
 ```
+
+The script also auto-computes the live checkout's build identity (short SHA,
+with a `-dirty` suffix for uncommitted tracked changes) and bakes it as
+`SAGE_BUILD_IDENTITY` — no separate positional argument needed.
 
 The same checks run as an opt-in, Docker-gated pytest module:
 

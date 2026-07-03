@@ -29,6 +29,9 @@ _PREBUILT_IMAGE: str | None = os.environ.get("SAGE_TEST_IMAGE")
 #: Version baked into the image. CI sets SAGE_TEST_IMAGE_VERSION to the real
 #: release; local dev uses an unmistakable sentinel distinct from any release.
 _VERSION: str = os.environ.get("SAGE_TEST_IMAGE_VERSION") or "9.9.9"
+#: Build identity baked into the image. CI sets SAGE_TEST_IMAGE_IDENTITY to the
+#: real short SHA; local dev uses an unmistakable sentinel.
+_IDENTITY: str = os.environ.get("SAGE_TEST_IMAGE_IDENTITY") or "cafe123"
 #: Production target arch. On Apple Silicon this builds under emulation; set
 #: SAGE_TEST_DOCKER_PLATFORM="" to build a native image instead.
 _PLATFORM = os.environ.get("SAGE_TEST_DOCKER_PLATFORM", "linux/amd64")
@@ -62,6 +65,8 @@ def image() -> str:
             *_platform_args(),
             "--build-arg",
             f"SAGE_BUILD_VERSION={_VERSION}",
+            "--build-arg",
+            f"SAGE_BUILD_IDENTITY={_IDENTITY}",
             "-t",
             _IMAGE,
             str(_REPO_ROOT),
@@ -153,6 +158,18 @@ def test_smk_001_boots_health_green_version_baked(image: str) -> None:
         assert body["version"] not in ("0.0.0", "unknown", ""), (
             f"image reports a degraded baked version {body['version']!r}; build_info "
             "found no v* tag at build time and baked the setuptools-scm fallback"
+        )
+
+        # SMK-001b: the baked build identity reaches the startup banner (docker
+        # logs), proving the ARG -> ENV -> build_info -> banner path end-to-end
+        # -- not just that the Dockerfile declares the ARG.
+        logs_result = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+        logs = logs_result.stdout + logs_result.stderr
+        assert f"build {_IDENTITY}" in logs, (
+            f"startup banner does not report baked identity {_IDENTITY!r}"
+        )
+        assert "build identity unavailable" not in logs, (
+            "banner reports identity unavailable despite a baked SAGE_BUILD_IDENTITY stamp"
         )
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)

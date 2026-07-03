@@ -5,7 +5,12 @@ so it can silently serve code older than the working tree. This module
 captures the git build the process was started from — a short commit SHA plus
 a ``-dirty`` marker when the checked-out tree carried uncommitted *tracked*
 changes — and surfaces it, together with the release version, to connecting
-MCP clients.
+MCP clients. The running ``BUILD_IDENTITY`` is resolved at import across two
+tiers: live ``git rev-parse`` (the dev-box path); then a build-time-baked
+stamp read from the ``SAGE_BUILD_IDENTITY`` environment variable, which a
+repo-less build populates from a build ARG (e.g. a container's
+``ARG SAGE_BUILD_IDENTITY`` → ``ENV SAGE_BUILD_IDENTITY=cc019b8``) so a
+``.git``-less deploy still reports its real commit.
 
 It also single-sources the project version, derived live from VCS state. The
 running ``RELEASE_VERSION`` is ``MAJOR.MINOR.PATCH`` where PATCH is the commit
@@ -24,9 +29,9 @@ Every value is computed **once at import** and frozen in module constants for
 the lifetime of the process. The build identity therefore reflects the code
 the running process actually loaded, never a value re-read from disk per
 request: if it disagrees with the repository HEAD, the process is serving
-stale code. With no git checkout, no ``SAGE_BUILD_VERSION`` stamp, and no
-installed distribution metadata, the values degrade to the literal
-``"unknown"`` rather than failing.
+stale code. With no git checkout, no ``SAGE_BUILD_IDENTITY`` or
+``SAGE_BUILD_VERSION`` stamp, and no installed distribution metadata, the
+values degrade to the literal ``"unknown"`` rather than failing.
 """
 
 from __future__ import annotations
@@ -66,6 +71,16 @@ _BAKED_VERSION_ENV: str = "SAGE_BUILD_VERSION"
 #: ``1.2.3`` round-trips verbatim rather than collapsing to ``1.2.0``.
 _BAKED_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
+#: Environment variable carrying the build-time-baked build identity, read once
+#: at import as the fallback when no live git checkout is present.
+_BAKED_IDENTITY_ENV: str = "SAGE_BUILD_IDENTITY"
+
+#: Matches a short (7) to full (40) hex SHA, with an optional ``-dirty`` suffix
+#: — the same alphabet and shape :func:`_compute_build_identity` emits, so a
+#: baked stamp round-trips whatever a CI checkout's short or full SHA looks
+#: like.
+_BAKED_IDENTITY_RE = re.compile(r"^[0-9a-f]{7,40}(-dirty)?$", re.IGNORECASE)
+
 _GIT_TIMEOUT_S: float = 5.0
 
 
@@ -101,6 +116,40 @@ def _compute_build_identity(repo_dir: Path) -> str:
         return identity
     except (OSError, subprocess.SubprocessError):
         return UNKNOWN
+
+
+def _identity_from_baked() -> str:
+    """Return the build-time-baked build identity, if any.
+
+    Reads the :data:`_BAKED_IDENTITY_ENV` (``SAGE_BUILD_IDENTITY``) environment
+    variable, which a repo-less build (e.g. a container image) populates from a
+    build ARG so the runtime reports its real commit where live git is absent.
+    The value must be 7-40 hex characters, optionally suffixed with
+    ``-dirty``; an unset, empty, or malformed value degrades to :data:`UNKNOWN`
+    rather than raising.
+    """
+    raw = os.environ.get(_BAKED_IDENTITY_ENV)
+    if not raw:
+        return UNKNOWN
+    stripped = raw.strip()
+    if not _BAKED_IDENTITY_RE.match(stripped):
+        return UNKNOWN
+    return stripped
+
+
+def _resolve_build_identity(repo_dir: Path) -> str:
+    """Resolve the running build identity across two tiers.
+
+    Order of preference: live git (accurate at every restart with no rebuild,
+    the dev-box path) → the build-time-baked :data:`_BAKED_IDENTITY_ENV` stamp
+    (a repo-less deploy's real commit). :data:`UNKNOWN` only when neither
+    resolves. Unlike :func:`_resolve_release_version` there is no third,
+    installed-metadata tier: distribution metadata carries no commit SHA.
+    """
+    from_git = _compute_build_identity(repo_dir)
+    if from_git != UNKNOWN:
+        return from_git
+    return _identity_from_baked()
 
 
 def _parse_describe(describe_out: str) -> str | None:
@@ -254,8 +303,9 @@ def _render_instructions(version_with_build: str) -> str:
     )
 
 
-#: The build identity captured once at import time, frozen for the process.
-BUILD_IDENTITY: str = _compute_build_identity(_SAGE_PKG_DIR)
+#: The build identity resolved once at import time, frozen for the process:
+#: live git preferred over the baked ``SAGE_BUILD_IDENTITY`` stamp.
+BUILD_IDENTITY: str = _resolve_build_identity(_SAGE_PKG_DIR)
 
 #: The running project version ``MAJOR.MINOR.PATCH`` (PATCH = commit distance
 #: since the last tag), resolved once at import from git, metadata as fallback.
