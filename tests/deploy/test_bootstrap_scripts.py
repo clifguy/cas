@@ -251,11 +251,10 @@ def test_entra_script_registers_mcp_loopback_redirect() -> None:
 
 
 def test_entra_script_declares_all_sage_identifier_uris() -> None:
-    """The SAGE resource server declares all SIX identifier URIs in one update:
+    """The SAGE resource server declares all FOUR identifier URIs in one update:
     the ``api://<app-id>`` audience URI, the ``https://<SAGE_PUBLIC_HOSTNAME>``
-    custom-domain identity, the two MCP-mount forms of that identity, and the
-    two mounts' SSE transport-endpoint forms — with the hostname arriving as
-    required environment.
+    custom-domain identity, and the two MCP-mount forms of that identity — with
+    the hostname arriving as required environment.
 
     The https identities are what let a standards MCP client through Entra: the
     client sends an RFC 8707 ``resource`` parameter with ``/authorize``, and
@@ -263,12 +262,15 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
     parameter IS a registered identifier URI of the scope's app — same-origin is
     not enough; the match is byte-for-byte (verified live: the bare host minted
     a code while the unregistered ``/mcp`` form was rejected, then ``/mcp``
-    after registration while ``/mcp/sse`` was rejected, and so on). A client may
-    send its connector/server URL, that URL's SSE transport endpoint, or the
-    PRM-advertised resource, so every URI a client could canonicalize from is
-    registered. ``--identifier-uris`` is a declarative full-set replace, so
-    every URI must be passed together on every invocation or a re-bootstrap
-    drops some.
+    after registration). A client is steered to the mount URI by the mount's
+    protected-resource metadata, so the mount forms are the resources clients
+    actually request; the bare host remains the scope prefix. The retired SSE
+    transport's ``/sse`` endpoint forms must stay OUT of the set: the endpoints
+    no longer exist, and a registered identity for a dead path is an identity
+    a client can acquire a token for but never use. ``--identifier-uris`` is a
+    declarative full-set replace, so every URI must be passed together on every
+    invocation or a re-bootstrap drops some (and re-running the updated script
+    is itself the live-tenant trim).
     """
     text = _text(ENTRA)
     assert re.search(r':\s*"\$\{SAGE_PUBLIC_HOSTNAME:\?', text), (
@@ -295,14 +297,8 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"': (
             "the /mcp_admin mount identity (the maintenance surface's canonical server URI)"
         ),
-        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse"': (
-            "the /mcp SSE transport-endpoint identity (the URL an SSE-transport "
-            "connector is configured with)"
-        ),
-        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin/sse"': (
-            "the /mcp_admin SSE transport-endpoint identity"
-        ),
     }
+    forbidden = ("/mcp/sse", "/mcp_admin/sse")
     for invocation in uri_invocations:
         flat = invocation.replace("\\\n", " ")
         for needle, why in required.items():
@@ -310,6 +306,12 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
                 f"every --identifier-uris invocation must declare {why} — the "
                 "flag is a full-set replace, so omitting it here regresses the "
                 "tenant to AADSTS9010010 at /authorize"
+            )
+        for dead in forbidden:
+            assert dead not in flat, (
+                f"identifier URI for the retired SSE endpoint {dead!r} must not "
+                "be re-registered — the transport is gone and the full-set "
+                "replace is how the live tenant stays trimmed"
             )
 
 

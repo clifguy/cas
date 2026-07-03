@@ -243,9 +243,9 @@ resource sageApi 'Microsoft.ApiManagement/service/apis@2022-08-01' = {
 // request ever matches it, so the gateway answers its generic 404 on every
 // path. The working catch-all is one operation per explicit method, each with
 // the '/{*path}' wildcard template and its declared 'path' parameter. The set
-// covers SAGE's REST verbs and the MCP Streamable-HTTP transport (POST, GET for
-// the SSE stream, DELETE for session teardown); HEAD and OPTIONS cover probes
-// and preflight.
+// covers SAGE's REST verbs and the MCP Streamable HTTP transport (POST for
+// JSON-RPC, GET and DELETE for the transport's optional stream and session
+// legs); HEAD and OPTIONS cover probes and preflight.
 var sageHttpMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 
 resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = [

@@ -24,10 +24,10 @@ import uvicorn
 
 from sage.app import MCP_HTTP_MOUNTS, create_app
 
-#: SSE message-transport endpoint of every mounted MCP surface, derived from
-#: the canonical mount list so a newly mounted surface is suppressed without a
-#: second edit here. ``str.startswith`` accepts this tuple directly.
-_MCP_MESSAGE_PREFIXES: tuple[str, ...] = tuple(f"{path}/messages/" for path, _ in MCP_HTTP_MOUNTS)
+#: JSON-RPC endpoint path of every mounted MCP surface, derived from the
+#: canonical mount list so a newly mounted surface is suppressed without a
+#: second edit here.
+_MCP_MOUNT_PATHS: tuple[str, ...] = tuple(path for path, _ in MCP_HTTP_MOUNTS)
 
 
 def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = None) -> Path:
@@ -60,18 +60,19 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
     return Path.home() / "sage_vaults"
 
 
-class _DropMcpMessagesAccessLogs(_logging.Filter):
-    """Drop uvicorn.access records for any MCP mount's /messages/ endpoint.
+class _DropMcpAccessLogs(_logging.Filter):
+    """Drop uvicorn.access records for any MCP mount's JSON-RPC endpoint.
 
-    Every mounted MCP surface exposes its SSE message transport at
-    ``<mount>/messages/`` (e.g. ``/mcp/messages/`` and
-    ``/mcp_admin/messages/``). The transport hits that endpoint on every
-    JSON-RPC message (often twice per logical tool call, plus extras for
-    notifications and idle reconnect handshakes). ``_LoggingFastMCP.call_tool``
-    already surfaces the tool name; these access lines add no signal beyond
-    that, so they are dropped for all mounts uniformly. The suppressed
-    prefixes are derived from the canonical mount list (``_MCP_MESSAGE_PREFIXES``)
-    so a newly mounted surface is covered automatically.
+    Over the Streamable HTTP transport every JSON-RPC message is a ``POST``
+    to the mount path itself (e.g. ``/mcp``, ``/mcp_admin``), so each
+    logical tool call produces access lines whose URL carries no signal —
+    the tool name lives in the request body, and
+    ``_LoggingFastMCP.call_tool`` already surfaces it. The suppressed paths
+    are derived from the canonical mount list (``_MCP_MOUNT_PATHS``) so a
+    newly mounted surface is covered automatically. Matching is
+    exact-path-or-query, never bare prefix: the mount path must not shadow
+    an unrelated route that merely starts with the same characters, and a
+    stray request to a subpath (a 404 worth seeing) stays visible.
     """
 
     def filter(self, record: _logging.LogRecord) -> bool:
@@ -81,7 +82,7 @@ class _DropMcpMessagesAccessLogs(_logging.Filter):
         path = args[2]
         if not isinstance(path, str):
             return True
-        return not path.startswith(_MCP_MESSAGE_PREFIXES)
+        return not any(path == m or path.startswith(m + "?") for m in _MCP_MOUNT_PATHS)
 
 
 # Uvicorn's default log_config with a timestamp prefix added, matching the
@@ -92,7 +93,7 @@ UVICORN_LOG_CONFIG: dict = {
     "version": 1,
     "disable_existing_loggers": False,
     "filters": {
-        "drop_mcp_messages": {"()": "sage.__main__._DropMcpMessagesAccessLogs"},
+        "drop_mcp_access": {"()": "sage.__main__._DropMcpAccessLogs"},
     },
     "formatters": {
         "default": {
@@ -124,7 +125,7 @@ UVICORN_LOG_CONFIG: dict = {
         "uvicorn.error": {"level": "INFO"},
         "uvicorn.access": {
             "handlers": ["access"],
-            "filters": ["drop_mcp_messages"],
+            "filters": ["drop_mcp_access"],
             "level": "INFO",
             "propagate": False,
         },

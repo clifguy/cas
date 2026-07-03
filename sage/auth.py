@@ -2,7 +2,7 @@
 
 Binds the SAGE process as an OAuth resource server (CAS-ADR-042): a single
 bearer-token validator enforces identical authorization on the REST API and
-the HTTP/SSE MCP mounts, so a caller is authorized uniformly regardless of
+the HTTP MCP mounts, so a caller is authorized uniformly regardless of
 surface. The validator is selected by the deployment profile's auth seam --
 a pass-through validator where the deployment authenticates no one (the
 on-box default), an Entra JWT validator where it does.
@@ -304,7 +304,7 @@ class AuthMiddleware:
     """Enforce the resolved token validator across every HTTP surface.
 
     A pure-ASGI middleware on the parent application so the one validator
-    guards the REST routes and the mounted HTTP/SSE MCP sub-apps identically
+    guards the REST routes and the HTTP MCP transport routes identically
     -- authorization is uniform regardless of surface. Exempt paths (the
     liveness probe) are answered without a token. A rejected request is
     answered here with the validator's status and ``WWW-Authenticate``

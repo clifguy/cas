@@ -38,31 +38,29 @@ if [ -z "${SAGE_APP_ID}" ]; then
   SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
-# Six identifier URIs, declared together (the flag is a declarative full-set
-# replace, so a re-run keeps all of them): the api://<app-id> audience URI the
-# BFF OBO exchange and the deploy preflight token target, the https
-# custom-domain identity the MCP edge advertises as its scope prefix, the two
-# MCP-mount forms of that identity, and the two mounts' SSE transport-endpoint
-# forms. The https forms exist because an MCP client sends an RFC 8707
-# resource parameter with /authorize and Entra rejects the request
+# Four identifier URIs, declared together (the flag is a declarative full-set
+# replace, so a re-run keeps exactly these -- and re-running after a set
+# change IS the live-tenant trim): the api://<app-id> audience URI the BFF OBO
+# exchange and the deploy preflight token target, the https custom-domain
+# identity the MCP edge advertises as its scope prefix, and the two MCP-mount
+# forms of that identity. The https forms exist because an MCP client sends an
+# RFC 8707 resource parameter with /authorize and Entra rejects the request
 # (AADSTS9010010, invalid_target) unless that parameter IS a registered
 # identifier URI of the scope's app -- same-origin is not enough, matched
-# byte-for-byte, verified live. What a client sends varies by implementation
-# (the connector/server URL, its /sse transport endpoint, or the PRM-advertised
-# resource), so every URI a client could canonicalize from is registered.
-# Trailing-slash forms canNOT be registered (Entra rejects them as invalid
-# aliases), which is why the edge's protected-resource metadata must advertise
-# path-carrying mount URIs -- a bare origin normalizes to https://<host>/ in a
-# client's URL serializer and can never match. Scope prefix and resource may be
-# different identifier URIs of the same app; only same-app resolution is
-# required. The mount and transport paths are protocol constants of the SAGE
-# MCP surface (sage.mcp_server / sage.mcp_server_admin over SSE), not
-# per-tenant coordinates. The https identifier URIs require their host under a
-# tenant-verified domain; az fails loudly here if it is not.
+# byte-for-byte, verified live. The mount forms are the resources clients
+# actually request: each mount's protected-resource metadata steers its
+# clients to the path-carrying mount URI, because trailing-slash forms canNOT
+# be registered (Entra rejects them as invalid aliases) and a bare origin
+# normalizes to https://<host>/ in a client's URL serializer and can never
+# match. Scope prefix and resource may be different identifier URIs of the
+# same app; only same-app resolution is required. The mount paths are protocol
+# constants of the SAGE MCP Streamable HTTP surface (each mount serves
+# JSON-RPC POSTs at its own path), not per-tenant coordinates. The https
+# identifier URIs require their host under a tenant-verified domain; az fails
+# loudly here if it is not.
 az ad app update --id "${SAGE_APP_ID}" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin/sse"
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
 az ad sp create --id "${SAGE_APP_ID}" 2>/dev/null || true
 
 # Expose the single delegated scope and app role that authorize both the REST

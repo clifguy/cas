@@ -9,8 +9,8 @@ valid token passes through. Enabled-auth wiring uses a stub validator (the
 JWT logic itself is covered by test_auth_validator); the stub is installed
 through the same factory monkeypatch seam the binding honors.
 
-No-token requests to the MCP mounts are answered by the middleware before the
-SSE sub-app runs, so these never open a streaming connection.
+No-token requests to the MCP mounts are answered by the middleware before
+the transport route runs, so these never reach the MCP session layer.
 """
 
 from __future__ import annotations

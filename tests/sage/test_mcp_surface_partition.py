@@ -2,7 +2,7 @@
 
 Gates the CAS-ADR-034 / CAS-ADR-029 split of the SAGE MCP tool surface
 across two stdio servers and (per CAS-ADR-034 v7) the matching pair of
-HTTP/SSE mounts on the SAGE app — ``/mcp`` (ordinary) and ``/mcp_admin``
+Streamable HTTP mounts on the SAGE app — ``/mcp`` (ordinary) and ``/mcp_admin``
 (maintenance), both built by the same partition factory in the one
 uvicorn process:
 
@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi import FastAPI
-from starlette.routing import Mount
+from fastapi.routing import APIRoute
+from starlette.routing import Mount, Route
 
 import sage.mcp_server as mcp_server
 import sage.mcp_server_admin as mcp_server_admin
@@ -35,7 +36,7 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.app import _GracefulSSEMiddleware, _initialize_services, create_app
+from sage.app import _initialize_services, create_app
 
 EXPECTED_SAGE = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage"}
 EXPECTED_ADMIN = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage_admin"}
@@ -109,7 +110,7 @@ def test_partition_is_disjoint_and_exhaustive():
 
 
 def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
-    """The ``/mcp`` HTTP/SSE mount advertises exactly the ordinary roster.
+    """The ``/mcp`` HTTP mount advertises exactly the ordinary roster.
 
     Revises the prior full-surface assertion: per CAS-ADR-034 v7 the HTTP
     transport is partitioned like the stdio servers, so ``/mcp`` carries the
@@ -124,7 +125,7 @@ def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
 
 
 def test_mcp_admin_mount_advertises_maintenance_surface_only(minimal_config):
-    """The ``/mcp_admin`` HTTP/SSE mount advertises exactly the maintenance roster."""
+    """The ``/mcp_admin`` HTTP mount advertises exactly the maintenance roster."""
     app = create_app(config=minimal_config)
     names = _mounted_names(app, "/mcp_admin")
     assert names == EXPECTED_ADMIN
@@ -134,12 +135,48 @@ def test_mcp_admin_mount_advertises_maintenance_surface_only(minimal_config):
     assert not dup, f"read-spine tool(s) duplicated on /mcp_admin: {sorted(dup)}"
 
 
-def test_both_mcp_mounts_present_in_one_app(minimal_config):
-    """One uvicorn process/app serves both partitioned mounts (CAS-ADR-034 v7)."""
+def test_both_mcp_mounts_are_exact_path_routes(minimal_config):
+    """One uvicorn process/app serves both partitioned mounts as exact-path
+    raw Starlette routes (CAS-ADR-034 v7).
+
+    A ``Mount`` at these paths is the structural form of the trailing-slash
+    307 regression: its path regex requires ``/mcp/...``, so an exact
+    ``POST /mcp`` — the byte-exact resource URI the edge advertises — falls
+    through to the parent router's redirect. The transport must hang off an
+    exact-path ``Route`` (raw ASGI, not an ``APIRoute``) instead.
+    """
     app = create_app(config=minimal_config)
-    mounted_paths = {route.path for route in app.routes if isinstance(route, Mount)}
-    assert {"/mcp", "/mcp_admin"} <= mounted_paths
+    for mount, _surface in (("/mcp", "sage"), ("/mcp_admin", "sage_admin")):
+        matches = [
+            route
+            for route in app.routes
+            if isinstance(route, Route) and not isinstance(route, APIRoute) and route.path == mount
+        ]
+        assert len(matches) == 1, (
+            f"expected exactly one raw exact-path Route at {mount}, found {len(matches)}"
+        )
+        mounted = [
+            route for route in app.routes if isinstance(route, Mount) and route.path == mount
+        ]
+        assert not mounted, f"a Mount at {mount} reintroduces the trailing-slash redirect"
     assert set(app.state.mcp_mounts) == {"/mcp", "/mcp_admin"}
+
+
+@pytest.mark.parametrize(("mount", "surface"), [("/mcp", "sage"), ("/mcp_admin", "sage_admin")])
+def test_mount_transport_settings_pinned(minimal_config, mount, surface):
+    """The HTTP-mounted servers run the stateless, JSON-response transport.
+
+    ``stateless_http=True`` because the cloud runtime scales out with no
+    session affinity (in-memory per-session transports would break on the
+    second replica); ``json_response=True`` so tool responses are plain JSON
+    bodies rather than SSE frames an intermediary may buffer. The path
+    setting is the per-mount coordinate the exact-path route is built from.
+    """
+    app = create_app(config=minimal_config)
+    server = app.state.mcp_mounts[mount]
+    assert server.settings.stateless_http is True
+    assert server.settings.json_response is True
+    assert server.settings.streamable_http_path == mount
 
 
 async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
@@ -169,20 +206,6 @@ async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
         mcp_server._vaults.pop(minimal_config.vault.id, None)
 
 
-def test_graceful_sse_middleware_applied_to_both_mounts(minimal_config):
-    """``_GracefulSSEMiddleware`` wraps both partitioned SSE mounts."""
-    app = create_app(config=minimal_config)
-    routes = {
-        route.path: route
-        for route in app.routes
-        if isinstance(route, Mount) and route.path in {"/mcp", "/mcp_admin"}
-    }
-    assert set(routes) == {"/mcp", "/mcp_admin"}
-    for path, route in routes.items():
-        applied = any(mw.cls is _GracefulSSEMiddleware for mw in route.app.user_middleware)
-        assert applied, f"_GracefulSSEMiddleware not applied to {path}"
-
-
 def test_sage_admin_entry_module_builds_admin_surface():
     """The ``sage.mcp_server_admin`` entry module is wired to the maintenance partition."""
     assert mcp_server_admin.SURFACE == "sage_admin"
@@ -196,7 +219,7 @@ def test_partitioned_server_disables_dns_rebinding_host_validation(surface):
 
     The MCP SDK auto-enables DNS-rebinding protection whenever the server's bind
     host is a loopback value (the default); its allow-list then rejects every
-    non-loopback Host with HTTP 421 on the SSE handshake -- i.e. every request
+    non-loopback Host with HTTP 421 on the handshake -- i.e. every request
     that arrives through a proxy. The public-edge boundary is the JWT/identity
     layer (CAS-ADR-034), not a browser-localhost threat model, so SAGE disables
     the SDK check rather than letting it 421 legitimate proxied traffic. This

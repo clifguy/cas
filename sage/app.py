@@ -10,13 +10,10 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qs
 
-from anyio import ClosedResourceError
 from fastapi import FastAPI
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.backend.auth.router import router as auth_router
 from app.backend.router import router as app_backend_router
@@ -49,81 +46,6 @@ from sage.services.vault_registry import VaultRegistryService
 from sage.startup_banner import render_startup_banner
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# ASGI middleware: suppress double-response errors during shutdown
-# ---------------------------------------------------------------------------
-
-
-def _extract_session_id(scope: Scope) -> str | None:
-    """Best-effort pull of the SSE ``session_id`` query parameter from an ASGI scope."""
-    raw = scope.get("query_string", b"")
-    if not raw:
-        return None
-    try:
-        params = parse_qs(raw.decode("ascii"))
-    except UnicodeDecodeError:
-        return None
-    values = params.get("session_id")
-    if not values:
-        return None
-    return values[0]
-
-
-class _GracefulSSEMiddleware:
-    """Quiet two SSE transport edge cases that surface as noisy tracebacks.
-
-    1. **Server shutdown.** When uvicorn cancels an active SSE connection,
-       the SSE transport has already sent response headers; the Starlette
-       exception-handling middleware then tries to send an error response,
-       producing a second ``http.response.start`` that uvicorn rejects with
-       a ``RuntimeError``. This wrapper silently drops the redundant start
-       message so the shutdown traceback is avoided.
-
-    2. **Client cancellation.** When an MCP client cancels a long-running
-       ``CallToolRequest`` (default 60s client timeout), the mcp SDK's SSE
-       writer raises ``anyio.ClosedResourceError`` from
-       ``mcp/server/sse.py`` when it tries to send the deferred response
-       to the now-closed memory stream. The cancellation is a normal
-       outcome, so we log one INFO line and swallow the exception rather
-       than emitting an ERROR-level ASGI traceback.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        response_started = False
-
-        async def _safe_send(message: dict) -> None:
-            nonlocal response_started
-            if message["type"] == "http.response.start":
-                if response_started:
-                    logger.debug("Suppressed duplicate http.response.start during shutdown")
-                    return
-                response_started = True
-            await send(message)
-
-        try:
-            await self.app(scope, receive, _safe_send)
-        except ClosedResourceError:
-            session_id = _extract_session_id(scope)
-            if session_id:
-                logger.info(
-                    "SSE writer closed by client cancellation (session_id=%s)",
-                    session_id,
-                )
-            else:
-                logger.info("SSE writer closed by client cancellation")
-        except RuntimeError as exc:
-            if "http.response.start" not in str(exc):
-                raise
-            logger.debug("Suppressed SSE shutdown RuntimeError: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -231,41 +153,47 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     app.state.utilities_service = services.utilities_service
 
 
-#: Canonical HTTP/SSE MCP mount points as ``(mount_path, surface)`` pairs.
+#: Canonical HTTP MCP mount points as ``(mount_path, surface)`` pairs.
 #: Single source of truth for both the mounter below and the
-#: ``uvicorn.access`` message-endpoint suppression filter in ``sage.__main__``:
+#: ``uvicorn.access`` suppression filter in ``sage.__main__``:
 #: a mount added here is covered by both without a second edit.
 MCP_HTTP_MOUNTS: tuple[tuple[str, str], ...] = (("/mcp", "sage"), ("/mcp_admin", "sage_admin"))
 
 
 def _mount_partitioned_mcp(app: FastAPI) -> None:
-    """Mount the ordinary and maintenance MCP surfaces as SSE sub-apps.
+    """Serve the ordinary and maintenance MCP surfaces over Streamable HTTP.
 
     Realizes the CAS-ADR-034 ordinary/maintenance partition over the
-    HTTP/SSE transport: ``/mcp`` carries the ``sage`` (ordinary) roster and
-    ``/mcp_admin`` the ``sage_admin`` (``admin_*``) roster. Both are built by
-    ``build_partitioned_server`` and run in this one uvicorn process, sharing
-    the app-populated ``_vaults`` registry and the single stack abstraction
-    provider (CAS-ADR-030) — partitioning the transport adds no per-mount
-    vault re-initialization and no second abstraction-model load. The full
-    surface is reached by connecting to both mounts.
+    Streamable HTTP transport: ``/mcp`` carries the ``sage`` (ordinary)
+    roster and ``/mcp_admin`` the ``sage_admin`` (``admin_*``) roster. Both
+    are built by ``build_partitioned_server`` and run in this one uvicorn
+    process, sharing the app-populated ``_vaults`` registry and the single
+    stack abstraction provider (CAS-ADR-030) — partitioning the transport
+    adds no per-mount vault re-initialization and no second
+    abstraction-model load. The full surface is reached by connecting to
+    both mounts.
 
-    Each SSE app is mounted as a native Starlette sub-application so FastAPI
-    propagates lifespan and request scope, and ``_GracefulSSEMiddleware`` is
-    added to each sub-app's own middleware stack (rather than wrapping it
-    externally, which would obscure the app type and interfere with MCP
-    session initialization). The partitioned server for each path is recorded
-    on ``app.state.mcp_mounts`` (mirroring ``app.state.vault_registry``) so
-    the wiring is inspectable.
+    A standards MCP client POSTs its JSON-RPC directly to the mount URL —
+    the byte-exact, slash-less path the edge's protected-resource metadata
+    advertises as the OAuth resource. A Starlette ``Mount`` can never match
+    that exact path (its regex requires the trailing slash), so mounting a
+    sub-application would answer ``307`` via the parent router's
+    ``redirect_slashes`` — a redirect MCP clients do not follow on POST.
+    Each transport therefore hangs off an exact-path ``Route``: the server's
+    ``streamable_http_path`` is set to the full mount path and the routes of
+    the SDK-built transport app are appended to the parent router. The
+    session manager each route requires is started by the app lifespan (a
+    sub-application's own lifespan never runs under FastAPI). The
+    partitioned server for each path is recorded on ``app.state.mcp_mounts``
+    (mirroring ``app.state.vault_registry``) so the wiring is inspectable.
     """
     from sage.mcp_server import build_partitioned_server
 
     mounts: dict[str, object] = {}
     for path, surface in MCP_HTTP_MOUNTS:
         server = build_partitioned_server(surface)
-        sse_app = server.sse_app()
-        sse_app.add_middleware(_GracefulSSEMiddleware)
-        app.mount(path, sse_app)
+        server.settings.streamable_http_path = path
+        app.router.routes.extend(server.streamable_http_app().routes)
         mounts[path] = server
     app.state.mcp_mounts = mounts
 
@@ -377,7 +305,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Use the MCP server's _vaults dict as the canonical registry so
-        # both the REST API and MCP SSE transport share the same services.
+        # both the REST API and MCP HTTP transport share the same services.
         from sage.mcp_init import (
             resolve_stack_abstraction_provider,
             resolve_stack_vault_source_store,
@@ -390,97 +318,114 @@ def create_app(
         # VaultConfigService instances pick up the same singleton.
         _ensure_registry_service(app)
 
-        # CAS-ADR-042: publish the stack-wide config resolved at construction
-        # and resolve the active deployment profile's abstraction binding once;
-        # thread it through every per-vault initialize_services call. For the
-        # local profile the binding is the stack-wide provider built per
-        # CAS-ADR-030.
-        set_stack_config(stack_cfg)
-        stack_provider = resolve_stack_abstraction_provider(stack_cfg)
+        # Start each MCP mount's Streamable HTTP session manager. The
+        # transport routes were appended at construction time, but their
+        # task groups only exist inside session_manager.run() — and FastAPI
+        # never runs a sub-application's lifespan, so the parent lifespan
+        # owns them. Teardown order matters: the stack is closed in the
+        # finally block BEFORE vault storage closes, so an in-flight MCP
+        # task is cancelled while the services it holds are still alive.
+        mcp_session_stack = AsyncExitStack()
+        for server in getattr(app.state, "mcp_mounts", {}).values():
+            await mcp_session_stack.enter_async_context(server.session_manager.run())
+        try:
+            # CAS-ADR-042: publish the stack-wide config resolved at construction
+            # and resolve the active deployment profile's abstraction binding once;
+            # thread it through every per-vault initialize_services call. For the
+            # local profile the binding is the stack-wide provider built per
+            # CAS-ADR-030.
+            set_stack_config(stack_cfg)
+            stack_provider = resolve_stack_abstraction_provider(stack_cfg)
 
-        init_overrides: dict = {"abstraction_provider": stack_provider}
-        if content_store_factory is not None:
-            init_overrides["content_store_factory"] = content_store_factory
+            init_overrides: dict = {"abstraction_provider": stack_provider}
+            if content_store_factory is not None:
+                init_overrides["content_store_factory"] = content_store_factory
 
-        # Backend-for-frontend auth, profile-gated on configuration presence: the
-        # interactive sign-in, the delegated downstream-token acquisition, and the
-        # externalized session store activate only when the identity-provider
-        # coordinates are supplied through the environment. When absent, the
-        # backend runs without auth and the on-box profile is unaffected.
-        await _initialize_bff_auth(app, stack_cfg)
+            # Backend-for-frontend auth, profile-gated on configuration presence: the
+            # interactive sign-in, the delegated downstream-token acquisition, and the
+            # externalized session store activate only when the identity-provider
+            # coordinates are supplied through the environment. When absent, the
+            # backend runs without auth and the on-box profile is unaffected.
+            await _initialize_bff_auth(app, stack_cfg)
 
-        # Vaults that fail to load are logged-and-dropped below; collect them
-        # here too so the end-of-startup banner can report the skipped set.
-        skipped_vaults: list[tuple[str, str]] = []
+            # Vaults that fail to load are logged-and-dropped below; collect them
+            # here too so the end-of-startup banner can report the skipped set.
+            skipped_vaults: list[tuple[str, str]] = []
 
-        if vault_root is not None:
-            # CAS-ADR-043: discovery and config load go through the active
-            # profile's vault-source store. The filesystem binding yields each
-            # config's filesystem path, threaded into initialize_services
-            # unchanged; a malformed vault is logged-and-dropped per-vault.
-            vault_source_store = resolve_stack_vault_source_store(stack_cfg, vault_root=vault_root)
-            for discovered in vault_source_store.discover():
+            if vault_root is not None:
+                # CAS-ADR-043: discovery and config load go through the active
+                # profile's vault-source store. The filesystem binding yields each
+                # config's filesystem path, threaded into initialize_services
+                # unchanged; a malformed vault is logged-and-dropped per-vault.
+                vault_source_store = resolve_stack_vault_source_store(
+                    stack_cfg, vault_root=vault_root
+                )
+                for discovered in vault_source_store.discover():
+                    try:
+                        vc = vault_source_store.load_config(discovered)
+                        await _initialize_vault(
+                            app, vc, config_path=discovered.config_path, **init_overrides
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Skipping vault at %s: failed to load (%s)", discovered.config_path, exc
+                        )
+                        skipped_vaults.append(
+                            (str(discovered.config_path), f"{type(exc).__name__}: {exc}")
+                        )
+            elif configs is not None:
+                for vc in configs:
+                    await _initialize_vault(app, vc, **init_overrides)
+            elif config is not None:
+                await _initialize_vault(app, config, **init_overrides)
+            else:
+                # No configs = empty vault registry (valid per BE-002)
+                pass
+
+            # Re-derive abstraction work left pending by a prior crash or a stopped
+            # worker, across every registered vault. The in-memory queue is not
+            # itself durable; pipeline_status in the graph store is the durable
+            # record the worker reconstructs from. Best-effort per vault.
+            for vault_id, services in list(app.state.vault_registry.items()):
                 try:
-                    vc = vault_source_store.load_config(discovered)
-                    await _initialize_vault(
-                        app, vc, config_path=discovered.config_path, **init_overrides
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Skipping vault at %s: failed to load (%s)", discovered.config_path, exc
-                    )
-                    skipped_vaults.append(
-                        (str(discovered.config_path), f"{type(exc).__name__}: {exc}")
-                    )
-        elif configs is not None:
-            for vc in configs:
-                await _initialize_vault(app, vc, **init_overrides)
-        elif config is not None:
-            await _initialize_vault(app, config, **init_overrides)
-        else:
-            # No configs = empty vault registry (valid per BE-002)
-            pass
+                    recovered = await services.ingestion_service.recover_incomplete_documents()
+                    if recovered:
+                        logger.info(
+                            "Recovered %d incomplete document(s) for vault %s", recovered, vault_id
+                        )
+                except Exception:
+                    logger.exception("Abstraction recovery failed for vault %s", vault_id)
 
-        # Re-derive abstraction work left pending by a prior crash or a stopped
-        # worker, across every registered vault. The in-memory queue is not
-        # itself durable; pipeline_status in the graph store is the durable
-        # record the worker reconstructs from. Best-effort per vault.
-        for vault_id, services in list(app.state.vault_registry.items()):
-            try:
-                recovered = await services.ingestion_service.recover_incomplete_documents()
-                if recovered:
-                    logger.info(
-                        "Recovered %d incomplete document(s) for vault %s", recovered, vault_id
-                    )
-            except Exception:
-                logger.exception("Abstraction recovery failed for vault %s", vault_id)
+            logger.info(
+                "%s",
+                render_startup_banner(
+                    build_identity=BUILD_IDENTITY,
+                    version=RELEASE_VERSION,
+                    python_version=sys.version.split()[0],
+                    pid=os.getpid(),
+                    vault_root=vault_root,
+                    loaded_vault_ids=sorted(app.state.vault_registry),
+                    skipped_vaults=skipped_vaults,
+                    mcp_mounts=sorted(getattr(app.state, "mcp_mounts", {})),
+                ),
+            )
 
-        logger.info(
-            "%s",
-            render_startup_banner(
-                build_identity=BUILD_IDENTITY,
-                version=RELEASE_VERSION,
-                python_version=sys.version.split()[0],
-                pid=os.getpid(),
-                vault_root=vault_root,
-                loaded_vault_ids=sorted(app.state.vault_registry),
-                skipped_vaults=skipped_vaults,
-                mcp_mounts=sorted(getattr(app.state, "mcp_mounts", {})),
-            ),
-        )
+            yield
 
-        yield
-
-        for services in app.state.vault_registry.values():
-            await services.ingestion_service.stop_worker()
-            services.close_timing()
-            await services.close_storage()
-        app.state.vault_registry.clear()
-        bff_auth = getattr(app.state, "bff_auth", None)
-        if bff_auth is not None:
-            await bff_auth.store.close()
-        app.state.bff_auth = None
-        set_stack_config(None)
+        finally:
+            # Unwind the MCP session managers FIRST: an in-flight MCP task is
+            # cancelled while the vault services it holds are still open.
+            await mcp_session_stack.aclose()
+            for services in app.state.vault_registry.values():
+                await services.ingestion_service.stop_worker()
+                services.close_timing()
+                await services.close_storage()
+            app.state.vault_registry.clear()
+            bff_auth = getattr(app.state, "bff_auth", None)
+            if bff_auth is not None:
+                await bff_auth.store.close()
+            app.state.bff_auth = None
+            set_stack_config(None)
 
     app = FastAPI(
         title="SAGE Core API",
@@ -528,8 +473,8 @@ def create_app(
 
     app.add_api_route("/health", _health, methods=["GET"], include_in_schema=False)
 
-    # Mount the partitioned MCP surfaces (SSE transport) for external
-    # clients (e.g. Cowork). Per CAS-ADR-034 v7 the HTTP transport is
+    # Serve the partitioned MCP surfaces (Streamable HTTP transport) for
+    # external clients. Per CAS-ADR-034 v7 the HTTP transport is
     # partitioned like the stdio servers: /mcp = ordinary, /mcp_admin =
     # maintenance. Full surface = connect to both.
     _mount_partitioned_mcp(app)

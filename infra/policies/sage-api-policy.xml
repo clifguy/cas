@@ -11,7 +11,11 @@
             catch-all operation, so one API-level <cors> covers all paths.
             allow-credentials is false because MCP clients authenticate with a
             bearer token in the Authorization header, not cookies, so a wildcard
-            origin is valid.
+            origin is valid. The Mcp-* entries carry the Streamable HTTP
+            transport's protocol headers: a client sends Mcp-Session-Id and
+            MCP-Protocol-Version on every post-initialize request, and must be
+            able to read Mcp-Session-Id off the initialize response
+            (expose-headers) when the server mints one.
         -->
         <cors allow-credentials="false">
             <allowed-origins>
@@ -25,7 +29,12 @@
             <allowed-headers>
                 <header>Authorization</header>
                 <header>Content-Type</header>
+                <header>Mcp-Session-Id</header>
+                <header>MCP-Protocol-Version</header>
             </allowed-headers>
+            <expose-headers>
+                <header>Mcp-Session-Id</header>
+            </expose-headers>
         </cors>
         <!--
             SAGE public-edge default policy for the CAS cloud deployment profile

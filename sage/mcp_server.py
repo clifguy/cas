@@ -369,7 +369,7 @@ def _removed_tool_envelope(name: str) -> Sequence[ContentBlock]:
 # The MCP SDK's FastMCP auto-enables DNS-rebinding Host validation whenever the
 # bind host is a loopback value (its default); the resulting allow-list
 # (127.0.0.1 / localhost / ::1 only) rejects every non-loopback Host with HTTP
-# 421 on the SSE handshake -- i.e. every request that reaches an HTTP-mounted
+# 421 on the handshake -- i.e. every request that reaches an HTTP-mounted
 # surface through a proxy. SAGE's public edge authenticates at the JWT/identity
 # layer (CAS-ADR-034); DNS-rebinding is a browser-localhost threat model that
 # does not apply to that server-to-server path, so the SDK check is disabled
@@ -381,8 +381,8 @@ class _LoggingFastMCP(FastMCP):
     """FastMCP subclass that distinguishes tool outcomes in the console log.
 
     The underlying uvicorn access log shows every tool call as
-    `POST /mcp/messages/?session_id=...` — uninformative because the tool
-    name lives in the JSON-RPC body, not the URL. Overriding the single
+    `POST /mcp` — uninformative because the tool name lives in the
+    JSON-RPC body, not the URL. Overriding the single
     dispatch point (`FastMCP.call_tool`, wired in `_setup_handlers`)
     surfaces the tool name in the console without touching individual
     `@mcp.tool()` registrations. Three outcomes get three log shapes:
@@ -530,14 +530,15 @@ bulk_ingest_document = _app_tools["bulk_ingest_document"]
 # The SAGE MCP surface is split into two: ``sage`` (the ordinary surface,
 # always enabled) and ``sage_admin`` (the maintenance surface, opt-in
 # additive). Per CAS-ADR-034 v7 the partition is realized over both
-# transports — two stdio servers, and two HTTP/SSE mounts on the SAGE app
-# (``/mcp`` = ordinary, ``/mcp_admin`` = maintenance; see ``sage/app.py``).
-# Server/mount selection *is* the role declaration. Surface assignment is
-# derived purely from each tool name's first segment per CAS-ADR-029's
-# prefix-encodes-surface rule — there is no per-tool override table. The
-# module-level ``mcp`` above remains the full, unpartitioned surface for
-# standalone use (see ``mount_on_app``); the partitioned servers are built
-# by ``build_partitioned_server`` below.
+# transports — two stdio servers, and two Streamable HTTP mounts on the
+# SAGE app (``/mcp`` = ordinary, ``/mcp_admin`` = maintenance; see
+# ``sage/app.py``). Server/mount selection *is* the role declaration.
+# Surface assignment is derived purely from each tool name's first segment
+# per CAS-ADR-029's prefix-encodes-surface rule — there is no per-tool
+# override table. The module-level ``mcp`` above remains the full,
+# unpartitioned surface whose tool functions are re-exported for direct
+# import; the partitioned servers are built by ``build_partitioned_server``
+# below.
 
 
 def _surface_of(tool_name: str) -> str:
@@ -551,7 +552,7 @@ def _surface_of(tool_name: str) -> str:
 
 
 def build_partitioned_server(surface: str) -> _LoggingFastMCP:
-    """Build a stdio MCP server registering only the tools for ``surface``.
+    """Build an MCP server registering only the tools for ``surface``.
 
     Both servers share the underlying tool-implementation layer
     (``register_sage_tools`` / ``register_app_tools``). The partition is
@@ -560,8 +561,23 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
     (CAS-ADR-029) with no per-tool override table. The maintenance server
     therefore does not duplicate the shared read spine, which carries no
     ``admin_`` prefix and so resolves to ``sage``.
+
+    The server carries the Streamable HTTP transport settings its HTTP
+    mounting requires; stdio use never reads them. ``stateless_http=True``
+    because the cloud runtime scales out with no session affinity — an
+    in-memory per-session transport would strand a session on its minting
+    replica. ``json_response=True`` so a tool response is a plain JSON body
+    rather than an SSE-framed stream an intermediary may buffer. The
+    per-mount ``streamable_http_path`` is a mounting coordinate, not a
+    surface property, so it is set by the mounter (``sage/app.py``).
     """
-    server = _LoggingFastMCP(surface, lifespan=_lifespan, instructions=SERVER_INSTRUCTIONS)
+    server = _LoggingFastMCP(
+        surface,
+        lifespan=_lifespan,
+        instructions=SERVER_INSTRUCTIONS,
+        stateless_http=True,
+        json_response=True,
+    )
     server._mcp_server.version = VERSION_WITH_BUILD
     sage_tools = register_sage_tools(
         server, _get_vault, _serialize, _error_response, _get_vaults, get_vault_registry_service
@@ -571,30 +587,6 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
         if _surface_of(name) != surface:
             server.remove_tool(name)
     return server
-
-
-# ---------------------------------------------------------------------------
-# Mounting on FastAPI (shared-process mode)
-# ---------------------------------------------------------------------------
-
-
-def mount_on_app(
-    app: "FastAPI",  # noqa: F821 -- imported only at call site
-    path: str = "/mcp",
-) -> None:
-    """Mount the full-surface MCP server on an existing FastAPI application.
-
-    Mounts the unpartitioned ``mcp`` singleton (the ordinary and maintenance
-    rosters combined). The SAGE app does not use this — it mounts the two
-    partitioned surfaces directly (CAS-ADR-034 v7; see
-    ``_mount_partitioned_mcp`` in ``sage/app.py``). This helper remains for
-    standalone full-surface mounting.
-
-    The caller's lifespan should populate the module-level ``_vaults``
-    dict directly (via ``sage.mcp_server._vaults``) so the MCP tools
-    and the FastAPI routes share the same SAGEServices instances.
-    """
-    app.mount(path, mcp.sse_app())
 
 
 # ---------------------------------------------------------------------------

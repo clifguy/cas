@@ -251,7 +251,7 @@ def _write_chain_probe_stub(tmp_path: Path, output: str) -> str:
 
 def _write_probe_stub(tmp_path: Path, verdict: str, exit_code: int) -> str:
     """An MCP-probe seam echoing a fixed verdict line and exiting ``exit_code`` --
-    standing in for ``mcp_preflight_probe.py`` against a live SSE transport, so the
+    standing in for ``mcp_preflight_probe.py`` against a live MCP transport, so the
     bash check's control logic (discovery-200 + unauth-401) is exercised offline.
     The probe's own protocol is proven separately in test_mcp_preflight_probe.py.
     """

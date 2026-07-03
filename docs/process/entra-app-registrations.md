@@ -74,11 +74,11 @@ You will also choose placeholders that downstream work fixes concretely:
 
 ## 1. SAGE resource-server registration
 
-Create (or reuse) the application, give it **six** identifier URIs — the
+Create (or reuse) the application, give it **four** identifier URIs — the
 `api://<SAGE_APP_ID>` audience URI, the `https://<SAGE_PUBLIC_HOSTNAME>`
-custom-domain identity, the two MCP-mount forms of that identity, and the two
-mounts' SSE transport-endpoint forms — and create its service principal. The
-lookup-then-create guard makes the step idempotent.
+custom-domain identity, and the two MCP-mount forms of that identity — and
+create its service principal. The lookup-then-create guard makes the step
+idempotent.
 
 ```bash
 SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
@@ -90,8 +90,7 @@ fi
 
 az ad app update --id "$SAGE_APP_ID" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin/sse"
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
 
@@ -102,10 +101,10 @@ The **https identities** exist for the MCP edge: the facade advertises
 client sends an RFC 8707 `resource` parameter with `/authorize`. Entra rejects
 the request (`AADSTS9010010`, `invalid_target`) unless that parameter **is a
 registered identifier URI** of the scope's app — same-origin is not enough; the
-match is **byte-for-byte**, verified live on cor-prod. What a client sends
-varies by implementation — the connector/server URL, its `/sse` transport
-endpoint, or the PRM-advertised `resource` — so every URI a client could
-canonicalize from is registered. Two hard-won facts shape this set:
+match is **byte-for-byte**, verified live on cor-prod. Each mount's
+path-inserted protected-resource metadata steers its clients to the
+path-carrying mount URI, so the mount forms are the resources clients actually
+request. Two hard-won facts shape this set:
 
 - **Trailing-slash forms cannot be registered** — Entra rejects them as invalid
   aliases (`Application alias 'https://…/' value is invalid`). A client that
@@ -123,16 +122,17 @@ canonicalize from is registered. Two hard-won facts shape this set:
 The client independently requires the advertised resource to match the server
 origin it connected to (RFC 9728), which is why the https identities derive
 from the custom domain rather than a made-up URI. `--identifier-uris` is a
-declarative full-set replace: declare all six together so a re-run cannot drop
-any. The https forms require their host under a tenant-verified domain; `az`
-fails loudly if it is not. Tokens are unaffected either way — a v2 access token
-carries the bare app-id GUID as its `aud` no matter which identifier form the
-scope used.
+declarative full-set replace: declare all four together so a re-run cannot drop
+any — and re-running the updated invocation is also how a *removed* URI (the
+retired SSE-transport endpoint forms) is trimmed from a live tenant. The https
+forms require their host under a tenant-verified domain; `az` fails loudly if
+it is not. Tokens are unaffected either way — a v2 access token carries the
+bare app-id GUID as its `aud` no matter which identifier form the scope used.
 
-> The mount and transport paths (`/mcp`, `/mcp_admin`, and their `/sse`
-> endpoints) are protocol constants of the SAGE MCP surface, mirrored from the
-> uvicorn mounts. Adding a new MCP mount means adding its identifier URIs here
-> and its path-inserted metadata operation at the APIM edge in the same change.
+> The mount paths (`/mcp`, `/mcp_admin`) are protocol constants of the SAGE
+> MCP Streamable HTTP surface, mirrored from the uvicorn mounts. Adding a new
+> MCP mount means adding its identifier URI here and its path-inserted
+> metadata operation at the APIM edge in the same change.
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and
