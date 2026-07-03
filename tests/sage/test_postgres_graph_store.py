@@ -370,3 +370,53 @@ async def test_c5d_concurrent_same_tier3_value_one_winner(postgres_graph_store):
     assert len(committed) == 1, results
     assert len(violations) == _N - 1, results
     assert await store.get_total_document_count() == 1
+
+
+# ---------------------------------------------------------------------------
+# C6: measured_byte_size -- live graph-store size (server)
+# ---------------------------------------------------------------------------
+
+
+async def test_measured_byte_size_grows_with_ingest(postgres_graph_store):
+    """The live relation-size stat grows as documents/edges are inserted."""
+    store = postgres_graph_store
+    base = await store.measured_byte_size()
+
+    docs = [_doc(i) for i in range(50)]
+    for doc in docs:
+        await store.insert_document(doc)
+    for n, (a, b) in enumerate(zip(docs, docs[1:])):
+        await store.insert_edge(_edge(a.id, b.id, n))
+
+    assert await store.measured_byte_size() > base
+
+
+async def test_measured_byte_size_zero_when_tables_absent(pg_dsn):
+    """measured_byte_size returns 0 (not raise) against a schema with no graph tables.
+
+    to_regclass resolves each table name against the connection's search_path;
+    none exist in the bare schema, so every relation-size lookup is NULL and
+    COALESCE reports 0. Mirrors a freshly created, not-yet-bootstrapped vault --
+    the same trap covered for the content store's chunks table in
+    ``test_content_store_postgres.py::test_count_methods_zero_when_table_absent``.
+    """
+    import os
+
+    import psycopg
+
+    from sage.storage.postgres.pool import pool_from_conninfo
+
+    schema = "sage_test_empty_" + os.urandom(4).hex()
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        pool = pool_from_conninfo(pg_dsn, search_path=f"{schema},public")
+        await pool.open()
+        try:
+            store = PostgresGraphStore(pool)
+            assert await store.measured_byte_size() == 0
+        finally:
+            await pool.close()
+    finally:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

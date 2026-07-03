@@ -518,6 +518,9 @@ class StubGraphStore(GraphStore):
     async def list_pending_metadata_documents(self) -> list[Document]:
         raise self._unsupported("list_pending_metadata_documents")
 
+    async def measured_byte_size(self) -> int:
+        return 0
+
     # --- Traversal ---
     async def traverse(
         self, start_id: str, edge_type: str | None, direction: str, depth: int
