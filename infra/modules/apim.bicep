@@ -62,13 +62,16 @@ param sageCustomDomain string
 @description('Resource id of the user-assigned managed identity APIM uses to read the custom-domain certificate from Key Vault.')
 param sageIdentityId string
 
-@description('Client id of that managed identity — the Key Vault GET principal for the custom-domain certificate.')
+@description('Client id of that managed identity — the Key Vault GET principal for the custom-domain certificate, and the token principal for Application Insights telemetry ingestion.')
 param sageIdentityClientId string
+
+@description('Principal (object) id of that managed identity — granted the telemetry-ingestion role on the Application Insights resource.')
+param sageIdentityPrincipalId string
 
 @description('Versionless Key Vault secret URL of the wildcard certificate. Versionless so the binding follows certificate rotation.')
 param tlsCertSecretUri string
 
-@description('Resource id of the Log Analytics workspace the gateway routes its diagnostic logs and metrics to (the foundation workspace).')
+@description('Resource id of the Log Analytics workspace the gateway routes its platform metrics to; also backs the workspace-based Application Insights telemetry sink (the foundation workspace).')
 param logAnalyticsWorkspaceId string
 
 // The Consumption SKU is serverless and takes capacity 0; the classic and v2
@@ -120,30 +123,18 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
   }
 }
 
-// Route the gateway's own diagnostic logs and metrics to the foundation Log
-// Analytics workspace (CAS-ADR-042). GatewayLogs entries — request outcomes,
-// validate-jwt rejects, CORS preflight, backend latency — land in the workspace's
-// dedicated ApiManagementGatewayLogs table (logAnalyticsDestinationType:
-// 'Dedicated'), not the legacy consolidated AzureDiagnostics table. Retention is
-// the workspace's own concern (no per-setting retentionPolicy; the override is
-// deprecated for Log Analytics destinations).
-//
-// This resource only *routes* logs APIM has been told to emit. Azure Monitor
-// platform metrics emit automatically, but APIM's own gateway request/response
-// logs require the internal Diagnostic + Logger below to be emitted at all —
-// without them GatewayLogs is enabled-but-empty (metrics flow, logs do not).
+// Route the gateway's platform metrics to the foundation Log Analytics workspace
+// (CAS-ADR-042). Metrics only: the Consumption tier collects no resource logs at
+// all, so routing a log category here would be inert configuration that reads as
+// coverage — request-level observability rides the Application Insights plane
+// below instead, which every tier supports. Retention is the workspace's own
+// concern (no per-setting retentionPolicy; the override is deprecated for Log
+// Analytics destinations).
 resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'apim-to-log-analytics'
   scope: apimService
   properties: {
     workspaceId: logAnalyticsWorkspaceId
-    logAnalyticsDestinationType: 'Dedicated'
-    logs: [
-      {
-        category: 'GatewayLogs'
-        enabled: true
-      }
-    ]
     metrics: [
       {
         category: 'AllMetrics'
@@ -153,31 +144,69 @@ resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previ
   }
 }
 
-// The Azure-Monitor logger: the piece the ARM-level diagnosticSettings above
-// cannot substitute for. It tells APIM to emit its gateway request logs to Azure
-// Monitor — no Application Insights, so no instrumentation key, no credentials,
-// and no target resource id (those belong only to applicationInsights /
-// azureEventHub loggers). isBuffered is the default; named for the emit target.
-resource apimAzureMonitorLogger 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {
-  parent: apimService
-  name: 'azuremonitor'
+// The telemetry sink for the gateway's per-request logs: a workspace-based
+// Application Insights resource backed by the same foundation workspace, so
+// edge telemetry (AppRequests, AppDependencies, AppExceptions) is queryable
+// alongside every other signal. DisableLocalAuth forces Entra-authenticated
+// ingestion — with the instrumentation-key path open, telemetry could still
+// flow with a broken role grant, and a live check would prove nothing about
+// the managed-identity path.
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: 'appi-${environmentName}'
+  location: location
+  tags: tags
+  kind: 'web'
   properties: {
-    loggerType: 'azureMonitor'
-    isBuffered: true
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalyticsWorkspaceId
+    DisableLocalAuth: true
+  }
+}
+
+// Built-in Azure role: Monitoring Metrics Publisher (Entra-authenticated
+// telemetry ingestion). A fixed, public Azure constant — not an environment
+// identity coordinate.
+var monitoringMetricsPublisherRoleId = '3913510d-42f4-4e42-8a64-420c390d0215'
+
+// The gateway's managed identity may publish telemetry to the Application
+// Insights resource. Required because local (key-based) ingestion is disabled
+// above: without this grant, nothing can be ingested at all.
+resource appInsightsMetricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: appInsights
+  name: guid(appInsights.id, sageIdentityPrincipalId, monitoringMetricsPublisherRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringMetricsPublisherRoleId)
+    principalId: sageIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// The Application Insights logger. Credentials carry the sink's connection
+// string by symbolic reference (no literal, no instrumentation key) plus the
+// managed identity's client id — the gateway acquires its ingestion token via
+// Entra rather than presenting a key.
+resource apimAppInsightsLogger 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {
+  parent: apimService
+  name: 'appinsights'
+  properties: {
+    loggerType: 'applicationInsights'
+    credentials: {
+      connectionString: appInsights.properties.ConnectionString
+      identityClientId: sageIdentityClientId
+    }
   }
 }
 
 // The service-level diagnostic that binds that logger. Its instance name must be
-// the Azure-Monitor-reserved 'azuremonitor'. Sampling is pinned to 100% (with
-// alwaysLog: 'allErrors' so failures bypass sampling) so every gateway request
-// produces a log row — the guarantee the live ApiManagementGatewayLogs check
-// depends on. metrics / httpCorrelationProtocol are Application-Insights-only and
-// are omitted.
-resource apimAzureMonitorDiagnostic 'Microsoft.ApiManagement/service/diagnostics@2022-08-01' = {
+// the Application-Insights-reserved 'applicationinsights'. Sampling is pinned to
+// 100% (with alwaysLog: 'allErrors' so failures bypass sampling) so every gateway
+// request produces a telemetry row — the guarantee the live AppRequests check
+// depends on.
+resource apimAppInsightsDiagnostic 'Microsoft.ApiManagement/service/diagnostics@2022-08-01' = {
   parent: apimService
-  name: 'azuremonitor'
+  name: 'applicationinsights'
   properties: {
-    loggerId: apimAzureMonitorLogger.id
+    loggerId: apimAppInsightsLogger.id
     alwaysLog: 'allErrors'
     sampling: {
       samplingType: 'fixed'
