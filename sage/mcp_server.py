@@ -49,7 +49,6 @@ from pydantic import ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
-from sage._tool_rename_mapping import REMOVED_TOOLS, RENAME_MAPPING
 from sage.api.errors import _TYPED_ALIAS_CODES, SAGEError, translate_validation_error
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
@@ -337,35 +336,6 @@ def _unknown_parameter_envelope(
     return [TextContent(type="text", text=_json.dumps(envelope))]
 
 
-#: Calendar date by which the deprecation alias layer is scheduled
-#: for removal. The follow-up change that removes the alias rewrites
-#: this module and the ``RENAME_MAPPING`` / ``REMOVED_TOOLS`` entries
-#: in ``sage/_tool_rename_mapping.py``. The date is surfaced in the
-#: per-call deprecation log so callers see when their old-name usage
-#: stops working.
-_ALIAS_REMOVAL_DATE: str = "2026-06-15"
-
-
-def _removed_tool_envelope(name: str) -> Sequence[ContentBlock]:
-    """Build an envelope-shaped error for a removed tool name.
-
-    Returned in place of dispatch when an old-name call targets a tool
-    that was dropped from the MCP surface entirely (e.g. folded into
-    another tool, or retained as REST-only). The envelope matches the
-    production ``[TextContent(text=<json>)]`` shape so existing
-    envelope-error logging picks it up.
-    """
-    envelope = {
-        "error": "tool_removed",
-        "message": (
-            f"Tool {name!r} has been removed from the MCP surface. "
-            "See sage._tool_rename_mapping.REMOVED_TOOLS for the disposition "
-            "of each removed name."
-        ),
-    }
-    return [TextContent(type="text", text=_json.dumps(envelope))]
-
-
 # The MCP SDK's FastMCP auto-enables DNS-rebinding Host validation whenever the
 # bind host is a loopback value (its default); the resulting allow-list
 # (127.0.0.1 / localhost / ::1 only) rejects every non-loopback Host with HTTP
@@ -404,18 +374,6 @@ class _LoggingFastMCP(FastMCP):
     ``[TextContent(text=<json>)]`` wire shape) and falls through to the
     existing ``_envelope_error_kind`` warning path; the ToolError is
     NOT re-raised. Substrate decision: CAS-ADR-037.
-
-    Pre-dispatch alias resolution (transitional, removal date
-    ``_ALIAS_REMOVAL_DATE``):
-    Before dispatch, the requested ``name`` is checked against
-    ``RENAME_MAPPING`` (verb convention per CAS-ADR-033, prefix
-    simplification per CAS-ADR-034). An old name is rewritten to its
-    current target and a per-call deprecation WARNING is logged so
-    callers see both the old name, the current target, and the
-    scheduled removal date. Old names listed in ``REMOVED_TOOLS``
-    return an envelope-shaped ``tool_removed`` error rather than
-    dispatching. New names (the value side of ``RENAME_MAPPING``)
-    bypass the rewrite and dispatch directly.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -430,22 +388,6 @@ class _LoggingFastMCP(FastMCP):
         self, name: str, arguments: dict[str, Any]
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         logger = _logging.getLogger(__name__)
-        # Pre-dispatch alias resolution. Old names rewrite to their
-        # current target; removed names short-circuit to an envelope
-        # error. New names fall through unchanged.
-        if name in REMOVED_TOOLS:
-            logger.warning("mcp tool removed: %s (no replacement on MCP surface)", name)
-            return _removed_tool_envelope(name)
-        if name in RENAME_MAPPING:
-            target = RENAME_MAPPING[name]
-            logger.warning(
-                "mcp tool deprecated: %r is aliased to %r; "
-                "the alias is scheduled for removal on %s",
-                name,
-                target,
-                _ALIAS_REMOVAL_DATE,
-            )
-            name = target
         logger.info("mcp tool: %s", name)
         try:
             result = await super().call_tool(name, arguments)

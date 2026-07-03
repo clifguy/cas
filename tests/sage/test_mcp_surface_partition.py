@@ -14,7 +14,7 @@ uvicorn process:
 Server assignment is derived purely from each tool name's first segment
 (``admin_`` -> ``sage_admin``; everything else -> ``sage``). These tests
 cross-check the built partitions against ``SERVER_ASSIGNMENT`` in
-``sage/_tool_rename_mapping.py`` — the in-code transcription of the
+``sage/_tool_naming.py`` — the in-code transcription of the
 *SAGE MCP Tool Surface* steering-document registration map. That oracle is
 hand-maintained from the steering doc rather than re-derived from the
 prefix rule at runtime, so the comparison is a genuine cross-check, not a
@@ -30,7 +30,7 @@ from starlette.routing import Mount, Route
 
 import sage.mcp_server as mcp_server
 import sage.mcp_server_admin as mcp_server_admin
-from sage._tool_rename_mapping import SERVER_ASSIGNMENT
+from sage._tool_naming import SERVER_ASSIGNMENT
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,

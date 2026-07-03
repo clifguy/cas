@@ -1,4 +1,4 @@
-"""Transport-layer tests for the legacy_form envelope on update_metadata and bulk_update_metadata.
+"""Transport-layer tests for the legacy_form envelope on update_metadata.
 
 Pins the body-level `_check_legacy_patch_form` guard's reachability through
 the real FastMCP transport, not just the in-process path. The in-process
@@ -18,12 +18,14 @@ and surfaces the structured ``legacy_form`` envelope on real transport.
 The remaining three are regression guards. The ``tier3_metadata`` legacy
 form is a dict (key/value pairs whose keys are not ``{"set", "unset"}``),
 so the current ``dict | None`` signature already lets the legacy shape
-reach the body-level guard. ``bulk_update_metadata`` declares
-``items: list[dict]``, which makes the per-item shape opaque to FastMCP's
-argument validation, so the per-item legacy-form guard fires inside the
-body loop regardless of caller transport. These three are pinned so a
-future change to the body-level guard, the tool registration, or the
-``items`` shape can't silently regress what already works.
+reach the body-level guard. ``update_metadata`` declares
+``items: list[dict]`` (CAS-ADR-029 plural-noun shape), which makes the
+per-item shape opaque to FastMCP's argument validation, so the per-item
+legacy-form guard fires inside the body loop regardless of caller
+transport -- including for a legacy shape carried by a *non-first* item
+in a multi-item batch. These three are pinned so a future change to the
+body-level guard, the tool registration, or the ``items`` shape can't
+silently regress what already works.
 """
 
 from __future__ import annotations
@@ -158,26 +160,26 @@ async def test_update_metadata_tier3_bare_dict_returns_legacy_form_envelope_via_
 
 
 # ---------------------------------------------------------------------------
-# bulk_update_metadata
+# update_metadata -- multi-item batch (guard fires on a non-first item)
 # ---------------------------------------------------------------------------
 
 
-async def test_bulk_update_metadata_item_tags_bare_list_returns_legacy_form_envelope_via_transport(
+async def test_update_metadata_multi_item_tags_bare_list_returns_legacy_form_via_transport(
     vault_services,
 ):
-    """Bare-list per-item ``tags`` on ``bulk_update_metadata`` returns legacy_form via transport.
+    """Bare-list ``tags`` on a non-first ``update_metadata`` item returns legacy_form via transport.
 
-    ``bulk_update_metadata`` declares ``items: list[dict]``; the inner
-    dict structure is opaque to FastMCP's per-tool argument model, so the
-    bare-list ``tags`` value inside the item reaches the body-level
+    ``update_metadata`` declares ``items: list[dict]``; the inner dict
+    structure is opaque to FastMCP's per-tool argument model, so the
+    bare-list ``tags`` value inside a later item reaches the body-level
     per-item legacy-form guard regardless of caller transport. Regression
-    guard: pin the wire shape.
+    guard: pin that the guard scans every item, not just the first.
     """
     ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = await mcp.call_tool(
-        "bulk_update_metadata",  # legacy name; alias-layer routes to update_metadata
+        "update_metadata",
         {
             "vault_id": "test_vault",
             "items": [
@@ -192,10 +194,10 @@ async def test_bulk_update_metadata_item_tags_bare_list_returns_legacy_form_enve
     assert "add" in envelope["detail"]["example"]
 
 
-async def test_bulk_update_metadata_item_tier3_bare_dict_returns_legacy_form_envelope_via_transport(
+async def test_update_metadata_multi_item_tier3_bare_dict_returns_legacy_form_via_transport(
     vault_services,
 ):
-    """Bare-dict per-item ``tier3_metadata`` on ``bulk_update_metadata`` returns legacy_form.
+    """Bare-dict ``tier3_metadata`` on a non-first ``update_metadata`` item returns legacy_form.
 
     Same ``items: list[dict]`` opacity argument as the bare-list tags
     case: the per-item dict reaches the body-level guard regardless of
@@ -205,7 +207,7 @@ async def test_bulk_update_metadata_item_tier3_bare_dict_returns_legacy_form_env
     doc_id = ingest_result["id"]
 
     result = await mcp.call_tool(
-        "bulk_update_metadata",  # legacy name; alias-layer routes to update_metadata
+        "update_metadata",
         {
             "vault_id": "test_vault",
             "items": [

@@ -1,17 +1,20 @@
 """Catalog-level conformance tests for the SAGE MCP tool naming scheme.
 
-Three gates over the live FastMCP catalog:
+Gates over the live FastMCP catalog and the naming taxonomy:
 
 - ``test_no_legacy_prefix`` — every registered tool name omits the
   pre-rename ``sage_``, ``sage_admin_``, and ``app_`` inner prefixes
   that the two-server design in CAS-ADR-034 made vestigial.
-- ``test_rename_mapping_complete`` — every entry on the value side of
-  ``RENAME_MAPPING`` is present in the live catalog. Five invocation
-  probes across the read / write / admin classes pin handler binding
-  so a typo'd registration cannot pass on presence alone.
 - ``test_verb_category_compliance`` — every registered tool name
   begins with a verb in ``CANONICAL_VERBS`` (after stripping any
   member of ``COMPOUND_PREFIXES``). Anchored to CAS-ADR-033.
+- ``test_live_catalog_matches_expected_set`` — the live catalog equals
+  the roster transcribed in ``SERVER_ASSIGNMENT``.
+- ``test_rename_target_invocable`` — a representative tool per class
+  dispatches end-to-end (a wrong registration key surfaces as
+  tool-not-found).
+- ``test_settings_local_permissions_match_live_catalog`` — every
+  ``mcp__sage__<name>`` permission entry names a registered tool.
 
 The tests enumerate the live catalog (``mcp.list_tools()``); they do
 not parametrize over a static expected list. A stale expected list
@@ -23,15 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 
 import pytest
 
 import sage.mcp_server as _mcp
-from sage._tool_rename_mapping import (
+from sage._tool_naming import (
     CANONICAL_VERBS,
     COMPOUND_PREFIXES,
-    RENAME_MAPPING,
     SERVER_ASSIGNMENT,
     extract_verb,
 )
@@ -78,33 +79,8 @@ async def test_no_legacy_prefix() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — every rename target is registered (presence + invocation probes)
+# Invocation probes — a representative tool per class dispatches end-to-end
 # ---------------------------------------------------------------------------
-
-
-async def test_rename_mapping_targets_registered() -> None:
-    """Every value on the right side of ``RENAME_MAPPING`` is registered.
-
-    Anti-coincidental check: the assertion compares the full target set
-    to the live catalog (with the legacy prefix asserted absent in
-    Test 1, the live catalog must equal the target set). A typo in a
-    rename target would surface as a missing registration here, not
-    just as a silent gap in the conformance allowlist.
-    """
-    targets = set(RENAME_MAPPING.values())
-    names = await _live_tool_names()
-    missing = sorted(targets - names)
-    extras = sorted(names - targets)
-    assert not missing, (
-        f"Rename targets missing from the live MCP catalog: {missing}. "
-        "Every value side of RENAME_MAPPING in sage/_tool_rename_mapping.py "
-        "must correspond to a registered FastMCP tool."
-    )
-    assert not extras, (
-        f"Live catalog contains tools not in RENAME_MAPPING targets: {extras}. "
-        "Add the new tool to RENAME_MAPPING and SERVER_ASSIGNMENT, or remove "
-        "the registration."
-    )
 
 
 @pytest.fixture
@@ -192,17 +168,17 @@ _INVOCATION_PROBES: tuple[tuple[str, dict], ...] = (
 
 @pytest.mark.parametrize(("tool_name", "arguments"), _INVOCATION_PROBES)
 async def test_rename_target_invocable(vault_services, tool_name: str, arguments: dict) -> None:
-    """A representative subset of rename targets is invokable end-to-end.
+    """A representative subset of tools is invokable end-to-end.
 
     Anti-coincidental check: a typo in a tool's MCP-registered name
-    could let registration succeed under the wrong key; pure-presence
-    assertion in ``test_rename_mapping_targets_registered`` would still
-    pass. The invocation probe forces FastMCP to dispatch to the
+    could let registration succeed under the wrong key; a pure-presence
+    assertion (see ``test_live_catalog_matches_expected_set``) would
+    still pass. The invocation probe forces FastMCP to dispatch to the
     underlying handler; a wrong key would surface as a tool-not-found
     error here.
 
     The probes target the read, write, and maintenance classes so a
-    rename mistake confined to one class still trips at least one
+    registration mistake confined to one class still trips at least one
     probe.
     """
     result = await _mcp.mcp.call_tool(tool_name, arguments)
@@ -217,7 +193,7 @@ async def test_rename_target_invocable(vault_services, tool_name: str, arguments
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — verb-category compliance across the live catalog
+# Verb-category compliance across the live catalog
 # ---------------------------------------------------------------------------
 
 
@@ -283,233 +259,7 @@ def test_extract_verb_synthetic_inputs(tool_name: str, expected_verb: str) -> No
 
 
 # ---------------------------------------------------------------------------
-# Module-level invariants over the mapping module itself
-# ---------------------------------------------------------------------------
-
-
-def test_server_assignment_covers_every_rename_target() -> None:
-    """Every value side of ``RENAME_MAPPING`` is in ``SERVER_ASSIGNMENT``.
-
-    The mapping module's import-time assert pins this too, but we
-    re-test at the pytest layer to keep the failure mode legible if
-    someone adds a rename target without a server assignment.
-    """
-    rename_targets = set(RENAME_MAPPING.values())
-    assigned = set(SERVER_ASSIGNMENT.keys())
-    missing = sorted(rename_targets - assigned)
-    assert not missing, f"Rename targets without a SERVER_ASSIGNMENT entry: {missing}."
-
-
-def test_rename_mapping_targets_use_canonical_verbs() -> None:
-    """Every rename target itself begins with a canonical verb.
-
-    Anti-coincidental check: the live-catalog gate above can only fail
-    after the rename lands. This test catches the *mapping table*
-    being wrong (e.g. a target with a non-canonical verb) as soon as
-    the mapping module is imported, independent of the live catalog.
-    """
-    bad = sorted(t for t in RENAME_MAPPING.values() if extract_verb(t) not in CANONICAL_VERBS)
-    assert not bad, f"RENAME_MAPPING contains targets whose verb is not in CANONICAL_VERBS: {bad}."
-
-
-# ---------------------------------------------------------------------------
-# Test 3 — alias layer rewrites old names to new before dispatch
-# ---------------------------------------------------------------------------
-
-
-from sage._tool_rename_mapping import REMOVED_TOOLS  # noqa: E402
-from sage.mcp_server import _LoggingFastMCP  # noqa: E402
-
-
-@pytest.mark.parametrize(
-    ("old_name", "new_name"),
-    sorted(RENAME_MAPPING.items()),
-)
-async def test_alias_layer_rewrites_old_name_to_new(
-    old_name: str, new_name: str, monkeypatch
-) -> None:
-    """``_LoggingFastMCP.call_tool`` rewrites every old name to its new target before dispatch.
-
-    Anti-coincidental check: parametrize over the full ``RENAME_MAPPING``
-    table; record the name actually passed to the parent FastMCP
-    ``call_tool`` (rather than asserting against a static expected).
-    A mis-wired alias (e.g. all old names mapping to the same target)
-    would surface as a mismatch on every parametrization that pointed
-    to a different new name.
-    """
-    captured: list[str] = []
-
-    async def fake_super_call(self, name, arguments):
-        captured.append(name)
-        return {"echoed": name, "args": arguments}
-
-    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
-    mcp = _LoggingFastMCP("test")
-    result = await mcp.call_tool(old_name, {"probe": True})
-
-    assert captured == [new_name], (
-        f"alias rewrite for {old_name!r} dispatched to {captured!r}; "
-        f"expected exactly [{new_name!r}]"
-    )
-    assert result == {"echoed": new_name, "args": {"probe": True}}
-
-
-async def test_alias_layer_passes_new_names_through_unchanged(monkeypatch) -> None:
-    """New names dispatch directly without rewrite.
-
-    Anti-coincidental check: a buggy alias layer might rewrite *every*
-    incoming name. Calling with the new name and asserting no rewrite
-    catches that.
-    """
-    captured: list[str] = []
-
-    async def fake_super_call(self, name, arguments):
-        captured.append(name)
-        return {"ok": True}
-
-    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
-    mcp = _LoggingFastMCP("test")
-
-    # Pick a few representative new names from each class. Per CAS-ADR-029
-    # (CAS-ADR-029 v4), the read/write/maintenance probes use the post-v7
-    # canonical names (verify_hashes plural-noun, admin_migrate_vault
-    # admin-prefixed) rather than their legacy pre-v7 forms.
-    for new_name in ("search", "get_document", "verify_hashes", "admin_migrate_vault"):
-        await mcp.call_tool(new_name, {})
-
-    assert captured == ["search", "get_document", "verify_hashes", "admin_migrate_vault"]
-
-
-# ---------------------------------------------------------------------------
-# Test 4 — deprecation warning emitted for old-name invocations
-# ---------------------------------------------------------------------------
-
-
-import logging  # noqa: E402
-
-
-async def test_alias_emits_deprecation_warning_with_both_names(caplog, monkeypatch) -> None:
-    """An old-name call emits a WARNING naming both the old and new names.
-
-    Anti-coincidental check: the assertion verifies *both* names
-    appear in the warning message. A hard-coded message that names
-    only the old or only the new name would fail this assertion.
-    Parametrize across a representative sample to ensure the message
-    formatting is per-call, not a literal constant.
-    """
-
-    async def fake_super_call(self, name, arguments):
-        return {"ok": True}
-
-    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
-    mcp = _LoggingFastMCP("test")
-
-    # NOTE: these pairs intentionally use the *old* names on the left;
-    # the test sweep that mass-renames legacy references must not touch
-    # them. Keep this list synchronized with RENAME_MAPPING by hand —
-    # add a representative across read / write / admin classes.
-    for old_name, new_name in [
-        ("sage_discover", "search"),
-        ("sage_get_document", "get_document"),
-        ("sage_admin_migrate_vault", "admin_migrate_vault"),
-        ("app_batch_ingest", "bulk_ingest_document"),
-    ]:
-        with caplog.at_level(logging.WARNING, logger="sage.mcp_server"):
-            caplog.clear()
-            await mcp.call_tool(old_name, {})
-
-        warning_messages = [
-            rec.getMessage()
-            for rec in caplog.records
-            if rec.name == "sage.mcp_server" and rec.levelno == logging.WARNING
-        ]
-        assert any(old_name in msg and new_name in msg for msg in warning_messages), (
-            f"Deprecation warning for {old_name!r} → {new_name!r} did not name "
-            f"both old and new. WARNING records: {warning_messages}"
-        )
-
-
-async def test_new_name_call_emits_no_deprecation_warning(caplog, monkeypatch) -> None:
-    """A new-name call does NOT emit the deprecation WARNING.
-
-    Anti-coincidental check: pairs with the previous test — if the
-    warning emission is unconditional (a wiring bug), this test would
-    fail.
-    """
-
-    async def fake_super_call(self, name, arguments):
-        return {"ok": True}
-
-    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
-    mcp = _LoggingFastMCP("test")
-
-    with caplog.at_level(logging.WARNING, logger="sage.mcp_server"):
-        await mcp.call_tool("search", {})
-        await mcp.call_tool("get_document", {})
-
-    deprecation_records = [
-        rec
-        for rec in caplog.records
-        if rec.name == "sage.mcp_server"
-        and rec.levelno == logging.WARNING
-        and "deprecated" in rec.getMessage()
-    ]
-    assert not deprecation_records, (
-        f"new-name calls emitted deprecation warnings: {deprecation_records}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# REMOVED_TOOLS handling
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Test 7 — no docstring cross-references the renamed tools by their old name
-# ---------------------------------------------------------------------------
-
-
-async def test_no_docstring_references_legacy_tool_name() -> None:
-    """No tool's docstring (live ``description``) names another tool by its old name.
-
-    Iterates the live MCP catalog's tool descriptions and asserts each
-    description avoids every member of ``RENAME_MAPPING``'s key set.
-
-    Anti-coincidental check: the assertion only fires when a docstring
-    contains an old name as a *word* (regex boundary). Legitimate
-    substrings — ``sage_core`` (a conformance-surface name), ``sage_admin``
-    (an MCP server name), ``sage_vault`` (a path prefix) — do not match
-    because they are not in ``RENAME_MAPPING`` keys. The check is
-    therefore precise: only deprecated cross-references trip it.
-    """
-    old_names = set(RENAME_MAPPING.keys())
-    tools = await _mcp.mcp.list_tools()
-    offending: list[tuple[str, list[str]]] = []
-    for tool in tools:
-        desc = tool.description or ""
-        # Find tokens; each token is a maximal word that includes
-        # underscores. A docstring of the form "use `sage_traverse` to
-        # walk further" tokenizes to "use", "sage_traverse", "to",
-        # "walk", "further" — the token check catches sage_traverse
-        # while leaving sage_admin (with a trailing word boundary)
-        # alone unless it appears as a standalone token.
-        tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", desc))
-        old_in_doc = sorted(old_names & tokens)
-        if old_in_doc:
-            offending.append((tool.name, old_in_doc))
-    assert not offending, (
-        "Tool descriptions still cross-reference renamed tools by their old name:\n"
-        + "\n".join(f"  {name}: {refs}" for name, refs in offending)
-    )
-
-
-# ---------------------------------------------------------------------------
-# REMOVED_TOOLS handling
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Test 9 — settings.local.json permission entries align with live catalog
+# settings.local.json permission entries align with live catalog
 # ---------------------------------------------------------------------------
 
 
@@ -548,63 +298,30 @@ async def test_settings_local_permissions_match_live_catalog() -> None:
 
 
 # ---------------------------------------------------------------------------
-# REMOVED_TOOLS handling
+# Live catalog matches the SERVER_ASSIGNMENT roster
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("removed_name", sorted(REMOVED_TOOLS))
-async def test_removed_tool_returns_envelope_error(removed_name: str, caplog, monkeypatch) -> None:
-    """Calling a removed tool returns a ``tool_removed`` envelope without dispatch.
-
-    Anti-coincidental check: monkeypatch the parent ``call_tool`` so
-    the test would FAIL if the removed-name path accidentally falls
-    through to dispatch.
-    """
-    dispatched: list[str] = []
-
-    async def fake_super_call(self, name, arguments):
-        dispatched.append(name)
-        return {"unexpected": True}
-
-    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
-    mcp = _LoggingFastMCP("test")
-
-    with caplog.at_level(logging.WARNING, logger="sage.mcp_server"):
-        result = await mcp.call_tool(removed_name, {})
-
-    assert not dispatched, f"removed tool {removed_name} reached dispatch: {dispatched}"
-    # Result should be the production-shape envelope; decode and check error code.
-    assert isinstance(result, list) and len(result) == 1
-    envelope = json.loads(result[0].text)
-    assert envelope.get("error") == "tool_removed"
-    assert removed_name in envelope.get("message", "")
-
-
-# ---------------------------------------------------------------------------
-# Post-CAS-ADR-029 catalog conformance (CAS-ADR-029 v4)
-# ---------------------------------------------------------------------------
-
-
-# Derived from SERVER_ASSIGNMENT in sage/_tool_rename_mapping.py — the
-# 34-tool target catalog after CAS-ADR-029. Sourcing from SERVER_ASSIGNMENT
-# (rather than a hand-typed literal) closes the misclassification
-# re-entry trap: a v6 → v7 amendment that updates SERVER_ASSIGNMENT
-# automatically propagates here, and any drift between the table and
-# the live catalog surfaces on either side as the same diff.
+# Derived from SERVER_ASSIGNMENT in sage/_tool_naming.py — the target
+# catalog after CAS-ADR-029. Sourcing from SERVER_ASSIGNMENT (rather than
+# a hand-typed literal) closes the misclassification re-entry trap: a
+# v6 → v7 amendment that updates SERVER_ASSIGNMENT automatically
+# propagates here, and any drift between the table and the live catalog
+# surfaces on either side as the same diff.
 
 _EXPECTED_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
 
 
 async def test_live_catalog_matches_expected_set() -> None:
-    """The live MCP catalog equals the 34-tool target set defined in
+    """The live MCP catalog equals the target set defined in
     SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + admin-prefix pass.
 
     Anti-coincidental check: the expected set is sourced from the
-    SERVER_ASSIGNMENT table in ``sage/_tool_rename_mapping.py`` rather
-    than from a hand-typed literal. A v6 → v7 misclassification re-entry
-    (e.g., re-adding `list_vaults` as unprefixed) would surface as the
-    SAME diff on both sides — the live catalog and the table — which is
-    the desired auditable failure mode.
+    SERVER_ASSIGNMENT table in ``sage/_tool_naming.py`` rather than from
+    a hand-typed literal. A v6 → v7 misclassification re-entry (e.g.,
+    re-adding `list_vaults` as unprefixed) would surface as the SAME diff
+    on both sides — the live catalog and the table — which is the desired
+    auditable failure mode.
     """
     live = await _live_tool_names()
     expected = set(_EXPECTED_CATALOG)
@@ -614,23 +331,4 @@ async def test_live_catalog_matches_expected_set() -> None:
         f"Live MCP catalog differs from the CAS-ADR-029 target set. "
         f"Missing from live: {sorted(missing)}; "
         f"Extra in live (not in SERVER_ASSIGNMENT): {sorted(extra)}."
-    )
-
-
-async def test_old_names_absent_from_canonical_catalog() -> None:
-    """Every key in RENAME_MAPPING is absent from the live MCP catalog.
-
-    Anti-coincidental check: pairs with
-    ``test_rename_mapping_targets_registered`` (which asserts targets
-    are present). A registration that accidentally exposes BOTH the
-    old and the new name would pass that test but break the
-    surface-reduction goal of CAS-ADR-029 v4. This test catches that
-    case by asserting old names resolve only via the alias middleware,
-    not as first-class catalog entries.
-    """
-    live = await _live_tool_names()
-    leaked = sorted(old for old in RENAME_MAPPING if old in live)
-    assert not leaked, (
-        f"Old names appear in the live canonical catalog (should resolve "
-        f"only via the alias middleware): {leaked}."
     )
