@@ -433,6 +433,49 @@ check_edge_resource_identity() {
   return 1
 }
 
+check_edge_mount_discovery() {
+  # Each MCP mount must steer a denied client to its RFC 9728 PATH-INSERTED
+  # metadata document, and that document must advertise the PATH-CARRYING mount
+  # URI as its resource. A client normalizes the advertised resource through a
+  # URL serializer and sends the result as its RFC 8707 resource /authorize
+  # parameter; a bare-origin resource serializes WITH a trailing slash
+  # (https://host -> https://host/), a form Entra can neither match against a
+  # registered identifier URI (byte-for-byte; AADSTS9010010) nor register as
+  # one (invalid alias) -- so a client steered to a bare-host resource
+  # dead-ends at /authorize with no registrable fix. Verified live on cor-prod.
+  # Two legs per mount: the 401 challenge points at the mount document (not the
+  # root), and the mount document 200s with the mount URI as resource. The
+  # discovery-200 control guards the blanket-edge trap.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); a challenge/document shape is the blanket trap, not mount discovery"
+    return 1
+  fi
+  local esc_base
+  esc_base="$(printf '%s' "$SAGE_BASE_URL" | sed 's/[.]/\\./g')"
+  local detail="" ok=yes
+  local mount
+  for mount in /mcp /mcp_admin; do
+    http_get "$SAGE_BASE_URL$mount"
+    local challenge_ok=no
+    # The closing quote anchors exactness: the /mcp challenge must point at
+    # .../oauth-protected-resource/mcp", never the root doc or another mount's.
+    printf '%s' "$HTTP_HEADERS" \
+      | grep -qE "resource_metadata=\"${esc_base}/\.well-known/oauth-protected-resource${mount}\"" && challenge_ok=yes
+    http_get "$SAGE_BASE_URL/.well-known/oauth-protected-resource$mount"
+    local doc_code="$HTTP_CODE" doc_res_ok=no
+    printf '%s' "$HTTP_BODY" \
+      | grep -qE "\"resource\"[[:space:]]*:[[:space:]]*\"${esc_base}${mount}\"" && doc_res_ok=yes
+    [ "$challenge_ok" = yes ] && [ "$doc_code" = 200 ] && [ "$doc_res_ok" = yes ] || ok=no
+    detail="$detail $mount(challenge=$challenge_ok doc=$doc_code resource=$doc_res_ok)"
+  done
+  if [ "$ok" = yes ]; then
+    DETAIL_MSG="each mount's 401 challenge points at its path-inserted metadata and each document advertises the path-carrying mount URI:$detail"
+    return 0
+  fi
+  DETAIL_MSG="mount discovery incoherent:$detail -- a client steered to a bare-host resource serializes a trailing-slash form Entra can never match (AADSTS9010010)"
+  return 1
+}
+
 check_mcp_admin() {
   http_get "$SAGE_BASE_URL/mcp_admin"
   local unauth="$HTTP_CODE"
@@ -728,6 +771,9 @@ register edge_dcr_registration check_edge_dcr_registration \
 register edge_resource_identity check_edge_resource_identity \
   "the advertised resource, scopes_supported, and /register scope all carry the public SAGE base URL (RFC 9728 origin match; Entra accepts the client's RFC 8707 resource parameter)" \
   "an internal-gateway resource or api://-form scope prefix is the coincidental-pass trap (both 200 fine at the edge yet fail a standards client); credited only with the discovery-200 control held"
+register edge_mount_discovery check_edge_mount_discovery \
+  "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \
+  "a bare-host resource is the coincidental-pass trap (200s fine, but serializes to a trailing-slash form Entra can neither match nor register -- AADSTS9010010); credited only with the discovery-200 control held"
 register mcp_admin check_mcp_admin \
   "/mcp_admin 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"

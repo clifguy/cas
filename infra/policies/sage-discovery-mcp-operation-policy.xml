@@ -1,0 +1,78 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET
+            /.well-known/oauth-protected-resource/mcp (CAS-ADR-042). Serves the
+            RFC 9728 PATH-INSERTED protected-resource-metadata document for the
+            ordinary MCP mount. The catch-all 401 challenge on /mcp requests
+            points a denied client here, and the mount-specific document is what
+            makes the RFC 8707 resource leg survive client URL normalization:
+
+            The resource is the mount URI ({{sage-resource-url}}/mcp), never the
+            bare host. A standards MCP client normalizes the advertised resource
+            through a URL object and sends its serialized form (href) as the
+            /authorize resource parameter. A bare-origin URL serializes WITH a
+            trailing slash (https://host -> https://host/), and Entra both
+            rejects that form at /authorize (AADSTS9010010, invalid_target —
+            the resource must BE a registered identifier URI, matched
+            byte-for-byte) and refuses to register it as an identifier URI. A
+            path-carrying URL serializes byte-identically, and the /mcp mount
+            URI is registered on the Entra resource app by the bootstrap.
+            Verified live on cor-prod. The mount URI also satisfies the client's
+            own RFC 9728 origin/prefix validation against the server URL it
+            connected to.
+
+            authorization_servers and the scope prefix stay the facade root
+            ({{sage-resource-url}}): the AS metadata is served at the root
+            well-known, and Entra requires only that the scope's resource and
+            the resource parameter resolve to the SAME app — the host identity
+            and the mount identity are both registered on it.
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so the document is
+            reachable without a token, matching the root discovery operation.
+            Routing is by a literal urlTemplate, so no policy expression
+            evaluates an inline path-string literal.
+        -->
+        <!--
+            CORS (CAS-ADR-042): this anonymous operation omits <base />, so it
+            never runs the API-level <cors>. It carries its own so the actual
+            response a browser reads cross-origin returns Access-Control-Allow-*.
+        -->
+        <cors allow-credentials="false">
+            <allowed-origins>
+                <origin>*</origin>
+            </allowed-origins>
+            <allowed-methods>
+                <method>GET</method>
+                <method>POST</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Authorization</header>
+                <header>Content-Type</header>
+            </allowed-headers>
+        </cors>
+        <return-response>
+            <set-status code="200" reason="OK" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>{
+  "resource": "{{sage-resource-url}}/mcp",
+  "authorization_servers": ["{{sage-resource-url}}"],
+  "scopes_supported": ["{{sage-resource-url}}/Sage.Access"],
+  "bearer_methods_supported": ["header"]
+}</set-body>
+        </return-response>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

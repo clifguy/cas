@@ -251,22 +251,24 @@ def test_entra_script_registers_mcp_loopback_redirect() -> None:
 
 
 def test_entra_script_declares_all_sage_identifier_uris() -> None:
-    """The SAGE resource server declares all FOUR identifier URIs in one update:
+    """The SAGE resource server declares all SIX identifier URIs in one update:
     the ``api://<app-id>`` audience URI, the ``https://<SAGE_PUBLIC_HOSTNAME>``
-    custom-domain identity, and the two MCP-mount forms of that identity — with
-    the hostname arriving as required environment.
+    custom-domain identity, the two MCP-mount forms of that identity, and the
+    two mounts' SSE transport-endpoint forms — with the hostname arriving as
+    required environment.
 
     The https identities are what let a standards MCP client through Entra: the
     client sends an RFC 8707 ``resource`` parameter with ``/authorize``, and
     Entra rejects the request (AADSTS9010010, ``invalid_target``) unless that
     parameter IS a registered identifier URI of the scope's app — same-origin is
-    not enough (verified live: the bare host minted a code while the unregistered
-    ``/mcp`` form was rejected). A client may send its canonical server URI
-    including the mount path (``https://<host>/mcp``, per the MCP authorization
-    profile) or the PRM-advertised bare host, so both mounts and the bare host
-    must all be registered. ``--identifier-uris`` is a declarative full-set
-    replace, so every URI must be passed together on every invocation or a
-    re-bootstrap drops some.
+    not enough; the match is byte-for-byte (verified live: the bare host minted
+    a code while the unregistered ``/mcp`` form was rejected, then ``/mcp``
+    after registration while ``/mcp/sse`` was rejected, and so on). A client may
+    send its connector/server URL, that URL's SSE transport endpoint, or the
+    PRM-advertised resource, so every URI a client could canonicalize from is
+    registered. ``--identifier-uris`` is a declarative full-set replace, so
+    every URI must be passed together on every invocation or a re-bootstrap
+    drops some.
     """
     text = _text(ENTRA)
     assert re.search(r':\s*"\$\{SAGE_PUBLIC_HOSTNAME:\?', text), (
@@ -284,16 +286,22 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
             "the api://<app-id> audience URI (the BFF OBO and preflight token target)"
         ),
         '"https://${SAGE_PUBLIC_HOSTNAME}"': (
-            "the bare-host https identity (the PRM resource a reference-SDK "
-            "client echoes back as its RFC 8707 resource parameter)"
+            "the bare-host https identity (the scope prefix the facade advertises)"
         ),
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp"': (
-            "the /mcp mount identity (the canonical server URI a spec-following "
-            "client sends as its resource parameter)"
+            "the /mcp mount identity (the path-inserted PRM resource and the "
+            "canonical server URI a spec-following client sends)"
         ),
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"': (
             "the /mcp_admin mount identity (the maintenance surface's canonical "
             "server URI)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse"': (
+            "the /mcp SSE transport-endpoint identity (the URL an SSE-transport "
+            "connector is configured with)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin/sse"': (
+            "the /mcp_admin SSE transport-endpoint identity"
         ),
     }
     for invocation in uri_invocations:

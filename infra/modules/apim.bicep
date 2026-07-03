@@ -286,6 +286,37 @@ resource sageDiscoveryOperation 'Microsoft.ApiManagement/service/apis/operations
   }
 }
 
+// RFC 9728 path-inserted protected-resource metadata, one operation per MCP
+// mount. Each document's `resource` is the path-carrying mount URI -- the form
+// that survives a client's URL normalization byte-identically and is
+// registered as an Entra identifier URI, so the client's RFC 8707 resource
+// parameter clears Entra's byte-for-byte match (AADSTS9010010 otherwise; the
+// bare host normalizes to a trailing-slash form Entra can neither match nor
+// register). The catch-all policy's 401 challenge steers each mount's clients
+// here. The mount list mirrors the uvicorn MCP mounts, the same protocol
+// constant the Entra bootstrap registers identifier URIs for.
+resource sageDiscoveryMcpOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'oauth-protected-resource-mcp'
+  properties: {
+    displayName: 'OAuth protected-resource metadata (mcp mount)'
+    method: 'GET'
+    urlTemplate: '/.well-known/oauth-protected-resource/mcp'
+    templateParameters: []
+  }
+}
+
+resource sageDiscoveryMcpAdminOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'oauth-protected-resource-mcp-admin'
+  properties: {
+    displayName: 'OAuth protected-resource metadata (mcp_admin mount)'
+    method: 'GET'
+    urlTemplate: '/.well-known/oauth-protected-resource/mcp_admin'
+    templateParameters: []
+  }
+}
+
 resource sageHealthOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
   parent: sageApi
   name: 'health'
@@ -341,6 +372,24 @@ resource sageDiscoveryOperationPolicy 'Microsoft.ApiManagement/service/apis/oper
   properties: {
     format: 'rawxml'
     value: loadTextContent('../policies/sage-discovery-operation-policy.xml')
+  }
+}
+
+resource sageDiscoveryMcpOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageDiscoveryMcpOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-discovery-mcp-operation-policy.xml')
+  }
+}
+
+resource sageDiscoveryMcpAdminOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageDiscoveryMcpAdminOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-discovery-mcp-admin-operation-policy.xml')
   }
 }
 

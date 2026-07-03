@@ -1,0 +1,61 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET
+            /.well-known/oauth-protected-resource/mcp_admin (CAS-ADR-042). The
+            RFC 9728 path-inserted protected-resource-metadata document for the
+            maintenance MCP mount — the same shape and rationale as the /mcp
+            document (see sage-discovery-mcp-operation-policy.xml for the full
+            explanation of why the resource must be the path-carrying mount URI,
+            never the bare host): the mount URI survives client URL
+            normalization byte-identically and is registered as an identifier
+            URI on the Entra resource app, so the client's RFC 8707 resource
+            parameter clears Entra's byte-for-byte identifier match
+            (AADSTS9010010 otherwise).
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so the document is
+            reachable without a token, matching the root discovery operation.
+        -->
+        <!--
+            CORS (CAS-ADR-042): this anonymous operation omits <base />, so it
+            never runs the API-level <cors>. It carries its own so the actual
+            response a browser reads cross-origin returns Access-Control-Allow-*.
+        -->
+        <cors allow-credentials="false">
+            <allowed-origins>
+                <origin>*</origin>
+            </allowed-origins>
+            <allowed-methods>
+                <method>GET</method>
+                <method>POST</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Authorization</header>
+                <header>Content-Type</header>
+            </allowed-headers>
+        </cors>
+        <return-response>
+            <set-status code="200" reason="OK" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>{
+  "resource": "{{sage-resource-url}}/mcp_admin",
+  "authorization_servers": ["{{sage-resource-url}}"],
+  "scopes_supported": ["{{sage-resource-url}}/Sage.Access"],
+  "bearer_methods_supported": ["header"]
+}</set-body>
+        </return-response>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

@@ -74,11 +74,11 @@ You will also choose placeholders that downstream work fixes concretely:
 
 ## 1. SAGE resource-server registration
 
-Create (or reuse) the application, give it **four** identifier URIs — the
+Create (or reuse) the application, give it **six** identifier URIs — the
 `api://<SAGE_APP_ID>` audience URI, the `https://<SAGE_PUBLIC_HOSTNAME>`
-custom-domain identity, and the two MCP-mount forms of that identity — and
-create its service principal. The lookup-then-create guard makes the step
-idempotent.
+custom-domain identity, the two MCP-mount forms of that identity, and the two
+mounts' SSE transport-endpoint forms — and create its service principal. The
+lookup-then-create guard makes the step idempotent.
 
 ```bash
 SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
@@ -90,7 +90,8 @@ fi
 
 az ad app update --id "$SAGE_APP_ID" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin" \
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin/sse"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
 
@@ -100,25 +101,38 @@ The **https identities** exist for the MCP edge: the facade advertises
 `https://<SAGE_PUBLIC_HOSTNAME>/Sage.Access` as its scope, and a standards MCP
 client sends an RFC 8707 `resource` parameter with `/authorize`. Entra rejects
 the request (`AADSTS9010010`, `invalid_target`) unless that parameter **is a
-registered identifier URI** of the scope's app — same-origin is not enough,
-verified live on cor-prod. What a client sends varies by implementation: the
-canonical server URI *including the mount path* (`https://<host>/mcp`, per the
-MCP authorization profile) or the PRM-advertised `resource` (the bare host a
-reference-SDK client echoes back) — so the bare host and each servable MCP
-mount are all registered. Scope prefix and resource may be *different*
-identifier URIs of the same app; Entra requires only same-app resolution. The
-client independently requires the advertised resource to match the server
-origin it connected to (RFC 9728), which is why the https identity is the
-custom domain rather than a made-up URI. `--identifier-uris` is a declarative
-full-set replace: declare all four together so a re-run cannot drop any. The
-https forms require their host under a tenant-verified domain; `az` fails
-loudly if it is not. Tokens are unaffected either way — a v2 access token
+registered identifier URI** of the scope's app — same-origin is not enough; the
+match is **byte-for-byte**, verified live on cor-prod. What a client sends
+varies by implementation — the connector/server URL, its `/sse` transport
+endpoint, or the PRM-advertised `resource` — so every URI a client could
+canonicalize from is registered. Two hard-won facts shape this set:
+
+- **Trailing-slash forms cannot be registered** — Entra rejects them as invalid
+  aliases (`Application alias 'https://…/' value is invalid`). A client that
+  round-trips the advertised resource through a URL serializer turns a bare
+  origin into `https://<host>/` (the serializer appends the slash to an empty
+  path), a form Entra can then never match. This is why the edge's
+  protected-resource metadata advertises **path-carrying mount URIs** (the
+  path-inserted RFC 9728 documents) rather than the bare host: a URL with a
+  path survives serialization byte-identically.
+- Scope prefix and resource may be *different* identifier URIs of the same
+  app; Entra requires only same-app resolution (e.g. scope
+  `https://<host>/Sage.Access` with resource `https://<host>/mcp` is
+  accepted).
+
+The client independently requires the advertised resource to match the server
+origin it connected to (RFC 9728), which is why the https identities derive
+from the custom domain rather than a made-up URI. `--identifier-uris` is a
+declarative full-set replace: declare all six together so a re-run cannot drop
+any. The https forms require their host under a tenant-verified domain; `az`
+fails loudly if it is not. Tokens are unaffected either way — a v2 access token
 carries the bare app-id GUID as its `aud` no matter which identifier form the
 scope used.
 
-> The mount list (`/mcp`, `/mcp_admin`) is a protocol constant of the SAGE MCP
-> surface, mirrored from the uvicorn mounts. Adding a new MCP mount means adding
-> its identifier URI here in the same change.
+> The mount and transport paths (`/mcp`, `/mcp_admin`, and their `/sse`
+> endpoints) are protocol constants of the SAGE MCP surface, mirrored from the
+> uvicorn mounts. Adding a new MCP mount means adding its identifier URIs here
+> and its path-inserted metadata operation at the APIM edge in the same change.
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and
