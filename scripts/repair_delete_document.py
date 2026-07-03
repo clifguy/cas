@@ -31,8 +31,8 @@ What does NOT get touched
 - Documents on the other side of this doc's edges. Only this doc and its
   direct edges are affected.
 - Symlink views under ``$brain_root/sources/views/``. After running this
-  script, call ``mcp__sage__sage_refresh_views`` to drop and rebuild
-  them, or wait for the next ingest to do so.
+  script, call ``mcp__sage_admin__admin_recompute_views`` to drop and
+  rebuild them, or wait for the next ingest to do so.
 
 Usage
 -----
@@ -219,8 +219,10 @@ def repair(vault_id: str, doc_id: str, *, execute: bool, keep_source: bool) -> i
 
     print()
     print("Done. Next steps:")
-    print(f"  1. Refresh symlink views: mcp__sage__sage_refresh_views(vault_id={vault_id!r})")
-    print("  2. Re-ingest the corrected source via mcp__sage__sage_ingest.")
+    print(
+        f"  1. Refresh symlink views: mcp__sage_admin__admin_recompute_views(vault_id={vault_id!r})"
+    )
+    print("  2. Re-ingest the corrected source via mcp__sage__ingest_document.")
     if sidecar:
         print(f"  3. Re-create edges using the sidecar at {sidecar}.")
     return 0
