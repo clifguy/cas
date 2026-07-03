@@ -44,10 +44,15 @@ _APIM_BACKEND_TYPE: Final[str] = "Microsoft.ApiManagement/service/backends"
 
 # Resource-level diagnostic settings route the gateway's own logs and metrics to
 # the foundation Log Analytics workspace (CAS-ADR-042). GatewayLogs is the log
-# category that lands in the workspace's ``ApiManagementGatewayLogs`` table; the
-# workspace id arrives as a module parameter so no id is hard-coded here.
+# category that lands in the workspace's ``ApiManagementGatewayLogs`` table;
+# GatewayMCPLogs is the MCP-protocol-aware category — every SAGE tool call flows
+# through the ``/mcp`` and ``/mcp_admin`` mounts — and lands in the SINGULAR
+# ``ApiManagementGatewayMCPLog`` table (note: no trailing ``s``, unlike the plural
+# GatewayLogs table). The workspace id arrives as a module parameter so no id is
+# hard-coded here.
 _DIAGNOSTIC_SETTINGS_TYPE: Final[str] = "Microsoft.Insights/diagnosticSettings"
 _GATEWAY_LOG_CATEGORY: Final[str] = "GatewayLogs"
+_GATEWAY_MCP_LOG_CATEGORY: Final[str] = "GatewayMCPLogs"
 _WORKSPACE_PARAM: Final[str] = "logAnalyticsWorkspaceId"
 
 # Routing the logs (``diagnosticSettings``, above) is necessary but not
@@ -242,6 +247,33 @@ def _declares_param(text: str, name: str) -> bool:
     with_default = re.search(rf"^param\s+{re.escape(name)}\s+\w+\s*=", stripped, re.MULTILINE)
     declared = re.search(rf"^param\s+{re.escape(name)}\s+\w+\s*$", stripped, re.MULTILINE)
     return declared is not None and with_default is None
+
+
+def _diagnostic_log_categories(block: str) -> dict[str, bool]:
+    """Map each ``logs:`` array entry of a diagnosticSettings block to its enabled flag.
+
+    Scoped to the ``logs:`` array (the non-greedy ``[...]`` stops at the first
+    closing bracket, which closes ``logs`` before ``metrics`` begins), so a
+    ``metrics:`` entry such as ``AllMetrics`` is never folded into the result.
+    Each ``{ ... }`` object is parsed independently for its ``category`` and
+    ``enabled`` values, so the map is order-independent within an object. Returns
+    ``{}`` when the block declares no ``logs:`` array.
+
+    This ties enablement to the *specific* category — a bare ``category:
+    'GatewayMCPLogs'`` substring would pass even on an ``enabled: false`` entry,
+    which is exactly the pre-change form the control test proves fails red.
+    """
+    logs = re.search(r"logs:\s*\[(.*?)\]", block, re.DOTALL)
+    if logs is None:
+        return {}
+    categories: dict[str, bool] = {}
+    for obj in re.finditer(r"\{([^{}]*)\}", logs.group(1)):
+        body = obj.group(1)
+        category = re.search(r"category:\s*'([^']+)'", body)
+        enabled = re.search(r"enabled:\s*(true|false)", body)
+        if category and enabled:
+            categories[category.group(1)] = enabled.group(1) == "true"
+    return categories
 
 
 def _output_secret_violations(text: str) -> list[tuple[str, str]]:
@@ -1849,6 +1881,20 @@ def test_apim_declares_diagnostic_settings_to_workspace() -> None:
     assert block.count("enabled: true") >= 2, (
         "both the GatewayLogs log and the gateway metrics must be enabled: true"
     )
+    # Enablement tied to the specific category (stronger than the block-wide count):
+    # GatewayLogs stays enabled (a regression guard on the existing routing) and
+    # GatewayMCPLogs — the MCP-protocol-aware category every /mcp and /mcp_admin tool
+    # call flows through — is routed too, landing in the dedicated
+    # ApiManagementGatewayMCPLog table.
+    categories = _diagnostic_log_categories(block)
+    assert categories.get(_GATEWAY_LOG_CATEGORY) is True, (
+        f"the {_GATEWAY_LOG_CATEGORY} log category must be present and enabled"
+    )
+    assert categories.get(_GATEWAY_MCP_LOG_CATEGORY) is True, (
+        f"the {_GATEWAY_MCP_LOG_CATEGORY} log category must be present and enabled — "
+        "every SAGE tool call flows through the /mcp and /mcp_admin mounts, and its "
+        "MCP-protocol-aware signal is otherwise silently discarded"
+    )
 
 
 def test_apim_diagnostic_settings_has_no_retention_override() -> None:
@@ -1994,6 +2040,38 @@ def test_apim_diagnostic_detectors_control() -> None:
     assert _declares_param("param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
     assert not _declares_param("param logAnalyticsWorkspaceId string = ''\n", _WORKSPACE_PARAM)
     assert not _declares_param("// param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
+
+    # Log-category parser: maps each logs[] entry to its enabled flag, distinguishes
+    # enabled from disabled, and excludes the metrics array. This is the
+    # anti-coincidental guarantee for the GatewayMCPLogs gate: the pre-change form
+    # (GatewayMCPLogs enabled: false) reports False, so the positive gate above —
+    # which asserts `.get(_GATEWAY_MCP_LOG_CATEGORY) is True` — fails red. A regex
+    # that swallowed the metrics array would leak AllMetrics into the map.
+    mixed = (
+        "resource d 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {\n"
+        "  scope: apimService\n"
+        "  properties: {\n"
+        "    logs: [\n"
+        "      {\n        category: 'GatewayLogs'\n        enabled: true\n      }\n"
+        "      {\n        category: 'GatewayMCPLogs'\n        enabled: false\n      }\n"
+        "    ]\n"
+        "    metrics: [\n"
+        "      {\n        category: 'AllMetrics'\n        enabled: true\n      }\n"
+        "    ]\n"
+        "  }\n"
+        "}\n"
+        "output x string = d.id\n"
+    )
+    mixed_block = _resource_block(mixed, _DIAGNOSTIC_SETTINGS_TYPE)
+    assert _diagnostic_log_categories(mixed_block) == {
+        "GatewayLogs": True,
+        "GatewayMCPLogs": False,
+    }, (
+        "the log-category parser must map each logs[] entry to its enabled flag, "
+        "distinguish enabled from disabled, and exclude the metrics array"
+    )
+    # No logs array at all -> empty map (boundary).
+    assert _diagnostic_log_categories("") == {}
 
 
 def test_apim_azure_monitor_detectors_control() -> None:

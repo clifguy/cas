@@ -124,9 +124,13 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
 // Analytics workspace (CAS-ADR-042). GatewayLogs entries — request outcomes,
 // validate-jwt rejects, CORS preflight, backend latency — land in the workspace's
 // dedicated ApiManagementGatewayLogs table (logAnalyticsDestinationType:
-// 'Dedicated'), not the legacy consolidated AzureDiagnostics table. Retention is
-// the workspace's own concern (no per-setting retentionPolicy; the override is
-// deprecated for Log Analytics destinations).
+// 'Dedicated'), not the legacy consolidated AzureDiagnostics table. GatewayMCPLogs
+// is the MCP-protocol-aware category — every SAGE tool call reaches the backend
+// through the /mcp and /mcp_admin mounts, so its JSON-RPC/session-level detail is
+// signal a generic gateway request line does not distinguish; it lands in the
+// SINGULAR ApiManagementGatewayMCPLog table (no trailing 's', unlike the plural
+// GatewayLogs table). Retention is the workspace's own concern (no per-setting
+// retentionPolicy; the override is deprecated for Log Analytics destinations).
 //
 // This resource only *routes* logs APIM has been told to emit. Azure Monitor
 // platform metrics emit automatically, but APIM's own gateway request/response
@@ -141,6 +145,10 @@ resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previ
     logs: [
       {
         category: 'GatewayLogs'
+        enabled: true
+      }
+      {
+        category: 'GatewayMCPLogs'
         enabled: true
       }
     ]
