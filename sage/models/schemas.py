@@ -879,6 +879,21 @@ class IngestRequest(BaseModel):
             "`Tier3Patch` ops-object with `set`/`unset` semantics."
         ),
     )
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Pins the force-reingest target. Force-reingest keys the record "
+            "to reuse by content hash alone; when the incoming file is "
+            "byte-identical to an existing document stored at a different "
+            "source_path, the hash match may be an unrelated document. To "
+            "protect that document's identity, a different-path collision is "
+            "rejected with 409 `force_reingest_path_mismatch` unless this "
+            "field names the record the caller intends to overwrite (for "
+            "example, re-ingesting a document whose file legitimately moved). "
+            "Consulted only when `force=true` and a content-hash collision "
+            "exists; ignored otherwise."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_metadata_dates(self) -> "IngestRequest":

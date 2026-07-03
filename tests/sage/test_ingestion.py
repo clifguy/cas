@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.api.errors import DuplicateContentError
+from sage.api.errors import DuplicateContentError, ForceReingestPathMismatchError
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
@@ -983,16 +983,23 @@ async def test_bh_065_document_date_round_trip(tmp_vault_dir, graph_store, inges
 
 
 # ---------------------------------------------------------------------------
-# BH-067: Force re-ingestion reuses existing document at different path
+# BH-067: Force re-ingestion reuses existing document at a different path,
+# now gated behind an explicit document_id confirmation. A hash match at a
+# different source_path may be an unrelated document that merely shares
+# content bytes, so the caller must name the record to reuse; otherwise the
+# collision is rejected (see the cross-document-collision guard test below).
 # ---------------------------------------------------------------------------
 
 
 async def test_bh_067_force_reingestion_different_path_reuses_document(
     tmp_vault_dir, graph_store, ingestion_service
 ):
-    """Force re-ingestion of identical content at a different path reuses
-    the existing document record rather than creating a duplicate.
-    The source_path is updated to the new location."""
+    """Force re-ingestion of identical content at a different path reuses the
+    existing document record when the caller confirms the target via
+    document_id. The source_path is updated to the new location. Without the
+    document_id pin the same call is rejected (a different-path hash match may
+    be an unrelated document); that guard is covered by
+    test_force_reingest_cross_document_collision_raises."""
     content = "# Identical\n\nSame content at two paths."
     _create_test_file(tmp_vault_dir, "reports/doc_a.md", content)
     _create_test_file(tmp_vault_dir, "reports/subfolder/doc_a_copy.md", content)
@@ -1007,12 +1014,14 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
     assert result1.is_new is True
     original_id = result1.document.id
 
-    # Force re-ingest from different path with identical content
+    # Force re-ingest from a different path with identical content, confirming
+    # the intended record via document_id (the legitimate file-moved case).
     result2 = await ingestion_service.ingest(
         IngestRequest(
             source="reports/subfolder/doc_a_copy.md",
             source_type=SourceType.MARKDOWN,
             force=True,
+            document_id=original_id,
         )
     )
 
@@ -1020,6 +1029,55 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
     assert result2.document.id == original_id
     assert result2.document.source_path == "reports/subfolder/doc_a_copy.md"
     assert result2.document.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+async def test_force_reingest_cross_document_collision_raises(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Force re-ingesting content that is byte-identical to an *unrelated*
+    document stored at a different path must not silently overwrite that
+    document. Without a document_id pin the collision is rejected with
+    force_reingest_path_mismatch, and the original document is left intact.
+
+    Regression guard for the identity-clobber bug: previously the force branch
+    resolved its target by content hash alone and rewrote the first document's
+    source_path (and title) to the second file's."""
+    content = "# Shared\n\nByte-identical content living at two unrelated paths."
+    _create_test_file(tmp_vault_dir, "reports/collide_a.md", content)
+    _create_test_file(tmp_vault_dir, "reports/collide_b.md", content)
+
+    result_a = await ingestion_service.ingest(
+        IngestRequest(
+            source="reports/collide_a.md",
+            source_type=SourceType.MARKDOWN,
+        )
+    )
+    assert result_a.is_new is True
+    id_a = result_a.document.id
+    title_a = result_a.document.title
+
+    # Force-ingest the byte-identical file at a different path, WITHOUT a pin.
+    with pytest.raises(ForceReingestPathMismatchError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="reports/collide_b.md",
+                source_type=SourceType.MARKDOWN,
+                force=True,
+            )
+        )
+
+    err = exc_info.value
+    assert err.status_code == 409
+    assert err.code == "force_reingest_path_mismatch"
+    assert err.detail["existing_document_id"] == id_a
+    assert err.detail["existing_source_path"] == "reports/collide_a.md"
+    assert err.detail["new_source_path"] == "reports/collide_b.md"
+
+    # The unrelated document A is untouched: same path, same title, still there.
+    fetched_a = await graph_store.get_document(id_a)
+    assert fetched_a is not None
+    assert fetched_a.source_path == "reports/collide_a.md"
+    assert fetched_a.title == title_a
 
 
 # ---------------------------------------------------------------------------

@@ -126,6 +126,7 @@ def register_sage_tools(
         needs_review: bool = False,
         metadata: dict | None = None,
         tier3_metadata: dict | None = None,
+        document_id: str | None = None,
     ) -> dict:
         """Ingest a source file into SAGE, running the projection ->
         indexing -> abstraction pipeline.
@@ -173,6 +174,16 @@ def register_sage_tools(
         - ``duplicate_content`` (409): a document with the same
           ``source_path`` and content hash exists. Override with
           ``force=true``.
+        - ``force_reingest_path_mismatch`` (409): ``force=true`` and the
+          content-hash match resolves to a document stored at a different
+          ``source_path`` than ``source``, without a ``document_id``
+          confirming the target. Force-reingest keys the record to reuse by
+          content hash alone, so a byte-identical file at a different path can
+          collide with an unrelated document; the guard refuses rather than
+          overwrite its identity. Detail carries ``existing_document_id``,
+          ``existing_source_path``, ``new_source_path``, and
+          ``source_content_hash``. Pass ``document_id`` to confirm the intended
+          record (for example, a document whose file legitimately moved).
         - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
           but the predecessor is not ``active``. Run the archive ->
           reactivate dance via ``update_lifecycles`` before retrying.
@@ -213,7 +224,14 @@ def register_sage_tools(
                 Deep-merged over the vault's adapter-config defaults; unknown
                 keys are rejected by the adapter.
             created_by: Creator name. Defaults to vault owner.
-            force: Allow re-ingestion of duplicate content.
+            force: Allow re-ingestion of duplicate content. The record to
+                reuse is resolved by content hash alone, not by ``source``
+                path; a byte-identical file at a different path collides with
+                whatever document already carries that hash. When that
+                document sits at a different ``source_path``, the ingest is
+                rejected with ``force_reingest_path_mismatch`` unless
+                ``document_id`` names the intended target. Same-path
+                re-ingestion is unaffected.
             predecessor_id: When set, the ingested document supersedes this
                 predecessor: SAGE creates a ``supersedes`` edge (new -> old)
                 and archives the predecessor synchronously. The predecessor
@@ -244,11 +262,19 @@ def register_sage_tools(
                 once validated; queryable via ``search`` filters as
                 ``{"tier3_metadata": {"<field>": <value>}}`` (exact equality;
                 null matches absent-or-null fields).
+            document_id: Pins the force-reingest target. Consulted only when
+                ``force=true`` and a content-hash collision exists; ignored
+                otherwise. Names the record to re-ingest into so a
+                different-path hash match is treated as a deliberate reuse
+                (for example, a moved file) rather than the unrelated-document
+                collision that ``force_reingest_path_mismatch`` guards against.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             if predecessor_id is not None:
                 predecessor_id = _DOCUMENT_ID_ADAPTER.validate_python(predecessor_id)
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             request = IngestRequest(
                 source=source,
@@ -261,6 +287,7 @@ def register_sage_tools(
                 needs_review=needs_review,
                 metadata=metadata,
                 tier3_metadata=tier3_metadata,
+                document_id=document_id,
             )
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP
             # client timeout (BH-130). Callers poll get_document
