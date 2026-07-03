@@ -1036,10 +1036,11 @@ def test_apim_mount_discovery_docs_advertise_path_carrying_resource() -> None:
             f"{policy.name}: authorization_servers must be the facade root "
             "({{sage-resource-url}}), where the AS metadata well-known lives"
         )
-        assert body.get("scopes_supported") == ["NV/Sage.Access"], (
-            f"{policy.name}: the advertised scope stays the host-qualified "
-            "{{sage-resource-url}}/Sage.Access — Entra requires only same-app "
-            "resolution between the scope's resource and the resource parameter"
+        assert body.get("scopes_supported") == ["NV/Sage.Access", "offline_access"], (
+            f"{policy.name}: the advertised scopes are the host-qualified "
+            "{{sage-resource-url}}/Sage.Access plus the bare OIDC offline_access "
+            "scope — the latter is what makes Entra mint a refresh token, so an "
+            "expired access token renews without a fresh /authorize round trip"
         )
         xml = policy.read_text(encoding="utf-8")
         inbound = _inbound_section(xml)
@@ -1051,6 +1052,39 @@ def test_apim_mount_discovery_docs_advertise_path_carrying_resource() -> None:
             f"{policy.name}: the anonymous operation must carry its own <cors> "
             "so the actual response a browser reads returns Access-Control-Allow-*"
         )
+
+
+def test_apim_edge_documents_advertise_offline_access() -> None:
+    """Every edge document that advertises a requestable scope must include the
+    OIDC ``offline_access`` scope, so a standards MCP client asks for it at
+    ``/authorize`` and Entra mints a refresh token. Without it the client's v2
+    access token (60–90 min) expires with no way to renew the session but a fresh
+    ``/authorize`` round trip. ``offline_access`` is a bare OIDC scope, never
+    resource-qualified (CAS-ADR-042).
+
+    The scope is advertised uniformly across all five documents so that whichever
+    one the client composes its scope from — a mount protected-resource metadata
+    document, the root document, the authorization-server metadata, or the DCR
+    ``/register`` registration — offline_access is present.
+    """
+    for policy in (
+        DISCOVERY_OP_POLICY,
+        DISCOVERY_MCP_OP_POLICY,
+        DISCOVERY_MCP_ADMIN_OP_POLICY,
+        AS_METADATA_OP_POLICY,
+    ):
+        scopes = _set_body_json(policy).get("scopes_supported")
+        assert isinstance(scopes, list) and "offline_access" in scopes, (
+            f"{policy.name}: scopes_supported must include the bare 'offline_access' "
+            f"OIDC scope so the client requests a refresh token, got {scopes!r}"
+        )
+    # The /register response carries one space-delimited OAuth scope string; a DCR
+    # client requests exactly the scope it was registered with.
+    scope = _set_body_json(REGISTER_OP_POLICY).get("scope")
+    assert isinstance(scope, str) and "offline_access" in scope.split(), (
+        f"{REGISTER_OP_POLICY.name}: the /register scope string must include "
+        f"'offline_access' as a space-delimited token, got {scope!r}"
+    )
 
 
 def test_apim_challenge_is_path_aware() -> None:

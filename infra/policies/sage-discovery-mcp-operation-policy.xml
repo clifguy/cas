@@ -61,7 +61,7 @@
             <set-body>{
   "resource": "{{sage-resource-url}}/mcp",
   "authorization_servers": ["{{sage-resource-url}}"],
-  "scopes_supported": ["{{sage-resource-url}}/Sage.Access"],
+  "scopes_supported": ["{{sage-resource-url}}/Sage.Access", "offline_access"],
   "bearer_methods_supported": ["header"]
 }</set-body>
         </return-response>

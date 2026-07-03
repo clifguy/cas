@@ -66,7 +66,7 @@
   "token_endpoint_auth_method": "none",
   "grant_types": ["authorization_code"],
   "response_types": ["code"],
-  "scope": "{{sage-resource-url}}/Sage.Access"
+  "scope": "{{sage-resource-url}}/Sage.Access offline_access"
 }</set-body>
         </return-response>
     </inbound>

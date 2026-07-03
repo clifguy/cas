@@ -384,7 +384,7 @@ check_edge_dcr_registration() {
   local code="$HTTP_CODE" body="$HTTP_BODY"
   local ruris=no scope_ok=no
   printf '%s' "$body" | grep -qE '"redirect_uris"[[:space:]]*:[[:space:]]*\[[[:space:]]*"' && ruris=yes
-  printf '%s' "$body" | grep -qE '"scope"[[:space:]]*:[[:space:]]*"[^"]*/Sage\.Access"' && scope_ok=yes
+  printf '%s' "$body" | grep -qE '"scope"[[:space:]]*:[[:space:]]*"[^"]*/Sage\.Access[[:space:]"]' && scope_ok=yes
   if _is_2xx "$code" && [ "$ruris" = yes ] && [ "$scope_ok" = yes ]; then
     DETAIL_MSG="/register $code returns non-empty redirect_uris and a resource-qualified scope (a standards MCP client can complete DCR)"
     return 0
@@ -424,7 +424,7 @@ check_edge_resource_identity() {
   http_post "$SAGE_BASE_URL/register" \
     '{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}'
   printf '%s' "$HTTP_BODY" \
-    | grep -qE "\"scope\"[[:space:]]*:[[:space:]]*\"${esc_base}/Sage\.Access\"" && reg_scope_ok=yes
+    | grep -qE "\"scope\"[[:space:]]*:[[:space:]]*\"${esc_base}/Sage\.Access[[:space:]\"]" && reg_scope_ok=yes
   if [ "$res_ok" = yes ] && [ "$prm_scope_ok" = yes ] && [ "$reg_scope_ok" = yes ]; then
     DETAIL_MSG="advertised resource, scopes_supported, and /register scope all carry $SAGE_BASE_URL (identity coherent with the public host)"
     return 0
