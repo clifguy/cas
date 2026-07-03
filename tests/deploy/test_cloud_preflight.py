@@ -63,6 +63,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_cors_preflight",
         "edge_dcr_registration",
         "edge_resource_identity",
+        "edge_mount_discovery",
         "mcp_admin",
         "mcp_roundtrip",
         "edge_authn_backend",
@@ -172,11 +173,12 @@ Responder = Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]
 def serve(responder: Responder) -> Iterator[str]:
     """Run a threaded stub HTTP server; yield its ``http://127.0.0.1:<port>``.
 
-    Response bodies may carry a ``{{BASE_URL}}`` token, substituted with the
-    stub's own ``http://127.0.0.1:<port>`` before sending — the same shape as an
-    APIM named value. This lets a responder advertise the server's own identity
-    (which the host-coherence checks compare against ``SAGE_BASE_URL``) without
-    knowing the ephemeral port at definition time.
+    Response bodies and header values may carry a ``{{BASE_URL}}`` token,
+    substituted with the stub's own ``http://127.0.0.1:<port>`` before sending —
+    the same shape as an APIM named value. This lets a responder advertise the
+    server's own identity (which the host-coherence checks compare against
+    ``SAGE_BASE_URL``, in discovery bodies and WWW-Authenticate challenges
+    alike) without knowing the ephemeral port at definition time.
     """
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -199,7 +201,9 @@ def serve(responder: Responder) -> Iterator[str]:
             payload = text.encode("utf-8")
             self.send_response(status)
             for key, value in headers.items():
-                self.send_header(key, value)
+                # The {{BASE_URL}} seam applies to header values too — the
+                # WWW-Authenticate challenge carries the metadata URL.
+                self.send_header(key, value.replace("{{BASE_URL}}", base_url))
             if "Content-Type" not in headers:
                 self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -827,6 +831,100 @@ def test_resource_identity_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_resource_identity"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_resource_identity") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _mount_discovery_stub(
+    pathful_resource: bool = True,
+    pathful_challenge: bool = True,
+    discovery_status: int = 200,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the mount-discovery check. When healthy, a 401 on an MCP
+    mount carries a challenge pointing at that mount's path-inserted metadata
+    document, and the document advertises the path-carrying mount URI as its
+    resource. Toggling ``pathful_resource`` off makes the mount documents
+    advertise the bare host (the trailing-slash dead-end regression); toggling
+    ``pathful_challenge`` off points every challenge at the root document.
+    """
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            return discovery_status, (_DISCOVERY_BODY if discovery_status == 200 else "{}"), {}
+        for mount in ("/mcp_admin", "/mcp"):  # admin first: /mcp is its prefix
+            if p == f"/.well-known/oauth-protected-resource{mount}":
+                resource = "{{BASE_URL}}" + (mount if pathful_resource else "")
+                body = (
+                    "{"
+                    f'"resource": "{resource}", '
+                    '"authorization_servers": ["{{BASE_URL}}"], '
+                    '"scopes_supported": ["{{BASE_URL}}/Sage.Access"], '
+                    '"bearer_methods_supported": ["header"]'
+                    "}"
+                )
+                return 200, body, {}
+            if p == mount:
+                pointer = mount if pathful_challenge else ""
+                challenge = (
+                    "Bearer resource_metadata="
+                    f'"{{{{BASE_URL}}}}/.well-known/oauth-protected-resource{pointer}"'
+                )
+                return 401, "", {"WWW-Authenticate": challenge}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_mount_discovery_passes() -> None:
+    """Each mount 401s with a challenge pointing at its path-inserted metadata
+    document, and each document advertises the path-carrying mount URI ->
+    edge_mount_discovery PASS.
+    """
+    with serve(_mount_discovery_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_mount_discovery"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_mount_discovery") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_mount_discovery_bare_host_resource_fails() -> None:
+    """THE trailing-slash dead-end regression: the mount documents 200 but
+    advertise the bare host as resource. A client's URL serializer turns that
+    into https://host/ -- a form Entra can neither match nor register -- so the
+    check must FAIL on the document shape, not credit the healthy statuses.
+    """
+    with serve(_mount_discovery_stub(pathful_resource=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_mount_discovery"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_mount_discovery") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mount_discovery_root_challenge_fails() -> None:
+    """The challenge on an MCP mount points at the ROOT document instead of the
+    mount's path-inserted one: the client then reads the bare-host resource and
+    dead-ends. The check must FAIL on the challenge pointer even though the
+    mount documents themselves are correct.
+    """
+    with serve(_mount_discovery_stub(pathful_challenge=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_mount_discovery"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_mount_discovery") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mount_discovery_dead_edge_fails() -> None:
+    """Discovery doc broken (404): coherent-looking challenges and documents
+    must NOT be credited -- the discovery-200 control rejects them.
+    """
+    with serve(_mount_discovery_stub(discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_mount_discovery"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_mount_discovery") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

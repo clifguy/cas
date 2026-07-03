@@ -250,39 +250,67 @@ def test_entra_script_registers_mcp_loopback_redirect() -> None:
     )
 
 
-def test_entra_script_declares_both_sage_identifier_uris() -> None:
-    """The SAGE resource server declares BOTH identifier URIs in one update: the
-    ``api://<app-id>`` audience URI and the ``https://<SAGE_PUBLIC_HOSTNAME>``
-    custom-domain identity, with the hostname arriving as required environment.
+def test_entra_script_declares_all_sage_identifier_uris() -> None:
+    """The SAGE resource server declares all SIX identifier URIs in one update:
+    the ``api://<app-id>`` audience URI, the ``https://<SAGE_PUBLIC_HOSTNAME>``
+    custom-domain identity, the two MCP-mount forms of that identity, and the
+    two mounts' SSE transport-endpoint forms — with the hostname arriving as
+    required environment.
 
-    The https identity is what lets the edge-advertised
-    ``{{sage-resource-url}}/Sage.Access`` scope resolve to this app: an MCP
-    client sends an RFC 8707 ``resource`` parameter (its server URL) with
-    ``/authorize``, and Entra rejects the request pre-authentication when that
-    parameter is not consistent with the requested scope's resource
-    (AADSTS9010010, ``invalid_target``) — an api://-prefixed scope can never
-    match the client's https server URL. ``--identifier-uris`` is a declarative
-    full-set replace, so both URIs must be passed together on every invocation
-    or a re-bootstrap drops one.
+    The https identities are what let a standards MCP client through Entra: the
+    client sends an RFC 8707 ``resource`` parameter with ``/authorize``, and
+    Entra rejects the request (AADSTS9010010, ``invalid_target``) unless that
+    parameter IS a registered identifier URI of the scope's app — same-origin is
+    not enough; the match is byte-for-byte (verified live: the bare host minted
+    a code while the unregistered ``/mcp`` form was rejected, then ``/mcp``
+    after registration while ``/mcp/sse`` was rejected, and so on). A client may
+    send its connector/server URL, that URL's SSE transport endpoint, or the
+    PRM-advertised resource, so every URI a client could canonicalize from is
+    registered. ``--identifier-uris`` is a declarative full-set replace, so
+    every URI must be passed together on every invocation or a re-bootstrap
+    drops some.
     """
     text = _text(ENTRA)
     assert re.search(r':\s*"\$\{SAGE_PUBLIC_HOSTNAME:\?', text), (
         "entra script must require SAGE_PUBLIC_HOSTNAME in the environment "
-        "(the public sage custom domain the https identifier URI is built from)"
+        "(the public sage custom domain the https identifier URIs are built from)"
     )
-    uri_invocations = re.findall(r"--identifier-uris[^\n]*(?:\\\n[^\n]*)*", text)
+    # Continuation-aware: consume every line that ends in a backslash, then the
+    # final line. (The naive `[^\n]*(?:\\\n[^\n]*)*` form silently matches zero
+    # continuations — the greedy `[^\n]*` eats the trailing backslash and the
+    # optional group succeeds empty, truncating the invocation at line one.)
+    uri_invocations = re.findall(r"--identifier-uris(?:[^\n]*\\\n)*[^\n]*", text)
     assert uri_invocations, "entra script must pass --identifier-uris"
+    required = {
+        "api://${SAGE_APP_ID}": (
+            "the api://<app-id> audience URI (the BFF OBO and preflight token target)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}"': (
+            "the bare-host https identity (the scope prefix the facade advertises)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp"': (
+            "the /mcp mount identity (the path-inserted PRM resource and the "
+            "canonical server URI a spec-following client sends)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"': (
+            "the /mcp_admin mount identity (the maintenance surface's canonical server URI)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse"': (
+            "the /mcp SSE transport-endpoint identity (the URL an SSE-transport "
+            "connector is configured with)"
+        ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin/sse"': (
+            "the /mcp_admin SSE transport-endpoint identity"
+        ),
+    }
     for invocation in uri_invocations:
         flat = invocation.replace("\\\n", " ")
-        assert "api://${SAGE_APP_ID}" in flat, (
-            "every --identifier-uris invocation must keep the api://<app-id> "
-            "audience URI (the BFF OBO and preflight token target)"
-        )
-        assert "https://${SAGE_PUBLIC_HOSTNAME}" in flat, (
-            "every --identifier-uris invocation must declare the https "
-            "custom-domain identity — the flag is a full-set replace, so omitting "
-            "it here regresses the tenant to AADSTS9010010 at /authorize"
-        )
+        for needle, why in required.items():
+            assert needle in flat, (
+                f"every --identifier-uris invocation must declare {why} — the "
+                "flag is a full-set replace, so omitting it here regresses the "
+                "tenant to AADSTS9010010 at /authorize"
+            )
 
 
 def test_entra_script_provisions_group_idempotently() -> None:

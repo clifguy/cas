@@ -97,9 +97,39 @@
                         </return-response>
                     </when>
                     <otherwise>
-                        <set-header name="WWW-Authenticate" exists-action="override">
-                            <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"</value>
-                        </set-header>
+                        <!--
+                            The challenge is PATH-AWARE: a client denied on an MCP
+                            mount is pointed at that mount's RFC 9728 path-inserted
+                            metadata document, whose `resource` is the path-carrying
+                            mount URI. The root document's bare-host resource
+                            serializes with a trailing slash under client URL
+                            normalization (https://host -> https://host/), a form
+                            Entra can neither match nor register as an identifier
+                            URI, so a client steered to the root document dead-ends
+                            at /authorize with AADSTS9010010 (invalid_target).
+                            Verified live on cor-prod. /mcp_admin is tested before
+                            /mcp because /mcp is its string prefix. The path-string
+                            literals use the round-trip-safe &quot;-escaped
+                            double-quoted attribute encoding (see the Accept test
+                            above).
+                        -->
+                        <choose>
+                            <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_admin&quot;))">
+                                <set-header name="WWW-Authenticate" exists-action="override">
+                                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_admin"</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp&quot;))">
+                                <set-header name="WWW-Authenticate" exists-action="override">
+                                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp"</value>
+                                </set-header>
+                            </when>
+                            <otherwise>
+                                <set-header name="WWW-Authenticate" exists-action="override">
+                                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"</value>
+                                </set-header>
+                            </otherwise>
+                        </choose>
                     </otherwise>
                 </choose>
             </when>
