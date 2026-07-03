@@ -254,6 +254,22 @@ def test_foundation_exposes_vnet_id_output() -> None:
     )
 
 
+def test_foundation_exposes_log_analytics_workspace_id_output() -> None:
+    """The foundation exposes the Log Analytics workspace's resource id.
+
+    The workspace backs the ACA environment's application logs; exposing its id
+    lets a downstream module (e.g. the APIM facade's diagnostic settings) route
+    its own resource logs to the same workspace, composing through a named output
+    rather than re-deriving the id. Without this seam a consumer would have to
+    hard-code the workspace id — an F-class regression.
+    """
+    outputs = _output_lines(FOUNDATION.read_text(encoding="utf-8"))
+    assert any("logAnalytics.id" in rhs for _, rhs in outputs), (
+        "missing a Log Analytics workspace id output (RHS referencing "
+        f"logAnalytics.id); have {[(n, r) for n, r in outputs]}"
+    )
+
+
 def test_foundation_outputs_contain_no_secrets() -> None:
     """No module output exposes a secret (shared key, admin password) or a
     hardcoded identity GUID — a local mirror of the bicep

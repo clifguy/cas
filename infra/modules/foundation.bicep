@@ -177,3 +177,6 @@ output acaInfraSubnetId string = vnet.properties.subnets[0].id
 
 @description('Resource id of the delegated Postgres subnet.')
 output postgresSubnetId string = vnet.properties.subnets[1].id
+
+@description('Resource id of the Log Analytics workspace. Downstream modules (e.g. the APIM facade diagnostic settings) route their own resource logs to the same workspace by composing through this output rather than re-deriving the id.')
+output logAnalyticsWorkspaceId string = logAnalytics.id

@@ -68,6 +68,9 @@ param sageIdentityClientId string
 @description('Versionless Key Vault secret URL of the wildcard certificate. Versionless so the binding follows certificate rotation.')
 param tlsCertSecretUri string
 
+@description('Resource id of the Log Analytics workspace the gateway routes its diagnostic logs and metrics to (the foundation workspace).')
+param logAnalyticsWorkspaceId string
+
 // The Consumption SKU is serverless and takes capacity 0; the classic and v2
 // SKUs take a unit count. One unit is enough for this single-edge facade.
 var apimCapacity = apimSku == 'Consumption' ? 0 : 1
@@ -112,6 +115,34 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
         keyVaultId: tlsCertSecretUri
         identityClientId: sageIdentityClientId
         defaultSslBinding: true
+      }
+    ]
+  }
+}
+
+// Route the gateway's own diagnostic logs and metrics to the foundation Log
+// Analytics workspace (CAS-ADR-042). Without this the edge is observable only by
+// live probing; with it, GatewayLogs entries — request outcomes, validate-jwt
+// rejects, CORS preflight, backend latency — land in the workspace's
+// ApiManagementGatewayLogs table. Retention is the workspace's own concern (no
+// per-setting retentionPolicy; the override is deprecated for Log Analytics
+// destinations). This is the minimal, cost-safe cut: no APIM logger, no
+// Application Insights, no request/response payload tracing.
+resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'apim-to-log-analytics'
+  scope: apimService
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      {
+        category: 'GatewayLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
       }
     ]
   }
