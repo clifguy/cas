@@ -293,8 +293,7 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
             "canonical server URI a spec-following client sends)"
         ),
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"': (
-            "the /mcp_admin mount identity (the maintenance surface's canonical "
-            "server URI)"
+            "the /mcp_admin mount identity (the maintenance surface's canonical server URI)"
         ),
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp/sse"': (
             "the /mcp SSE transport-endpoint identity (the URL an SSE-transport "

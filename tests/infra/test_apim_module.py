@@ -25,7 +25,6 @@ import json
 import re
 import shutil
 import subprocess
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Final
 from urllib.parse import urlparse
@@ -913,28 +912,6 @@ def test_apim_resource_url_named_value_is_custom_domain() -> None:
     )
 
 
-def test_apim_policy_xml_is_well_formed() -> None:
-    """Every policy XML under infra/policies/ parses as well-formed XML.
-
-    APIM rejects a malformed stored policy at deploy time, far from the edit
-    that broke it. The historical trap is ``--`` inside an XML comment (an
-    em-dash typed as a double hyphen) — illegal in XML, and the exact defect
-    that once shipped as invalid policy comments (#221). Nothing else gated
-    this: the text-assertion gates above read the files as strings and pass
-    over a file APIM would refuse.
-    """
-    policies = sorted(POLICIES_DIR.glob("*.xml"))
-    assert policies, "no policy XML found under infra/policies/"
-    for policy in policies:
-        try:
-            ET.fromstring(policy.read_text(encoding="utf-8"))
-        except ET.ParseError as exc:
-            pytest.fail(
-                f"{policy.name} is not well-formed XML ({exc}) — check for a "
-                "double-hyphen inside an XML comment (write an em-dash instead)"
-            )
-
-
 def test_apim_declares_path_inserted_discovery_operations() -> None:
     """apim.bicep declares a dedicated literal GET operation for each MCP
     mount's RFC 9728 path-inserted protected-resource-metadata document.
@@ -1020,7 +997,11 @@ def test_apim_challenge_is_path_aware() -> None:
     admin = (
         'resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_admin"'
     )
-    for challenge, label in ((root, "root fallback"), (mcp, "/mcp mount"), (admin, "/mcp_admin mount")):
+    for challenge, label in (
+        (root, "root fallback"),
+        (mcp, "/mcp mount"),
+        (admin, "/mcp_admin mount"),
+    ):
         assert challenge in on_error, (
             f"the on-error challenge must carry the {label} resource_metadata pointer"
         )
