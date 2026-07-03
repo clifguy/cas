@@ -42,29 +42,31 @@ _APIM_SERVICE_TYPE: Final[str] = "Microsoft.ApiManagement/service"
 _APIM_API_TYPE: Final[str] = "Microsoft.ApiManagement/service/apis"
 _APIM_BACKEND_TYPE: Final[str] = "Microsoft.ApiManagement/service/backends"
 
-# Resource-level diagnostic settings route the gateway's own logs and metrics to
-# the foundation Log Analytics workspace (CAS-ADR-042). GatewayLogs is the log
-# category that lands in the workspace's ``ApiManagementGatewayLogs`` table; the
-# workspace id arrives as a module parameter so no id is hard-coded here.
+# Resource-level diagnostic settings route the gateway's platform metrics to the
+# foundation Log Analytics workspace (CAS-ADR-042). Metrics are the only signal
+# the resource-log plane carries on the deployed (Consumption) tier — that tier
+# collects no resource logs at all, so no log category may be routed here: a
+# routed-but-never-emitted category reads as coverage it does not provide.
 _DIAGNOSTIC_SETTINGS_TYPE: Final[str] = "Microsoft.Insights/diagnosticSettings"
-_GATEWAY_LOG_CATEGORY: Final[str] = "GatewayLogs"
+_METRICS_CATEGORY: Final[str] = "AllMetrics"
 _WORKSPACE_PARAM: Final[str] = "logAnalyticsWorkspaceId"
 
-# Routing the logs (``diagnosticSettings``, above) is necessary but not
-# sufficient: APIM emits its own gateway request/response logs only when its
-# internal Diagnostic + Logger are configured. Platform metrics flow regardless,
-# which is why metrics were observed live while ``AzureDiagnostics`` stayed empty.
-# The Azure-Monitor path needs no Application Insights: an ``azureMonitor`` logger
-# (no credentials, no target resource id) plus a service-level diagnostic named
-# ``azuremonitor`` (the reserved instance id) referencing it.
+# Edge request observability rides the Application Insights telemetry plane,
+# which every APIM tier supports: a workspace-based Application Insights
+# resource linked to the same foundation workspace, an ``applicationInsights``
+# logger authenticated by the facade's user-assigned managed identity (no
+# instrumentation key, no connection-string literal), and a service-level
+# diagnostic named ``applicationinsights`` (the reserved instance id) binding it.
 _APIM_LOGGER_TYPE: Final[str] = "Microsoft.ApiManagement/service/loggers"
 _APIM_DIAGNOSTIC_TYPE: Final[str] = "Microsoft.ApiManagement/service/diagnostics"
-_AZURE_MONITOR_LOGGER_TYPE: Final[str] = "azureMonitor"
-_AZURE_MONITOR_DIAGNOSTIC_NAME: Final[str] = "azuremonitor"
-# ``logAnalyticsDestinationType: 'Dedicated'`` lands GatewayLogs in the dedicated
-# ``ApiManagementGatewayLogs`` table rather than the legacy consolidated
-# ``AzureDiagnostics`` table.
-_DEDICATED_DESTINATION: Final[str] = "Dedicated"
+_APP_INSIGHTS_TYPE: Final[str] = "Microsoft.Insights/components"
+_APP_INSIGHTS_LOGGER_TYPE: Final[str] = "applicationInsights"
+_APP_INSIGHTS_DIAGNOSTIC_NAME: Final[str] = "applicationinsights"
+_ROLE_ASSIGNMENT_TYPE: Final[str] = "Microsoft.Authorization/roleAssignments"
+# Built-in Azure role: Monitoring Metrics Publisher (Entra-authenticated
+# telemetry ingestion). A fixed, public Azure constant — not an environment
+# identity coordinate — and the only GUID the module may carry.
+_METRICS_PUBLISHER_ROLE: Final[str] = "3913510d-42f4-4e42-8a64-420c390d0215"
 
 # The stable API Management API version every resource must pin. A bare
 # 2023-05-01 exists only in its ``-preview`` form (the stable form raises BCP081
@@ -1139,9 +1141,12 @@ def test_apim_declares_mcp_client_id_named_value() -> None:
     assert re.search(r"value:\s*mcpClientId", text), (
         "the mcp-client-id named value must come from the mcpClientId parameter"
     )
-    assert not _GUID_RE.search(APIM.read_text(encoding="utf-8")), (
-        "apim.bicep must not hardcode the mcp client id as a literal GUID"
-    )
+    stray = [
+        g
+        for g in _GUID_RE.findall(APIM.read_text(encoding="utf-8"))
+        if g.lower() != _METRICS_PUBLISHER_ROLE
+    ]
+    assert not stray, f"apim.bicep must not hardcode the mcp client id as a literal GUID: {stray}"
 
 
 def test_apim_health_operation_policy_routes_to_backend_unauthenticated() -> None:
@@ -1341,14 +1346,19 @@ def test_apim_policy_routes_admin_mount_through_jwt() -> None:
 
 def test_apim_no_hardcoded_identity_or_env_url_in_bicep() -> None:
     """The tenant is derived from a deploy-time ARM function (not a literal
-    GUID), and no Entra authority URL is baked into the Bicep — the authority
-    host belongs to the versioned policy XML only.
+    GUID), no identity GUID is hardcoded, and no Entra authority URL is baked
+    into the Bicep — the authority host belongs to the versioned policy XML only.
+
+    The one sanctioned GUID is the Monitoring Metrics Publisher role id: a
+    fixed, public Azure constant naming a built-in role, not an identity
+    coordinate. Any other GUID-shaped literal fails the gate.
     """
     text = APIM.read_text(encoding="utf-8")
     assert "subscription().tenantId" in _strip_line_comments(text), (
         "the tenant id must be derived from subscription().tenantId, not hardcoded"
     )
-    assert not _GUID_RE.search(text), "apim.bicep must not hardcode an identity GUID"
+    stray = [g for g in _GUID_RE.findall(text) if g.lower() != _METRICS_PUBLISHER_ROLE]
+    assert not stray, f"apim.bicep must not hardcode an identity GUID: {stray}"
     assert _ENTRA_AUTHORITY_HOST not in text, (
         f"the {_ENTRA_AUTHORITY_HOST} authority host must live in the policy XML, "
         "not in the Bicep (keeps no-hardcoded-env-urls clean)"
@@ -1820,14 +1830,15 @@ def test_apim_declares_log_analytics_workspace_param() -> None:
 
 
 def test_apim_declares_diagnostic_settings_to_workspace() -> None:
-    """The APIM service routes GatewayLogs + gateway metrics to the workspace.
+    """The APIM service routes platform metrics — and only metrics — to the workspace.
 
     Resource-level ``Microsoft.Insights/diagnosticSettings`` scoped to the APIM
-    service, with ``workspaceId`` bound to the workspace param, the ``GatewayLogs``
-    log category enabled, and a metrics category enabled — so gateway request
-    outcomes (JWT rejects, CORS preflight, backend latency) land in the workspace's
-    ``ApiManagementGatewayLogs`` table instead of being observable only by live
-    probing.
+    service, with ``workspaceId`` bound to the workspace param and the
+    ``AllMetrics`` category enabled. No log category may be routed: the deployed
+    (Consumption) tier collects no resource logs at all, so a ``logs`` entry —
+    or the ``logAnalyticsDestinationType`` that only matters for one — is inert
+    config masquerading as coverage. Request-level observability rides the
+    Application Insights plane instead (gates below).
     """
     text = APIM.read_text(encoding="utf-8")
     assert _declares_resource_type(text, _DIAGNOSTIC_SETTINGS_TYPE), (
@@ -1840,15 +1851,15 @@ def test_apim_declares_diagnostic_settings_to_workspace() -> None:
     assert f"workspaceId: {_WORKSPACE_PARAM}" in block, (
         f"the diagnostic settings must bind workspaceId to the {_WORKSPACE_PARAM} param"
     )
-    assert f"category: '{_GATEWAY_LOG_CATEGORY}'" in block, (
-        f"the diagnostic settings must enable the {_GATEWAY_LOG_CATEGORY} log category"
+    assert f"category: '{_METRICS_CATEGORY}'" in block, (
+        f"the diagnostic settings must route the {_METRICS_CATEGORY} metrics category"
     )
-    # A metrics category (e.g. AllMetrics) so gateway metrics flow to the workspace.
-    assert "metrics:" in block, "the diagnostic settings must route gateway metrics"
-    # Both the log and the metric must be turned on, not merely listed.
-    assert block.count("enabled: true") >= 2, (
-        "both the GatewayLogs log and the gateway metrics must be enabled: true"
-    )
+    assert "enabled: true" in block, "the metrics category must be enabled: true"
+    for inert in ("logs:", "GatewayLogs", "logAnalyticsDestinationType"):
+        assert inert not in block, (
+            f"the diagnostic settings must not carry '{inert}' — resource logs are "
+            "never collected on the deployed tier, so routing them is inert config"
+        )
 
 
 def test_apim_diagnostic_settings_has_no_retention_override() -> None:
@@ -1870,77 +1881,148 @@ def test_apim_diagnostic_settings_has_no_retention_override() -> None:
     )
 
 
-def test_apim_declares_azure_monitor_logger() -> None:
-    """The facade declares an ``azureMonitor`` logger — the piece the ARM-level
-    ``diagnosticSettings`` cannot substitute for.
+def test_apim_declares_app_insights_resource() -> None:
+    """The module provisions the workspace-based Application Insights resource
+    the gateway's request telemetry lands in.
 
-    ``diagnosticSettings`` only routes logs APIM has been told to emit; without a
-    logger + diagnostic, APIM emits no gateway request logs at all (platform
-    metrics flow regardless, masking the gap). The Azure-Monitor path needs no
-    Application Insights: the logger carries ``loggerType: 'azureMonitor'`` and
-    NO ``credentials`` / ``resourceId`` / ``instrumentationKey`` — so no secret
-    and no App-Insights/Event-Hub coupling leaks into the module.
+    ``WorkspaceResourceId`` binds to the workspace param — workspace-based, not
+    classic, so telemetry lands in the same foundation workspace as everything
+    else. ``DisableLocalAuth: true`` forces Entra-authenticated ingestion: were
+    instrumentation-key ingestion left open, telemetry could flow even with a
+    broken role grant, and a live check would prove nothing about the
+    managed-identity path.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_resource_type(text, _APP_INSIGHTS_TYPE), (
+        f"apim.bicep must declare a {_APP_INSIGHTS_TYPE} resource"
+    )
+    block = _resource_block(text, _APP_INSIGHTS_TYPE)
+    assert f"WorkspaceResourceId: {_WORKSPACE_PARAM}" in block, (
+        f"the Application Insights resource must bind WorkspaceResourceId to the "
+        f"{_WORKSPACE_PARAM} param (workspace-based, not classic)"
+    )
+    assert "DisableLocalAuth: true" in block, (
+        "the Application Insights resource must set DisableLocalAuth: true so only "
+        "Entra-authenticated ingestion is accepted"
+    )
+    assert "Application_Type: 'web'" in block, (
+        "the Application Insights resource must declare Application_Type: 'web'"
+    )
+
+
+def test_apim_declares_app_insights_logger() -> None:
+    """The facade's logger is an ``applicationInsights`` logger authenticated by
+    the managed identity — no instrumentation key, no connection-string literal.
+
+    ``connectionString`` must be a symbolic reference to the Application Insights
+    resource's own property (never a literal), and ``identityClientId`` must bind
+    the identity param so the gateway acquires its ingestion token via the
+    user-assigned managed identity. An ``instrumentationKey`` credential anywhere
+    in the block signals key-based auth — a secret in source — and fails the gate.
     """
     text = APIM.read_text(encoding="utf-8")
     assert _declares_resource_type(text, _APIM_LOGGER_TYPE), (
-        f"apim.bicep must declare a {_APIM_LOGGER_TYPE} resource (the azureMonitor logger)"
+        f"apim.bicep must declare a {_APIM_LOGGER_TYPE} resource"
     )
     block = _resource_block(text, _APIM_LOGGER_TYPE)
-    assert f"loggerType: '{_AZURE_MONITOR_LOGGER_TYPE}'" in block, (
-        f"the logger must be an {_AZURE_MONITOR_LOGGER_TYPE} logger "
-        f"(loggerType: '{_AZURE_MONITOR_LOGGER_TYPE}')"
+    assert f"loggerType: '{_APP_INSIGHTS_LOGGER_TYPE}'" in block, (
+        f"the logger must carry loggerType: '{_APP_INSIGHTS_LOGGER_TYPE}'"
     )
     assert "parent: apimService" in block, (
         "the logger must be a child of the APIM service (parent: apimService)"
     )
-    for forbidden in ("instrumentationKey", "credentials", "resourceId"):
-        assert forbidden not in block, (
-            f"an azureMonitor logger carries no {forbidden}; its presence signals an "
-            "Application Insights / Event Hub logger (a secret/coupling this module must not carry)"
-        )
+    assert re.search(r"connectionString:\s*\w+\.properties\.ConnectionString", block), (
+        "credentials.connectionString must be a symbolic reference to the Application "
+        "Insights resource's ConnectionString property, never a literal"
+    )
+    assert "identityClientId: sageIdentityClientId" in block, (
+        "credentials.identityClientId must bind the sageIdentityClientId param so "
+        "ingestion authenticates via the user-assigned managed identity"
+    )
+    assert "instrumentationKey" not in block, (
+        "the logger must not carry an instrumentationKey — key-based auth puts a "
+        "secret in source; ingestion authenticates via the managed identity"
+    )
 
 
-def test_apim_declares_azure_monitor_diagnostic() -> None:
-    """The facade declares the service-level ``azuremonitor`` diagnostic that tells
-    APIM to emit its gateway logs through the logger above.
+def test_apim_declares_app_insights_diagnostic() -> None:
+    """The service-level diagnostic that makes the gateway emit per-request
+    telemetry through the logger above.
 
-    The diagnostic instance name must be the Azure-Monitor-reserved ``azuremonitor``,
-    and its ``loggerId`` must be a symbolic reference to the logger resource — never
-    a hardcoded literal id (which would both break on redeploy and smuggle a GUID
-    into the module).
+    The instance name must be the reserved ``applicationinsights``; ``loggerId``
+    must be a symbolic reference to the logger resource — never a hardcoded
+    literal id. Sampling is pinned to 100% with ``allErrors`` so every request
+    (and every error regardless of sampling) produces telemetry — the guarantee
+    any live emission check rests on.
     """
     text = APIM.read_text(encoding="utf-8")
     assert _declares_resource_type(text, _APIM_DIAGNOSTIC_TYPE), (
-        f"apim.bicep must declare a {_APIM_DIAGNOSTIC_TYPE} resource (the azuremonitor diagnostic)"
+        f"apim.bicep must declare a {_APIM_DIAGNOSTIC_TYPE} resource"
     )
     block = _resource_block(text, _APIM_DIAGNOSTIC_TYPE)
-    assert f"name: '{_AZURE_MONITOR_DIAGNOSTIC_NAME}'" in block, (
-        f"the diagnostic instance must be named '{_AZURE_MONITOR_DIAGNOSTIC_NAME}' "
-        "(the Azure-Monitor-reserved diagnostic id)"
+    assert f"name: '{_APP_INSIGHTS_DIAGNOSTIC_NAME}'" in block, (
+        f"the diagnostic instance must be named '{_APP_INSIGHTS_DIAGNOSTIC_NAME}' "
+        "(the reserved Application-Insights diagnostic id)"
     )
     assert "parent: apimService" in block, (
         "the diagnostic must be a child of the APIM service (parent: apimService)"
     )
     assert re.search(r"loggerId:\s*\w+\.id", block), (
-        "loggerId must be a symbolic reference to the logger resource (e.g. "
-        "loggerId: apimAzureMonitorLogger.id), never a hardcoded literal id"
+        "loggerId must be a symbolic reference to the logger resource, never a hardcoded literal id"
+    )
+    assert "alwaysLog: 'allErrors'" in block, (
+        "the diagnostic must set alwaysLog: 'allErrors' so errors emit regardless of sampling"
+    )
+    assert "samplingType: 'fixed'" in block and "percentage: 100" in block, (
+        "sampling must be pinned to fixed 100% so every request produces telemetry"
     )
 
 
-def test_apim_diagnostic_settings_uses_dedicated_table() -> None:
-    """The resource-level diagnostic settings route logs to the DEDICATED table.
+def test_apim_grants_metrics_publisher_to_identity() -> None:
+    """The facade's managed identity may publish telemetry to the Application
+    Insights resource — the grant Entra-authenticated ingestion depends on.
 
-    Without ``logAnalyticsDestinationType: 'Dedicated'`` GatewayLogs land in the
-    legacy consolidated ``AzureDiagnostics`` table; with it they land in the
-    per-resource ``ApiManagementGatewayLogs`` table (the queryable, dedicated
-    destination).
+    Scoped to the Application Insights resource; the principal binds the
+    principal-id param, never the client id (the two are distinct coordinates,
+    and an assignment against the client id silently matches no principal); the
+    role arrives through ``subscriptionResourceId`` with a ``guid()``-derived
+    idempotent name.
     """
-    block = _resource_block(APIM.read_text(encoding="utf-8"), _DIAGNOSTIC_SETTINGS_TYPE)
-    assert block, "no diagnostic settings block found"
-    assert f"logAnalyticsDestinationType: '{_DEDICATED_DESTINATION}'" in block, (
-        f"the diagnostic settings must set logAnalyticsDestinationType: "
-        f"'{_DEDICATED_DESTINATION}' so GatewayLogs land in the dedicated "
-        "ApiManagementGatewayLogs table"
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_resource_type(text, _ROLE_ASSIGNMENT_TYPE), (
+        f"apim.bicep must declare a {_ROLE_ASSIGNMENT_TYPE} resource"
+    )
+    block = _resource_block(text, _ROLE_ASSIGNMENT_TYPE)
+    assert re.search(r"scope:\s*appInsights\b", block), (
+        "the role assignment must be scoped to the Application Insights resource "
+        "(scope: appInsights)"
+    )
+    assert "principalId: sageIdentityPrincipalId" in block, (
+        "the role assignment must bind principalId to the sageIdentityPrincipalId "
+        "param (the principal id, not the client id)"
+    )
+    assert "principalType: 'ServicePrincipal'" in block, (
+        "the role assignment must declare principalType: 'ServicePrincipal'"
+    )
+    assert "subscriptionResourceId('Microsoft.Authorization/roleDefinitions'" in block, (
+        "roleDefinitionId must be derived via subscriptionResourceId over the "
+        "built-in role constant"
+    )
+    assert re.search(r"name:\s*guid\(", block), (
+        "the role assignment name must be guid()-derived for idempotent redeploys"
+    )
+
+
+def test_apim_declares_identity_principal_param() -> None:
+    """The identity's principal id arrives as a required parameter.
+
+    The role assignment needs the service principal's object id; a required
+    param (no default) keeps the coordinate out of the module, and the
+    error-level ``no-unused-params`` lint rule forces it to be consumed.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_param(text, "sageIdentityPrincipalId"), (
+        "apim.bicep must declare a required 'param sageIdentityPrincipalId string' (no default)"
     )
 
 
@@ -1959,6 +2041,24 @@ def test_main_bicep_wires_workspace_into_apim() -> None:
     ), (
         f"the apim module must receive {_WORKSPACE_PARAM} from "
         "foundation.outputs.logAnalyticsWorkspaceId"
+    )
+
+
+def test_main_bicep_wires_identity_principal_into_apim() -> None:
+    """The orchestrator passes the identity's principal id into the APIM module.
+
+    Scoped to the ``apim`` module call and pinned to the identity module's
+    ``sageIdentityPrincipalId`` output — the principal id, not the client id,
+    which a bare substring check would accept and which produces a role
+    assignment that matches no principal.
+    """
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/apim.bicep")
+    assert block, "main.bicep declares no apim module call"
+    assert re.search(
+        r"sageIdentityPrincipalId:\s*identity\.outputs\.sageIdentityPrincipalId", block
+    ), (
+        "the apim module must receive sageIdentityPrincipalId from "
+        "identity.outputs.sageIdentityPrincipalId"
     )
 
 
@@ -1995,74 +2095,157 @@ def test_apim_diagnostic_detectors_control() -> None:
     assert not _declares_param("param logAnalyticsWorkspaceId string = ''\n", _WORKSPACE_PARAM)
     assert not _declares_param("// param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
 
+    # Inert resource-log config is visible to the metrics-only assertions: a
+    # block carrying a log category or a destination type exposes every substring
+    # the gate forbids, and stripping them clears the gate while the metrics
+    # category stays detectable.
+    inert = (
+        "resource d 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {\n"
+        "  scope: apimService\n"
+        "  properties: {\n"
+        "    workspaceId: logAnalyticsWorkspaceId\n"
+        "    logAnalyticsDestinationType: 'Dedicated'\n"
+        "    logs: [\n"
+        "      {\n"
+        "        category: 'GatewayLogs'\n"
+        "        enabled: true\n"
+        "      }\n"
+        "    ]\n"
+        "    metrics: [\n"
+        "      {\n"
+        "        category: 'AllMetrics'\n"
+        "        enabled: true\n"
+        "      }\n"
+        "    ]\n"
+        "  }\n"
+        "}\n"
+        "output x string = d.id\n"
+    )
+    inert_block = _resource_block(inert, _DIAGNOSTIC_SETTINGS_TYPE)
+    for token in ("logs:", "GatewayLogs", "logAnalyticsDestinationType"):
+        assert token in inert_block, f"inert-config token '{token}' must be visible"
+    clean = (
+        "resource d 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {\n"
+        "  scope: apimService\n"
+        "  properties: {\n"
+        "    workspaceId: logAnalyticsWorkspaceId\n"
+        "    metrics: [\n"
+        "      {\n"
+        "        category: 'AllMetrics'\n"
+        "        enabled: true\n"
+        "      }\n"
+        "    ]\n"
+        "  }\n"
+        "}\n"
+        "output x string = d.id\n"
+    )
+    clean_block = _resource_block(clean, _DIAGNOSTIC_SETTINGS_TYPE)
+    for token in ("logs:", "GatewayLogs", "logAnalyticsDestinationType"):
+        assert token not in clean_block
+    assert f"category: '{_METRICS_CATEGORY}'" in clean_block
 
-def test_apim_azure_monitor_detectors_control() -> None:
-    """The logger/diagnostic detectors distinguish the three prefix-sharing APIM
-    types and isolate adjacent blocks — so the gates above cannot pass by accident.
+
+def test_apim_app_insights_detectors_control() -> None:
+    """The telemetry-plane detectors distinguish the prefix-sharing APIM types,
+    isolate adjacent blocks, and surface the malformed credential shapes — so
+    the gates above cannot pass by accident.
 
     ``Microsoft.ApiManagement/service``, ``.../service/loggers``, and
     ``.../service/diagnostics`` share a prefix; the ``@``-anchored declaration
     match must treat them as distinct, and ``_resource_block`` must not bleed one
-    resource's body into the next when the logger and diagnostic are adjacent (the
-    real module declares them back-to-back). ``logAnalyticsDestinationType`` is a
-    plain substring, controlled here so its presence/absence is proven meaningful.
+    resource's body into the next when several are adjacent (the real module
+    declares them back-to-back). The credential assertions are substring/regex
+    checks, controlled here so their presence/absence is proven meaningful.
     """
     present = (
         "resource s 'Microsoft.ApiManagement/service@2022-08-01' = {\n"
         "  name: 'x'\n"
         "}\n"
+        "resource ai 'Microsoft.Insights/components@2020-02-02' = {\n"
+        "  name: 'appi-x'\n"
+        "  properties: {\n"
+        "    WorkspaceResourceId: logAnalyticsWorkspaceId\n"
+        "    DisableLocalAuth: true\n"
+        "  }\n"
+        "}\n"
+        "resource ra 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n"
+        "  scope: ai\n"
+        "  name: guid(ai.id)\n"
+        "  properties: {\n"
+        "    principalId: sageIdentityPrincipalId\n"
+        "  }\n"
+        "}\n"
         "resource lg 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {\n"
         "  parent: s\n"
-        "  name: 'azuremonitor'\n"
+        "  name: 'appinsights'\n"
         "  properties: {\n"
-        "    loggerType: 'azureMonitor'\n"
+        "    loggerType: 'applicationInsights'\n"
+        "    credentials: {\n"
+        "      connectionString: ai.properties.ConnectionString\n"
+        "      identityClientId: sageIdentityClientId\n"
+        "    }\n"
         "  }\n"
         "}\n"
         "resource dg 'Microsoft.ApiManagement/service/diagnostics@2022-08-01' = {\n"
         "  parent: s\n"
-        "  name: 'azuremonitor'\n"
+        "  name: 'applicationinsights'\n"
         "  properties: {\n"
         "    loggerId: lg.id\n"
         "  }\n"
         "}\n"
         "output x string = s.id\n"
     )
-    # The @-anchor distinguishes the three prefix-sharing types.
+    # The @-anchor distinguishes every declared type, prefix-sharing or not.
     assert _declares_resource_type(present, _APIM_SERVICE_TYPE)
     assert _declares_resource_type(present, _APIM_LOGGER_TYPE)
     assert _declares_resource_type(present, _APIM_DIAGNOSTIC_TYPE)
+    assert _declares_resource_type(present, _APP_INSIGHTS_TYPE)
+    assert _declares_resource_type(present, _ROLE_ASSIGNMENT_TYPE)
 
-    # Adjacent-block isolation: the logger block carries loggerType and not the
-    # diagnostic's loggerId; the diagnostic block carries loggerId and not
-    # loggerType. Without isolation, T2's loggerId assertion could be satisfied by
-    # the wrong resource.
+    # Adjacent-block isolation: the logger carries the credentials, the
+    # diagnostic the loggerId, the role assignment the principalId — none bleeds
+    # into another, so no assertion can be satisfied by the wrong resource.
     logger_block = _resource_block(present, _APIM_LOGGER_TYPE)
-    assert "loggerType: 'azureMonitor'" in logger_block
+    assert re.search(r"connectionString:\s*\w+\.properties\.ConnectionString", logger_block)
     assert "loggerId" not in logger_block
     diag_block = _resource_block(present, _APIM_DIAGNOSTIC_TYPE)
     assert re.search(r"loggerId:\s*\w+\.id", diag_block)
-    assert "loggerType" not in diag_block
+    assert "credentials" not in diag_block
+    ra_block = _resource_block(present, _ROLE_ASSIGNMENT_TYPE)
+    assert "principalId: sageIdentityPrincipalId" in ra_block
+    assert "connectionString" not in ra_block
+    ai_block = _resource_block(present, _APP_INSIGHTS_TYPE)
+    assert "DisableLocalAuth: true" in ai_block
+    assert "principalId" not in ai_block
 
-    # Absent: neither child type resolves to a block when only the service exists.
+    # Malformed credential shapes are visible to the logger gate: a key-based
+    # credential, a wrong logger type, and a stripped identityClientId must each
+    # fail the corresponding assertion.
+    keyed = present.replace(
+        "      connectionString: ai.properties.ConnectionString\n",
+        "      instrumentationKey: 'deadbeef'\n",
+    )
+    keyed_block = _resource_block(keyed, _APIM_LOGGER_TYPE)
+    assert "instrumentationKey" in keyed_block
+    assert not re.search(r"connectionString:\s*\w+\.properties\.ConnectionString", keyed_block)
+    wrong_type = present.replace("loggerType: 'applicationInsights'", "loggerType: 'azureMonitor'")
+    assert f"loggerType: '{_APP_INSIGHTS_LOGGER_TYPE}'" not in _resource_block(
+        wrong_type, _APIM_LOGGER_TYPE
+    )
+    no_identity = present.replace("      identityClientId: sageIdentityClientId\n", "")
+    assert "identityClientId" not in _resource_block(no_identity, _APIM_LOGGER_TYPE)
+
+    # Absent: no telemetry-plane type resolves to a block when only the service
+    # exists.
     absent = "resource s 'Microsoft.ApiManagement/service@2022-08-01' = {\n  name: 'x'\n}\n"
     assert _resource_block(absent, _APIM_LOGGER_TYPE) == ""
     assert _resource_block(absent, _APIM_DIAGNOSTIC_TYPE) == ""
+    assert _resource_block(absent, _APP_INSIGHTS_TYPE) == ""
+    assert _resource_block(absent, _ROLE_ASSIGNMENT_TYPE) == ""
 
-    # The dedicated-destination substring is present only when actually set.
-    dedicated = (
-        "resource d 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {\n"
-        "  scope: apimService\n"
-        "  properties: {\n"
-        "    workspaceId: logAnalyticsWorkspaceId\n"
-        "    logAnalyticsDestinationType: 'Dedicated'\n"
-        "  }\n"
-        "}\n"
-        "output x string = d.id\n"
-    )
-    legacy = dedicated.replace("    logAnalyticsDestinationType: 'Dedicated'\n", "")
-    assert f"logAnalyticsDestinationType: '{_DEDICATED_DESTINATION}'" in _resource_block(
-        dedicated, _DIAGNOSTIC_SETTINGS_TYPE
-    )
-    assert f"logAnalyticsDestinationType: '{_DEDICATED_DESTINATION}'" not in _resource_block(
-        legacy, _DIAGNOSTIC_SETTINGS_TYPE
-    )
+    # The GUID allowlist: the sanctioned role constant clears the stray filter;
+    # any other GUID-shaped literal fires it.
+    sanctioned = f"var roleId = '{_METRICS_PUBLISHER_ROLE}'"
+    assert not [g for g in _GUID_RE.findall(sanctioned) if g.lower() != _METRICS_PUBLISHER_ROLE]
+    unsanctioned = "var other = '00000000-0000-0000-0000-000000000001'"
+    assert [g for g in _GUID_RE.findall(unsanctioned) if g.lower() != _METRICS_PUBLISHER_ROLE]
