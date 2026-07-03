@@ -84,6 +84,9 @@ def test_builds_both_images_bakes_version_and_smokes() -> None:
     assert "--build-arg" in raw and "SAGE_BUILD_VERSION=" in raw, (
         "the image version must be baked via the SAGE_BUILD_VERSION build arg"
     )
+    assert "--build-arg" in raw and "SAGE_BUILD_IDENTITY=" in raw, (
+        "the image build identity must be baked via the SAGE_BUILD_IDENTITY build arg"
+    )
     assert "build_info" in raw, "the version must be single-sourced from sage.build_info"
     assert re.search(r"pytest\b.*tests/deploy/", raw), (
         "the container smoke tests (tests/deploy/) must run as part of the build"

@@ -7,9 +7,11 @@
 # excluded by its environment marker; the Nomic CPU embedder and the Postgres
 # adapters are cross-platform and ship in the image. The Nomic weights are
 # baked in so the runtime loads them offline. The build is repo-less, so the
-# runtime version comes from the SAGE_BUILD_VERSION build arg (see build_info).
+# runtime version and build identity come from the SAGE_BUILD_VERSION and
+# SAGE_BUILD_IDENTITY build args (see build_info).
 #
-# Build:   docker build --build-arg SAGE_BUILD_VERSION=<MAJOR.MINOR.PATCH> -t cas-sage .
+# Build:   docker build --build-arg SAGE_BUILD_VERSION=<MAJOR.MINOR.PATCH> \
+#            --build-arg SAGE_BUILD_IDENTITY=<short-sha> -t cas-sage .
 # Run:     docker run -p 8000:8000 cas-sage          # boots on the baked smoke config
 # Override config at deploy time via SAGE_CONFIG_PATH. See
 # docs/process/container-image.md.
@@ -57,10 +59,13 @@ FROM ${PYTHON_IMAGE} AS runtime
 RUN groupadd --system sage \
     && useradd --system --gid sage --create-home --home-dir /home/sage sage
 
-# Baked at build time so a .git-less image reports its real version
-# (build_info resolves SAGE_BUILD_VERSION when no live git checkout is present).
+# Baked at build time so a .git-less image reports its real version and
+# commit (build_info resolves SAGE_BUILD_VERSION and SAGE_BUILD_IDENTITY when
+# no live git checkout is present).
 ARG SAGE_BUILD_VERSION
+ARG SAGE_BUILD_IDENTITY
 ENV SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION} \
+    SAGE_BUILD_IDENTITY=${SAGE_BUILD_IDENTITY} \
     PATH=/opt/sage/.venv/bin:$PATH \
     HF_HOME=/opt/hf \
     HF_HUB_OFFLINE=1 \

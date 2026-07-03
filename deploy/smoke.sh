@@ -27,6 +27,13 @@ version="${1:-$("$repo_root/.venv/bin/python" -c 'from sage import build_info as
 # build_info yields "unknown" only without a v* tag or git checkout; fall back so
 # the smoke still bakes a usable stamp.
 case "$version" in ""|unknown) version="0.0.0" ;; esac
+# Mirror build_info._compute_build_identity's own convention: short SHA, with
+# -dirty appended for uncommitted *tracked* changes (untracked files ignored).
+identity="$(git -C "$repo_root" rev-parse --short=7 HEAD 2>/dev/null || true)"
+if [ -n "$identity" ] && [ -n "$(git -C "$repo_root" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+  identity="${identity}-dirty"
+fi
+[ -n "$identity" ] || identity="unknown"
 image="${SMOKE_IMAGE:-cas-sage:smoke}"
 platform="${SMOKE_PLATFORM-linux/amd64}"
 port="${SMOKE_PORT:-18000}"
@@ -38,8 +45,8 @@ plat_arg=()
 cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-echo "==> Building $image (version=$version, platform=${platform:-native})"
-docker build ${plat_arg[@]+"${plat_arg[@]}"} --build-arg SAGE_BUILD_VERSION="$version" -t "$image" "$repo_root"
+echo "==> Building $image (version=$version, identity=$identity, platform=${platform:-native})"
+docker build ${plat_arg[@]+"${plat_arg[@]}"} --build-arg SAGE_BUILD_VERSION="$version" --build-arg SAGE_BUILD_IDENTITY="$identity" -t "$image" "$repo_root"
 
 echo "==> SMK-003: runs as non-root"
 uid="$(docker run --rm ${plat_arg[@]+"${plat_arg[@]}"} --entrypoint id "$image" -u)"
@@ -72,6 +79,19 @@ echo "    health body: $body"
 echo "$body" | grep -Eq '"status": *"ok"' || { echo "FAIL: health status not ok"; exit 1; }
 echo "$body" | grep -Eq "\"version\": *\"$version\"" || { echo "FAIL: baked version $version not reported"; exit 1; }
 echo "    boot + non-loopback bind + health + version OK"
+
+echo "==> SMK-001b: build identity baked, banner reports it"
+logs="$(docker logs "$name" 2>&1)"
+if [ "$identity" = "unknown" ]; then
+  echo "$logs" | grep -q "build identity unavailable" \
+    || { echo "FAIL: expected degraded-identity banner hint not found"; exit 1; }
+else
+  echo "$logs" | grep -Fq "build $identity" \
+    || { echo "FAIL: banner does not report baked identity $identity"; exit 1; }
+  echo "$logs" | grep -q "build identity unavailable" \
+    && { echo "FAIL: banner reports identity unavailable despite baked stamp"; exit 1; }
+fi
+echo "    startup banner build identity OK"
 
 docker image inspect "$image" --format '==> Image size: {{.Size}} bytes ({{len .RootFS.Layers}} layers)' || true
 echo "ALL SMOKE CHECKS PASSED"
