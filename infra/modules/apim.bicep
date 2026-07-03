@@ -121,18 +121,23 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
 }
 
 // Route the gateway's own diagnostic logs and metrics to the foundation Log
-// Analytics workspace (CAS-ADR-042). Without this the edge is observable only by
-// live probing; with it, GatewayLogs entries — request outcomes, validate-jwt
-// rejects, CORS preflight, backend latency — land in the workspace's
-// ApiManagementGatewayLogs table. Retention is the workspace's own concern (no
-// per-setting retentionPolicy; the override is deprecated for Log Analytics
-// destinations). This is the minimal, cost-safe cut: no APIM logger, no
-// Application Insights, no request/response payload tracing.
+// Analytics workspace (CAS-ADR-042). GatewayLogs entries — request outcomes,
+// validate-jwt rejects, CORS preflight, backend latency — land in the workspace's
+// dedicated ApiManagementGatewayLogs table (logAnalyticsDestinationType:
+// 'Dedicated'), not the legacy consolidated AzureDiagnostics table. Retention is
+// the workspace's own concern (no per-setting retentionPolicy; the override is
+// deprecated for Log Analytics destinations).
+//
+// This resource only *routes* logs APIM has been told to emit. Azure Monitor
+// platform metrics emit automatically, but APIM's own gateway request/response
+// logs require the internal Diagnostic + Logger below to be emitted at all —
+// without them GatewayLogs is enabled-but-empty (metrics flow, logs do not).
 resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'apim-to-log-analytics'
   scope: apimService
   properties: {
     workspaceId: logAnalyticsWorkspaceId
+    logAnalyticsDestinationType: 'Dedicated'
     logs: [
       {
         category: 'GatewayLogs'
@@ -145,6 +150,39 @@ resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previ
         enabled: true
       }
     ]
+  }
+}
+
+// The Azure-Monitor logger: the piece the ARM-level diagnosticSettings above
+// cannot substitute for. It tells APIM to emit its gateway request logs to Azure
+// Monitor — no Application Insights, so no instrumentation key, no credentials,
+// and no target resource id (those belong only to applicationInsights /
+// azureEventHub loggers). isBuffered is the default; named for the emit target.
+resource apimAzureMonitorLogger 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {
+  parent: apimService
+  name: 'azuremonitor'
+  properties: {
+    loggerType: 'azureMonitor'
+    isBuffered: true
+  }
+}
+
+// The service-level diagnostic that binds that logger. Its instance name must be
+// the Azure-Monitor-reserved 'azuremonitor'. Sampling is pinned to 100% (with
+// alwaysLog: 'allErrors' so failures bypass sampling) so every gateway request
+// produces a log row — the guarantee the live ApiManagementGatewayLogs check
+// depends on. metrics / httpCorrelationProtocol are Application-Insights-only and
+// are omitted.
+resource apimAzureMonitorDiagnostic 'Microsoft.ApiManagement/service/diagnostics@2022-08-01' = {
+  parent: apimService
+  name: 'azuremonitor'
+  properties: {
+    loggerId: apimAzureMonitorLogger.id
+    alwaysLog: 'allErrors'
+    sampling: {
+      samplingType: 'fixed'
+      percentage: 100
+    }
   }
 }
 

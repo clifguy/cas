@@ -50,6 +50,22 @@ _DIAGNOSTIC_SETTINGS_TYPE: Final[str] = "Microsoft.Insights/diagnosticSettings"
 _GATEWAY_LOG_CATEGORY: Final[str] = "GatewayLogs"
 _WORKSPACE_PARAM: Final[str] = "logAnalyticsWorkspaceId"
 
+# Routing the logs (``diagnosticSettings``, above) is necessary but not
+# sufficient: APIM emits its own gateway request/response logs only when its
+# internal Diagnostic + Logger are configured. Platform metrics flow regardless,
+# which is why metrics were observed live while ``AzureDiagnostics`` stayed empty.
+# The Azure-Monitor path needs no Application Insights: an ``azureMonitor`` logger
+# (no credentials, no target resource id) plus a service-level diagnostic named
+# ``azuremonitor`` (the reserved instance id) referencing it.
+_APIM_LOGGER_TYPE: Final[str] = "Microsoft.ApiManagement/service/loggers"
+_APIM_DIAGNOSTIC_TYPE: Final[str] = "Microsoft.ApiManagement/service/diagnostics"
+_AZURE_MONITOR_LOGGER_TYPE: Final[str] = "azureMonitor"
+_AZURE_MONITOR_DIAGNOSTIC_NAME: Final[str] = "azuremonitor"
+# ``logAnalyticsDestinationType: 'Dedicated'`` lands GatewayLogs in the dedicated
+# ``ApiManagementGatewayLogs`` table rather than the legacy consolidated
+# ``AzureDiagnostics`` table.
+_DEDICATED_DESTINATION: Final[str] = "Dedicated"
+
 # The stable API Management API version every resource must pin. A bare
 # 2023-05-01 exists only in its ``-preview`` form (the stable form raises BCP081
 # against the public type index); 2022-08-01 is the real stable version.
@@ -1820,6 +1836,80 @@ def test_apim_diagnostic_settings_has_no_retention_override() -> None:
     )
 
 
+def test_apim_declares_azure_monitor_logger() -> None:
+    """The facade declares an ``azureMonitor`` logger — the piece the ARM-level
+    ``diagnosticSettings`` cannot substitute for.
+
+    ``diagnosticSettings`` only routes logs APIM has been told to emit; without a
+    logger + diagnostic, APIM emits no gateway request logs at all (platform
+    metrics flow regardless, masking the gap). The Azure-Monitor path needs no
+    Application Insights: the logger carries ``loggerType: 'azureMonitor'`` and
+    NO ``credentials`` / ``resourceId`` / ``instrumentationKey`` — so no secret
+    and no App-Insights/Event-Hub coupling leaks into the module.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_resource_type(text, _APIM_LOGGER_TYPE), (
+        f"apim.bicep must declare a {_APIM_LOGGER_TYPE} resource (the azureMonitor logger)"
+    )
+    block = _resource_block(text, _APIM_LOGGER_TYPE)
+    assert f"loggerType: '{_AZURE_MONITOR_LOGGER_TYPE}'" in block, (
+        f"the logger must be an {_AZURE_MONITOR_LOGGER_TYPE} logger "
+        f"(loggerType: '{_AZURE_MONITOR_LOGGER_TYPE}')"
+    )
+    assert "parent: apimService" in block, (
+        "the logger must be a child of the APIM service (parent: apimService)"
+    )
+    for forbidden in ("instrumentationKey", "credentials", "resourceId"):
+        assert forbidden not in block, (
+            f"an azureMonitor logger carries no {forbidden}; its presence signals an "
+            "Application Insights / Event Hub logger (a secret/coupling this module must not carry)"
+        )
+
+
+def test_apim_declares_azure_monitor_diagnostic() -> None:
+    """The facade declares the service-level ``azuremonitor`` diagnostic that tells
+    APIM to emit its gateway logs through the logger above.
+
+    The diagnostic instance name must be the Azure-Monitor-reserved ``azuremonitor``,
+    and its ``loggerId`` must be a symbolic reference to the logger resource — never
+    a hardcoded literal id (which would both break on redeploy and smuggle a GUID
+    into the module).
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_resource_type(text, _APIM_DIAGNOSTIC_TYPE), (
+        f"apim.bicep must declare a {_APIM_DIAGNOSTIC_TYPE} resource (the azuremonitor diagnostic)"
+    )
+    block = _resource_block(text, _APIM_DIAGNOSTIC_TYPE)
+    assert f"name: '{_AZURE_MONITOR_DIAGNOSTIC_NAME}'" in block, (
+        f"the diagnostic instance must be named '{_AZURE_MONITOR_DIAGNOSTIC_NAME}' "
+        "(the Azure-Monitor-reserved diagnostic id)"
+    )
+    assert "parent: apimService" in block, (
+        "the diagnostic must be a child of the APIM service (parent: apimService)"
+    )
+    assert re.search(r"loggerId:\s*\w+\.id", block), (
+        "loggerId must be a symbolic reference to the logger resource (e.g. "
+        "loggerId: apimAzureMonitorLogger.id), never a hardcoded literal id"
+    )
+
+
+def test_apim_diagnostic_settings_uses_dedicated_table() -> None:
+    """The resource-level diagnostic settings route logs to the DEDICATED table.
+
+    Without ``logAnalyticsDestinationType: 'Dedicated'`` GatewayLogs land in the
+    legacy consolidated ``AzureDiagnostics`` table; with it they land in the
+    per-resource ``ApiManagementGatewayLogs`` table (the queryable, dedicated
+    destination).
+    """
+    block = _resource_block(APIM.read_text(encoding="utf-8"), _DIAGNOSTIC_SETTINGS_TYPE)
+    assert block, "no diagnostic settings block found"
+    assert f"logAnalyticsDestinationType: '{_DEDICATED_DESTINATION}'" in block, (
+        f"the diagnostic settings must set logAnalyticsDestinationType: "
+        f"'{_DEDICATED_DESTINATION}' so GatewayLogs land in the dedicated "
+        "ApiManagementGatewayLogs table"
+    )
+
+
 def test_main_bicep_wires_workspace_into_apim() -> None:
     """The orchestrator passes the foundation workspace id into the APIM module.
 
@@ -1870,3 +1960,75 @@ def test_apim_diagnostic_detectors_control() -> None:
     assert _declares_param("param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
     assert not _declares_param("param logAnalyticsWorkspaceId string = ''\n", _WORKSPACE_PARAM)
     assert not _declares_param("// param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
+
+
+def test_apim_azure_monitor_detectors_control() -> None:
+    """The logger/diagnostic detectors distinguish the three prefix-sharing APIM
+    types and isolate adjacent blocks — so the gates above cannot pass by accident.
+
+    ``Microsoft.ApiManagement/service``, ``.../service/loggers``, and
+    ``.../service/diagnostics`` share a prefix; the ``@``-anchored declaration
+    match must treat them as distinct, and ``_resource_block`` must not bleed one
+    resource's body into the next when the logger and diagnostic are adjacent (the
+    real module declares them back-to-back). ``logAnalyticsDestinationType`` is a
+    plain substring, controlled here so its presence/absence is proven meaningful.
+    """
+    present = (
+        "resource s 'Microsoft.ApiManagement/service@2022-08-01' = {\n"
+        "  name: 'x'\n"
+        "}\n"
+        "resource lg 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {\n"
+        "  parent: s\n"
+        "  name: 'azuremonitor'\n"
+        "  properties: {\n"
+        "    loggerType: 'azureMonitor'\n"
+        "  }\n"
+        "}\n"
+        "resource dg 'Microsoft.ApiManagement/service/diagnostics@2022-08-01' = {\n"
+        "  parent: s\n"
+        "  name: 'azuremonitor'\n"
+        "  properties: {\n"
+        "    loggerId: lg.id\n"
+        "  }\n"
+        "}\n"
+        "output x string = s.id\n"
+    )
+    # The @-anchor distinguishes the three prefix-sharing types.
+    assert _declares_resource_type(present, _APIM_SERVICE_TYPE)
+    assert _declares_resource_type(present, _APIM_LOGGER_TYPE)
+    assert _declares_resource_type(present, _APIM_DIAGNOSTIC_TYPE)
+
+    # Adjacent-block isolation: the logger block carries loggerType and not the
+    # diagnostic's loggerId; the diagnostic block carries loggerId and not
+    # loggerType. Without isolation, T2's loggerId assertion could be satisfied by
+    # the wrong resource.
+    logger_block = _resource_block(present, _APIM_LOGGER_TYPE)
+    assert "loggerType: 'azureMonitor'" in logger_block
+    assert "loggerId" not in logger_block
+    diag_block = _resource_block(present, _APIM_DIAGNOSTIC_TYPE)
+    assert re.search(r"loggerId:\s*\w+\.id", diag_block)
+    assert "loggerType" not in diag_block
+
+    # Absent: neither child type resolves to a block when only the service exists.
+    absent = "resource s 'Microsoft.ApiManagement/service@2022-08-01' = {\n  name: 'x'\n}\n"
+    assert _resource_block(absent, _APIM_LOGGER_TYPE) == ""
+    assert _resource_block(absent, _APIM_DIAGNOSTIC_TYPE) == ""
+
+    # The dedicated-destination substring is present only when actually set.
+    dedicated = (
+        "resource d 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {\n"
+        "  scope: apimService\n"
+        "  properties: {\n"
+        "    workspaceId: logAnalyticsWorkspaceId\n"
+        "    logAnalyticsDestinationType: 'Dedicated'\n"
+        "  }\n"
+        "}\n"
+        "output x string = d.id\n"
+    )
+    legacy = dedicated.replace("    logAnalyticsDestinationType: 'Dedicated'\n", "")
+    assert f"logAnalyticsDestinationType: '{_DEDICATED_DESTINATION}'" in _resource_block(
+        dedicated, _DIAGNOSTIC_SETTINGS_TYPE
+    )
+    assert f"logAnalyticsDestinationType: '{_DEDICATED_DESTINATION}'" not in _resource_block(
+        legacy, _DIAGNOSTIC_SETTINGS_TYPE
+    )
