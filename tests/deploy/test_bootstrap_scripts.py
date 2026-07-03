@@ -222,6 +222,29 @@ def test_entra_script_creates_public_client_registration() -> None:
     )
 
 
+def test_entra_script_grants_offline_access_to_mcp_client() -> None:
+    """The public MCP client is granted the OIDC ``offline_access`` permission so
+    Entra issues a refresh token — without it the client's v2 access token
+    (60–90 min) expires and the only way to renew the session is a fresh
+    ``/authorize`` round trip (CAS-ADR-042). ``offline_access`` is a Microsoft
+    Graph delegated permission, so it is granted against Graph's first-party
+    service principal, and both Graph's app id and the scope id are resolved from
+    the tenant at run time — never hardcoded, matching the no-GUID-literal
+    discipline the GUID gate enforces.
+    """
+    text = _text(ENTRA)
+    assert "offline_access" in text, (
+        "the MCP client must be granted the offline_access delegated permission"
+    )
+    assert "OFFLINE_ACCESS_SCOPE_ID" in text, (
+        "the offline_access scope id must be resolved at run time, not hardcoded"
+    )
+    assert "displayName eq 'Microsoft Graph'" in text, (
+        "offline_access is a Microsoft Graph permission — resolve Graph's own "
+        "service principal to grant it, not the SAGE resource server"
+    )
+
+
 def test_entra_script_registers_mcp_loopback_redirect() -> None:
     """The public MCP client registers the Desktop loopback redirect
     (``http://localhost/callback``) alongside its primary env-resolved redirect

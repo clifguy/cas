@@ -675,7 +675,9 @@ def _dcr_stub(
             fields = ['"client_id": "NV"', '"token_endpoint_auth_method": "none"']
             if with_redirect_uris:
                 fields.append('"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]')
-            scope = "api://sage-app-id/Sage.Access" if qualified_scope else "Sage.Access"
+            scope = (
+                "api://sage-app-id/Sage.Access offline_access" if qualified_scope else "Sage.Access"
+            )
             fields.append(f'"scope": "{scope}"')
             return status, "{" + ", ".join(fields) + "}", {}
         return 404, '{"error":"not_found"}', {}
@@ -758,7 +760,7 @@ def _resource_identity_stub(
                 "{"
                 f'"resource": "{resource}", '
                 f'"authorization_servers": ["{resource}"], '
-                f'"scopes_supported": ["{scope_prefix}/Sage.Access"], '
+                f'"scopes_supported": ["{scope_prefix}/Sage.Access", "offline_access"], '
                 '"bearer_methods_supported": ["header"]'
                 "}"
             )
@@ -769,7 +771,7 @@ def _resource_identity_stub(
                 '"client_id": "NV", '
                 '"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"], '
                 '"token_endpoint_auth_method": "none", '
-                f'"scope": "{scope_prefix}/Sage.Access"'
+                f'"scope": "{scope_prefix}/Sage.Access offline_access"'
                 "}"
             )
             return 201, body, {}
@@ -858,7 +860,7 @@ def _mount_discovery_stub(
                     "{"
                     f'"resource": "{resource}", '
                     '"authorization_servers": ["{{BASE_URL}}"], '
-                    '"scopes_supported": ["{{BASE_URL}}/Sage.Access"], '
+                    '"scopes_supported": ["{{BASE_URL}}/Sage.Access", "offline_access"], '
                     '"bearer_methods_supported": ["header"]'
                     "}"
                 )

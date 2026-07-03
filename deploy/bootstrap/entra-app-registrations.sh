@@ -179,10 +179,27 @@ fi
 MCP_CLIENT_SP_ID="$(az ad sp create --id "${MCP_CLIENT_APP_ID}" --query id -o tsv 2>/dev/null || \
   az ad sp show --id "${MCP_CLIENT_APP_ID}" --query id -o tsv)"
 
-# Grant the same delegated SAGE.Access scope the BFF holds, then admin-consent it.
+# Grant the same delegated SAGE.Access scope the BFF holds; the admin-consent
+# below covers this grant and the offline_access grant that follows.
 az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
   --api "${SAGE_APP_ID}" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
+
+# Also grant offline_access so Entra issues a refresh token to this public client
+# -- without it a v2 access token (60-90 min lifetime) expires with no way to
+# renew the session but a fresh /authorize round trip (CAS-ADR-042).
+# offline_access is a Microsoft Graph delegated permission, not a scope on the
+# SAGE resource server, so it is granted against Graph's first-party service
+# principal; Graph's app id and the offline_access scope id are resolved from the
+# tenant at run time, never hardcoded, keeping this durable script free of
+# GUID-shaped literals.
+GRAPH_APP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
+  --query '[0].appId' -o tsv)"
+OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "${GRAPH_APP_ID}" \
+  --query "oauth2PermissionScopes[?value=='offline_access'].id | [0]" -o tsv)"
+az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
+  --api "${GRAPH_APP_ID}" \
+  --api-permissions "${OFFLINE_ACCESS_SCOPE_ID}=Scope"
 az ad app permission admin-consent --id "${MCP_CLIENT_APP_ID}"
 
 # Gate the public client on the single provisioning group (CAS-ADR-044): require

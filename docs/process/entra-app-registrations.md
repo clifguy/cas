@@ -313,13 +313,31 @@ loopback a browser-context Desktop client uses for its auth-code/PKCE callback.
 The flag is a declarative full-set replace, so registering both together keeps a
 re-run from dropping the loopback.
 
-Grant the same delegated `Sage.Access` scope the BFF holds, then admin-consent
-it — permission add and consent are identical to the BFF step above:
+Grant the same delegated `Sage.Access` scope the BFF holds, and additionally grant
+`offline_access` so Entra issues this public client a **refresh token** — then
+admin-consent both in one call. Without `offline_access`, Entra's v2 endpoint mints
+an access token only; once it expires (a 60–90 min default lifetime) the client has
+no way to renew the session but a fresh `/authorize` round trip, which is why an
+idle MCP connection re-authorizes every hour or two instead of persisting.
+`offline_access` is a Microsoft Graph delegated permission — not a scope on the
+SAGE resource server — so it is granted against Graph's first-party service
+principal. Resolve Graph's app id and the `offline_access` scope id at run time
+rather than pasting the well-known GUIDs, the same no-literal discipline used for
+the all-zero role sentinel below.
 
 ```bash
 az ad app permission add --id "$MCP_CLIENT_APP_ID" \
   --api "$SAGE_APP_ID" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
+
+GRAPH_APP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
+  --query '[0].appId' -o tsv)"
+OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "$GRAPH_APP_ID" \
+  --query "oauth2PermissionScopes[?value=='offline_access'].id | [0]" -o tsv)"
+az ad app permission add --id "$MCP_CLIENT_APP_ID" \
+  --api "$GRAPH_APP_ID" \
+  --api-permissions "${OFFLINE_ACCESS_SCOPE_ID}=Scope"
+
 az ad app permission admin-consent --id "$MCP_CLIENT_APP_ID"
 ```
 
