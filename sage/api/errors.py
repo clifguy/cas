@@ -172,6 +172,43 @@ class DuplicateContentError(SAGEError):
         )
 
 
+class ForceReingestPathMismatchError(SAGEError):
+    """409: a force-reingest resolved a content-hash match to a record stored
+    at a different source_path than the incoming file, and the caller did not
+    confirm the target.
+
+    Force-reingest keys its target by content hash alone. When two files are
+    byte-identical but live at different paths, the hash match may be an
+    unrelated document rather than the one the caller meant to re-ingest.
+    Overwriting it would silently discard that document's identity, so the
+    substrate refuses until the caller confirms the intended record via
+    ``document_id``. Same-path force-reingest (BH-019) never trips this.
+    """
+
+    def __init__(
+        self,
+        resolved_id: str,
+        resolved_source_path: str,
+        incoming_source_path: str,
+        content_hash: str,
+    ) -> None:
+        super().__init__(
+            "force_reingest_path_mismatch",
+            (
+                "Force re-ingest matched an existing document at a different "
+                "source_path by content hash alone; pass document_id to "
+                "confirm the record to overwrite."
+            ),
+            409,
+            {
+                "existing_document_id": resolved_id,
+                "existing_source_path": resolved_source_path,
+                "new_source_path": incoming_source_path,
+                "source_content_hash": content_hash,
+            },
+        )
+
+
 class MissingFieldError(SAGEError):
     """400: required field missing from request."""
 

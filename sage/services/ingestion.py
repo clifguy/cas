@@ -36,6 +36,7 @@ from sage.api.errors import (
     DocumentNotFoundError,
     DuplicateContentError,
     ExpectedHeadVersionRequiresPredecessorError,
+    ForceReingestPathMismatchError,
     IdenticalContentSupersedeError,
     NoProjectionError,
     ReabstractDocumentAlreadyInFlightError,
@@ -506,6 +507,11 @@ class IngestionService:
         Raises:
             DuplicateContentError: Same content hash exists anywhere in vault
                 (BH-018, BH-066), unless force flag set.
+            ForceReingestPathMismatchError: ``force=True`` and the content-hash
+                match resolves to a document stored at a different
+                ``source_path`` than the incoming file, without a ``document_id``
+                confirming the intended target. Guards against silently
+                overwriting an unrelated byte-identical document.
             AdapterNotFoundError: No adapter for requested source type.
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: predecessor is not active.
@@ -664,8 +670,34 @@ class IngestionService:
         # for the force-reingest branch from this point forward.
         existing_doc: Document | None = None
         if hash_matches and request.force:
-            existing_id = next(iter(hash_matches.values()))
+            match_ids = set(hash_matches.values())
+            # Honor an explicit pin when it names one of the colliding
+            # records; otherwise fall back to the (normally singular) hash
+            # match. A vault without this bug's residue has at most one match.
+            if request.document_id is not None and request.document_id in match_ids:
+                existing_id = request.document_id
+            else:
+                existing_id = next(iter(match_ids))
             existing_doc = await self._store.get_document(existing_id)
+            # Cross-document collision guard: force-reingest keys its target by
+            # content hash alone, so a hash match stored at a *different* path
+            # may be an unrelated document that merely shares content bytes.
+            # Overwriting it would silently discard that document's identity
+            # (source_path, and title when filename inference contributed it).
+            # Refuse unless the caller confirmed this record via document_id.
+            # Same-path re-ingest (BH-019) never trips this. An existing_doc of
+            # None (rare race) falls through to the new-document branch below.
+            if (
+                existing_doc is not None
+                and existing_doc.source_path != vault_relative
+                and request.document_id != existing_doc.id
+            ):
+                raise ForceReingestPathMismatchError(
+                    resolved_id=existing_doc.id,
+                    resolved_source_path=existing_doc.source_path,
+                    incoming_source_path=vault_relative,
+                    content_hash=canonical_hash,
+                )
 
         # Compute the merged metadata in memory before any insert/update
         # touches the store. Closes the partial-metadata window
@@ -714,7 +746,10 @@ class IngestionService:
             # in case the filename changed between ingestions.
             if parsed is not None and resolved_title:
                 updates["title"] = resolved_title
-            # Update source_path if the file moved (BH-067)
+            # Update source_path if the file moved (BH-067). A different path
+            # here is reached only when the caller confirmed this record via
+            # document_id; the cross-document collision guard above rejects an
+            # unconfirmed different-path hash match before this point.
             if vault_relative != existing_doc.source_path:
                 updates["source_path"] = vault_relative
             doc = await self._store.update_document(existing_doc.id, updates)

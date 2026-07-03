@@ -386,6 +386,17 @@ paths:
             bypass detection and re-run the pipeline.
 
 
+            `force_reingest_path_mismatch`: `force: true` and the
+            content-hash match resolves to a document stored at a
+            different `source_path` than `source`, without a
+            `document_id` confirming the target. Force-reingest keys the
+            record to reuse by content hash alone, so a byte-identical
+            file at a different path can collide with an unrelated
+            document; pass `document_id` to confirm the intended record.
+            Detail carries `existing_document_id`, `existing_source_path`,
+            `new_source_path`, and `source_content_hash`.
+
+
             `supersede_target_not_active`: `predecessor_id` was
             set but the predecessor is not in `active`. For completed,
             filed, or otherwise non-active predecessors, run the
@@ -3327,6 +3338,21 @@ components:
             CAS-ADR-028: ingest takes the literal dict, whereas
             `UpdateMetadataRequest.tier3_metadata` takes a
             `Tier3Patch` ops-object with `set`/`unset` semantics.
+        document_id:
+          type: string
+          nullable: true
+          description: >-
+            Pins the force-reingest target. Force-reingest keys the
+            record to reuse by content hash alone; when the incoming
+            file is byte-identical to an existing document stored at a
+            different source_path, the hash match may be an unrelated
+            document. To protect that document's identity, a
+            different-path collision is rejected with 409
+            `force_reingest_path_mismatch` unless this field names the
+            record the caller intends to overwrite (for example,
+            re-ingesting a document whose file legitimately moved).
+            Consulted only when `force=true` and a content-hash
+            collision exists; ignored otherwise.
 
     ParseFilenameRequest:
       type: object
