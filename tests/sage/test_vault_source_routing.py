@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.api.errors import ContentFileMissingError
+from sage.api.errors import ContentFileMissingError, SourceFileNotFoundError
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.documents import DocumentsService
@@ -315,3 +315,71 @@ async def test_vsbb_021_local_copy_short_circuits_the_port(
     projection = await ingestion_service._reproject_from_source(doc.id)
 
     assert projection.title == "Keep"
+
+
+# --------------------------------------------------------------------------- #
+# VSBB-022 / VSBB-023: ingest resolves a relative source through the port
+# --------------------------------------------------------------------------- #
+
+
+class _BackendOnlyStore(FilesystemVaultSourceStore):
+    """A relative source present in the backing store with no local mirror --
+    the post-restart document-store-binding condition (CAS-ADR-043). Reports the
+    source present, yields sentinel bytes, and fails loudly if the service tries
+    to re-retain (re-upload) an already-retained relative source."""
+
+    SENTINEL_TITLE = "BACKEND-ONLY-SENTINEL"
+    SENTINEL_BYTES = b"# BACKEND-ONLY-SENTINEL\n\nFetched from the backend.\n"
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return True
+
+    def read_source(self, vault_id, storage_root, source_path):
+        return self.SENTINEL_BYTES
+
+    def retain_source(self, vault_id, storage_root, source_path):
+        raise AssertionError("retain_source must not run for an already-retained relative source")
+
+
+class _AbsentBackendStore(FilesystemVaultSourceStore):
+    """Reports every relative source absent from the store."""
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return False
+
+
+async def test_vsbb_022_ingest_relative_backend_source_resolves(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """A relative ``source`` present only in the backing store resolves through
+    the port instead of 404'ing on a raw local ``Path.exists()`` gate
+    (CAS-ADR-043). The document's title is the sentinel backend markdown's
+    heading, proving the bytes were read via ``read_source``; its
+    ``source_path`` is the relative input recorded verbatim. Anti-coincidental:
+    with no local mirror the pre-fix code raised ``SourceFileNotFoundError`` at
+    the local-disk gate, and the fake's ``retain_source`` raises if the service
+    mistreats the relative source as an external file to re-upload."""
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="imports/backend_only.md", source_type=SourceType.MARKDOWN)
+    )
+
+    assert result.document.title == _BackendOnlyStore.SENTINEL_TITLE
+    assert result.document.source_path == "imports/backend_only.md"
+
+
+async def test_vsbb_023_ingest_relative_absent_source_still_raises(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """Relocating the existence gate behind the port does not remove it: a
+    relative source absent from both the local tree and the store still raises
+    ``SourceFileNotFoundError``. Anti-coincidental: were the gate dropped, the
+    call would fall through to projection and surface a different failure (or
+    none)."""
+    _patch_store(monkeypatch, _AbsentBackendStore(_UNUSED_ROOT))
+
+    with pytest.raises(SourceFileNotFoundError):
+        await ingestion_service.ingest(
+            IngestRequest(source="imports/nope.md", source_type=SourceType.MARKDOWN)
+        )
