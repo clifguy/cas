@@ -118,6 +118,7 @@ module apim 'modules/apim.bicep' = {
     sageIdentityId: identity.outputs.sageIdentityId
     sageIdentityClientId: identity.outputs.sageIdentityClientId
     tlsCertSecretUri: tlsCertSecretUri
+    logAnalyticsWorkspaceId: foundation.outputs.logAnalyticsWorkspaceId
   }
 }
 

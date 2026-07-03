@@ -42,6 +42,14 @@ _APIM_SERVICE_TYPE: Final[str] = "Microsoft.ApiManagement/service"
 _APIM_API_TYPE: Final[str] = "Microsoft.ApiManagement/service/apis"
 _APIM_BACKEND_TYPE: Final[str] = "Microsoft.ApiManagement/service/backends"
 
+# Resource-level diagnostic settings route the gateway's own logs and metrics to
+# the foundation Log Analytics workspace (CAS-ADR-042). GatewayLogs is the log
+# category that lands in the workspace's ``ApiManagementGatewayLogs`` table; the
+# workspace id arrives as a module parameter so no id is hard-coded here.
+_DIAGNOSTIC_SETTINGS_TYPE: Final[str] = "Microsoft.Insights/diagnosticSettings"
+_GATEWAY_LOG_CATEGORY: Final[str] = "GatewayLogs"
+_WORKSPACE_PARAM: Final[str] = "logAnalyticsWorkspaceId"
+
 # The stable API Management API version every resource must pin. A bare
 # 2023-05-01 exists only in its ``-preview`` form (the stable form raises BCP081
 # against the public type index); 2022-08-01 is the real stable version.
@@ -168,6 +176,56 @@ def _output_lines(text: str) -> list[tuple[str, str]]:
     """Return ``(name, rhs)`` for every ``output <name> <type> = <rhs>`` line."""
     pattern = re.compile(r"^\s*output\s+(\w+)\s+\w+\s*=\s*(.+?)\s*$", re.MULTILINE)
     return [(m.group(1), m.group(2)) for m in pattern.finditer(_strip_line_comments(text))]
+
+
+def _resource_block(text: str, resource_type: str) -> str:
+    """Return the body of the ``resource <symbol> '<resource_type>@...' = {`` block.
+
+    Slices from the resource declaration to the next top-level declaration
+    (``resource`` / ``module`` / ``output`` at column 0) or end of file, so an
+    assertion is scoped to a single resource rather than satisfied by an unrelated
+    one elsewhere in the module. Returns ``""`` when the type is not declared.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^resource\s+\w+\s+'" + re.escape(resource_type) + r"@[0-9A-Za-z-]+'",
+        stripped,
+        re.MULTILINE,
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|module|output)\b", rest, re.MULTILINE)
+    return rest if nxt is None else rest[: nxt.start()]
+
+
+def _module_block(text: str, module_rel_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_rel_path>' = {`` block.
+
+    The same top-level slice as :func:`_resource_block`, keyed by a module's source
+    path — scopes a wiring assertion to a single module call so a bare substring
+    check cannot pass against the wrong call. Returns ``""`` when no module wires
+    that path.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_rel_path) + r"'\s*=",
+        stripped,
+        re.MULTILINE,
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|module|output)\b", rest, re.MULTILINE)
+    return rest if nxt is None else rest[: nxt.start()]
+
+
+def _declares_param(text: str, name: str) -> bool:
+    """True iff ``text`` declares ``param <name> <type>`` (no default)."""
+    stripped = _strip_line_comments(text)
+    with_default = re.search(rf"^param\s+{re.escape(name)}\s+\w+\s*=", stripped, re.MULTILINE)
+    declared = re.search(rf"^param\s+{re.escape(name)}\s+\w+\s*$", stripped, re.MULTILINE)
+    return declared is not None and with_default is None
 
 
 def _output_secret_violations(text: str) -> list[tuple[str, str]]:
@@ -1689,3 +1747,126 @@ def test_apim_cors_detector_controls() -> None:
     assert _cors_block("no cors here at all") == ""
     # A comment naming <cors> must not satisfy the block detector.
     assert _cors_block("<!-- add a <cors> element here -->") == ""
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic settings — gateway logs + metrics to the foundation workspace
+# ---------------------------------------------------------------------------
+
+
+def test_apim_declares_log_analytics_workspace_param() -> None:
+    """The module takes the Log Analytics workspace id as a required parameter.
+
+    The workspace is provisioned by the foundation module; its id is wired in by
+    the orchestrator (see :func:`test_main_bicep_wires_workspace_into_apim`). A
+    required param (no default) keeps the id out of the module — and the
+    error-level ``no-unused-params`` lint rule forces it to actually be consumed
+    by the diagnostic-settings resource below.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_param(text, _WORKSPACE_PARAM), (
+        f"apim.bicep must declare a required 'param {_WORKSPACE_PARAM} string' (no default)"
+    )
+
+
+def test_apim_declares_diagnostic_settings_to_workspace() -> None:
+    """The APIM service routes GatewayLogs + gateway metrics to the workspace.
+
+    Resource-level ``Microsoft.Insights/diagnosticSettings`` scoped to the APIM
+    service, with ``workspaceId`` bound to the workspace param, the ``GatewayLogs``
+    log category enabled, and a metrics category enabled — so gateway request
+    outcomes (JWT rejects, CORS preflight, backend latency) land in the workspace's
+    ``ApiManagementGatewayLogs`` table instead of being observable only by live
+    probing.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_resource_type(text, _DIAGNOSTIC_SETTINGS_TYPE), (
+        f"apim.bicep must declare a {_DIAGNOSTIC_SETTINGS_TYPE} resource"
+    )
+    block = _resource_block(text, _DIAGNOSTIC_SETTINGS_TYPE)
+    assert "scope: apimService" in block, (
+        "the diagnostic settings must be scoped to the APIM service (scope: apimService)"
+    )
+    assert f"workspaceId: {_WORKSPACE_PARAM}" in block, (
+        f"the diagnostic settings must bind workspaceId to the {_WORKSPACE_PARAM} param"
+    )
+    assert f"category: '{_GATEWAY_LOG_CATEGORY}'" in block, (
+        f"the diagnostic settings must enable the {_GATEWAY_LOG_CATEGORY} log category"
+    )
+    # A metrics category (e.g. AllMetrics) so gateway metrics flow to the workspace.
+    assert "metrics:" in block, "the diagnostic settings must route gateway metrics"
+    # Both the log and the metric must be turned on, not merely listed.
+    assert block.count("enabled: true") >= 2, (
+        "both the GatewayLogs log and the gateway metrics must be enabled: true"
+    )
+
+
+def test_apim_diagnostic_settings_has_no_retention_override() -> None:
+    """Retention follows the workspace, not a per-setting override.
+
+    For a Log Analytics destination the diagnostic-setting ``retentionPolicy`` is
+    deprecated — retention is governed by the workspace's own
+    ``logAnalyticsRetentionDays``. The block must therefore carry no retention
+    override.
+    """
+    block = _resource_block(APIM.read_text(encoding="utf-8"), _DIAGNOSTIC_SETTINGS_TYPE)
+    assert block, "no diagnostic settings block found to check for a retention override"
+    assert "retentionPolicy" not in block, (
+        "the diagnostic settings must not set a retentionPolicy — retention follows "
+        "the workspace's logAnalyticsRetentionDays"
+    )
+    assert "retentionInDays" not in block, (
+        "the diagnostic settings must not set retentionInDays — retention follows the workspace"
+    )
+
+
+def test_main_bicep_wires_workspace_into_apim() -> None:
+    """The orchestrator passes the foundation workspace id into the APIM module.
+
+    Scoped to the ``apim`` module call so the wire cannot be satisfied by some
+    other module receiving a foundation output. A symbolic reference to
+    ``foundation.outputs.*`` also gives APIM an implicit ``dependsOn`` on the
+    foundation, regardless of module declaration order.
+    """
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/apim.bicep")
+    assert block, "main.bicep declares no apim module call"
+    assert re.search(
+        rf"{_WORKSPACE_PARAM}:\s*foundation\.outputs\.logAnalyticsWorkspaceId", block
+    ), (
+        f"the apim module must receive {_WORKSPACE_PARAM} from "
+        "foundation.outputs.logAnalyticsWorkspaceId"
+    )
+
+
+def test_apim_diagnostic_detectors_control() -> None:
+    """The diagnostic detectors fire on the regressions they target and clear on
+    the correct form — so the gates above cannot pass coincidentally.
+
+    ``_resource_block`` must return "" when the resource is absent and the block
+    otherwise; ``_declares_param`` must reject a defaulted param and a bare mention
+    while accepting the required declaration; and a ``retentionPolicy`` inside the
+    block must be visible to the no-override check.
+    """
+    absent = "resource other 'Microsoft.ApiManagement/service@2022-08-01' = {\n  name: 'x'\n}\n"
+    assert _resource_block(absent, _DIAGNOSTIC_SETTINGS_TYPE) == "", (
+        "detector must not find a diagnostic settings block when none is declared"
+    )
+    present = (
+        "resource d 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {\n"
+        "  scope: apimService\n"
+        "  properties: {\n"
+        "    workspaceId: logAnalyticsWorkspaceId\n"
+        "    retentionPolicy: { days: 7, enabled: true }\n"
+        "  }\n"
+        "}\n"
+        "output x string = d.id\n"
+    )
+    block = _resource_block(present, _DIAGNOSTIC_SETTINGS_TYPE)
+    assert "workspaceId: logAnalyticsWorkspaceId" in block
+    assert "retentionPolicy" in block, (
+        "a retention override must be visible to the no-override gate"
+    )
+    # Param detector: required accepted; defaulted and comment-only rejected.
+    assert _declares_param("param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
+    assert not _declares_param("param logAnalyticsWorkspaceId string = ''\n", _WORKSPACE_PARAM)
+    assert not _declares_param("// param logAnalyticsWorkspaceId string\n", _WORKSPACE_PARAM)
