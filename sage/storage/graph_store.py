@@ -1753,6 +1753,28 @@ class SqliteGraphStore(GraphStore):
         rows = conn.execute("SELECT * FROM documents WHERE metadata_confirmed = 0").fetchall()
         return [self._row_to_document(r) for r in rows]
 
+    async def measured_byte_size(self) -> int:
+        """Sum of the graph.db file plus any WAL/SHM siblings.
+
+        The on-disk footprint of the embedded graph store; 0 when the base
+        file does not exist yet. The canonical source for the dashboard's
+        graph-store size, read through the binding-agnostic port.
+        """
+        with self._query_timer.measure("measured_byte_size"):
+            return self._graph_db_file_bytes()
+
+    def _graph_db_file_bytes(self) -> int:
+        """Sum of file sizes for graph.db and its WAL/SHM siblings, if present."""
+        total = 0
+        for path in (
+            self._db_path,
+            self._db_path.with_name(self._db_path.name + "-wal"),
+            self._db_path.with_name(self._db_path.name + "-shm"),
+        ):
+            if path.exists():
+                total += path.stat().st_size
+        return total
+
     # ------------------------------------------------------------------
     # Graph traversal
     # ------------------------------------------------------------------

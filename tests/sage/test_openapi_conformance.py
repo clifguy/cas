@@ -548,6 +548,32 @@ def test_vault_stats_response_documents_content_store_small_fragment_count(
     )
 
 
+def test_vault_stats_response_documents_graph_store_size_bytes(
+    sage_core_spec: dict | None,
+):
+    """Spot regression guard for the backend-neutral live graph-store-size field."""
+    assert sage_core_spec is not None, "sage_core_api spec is missing"
+
+    schemas = sage_core_spec["components"]["schemas"]
+    assert "VaultStatsResponse" in schemas, "components.schemas.VaultStatsResponse is not defined"
+    vault_stats = schemas["VaultStatsResponse"]
+
+    properties = vault_stats.get("properties") or {}
+    assert "graph_store_size_bytes" in properties, (
+        "VaultStatsResponse.properties.graph_store_size_bytes is missing"
+    )
+    field = properties["graph_store_size_bytes"]
+    assert field.get("type") == "integer", (
+        f"VaultStatsResponse.graph_store_size_bytes must have type 'integer', "
+        f"got {field.get('type')!r}"
+    )
+
+    required = vault_stats.get("required") or []
+    assert "graph_store_size_bytes" in required, (
+        "VaultStatsResponse must list 'graph_store_size_bytes' in 'required'"
+    )
+
+
 def test_vault_stats_response_documents_last_optimize(
     sage_core_spec: dict | None,
 ):

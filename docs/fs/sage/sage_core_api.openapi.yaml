@@ -1212,11 +1212,12 @@ paths:
 
         Response contents: total document count; counts per lifecycle
         state; counts per `doc_type`; counts per `pipeline_status`;
-        storage figures (`content_store_size_bytes` is computed by walking
-        the on-disk content-store directory, `content_store_chunk_count` is the
-        row count from the chunks table, `sqlite_size_bytes` covers
-        the graph.db file and WAL/SHM siblings when present in the MCP
-        variant); and health indicators.
+        storage figures (`graph_store_size_bytes` is the live graph-store
+        footprint under whichever storage binding is active, `content_store_size_bytes`
+        is computed by walking the on-disk content-store directory,
+        `content_store_chunk_count` is the row count from the chunks table,
+        `sqlite_size_bytes` covers the graph.db file and WAL/SHM siblings
+        when present in the MCP variant); and health indicators.
 
 
         Health indicators include pending metadata reviews, pending
@@ -5072,6 +5073,7 @@ components:
         - total_edges
         - by_edge_type
         - staging_edge_count
+        - graph_store_size_bytes
         - content_store_size_bytes
         - content_store_chunk_count
         - content_store_version_count
@@ -5109,6 +5111,9 @@ components:
         staging_edge_count:
           type: integer
           description: Number of edges in the Tier 2 staging table awaiting review.
+        graph_store_size_bytes:
+          type: integer
+          description: Live on-disk byte footprint of the graph store under the vault's active storage binding (CAS-ADR-042) -- the graph.db file plus WAL/SHM siblings under the embedded binding, or the summed relation size of the documents/edges/staging_edges/users/document_tags tables under the Postgres binding. Backend-neutral, unlike sqlite_size_bytes.
         content_store_size_bytes:
           type: integer
           description: On-disk size of the content store in bytes.

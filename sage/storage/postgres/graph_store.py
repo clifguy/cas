@@ -1093,6 +1093,25 @@ class PostgresGraphStore(GraphStore):
             )
             return [self._row_to_document(r) for r in rows]
 
+    async def measured_byte_size(self) -> int:
+        """Live total relation size of the graph tables (heap + indexes + toast).
+
+        Sums documents, edges, staging_edges, users, and document_tags --
+        the tables that constitute the graph store. ``chunks`` (the content
+        store) is deliberately excluded; that footprint is reported through
+        ``ContentStore.measured_byte_size`` instead. ``to_regclass`` resolves
+        against the connection's search_path and yields NULL for a table
+        that has not been provisioned yet, so an unprovisioned schema sums
+        to NULL and COALESCE reports 0 rather than raising.
+        """
+        with self._query_timer.measure("measured_byte_size"):
+            value = await self._fetch_scalar(
+                "SELECT COALESCE(SUM(pg_total_relation_size(to_regclass(t.name))), 0) "
+                "FROM (VALUES ('documents'), ('edges'), ('staging_edges'), "
+                "('users'), ('document_tags')) AS t(name)"
+            )
+            return int(value)
+
     # ------------------------------------------------------------------
     # Traversal
     # ------------------------------------------------------------------

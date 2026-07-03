@@ -533,6 +533,18 @@ class GraphStore(ABC):
     async def list_pending_metadata_documents(self) -> list[Document]:
         """Return documents awaiting metadata confirmation."""
 
+    @abstractmethod
+    async def measured_byte_size(self) -> int:
+        """Return the graph store's on-disk byte footprint.
+
+        Read-only. The substrate-native total size of the document/edge/user
+        tables (e.g. a file-size sum for a file-backed store, or the total
+        relation size for a relational one), so the dashboard can report
+        graph-store size without knowing which binding is active. Returns 0
+        for substrates with no on-disk presence and when the underlying
+        tables have not been created yet.
+        """
+
     # --- Traversal ---
     @abstractmethod
     async def traverse(

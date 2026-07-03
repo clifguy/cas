@@ -43,6 +43,7 @@ function makeStats(
     total_edges: 0,
     by_edge_type: {},
     staging_edge_count: 0,
+    graph_store_size_bytes: 800,
     content_store_size_bytes: 1000,
     content_store_chunk_count: 5,
     content_store_version_count: versionCount,
@@ -129,5 +130,17 @@ describe('Dashboard last-optimize card', () => {
 
     const card = await screen.findByTestId('last-optimize-card');
     expect(card).toHaveTextContent(/never/i);
+  });
+});
+
+describe('Dashboard storage stats', () => {
+  it('renders the backend-neutral graph-store size alongside the SQLite stat', async () => {
+    mockGetVaultStats.mockResolvedValue(makeStats(3, 0));
+    renderDashboard();
+
+    await screen.findByText('Graph Store');
+    expect(screen.getByText('800 B')).toBeInTheDocument();
+    // sqlite_size_bytes keeps its own card and narrow meaning alongside the new metric.
+    expect(screen.getByText('SQLite')).toBeInTheDocument();
   });
 });

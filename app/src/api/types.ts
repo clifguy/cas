@@ -40,6 +40,7 @@ export interface VaultStats {
   total_edges: number;
   by_edge_type: Record<string, number>;
   staging_edge_count: number;
+  graph_store_size_bytes: number;
   content_store_size_bytes: number;
   content_store_chunk_count: number;
   content_store_version_count: number;

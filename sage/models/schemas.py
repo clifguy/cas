@@ -4167,6 +4167,16 @@ class VaultStatsResponse(BaseModel):
     staging_edge_count: int = Field(
         description="Number of edges in the Tier 2 staging table awaiting review."
     )
+    graph_store_size_bytes: int = Field(
+        description=(
+            "Live on-disk byte footprint of the graph store under the vault's "
+            "active storage binding (CAS-ADR-042) -- the graph.db file plus "
+            "WAL/SHM siblings under the embedded binding, or the summed "
+            "relation size of the documents/edges/staging_edges/users/document_tags "
+            "tables under the Postgres binding. Backend-neutral, unlike "
+            "sqlite_size_bytes."
+        )
+    )
     content_store_size_bytes: int = Field(description="On-disk size of the content store in bytes.")
     content_store_chunk_count: int = Field(
         description="Total chunk row count across all documents."
