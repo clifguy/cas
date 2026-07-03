@@ -180,7 +180,10 @@ MCP_CLIENT_SP_ID="$(az ad sp create --id "${MCP_CLIENT_APP_ID}" --query id -o ts
   az ad sp show --id "${MCP_CLIENT_APP_ID}" --query id -o tsv)"
 
 # Grant the same delegated SAGE.Access scope the BFF holds; the admin-consent
-# below covers this grant and the offline_access grant that follows.
+# below records the tenant consent for this SAGE.Access grant. It does NOT
+# consent the offline_access grant that follows -- that needs its own explicit
+# grant (verified live: admin-consent returns 0 yet records no offline_access
+# consent), issued after the admin-consent step below.
 az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
   --api "${SAGE_APP_ID}" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
@@ -201,6 +204,19 @@ az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
   --api "${GRAPH_APP_ID}" \
   --api-permissions "${OFFLINE_ACCESS_SCOPE_ID}=Scope"
 az ad app permission admin-consent --id "${MCP_CLIENT_APP_ID}"
+
+# admin-consent above records the tenant consent for the SAGE.Access delegated
+# scope but empirically does NOT create the delegated grant for the Graph
+# offline_access scope -- az returns 0 yet no oauth2PermissionGrant for
+# offline_access appears (verified live against the tenant). Without the grant
+# Entra issues no refresh token and the symptom the offline_access request was
+# meant to fix returns. An explicit grant is what actually consents it: it
+# records an AllPrincipals oauth2PermissionGrant for offline_access on the Graph
+# resource. Graph's app id is reused from the run-time resolution above, so this
+# durable script still carries no GUID-shaped literal (CAS-ADR-042).
+az ad app permission grant --id "${MCP_CLIENT_APP_ID}" \
+  --api "${GRAPH_APP_ID}" \
+  --scope offline_access
 
 # Gate the public client on the single provisioning group (CAS-ADR-044): require
 # app-role assignment on its service principal, then assign the group to its

@@ -63,6 +63,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_cors_preflight",
         "edge_dcr_registration",
         "edge_resource_identity",
+        "edge_advertises_offline_access",
         "edge_mount_discovery",
         "mcp_admin",
         "mcp_roundtrip",
@@ -833,6 +834,105 @@ def test_resource_identity_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_resource_identity"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_resource_identity") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _offline_access_stub(
+    prm_advertises: bool = True,
+    register_advertises: bool = True,
+    discovery_status: int = 200,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the offline_access-advertisement check. When healthy, the
+    protected-resource-metadata ``scopes_supported`` AND the ``/register`` scope
+    string both carry the bare OIDC ``offline_access`` token alongside the
+    resource-qualified ``Sage.Access`` scope; the discovery doc answers
+    ``discovery_status`` (200 = edge live). Toggling ``prm_advertises`` /
+    ``register_advertises`` off drops offline_access from one leg while the other
+    stays healthy — the dropped-advertisement regression the check must catch.
+    """
+    prm_scopes = (
+        '["{{BASE_URL}}/Sage.Access"' + (', "offline_access"' if prm_advertises else "") + "]"
+    )
+    reg_scope = "{{BASE_URL}}/Sage.Access" + (" offline_access" if register_advertises else "")
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            body = (
+                "{"
+                '"resource": "{{BASE_URL}}", '
+                '"authorization_servers": ["{{BASE_URL}}"], '
+                f'"scopes_supported": {prm_scopes}, '
+                '"bearer_methods_supported": ["header"]'
+                "}"
+            )
+            return discovery_status, (body if discovery_status == 200 else "{}"), {}
+        if method == "POST" and p == "/register":
+            body = (
+                "{"
+                '"client_id": "NV", '
+                '"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"], '
+                '"token_endpoint_auth_method": "none", '
+                f'"scope": "{reg_scope}"'
+                "}"
+            )
+            return 201, body, {}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_advertises_offline_access_passes() -> None:
+    """scopes_supported AND the /register scope both carry offline_access, edge
+    live -> edge_advertises_offline_access PASS: a standards MCP client requests
+    the refresh-token scope and Entra issues a refresh token.
+    """
+    with serve(_offline_access_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_offline_access"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_offline_access") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_advertises_offline_access_missing_from_metadata_fails() -> None:
+    """THE dropped-advertisement regression on the metadata leg: the discovery
+    doc omits offline_access from scopes_supported (the /register scope still
+    carries it). The check must FAIL on the metadata leg, proving it asserts the
+    actual token in scopes_supported, not merely a 200 + a healthy /register.
+    """
+    with serve(_offline_access_stub(prm_advertises=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_offline_access"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_offline_access") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_advertises_offline_access_missing_from_register_fails() -> None:
+    """THE dropped-advertisement regression on the /register leg: the discovery
+    scopes_supported still carries offline_access but the /register scope string
+    drops it. The check must FAIL on the /register leg, proving it asserts the
+    token in both legs independently.
+    """
+    with serve(_offline_access_stub(register_advertises=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_offline_access"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_offline_access") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_advertises_offline_access_dead_edge_fails() -> None:
+    """Discovery doc broken (404): fully-advertised bodies must NOT be credited
+    -- the discovery-200 control rejects them (the blanket-edge
+    coincidental-pass trap).
+    """
+    with serve(_offline_access_stub(discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_offline_access"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_offline_access") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

@@ -245,6 +245,42 @@ def test_entra_script_grants_offline_access_to_mcp_client() -> None:
     )
 
 
+def test_entra_script_explicitly_grants_offline_access_consent() -> None:
+    """Requesting ``offline_access`` is not enough — it must be consented. Granting
+    admin consent with ``az ad app permission admin-consent`` alone does NOT
+    record the delegated consent grant for the Graph ``offline_access`` scope
+    (verified live: the call returns 0 yet creates no ``oauth2PermissionGrant``
+    for it), leaving the public MCP client without a refresh token on a fresh
+    bring-up. The script must follow the ``offline_access`` ``permission add``
+    with an explicit ``az ad app permission grant ... --scope offline_access``,
+    the form that actually consents it as an ``AllPrincipals`` grant on Graph
+    (CAS-ADR-042).
+    """
+    text = _text(ENTRA)
+    # Anchor on the actual command, never a prose/comment mention: the pre-fix
+    # script mentions "offline_access" and "grant" in comments but issues no
+    # `az ad app permission grant` at all, so a substring check would pass by
+    # accident. Match the command continuation-aware -- the `(?:[^\n]*\\\n)*[^\n]*`
+    # form (not the naive `[^\n]*(?:\\\n[^\n]*)*`, whose greedy first `[^\n]*` eats
+    # the trailing backslash and truncates the match at line one).
+    grant = re.search(r"az ad app permission grant(?:[^\n]*\\\n)*[^\n]*", text)
+    assert grant is not None, (
+        "entra script must issue `az ad app permission grant` for the MCP client — "
+        "admin-consent alone does not consent the Graph offline_access scope"
+    )
+    flat = grant.group(0).replace("\\\n", " ")
+    assert "--scope offline_access" in flat, (
+        "the explicit grant must consent the offline_access scope (--scope offline_access)"
+    )
+    assert "GRAPH_APP_ID" in flat, (
+        "the grant must target Graph's runtime-resolved app id (${GRAPH_APP_ID}), "
+        "not a hardcoded GUID"
+    )
+    assert "MCP_CLIENT_APP_ID" in flat, (
+        "the explicit grant must be issued for the public MCP client (${MCP_CLIENT_APP_ID})"
+    )
+
+
 def test_entra_script_registers_mcp_loopback_redirect() -> None:
     """The public MCP client registers the Desktop loopback redirect
     (``http://localhost/callback``) alongside its primary env-resolved redirect
