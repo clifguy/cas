@@ -184,6 +184,58 @@ returns an `sts.windows.net` (v1) issuer, so it must not be used to reach SAGE.
 Leaving the setting unset regresses a re-provisioned tenant to v1 tokens and a
 401 at the edge.
 
+### Pre-authorizing Azure CLI for operator-run preflight tokens
+
+An operator hand-minting the bearer that
+[`deploy/cloud-preflight.sh`](../../deploy/cloud-preflight.sh) needs (see *Post-deploy
+preflight gate* in [`azure-deployment.md`](azure-deployment.md)) runs
+`az account get-access-token --scope "api://<SAGE_APP_ID>/.default"`. Verified live
+against `cor.org` (2026-07-04): on a fresh SAGE registration this fails
+`AADSTS650057` (`invalid_client`) — Azure CLI's own first-party app has no
+delegated permission recorded against the SAGE resource, and the `.default`
+scope endpoint will not silently grant one the way it would for a resource the
+signed-in user has already consented some other client to.
+
+The fix is a `preAuthorizedApplications` entry on the SAGE registration naming
+Azure CLI against the `Sage.Access` scope. Azure CLI's app id
+(`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) is a fixed, Microsoft-published
+multi-tenant constant — the same value in every tenant — not a directory object
+resolvable at run time the way the Graph app id is in §4: a fresh tenant has no
+service principal for it to look up (`az ad sp list --filter "appId eq
+'04b07795-...'"` returns empty) until something provisions one, so unlike the
+Graph app id this one literal is pasted rather than resolved.
+
+```bash
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/applications/${SAGE_OBJECT_ID}" \
+  --headers 'Content-Type=application/json' \
+  --body "{
+    \"api\": {
+      \"preAuthorizedApplications\": [{
+        \"appId\": \"04b07795-8ddb-461a-bbee-02f9e1bf7b46\",
+        \"delegatedPermissionIds\": [\"${ACCESS_SCOPE_ID}\"]
+      }]
+    }
+  }"
+```
+
+`az ad app update --set api.preAuthorizedApplications=...` does not reach this
+nested `api` property reliably (`Couldn't find 'api' in ''`); the direct Graph
+`PATCH` above is what actually lands the change — verified live. The `PATCH`
+body is additive alongside the `oauth2PermissionScopes`/
+`requestedAccessTokenVersion` `PATCH` earlier in this section; re-running it
+with the same body is idempotent, but note it is a **declarative full-set
+replace** of `preAuthorizedApplications` like `--identifier-uris` above — a
+future addition to this list must include this entry or the PATCH will drop
+it.
+
+This grants **delegated** (signed-in user) access only: any operator with
+`Sage.Access` consent can mint a SAGE token through their own `az login`
+session without a per-app consent screen, the same shape of access the BFF's
+on-behalf-of exchange and the public MCP client already get through their own
+registrations in §3 and §4. It changes nothing about app-only
+(client-credentials) access, which SAGE does not otherwise support.
+
 ## 2. SAGE access-provisioning group (CAS-ADR-044)
 
 A single directory security group gates SAGE access: membership is **binary**

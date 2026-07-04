@@ -98,6 +98,42 @@ az rest --method PATCH \
     }]
   }"
 
+# Pre-authorize Azure CLI so an operator can hand-mint the bearer
+# deploy/cloud-preflight.sh needs (az account get-access-token --scope
+# api://<SAGE_APP_ID>/.default) without a per-app consent screen. Verified
+# live against cor.org (2026-07-04): without this, that call fails
+# AADSTS650057 (invalid_client) on a fresh SAGE registration. Azure CLI's own
+# client id is a fixed, Microsoft-published multi-tenant constant, but it is
+# not a directory object in a fresh tenant -- there is no service principal to
+# resolve it from by display name the way Graph's app id is resolved below --
+# so it is read off the appid claim of a token az itself already holds (any
+# resource works; Graph is always reachable) rather than pasted as a literal,
+# keeping this durable script free of GUID-shaped literals.
+AZURE_CLI_APP_ID="$(az account get-access-token --resource https://graph.microsoft.com \
+  --query accessToken -o tsv | python3 -c '
+import base64, json, sys
+segment = sys.stdin.read().strip().split(".")[1]
+segment += "=" * (-len(segment) % 4)
+print(json.loads(base64.urlsafe_b64decode(segment))["appid"])
+')"
+
+# A second, separate PATCH to the api complex property: verified live that
+# this merges alongside (rather than overwriting) the oauth2PermissionScopes
+# set above. preAuthorizedApplications is itself a declarative full-set
+# replace, like --identifier-uris earlier -- a future addition to this list
+# must include this entry or a re-run will drop it.
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/applications/${SAGE_OBJECT_ID}" \
+  --headers 'Content-Type=application/json' \
+  --body "{
+    \"api\": {
+      \"preAuthorizedApplications\": [{
+        \"appId\": \"${AZURE_CLI_APP_ID}\",
+        \"delegatedPermissionIds\": [\"${ACCESS_SCOPE_ID}\"]
+      }]
+    }
+  }"
+
 # 2. The single SAGE access-provisioning group (CAS-ADR-044): binary membership,
 # uniform across every interactive surface (browser and agent alike). Every
 # client-gating step below assigns this same group to its own service
