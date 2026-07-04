@@ -76,7 +76,7 @@ def _uncommented_run_text(job: dict) -> str:
 def _validation_job(workflow: dict) -> dict:
     """The job that runs the validator driver — it invokes ``sharepoint_validate.py``."""
     for job in (workflow.get("jobs") or {}).values():
-        if "sharepoint_validate.py" in _job_run_text(job):
+        if "sharepoint_validate.py" in _uncommented_run_text(job):
             return job
     raise AssertionError("no job runs deploy/sharepoint_validate.py")
 
@@ -199,7 +199,7 @@ def test_phases_run_around_restart_with_liveness_in_order() -> None:
     container with a wiped ephemeral filesystem, so it must run *after* the restart and
     *after* the container is live again. Anchored on the command lines, not prose.
     """
-    runs = _job_run_text(_validation_job(_load()))
+    runs = _uncommented_run_text(_validation_job(_load()))
     anchors = [
         "--phase pre-restart",
         "az containerapp revision restart",
@@ -227,7 +227,7 @@ def test_targets_disposable_test_vault() -> None:
     env = job.get("env") or {}
     vault = str(env.get("SP_VALIDATE_VAULT_ID", ""))
     if not vault:
-        match = re.search(r"--vault-id\s+(\S+)", _job_run_text(job))
+        match = re.search(r"--vault-id\s+(\S+)", _uncommented_run_text(job))
         vault = match.group(1) if match else ""
     assert vault == "test", (
         f"the harness must target the disposable `test` vault (it mutates), not {vault!r}"

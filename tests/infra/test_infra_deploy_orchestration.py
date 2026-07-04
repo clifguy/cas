@@ -76,7 +76,7 @@ def _uncommented_run_text(job: dict) -> str:
 def _deploy_job(workflow: dict) -> dict:
     """The job that applies the deployment — it runs ``az deployment sub create``."""
     for job in (workflow.get("jobs") or {}).values():
-        if "az deployment sub create" in _job_run_text(job):
+        if "az deployment sub create" in _uncommented_run_text(job):
             return job
     raise AssertionError("no deploy job runs `az deployment sub create`")
 
@@ -104,7 +104,7 @@ def test_deploy_orchestrates_staged_bringup_in_order() -> None:
     order convergence requires: what-if gate, Bicep apply, the in-VNet bootstrap
     job, app-tier convergence, then the post-deploy preflight.
     """
-    runs = _job_run_text(_deploy_job(_load()))
+    runs = _uncommented_run_text(_deploy_job(_load()))
     anchors = [
         "az deployment sub what-if",
         "az deployment sub create",
@@ -170,7 +170,7 @@ def test_whatif_gate_precedes_apply() -> None:
     """A what-if / validate gate runs before the apply and so can block on a Bicep
     error before any change is made.
     """
-    runs = _job_run_text(_deploy_job(_load()))
+    runs = _uncommented_run_text(_deploy_job(_load()))
     whatif = runs.find("az deployment sub what-if")
     apply = runs.find("az deployment sub create")
     assert whatif != -1, "deploy job must run a what-if gate"
@@ -231,7 +231,7 @@ def test_deploy_passes_every_required_bicep_parameter() -> None:
     """
     required = _required_bicep_param_names()
     assert required, "no required params parsed from main.bicep (parser drift?)"
-    runs = _job_run_text(_deploy_job(_load()))
+    runs = _uncommented_run_text(_deploy_job(_load()))
     for name in required:
         assert re.search(rf"\b{re.escape(name)}=", runs), (
             f"deploy job must pass required main.bicep parameter {name!r} "
@@ -244,7 +244,7 @@ def test_parameters_sourced_from_variables_not_repo() -> None:
     parameters; it consumes no committed per-tenant ``.bicepparam`` — tenant-isms
     stay out of the repository and arrive as environment variables at deploy time.
     """
-    runs = _job_run_text(_deploy_job(_load()))
+    runs = _uncommented_run_text(_deploy_job(_load()))
     assert "infra/main.bicep" in runs, "deploy must target the infra/main.bicep template"
     assert "--parameters" in runs, "deploy must pass inline parameters"
     assert not re.search(r"main\.[A-Za-z0-9_-]+\.bicepparam", runs), (
