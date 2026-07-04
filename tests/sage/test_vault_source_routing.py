@@ -146,6 +146,50 @@ async def test_vsbb_015_delivery_missing_via_port(
 
 
 # --------------------------------------------------------------------------- #
+# VSBB-024: streaming content delivery routes through the port
+# --------------------------------------------------------------------------- #
+
+
+class _SentinelStreamStore(FilesystemVaultSourceStore):
+    SENTINEL_CHUNKS = [b"SENTINEL-", b"CHUNKS"]
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return True
+
+    def source_size(self, vault_id, storage_root, source_path):
+        return sum(len(c) for c in self.SENTINEL_CHUNKS)
+
+    def iter_source(self, vault_id, storage_root, source_path):
+        yield from self.SENTINEL_CHUNKS
+
+    def read_source(self, vault_id, storage_root, source_path):
+        raise AssertionError("buffered read on the streaming path")
+
+
+async def test_vsbb_024_content_delivery_via_port(
+    ingestion_service, graph_store, minimal_config, tmp_vault_dir, monkeypatch
+):
+    """Streaming content delivery yields exactly the chunks ``iter_source``
+    produced, and never touches the buffered ``read_source``. Anti-coincidental:
+    the real file holds ``# Real…`` (a direct read would surface it), and the
+    sentinel store's ``read_source`` raises, so any whole-bytes fallback fails
+    loudly."""
+    doc = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "reports/stream.md", "# Real\n\nX."
+    )
+
+    _patch_store(monkeypatch, _SentinelStreamStore(_UNUSED_ROOT))
+    documents = DocumentsService(graph_store, minimal_config)
+
+    delivery = await documents.get_document_content(doc.id)
+
+    assert list(delivery.chunks) == _SentinelStreamStore.SENTINEL_CHUNKS
+    assert delivery.size == sum(len(c) for c in _SentinelStreamStore.SENTINEL_CHUNKS)
+    assert delivery.filename == "stream.md"
+    assert delivery.media_type == "text/markdown"
+
+
+# --------------------------------------------------------------------------- #
 # VSBB-016 / VSBB-017: integrity audit routes through the port
 # --------------------------------------------------------------------------- #
 

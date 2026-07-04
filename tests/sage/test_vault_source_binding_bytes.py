@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.vault_source_binding import FilesystemVaultSourceStore
+from sage.vault_source_binding import _SOURCE_CHUNK_BYTES, FilesystemVaultSourceStore
 
 VID = "vault_x"  # ignored by the filesystem binding; present for signature parity.
 
@@ -161,6 +161,35 @@ def test_vsbb_009_hash_source_canonical_sha256(store, storage_root, tmp_path):
     rel = store.retain_source(VID, storage_root, ext)
 
     assert store.hash_source(VID, storage_root, rel) == f"sha256:{hashlib.sha256(body).hexdigest()}"
+
+
+def test_vsbb_011_iter_source_streams_in_bounded_chunks(store, storage_root, tmp_path):
+    """``iter_source`` yields the retained bytes in chunks no larger than the
+    delivery chunk size, so a large source is never materialized whole.
+
+    Anti-coincidental: a 150 000-byte body must arrive in at least three chunks
+    -- an implementation that reads the file whole (``read_bytes`` or a
+    ``read_source`` delegation) yields a single oversized chunk and fails both
+    the count and the per-chunk bound."""
+    body = os.urandom(150_000)  # crosses the 65536 chunk boundary twice
+    ext = _external(tmp_path, "big.bin", body)
+    rel = store.retain_source(VID, storage_root, ext)
+
+    chunks = list(store.iter_source(VID, storage_root, rel))
+
+    assert b"".join(chunks) == body
+    assert len(chunks) >= 3
+    assert all(len(chunk) <= _SOURCE_CHUNK_BYTES for chunk in chunks)
+
+
+def test_vsbb_012_iter_source_missing_file_raises(store, storage_root):
+    """Consuming ``iter_source`` for an absent path raises ``FileNotFoundError``,
+    matching ``read_source``'s behavior for the same miss.
+
+    Anti-coincidental: a generator that silently yields nothing for a missing
+    file would pass a join-only check; the raises-check catches fail-open."""
+    with pytest.raises(FileNotFoundError):
+        list(store.iter_source(VID, storage_root, "imports/absent.bin"))
 
 
 # --------------------------------------------------------------------------- #

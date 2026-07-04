@@ -9,9 +9,12 @@ Owns the work behind two endpoints:
 
 import base64
 import hashlib
+import mimetypes
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from sage.adapters.interfaces import GraphStore
@@ -39,6 +42,22 @@ from sage.services.read_diagnostics import build_not_found_detail
 from sage.vault_source_binding import SupportsSourceDownloadUrl, VaultSourceStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class SourceContentDelivery:
+    """One streamed source delivery: response metadata plus the chunk iterator.
+
+    A transport-neutral carrier the router turns into a streaming response.
+    ``chunks`` comes straight from the vault-source store's streaming read, so
+    consuming it never materializes the whole file. Deliberately a plain
+    dataclass: it is never serialized as a response body.
+    """
+
+    filename: str
+    media_type: str
+    size: int
+    chunks: Iterator[bytes]
 
 
 def _max_inline_content_bytes() -> int:
@@ -218,6 +237,43 @@ class DocumentsService:
         response.body_form = "binary" if is_binary else "text"
 
         return response
+
+    async def get_document_content(self, document_id: str) -> SourceContentDelivery:
+        """Stream a document's retained source bytes for raw delivery.
+
+        The binding-agnostic browser-delivery path: the bytes come chunked from
+        the active vault-source store's streaming read (CAS-ADR-043), so no hop
+        holds the whole file. The inline-content size ceiling does not apply --
+        it bounds the cost of base64-inlining into a JSON body, and a streamed
+        delivery has no such cost. Binary-container sources are served raw with
+        their correct media type: the CAS-ADR-039 refusal guards text-scanning
+        of container bytes inlined into JSON, and this raw byte channel is the
+        sanctioned alternative, matching the download-url path.
+
+        Every failure mode raises before any bytes flow, so the caller receives
+        a structured error envelope rather than a truncated stream.
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(
+                document_id, await build_not_found_detail(self._store, document_id)
+            )
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        store = resolve_stack_vault_source_store(get_stack_config())
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        vault_id = self._config.vault.id
+        if not store.source_exists(vault_id, storage_root, doc.source_path):
+            raise ContentFileMissingError(doc.id, doc.source_path)
+
+        filename = Path(doc.source_path).name
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        return SourceContentDelivery(
+            filename=filename,
+            media_type=media_type,
+            size=store.source_size(vault_id, storage_root, doc.source_path),
+            chunks=store.iter_source(vault_id, storage_root, doc.source_path),
+        )
 
     async def get_document_download_url(self, document_id: str) -> DocumentDownloadUrlResponse:
         """Mint a short-lived download URL for a cloud-resident document's source.

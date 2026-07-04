@@ -37,6 +37,7 @@ import shutil
 import stat
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -48,6 +49,11 @@ logger = logging.getLogger(__name__)
 # Read size for streamed source hashing, so a large source file is never
 # loaded whole into memory to compute its digest.
 _HASH_CHUNK_BYTES = 65536
+
+# Chunk size for streamed source delivery (``iter_source``). Hashing and
+# delivery are separate concerns that happen to share a size today; the two
+# constants keep them independently tunable.
+_SOURCE_CHUNK_BYTES = 65536
 
 # Environment override for the vault-source-backend dispatch, consulted before
 # the stack config's ``vault_source_backend`` key. Mirrors
@@ -146,6 +152,16 @@ class VaultSourceStore(ABC):
     @abstractmethod
     def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
         """Read back a retained source's bytes."""
+
+    @abstractmethod
+    def iter_source(self, vault_id: str, storage_root: Path, source_path: str) -> Iterator[bytes]:
+        """Yield a retained source's bytes in bounded chunks.
+
+        The streaming counterpart of ``read_source`` for delivery paths that
+        must never hold the whole file in memory. Chunks are at most
+        ``_SOURCE_CHUNK_BYTES`` long; closing the iterator early releases any
+        binding-held resources (open file, live HTTP response).
+        """
 
     @abstractmethod
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
@@ -429,6 +445,10 @@ class FilesystemVaultSourceStore(VaultSourceStore):
     def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
         return (storage_root / source_path).read_bytes()
 
+    def iter_source(self, vault_id: str, storage_root: Path, source_path: str) -> Iterator[bytes]:
+        with (storage_root / source_path).open("rb") as f:
+            yield from iter(lambda: f.read(_SOURCE_CHUNK_BYTES), b"")
+
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         digest = hashlib.sha256()
         with (storage_root / source_path).open("rb") as f:
@@ -553,6 +573,9 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
 
     def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
         return self._get_client().read_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
+
+    def iter_source(self, vault_id: str, storage_root: Path, source_path: str) -> Iterator[bytes]:
+        yield from self._get_client().stream_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
 
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         return self._get_client().hash_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]

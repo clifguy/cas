@@ -819,6 +819,85 @@ async def test_get_download_url_404_unknown_id(client):
     assert resp.json()["code"] == "document_not_found"
 
 
+# ---------------------------------------------------------------------------
+# Streaming content delivery -- GET /documents/{id}/content
+# ---------------------------------------------------------------------------
+
+
+async def test_get_content_200_streams_with_headers(client):
+    """The content route delivers the exact source bytes with a derived
+    Content-Type and an attachment Content-Disposition.
+
+    Anti-coincidental: the header assertions are load-bearing -- a route that
+    hardcoded octet-stream or omitted the disposition would fail even though
+    the bytes round-trip.
+    """
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}/content")
+    assert resp2.status_code == 200
+    assert resp2.content == b"# Sample Document\n\nSample content."
+    assert resp2.headers["content-type"].startswith("text/markdown")
+    assert resp2.headers["content-disposition"] == 'attachment; filename="sample.md"'
+
+
+async def test_get_content_404_unknown_id(client):
+    """An unknown document id resolves to the structured 404 before any stream
+    opens (the error is a JSON envelope, not a truncated byte stream)."""
+    resp = await client.get(
+        "/sage_vaults/test_vault/documents/deadbeef_nonexistent/content",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "document_not_found"
+
+
+async def test_get_content_404_source_missing(client, tmp_vault_dir):
+    """A document whose retained source file is gone resolves to the structured
+    404 `content_file_missing` before any stream opens."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+    (tmp_vault_dir / "sources" / "test" / "sample.md").unlink()
+
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}/content")
+    assert resp2.status_code == 404
+    assert resp2.json()["code"] == "content_file_missing"
+
+
+async def test_get_content_exceeding_inline_cap_still_delivers(client, tmp_vault_dir, monkeypatch):
+    """A source above the inline cap is refused by the base64-inline path (413)
+    yet fully delivered by the streaming content route (200).
+
+    The 413 leg proves the file genuinely exceeds the old path's ceiling --
+    without it, the 200 leg would prove nothing about bounded-memory delivery.
+    """
+    monkeypatch.setenv("SAGE_MAX_INLINE_CONTENT_BYTES", "256")
+    body = "x" * 4096
+    (tmp_vault_dir / "sources" / "test" / "big.md").write_text(body)
+
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/big.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    inline = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc_id}", params={"include_content": "true"}
+    )
+    assert inline.status_code == 413
+    assert inline.json()["code"] == "content_too_large"
+
+    streamed = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}/content")
+    assert streamed.status_code == 200
+    assert streamed.content == body.encode()
+
+
 async def test_eval_retrieval_not_configured_400(client):
     """POST /eval-retrieval without assertions config returns 400."""
     resp = await client.post("/sage_vaults/test_vault/eval-retrieval")

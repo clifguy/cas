@@ -24,6 +24,7 @@ from app.backend.transport import (
     HttpSageTransport,
     InProcessSageTransport,
     SageResponse,
+    SageStreamingResponse,
     SageTransport,
     resolve_bff_transport,
 )
@@ -242,6 +243,137 @@ def test_tx_007_registration_and_profile_resolution():
 
     assert isinstance(inproc, InProcessSageTransport)
     assert isinstance(http, HttpSageTransport)
+
+
+async def test_tx_009_http_binding_streams_lazily_with_bearer():
+    """`stream()` on the HTTP binding returns before the upstream body has been
+    produced, carries the delegated bearer, and delivers the chunks on demand.
+
+    Anti-coincidental-pass: an implementation routed through the buffered
+    `request()` exhausts the upstream body before returning, so the laziness
+    flag would already be flipped.
+    """
+    recorder: list[httpx.Request] = []
+    produced = {"all": False}
+
+    async def body():
+        yield b"chunk-1"
+        yield b"chunk-2"
+        produced["all"] = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorder.append(request)
+        return httpx.Response(200, content=body())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://sage.test")
+    transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", _StubOidc("tok-abc"), client=client)
+    )
+
+    sr = await transport.stream("GET", "/sage_vaults/cas/documents/d1/content", session=_session())
+
+    assert isinstance(sr, SageStreamingResponse)
+    assert sr.status_code == 200
+    assert produced["all"] is False  # nothing consumed yet: the body is still lazy
+    chunks = [chunk async for chunk in sr.stream]
+    assert b"".join(chunks) == b"chunk-1chunk-2"
+    assert produced["all"] is True
+    await sr.aclose()
+    assert recorder[0].headers["authorization"] == "Bearer tok-abc"
+
+
+async def test_tx_010_inprocess_binding_keeps_client_alive_until_aclose():
+    """The in-process binding's streamed body stays consumable after `stream()`
+    returns, and `aclose` completes cleanly after full consumption.
+
+    Scope note: httpx's ASGITransport runs the dispatched app to completion
+    inside `send` and replays the collected chunks, so this binding cannot
+    exhibit (or violate) bounded-memory laziness -- a per-call ``async with``
+    client shape would pass here too. This test pins the port shape
+    (post-return consumability + clean aclose) for the in-process binding;
+    genuine stream laziness is the HTTP binding's contract, pinned by
+    TX-009's produced-all flag.
+    """
+    from fastapi.responses import StreamingResponse
+
+    app = FastAPI()
+
+    @app.get("/sage_vaults/{vault}/documents/{doc}/content")
+    async def content(vault: str, doc: str) -> StreamingResponse:
+        async def chunks():
+            yield b"alpha-"
+            yield b"beta-"
+            yield b"gamma"
+
+        return StreamingResponse(chunks(), media_type="application/octet-stream")
+
+    transport = InProcessSageTransport(app)
+
+    sr = await transport.stream("GET", "/sage_vaults/cas/documents/d1/content")
+
+    body = b"".join([chunk async for chunk in sr.stream])
+    await sr.aclose()
+    assert sr.status_code == 200
+    assert body == b"alpha-beta-gamma"
+
+
+async def test_tx_011_http_stream_requires_session():
+    """`stream()` with no session refuses with the structured 401 before
+    minting a token or reaching SAGE (mirror of TX-004b for the streaming
+    method).
+
+    Anti-coincidental-pass: a binding that skipped the session check would call
+    `acquire_sage_token` (recorded) and/or reach the mock transport.
+    """
+    recorder: list[httpx.Request] = []
+    client = httpx.AsyncClient(transport=_mock_sage(recorder), base_url="http://sage.test")
+    oidc = _StubOidc()
+    transport = HttpSageTransport(ObOSageClient("http://sage.test", oidc, client=client))
+
+    with pytest.raises(SAGEError) as excinfo:
+        await transport.stream("GET", "/sage_vaults/cas/documents/d1/content", session=None)
+
+    assert excinfo.value.status_code == 401
+    assert recorder == []
+    assert oidc.calls == []
+
+
+async def test_tx_012_stream_parity_across_bindings():
+    """Both bindings, pointed at the same streaming SAGE route, deliver the
+    same status and joined body (mirror of TX-006 for the streaming method).
+
+    Anti-coincidental-pass: per-binding divergence in header or body handling
+    (e.g. one binding truncating or double-reading the stream) diverges the
+    joined bodies.
+    """
+    from fastapi.responses import StreamingResponse
+
+    app = FastAPI()
+
+    @app.get("/sage_vaults/{vault}/documents/{doc}/content")
+    async def content(vault: str, doc: str) -> StreamingResponse:
+        async def chunks():
+            yield b"one-"
+            yield b"two"
+
+        return StreamingResponse(chunks(), media_type="application/octet-stream")
+
+    inproc = InProcessSageTransport(app)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://sage.test"
+    )
+    http = HttpSageTransport(ObOSageClient("http://sage.test", _StubOidc(), client=http_client))
+
+    via_inproc = await inproc.stream("GET", "/sage_vaults/cas/documents/d1/content")
+    via_http = await http.stream("GET", "/sage_vaults/cas/documents/d1/content", session=_session())
+
+    inproc_body = b"".join([chunk async for chunk in via_inproc.stream])
+    http_body = b"".join([chunk async for chunk in via_http.stream])
+    await via_inproc.aclose()
+    await via_http.aclose()
+
+    assert via_inproc.status_code == via_http.status_code == 200
+    assert inproc_body == http_body == b"one-two"
 
 
 def test_tx_008_obo_client_builds_an_explicit_generous_timeout():

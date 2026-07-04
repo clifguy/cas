@@ -258,6 +258,16 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ),
     (
         "sage_core",
+        "get_document_content",
+    ): (
+        "HTTP-only browser-delivery affordance: streams a document's retained "
+        "source bytes as a raw download, chunked from the vault-source store so "
+        "no hop holds the whole file. Agents read source bytes via "
+        "get_document/read_projection, and a raw byte stream has no MCP "
+        "tool-result equivalent, so there is no MCP tool."
+    ),
+    (
+        "sage_core",
         "batch_ingest_documents",
     ): (
         "Multipart upload + SSE batch-ingest endpoint for the hosted profile "

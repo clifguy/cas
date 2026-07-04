@@ -56,6 +56,7 @@ class _FakeGraphClient:
         self.source_uploads = 0
         self.source_reads = 0
         self.source_stats = 0
+        self.source_streams: list[tuple[str, str]] = []
 
     def list_vault_ids(self) -> list[str]:
         return sorted(self.store)
@@ -90,6 +91,11 @@ class _FakeGraphClient:
 
     def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
         return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()
+
+    def stream_source_bytes(self, vault_id: str, source_path: str):
+        self.source_streams.append((vault_id, source_path))
+        yield b"SENTINEL-"
+        yield b"CHUNKS"
 
     def source_download_url(self, vault_id: str, source_path: str) -> str | None:
         if source_path not in self.sources:
@@ -301,6 +307,25 @@ def test_vsb_ds_036_hash_source_canonical_form():
     assert store.hash_source("v", Path("/unused"), "imports/h.md") == (
         "sha256:" + hashlib.sha256(payload).hexdigest()
     )
+
+
+def test_vsb_ds_037_iter_source_delegates_to_client_stream():
+    """``iter_source`` yields the chunks the Graph client streams and never
+    routes through the buffered whole-body read.
+
+    Anti-coincidental-pass: the sentinel chunks can only come from the fake's
+    ``stream_source_bytes``; assert ``source_reads == 0`` so a binding wired to
+    ``read_source_bytes`` (the easy wrong delegation) fails.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/x.md"] = b"real bytes the stream must not touch"
+    store = _binding(fake)
+
+    chunks = list(store.iter_source("v1", Path("/unused"), "imports/x.md"))
+
+    assert chunks == [b"SENTINEL-", b"CHUNKS"]
+    assert fake.source_streams == [("v1", "imports/x.md")]
+    assert fake.source_reads == 0
 
 
 def test_vsb_ds_050_download_url_delegates_to_client(tmp_path):
@@ -714,6 +739,109 @@ def test_vsb_ds_043_hash_source_streams_multi_chunk_body():
     digest = client.hash_source_bytes("v", "imports/big.bin")
     assert digest == "sha256:" + hashlib.sha256(body).hexdigest()
     assert streamed, "hash_source_bytes did not use the streaming GET path"
+
+
+def test_vsb_ds_044_stream_source_bytes_scoped_url_and_multichunk():
+    """``stream_source_bytes`` GETs the site/drive-scoped ``:/content`` endpoint
+    under a bearer and yields the body in multiple bounded chunks.
+
+    Anti-coincidental-pass: a >64 KiB body must surface as more than one chunk
+    (a whole-body ``resp.content`` implementation joins correctly but yields
+    once); the scoped-URL assertions kill tenant-wide-path regressions.
+    """
+    body = b"abcdefgh" * 40000  # 320 KB: spans several 64 KiB read chunks
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=body)
+
+    client = _client(handler)
+    chunks = list(client.stream_source_bytes("vault_a", "imports/x.md"))
+
+    assert b"".join(chunks) == body
+    assert len(chunks) > 1
+    assert seen[0].headers["authorization"] == "Bearer tok"
+    assert f"/sites/{_SITE}/drives/{_DRIVE}/root" in str(seen[0].url)
+    assert str(seen[0].url).endswith("/vaults/vault_a/imports/x.md:/content")
+
+
+def test_vsb_ds_045_stream_source_retries_once_on_throttle():
+    """A 429 before any chunk has flowed is retried once, honoring
+    ``Retry-After``, and the stream then delivers.
+
+    Anti-coincidental-pass: assert exactly two requests and the recorded sleep
+    -- a stream that skipped the retry loop surfaces the 429 as a RuntimeError.
+    """
+    calls = {"n": 0}
+    slept: list[float] = []
+
+    def transient(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "1.5"})
+        return httpx.Response(200, content=b"SRC")
+
+    client = _client(transient, sleep=slept.append)
+    assert b"".join(client.stream_source_bytes("v", "imports/x.md")) == b"SRC"
+    assert calls["n"] == 2
+    assert slept == [1.5]
+
+
+def test_vsb_ds_046_stream_source_fails_loud_on_error():
+    """A Graph 4xx on the streaming read fails closed as ``RuntimeError`` naming
+    the op and target.
+
+    Anti-coincidental-pass: a generator that yielded the error body as content
+    would pass a join-only check; the raises-check catches fail-open.
+    """
+    client = _client(lambda r: httpx.Response(404, text="gone"))
+    with pytest.raises(RuntimeError, match="stream source.*imports/x.md"):
+        list(client.stream_source_bytes("v", "imports/x.md"))
+
+
+def test_vsb_ds_047_abandoned_stream_closes_response():
+    """Closing the iterator early unwinds the streaming context and releases
+    the HTTP response.
+
+    Anti-coincidental-pass: an implementation not structured around the
+    ``with self._http.stream(...)`` block (e.g. a manual ``send``) leaks the
+    connection and never records the context exit.
+    """
+    exits: list[bool] = []
+
+    class _Resp:
+        status_code = 200
+        headers: dict = {}
+
+        def iter_bytes(self, chunk_size: int):
+            while True:
+                yield b"chunk"
+
+    class _StreamCM:
+        def __enter__(self):
+            return _Resp()
+
+        def __exit__(self, *exc) -> None:
+            exits.append(True)
+
+    class _StubHttp:
+        def stream(self, method: str, url: str, **kwargs):
+            return _StreamCM()
+
+    client = SharePointGraphClient(
+        site_id=_SITE,
+        drive_id=_DRIVE,
+        root_path="vaults",
+        token_provider=lambda: "tok",
+        http_client=_StubHttp(),  # type: ignore[arg-type]
+    )
+
+    it = client.stream_source_bytes("v", "imports/endless.bin")
+    assert next(it) == b"chunk"
+    assert exits == []  # still streaming
+    it.close()
+    assert exits == [True]
 
 
 def test_vsb_ds_052_source_download_url_reads_graph_annotation():

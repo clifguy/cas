@@ -56,6 +56,22 @@ class ObOSageClient:
         headers["Authorization"] = f"Bearer {token}"
         return await self._client.request(method, path, headers=headers, **kwargs)
 
+    async def stream(
+        self, method: str, path: str, session: Session, **kwargs: Any
+    ) -> httpx.Response:
+        """Issue a request whose body is left unread, for chunked relaying.
+
+        Same bearer-first discipline as ``request`` -- a session that cannot
+        mint a delegated token raises before anything is sent. The returned
+        response holds a live stream; the caller must ``aclose()`` it after
+        consuming the body.
+        """
+        token = self._oidc.acquire_sage_token(session.token_cache)
+        headers = dict(kwargs.pop("headers", None) or {})
+        headers["Authorization"] = f"Bearer {token}"
+        request = self._client.build_request(method, path, headers=headers, **kwargs)
+        return await self._client.send(request, stream=True)
+
     async def get(self, path: str, session: Session, **kwargs: Any) -> httpx.Response:
         return await self.request("GET", path, session, **kwargs)
 

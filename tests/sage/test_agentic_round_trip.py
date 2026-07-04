@@ -791,6 +791,31 @@ async def test_t0253_binary_container_include_content_is_refused(
     assert "read_projection" in err.message
 
 
+async def test_get_content_binary_container_not_refused(tmp_vault_dir, graph_store, minimal_config):
+    """The streaming content delivery serves a binary-container source raw.
+
+    The CAS-ADR-039 refusal exists to stop a caller text-scanning container
+    bytes inlined into JSON; raw delivery with a correct media type is the
+    sanctioned byte channel, matching the download-url path, which performs no
+    source-type check. Guards against the refusal being "helpfully" extended
+    to this route.
+    """
+    service = DocumentsService(graph_store, minimal_config)
+    _seed_file(tmp_vault_dir, "raw.pdf", "%PDF-1.4 fake body")
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("content_raw_pdf"),
+        source_type=SourceType.PDF,
+        source_path="raw.pdf",
+    )
+
+    delivery = await service.get_document_content(doc.id)
+
+    assert b"".join(delivery.chunks) == b"%PDF-1.4 fake body"
+    assert delivery.media_type == "application/pdf"
+    assert delivery.filename == "raw.pdf"
+
+
 async def test_t0253_binary_container_without_content_stamps_body_form_binary(
     tmp_vault_dir, graph_store, minimal_config
 ):

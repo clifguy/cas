@@ -1793,6 +1793,47 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/documents/{document_id}/content:
+    get:
+      operationId: get_document_content
+      summary: Stream a document's retained source bytes as a raw download.
+      description: >-
+        The binding-agnostic browser-delivery path: bytes come chunked from
+        the vault-source store's streaming read, so no hop holds the whole
+        file and the inline-content size ceiling does not apply.
+        Binary-container sources are served raw with their correct media
+        type -- the refusal that guards text-scanning of container bytes
+        inlined into JSON does not apply to this raw byte channel. Every
+        failure mode resolves before the stream opens, so errors arrive as
+        structured JSON envelopes, never a truncated byte stream. The
+        response carries a derived `Content-Type` and an `attachment`
+        `Content-Disposition`.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: The retained source bytes, streamed.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: >-
+                  The raw source bytes. The concrete Content-Type is derived
+                  from the source filename and may be more specific than
+                  octet-stream.
+        "404":
+          description: >-
+            Vault or document not found. Also returned with
+            `content_file_missing` when the retained source file is absent
+            from the vault-source store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/documents/{document_id}/projection:
     get:
       operationId: read_projection
