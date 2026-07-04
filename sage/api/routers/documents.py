@@ -8,7 +8,10 @@ mutually-exclusive content-delivery modes:
   exceed MCP tool-result size ceilings.
 """
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 
 from sage.api.dependencies import (
     get_documents_service,
@@ -123,6 +126,53 @@ async def get_document_download_url(
     service: DocumentsService = Depends(get_documents_service),
 ) -> DocumentDownloadUrlResponse:
     return await service.get_document_download_url(document_id)
+
+
+@router.get(
+    "/documents/{document_id}/content",
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "Vault or document not found. Also returned with "
+                "`content_file_missing` when the retained source file is "
+                "absent from the vault-source store."
+            ),
+        },
+    },
+)
+async def get_document_content(
+    document_id: DocumentIdStr,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: DocumentsService = Depends(get_documents_service),
+) -> StreamingResponse:
+    """Stream a document's retained source bytes as a raw download.
+
+    The binding-agnostic browser-delivery path (CAS-ADR-043): bytes come
+    chunked from the vault-source store's streaming read, so no hop holds the
+    whole file and the inline-content size ceiling does not apply.
+    Binary-container sources are served raw with their correct media type --
+    the CAS-ADR-039 refusal guards text-scanning of container bytes inlined
+    into JSON, and this raw byte channel is the sanctioned alternative. Every
+    failure mode resolves before the stream opens, so errors arrive as
+    structured JSON envelopes, never a truncated byte stream.
+    """
+    delivery = await service.get_document_content(document_id)
+    filename = delivery.filename.replace("\\", "_").replace('"', "_")
+    disposition = f'attachment; filename="{filename}"'
+    if not filename.isascii():
+        disposition = (
+            f'attachment; filename="{filename.encode("ascii", "replace").decode()}"; '
+            f"filename*=UTF-8''{quote(filename)}"
+        )
+    return StreamingResponse(
+        delivery.chunks,
+        media_type=delivery.media_type,
+        headers={
+            "Content-Disposition": disposition,
+            "Content-Length": str(delivery.size),
+        },
+    )
 
 
 @router.get(

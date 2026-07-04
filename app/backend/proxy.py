@@ -10,17 +10,27 @@ profile), SAGE answers these paths from its own routers and this proxy is unused
 
 from __future__ import annotations
 
+import re
+
 import httpx
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.backend.auth.config import BffAuthSettings
 from app.backend.auth.dependencies import get_auth_settings, get_session_service
-from app.backend.auth.session_store import SessionService
+from app.backend.auth.session_store import Session, SessionService
 from app.backend.transport import SageTransport
 from sage.api.errors import SAGEError
 
 router = APIRouter(tags=["proxy"])
+
+# The one proxied route whose body is relayed as a stream: SAGE's raw
+# source-byte delivery, whose payload can exceed any sensible in-memory
+# buffer. A full-path match on the GET method only -- any other route (or a
+# non-GET on a content-shaped path) keeps the buffered forward, so a future
+# route that merely ends in /content must opt in deliberately.
+_CONTENT_STREAM_PATH = re.compile(r"^/sage_vaults/[^/]+/documents/[^/]+/content$")
 
 # Request headers never forwarded upstream: the transport supplies its own
 # Authorization; Host, Cookie, and the body-framing headers are connection- or
@@ -78,6 +88,10 @@ async def _forward_to_sage(
         for key, value in request.headers.items()
         if key.lower() not in _DROP_REQUEST_HEADERS
     }
+    if request.method == "GET" and _CONTENT_STREAM_PATH.fullmatch(upstream_path):
+        return await _stream_from_sage(
+            upstream_path, request, transport, session, forwarded_headers
+        )
     body = await request.body()
     try:
         sage_response = await transport.request(
@@ -117,6 +131,56 @@ async def _forward_to_sage(
         content=sage_response.content,
         status_code=sage_response.status_code,
         headers=relayed_headers,
+    )
+
+
+async def _stream_from_sage(
+    upstream_path: str,
+    request: Request,
+    transport: SageTransport,
+    session: Session,
+    forwarded_headers: dict[str, str],
+) -> StreamingResponse:
+    """Relay one large-body SAGE response chunk-by-chunk, never buffering it.
+
+    Opening the stream (connect + response headers) carries the same
+    504/502 mapping as the buffered forward. Once the headers have been sent
+    downstream, remapping is impossible by HTTP construction: a mid-stream
+    upstream failure truncates the response body, and the client observes the
+    truncation against the relayed Content-Length. The upstream response (and
+    the binding's per-stream resources) are released by the background task,
+    which runs after the last byte or on client disconnect.
+    """
+    try:
+        sage_stream = await transport.stream(
+            request.method,
+            upstream_path,
+            session=session,
+            params=dict(request.query_params),
+            headers=forwarded_headers,
+        )
+    except httpx.TimeoutException as exc:
+        raise SAGEError(
+            "sage_upstream_timeout",
+            "The upstream SAGE service did not respond in time.",
+            504,
+        ) from exc
+    except httpx.TransportError as exc:
+        raise SAGEError(
+            "sage_upstream_unavailable",
+            "The upstream SAGE service is unavailable.",
+            502,
+        ) from exc
+    relayed_headers = {
+        key: value
+        for key, value in sage_stream.headers.items()
+        if key.lower() not in _DROP_RESPONSE_HEADERS
+    }
+    return StreamingResponse(
+        sage_stream.stream,
+        status_code=sage_stream.status_code,
+        headers=relayed_headers,
+        background=BackgroundTask(sage_stream.aclose),
     )
 
 

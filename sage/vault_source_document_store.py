@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import httpx
 
@@ -48,6 +48,10 @@ _CONFIG_FILENAME = "vault_config.yaml"
 # Read size for streamed source hashing, so a large source is never loaded whole
 # into memory to compute its digest. Matches the filesystem binding's chunk size.
 _HASH_CHUNK_BYTES = 65536
+
+# Chunk size for streamed source delivery, matching the filesystem binding's
+# delivery chunk size so both bindings hand equal-bounded chunks upward.
+_SOURCE_CHUNK_BYTES = 65536
 
 
 class SharePointGraphClient:
@@ -247,6 +251,31 @@ class SharePointGraphClient:
         # ``range(2)`` is non-empty, so the loop always returns on the second
         # attempt; this line is unreachable and only satisfies the type checker.
         raise RuntimeError("vault-source Graph hash retry loop produced no response")
+
+    def stream_source_bytes(self, vault_id: str, source_path: str) -> Iterator[bytes]:
+        """Yield a retained source's bytes in bounded chunks (a streamed download).
+
+        The delivery counterpart of ``hash_source_bytes``'s streamed read: the
+        content is never loaded whole into memory. Carries the same single
+        throttle/transient retry, applied only before the first chunk has
+        flowed -- once bytes have been yielded a retry would corrupt the
+        delivery. Closing the iterator early unwinds the streaming context and
+        releases the response.
+        """
+        url = self._content_url(vault_id, *source_path.split("/"))
+        target = f"{vault_id}/{source_path}"
+        for attempt in range(2):
+            headers = {"Authorization": f"Bearer {self._token_provider()}"}
+            with self._http.stream("GET", url, headers=headers) as resp:
+                if resp.status_code in _RETRY_STATUSES and attempt == 0:
+                    retry_after = resp.headers.get("Retry-After")
+                    self._sleep(float(retry_after) if retry_after else 0.0)
+                    continue
+                if resp.status_code >= 400:
+                    resp.read()
+                    self._fail(resp, "stream source", target)
+                yield from resp.iter_bytes(_SOURCE_CHUNK_BYTES)
+                return
 
     def source_download_url(self, vault_id: str, source_path: str) -> str | None:
         """Return a retained source's short-lived pre-authenticated download URL.

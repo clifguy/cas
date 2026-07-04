@@ -22,7 +22,7 @@ from app.backend.asgi import create_bff_app
 from app.backend.auth.config import BffAuthContext, BffAuthSettings
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import InMemorySessionStore, Session
-from app.backend.transport import HttpSageTransport
+from app.backend.transport import HttpSageTransport, SageTransport
 from sage.config import SageCoreConfig
 
 
@@ -407,3 +407,177 @@ async def test_app_013_proxy_maps_upstream_transport_error_to_structured_502():
     body = response.json()
     assert body["code"] == "sage_upstream_unavailable"
     assert body["message"]
+
+
+def _streaming_sage(recorder: list[httpx.Request]) -> httpx.AsyncClient:
+    """A SAGE stand-in that answers the content route with a chunked body and
+    download headers, and any other path with a JSON body."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorder.append(request)
+        if request.url.path.endswith("/content"):
+
+            async def chunks():
+                yield b"raw-"
+                yield b"bytes"
+
+            return httpx.Response(
+                200,
+                content=chunks(),
+                headers={
+                    "Content-Type": "application/pdf",
+                    "Content-Disposition": 'attachment; filename="x.pdf"',
+                },
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://sage.test")
+
+
+async def _signed_in_app(transport) -> tuple:
+    """A cloud-profile BFF app with a signed-in session and the given transport."""
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    settings = _settings()
+    store = InMemorySessionStore()
+    await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=_StubOidc("tok-xyz"), store=store)
+    app.state.sage_transport = transport
+    return app, settings
+
+
+async def test_app_014_proxy_streams_content_route():
+    """A logged-in GET on the document content route is relayed as a stream:
+    body intact, download headers (Content-Type, Content-Disposition) relayed,
+    delegated bearer attached upstream.
+
+    Anti-coincidental-pass: the header-relay assertions are load-bearing --
+    dropping Content-Disposition in the proxy's header filtering would break
+    the browser download even though the bytes round-trip.
+    """
+    recorder: list[httpx.Request] = []
+    oidc = _StubOidc("tok-xyz")
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    settings = _settings()
+    store = InMemorySessionStore()
+    await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", oidc, client=_streaming_sage(recorder))
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.get("/sage_vaults/cas/documents/d1/content")
+
+    assert response.status_code == 200
+    assert response.content == b"raw-bytes"
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == 'attachment; filename="x.pdf"'
+    assert len(recorder) == 1
+    assert recorder[0].headers["authorization"] == "Bearer tok-xyz"
+
+
+class _SpyTransport(SageTransport):
+    """Wraps a real transport, recording which port method each call took."""
+
+    def __init__(self, inner: SageTransport) -> None:
+        self._inner = inner
+        self.calls: list[str] = []
+
+    async def request(self, method, path, **kwargs):
+        self.calls.append(f"request {method} {path}")
+        return await self._inner.request(method, path, **kwargs)
+
+    async def stream(self, method, path, **kwargs):
+        self.calls.append(f"stream {method} {path}")
+        return await self._inner.stream(method, path, **kwargs)
+
+
+async def test_app_015_only_content_route_streams():
+    """The streaming branch is scoped to GET on the document content route:
+    other paths -- and non-GET methods on a content-shaped path -- keep the
+    buffered `request()` port method.
+
+    Anti-coincidental-pass: a bare `/content` suffix match or a method-agnostic
+    branch would route the POST (c) through `stream()`.
+    """
+    recorder: list[httpx.Request] = []
+    oidc = _StubOidc("tok-xyz")
+    spy = _SpyTransport(
+        HttpSageTransport(ObOSageClient("http://sage.test", oidc, client=_streaming_sage(recorder)))
+    )
+    app, settings = await _signed_in_app(spy)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        await client.get("/sage_vaults/cas/documents/d1/content")  # (a) streams
+        await client.get("/sage_vaults/cas/documents/d1")  # (b) buffered
+        await client.post("/sage_vaults/cas/documents/d1/content")  # (c) buffered
+
+    assert spy.calls == [
+        "stream GET /sage_vaults/cas/documents/d1/content",
+        "request GET /sage_vaults/cas/documents/d1",
+        "request POST /sage_vaults/cas/documents/d1/content",
+    ]
+
+
+async def test_app_016_streaming_route_requires_session():
+    """An unauthenticated GET on the content route is refused with the
+    structured 401 and SAGE is never reached -- the streaming branch sits after
+    the session gate.
+
+    Anti-coincidental-pass: a streaming branch placed before the session check
+    would record an upstream call.
+    """
+    recorder: list[httpx.Request] = []
+    oidc = _StubOidc()
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    store = InMemorySessionStore()
+    app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", oidc, client=_streaming_sage(recorder))
+    )
+
+    async with _client(app) as client:
+        response = await client.get("/sage_vaults/cas/documents/d1/content")  # no cookie
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "auth_required"
+    assert recorder == []
+
+
+async def test_app_017_stream_open_failures_map_to_504_and_502():
+    """A transport failure while opening the stream (before any headers) maps
+    to the same structured envelopes as the buffered path: timeout -> 504
+    `sage_upstream_timeout`, other transport error -> 502
+    `sage_upstream_unavailable`.
+
+    Anti-coincidental-pass: an unwrapped `stream()` call lets the httpx error
+    propagate as an opaque 500 (ASGITransport re-raises), never yielding the
+    structured envelope; catching `TransportError` before `TimeoutException`
+    would mis-map the timeout to 502.
+    """
+    for exc, status, code in (
+        (httpx.ConnectTimeout("slow"), 504, "sage_upstream_timeout"),
+        (httpx.ConnectError("down"), 502, "sage_upstream_unavailable"),
+    ):
+        oidc = _StubOidc("tok-xyz")
+        app, settings = await _signed_in_app(
+            HttpSageTransport(ObOSageClient("http://sage.test", oidc, client=_raising_sage(exc)))
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://bff.test",
+            cookies={settings.session_cookie_name: "sid-1"},
+        ) as client:
+            response = await client.get("/sage_vaults/cas/documents/d1/content")
+
+        assert response.status_code == status
+        assert response.json()["code"] == code

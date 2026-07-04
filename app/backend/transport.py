@@ -20,7 +20,7 @@ registered against the generic profile registry in :mod:`sage.profiles`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -58,6 +58,22 @@ class SageResponse:
     content: bytes
 
 
+@dataclass(frozen=True)
+class SageStreamingResponse:
+    """Transport-neutral streamed SAGE response: the body is not yet read.
+
+    ``stream`` yields the body chunk-by-chunk from the live upstream response;
+    ``aclose`` releases the response and any binding-held resources (the
+    in-process binding's per-stream client) and must be awaited after the last
+    chunk -- the proxy runs it as a post-response background task.
+    """
+
+    status_code: int
+    headers: Mapping[str, str]
+    stream: AsyncIterator[bytes]
+    aclose: Callable[[], Awaitable[None]]
+
+
 class SageTransport(ABC):
     """Port: one authenticated BFF->SAGE request/response call."""
 
@@ -78,6 +94,26 @@ class SageTransport(ABC):
         delegated bearer from it (and refuses the call without one), while the
         in-process binding ignores it because the co-located deployment
         authenticates in-process rather than by minting a delegated token.
+        """
+        ...
+
+    @abstractmethod
+    async def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        session: Session | None = None,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> SageStreamingResponse:
+        """Issue ``method`` against SAGE ``path``, leaving the body unread.
+
+        The streaming counterpart of ``request`` for large-body relays: the
+        returned response's body flows chunk-by-chunk, so no hop holds it
+        whole. Carries no request body -- it is a read path. The same
+        ``session`` semantics as ``request`` apply. Satisfiable by both
+        bindings, so it is part of the port contract (CAS-ADR-042).
         """
         ...
 
@@ -126,6 +162,37 @@ class HttpSageTransport(SageTransport):
             content=response.content,
         )
 
+    async def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        session: Session | None = None,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> SageStreamingResponse:
+        if session is None:
+            from sage.api.errors import SAGEError
+
+            raise SAGEError(
+                "auth_required",
+                "A signed-in session is required to reach SAGE.",
+                401,
+            )
+        response = await self._client.stream(
+            method,
+            path,
+            session,
+            params=dict(params) if params else None,
+            headers=dict(headers) if headers else None,
+        )
+        return SageStreamingResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            stream=response.aiter_bytes(),
+            aclose=response.aclose,
+        )
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -166,6 +233,43 @@ class InProcessSageTransport(SageTransport):
             status_code=response.status_code,
             headers=dict(response.headers),
             content=response.content,
+        )
+
+    async def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        session: Session | None = None,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> SageStreamingResponse:
+        # Unlike ``request``'s per-call ``async with``, the client is released
+        # by the ``aclose`` closure rather than before returning: the caller
+        # consumes the body after this method returns. Note that ASGITransport
+        # runs the dispatched app to completion inside ``send`` and replays the
+        # collected chunks, so this binding satisfies the port's streaming
+        # shape without bounded-memory laziness; the HTTP binding is the one
+        # that relays a genuinely live stream.
+        transport = httpx.ASGITransport(app=self._app)
+        client = httpx.AsyncClient(transport=transport, base_url=_ASGI_BASE_URL)
+        request = client.build_request(
+            method,
+            path,
+            params=dict(params) if params else None,
+            headers=dict(headers) if headers else None,
+        )
+        response = await client.send(request, stream=True)
+
+        async def aclose() -> None:
+            await response.aclose()
+            await client.aclose()
+
+        return SageStreamingResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            stream=response.aiter_bytes(),
+            aclose=aclose,
         )
 
 

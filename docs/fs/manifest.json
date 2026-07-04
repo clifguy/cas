@@ -93,7 +93,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.7",
+      "version": "0.8",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.41",
+  "substrate_version": "1.42",
   "revision_history": [
+    {
+      "version": "1.42",
+      "date": "2026-07-04",
+      "summary": "Streaming vault-source read and streaming large-file delivery (T-0366, CAS-ADR-043). sage/sage_core_api.openapi.yaml bumped v0.7->v0.8: new GET /sage_vaults/{vault_id}/documents/{document_id}/content (operationId get_document_content) streams a document's retained source bytes as a raw application/octet-stream download with a derived Content-Type and an attachment Content-Disposition -- the binding-agnostic browser-delivery counterpart to the download-url presign path, for bindings that must proxy bytes (the filesystem binding cannot presign). The inline-content size ceiling (SAGE_MAX_INLINE_CONTENT_BYTES) does not apply (it bounds base64-inlining into JSON, which this path never does), and binary-container sources are served raw (the CAS-ADR-039 refusal guards text-scanning of inlined container bytes; this raw byte channel is the sanctioned alternative, matching download-url). The operation is HTTP-only (a browser-delivery affordance; agents read bytes via get_document/read_projection) and is allowlisted in test_mcp_tool_conformance.HTTP_ONLY_OPERATIONS. Code (not in this spec): the VaultSourceStore port (sage/vault_source_binding.py) gains iter_source -- a chunked streaming read satisfiable by both bindings per CAS-ADR-043 s5, implemented on FilesystemVaultSourceStore (65536-byte file chunks) and DocumentStoreVaultSourceStore (delegating to a new SharePointGraphClient.stream_source_bytes that mirrors the hash_source_bytes streamed GET: fresh bearer per attempt, one 429/503 retry before the first chunk, iter_bytes chunking); sage/services/documents.py gains SourceContentDelivery and DocumentsService.get_document_content, resolving every failure mode before the stream opens; the CAS Application BFF transport (app/backend/transport.py) gains SageStreamingResponse and SageTransport.stream (httpx send(stream=True) on the OBO client; an explicit client + aclose-closure lifecycle on the in-process binding), and the reverse proxy (app/backend/proxy.py) routes GET requests matching the content route through a streaming forward that relays chunks without buffering, closing the upstream via a background task; all other proxied routes keep buffered behavior. Tests: VSBB-011/012/024 (filesystem chunked read, missing-file parity, delivery-through-port sentinel), VSB-DS-037/044-047 (binding delegation, scoped-URL multichunk stream, throttle retry, fail-loud, abandoned-stream close), content-route integration (headers, 404 envelopes, cap-crossing 413-vs-200, binary-not-refused), TX-009..012 (lazy bearer-carrying stream, in-process client lifetime, session refusal, cross-binding parity), APP-014..017 (end-to-end streamed proxy with header relay, content-route-only scoping, session gate, pre-header 504/502 mapping); the verbatim-description, YAML<->Pydantic parity, router-conformance, MCP-tool-conformance, typed-alias, seam, and public-posture gates pass."
+    },
     {
       "version": "1.41",
       "date": "2026-06-30",
