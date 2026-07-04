@@ -10,16 +10,22 @@ mutually-exclusive content-delivery modes:
 
 from fastapi import APIRouter, Depends, Query
 
-from sage.api.dependencies import get_documents_service, get_vault_id
+from sage.api.dependencies import (
+    get_documents_service,
+    get_ingestion_service,
+    get_vault_id,
+)
 from sage.models.schemas import (
     DocumentDownloadUrlResponse,
     DocumentIdStr,
     DocumentWithContent,
     ErrorResponse,
     OpenDocumentResponse,
+    ReabstractStartedResponse,
     VaultIdStr,
 )
 from sage.services.documents import DocumentsService
+from sage.services.ingestion import IngestionService
 
 router = APIRouter(tags=["Document Metadata"])
 
@@ -48,6 +54,48 @@ async def open_document(
     service: DocumentsService = Depends(get_documents_service),
 ) -> OpenDocumentResponse:
     return await service.open_document_locally(document_id)
+
+
+@router.post(
+    "/documents/{document_id}/reabstract",
+    operation_id="recompute_abstract",
+    response_model=ReabstractStartedResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "`document_not_found` / `no_projection` / `vault_not_found`: the "
+                "document, its stored projection chunks, or the vault could not be "
+                "resolved."
+            ),
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`reabstract_document_already_in_flight`: a re-abstraction is "
+                "already running for this document."
+            ),
+        },
+    },
+)
+async def recompute_abstract(
+    document_id: DocumentIdStr,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: IngestionService = Depends(get_ingestion_service),
+) -> ReabstractStartedResponse:
+    """Regenerate the semantic abstract for a single document (fire-and-forget).
+
+    Calls the shared per-document re-abstraction service path so this route and
+    the equivalent MCP tool dispatch identical work against one queue and one
+    single-flight claim. Returns as soon as the background job is enqueued; the
+    caller polls ``GET /documents/{document_id}`` for the transition out of
+    ``abstraction_in_progress``. A concurrent call against the same document
+    returns 409 rather than dispatching a parallel task. Regenerates regardless
+    of the document's current terminal ``pipeline_status`` as long as its
+    projection chunks are still stored.
+    """
+    result = await service.reabstract(document_id)
+    return ReabstractStartedResponse(**result)
 
 
 @router.get(

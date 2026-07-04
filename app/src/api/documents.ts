@@ -3,6 +3,7 @@ import type {
   BulkMetadataItemResult,
   BulkMetadataResponse,
   Document,
+  ReabstractStartedResponse,
   UpdateMetadataRequest,
 } from './types';
 
@@ -46,4 +47,21 @@ export async function getDocumentDownloadUrl(
   documentId: string,
 ): Promise<{ download_url: string }> {
   return apiGet(`/sage_vaults/${vaultId}/documents/${documentId}/download-url`);
+}
+
+// Regenerate a single document's semantic abstract. Fire-and-forget: SAGE
+// enqueues the re-abstraction against its shared per-document queue and returns
+// immediately, so the caller polls getDocument until pipeline_status leaves
+// 'abstraction_in_progress'. Works regardless of the document's current terminal
+// pipeline_status (e.g. to refresh a stale-but-complete abstract after a model
+// swap). A concurrent call against the same document rejects with a 409
+// ApiError (code 'reabstract_document_already_in_flight').
+export async function reabstractDocument(
+  vaultId: string,
+  documentId: string,
+): Promise<ReabstractStartedResponse> {
+  return apiPost<ReabstractStartedResponse>(
+    `/sage_vaults/${vaultId}/documents/${documentId}/reabstract`,
+    {},
+  );
 }

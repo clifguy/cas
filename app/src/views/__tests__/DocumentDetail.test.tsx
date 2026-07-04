@@ -20,6 +20,7 @@ vi.mock('../../api/documents', () => ({
   getDocument: vi.fn(),
   openDocument: vi.fn(),
   getDocumentDownloadUrl: vi.fn(),
+  reabstractDocument: vi.fn(),
 }));
 vi.mock('../../api/graph', () => ({
   traverse: vi.fn(),
@@ -32,14 +33,21 @@ vi.mock('../../api/ingest', () => ({
   detectIngestProfile: vi.fn(),
 }));
 
-import { getDocument, openDocument, getDocumentDownloadUrl } from '../../api/documents';
+import {
+  getDocument,
+  openDocument,
+  getDocumentDownloadUrl,
+  reabstractDocument,
+} from '../../api/documents';
 import { traverse } from '../../api/graph';
 import { discover } from '../../api/discover';
 import { detectIngestProfile } from '../../api/ingest';
+import { ApiError } from '../../api/client';
 
 const mockGetDocument = vi.mocked(getDocument);
 const mockOpenDocument = vi.mocked(openDocument);
 const mockGetDownloadUrl = vi.mocked(getDocumentDownloadUrl);
+const mockReabstractDocument = vi.mocked(reabstractDocument);
 const mockTraverse = vi.mocked(traverse);
 const mockDiscover = vi.mocked(discover);
 const mockDetectIngestProfile = vi.mocked(detectIngestProfile);
@@ -127,6 +135,7 @@ function TestAppWithHistory({
 beforeEach(() => {
   mockGetDocument.mockReset();
   mockOpenDocument.mockReset();
+  mockReabstractDocument.mockReset();
   mockTraverse.mockReset();
   mockDiscover.mockReset();
 });
@@ -259,5 +268,92 @@ describe('DocumentDetail: Back to search', () => {
     // not a Link to a hardcoded "/search" path.
     const backBtn = screen.getByRole('button', { name: /back to search/i });
     expect(backBtn.tagName).toBe('BUTTON');
+  });
+});
+
+describe('DocumentDetail: Regenerate abstract', () => {
+  it('renders a Regenerate abstract control on the document detail view', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+
+    await screen.findByRole('heading', { name: mockDoc.title });
+    expect(
+      screen.getByRole('button', { name: /regenerate abstract/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('kicks off re-abstraction and refreshes the displayed abstract on completion', async () => {
+    const refreshed: Document = {
+      ...mockDoc,
+      pipeline_status: 'abstraction_complete',
+      semantic_abstract: 'Freshly regenerated abstract.',
+    };
+    // First getDocument (initial mount load) returns the stale doc; the poll
+    // after re-abstraction returns the refreshed doc so the loop settles at
+    // once (no in-progress state to wait through).
+    mockGetDocument.mockResolvedValueOnce(mockDoc).mockResolvedValue(refreshed);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockReabstractDocument.mockResolvedValue({
+      status: 'reabstract_started',
+      document_id: 'doc-42',
+      dispatched_at: '2026-07-04T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+
+    await screen.findByRole('heading', { name: mockDoc.title });
+    // Stale state: mockDoc.semantic_abstract is null -> empty-state copy.
+    expect(screen.getByText(/no abstract generated yet/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /regenerate abstract/i }));
+
+    await waitFor(() =>
+      expect(mockReabstractDocument).toHaveBeenCalledWith('test_vault', 'doc-42'),
+    );
+    expect(mockReabstractDocument).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.getByText('Freshly regenerated abstract.')).toBeInTheDocument(),
+    );
+  });
+
+  it('surfaces a non-fatal message when a regeneration is already in flight', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockReabstractDocument.mockRejectedValue(
+      new ApiError('reabstract_document_already_in_flight', 'already running'),
+    );
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+
+    await screen.findByRole('heading', { name: mockDoc.title });
+    await user.click(screen.getByRole('button', { name: /regenerate abstract/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/already running for this document/i)).toBeInTheDocument(),
+    );
+    // No crash: the document heading is still present.
+    expect(screen.getByRole('heading', { name: mockDoc.title })).toBeInTheDocument();
   });
 });

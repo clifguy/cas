@@ -3,10 +3,15 @@ import { Link, useParams, useOutletContext, useNavigate } from 'react-router-dom
 import type { VaultContext } from '../App';
 import type { Document, Edge, EdgeType, LinkRequest, ResolutionPolicy } from '../api/types';
 import { DEFAULT_EDGE_POLICIES } from '../api/types';
-import { getDocument, openDocument, getDocumentDownloadUrl } from '../api/documents';
+import { getDocument, openDocument, getDocumentDownloadUrl, reabstractDocument } from '../api/documents';
 import { detectIngestProfile } from '../api/ingest';
 import { traverse } from '../api/graph';
 import { createEdge } from '../api/graph';
+import { ApiError } from '../api/client';
+
+// Poll cadence for observing a fire-and-forget re-abstraction to completion.
+const REABSTRACT_POLL_INTERVAL_MS = 1000;
+const REABSTRACT_MAX_POLLS = 120;
 
 // Edge types in the order we render them in the form dropdown and edge list.
 // Mirrors the SAGE EdgeType enum and the registry order.
@@ -67,6 +72,39 @@ export default function DocumentDetail() {
   const [edgeError, setEdgeError] = useState('');
   const [neighborTitles, setNeighborTitles] = useState<Record<string, string>>({});
   const [openStatus, setOpenStatus] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null);
+  const [reabstractPhase, setReabstractPhase] = useState<'idle' | 'running'>('idle');
+  const [reabstractMsg, setReabstractMsg] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null);
+
+  async function handleReabstract() {
+    if (!id) return;
+    setReabstractMsg(null);
+    setReabstractPhase('running');
+    try {
+      await reabstractDocument(vaultId, id);
+      // Fire-and-forget: the abstract is written by a background job, so poll
+      // the document until its pipeline_status leaves 'abstraction_in_progress'.
+      let refreshed = await getDocument(vaultId, id);
+      for (
+        let i = 0;
+        i < REABSTRACT_MAX_POLLS && refreshed.pipeline_status === 'abstraction_in_progress';
+        i++
+      ) {
+        await new Promise(resolve => setTimeout(resolve, REABSTRACT_POLL_INTERVAL_MS));
+        refreshed = await getDocument(vaultId, id);
+      }
+      setDoc(refreshed);
+      setReabstractPhase('idle');
+      setReabstractMsg({ kind: 'ok', message: 'Abstract regenerated.' });
+    } catch (err) {
+      setReabstractPhase('idle');
+      if (err instanceof ApiError && err.code === 'reabstract_document_already_in_flight') {
+        setReabstractMsg({ kind: 'err', message: 'A regeneration is already running for this document.' });
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to regenerate abstract';
+        setReabstractMsg({ kind: 'err', message: msg });
+      }
+    }
+  }
 
   async function handleOpen() {
     if (!id) return;
@@ -269,13 +307,35 @@ export default function DocumentDetail() {
         ]} />
       </Section>
 
-      {doc.semantic_abstract && (
-        <Section title="Semantic Abstract">
+      <Section title="Semantic Abstract">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+          <button
+            type="button"
+            onClick={handleReabstract}
+            disabled={reabstractPhase === 'running'}
+            style={{
+              ...btnStyle,
+              background: '#eee',
+              color: '#333',
+              ...(reabstractPhase === 'running' ? { cursor: 'not-allowed', opacity: 0.6 } : {}),
+            }}
+          >
+            {reabstractPhase === 'running' ? 'Regenerating…' : 'Regenerate abstract'}
+          </button>
+          {reabstractMsg && (
+            <span style={{ fontSize: 12, color: reabstractMsg.kind === 'ok' ? '#2e7d32' : '#c62828' }}>
+              {reabstractMsg.message}
+            </span>
+          )}
+        </div>
+        {doc.semantic_abstract ? (
           <div style={{ fontSize: 13, lineHeight: 1.6, color: '#444', fontStyle: 'italic' }}>
             {doc.semantic_abstract}
           </div>
-        </Section>
-      )}
+        ) : (
+          <div style={{ fontSize: 13, color: '#888' }}>No abstract generated yet.</div>
+        )}
+      </Section>
 
       {doc.projection_text && (
         <Section title="Projection Preview">

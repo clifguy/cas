@@ -119,10 +119,6 @@ OPERATION_RENAMES: dict[tuple[str, str], str] = {}
 DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     (
         "sage_core",
-        "recompute_abstract",
-    ): "Agent-only abstraction refresh; no HTTP route by design.",
-    (
-        "sage_core",
         "recompute_pipeline",
     ): (
         "Operator-only ingestion-pipeline repair for documents stuck at "
