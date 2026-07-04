@@ -103,12 +103,15 @@ def test_resolve_flag_overrides_env(tmp_path):
 
 @pytest.fixture
 def _isolated_logging_state():
-    """Snapshot and restore root + ``sage`` logger state across a test.
+    """Snapshot and restore root, ``sage``, and the MCP SDK lifecycle
+    loggers across a test.
 
     ``logging.config.dictConfig`` mutates global logger state. Without
     isolation, this test would either depend on or corrupt the state
     other tests in the same process rely on (Python's logging module
-    has no built-in transaction primitive).
+    has no built-in transaction primitive). ``UVICORN_LOG_CONFIG`` sets
+    the level of ``mcp.server.streamable_http`` and
+    ``mcp.server.lowlevel.server``, so those levels are snapshotted too.
     """
     root = logging.getLogger()
     saved_root_handlers = list(root.handlers)
@@ -120,6 +123,12 @@ def _isolated_logging_state():
     saved_sage_level = sage_logger.level
     saved_sage_propagate = sage_logger.propagate
 
+    mcp_loggers = [
+        logging.getLogger("mcp.server.streamable_http"),
+        logging.getLogger("mcp.server.lowlevel.server"),
+    ]
+    saved_mcp_levels = [lg.level for lg in mcp_loggers]
+
     yield
 
     root.handlers = saved_root_handlers
@@ -128,6 +137,8 @@ def _isolated_logging_state():
     sage_logger.handlers = saved_sage_handlers
     sage_logger.level = saved_sage_level
     sage_logger.propagate = saved_sage_propagate
+    for lg, lvl in zip(mcp_loggers, saved_mcp_levels):
+        lg.setLevel(lvl)
 
 
 def test_uvicorn_log_config_surfaces_sage_info_records(_isolated_logging_state):
@@ -179,3 +190,72 @@ def test_uvicorn_log_config_surfaces_sage_info_records(_isolated_logging_state):
         "propagation chain; UVICORN_LOG_CONFIG must attach a handler to "
         "either the sage logger or the root"
     )
+
+
+# ---------------------------------------------------------------------------
+# Surface 3d: MCP SDK per-request lifecycle log suppression
+# ---------------------------------------------------------------------------
+
+
+def test_uvicorn_log_config_declares_mcp_sdk_lifecycle_loggers():
+    """The two MCP SDK per-request lifecycle loggers are pinned to WARNING.
+
+    Over the Streamable HTTP transport's stateless mode, every JSON-RPC
+    request logs ``Terminating session: None`` on
+    ``mcp.server.streamable_http`` and ``Processing request of type <X>``
+    on ``mcp.server.lowlevel.server`` at INFO. Both must be declared at
+    WARNING in the console config so the chatter never reaches the root
+    handler that ``FastMCP.__init__`` installs.
+    """
+    loggers = UVICORN_LOG_CONFIG["loggers"]
+    for name in ("mcp.server.streamable_http", "mcp.server.lowlevel.server"):
+        assert name in loggers, f"{name} is not pinned in UVICORN_LOG_CONFIG"
+        assert loggers[name]["level"] == "WARNING", (
+            f"{name} must be WARNING to drop per-request lifecycle INFO chatter; "
+            f"got {loggers[name].get('level')!r}"
+        )
+
+
+def test_dictconfig_suppresses_mcp_sdk_info_but_keeps_warning(_isolated_logging_state):
+    """Applying UVICORN_LOG_CONFIG drops SDK INFO chatter but keeps WARNING+.
+
+    Mimics the FastMCP-configured production state: the root logger is at
+    INFO with a handler (``FastMCP.__init__`` installs a RichHandler at
+    INFO via ``configure_logging``). With the two SDK loggers pinned to
+    WARNING, their INFO records are never created and never reach root's
+    handler, while genuine WARNING records still propagate and stay visible.
+
+    Anti-coincidental: root is deliberately at INFO. Without the WARNING
+    pins the SDK loggers would inherit INFO, the INFO record WOULD be
+    captured, and the "not captured" assertion would fail.
+    """
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    root = logging.getLogger()
+    root.handlers = [_Capture()]
+    root.setLevel(logging.INFO)
+
+    logging.config.dictConfig(UVICORN_LOG_CONFIG)
+
+    for name in ("mcp.server.streamable_http", "mcp.server.lowlevel.server"):
+        logger = logging.getLogger(name)
+        assert logger.level == logging.WARNING, (
+            f"{name} own level is {logging.getLevelName(logger.level)}; expected WARNING"
+        )
+
+        captured.clear()
+        logger.info("per-request lifecycle chatter")
+        assert not captured, (
+            f"{name} INFO record reached the root handler; it must be "
+            f"suppressed at the child logger"
+        )
+
+        captured.clear()
+        logger.warning("genuine warning")
+        assert [r.getMessage() for r in captured] == ["genuine warning"], (
+            f"{name} WARNING record must still propagate to the root handler"
+        )

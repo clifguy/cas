@@ -141,6 +141,19 @@ UVICORN_LOG_CONFIG: dict = {
         # convention here makes successful-call visibility a SAGE-owned
         # contract instead.
         "sage": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        # Quiet the MCP SDK's per-request lifecycle chatter over the Streamable
+        # HTTP transport. In stateless mode every JSON-RPC request tears down a
+        # transient session, logging "Terminating session: None" on
+        # ``mcp.server.streamable_http``, and is dispatched through "Processing
+        # request of type <X>" on ``mcp.server.lowlevel.server`` — both at INFO,
+        # both redundant with the ``mcp tool: <name>`` line
+        # ``_LoggingFastMCP.call_tool`` already surfaces. Pinning these two
+        # loggers to WARNING drops the INFO records at creation so nothing
+        # reaches the root RichHandler; genuine WARNING/ERROR still propagate
+        # and stay visible. Scoped to this uvicorn process — the stdio MCP
+        # servers do not apply this config.
+        "mcp.server.streamable_http": {"level": "WARNING"},
+        "mcp.server.lowlevel.server": {"level": "WARNING"},
     },
 }
 
