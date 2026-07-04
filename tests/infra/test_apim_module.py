@@ -66,7 +66,7 @@ _ROLE_ASSIGNMENT_TYPE: Final[str] = "Microsoft.Authorization/roleAssignments"
 # Built-in Azure role: Monitoring Metrics Publisher (Entra-authenticated
 # telemetry ingestion). A fixed, public Azure constant — not an environment
 # identity coordinate — and the only GUID the module may carry.
-_METRICS_PUBLISHER_ROLE: Final[str] = "3913510d-42f4-4e42-8a64-420c390d0215"
+_METRICS_PUBLISHER_ROLE: Final[str] = "3913510d-42f4-4e42-8a64-420c390055eb"
 
 # The stable API Management API version every resource must pin. A bare
 # 2023-05-01 exists only in its ``-preview`` form (the stable form raises BCP081

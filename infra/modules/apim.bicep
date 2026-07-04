@@ -166,7 +166,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 // Built-in Azure role: Monitoring Metrics Publisher (Entra-authenticated
 // telemetry ingestion). A fixed, public Azure constant — not an environment
 // identity coordinate.
-var monitoringMetricsPublisherRoleId = '3913510d-42f4-4e42-8a64-420c390d0215'
+var monitoringMetricsPublisherRoleId = '3913510d-42f4-4e42-8a64-420c390055eb'
 
 // The gateway's managed identity may publish telemetry to the Application
 // Insights resource. Required because local (key-based) ingestion is disabled
