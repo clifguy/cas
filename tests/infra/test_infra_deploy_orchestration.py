@@ -64,6 +64,15 @@ def _job_run_text(job: dict) -> str:
     return "\n".join(s.get("run", "") for s in steps if isinstance(s, dict))
 
 
+def _uncommented_run_text(job: dict) -> str:
+    """``_job_run_text`` with shell ``#`` comment lines removed, so a command named
+    only in a comment cannot be mistaken for a real invocation by a token-mint gate.
+    """
+    return "\n".join(
+        line for line in _job_run_text(job).splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def _deploy_job(workflow: dict) -> dict:
     """The job that applies the deployment — it runs ``az deployment sub create``."""
     for job in (workflow.get("jobs") or {}).values():
@@ -295,11 +304,12 @@ def test_preflight_mints_v2_scoped_token() -> None:
     resource app's ``requestedAccessTokenVersion``, so only moving the mint to the
     ``/.default`` scope endpoint actually yields a v2 token.
     """
-    runs = _job_run_text(_deploy_job(_load()))
-    # The mint command spans shell line-continuations; collapse them so the flag
-    # and its audience read as one logical command line, then isolate the mint
-    # invocation. Anchoring on the command itself — not the whole-job text — keeps
-    # a paraphrasing comment from satisfying the gate.
+    runs = _uncommented_run_text(_deploy_job(_load()))
+    # Strip shell comments (above), then collapse line-continuations so the flag and
+    # its audience read as one logical command line. Comment-stripping is load-bearing:
+    # the mint anchor `az account get-access-token` can appear in an adjacent v1/v2
+    # explainer comment, and re.search would otherwise match that comment first and go
+    # blind to a --resource (v1) regression in the real command below it.
     collapsed = re.sub(r"\s+", " ", runs.replace("\\\n", " "))
     match = re.search(r"az account get-access-token.*?\)", collapsed)
     assert match is not None, "preflight must mint a bearer token for the SAGE audience"
@@ -312,3 +322,28 @@ def test_preflight_mints_v2_scoped_token() -> None:
         "preflight must not mint via --resource (the v1 token endpoint; it ignores the "
         "resource app's requestedAccessTokenVersion and always returns iss=sts.windows.net)"
     )
+
+
+def test_uncommented_run_text_strips_comment_lines() -> None:
+    """A command named only in a shell comment is absent from the scanned text, so a
+    comment cannot be mistaken for a real invocation. Without this, the re.search mint
+    gate above would match a v1/v2 explainer comment first and mask a --resource
+    regression in the real command below it.
+    """
+    job = {
+        "steps": [
+            {
+                "run": (
+                    "# mint with az account get-access-token --scope ... (v2), not --resource\n"
+                    'AUTH_TOKEN="$(az account get-access-token '
+                    '--scope "$SAGE_AUDIENCE/.default" -o tsv)"\n'
+                )
+            }
+        ]
+    }
+    text = _uncommented_run_text(job)
+    assert "# mint with" not in text, "shell comment lines must be stripped"
+    assert text.count("az account get-access-token") == 1, (
+        "only the real invocation survives; the comment's phantom mention is gone"
+    )
+    assert "not --resource" not in text, "the comment's --resource mention must not survive"

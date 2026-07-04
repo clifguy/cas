@@ -64,6 +64,15 @@ def _job_run_text(job: dict) -> str:
     return "\n".join(s.get("run", "") for s in steps if isinstance(s, dict))
 
 
+def _uncommented_run_text(job: dict) -> str:
+    """``_job_run_text`` with shell ``#`` comment lines removed, so a command named
+    only in a comment cannot be mistaken for a real invocation by a token-mint gate.
+    """
+    return "\n".join(
+        line for line in _job_run_text(job).splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def _validation_job(workflow: dict) -> dict:
     """The job that runs the validator driver — it invokes ``sharepoint_validate.py``."""
     for job in (workflow.get("jobs") or {}).values():
@@ -141,9 +150,10 @@ def test_all_token_mints_are_v2_scoped() -> None:
     request reaches the backend. The harness mints once per phase, so *both* mints must
     be v2.
     """
-    runs = _job_run_text(_validation_job(_load()))
-    # The mint command spans shell line-continuations; collapse them so the flag and
-    # its audience read as one logical command line, then isolate each mint invocation.
+    runs = _uncommented_run_text(_validation_job(_load()))
+    # Strip shell comments (above), then collapse line-continuations so the flag and its
+    # audience read as one logical command line — a comment naming the mint command must
+    # not be counted as an invocation.
     collapsed = re.sub(r"\s+", " ", runs.replace("\\\n", " "))
     mints = re.findall(r"az account get-access-token.*?\)", collapsed)
     assert mints, "the harness must mint a bearer token for the SAGE audience"
@@ -156,6 +166,29 @@ def test_all_token_mints_are_v2_scoped() -> None:
             "no token mint may use --resource (the v1 endpoint; it always returns "
             f"iss=sts.windows.net, rejected at the edge); got: {mint!r}"
         )
+
+
+def test_uncommented_run_text_strips_comment_lines() -> None:
+    """A command named only in a shell comment is absent from the scanned text, so a
+    comment cannot be mistaken for a real mint invocation by the gate above.
+    """
+    job = {
+        "steps": [
+            {
+                "run": (
+                    "# mint with az account get-access-token --scope ... (v2), not --resource\n"
+                    'AUTH_TOKEN="$(az account get-access-token '
+                    '--scope "$SAGE_AUDIENCE/.default" -o tsv)"\n'
+                )
+            }
+        ]
+    }
+    text = _uncommented_run_text(job)
+    assert "# mint with" not in text, "shell comment lines must be stripped"
+    assert text.count("az account get-access-token") == 1, (
+        "only the real invocation survives; the comment's phantom mention is gone"
+    )
+    assert "not --resource" not in text, "the comment's --resource mention must not survive"
 
 
 def test_phases_run_around_restart_with_liveness_in_order() -> None:
