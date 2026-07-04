@@ -81,6 +81,29 @@ def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _uncommented_invocations(text: str, token: str) -> list[str]:
+    """Every real command invocation of ``token``, each joined across its
+    trailing-backslash line continuations into a single string.
+
+    A ``#`` comment that merely names ``token`` in prose (e.g.
+    ``like --identifier-uris earlier``) is not a command and is excluded — a
+    line-oriented scan, not a bare ``re.findall`` for the token, is what keeps
+    such a mention from being mistaken for an actual use of the flag.
+    """
+    lines = text.splitlines()
+    invocations: list[str] = []
+    for i, line in enumerate(lines):
+        if token not in line or line.lstrip().startswith("#"):
+            continue
+        parts = [line]
+        j = i
+        while lines[j].rstrip().endswith("\\") and j + 1 < len(lines):
+            j += 1
+            parts.append(lines[j])
+        invocations.append(" ".join(part.strip().rstrip("\\").strip() for part in parts))
+    return invocations
+
+
 def test_all_four_scripts_exist_and_are_executable() -> None:
     """The bootstrap surface every later orchestration step assumes."""
     for script in SCRIPTS:
@@ -257,18 +280,17 @@ def test_entra_script_explicitly_grants_offline_access_consent() -> None:
     (CAS-ADR-042).
     """
     text = _text(ENTRA)
-    # Anchor on the actual command, never a prose/comment mention: the pre-fix
-    # script mentions "offline_access" and "grant" in comments but issues no
-    # `az ad app permission grant` at all, so a substring check would pass by
-    # accident. Match the command continuation-aware -- the `(?:[^\n]*\\\n)*[^\n]*`
-    # form (not the naive `[^\n]*(?:\\\n[^\n]*)*`, whose greedy first `[^\n]*` eats
-    # the trailing backslash and truncates the match at line one).
-    grant = re.search(r"az ad app permission grant(?:[^\n]*\\\n)*[^\n]*", text)
-    assert grant is not None, (
+    # Anchor on a real command invocation, never a prose/comment mention: the
+    # pre-fix script mentioned "offline_access" and "grant" in comments but
+    # issued no `az ad app permission grant` at all, so a substring check would
+    # pass by accident. _uncommented_invocations skips `#` comments and joins the
+    # command across its backslash continuations (there is exactly one such grant).
+    grants = _uncommented_invocations(text, "az ad app permission grant")
+    assert grants, (
         "entra script must issue `az ad app permission grant` for the MCP client — "
         "admin-consent alone does not consent the Graph offline_access scope"
     )
-    flat = grant.group(0).replace("\\\n", " ")
+    flat = grants[0]
     assert "--scope offline_access" in flat, (
         "the explicit grant must consent the offline_access scope (--scope offline_access)"
     )
@@ -336,11 +358,12 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
         "entra script must require SAGE_PUBLIC_HOSTNAME in the environment "
         "(the public sage custom domain the https identifier URIs are built from)"
     )
-    # Continuation-aware: consume every line that ends in a backslash, then the
-    # final line. (The naive `[^\n]*(?:\\\n[^\n]*)*` form silently matches zero
-    # continuations — the greedy `[^\n]*` eats the trailing backslash and the
-    # optional group succeeds empty, truncating the invocation at line one.)
-    uri_invocations = re.findall(r"--identifier-uris(?:[^\n]*\\\n)*[^\n]*", text)
+    # Comment-aware and continuation-aware: gather each real (non-``#``)
+    # ``--identifier-uris`` invocation, joined across its backslash-continued
+    # lines. A prose comment that merely names the flag (e.g. "like
+    # --identifier-uris earlier") is not an invocation and must not be counted
+    # as one — that phantom match previously failed this gate on a comment.
+    uri_invocations = _uncommented_invocations(text, "--identifier-uris")
     assert uri_invocations, "entra script must pass --identifier-uris"
     required = {
         "api://${SAGE_APP_ID}": (
@@ -358,8 +381,7 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
         ),
     }
     forbidden = ("/mcp/sse", "/mcp_admin/sse")
-    for invocation in uri_invocations:
-        flat = invocation.replace("\\\n", " ")
+    for flat in uri_invocations:
         for needle, why in required.items():
             assert needle in flat, (
                 f"every --identifier-uris invocation must declare {why} — the "
@@ -372,6 +394,25 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
                 "be re-registered — the transport is gone and the full-set "
                 "replace is how the live tenant stays trimmed"
             )
+
+
+def test_identifier_uris_gate_ignores_comment_mentions() -> None:
+    """The invocation scan behind the identifier-uris gate counts a real command
+    line as an invocation and a ``#`` comment that merely names the flag as
+    prose — the distinction that keeps a comment like ``like --identifier-uris
+    earlier`` from failing the gate as a phantom invocation, while still joining
+    a real invocation across its backslash continuations.
+    """
+    text = (
+        "# replace, like --identifier-uris earlier -- a future addition\n"
+        'az ad app update --id "$X" \\\n'
+        '  --identifier-uris "api://$X" "https://$H" \\\n'
+        '    "https://$H/mcp"\n'
+    )
+    invocations = _uncommented_invocations(text, "--identifier-uris")
+    assert invocations == ['--identifier-uris "api://$X" "https://$H" "https://$H/mcp"'], (
+        "the comment mention must be excluded and the real invocation joined"
+    )
 
 
 def test_entra_script_provisions_group_idempotently() -> None:

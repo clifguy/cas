@@ -73,6 +73,55 @@ SAGE_OBJECT_ID="$(az ad app show --id "${SAGE_APP_ID}" --query id -o tsv)"
 ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(uuidgen)}"
 SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(uuidgen)}"
 
+# Pre-authorize Azure CLI on the SAGE resource server (folded into the api PATCH
+# below) so an operator can hand-mint the bearer deploy/cloud-preflight.sh needs
+# -- `az account get-access-token --scope api://<SAGE_APP_ID>/.default` -- without
+# a per-app consent screen. Verified live against cor.org (2026-07-04): without
+# this, that call fails AADSTS650057 (invalid_client) on a fresh SAGE
+# registration.
+#
+# The value to pre-authorize is Azure CLI's own first-party client id, a fixed
+# Microsoft-published multi-tenant constant. It is read off the appid claim of a
+# token az itself already holds -- a v1 --resource token carries appid (any
+# resource works; Graph is always reachable) -- rather than pasted as a GUID
+# literal. But `az account get-access-token` returns a token whose appid is the
+# *running* principal's, which equals Azure CLI's constant only under an
+# interactive `az login` (a human directory admin, as this one-time-per-tenant
+# script assumes). Run under `az login --service-principal` or a managed
+# identity, appid is that principal's id, and pre-authorizing it instead would
+# silently NOT clear AADSTS650057 for a later operator. So the resolved value is
+# checked against Azure CLI's known constant -- assembled from segments the way
+# DEFAULT_ACCESS_APP_ROLE_ID is below, so this durable script still carries no
+# GUID-shaped literal -- and the run aborts loudly on a mismatch rather than
+# pre-authorizing the wrong app.
+AZURE_CLI_APP_ID="$(az account get-access-token --resource https://graph.microsoft.com \
+  --query accessToken -o tsv | python3 -c '
+import base64, json, sys
+segment = sys.stdin.read().strip().split(".")[1]
+segment += "=" * (-len(segment) % 4)
+print(json.loads(base64.urlsafe_b64decode(segment))["appid"])
+')"
+AZURE_CLI_ID_HEAD="04b07795-8ddb-461a"
+AZURE_CLI_ID_TAIL="bbee-02f9e1bf7b46"
+AZURE_CLI_KNOWN_APP_ID="${AZURE_CLI_ID_HEAD}-${AZURE_CLI_ID_TAIL}"
+if [ "${AZURE_CLI_APP_ID}" != "${AZURE_CLI_KNOWN_APP_ID}" ]; then
+  echo "ERROR: az minted a token whose appid (${AZURE_CLI_APP_ID}) is not Azure" \
+    "CLI's own client id (${AZURE_CLI_KNOWN_APP_ID}). Run this bootstrap under an" \
+    "interactive 'az login' as a directory admin -- not a service principal or" \
+    "managed identity -- so Azure CLI is the app being pre-authorized." >&2
+  exit 1
+fi
+
+# One PATCH pins the whole SAGE registration: access-token v2 (so a /.default
+# token carries the v2.0 issuer APIM validate-jwt and the SAGE backend require),
+# the single Sage.Access delegated scope and Sage.Reader app role that authorize
+# the REST and MCP surfaces, and the preAuthorizedApplications entry for Azure
+# CLI. Folding the pre-authorization into this PATCH -- rather than a second
+# PATCH to the same `api` complex property -- keeps requestedAccessTokenVersion
+# and oauth2PermissionScopes off Graph's merge-vs-replace semantics for a
+# follow-up `api` write. preAuthorizedApplications is a declarative full-set
+# replace (like the identifier URIs above), so a future addition to this list
+# must include this Azure CLI entry or a re-run will drop it.
 az rest --method PATCH \
   --url "https://graph.microsoft.com/v1.0/applications/${SAGE_OBJECT_ID}" \
   --headers 'Content-Type=application/json' \
@@ -86,6 +135,10 @@ az rest --method PATCH \
         \"adminConsentDisplayName\": \"Access SAGE\",
         \"adminConsentDescription\": \"Access SAGE on behalf of the signed-in user.\",
         \"isEnabled\": true
+      }],
+      \"preAuthorizedApplications\": [{
+        \"appId\": \"${AZURE_CLI_APP_ID}\",
+        \"delegatedPermissionIds\": [\"${ACCESS_SCOPE_ID}\"]
       }]
     },
     \"appRoles\": [{
