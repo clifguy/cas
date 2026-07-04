@@ -198,12 +198,24 @@ signed-in user has already consented some other client to.
 
 The fix is a `preAuthorizedApplications` entry on the SAGE registration naming
 Azure CLI against the `Sage.Access` scope. Azure CLI's app id
-(`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) is a fixed, Microsoft-published
+(the well-known `04b07795-...` value) is a fixed, Microsoft-published
 multi-tenant constant — the same value in every tenant — not a directory object
 resolvable at run time the way the Graph app id is in §4: a fresh tenant has no
 service principal for it to look up (`az ad sp list --filter "appId eq
-'04b07795-...'"` returns empty) until something provisions one, so unlike the
-Graph app id this one literal is pasted rather than resolved.
+'04b07795-...'"` returns empty) until something provisions one, so this manual
+step pastes the literal.
+
+The codified [bootstrap script](../../deploy/bootstrap/entra-app-registrations.sh)
+pins the same constant without a GUID literal (a durable script may carry none —
+the GUID gate): it assembles Azure CLI's id from segments, the way it builds the
+default-access app-role id, and checks that against the `appid` claim of a token
+`az` already holds. That check is also a guard — `az account get-access-token`
+reports the *running* principal's appid, which is Azure CLI's constant only under
+an interactive `az login`; under a service principal or managed identity it is
+that principal's id, so the script aborts rather than pre-authorize the wrong
+app. Run this step as an interactive directory admin. For the standalone `PATCH`
+below, set `AZURE_CLI_APP_ID` to that well-known `04b07795-...` id (the script
+resolves and verifies it for you).
 
 ```bash
 az rest --method PATCH \
@@ -212,7 +224,7 @@ az rest --method PATCH \
   --body "{
     \"api\": {
       \"preAuthorizedApplications\": [{
-        \"appId\": \"04b07795-8ddb-461a-bbee-02f9e1bf7b46\",
+        \"appId\": \"${AZURE_CLI_APP_ID}\",
         \"delegatedPermissionIds\": [\"${ACCESS_SCOPE_ID}\"]
       }]
     }
@@ -221,12 +233,17 @@ az rest --method PATCH \
 
 `az ad app update --set api.preAuthorizedApplications=...` does not reach this
 nested `api` property reliably (`Couldn't find 'api' in ''`); the direct Graph
-`PATCH` above is what actually lands the change — verified live. The `PATCH`
-body is additive alongside the `oauth2PermissionScopes`/
-`requestedAccessTokenVersion` `PATCH` earlier in this section; re-running it
-with the same body is idempotent, but note it is a **declarative full-set
-replace** of `preAuthorizedApplications` like `--identifier-uris` above — a
-future addition to this list must include this entry or the PATCH will drop
+`PATCH` above is what actually lands the change — verified live. The standalone
+`PATCH` shown is the targeted form for adding this pre-authorization to a tenant
+already provisioned by §1 (as `cor.org` was): it relies on the `api` write
+merging alongside the `oauth2PermissionScopes`/`requestedAccessTokenVersion`
+already set there rather than replacing the whole `api` object (verified live),
+and re-running it with the same body is idempotent. The bootstrap script instead
+folds `preAuthorizedApplications` into that same single `api` PATCH, so on a
+fresh bring-up `requestedAccessTokenVersion` and `oauth2PermissionScopes` never
+ride on that merge behavior at all. Either way `preAuthorizedApplications` is a
+**declarative full-set replace** (like `--identifier-uris` above) — a future
+addition to this list must include this Azure CLI entry or the write will drop
 it.
 
 This grants **delegated** (signed-in user) access only: any operator with
