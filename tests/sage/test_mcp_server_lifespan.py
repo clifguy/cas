@@ -155,6 +155,33 @@ async def test_standalone_mode_populates_registry_from_discovery(
         assert set(mcp_server._vaults.keys()) == {"vault_a", "vault_b"}
 
 
+async def test_standalone_lifespan_publishes_and_clears_vault_root(
+    isolate_module_state,
+    monkeypatch,
+    vault_root,
+    minimal_vault_config_dict,
+):
+    """The standalone lifespan publishes the resolved root to mcp_init so the
+    config write paths honor it, and clears it on teardown.
+
+    Trap (anti-coincidental): without ``set_vault_root(_vault_root)`` in the
+    standalone branch, ``get_vault_root()`` stays None inside the lifespan;
+    without the teardown clear, it stays set after exit.
+    """
+    from sage import mcp_init
+
+    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
+    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
+    monkeypatch.setattr(mcp_init, "_vault_root", None)
+    mcp_server._vaults.clear()
+    _patch_initialize_services(monkeypatch)
+
+    assert mcp_init.get_vault_root() is None
+    async with mcp_server._lifespan(mcp_server.mcp):
+        assert mcp_init.get_vault_root() == vault_root
+    assert mcp_init.get_vault_root() is None
+
+
 async def test_standalone_mode_isolates_bad_vault(
     isolate_module_state,
     monkeypatch,

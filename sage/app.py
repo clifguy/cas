@@ -310,6 +310,7 @@ def create_app(
             resolve_stack_abstraction_provider,
             resolve_stack_vault_source_store,
             set_stack_config,
+            set_vault_root,
         )
         from sage.mcp_server import _vaults
 
@@ -335,6 +336,12 @@ def create_app(
             # local profile the binding is the stack-wide provider built per
             # CAS-ADR-030.
             set_stack_config(stack_cfg)
+            # CAS-ADR-043: publish the resolved vault root so the config write
+            # paths (create_vault / update_config) resolve the same filesystem
+            # binding discovery uses, rather than the default root. None in the
+            # injected-config branches (config=/configs=) is a no-op: the write
+            # paths then fall through to the profile seam, unchanged.
+            set_vault_root(vault_root)
             stack_provider = resolve_stack_abstraction_provider(stack_cfg)
 
             init_overrides: dict = {"abstraction_provider": stack_provider}
@@ -426,6 +433,7 @@ def create_app(
                 await bff_auth.store.close()
             app.state.bff_auth = None
             set_stack_config(None)
+            set_vault_root(None)
 
     app = FastAPI(
         title="SAGE Core API",

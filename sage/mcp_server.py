@@ -59,6 +59,7 @@ from sage.mcp_init import (
     resolve_stack_abstraction_provider,
     resolve_stack_vault_source_store,
     set_stack_config,
+    set_vault_root,
 )
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
@@ -179,6 +180,10 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         # profile the binding is the stack-wide provider built per CAS-ADR-030.
         stack_cfg = load_stack_config_or_default()
         set_stack_config(stack_cfg)
+        # CAS-ADR-043: publish the resolved vault root so the config write paths
+        # (create_vault / update_config) resolve the same filesystem binding this
+        # discovery uses, rather than falling through to the default root.
+        set_vault_root(_vault_root)
         stack_abstraction_provider = resolve_stack_abstraction_provider(stack_cfg)
 
         # CAS-ADR-043: vault discovery and config load go through the active
@@ -232,6 +237,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
             await services.close_storage()
         _vaults.clear()
         set_stack_config(None)
+        set_vault_root(None)
 
 
 def _envelope_error_kind(result: Any) -> str | None:
