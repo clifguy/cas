@@ -1813,23 +1813,27 @@ async def test_reload_vault_reinitializes_services(vault_services):
 
 
 async def test_reload_vault_closes_old_graph_store(vault_services):
-    """Old SqliteGraphStore connections are closed after reload, and the
-    closed store enforces the CAS-ADR-036 barrier: post-close dispatch
-    raises rather than silently re-opening a connection.
+    """The old graph store is closed after reload, and the closed store
+    enforces the CAS-ADR-036 barrier: post-close dispatch raises rather
+    than silently serving through the released connection pool.
     """
     old_graph_store = vault_services.graph_store
-    assert old_graph_store._executor is not None
+    # Positive control: the store dispatches before the reload, so the
+    # post-reload raise below is attributable to the close, not to a store
+    # that never worked.
+    assert isinstance(await old_graph_store.list_all_documents(), list)
 
     await reload_vault("test_vault")
 
-    # Old store should be shut down
-    assert old_graph_store._executor is None
-    assert old_graph_store._all_connections == []
-
-    # Barrier semantics: dispatch through the closed store's _run
-    # boundary raises rather than silently degrading.
+    # Barrier semantics: dispatch through the closed store raises rather
+    # than silently degrading.
     with pytest.raises(RuntimeError, match="closed"):
         await old_graph_store.list_all_documents()
+
+    # The fresh store installed by the reload serves reads.
+    fresh_graph_store = _mcp._vaults["test_vault"].graph_store
+    assert fresh_graph_store is not old_graph_store
+    assert isinstance(await fresh_graph_store.list_all_documents(), list)
 
 
 async def test_reload_vault_unknown_vault_returns_error(vault_services):
@@ -1853,39 +1857,43 @@ async def test_reload_vault_sees_external_changes(vault_services):
     stats_before = _parse(await get_vault_stats("test_vault"))
     assert stats_before["total_documents"] == 1
 
-    # Simulate external modification: insert a document directly into the
-    # database file, bypassing the in-process services. This mimics what
-    # happens when the FastAPI server or another process writes to the DB.
-    import sqlite3
-    import uuid
+    # Simulate external modification: insert a document through a SECOND
+    # graph store over the same vault schema — a separate connection pool,
+    # as another OS process would hold — bypassing the in-process services.
+    # This mimics what happens when the FastAPI server or another process
+    # writes to the database.
+    import os
     from datetime import datetime, timezone
 
-    db_path = vault_services.graph_store._db_path
-    conn = sqlite3.connect(str(db_path))
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO documents
-           (id, title, source_path, source_type, source_content_hash,
-            adapter_version, created_by, last_modified_by,
-            lifecycle_status, pipeline_status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            str(uuid.uuid4()),
-            "Externally Added",
-            "external/doc.md",
-            "markdown",
-            "sha256:external_test_hash",
-            "1.0",
-            "test",
-            "test",
-            "active",
-            "abstraction_complete",
-            now,
-            now,
-        ),
+    from sage.models.schemas import Document
+    from sage.storage.postgres.graph_store import PostgresGraphStore
+    from sage.storage.postgres.pool import pool_from_conninfo
+
+    now = datetime.now(timezone.utc)
+    external_doc = Document(
+        id="deadbeef_external",
+        title="Externally Added",
+        source_type="markdown",
+        source_path="external/doc.md",
+        lifecycle_status="active",
+        source_content_hash="sha256:" + "e" * 64,
+        adapter_version="1.0",
+        created_by="test",
+        created_at=now,
+        last_modified_by="test",
+        updated_at=now,
+        pipeline_status="abstraction_complete",
     )
-    conn.commit()
-    conn.close()
+    external_pool = pool_from_conninfo(
+        os.environ["SAGE_TEST_PG_DSN"], search_path="test_vault,public"
+    )
+    await external_pool.open()
+    try:
+        external_store = PostgresGraphStore(external_pool)
+        await external_store.insert_document(external_doc)
+        await external_store.close()
+    finally:
+        await external_pool.close()
 
     # Reload vault to pick up external changes
     await reload_vault("test_vault")
@@ -1930,20 +1938,13 @@ async def test_reload_vault_failure_keeps_old_services_in_registry(vault_service
     # (b) Registry slot still points at the SAME object (identity check)
     assert _mcp._vaults["test_vault"] is old
 
-    # (c) The old services are still FUNCTIONAL — graph store is not closed.
-    # The internal-state assertions match the idiom used by
-    # test_reload_vault_closes_old_graph_store (above) for the closure
-    # detection: _executor goes to None and _all_connections is cleared by
-    # SqliteGraphStore.close(). The behavioural co-assertion below (per
-    # TEST-SAGE-BH-137) confirms the post-CAS-ADR-036 dispatch barrier did
-    # not engage — a successful list_all_documents() through _run is the
-    # contrapositive of the close-barrier RuntimeError.
-    assert old.graph_store._executor is not None, (
-        "old graph_store was closed; restore-on-failure did not preserve it"
-    )
-    assert old.graph_store._all_connections, (
-        "old graph_store has no live connections; close() was called"
-    )
+    # (c) The old services are still FUNCTIONAL — the graph store was not
+    # closed. Behavioural assertion per TEST-SAGE-BH-137: the CAS-ADR-036
+    # close barrier makes every post-close dispatch raise (see
+    # test_reload_vault_closes_old_graph_store above), so a successful
+    # list_all_documents() is the contrapositive of close() having run. A
+    # literal try/restore around a close-old-first ordering would re-install
+    # the closed reference — passing the identity check — and fail here.
     live_docs = await old.graph_store.list_all_documents()
     assert isinstance(live_docs, list)
 
@@ -2267,71 +2268,40 @@ async def test_sage_update_vault_config_atomicity_via_mcp_surface(
 async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
     vault_services_with_registry, monkeypatch
 ):
-    """C2: an MCP ``migrate_vault`` call whose post-migration
-    reload fails returns a structured error envelope and leaves the
-    original graph_store live in the registry.
+    """C2: an MCP ``migrate_vault`` call that fails mid-operation returns a
+    structured error envelope and leaves the vault's registered services
+    untouched and live.
 
-    Trap (anti-coincidental): a close-then-migrate sequence runs
-    ``self._graph_store.close()`` before fresh-handle migration, so by
-    the time the reload-failure propagates to the MCP envelope,
-    ``_executor`` on the registry's graph_store is None. Deferring the
-    close into reload's success path keeps the live graph_store
-    initialized; the live graph_store assertion is the trap.
+    On the Postgres backend the schema step is a deliberate no-op (the
+    schema is provisioned externally), so the fallible stage that remains is
+    the tier3-uniqueness scan; the failure is injected there. Trap
+    (anti-coincidental): a migrate path that tears down or swaps the vault's
+    services before its fallible stage would leave the registry slot
+    re-pointed or its graph_store closed — and a closed store's CAS-ADR-036
+    dispatch barrier would raise on the behavioural co-assertion below.
     """
-    import sage.mcp_init as _mcp_init
-    from sage.storage.graph_store import SqliteGraphStore as _RealGraphStore
-    from sage.storage.migrations import Migration
+    from sage.services.maintenance import MaintenanceService
 
-    # Force fake pending work so migrate_vault enters the migration branch.
-    fake_pending = [
-        Migration(
-            table="documents",
-            column="synthetic_pending_column_c2",
-            ddl="ALTER TABLE documents ADD COLUMN synthetic_pending_column_c2 TEXT",
-        )
-    ]
-    monkeypatch.setattr(
-        "sage.services.maintenance.pending_migrations",
-        lambda conn, plan=None: fake_pending,
-    )
-
-    # Migration succeeds via no-op fresh-handle subclass; failure must
-    # arrive at the reload step, not the migration.
-    class NoOpFreshGraphStore(_RealGraphStore):
-        async def initialize(self, migrate: bool = False) -> None:
-            return None
-
-    monkeypatch.setattr("sage.services.maintenance.SqliteGraphStore", NoOpFreshGraphStore)
-
-    async def failing_initialize_services(*args, **kwargs):
+    async def failing_tier3_scan(self):
         raise SAGEError(
             code="schema_migration_required",
-            message="simulated post-migration reload failure for MCP atomicity test",
+            message="simulated tier3-scan failure for MCP atomicity test",
             status_code=409,
         )
 
-    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
-    monkeypatch.setattr(_mcp, "initialize_services", failing_initialize_services)
+    monkeypatch.setattr(MaintenanceService, "_activate_tier3_uniqueness", failing_tier3_scan)
 
     old = _mcp._vaults["test_vault"]
-    assert old.graph_store._executor is not None
 
     result = _parse(await migrate_vault(vault_id="test_vault"))
 
     assert result.get("error") == "schema_migration_required"
-    assert "simulated post-migration reload failure" in result["message"]
+    assert "simulated tier3-scan failure" in result["message"]
 
-    # Registry slot identity unchanged and graph_store still live: the
-    # outer migration-then-reload sequence wrapped the close in reload's
-    # success path. Behavioural co-assertion per TEST-SAGE-BH-137 confirms
-    # the CAS-ADR-036 dispatch barrier did not engage.
+    # Registry slot identity unchanged and graph_store still live.
+    # Behavioural co-assertion per TEST-SAGE-BH-137 confirms the CAS-ADR-036
+    # dispatch barrier did not engage.
     assert _mcp._vaults["test_vault"] is old
-    assert old.graph_store._executor is not None, (
-        "live graph_store was closed before the MCP-surface reload failure"
-    )
-    assert old.graph_store._all_connections, (
-        "live graph_store has no live connections after MCP-surface reload failure"
-    )
     live_docs = await old.graph_store.list_all_documents()
     assert isinstance(live_docs, list)
 

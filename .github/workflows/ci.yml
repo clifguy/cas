@@ -97,12 +97,10 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           SAGE_TEST_STUB_PROVIDERS: "1"
-          # Pin service construction to the embedded stores; tests that
-          # exercise the Postgres binding clear this per-test and use the
-          # DSN below.
-          SAGE_TEST_STORAGE_BACKEND: "embedded"
-          # Points the storage harness at the Postgres service container above so
-          # the PG-touching storage tests run here instead of skipping.
+          # Points the storage harness at the Postgres service container above.
+          # The whole suite runs against it: the root conftest pins every
+          # stack-config resolution path to this server and isolates tests by
+          # schema.
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
           .venv/bin/pytest -v --tb=short \
@@ -297,11 +295,29 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       SAGE_TEST_STUB_PROVIDERS: "1"
-      # The e2e SAGE backend has no Postgres service in this job; pin its
-      # durable-storage binding to the embedded stores.
-      SAGE_TEST_STORAGE_BACKEND: "embedded"
+      # The e2e SAGE backend binds durable storage to the job's Postgres
+      # service container via the checked-in CI stack config; the password
+      # travels through the environment, never in config.
+      SAGE_CONFIG_PATH: ${{ github.workspace }}/tests/fixtures/ci_stack_config.yaml
+      SAGE_PG_PASSWORD: postgres
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
+    services:
+      # Same pgvector image as the test job: the e2e SAGE backend externalizes
+      # graph and content state to it (CAS-ADR-042).
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
         with:

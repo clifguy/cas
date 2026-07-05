@@ -174,42 +174,6 @@ def tier3_retrieval_service(graph_store, stub_content_store, stub_embedding_prov
     )
 
 
-@pytest.fixture
-def sqlite_tier3_ingestion_service(
-    sqlite_graph_store,
-    lock_manager,
-    stub_content_store,
-    stub_embedding_provider,
-    stub_abstraction_provider,
-    tier3_config,
-):
-    """SQLite-pinned tier3 ingestion, for the json_extract SQL-trace test."""
-    lifecycle = LifecycleService(sqlite_graph_store, lock_manager, tier3_config)
-    return IngestionService(
-        graph_store=sqlite_graph_store,
-        lock_manager=lock_manager,
-        content_store=stub_content_store,
-        embedding_provider=stub_embedding_provider,
-        abstraction_provider=stub_abstraction_provider,
-        config=tier3_config,
-        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
-        lifecycle_service=lifecycle,
-    )
-
-
-@pytest.fixture
-def sqlite_tier3_retrieval_service(
-    sqlite_graph_store, stub_content_store, stub_embedding_provider, tier3_config
-):
-    """SQLite-pinned tier3 retrieval, for the json_extract SQL-trace test."""
-    return RetrievalService(
-        graph_store=sqlite_graph_store,
-        content_store=stub_content_store,
-        embedding_provider=stub_embedding_provider,
-        config=tier3_config,
-    )
-
-
 def _write_md(tmp_vault_dir: Path, relative_path: str, body: str) -> None:
     full_path = tmp_vault_dir / "sources" / relative_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1172,54 +1136,64 @@ async def test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_sc
 
 async def test_t0075_catalog_filter_pushes_tier3_into_sql_not_python(
     tmp_vault_dir,
-    sqlite_tier3_ingestion_service,
-    sqlite_tier3_retrieval_service,
-    sqlite_graph_store,
+    tier3_ingestion_service,
+    tier3_retrieval_service,
+    graph_store,
+    monkeypatch,
 ):
-    tier3_ingestion_service = sqlite_tier3_ingestion_service
-    tier3_retrieval_service = sqlite_tier3_retrieval_service
-    graph_store = sqlite_graph_store
     """The optimization gate: the SQL emitted for a catalog-mode tier3
-    filter must contain a json_extract predicate, and the legacy
+    filter must carry the jsonb ``->>`` predicate, and the legacy
     wide-fetch / Python-post-filter phase must not fire.
 
-    Captured via sqlite3 connection trace. If this test breaks but the
-    behavior-equivalence tests still pass, the optimization has been
-    silently reverted to the 10M-row fallback.
+    Captured by wrapping the store's row/scalar fetch seams. If this
+    test breaks but the behavior-equivalence tests still pass, the
+    optimization has been silently reverted to the 10M-row fallback:
+    those tests cannot tell a SQL predicate from an in-Python filter
+    over an unbounded fetch.
     """
     await _seed_failure_records(tmp_vault_dir, tier3_ingestion_service)
 
-    # Warm-up: trigger the executor thread to materialize its
-    # threading.local connection (GraphStore uses one connection per
-    # thread; the test thread and the executor thread each get their
-    # own). Without this the next set_trace_callback would miss the
-    # executor's connection.
-    await graph_store.query_documents(filters={"doc_type": "ticket"}, limit=1)
+    captured: list[tuple[str, int | None]] = []
 
-    captured_sql: list[str] = []
-    # Trace every connection in the pool so we capture SQL regardless
-    # of which executor thread services the discover call.
-    for conn in graph_store._all_connections:
-        conn.set_trace_callback(captured_sql.append)
-    try:
-        await tier3_retrieval_service.discover(
-            DiscoverRequest(
-                mode=RetrievalMode.CATALOG,
-                filters=RetrievalFilters(
-                    doc_type="failure_record",
-                    tier3_metadata={"severity": "high"},
-                ),
-            )
+    real_fetch_rows = graph_store._fetch_rows
+    real_fetch_scalar = graph_store._fetch_scalar
+
+    async def tracing_fetch_rows(sql, params=()):
+        rows = await real_fetch_rows(sql, params)
+        captured.append((sql, len(rows)))
+        return rows
+
+    async def tracing_fetch_scalar(sql, params=()):
+        captured.append((sql, None))
+        return await real_fetch_scalar(sql, params)
+
+    monkeypatch.setattr(graph_store, "_fetch_rows", tracing_fetch_rows)
+    monkeypatch.setattr(graph_store, "_fetch_scalar", tracing_fetch_scalar)
+
+    response = await tier3_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(
+                doc_type="failure_record",
+                tier3_metadata={"severity": "high"},
+            ),
         )
-    finally:
-        for conn in graph_store._all_connections:
-            conn.set_trace_callback(None)
+    )
 
-    joined = "\n".join(captured_sql)
-    assert "json_extract(tier3_metadata, '$.severity')" in joined, joined
+    joined = "\n".join(sql for sql, _ in captured)
+    assert "tier3_metadata->>'severity'" in joined, joined
     # The legacy wide-fetch issued a `LIMIT 10000000` on the documents
     # table. The new path uses the request limit (default 10).
     assert "LIMIT 10000000" not in joined, joined
+    # No Python-side post-filter: the row fetch carrying the tier3
+    # predicate returns exactly the rows the caller receives. A wide
+    # fetch narrowed in Python would return more SQL rows than results.
+    predicate_row_counts = [
+        n for sql, n in captured if n is not None and "tier3_metadata->>'severity'" in sql
+    ]
+    assert predicate_row_counts, "no row fetch carried the tier3 predicate"
+    assert predicate_row_counts == [len(response.results)]
+    assert len(response.results) == 2  # the two high-severity seeds
 
 
 async def test_t0075_catalog_filter_rejects_sql_unsafe_tier3_key(

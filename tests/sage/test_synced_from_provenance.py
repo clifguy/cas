@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -70,20 +68,19 @@ def _make_doc(doc_id: str) -> Document:
     )
 
 
-def _edge_sql_row(db_path: Path, edge_id: str) -> tuple[str | None, str | None]:
+async def _edge_sql_row(pg_pool, edge_id: str) -> tuple[str | None, str | None]:
     """Read ``(synced_from_version, synced_from_content_hash)`` directly from
-    SQLite. Used by TEST-2 to confirm the storage layer writes SQL NULL
-    rather than an empty string (the Pydantic boundary cannot discriminate
-    between ``None`` and a buggy ``''`` substitution).
+    the edges table over a raw connection. Used by TEST-2 to confirm the
+    storage layer writes SQL NULL rather than an empty string (the Pydantic
+    boundary cannot discriminate between ``None`` and a buggy ``''``
+    substitution, since row projection would default either way).
     """
-    conn = sqlite3.connect(str(db_path))
-    try:
-        row = conn.execute(
-            "SELECT synced_from_version, synced_from_content_hash FROM edges WHERE id = ?",
+    async with pg_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT synced_from_version, synced_from_content_hash FROM edges WHERE id = %s",
             (edge_id,),
-        ).fetchone()
-    finally:
-        conn.close()
+        )
+        row = await cur.fetchone()
     assert row is not None, f"edge {edge_id} not found"
     return row[0], row[1]
 
@@ -145,10 +142,8 @@ async def test_t1_round_trip_both_attributes_via_link_and_traverse(
 
 
 async def test_t2_omitted_attributes_default_to_none_and_persist_as_null(
-    sqlite_graph_store, sqlite_graph_ops_service, tmp_vault_dir
+    graph_store, graph_ops_service, pg_pool
 ):
-    graph_store = sqlite_graph_store
-    graph_ops_service = sqlite_graph_ops_service
     """TEST-2. A ``derived_from`` edge created without supplying either
     attribute stores SQL ``NULL`` and serializes as ``None`` on the Edge
     model. Both the Pydantic round-trip and a direct ``SELECT`` confirm
@@ -194,7 +189,7 @@ async def test_t2_omitted_attributes_default_to_none_and_persist_as_null(
     assert edge.synced_from_version != ""
     assert edge.synced_from_content_hash != ""
 
-    sql_version, sql_hash = _edge_sql_row(tmp_vault_dir / "brain" / "graph.db", created.id)
+    sql_version, sql_hash = await _edge_sql_row(pg_pool, created.id)
     assert sql_version is None, (
         f"storage layer wrote {sql_version!r} for synced_from_version, expected SQL NULL"
     )

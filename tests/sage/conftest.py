@@ -1,8 +1,10 @@
 """SAGE-specific test fixtures.
 
 Extends the root conftest.py fixtures with SAGE storage, services,
-and stub adapters. Each test gets an isolated temp directory and
-fresh SQLite database via pytest's tmp_path fixture.
+and stub adapters. Each test gets an isolated temp directory via
+pytest's tmp_path fixture and a clean slate in the test Postgres
+(per-test truncation in the session schema; leaked vault schemas are
+dropped by the root conftest's hygiene fixture).
 """
 
 import asyncio
@@ -27,7 +29,6 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.user_service import UserService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.locks import DocumentLockManager
 
 
@@ -198,21 +199,6 @@ def extended_config(extended_vault_config_dict):
 
 
 @pytest.fixture
-async def sqlite_graph_store(tmp_vault_dir):
-    """SQLite graph store, unparametrized.
-
-    Used by tests that assert SQLite-specific mechanism (PRAGMAs, the
-    thread-pool close barrier, the on-disk document_tags join table, backfills)
-    and so have no Postgres analog. Behavioral tests use the parametrized
-    ``graph_store`` fixture instead.
-    """
-    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db")
-    await store.initialize()
-    yield store
-    await store.close()
-
-
-@pytest.fixture
 async def postgres_graph_store(pg_dsn, pg_schema):
     """A PostgresGraphStore over a per-test-truncated session schema.
 
@@ -249,21 +235,16 @@ async def postgres_graph_store(pg_dsn, pg_schema):
         await pool.close()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 def graph_store(request):
-    """Initialized graph store, parametrized over backends (CAS-ADR-042).
+    """Initialized graph store over the test Postgres (CAS-ADR-042).
 
-    The same behavioral test body runs against both the embedded SQLite store
-    and the Postgres store, proving cross-backend parity. A sync dispatcher that
-    delegates to one async backend fixture per param: the ``postgres`` param
-    *skips* when ``SAGE_TEST_PG_DSN`` is unset (via ``pg_dsn``), so the default
-    and local-without-server runs exercise SQLite only; the storage CI job sets
-    the DSN and runs both. Tests asserting SQLite-internal mechanism use the
-    unparametrized ``sqlite_graph_store`` fixture instead.
+    A sync dispatcher that delegates to the async ``postgres_graph_store``
+    fixture, which skips (via ``pg_dsn``) when ``SAGE_TEST_PG_DSN`` is unset.
+    The storage port has a single binding; behavioral tests written against
+    this fixture exercise the port contract, not Postgres specifics.
     """
-    if request.param == "postgres":
-        return request.getfixturevalue("postgres_graph_store")
-    return request.getfixturevalue("sqlite_graph_store")
+    return request.getfixturevalue("postgres_graph_store")
 
 
 @pytest.fixture
@@ -312,20 +293,8 @@ def metadata_service(graph_store, lock_manager, minimal_config, stub_content_sto
 
 
 @pytest.fixture
-def sqlite_metadata_service(sqlite_graph_store, lock_manager, minimal_config, stub_content_store):
-    """MetadataService pinned to SQLite, for tests that inspect the on-disk store."""
-    return MetadataService(sqlite_graph_store, lock_manager, minimal_config, stub_content_store)
-
-
-@pytest.fixture
 def graph_ops_service(graph_store, minimal_config):
     return GraphOpsService(graph_store, minimal_config)
-
-
-@pytest.fixture
-def sqlite_graph_ops_service(sqlite_graph_store, minimal_config):
-    """GraphOpsService pinned to SQLite, for tests that reach into the store."""
-    return GraphOpsService(sqlite_graph_store, minimal_config)
 
 
 @pytest.fixture

@@ -9,40 +9,32 @@ are covered by tests/sage/test_maintenance_service.py.
 
 from __future__ import annotations
 
-import pytest
-
 from sage import mcp_server
+from sage.config import VaultConfig
+from sage.mcp_init import initialize_services
 from sage.models.schemas import SourceFileIntegrityReport
-from tests.sage.test_maintenance_service import (
-    _bootstrap_post_migration_vault,
-    _close_registry_vault,
-)
+from sage.services.vault_registry import VaultRegistryService
+from tests.sage.conftest import initialize_services_for_test
 
 
-@pytest.fixture
-def empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Snapshot _vaults before each test and restore after."""
-    saved = dict(mcp_server._vaults)
-    mcp_server._vaults.clear()
-    try:
-        yield
-    finally:
-        mcp_server._vaults.clear()
-        mcp_server._vaults.update(saved)
-
-
-async def test_verify_vault_source_files_returns_report_dict(tmp_path, monkeypatch, empty_registry):
+async def test_verify_vault_source_files_returns_report_dict(minimal_vault_config_dict):
     """Happy path: an empty vault returns a SourceFileIntegrityReport with
-    zero entries that round-trips through the Pydantic model."""
-    async with _bootstrap_post_migration_vault(tmp_path, monkeypatch) as (
-        registry,
-        services,
-        _registry_service,
-    ):
-        vault_id = services.config.vault.id
-        try:
-            mcp_server._vaults[vault_id] = registry[vault_id]
+    zero entries that round-trips through the Pydantic model.
 
+    The vault registers through the uninjected production path (real
+    Postgres storage under the test-harness stack-config pin), with the
+    registry service wired over ``mcp_server._vaults`` — the registry the
+    MCP tool's get_vault reads — so the maintenance service the tool
+    dispatches to is the one production construction builds. The audit
+    itself resolves the vault-source store from the active profile, which
+    stays filesystem-backed against the config's storage_root.
+    """
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    registry_service = VaultRegistryService(mcp_server._vaults, initialize_services)
+    async with initialize_services_for_test(config, registry_service=registry_service) as services:
+        vault_id = config.vault.id
+        mcp_server._vaults[vault_id] = services
+        try:
             result = await mcp_server.verify_vault_source_files(vault_id=vault_id)
 
             report = SourceFileIntegrityReport.model_validate(result)
@@ -52,12 +44,10 @@ async def test_verify_vault_source_files_returns_report_dict(tmp_path, monkeypat
             assert report.entries == []
             assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 0}
         finally:
-            await _close_registry_vault(registry, vault_id)
+            mcp_server._vaults.pop(vault_id, None)
 
 
-async def test_verify_vault_source_files_invalid_vault_id_shape_returns_error_envelope(
-    empty_registry,
-):
+async def test_verify_vault_source_files_invalid_vault_id_shape_returns_error_envelope():
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
     and surfaces as the structured invalid_vault_id (400) envelope carrying
     the offending value, not a raised exception."""
@@ -69,9 +59,7 @@ async def test_verify_vault_source_files_invalid_vault_id_shape_returns_error_en
     assert result["detail"]["vault_id"] == "not a vault id!"
 
 
-async def test_verify_vault_source_files_unknown_vault_returns_error_envelope(
-    empty_registry,
-):
+async def test_verify_vault_source_files_unknown_vault_returns_error_envelope():
     """An unregistered vault_id returns the unknown_vault envelope."""
     result = await mcp_server.verify_vault_source_files(vault_id="ghost")
 

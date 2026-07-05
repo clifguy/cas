@@ -111,13 +111,14 @@ async def test_di_004_all_overrides(minimal_vault_config_dict, tmp_vault_dir):
 async def test_di_005_no_overrides_constructs_real_providers(
     minimal_vault_config_dict, tmp_vault_dir, monkeypatch
 ):
-    """When no embedding / content_store overrides are passed, real
-    production instances are created. Abstraction is injected explicitly
-    because post CAS-ADR-030 the stack provider is built once at SAGE
-    process startup and passed in; `initialize_services` no longer
-    constructs one. We only check types here -- we do NOT want to verify
-    model loading behavior, since that would defeat the purpose of this
-    test suite.
+    """When no embedding / store overrides are passed, real production
+    instances are created: the Nomic embedding provider and the
+    provisioner-built Postgres store pair (CAS-ADR-042). Abstraction is
+    injected explicitly because post CAS-ADR-030 the stack provider is
+    built once at SAGE process startup and passed in;
+    `initialize_services` no longer constructs one. We only check types
+    here -- we do NOT want to verify model loading behavior, since that
+    would defeat the purpose of this test suite.
     """
     # Force production path: CI sets SAGE_TEST_STUB_PROVIDERS=1 globally to
     # keep most tests off the real model; this test specifically
@@ -128,14 +129,16 @@ async def test_di_005_no_overrides_constructs_real_providers(
     async with initialize_services_for_test(
         config, abstraction_provider=StubAbstractionProvider()
     ) as services:
-        from sage.adapters.content_store_lancedb import LanceDBContentStore
+        from sage.adapters.content_store_postgres import PostgresContentStore
         from sage.adapters.embedding_nomic import NomicEmbeddingProvider
+        from sage.storage.postgres.graph_store import PostgresGraphStore
 
         embed = services.ingestion_service._embedding
         cs = services.ingestion_service._content_store
 
         assert isinstance(embed, NomicEmbeddingProvider)
-        assert isinstance(cs, LanceDBContentStore)
+        assert isinstance(cs, PostgresContentStore)
+        assert isinstance(services.graph_store, PostgresGraphStore)
 
 
 # ---------------------------------------------------------------------------

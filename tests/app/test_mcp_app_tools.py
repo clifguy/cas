@@ -299,14 +299,22 @@ class TestSageVaultStats:
         result = _parse(await get_vault_stats("nonexistent"))
         assert result["error"] == "unknown_vault"
 
-    async def test_sqlite_size_bytes_nonzero_after_ingest(self, single_vault):
-        """sqlite_size_bytes reflects actual graph.db file size."""
+    async def test_sqlite_size_bytes_zero_under_postgres_binding(self, single_vault):
+        """sqlite_size_bytes reports 0 on a Postgres-backed vault; the
+        backend-neutral graph_store_size_bytes carries the signal.
+
+        The field stats the embedded backend's graph.db, which the
+        Postgres binding never creates. It is deprecated pending removal
+        with the embedded backend; a nonzero reading here would mean a
+        stray SQLite file appeared alongside the real store.
+        """
         services, config = single_vault
         await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.3)
 
         result = _parse(await get_vault_stats("test_vault"))
-        assert result["sqlite_size_bytes"] > 0
+        assert result["sqlite_size_bytes"] == 0
+        assert result["graph_store_size_bytes"] > 0
 
     async def test_content_store_size_bytes_nonzero_after_indexing(self, single_vault):
         """content_store_size_bytes reflects actual content-store directory size."""
@@ -317,13 +325,21 @@ class TestSageVaultStats:
         result = _parse(await get_vault_stats("test_vault"))
         assert result["content_store_size_bytes"] > 0
 
-    async def test_storage_sizes_zero_for_empty_vault(self, single_vault):
-        """Empty vault has sqlite overhead but zero content store (no table yet)."""
+    async def test_storage_sizes_for_empty_vault(self, single_vault):
+        """Empty vault reports provisioned-relation overhead, no content.
+
+        Guards the meters' wiring on a fresh vault: a meter that fails to
+        resolve its relations degrades to 0, so the nonzero floor below
+        distinguishes "measured an empty relation" from "measured nothing".
+        """
         result = _parse(await get_vault_stats("test_vault"))
-        # SQLite file exists with schema, so it has some size
-        assert result["sqlite_size_bytes"] > 0
-        # Content-store directory may not exist or be empty before first ingest
-        assert result["content_store_size_bytes"] >= 0
+        # No graph.db under the Postgres binding (field deprecated pending
+        # removal with the embedded backend).
+        assert result["sqlite_size_bytes"] == 0
+        # Empty relations still carry index metapages and heap headers, so
+        # both live meters read nonzero overhead even before first ingest.
+        assert result["graph_store_size_bytes"] > 0
+        assert result["content_store_size_bytes"] > 0
         # Chunk count is 0 before any indexing
         assert result["content_store_chunk_count"] == 0
 

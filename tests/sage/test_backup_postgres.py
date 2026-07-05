@@ -90,14 +90,22 @@ def test_dump_filenames_timestamped_distinct_sortable() -> None:
     assert glob_e < glob_l
 
 
-def test_resolve_conninfo_from_config_targets_sage_db() -> None:
+def test_resolve_conninfo_from_config_targets_sage_db(monkeypatch) -> None:
     """With no override, the conninfo is composed from the config postgres block.
 
     The committed ``sage/config.yaml`` postgres block has ``database: sage`` and
     ``host: null`` (local socket), so the resolved conninfo names the ``sage``
     database and carries no host. A regression hardcoding ``localhost`` or the
     ``postgres`` maintenance DB would back up the wrong database.
+
+    ``resolve_conninfo(None)`` loads the stack config with no explicit path, so
+    it goes through ``SAGE_CONFIG_PATH`` when set. The test suite's harness pins
+    that variable at the test Postgres for every other test (so uninjected
+    service construction never touches a developer's live database); this test
+    is deliberately checking the *committed* file's own values, so it clears
+    the pin for its one call.
     """
+    monkeypatch.delenv("SAGE_CONFIG_PATH", raising=False)
     parsed = conninfo_to_dict(resolve_conninfo(None))
     assert parsed["dbname"] == "sage"
     assert "host" not in parsed  # socket default -- host omitted

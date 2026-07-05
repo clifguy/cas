@@ -39,8 +39,7 @@ from sage.models.schemas import (
     TraversalNode,
     TraverseRequest,
 )
-from sage.storage.graph_store import SqliteGraphStore
-from tests.sage._sentinel_rows import build_sentinel_row
+from sage.storage.postgres.graph_store import PostgresGraphStore
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -534,7 +533,7 @@ async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_servi
 
 
 async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, graph_ops_service):
-    """SQLite UNIQUE treats NULL as distinct: multiple retracts edges
+    """SQL UNIQUE treats NULL as distinct: multiple retracts edges
     on the same source with target_id=NULL stay legal per ADR-017.
     The retracted_edge_id differs across retract instances.
     """
@@ -567,8 +566,8 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
     ).edge
 
     # Retract both: both retracts edges share source_id=doc_a,
-    # target_id=NULL, edge_type='retracts'. Under SQLite NULL-distinct
-    # semantics this is legal.
+    # target_id=NULL, edge_type='retracts'. Under SQL NULL-distinct
+    # unique-index semantics this is legal.
     retract_b = (
         await graph_ops_service._create_edge_strict(
             LinkRequest(
@@ -633,39 +632,21 @@ async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
 
 
 # ---------------------------------------------------------------------------
-# Write-path transaction hygiene
+# Write-path failure hygiene
 #
-# A single-shot writer (insert_edge / insert_staging_edge) commits its own
-# transaction on success and must roll it back on failure. A re-raised
-# IntegrityError that leaves the transaction open holds the WAL write lock
-# until the store is closed; a sibling pool connection then blocks on that
-# lock for the full busy_timeout and surfaces as
-# `sqlite3.OperationalError: database is locked`. These tests pin the
-# rollback-on-raise invariant that keeps the BH-037 duplicate-edge path from
-# producing that flake.
+# A single-shot writer (insert_edge / insert_staging_edge) that re-raises a
+# natural-key conflict must leave the store fully usable: the failed write's
+# transaction is rolled back and its connection returns to the pool clean. A
+# poisoned connection (aborted transaction not rolled back) would fail the
+# next write routed to it.
 # ---------------------------------------------------------------------------
 
 
-def _assert_no_open_transaction(store: SqliteGraphStore) -> None:
-    """Assert that no connection owned by ``store`` holds an open transaction.
-
-    `sqlite3.Connection.in_transaction` is True while an implicit transaction
-    (opened before a DML statement under the default isolation level) is still
-    uncommitted and un-rolled-back. After a re-raised IntegrityError that flag
-    must be False on every store connection.
-    """
-    open_conns = [c for c in store._all_connections if c.in_transaction]
-    assert not open_conns, (
-        f"{len(open_conns)} of {len(store._all_connections)} store connection(s) "
-        "left an open transaction after a re-raised IntegrityError"
-    )
-
-
-async def test_insert_edge_raise_path_rolls_back_failed_transaction(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """A duplicate insert_edge under the default on_conflict="raise" both
-    re-raises NaturalKeyConflict and rolls back, leaving no open transaction on the
-    store's connection -- matching insert_document's discipline.
+async def test_insert_edge_raise_path_leaves_store_usable(graph_store):
+    """A duplicate insert_edge under the default on_conflict="raise" re-raises
+    NaturalKeyConflict, and a subsequent unrelated write on the same store
+    succeeds -- proving the failed write rolled back rather than poisoning a
+    pooled connection.
     """
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
@@ -698,72 +679,32 @@ async def test_insert_edge_raise_path_rolls_back_failed_transaction(sqlite_graph
     with pytest.raises(NaturalKeyConflict):
         await graph_store.insert_edge(dup)
 
-    _assert_no_open_transaction(graph_store)
-
-
-async def test_insert_edge_raise_path_releases_write_lock(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """After a re-raised IntegrityError, a second independent connection can
-    acquire the write lock -- proving the failed insert did not leave a write
-    transaction open. This is the deterministic form of the BH-037 flake: the
-    connection-pool occasionally routes the next op to a fresh connection,
-    which (on the un-rolled-back path) blocks on the held lock for busy_timeout
-    and raises "database is locked".
-    """
-    import sqlite3 as _sqlite3
-
-    await graph_store.insert_document(_make_doc(_id("doc_a")))
-    await graph_store.insert_document(_make_doc(_id("doc_b")))
-
-    base_time = datetime.now(timezone.utc) - timedelta(hours=3)
-    first = Edge(
-        id=_eid("edge_first"),
+    # Follow-up writes and reads on the same store must succeed.
+    await graph_store.insert_document(_make_doc(_id("doc_c")))
+    follow_up = Edge(
+        id=_eid("edge_follow_up"),
         source_id=_id("doc_a"),
-        target_id=_id("doc_b"),
+        target_id=_id("doc_c"),
         edge_type=EdgeType.REFERENCES,
         resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
         source_valid_from_version=_id("doc_a"),
-        target_valid_from_version=_id("doc_b"),
-        created_at=base_time,
-        rationale="first",
+        target_valid_from_version=_id("doc_c"),
+        created_at=base_time + timedelta(hours=2),
+        rationale="follow-up",
     )
-    await graph_store.insert_edge(first)
-
-    dup = Edge(
-        id=_eid("edge_dup"),
-        source_id=_id("doc_a"),
-        target_id=_id("doc_b"),
-        edge_type=EdgeType.REFERENCES,
-        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-        source_valid_from_version=_id("doc_a"),
-        target_valid_from_version=_id("doc_b"),
-        created_at=base_time + timedelta(hours=1),
-        rationale="dup",
-    )
-    with pytest.raises(NaturalKeyConflict):
-        await graph_store.insert_edge(dup)
-
-    # A fresh connection simulates a second pool worker. With a short
-    # busy_timeout, a lock left held by the failed insert surfaces in ~2s as
-    # "database is locked" instead of blocking for the production 30s.
-    probe = _sqlite3.connect(str(graph_store._db_path))
-    try:
-        probe.execute("PRAGMA busy_timeout=2000;")
-        probe.execute("BEGIN IMMEDIATE;")  # acquire the write lock or raise
-        probe.rollback()
-    finally:
-        probe.close()
+    await graph_store.insert_edge(follow_up)
+    edges = await graph_store.get_edges_by_source(_id("doc_a"))
+    assert {e.id for e in edges} == {_eid("edge_first"), _eid("edge_follow_up")}
 
 
-async def test_insert_staging_edge_raise_path_rolls_back_failed_transaction(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """The staging-edge twin of insert_edge has the same single-shot
-    commit/rollback ownership: a duplicate insert_staging_edge under
-    on_conflict="raise" must roll back the failed transaction, leaving no open
-    transaction on the store's connection.
+async def test_insert_staging_edge_raise_path_leaves_store_usable(graph_store):
+    """The staging-edge twin of insert_edge has the same rollback-on-raise
+    discipline: after a re-raised duplicate, a subsequent staging write
+    succeeds.
     """
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
+    await graph_store.insert_document(_make_doc(_id("doc_c")))
 
     base_time = datetime.now(timezone.utc) - timedelta(hours=3)
     first = StagingEdge(
@@ -789,7 +730,16 @@ async def test_insert_staging_edge_raise_path_rolls_back_failed_transaction(sqli
     with pytest.raises(NaturalKeyConflict):
         await graph_store.insert_staging_edge(dup, on_conflict="raise")
 
-    _assert_no_open_transaction(graph_store)
+    follow_up = StagingEdge(
+        id=_eid("staging_follow_up"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_c"),
+        edge_type=EdgeType.REFERENCES,
+        inference_evidence="follow-up",
+        confidence_tier=2,
+        created_at=base_time + timedelta(hours=2),
+    )
+    await graph_store.insert_staging_edge(follow_up)
 
 
 # ---------------------------------------------------------------------------
@@ -1521,7 +1471,7 @@ async def test_unlink_nonexistent_edge_raises_404(graph_store, graph_ops_service
 
 
 # ---------------------------------------------------------------------------
-# SqliteGraphStore get_edge / delete_edge
+# GraphStore get_edge / delete_edge
 # ---------------------------------------------------------------------------
 
 
@@ -1754,32 +1704,28 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
 #
 # The traversal hot path at sage/services/graph_ops.py:663 constructs an
 # ``Edge`` directly from a CTE join row, deliberately bypassing the
-# canonical factory ``SqliteGraphStore._row_to_edge`` per the BH-101 performance
-# rationale (per-row ``model_validate`` cost on a thousands-of-rows hot
-# path). Per the *CAS Projection-Point Audit Conventions* steering
-# document (cas vault, doc_type=steering_document), excluded projection
-# points still owe a structural guard against field-addition drift
-# between the two paths: when ``Edge`` grows a field and one path is
-# updated but the other is not, the guard must trip.
+# canonical factory ``PostgresGraphStore._row_to_edge`` per the BH-101
+# performance rationale (per-row ``model_validate`` cost on a
+# thousands-of-rows hot path). Per the *CAS Projection-Point Audit
+# Conventions* steering document (cas vault, doc_type=steering_document),
+# excluded projection points still owe a structural guard against
+# field-addition drift between the two paths: when ``Edge`` grows a field
+# and one path is updated but the other is not, the guard must trip.
 #
 # The exhaustive-fields test on the canonical factory itself lives in
-# tests/sage/test_graph_store.py::test_row_to_edge_populates_every_edge_field
-# . This file installs the parity half of the same closure: a
-# test that iterates ``Edge.model_fields`` and asserts field-by-field
-# equality between an ``Edge`` built via ``_row_to_edge`` and an ``Edge``
-# built via the graph_ops.py:663 inline construction from equivalent
-# row inputs.
+# tests/sage/test_postgres_graph_store.py::
+# test_pg_row_to_edge_populates_every_edge_field. This file installs the
+# parity half of the same closure: a test that iterates
+# ``Edge.model_fields`` and asserts field-by-field equality between an
+# ``Edge`` built via ``_row_to_edge`` and an ``Edge`` built via the
+# graph_ops.py:663 inline construction from equivalent row inputs.
 # ---------------------------------------------------------------------------
 
-
-import sqlite3  # noqa: E402 -- co-located with the fixtures below
-
-# Shared sentinel values used to populate both the canonical
-# ``sqlite3.Row`` (matching the ``_row_to_edge`` shape) and the CTE row
-# dict (matching the graph_ops.py:663 shape). Per the cohort decision
-# sheet, sentinel fixtures are per-ticket local -- no shared module --
-# but within a single ticket the same sentinel constants drive both
-# halves of the parity assertion so the equality check is meaningful.
+# Shared sentinel values used to populate both the canonical row dict
+# (matching the ``_row_to_edge`` shape) and the CTE row dict (matching
+# the graph_ops.py:663 shape). Sentinel fixtures are local -- no shared
+# module -- but the same sentinel constants drive both halves of the
+# parity assertion so the equality check is meaningful.
 _T0124_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C124))
 _T0124_RETRACTED_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C125))
 _T0124_SOURCE_ID = _id("t0124_doc_source")
@@ -1797,37 +1743,35 @@ _T0124_SYNCED_FROM_VERSION = _id("t0124_doc_synced_from_version")
 _T0124_SYNCED_FROM_CONTENT_HASH = "sha256:" + "cd" * 32
 
 
-def _edge_row_with_every_edge_field() -> sqlite3.Row:
-    """Per-ticket sentinel ``sqlite3.Row`` matching the ``_row_to_edge``
+def _edge_row_with_every_edge_field() -> dict:
+    """Sentinel row dict matching the ``PostgresGraphStore._row_to_edge``
     column shape, with every field set to a distinct non-default value.
 
-    Delegates the row-construction scaffold to ``build_sentinel_row``
-    ; only the column->value mapping is per-ticket. Co-derived
-    with ``_edge_cte_row_with_every_edge_field`` from the same
+    psycopg dict rows carry plain column names; ``created_at`` is the
+    ISO-8601 string the factory parses via ``datetime.fromisoformat``.
+    Co-derived with ``_edge_cte_row_with_every_edge_field`` from the same
     underlying sentinel constants so the two row shapes carry
     equivalent payloads despite their different column-name conventions
     (``id`` / ``created_at`` here vs. ``edge_id`` / ``edge_created_at``
     in the CTE row dict).
     """
-    return build_sentinel_row(
-        {
-            "id": _T0124_EDGE_ID,
-            "source_id": _T0124_SOURCE_ID,
-            "target_id": _T0124_TARGET_ID,
-            "edge_type": _T0124_EDGE_TYPE,
-            "resolution_policy": _T0124_RESOLUTION_POLICY,
-            "source_valid_from_version": _T0124_SOURCE_ANCHOR,
-            "target_valid_from_version": _T0124_TARGET_ANCHOR,
-            "valid_until_version": _T0124_TOMBSTONE,
-            "retracted_edge_id": _T0124_RETRACTED_EDGE_ID,
-            "created_at": _T0124_CREATED_AT_ISO,
-            "notes": _T0124_NOTES,
-            "rationale": _T0124_RATIONALE,
-            "rationale_kind": _T0124_RATIONALE_KIND,
-            "synced_from_version": _T0124_SYNCED_FROM_VERSION,
-            "synced_from_content_hash": _T0124_SYNCED_FROM_CONTENT_HASH,
-        }
-    )
+    return {
+        "id": _T0124_EDGE_ID,
+        "source_id": _T0124_SOURCE_ID,
+        "target_id": _T0124_TARGET_ID,
+        "edge_type": _T0124_EDGE_TYPE,
+        "resolution_policy": _T0124_RESOLUTION_POLICY,
+        "source_valid_from_version": _T0124_SOURCE_ANCHOR,
+        "target_valid_from_version": _T0124_TARGET_ANCHOR,
+        "valid_until_version": _T0124_TOMBSTONE,
+        "retracted_edge_id": _T0124_RETRACTED_EDGE_ID,
+        "created_at": _T0124_CREATED_AT_ISO,
+        "notes": _T0124_NOTES,
+        "rationale": _T0124_RATIONALE,
+        "rationale_kind": _T0124_RATIONALE_KIND,
+        "synced_from_version": _T0124_SYNCED_FROM_VERSION,
+        "synced_from_content_hash": _T0124_SYNCED_FROM_CONTENT_HASH,
+    }
 
 
 def _edge_cte_row_with_every_edge_field() -> dict:
@@ -1897,12 +1841,12 @@ def test_edge_cte_row_parity_with_row_to_edge():
     """(F4 closure pair, T2 -- parity guard on the BH-101 excluded
     projection point): the inline ``Edge`` construction at
     sage/services/graph_ops.py:663 and the canonical factory
-    ``SqliteGraphStore._row_to_edge`` (sage/storage/graph_store.py) construct
-    field-equivalent ``Edge`` instances from equivalent row inputs.
+    ``PostgresGraphStore._row_to_edge`` (sage/storage/postgres/graph_store.py)
+    construct field-equivalent ``Edge`` instances from equivalent row inputs.
 
     The exhaustive-fields test on the canonical factory itself is
-    (``tests/sage/test_graph_store.py::``
-    ``test_row_to_edge_populates_every_edge_field``). This parity test
+    (``tests/sage/test_postgres_graph_store.py::``
+    ``test_pg_row_to_edge_populates_every_edge_field``). This parity test
     composes against the same sentinel-row pattern and adds the
     drift-detection half: iterating ``Edge.model_fields`` and asserting
     equality at every field guarantees that when a future field is
@@ -1919,7 +1863,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
     row = _edge_row_with_every_edge_field()
     cte_row = _edge_cte_row_with_every_edge_field()
 
-    edge_canonical = SqliteGraphStore._row_to_edge(row)
+    edge_canonical = PostgresGraphStore._row_to_edge(row)
     edge_inline = _build_edge_from_cte_row(cte_row)
 
     # Both halves of the parity must produce identical Edge instances.
@@ -1935,7 +1879,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
             )
     assert not divergences, (
         "Edge inline construction at sage/services/graph_ops.py:663 "
-        "diverged from canonical SqliteGraphStore._row_to_edge factory on "
+        "diverged from canonical PostgresGraphStore._row_to_edge factory on "
         f"the following fields: {divergences}. The two paths must "
         "remain field-equivalent per the BH-101 exclusion guard "
         "(T-0124, T-0123) in the *CAS Projection-Point Audit "

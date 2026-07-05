@@ -8,7 +8,7 @@ Each test holds the line on one acceptance criterion from the plan:
 4. test_warn_threshold_drives_warning_level — slow-query WARN path.
 5. test_fast_path_suppresses_and_summary_aggregates — fast-path + flush.
 6. test_null_query_timer_default_is_silent — no-op default safety.
-7. test_uninstrumented_method_emits_nothing — write paths stay out of scope.
+7. test_write_path_emits_storage_record — timer threading through writes.
 8. test_vault_config_back_compat_no_timing_block — Pydantic default round-trip.
 9. test_mcp_init_attaches_per_vault_file_handler — wiring confirmation.
 """
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.adapters.content_store_lancedb import LanceDBContentStore
+from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.config import VaultConfig
 from sage.instrumentation import (
     NULL_QUERY_TIMER,
@@ -41,7 +41,7 @@ from sage.models.schemas import (
     Document,
 )
 from sage.services.retrieval import RetrievalService
-from sage.storage.graph_store import SqliteGraphStore
+from sage.storage.postgres.graph_store import PostgresGraphStore
 
 
 @pytest.fixture(autouse=True)
@@ -98,53 +98,57 @@ def _doc(doc_id: str = "deadbeef_t73") -> Document:
 # ── 1. storage happy path ────────────────────────────────────────────
 
 
-async def test_storage_emits_record_for_get_document(tmp_vault_dir, caplog):
-    """Real SqliteGraphStore + real QueryTimer → one DEBUG record with the right JSON."""
+async def test_storage_emits_record_for_get_document(pg_pool, caplog):
+    """Real PostgresGraphStore + real QueryTimer → one DEBUG record with the right JSON.
+
+    Coverage transfer note: timer threading through the Postgres adapter used
+    to ride on the embedded pair's tests alone; dropping the ``query_timer=``
+    plumbing in PostgresGraphStore now fails here.
+    """
     timer = QueryTimer(
         logger_name="sage.storage.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="storage",
     )
-    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
-    try:
-        await store.insert_document(_doc())
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
-            await store.get_document("deadbeef_t73")
+    await store.insert_document(_doc())
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
+        await store.get_document("deadbeef_t73")
 
-        payloads = _payloads(caplog, "sage.storage.timing")
-        get_doc_payloads = [p for p in payloads if p.get("label") == "get_document"]
-        assert len(get_doc_payloads) == 1, payloads
-        payload = get_doc_payloads[0]
-        assert payload["layer"] == "storage"
-        assert isinstance(payload["duration_ms"], float)
-        assert payload["duration_ms"] >= 0.0
+    payloads = _payloads(caplog, "sage.storage.timing")
+    get_doc_payloads = [p for p in payloads if p.get("label") == "get_document"]
+    assert len(get_doc_payloads) == 1, payloads
+    payload = get_doc_payloads[0]
+    assert payload["layer"] == "storage"
+    assert isinstance(payload["duration_ms"], float)
+    assert payload["duration_ms"] >= 0.0
 
-        records_for_label = [
-            r
-            for r in caplog.records
-            if r.name == "sage.storage.timing"
-            and json.loads(r.getMessage()).get("label") == "get_document"
-        ]
-        assert records_for_label[0].levelno == logging.DEBUG
-    finally:
-        await store.close()
+    records_for_label = [
+        r
+        for r in caplog.records
+        if r.name == "sage.storage.timing"
+        and json.loads(r.getMessage()).get("label") == "get_document"
+    ]
+    assert records_for_label[0].levelno == logging.DEBUG
 
 
 # ── 2. content happy path ────────────────────────────────────────────
 
 
-async def test_content_emits_record_for_search_semantic(tmp_path, caplog):
-    """Real LanceDBContentStore + real QueryTimer → record with layer=content."""
-    brain = tmp_path / "brain"
-    brain.mkdir()
+async def test_content_emits_record_for_search_semantic(pg_pool, caplog):
+    """Real PostgresContentStore + real QueryTimer → record with layer=content.
+
+    Same coverage-transfer rationale as the storage test above, for the
+    content adapter's ``query_timer=`` plumbing.
+    """
     timer = QueryTimer(
         logger_name="sage.content.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="content",
     )
-    store = LanceDBContentStore(brain, query_timer=timer)
+    store = PostgresContentStore(pg_pool, query_timer=timer)
 
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger="sage.content.timing"):
@@ -206,7 +210,7 @@ async def test_retrieval_emits_request_record_with_phases(
 # ── 4. WARN threshold drives WARNING level ───────────────────────────
 
 
-async def test_warn_threshold_drives_warning_level(tmp_vault_dir, caplog):
+async def test_warn_threshold_drives_warning_level(pg_pool, caplog):
     """warn_threshold_ms=0 forces WARN on every emission; no sleep required."""
     timer = QueryTimer(
         logger_name="sage.storage.timing",
@@ -216,27 +220,24 @@ async def test_warn_threshold_drives_warning_level(tmp_vault_dir, caplog):
         ),
         layer="storage",
     )
-    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
-    try:
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
-            await store.get_document("nonexistent")
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
+        await store.get_document("nonexistent")
 
-        warnings = [
-            r
-            for r in caplog.records
-            if r.name == "sage.storage.timing" and r.levelno == logging.WARNING
-        ]
-        assert len(warnings) >= 1, [(r.levelno, r.getMessage()) for r in caplog.records]
-    finally:
-        await store.close()
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == "sage.storage.timing" and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) >= 1, [(r.levelno, r.getMessage()) for r in caplog.records]
 
 
 # ── 5. fast-path suppression + summary aggregation ───────────────────
 
 
-async def test_fast_path_suppresses_and_summary_aggregates(tmp_vault_dir, caplog):
+async def test_fast_path_suppresses_and_summary_aggregates(pg_pool, caplog):
     """Sub-threshold queries are counted, not emitted; flush() emits one summary."""
     timer = QueryTimer(
         logger_name="sage.storage.timing",
@@ -246,83 +247,75 @@ async def test_fast_path_suppresses_and_summary_aggregates(tmp_vault_dir, caplog
         ),
         layer="storage",
     )
-    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
-    try:
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
-            n = 5
-            for _ in range(n):
-                await store.get_document("nonexistent")
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
+        n = 5
+        for _ in range(n):
+            await store.get_document("nonexistent")
 
-            payloads_pre = _payloads(caplog, "sage.storage.timing")
-            assert all(p.get("label") != "get_document" for p in payloads_pre), (
-                "fast-path queries should not emit per-call records"
-            )
+        payloads_pre = _payloads(caplog, "sage.storage.timing")
+        assert all(p.get("label") != "get_document" for p in payloads_pre), (
+            "fast-path queries should not emit per-call records"
+        )
 
-            timer.flush()
+        timer.flush()
 
-        payloads_post = _payloads(caplog, "sage.storage.timing")
-        summaries = [p for p in payloads_post if p.get("summary") is True]
-        assert len(summaries) == 1, payloads_post
-        summary = summaries[0]
-        assert summary["suppressed"].get("get_document") == n
-        assert summary["layer"] == "storage"
-        assert isinstance(summary["interval_s"], float)
-    finally:
-        await store.close()
+    payloads_post = _payloads(caplog, "sage.storage.timing")
+    summaries = [p for p in payloads_post if p.get("summary") is True]
+    assert len(summaries) == 1, payloads_post
+    summary = summaries[0]
+    assert summary["suppressed"].get("get_document") == n
+    assert summary["layer"] == "storage"
+    assert isinstance(summary["interval_s"], float)
 
 
 # ── 6. no-op default is silent ───────────────────────────────────────
 
 
-async def test_null_query_timer_default_is_silent(tmp_vault_dir, caplog):
+async def test_null_query_timer_default_is_silent(pg_pool, caplog):
     """Default kwarg = NULL_QUERY_TIMER: real query emits zero records."""
-    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db")
+    store = PostgresGraphStore(pg_pool)
     await store.initialize()
-    try:
-        caplog.clear()
-        with caplog.at_level(
-            logging.DEBUG,
-            logger="sage.storage.timing",
-        ):
-            await store.get_document("nonexistent")
+    caplog.clear()
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="sage.storage.timing",
+    ):
+        await store.get_document("nonexistent")
 
-        records = [r for r in caplog.records if r.name.endswith(".timing")]
-        assert records == [], records
-    finally:
-        await store.close()
+    records = [r for r in caplog.records if r.name.endswith(".timing")]
+    assert records == [], records
 
 
 # ── 7. uninstrumented method emits nothing ───────────────────────────
 
 
-async def test_uninstrumented_method_emits_nothing(tmp_vault_dir, caplog):
-    """Writes are out of scope; insert_document must not emit on the timing logger."""
+async def test_write_path_emits_storage_record(pg_pool, caplog):
+    """Write ops are instrumented on the Postgres adapter: insert_document
+    emits exactly one storage-layer record.
+
+    (The retired embedded store deliberately left writes unmeasured; the
+    Postgres adapter measures every dispatch, so this pins timer threading
+    through the write path rather than the old writes-out-of-scope rule.)
+    """
     timer = QueryTimer(
         logger_name="sage.storage.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="storage",
     )
-    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
-    try:
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
-            await store.insert_document(_doc())
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
+        await store.insert_document(_doc())
 
-        write_labels = {
-            "insert_document",
-            "update_document",
-            "delete_edge",
-            "insert_edge",
-        }
-        offending = [
-            p for p in _payloads(caplog, "sage.storage.timing") if p.get("label") in write_labels
-        ]
-        assert offending == [], offending
-    finally:
-        await store.close()
+    inserts = [
+        p for p in _payloads(caplog, "sage.storage.timing") if p.get("label") == "insert_document"
+    ]
+    assert len(inserts) == 1, inserts
+    assert inserts[0]["layer"] == "storage"
 
 
 # ── 8. vault config back-compat (no timing block) ────────────────────
@@ -356,14 +349,9 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
             logger.removeHandler(handler)
 
     config = VaultConfig.model_validate(minimal_vault_config_dict)
-    # Construct the real LanceDBContentStore via mcp_init's production path
-    # so we can verify the content_timer is threaded through. Skip
-    # gracefully if lancedb isn't available in this environment.
-    try:
-        import lancedb  # noqa: F401
-    except ImportError:
-        pytest.skip("lancedb not installed; mcp_init wiring test skipped")
-
+    # Build both stores via mcp_init's production path (the stack storage
+    # provisioner) so the storage_timer/content_timer threading is verified
+    # on the real wiring, not on injected stubs.
     async with initialize_services_for_test(config) as services:
         try:
             # All three loggers got a handler pointing at brain_root/timing.log

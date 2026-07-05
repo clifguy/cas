@@ -2,7 +2,10 @@
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, and successful round-trip of the
-OptimizeContentStoreReport payload through the MCP serialize path.
+OptimizeContentStoreReport payload through the MCP serialize path. The
+content store is a scripted snapshot stub — the tool-level contract is
+report shaping around the ContentStore port; real reclamation is covered
+by the content-store test modules.
 
 Test-file naming matches the existing test_sage_admin_*_tool.py
 sibling pattern (test_sage_admin_migrate_vault.py,
@@ -14,44 +17,33 @@ pass; the new test file matches the family for consistency.
 
 from __future__ import annotations
 
-import pytest
-
 from sage import mcp_server
+from sage.config import VaultConfig
+from sage.mcp_init import initialize_services
 from sage.models.schemas import OptimizeContentStoreReport
-from tests.sage.test_maintenance_service import (
-    _bootstrap_lancedb_vault,
-    _churn_chunks,
-    _close_registry_vault,
-)
+from sage.services.vault_registry import VaultRegistryService
+from tests.sage.conftest import initialize_services_for_test
+from tests.sage.test_maintenance_service import _SnapshotContentStore
 
 
-@pytest.fixture
-def empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Snapshot ``mcp_server._vaults`` before each test and restore after."""
-    saved = dict(mcp_server._vaults)
-    mcp_server._vaults.clear()
-    try:
-        yield
-    finally:
-        mcp_server._vaults.clear()
-        mcp_server._vaults.update(saved)
-
-
-async def test_optimize_vault_content_store_returns_report_dict(
-    tmp_path, monkeypatch, empty_registry
-):
+async def test_optimize_vault_content_store_returns_report_dict(minimal_vault_config_dict):
     """Happy path: returns a dict that round-trips through
-    OptimizeContentStoreReport."""
-    async with _bootstrap_lancedb_vault(tmp_path, monkeypatch) as (
-        registry,
-        services,
-        _vault_dir,
-    ):
-        vault_id = services.config.vault.id
+    OptimizeContentStoreReport, carrying the store's snapshot (the
+    version shrinkage and byte delta come from the scripted snapshot, so
+    a report built from constants rather than the store's observation
+    fails here).
+    """
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    content_store = _SnapshotContentStore()
+    registry_service = VaultRegistryService(mcp_server._vaults, initialize_services)
+    async with initialize_services_for_test(
+        config,
+        registry_service=registry_service,
+        content_store_factory=lambda _brain: content_store,
+    ) as services:
+        vault_id = config.vault.id
+        mcp_server._vaults[vault_id] = services
         try:
-            await _churn_chunks(services.content_store, cycles=15)
-            mcp_server._vaults[vault_id] = registry[vault_id]
-
             result = await mcp_server.optimize_vault_content_store(
                 vault_id=vault_id, cleanup_older_than_days=0
             )
@@ -59,14 +51,17 @@ async def test_optimize_vault_content_store_returns_report_dict(
             report = OptimizeContentStoreReport.model_validate(result)
             assert report.vault_id == vault_id
             assert report.cleanup_older_than_days == 0
-            assert report.pre_versions > report.post_versions, "expected pruning on churned vault"
+            assert report.pre_versions > report.post_versions, (
+                "report must carry the store's snapshot"
+            )
+            assert report.bytes_reclaimed == report.pre_bytes - report.post_bytes
+            # The threshold reached the store, not a tool-side default.
+            assert len(content_store.optimize_calls) == 1
         finally:
-            await _close_registry_vault(registry, vault_id)
+            mcp_server._vaults.pop(vault_id, None)
 
 
-async def test_optimize_vault_content_store_invalid_vault_id_shape_returns_error_envelope(
-    empty_registry,
-):
+async def test_optimize_vault_content_store_invalid_vault_id_shape_returns_error_envelope():
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
     and surfaces as the structured invalid_vault_id (400) envelope carrying
     the offending value, not a raised exception."""
@@ -78,9 +73,7 @@ async def test_optimize_vault_content_store_invalid_vault_id_shape_returns_error
     assert result["detail"]["vault_id"] == "not a vault id!"
 
 
-async def test_optimize_vault_content_store_unknown_vault_returns_error_envelope(
-    empty_registry,
-):
+async def test_optimize_vault_content_store_unknown_vault_returns_error_envelope():
     """An unregistered vault_id returns the unknown_vault envelope."""
     result = await mcp_server.optimize_vault_content_store(vault_id="ghost")
 

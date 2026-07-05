@@ -98,36 +98,39 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
 ):
     """N6: failed initialize_services must close the graph store.
 
-    ``SqliteGraphStore.__init__`` constructs an executor and connection pool;
-    ``.initialize()`` opens connections to apply schema. If a downstream
-    constructor raises, the executor and connections leak.
+    The storage provisioner constructs the graph store — and opens the
+    vault's connection pool backing it — before the downstream service
+    constructors run. If one of those raises, the store and its pool
+    leak unless the transactional cleanup wrapper closes the owned-here
+    store and releases the storage handle.
 
-    Trap (anti-coincidental): without try/except cleanup, ``_executor`` is
-    not None and ``_all_connections`` is non-empty after the failure. The
-    assertions on the graph store's internal state are the trap.
+    Trap (anti-coincidental): without try/except cleanup, the captured
+    store still accepts operations and its pool stays open after the
+    failure. The post-failure dispatch barrier and the pool's closed
+    flag are the trap.
 
-    We capture the graph_store reference by patching the SqliteGraphStore class
-    so we can inspect it after the failure.
+    We capture the graph_store reference by patching the store class on
+    its source module so we can inspect it after the failure.
     """
     config = VaultConfig.model_validate(minimal_vault_config_dict)
 
     from sage.services.user_service import UserService
-    from sage.storage import graph_store as _gs_module
+    from sage.storage.postgres import graph_store as _pg_gs_module
 
     captured: dict = {}
-    original_graph_store_cls = _gs_module.SqliteGraphStore
+    original_graph_store_cls = _pg_gs_module.PostgresGraphStore
 
     class CapturingGraphStore(original_graph_store_cls):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             captured["graph_store"] = self
 
-    # Patch the SqliteGraphStore class on its source module: the embedded
+    # Patch the PostgresGraphStore class on its source module: the Postgres
     # storage provisioner imports it at call time, so the patch is honored
     # through the provisioner path.
-    monkeypatch.setattr(_gs_module, "SqliteGraphStore", CapturingGraphStore)
+    monkeypatch.setattr(_pg_gs_module, "PostgresGraphStore", CapturingGraphStore)
 
-    # Patch bootstrap_owner to raise AFTER SqliteGraphStore is constructed and
+    # Patch bootstrap_owner to raise AFTER the graph store is constructed and
     # initialized.
     async def raising_bootstrap(self):
         raise SAGEError(
@@ -152,24 +155,23 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
 
     # The graph store must have been constructed
     assert "graph_store" in captured, (
-        "SqliteGraphStore was never constructed; test fixture is broken"
+        "PostgresGraphStore was never constructed; test fixture is broken"
     )
     graph_store = captured["graph_store"]
 
-    # Cleanup must have closed the graph store
-    assert graph_store._executor is None, (
-        "SqliteGraphStore._executor not closed on failure (connection pool leaked)"
-    )
-    assert graph_store._all_connections == [], (
-        f"SqliteGraphStore._all_connections has {len(graph_store._all_connections)} "
-        "leaked connections on failure"
-    )
     # Behavioural co-assertion per TEST-SAGE-BH-137: the CAS-ADR-036 dispatch
     # barrier must engage on the error-path teardown, not just the bookkeeping
     # fields. A silent-degrade close would let post-failure callers transparently
     # use the wreckage; the barrier raises instead.
     with pytest.raises(RuntimeError, match="closed"):
         await graph_store.list_all_documents()
+
+    # And the storage handle's backing resource — the per-vault pool the
+    # provisioner opened — must have been released, not just the store's
+    # dispatch flag flipped.
+    assert graph_store._pool.closed, (
+        "provisioner-opened connection pool leaked on failed initialize_services"
+    )
 
 
 async def test_initialize_services_cleanup_does_not_mask_original_exception(

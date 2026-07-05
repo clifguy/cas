@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+from pydantic_core import PydanticUndefined
 
 from sage.adapters.interfaces import GraphStore, NaturalKeyConflict
 from sage.models.enums import (
@@ -89,10 +90,16 @@ def test_postgres_graph_store_is_concrete_graphstore():
 # ---------------------------------------------------------------------------
 # C1: row-converter exhaustive-field closure (no server)
 #
-# The Postgres analog of the SQLite ``test_row_to_*_populates_every_field``
-# closure pair: every model field must be wired through the converter. psycopg
-# dict rows are plain dicts with jsonb columns already parsed and booleans
-# native, so the sentinel rows here are dicts, not sqlite3.Row objects.
+# Per the *CAS Projection-Point Audit Conventions* steering document, every
+# projection point owes a closure pair: a single owning factory and an
+# exhaustive-fields test that fails closed when a field is added to the
+# destination model but not wired through the factory. psycopg dict rows are
+# plain dicts with jsonb columns already parsed and booleans native, so the
+# sentinel rows here are dicts. The loops use the three-branch closure idiom:
+# the list/dict branch is forward defense for a future default_factory field
+# (whose empty-container default would satisfy a naive ``is not None``); the
+# non-None-default branch catches a dropped field whose Pydantic default
+# would satisfy ``is not None`` coincidentally.
 # ---------------------------------------------------------------------------
 
 
@@ -120,10 +127,14 @@ def test_pg_row_to_edge_populates_every_edge_field():
     edge = PostgresGraphStore._row_to_edge(_pg_edge_row())
     for field_name, field_info in Edge.model_fields.items():
         value = getattr(edge, field_name)
+        annotation = field_info.annotation
         default = field_info.default
-        from pydantic_core import PydanticUndefined
-
-        if default is not PydanticUndefined and default is not None:
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"Edge.{field_name} not populated by _row_to_edge "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
             assert value != default, (
                 f"Edge.{field_name} matches its default ({default!r}); "
                 "_row_to_edge may have dropped this field"
@@ -148,10 +159,14 @@ def test_pg_row_to_staging_edge_populates_every_staging_edge_field():
     staging = PostgresGraphStore._row_to_staging_edge(_pg_staging_edge_row())
     for field_name, field_info in StagingEdge.model_fields.items():
         value = getattr(staging, field_name)
+        annotation = field_info.annotation
         default = field_info.default
-        from pydantic_core import PydanticUndefined
-
-        if default is not PydanticUndefined and default is not None:
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"StagingEdge.{field_name} not populated by _row_to_staging_edge "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
             assert value != default, (
                 f"StagingEdge.{field_name} matches its default ({default!r}); "
                 "_row_to_staging_edge may have dropped this field"

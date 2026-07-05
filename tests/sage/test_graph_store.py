@@ -1,42 +1,28 @@
 """Graph Store Foundation tests: BH-001 through BH-008.
 
-Covers document ID generation, SQLite WAL mode, per-document concurrency,
-and indexed_at nullable semantics.
+Covers document ID generation, per-document concurrency, indexed_at nullable
+semantics, tag filtering, edge enumeration with retraction state, and the
+post-close dispatch barrier -- all through the ``graph_store`` port fixture.
 """
 
 import asyncio
 import hashlib
-import json
 import re
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 import pytest
-from pydantic_core import PydanticUndefined
 
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
-    RationaleKind,
-    ResolutionPolicy,
     SourceType,
 )
 from sage.models.schemas import (
     Document,
     Edge,
-    ListFieldPatch,
-    StagingEdge,
-    UpdateMetadataRequest,
 )
 from sage.services.identity import generate_document_id
-from sage.storage.graph_store import SqliteGraphStore
-from sage.storage.migrations import (
-    BACKFILL_PLAN,
-    _backfill_document_tags_apply,
-    _backfill_document_tags_detect,
-)
-from tests.sage._sentinel_rows import build_sentinel_row
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -111,48 +97,6 @@ def test_bh_003_same_path_different_timestamps():
     id_1 = generate_document_id(path, "2026-03-09T10:00:00Z", "Doc A")
     id_2 = generate_document_id(path, "2026-03-09T11:00:00Z", "Doc A")
     assert id_1 != id_2
-
-
-# ---------------------------------------------------------------------------
-# BH-004: SQLite WAL mode enabled at startup
-# ---------------------------------------------------------------------------
-
-
-async def test_bh_004_wal_mode_enabled(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    mode = await graph_store.get_journal_mode()
-    assert mode == "wal"
-
-
-# ---------------------------------------------------------------------------
-# Connection-setup PRAGMA hygiene: busy_timeout + synchronous=NORMAL
-#
-# Under WAL, a writer holding the database briefly must not bounce a
-# concurrent connection straight to SQLITE_BUSY; busy_timeout gives it a
-# bounded wait. synchronous=NORMAL is the WAL-safe durability/throughput
-# tradeoff. Both are per-connection PRAGMAs set in _get_connection.
-# ---------------------------------------------------------------------------
-
-
-async def test_busy_timeout_pragma_set(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """Every pooled connection is opened with a ~30s busy_timeout.
-
-    SQLite's compile-time default is 0 (no wait -> immediate SQLITE_BUSY);
-    this asserts the configured 30_000 ms so a brief writer hold does not
-    surface as an error to a concurrent connection.
-    """
-    assert await graph_store.get_busy_timeout() == 30_000
-
-
-async def test_synchronous_pragma_normal(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """Every pooled connection is opened with synchronous=NORMAL (==1).
-
-    SQLite's default is FULL (==2). NORMAL is the WAL-safe setting; the
-    integer-valued PRAGMA reads back 1 for NORMAL.
-    """
-    assert await graph_store.get_synchronous() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -410,26 +354,8 @@ async def test_get_supersedes_lineage_linear_chain(graph_store):
 
 
 # ---------------------------------------------------------------------------
-# Document_tags join-table normalization
+# Tag-filter behavior through the public query_documents API
 # ---------------------------------------------------------------------------
-
-
-def _join_rows(db_path, doc_id: str | None = None) -> list[tuple[str, str]]:
-    """Open a fresh read-only connection and return document_tags rows."""
-    conn = sqlite3.connect(str(db_path))
-    try:
-        if doc_id is None:
-            rows = conn.execute(
-                "SELECT document_id, tag FROM document_tags ORDER BY document_id, tag"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT document_id, tag FROM document_tags WHERE document_id = ? ORDER BY tag",
-                (doc_id,),
-            ).fetchall()
-        return rows
-    finally:
-        conn.close()
 
 
 def _make_doc_with_tags(doc_id: str, tags: list[str]) -> Document:
@@ -438,129 +364,37 @@ def _make_doc_with_tags(doc_id: str, tags: list[str]) -> Document:
     return doc
 
 
-async def test_t0078_insert_with_tags_populates_join_table(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#1: insert document with tags -> matching join rows."""
-    doc = _make_doc_with_tags(_id("doc_t1"), ["alpha", "beta"])
-    await graph_store.insert_document(doc)
-    rows = _join_rows(graph_store._db_path, doc.id)
-    assert rows == [(doc.id, "alpha"), (doc.id, "beta")]
+async def test_tag_filter_reflects_insert_and_update(graph_store):
+    """The tag filter tracks a document's CURRENT tags, not a stale copy.
 
-
-async def test_t0078_insert_with_no_tags_creates_no_join_rows(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#2: insert with empty tags -> zero join rows.
-
-    Vacuous pre-implementation (no hook runs, join table is always empty).
-    Kept as a regression guard against an over-eager hook that emits a
-    placeholder row for tag-less docs.
+    Two-phase guard. Phase 1: a freshly inserted document is findable by
+    its tag. Phase 2: after update_document rewrites the tags, the old tag
+    no longer matches and the new one does. Phase 2 is the
+    anti-coincidental half -- a store that materializes tags at insert
+    time but never refreshes the materialization on update passes phase 1
+    and fails here.
     """
-    doc = _make_doc_with_tags(_id("doc_t2"), [])
+    doc = _make_doc_with_tags(_id("doc_tagflow"), ["before"])
     await graph_store.insert_document(doc)
-    assert _join_rows(graph_store._db_path, doc.id) == []
 
-
-async def test_t0078_update_tags_add(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#3: update ["a"] -> ["a","b"] reflects in join table."""
-    doc = _make_doc_with_tags(_id("doc_t3"), ["a"])
-    await graph_store.insert_document(doc)
-    await graph_store.update_document(doc.id, {"tags": ["a", "b"]})
-    rows = _join_rows(graph_store._db_path, doc.id)
-    assert rows == [(doc.id, "a"), (doc.id, "b")]
-
-
-async def test_t0078_update_tags_remove(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#4: update ["a","b"] -> ["a"] removes the dropped row."""
-    doc = _make_doc_with_tags(_id("doc_t4"), ["a", "b"])
-    await graph_store.insert_document(doc)
-    await graph_store.update_document(doc.id, {"tags": ["a"]})
-    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "a")]
-
-
-async def test_t0078_update_tags_full_replace(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#5: update ["a"] -> ["c"] replaces the row entirely."""
-    doc = _make_doc_with_tags(_id("doc_t5"), ["a"])
-    await graph_store.insert_document(doc)
-    await graph_store.update_document(doc.id, {"tags": ["c"]})
-    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "c")]
-
-
-async def test_t0078_update_without_tags_key_preserves_join(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#6: update title only -> join rows unchanged.
-
-    Seeds the join table via the insert hook so the "unchanged" claim is
-    not vacuous. Pre-implementation this test still detects a buggy hook
-    that fires on every update regardless of which fields changed.
-    """
-    doc = _make_doc_with_tags(_id("doc_t6"), ["x", "y"])
-    await graph_store.insert_document(doc)
-    pre = _join_rows(graph_store._db_path, doc.id)
-    assert pre == [(doc.id, "x"), (doc.id, "y")], (
-        "precondition: insert hook must populate join rows; "
-        "if this fails, run sync-hook tests #1/#3-5 first"
-    )
-    await graph_store.update_document(doc.id, {"title": "New Title"})
-    assert _join_rows(graph_store._db_path, doc.id) == pre
-
-
-async def test_t0078_tag_filter_query_uses_join_table_plan(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#7: the production tag-filter query path uses the join table.
-
-    Two assertions:
-    1. The source of `_query_documents_sync` no longer contains the
-       `json_each(tags)` form. This is what fails pre-rewrite.
-    2. The join-table form, when EXPLAIN'd, uses an index on
-       `document_tags` (any index — SQLite may pick the PK auto-index
-       on `(document_id, tag)` or our explicit `(tag, document_id)`).
-    """
-    import inspect
-
-    from sage.storage.graph_store import SqliteGraphStore
-
-    source = inspect.getsource(SqliteGraphStore._query_documents_sync)
-    assert "json_each(tags)" not in source, (
-        "_query_documents_sync still references json_each(tags); "
-        "tag filter has not been rewritten to use document_tags"
-    )
-    assert "document_tags" in source, (
-        "_query_documents_sync does not reference document_tags; tag filter rewrite incomplete"
-    )
-
-    # Seed a few documents and verify the plan is index-driven
-    for suffix, tags in (("a", ["alpha"]), ("b", ["beta"]), ("c", ["alpha", "beta"])):
-        d = _make_doc_with_tags(_id(f"doc_plan_{suffix}"), tags)
-        await graph_store.insert_document(d)
-
-    conn = sqlite3.connect(str(graph_store._db_path))
-    try:
-        plan_rows = conn.execute(
-            "EXPLAIN QUERY PLAN SELECT * FROM documents WHERE pipeline_status != 'failed' "
-            "AND EXISTS (SELECT 1 FROM document_tags "
-            "WHERE document_id = documents.id AND tag = 'alpha')"
-        ).fetchall()
-    finally:
-        conn.close()
-    plan_text = " | ".join(str(r) for r in plan_rows)
-    assert "document_tags" in plan_text, plan_text
-    assert "USING" in plan_text and "INDEX" in plan_text, (
-        f"expected an index-driven plan over document_tags; got: {plan_text}"
-    )
-    assert "SCAN document_tags" not in plan_text, (
-        f"plan shows a full scan of document_tags; got: {plan_text}"
-    )
-
-    # Result correctness via the public API
     docs, total = await graph_store.query_documents(
-        {"tags": ["alpha"]}, limit=100, offset=0, sort_by=None, sort_order=None
+        {"tags": ["before"]}, limit=100, offset=0, sort_by=None, sort_order=None
     )
-    ids = {d.id for d in docs}
-    assert ids == {_id("doc_plan_a"), _id("doc_plan_c")}
-    assert total == 2
+    assert [d.id for d in docs] == [doc.id]
+    assert total == 1
+
+    await graph_store.update_document(doc.id, {"tags": ["after"]})
+
+    docs, total = await graph_store.query_documents(
+        {"tags": ["before"]}, limit=100, offset=0, sort_by=None, sort_order=None
+    )
+    assert docs == [] and total == 0, "stale tag must stop matching after the update"
+
+    docs, total = await graph_store.query_documents(
+        {"tags": ["after"]}, limit=100, offset=0, sort_by=None, sort_order=None
+    )
+    assert [d.id for d in docs] == [doc.id]
+    assert total == 1
 
 
 async def test_t0078_tag_filter_and_semantics(graph_store):
@@ -580,329 +414,6 @@ async def test_t0078_tag_filter_and_semantics(graph_store):
     ids = {d.id for d in docs}
     assert ids == {_id("doc_and_c"), _id("doc_and_d")}
     assert total == 2
-
-
-async def test_t0078_backfill_populates_from_json(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#9: backfill helper fills join table from existing JSON.
-
-    Simulates an unmigrated state by inserting a document directly via SQL
-    (bypassing the sync hook) so the JSON column is populated but the
-    join table is empty. Then runs the backfill apply function.
-    """
-    doc_id = _id("doc_backfill")
-    now = datetime.now(timezone.utc).isoformat()
-    conn = sqlite3.connect(str(graph_store._db_path))
-    try:
-        conn.execute(
-            "INSERT INTO documents ("
-            "id, title, source_type, source_path, lifecycle_status, "
-            "tags, source_content_hash, adapter_version, created_by, "
-            "created_at, last_modified_by, updated_at, pipeline_status, metadata_confirmed"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                doc_id,
-                "Backfill Doc",
-                "markdown",
-                f"test/{doc_id}.md",
-                "active",
-                json.dumps(["p", "q", "r"]),
-                _sha("backfill"),
-                "0.1.0",
-                "testuser",
-                now,
-                "testuser",
-                now,
-                "abstraction_complete",
-                1,
-            ),
-        )
-        # Manually clear any join rows that an existing hook may have created
-        conn.execute("DELETE FROM document_tags WHERE document_id = ?", (doc_id,))
-        conn.commit()
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM document_tags WHERE document_id = ?", (doc_id,)
-            ).fetchone()[0]
-            == 0
-        )
-
-        assert _backfill_document_tags_detect(conn) is True
-        _backfill_document_tags_apply(conn)
-        conn.commit()
-    finally:
-        conn.close()
-
-    rows = _join_rows(graph_store._db_path, doc_id)
-    assert rows == [(doc_id, "p"), (doc_id, "q"), (doc_id, "r")]
-
-
-async def test_t0078_backfill_is_idempotent(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#10: re-running backfill does not duplicate or error."""
-    doc_id = _id("doc_idem")
-    now = datetime.now(timezone.utc).isoformat()
-    conn = sqlite3.connect(str(graph_store._db_path))
-    try:
-        conn.execute(
-            "INSERT INTO documents ("
-            "id, title, source_type, source_path, lifecycle_status, "
-            "tags, source_content_hash, adapter_version, created_by, "
-            "created_at, last_modified_by, updated_at, pipeline_status, metadata_confirmed"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                doc_id,
-                "Idem Doc",
-                "markdown",
-                f"test/{doc_id}.md",
-                "active",
-                json.dumps(["s", "t"]),
-                _sha("idem"),
-                "0.1.0",
-                "testuser",
-                now,
-                "testuser",
-                now,
-                "abstraction_complete",
-                1,
-            ),
-        )
-        conn.execute("DELETE FROM document_tags WHERE document_id = ?", (doc_id,))
-        conn.commit()
-        _backfill_document_tags_apply(conn)
-        _backfill_document_tags_apply(conn)
-        conn.commit()
-        # Second detect should now return False -- the work is fully applied
-        assert _backfill_document_tags_detect(conn) is False
-    finally:
-        conn.close()
-
-    rows = _join_rows(graph_store._db_path, doc_id)
-    assert rows == [(doc_id, "s"), (doc_id, "t")]
-
-
-async def test_t0078_fk_cascade_on_document_delete(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """#11: deleting a document cascades to document_tags rows."""
-    doc = _make_doc_with_tags(_id("doc_fk"), ["m", "n"])
-    await graph_store.insert_document(doc)
-    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "m"), (doc.id, "n")]
-
-    conn = sqlite3.connect(str(graph_store._db_path))
-    try:
-        conn.execute("PRAGMA foreign_keys=ON;")
-        conn.execute("DELETE FROM documents WHERE id = ?", (doc.id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-    assert _join_rows(graph_store._db_path, doc.id) == []
-
-
-async def test_t0078_metadata_service_e2e(sqlite_metadata_service, sqlite_graph_store):
-    metadata_service = sqlite_metadata_service
-    graph_store = sqlite_graph_store
-    """#12: ListFieldPatch through MetadataService syncs the join table."""
-    doc = _make_doc_with_tags(_id("doc_e2e"), ["initial"])
-    await graph_store.insert_document(doc)
-    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "initial")]
-
-    await metadata_service._update_metadata(
-        doc.id,
-        UpdateMetadataRequest(tags=ListFieldPatch(add=["new1", "new2"], remove=["initial"])),
-        modified_by="testuser",
-    )
-    rows = _join_rows(graph_store._db_path, doc.id)
-    assert rows == [(doc.id, "new1"), (doc.id, "new2")]
-
-
-async def test_t0078_backfill_plan_includes_document_tags():
-    """The BACKFILL_PLAN registry must include the document_tags backfill."""
-    names = [b.name for b in BACKFILL_PLAN]
-    assert "document_tags" in names, names
-
-
-# ---------------------------------------------------------------------------
-# Exhaustive-fields closure test for ``SqliteGraphStore._row_to_edge``.
-#
-# ``_row_to_edge`` is the single owning factory for the
-# ``sqlite3.Row -> Edge`` projection (sage/storage/graph_store.py). Per the
-# *CAS Projection-Point Audit Conventions* steering document (cas vault,
-# doc_type=steering_document), every projection point owes a closure pair:
-# a single owning factory and an exhaustive-fields test that fails closed
-# when a field is added to the destination model but is not wired through
-# the factory. This test installs the second half of the pair.
-# ---------------------------------------------------------------------------
-
-
-def _edge_row_with_every_edge_field() -> sqlite3.Row:
-    """Build a ``sqlite3.Row`` with every column consumed by
-    ``SqliteGraphStore._row_to_edge`` set to a distinct non-default sentinel.
-
-    Delegates the row-construction scaffold to ``build_sentinel_row``
-    ; only the column->value mapping is per-ticket. The real
-    ``sqlite3.Row`` it returns matches ``_row_to_edge``'s expectations
-    including the defensive ``"<col>" in row.keys()`` guards for the
-    optional CTE-stripped columns.
-
-    Every field has a non-default value:
-
-    - Optional columns (``resolution_policy``, ``source_valid_from_version``,
-      ``target_valid_from_version``, ``valid_until_version``,
-      ``retracted_edge_id``, ``notes``, ``rationale``) are populated, not
-      left null, so an unread column trips ``value is not None``.
-    - ``rationale_kind`` is set to ``version_chain`` rather than the
-      ``manual`` default so a regression that drops the field is caught
-      by the non-None-default-scalar branch (``MANUAL`` would
-      satisfy ``is not None`` coincidentally).
-    - ``edge_type`` is ``references`` (a ``transitive_both`` edge type)
-      paired with ``resolution_policy='transitive_both'`` so the policy
-      sentinel is itself a coherent value for the chosen edge type.
-    """
-    return build_sentinel_row(
-        {
-            # Edge ids validate as UUIDs (sage/models/schemas.py:57),
-            # whereas document ids use the ``_id()`` short-hash form.
-            "id": str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000001)),
-            "source_id": _id("doc_source"),
-            "target_id": _id("doc_target"),
-            "edge_type": EdgeType.REFERENCES.value,
-            "resolution_policy": ResolutionPolicy.TRANSITIVE_BOTH.value,
-            "source_valid_from_version": _id("doc_source_anchor"),
-            "target_valid_from_version": _id("doc_target_anchor"),
-            "valid_until_version": _id("doc_tombstone"),
-            "retracted_edge_id": str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000002)),
-            "created_at": datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
-            "notes": "sentinel notes",
-            "rationale": "sentinel rationale",
-            "rationale_kind": RationaleKind.VERSION_CHAIN.value,
-            "synced_from_version": _id("doc_synced_from_version"),
-            "synced_from_content_hash": "sha256:" + "ab" * 32,
-        }
-    )
-
-
-def test_row_to_edge_populates_every_edge_field():
-    """(F4 closure pair, T1): every ``Edge`` field is populated by
-    ``SqliteGraphStore._row_to_edge`` from a sentinel row dict whose columns are
-    all non-default. Iterates ``Edge.model_fields`` so the assertion grows
-    automatically when a field is added to ``Edge``; if the new field is
-    not wired through ``_row_to_edge``, the loop trips the assertion.
-    """
-    row = _edge_row_with_every_edge_field()
-    edge = SqliteGraphStore._row_to_edge(row)
-    for field_name, field_info in Edge.model_fields.items():
-        value = getattr(edge, field_name)
-        annotation = field_info.annotation
-        default = field_info.default
-        # Three-branch closure-test idiom. The list/dict
-        # branch is forward defense for future Edge field additions
-        # (no current Edge field is list- or dict-typed). The
-        # non-None-default-scalar branch catches the coincidental-pass
-        # class where Pydantic's default would satisfy ``is not None``
-        # on a factory that dropped the field: Edge.rationale_kind
-        # defaults to RationaleKind.MANUAL; the sentinel row carries
-        # VERSION_CHAIN so the branch trips if the factory regresses.
-        if annotation == list[str] or annotation == (dict | None):
-            assert value, (
-                f"Edge.{field_name} not populated by _row_to_edge "
-                "(empty/falsy default would pass a naive 'is not None' check)"
-            )
-        elif default is not PydanticUndefined and default is not None:
-            assert value != default, (
-                f"Edge.{field_name} matches its default ({default!r}) — "
-                "_row_to_edge may have dropped this field (coincidental pass: "
-                "Pydantic supplies the default and 'is not None' would still pass)"
-            )
-        else:
-            assert value is not None, f"Edge.{field_name} not populated by _row_to_edge"
-
-
-# ---------------------------------------------------------------------------
-# Exhaustive-fields closure test for ``SqliteGraphStore._row_to_staging_edge``.
-#
-# ``_row_to_staging_edge`` is the single owning factory for the
-# ``sqlite3.Row -> StagingEdge`` projection (sage/storage/graph_store.py).
-# Per the *CAS Projection-Point Audit Conventions* steering document (cas
-# vault, doc_type=steering_document), every projection point owes a
-# closure pair: a single owning factory and an exhaustive-fields test
-# that fails closed when a field is added to the destination model but is
-# not wired through the factory. This test installs the second half of
-# the pair.
-# ---------------------------------------------------------------------------
-
-
-def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
-    """Build a ``sqlite3.Row`` with every column consumed by
-    ``SqliteGraphStore._row_to_staging_edge`` set to a distinct non-default
-    sentinel.
-
-    Delegates the row-construction scaffold to ``build_sentinel_row``
-    ; only the column->value mapping is per-ticket. The real
-    ``sqlite3.Row`` it returns matches ``_row_to_staging_edge``'s
-    column-lookup expectations.
-
-    Every column has a non-default value:
-
-    - ``confidence_tier`` is set to ``3`` rather than the model's default
-      of ``2`` so a regression that drops the field is caught by the
-      non-None-default-scalar branch (default ``2`` would
-      satisfy ``is not None`` coincidentally).
-    - ``inference_evidence`` carries a distinctive sentinel string so
-      an unread column trips ``value is not None``.
-    - ``created_at`` is an ISO-8601 string (the factory parses it via
-      ``datetime.fromisoformat``), matching how production rows are
-      persisted in SQLite.
-    """
-    return build_sentinel_row(
-        {
-            # Edge ids validate as UUIDs (sage/models/schemas.py:57),
-            # whereas document ids use the ``_id()`` short-hash form.
-            "id": str(uuid.UUID(int=0x57A60000_0000_0000_0000_000000000001)),
-            "source_id": _id("doc_source"),
-            "target_id": _id("doc_target"),
-            "edge_type": EdgeType.REFERENCES.value,
-            "inference_evidence": "sentinel inference evidence",
-            "confidence_tier": 3,
-            "created_at": datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
-        }
-    )
-
-
-def test_row_to_staging_edge_populates_every_staging_edge_field():
-    """(F4 closure pair, T1): every ``StagingEdge`` field is
-    populated by ``SqliteGraphStore._row_to_staging_edge`` from a sentinel
-    row dict whose columns are all non-default. Iterates
-    ``StagingEdge.model_fields`` so the assertion grows automatically
-    when a field is added to ``StagingEdge``; if the new field is not
-    wired through ``_row_to_staging_edge``, the loop trips the
-    assertion.
-    """
-    row = _staging_edge_row_with_every_staging_edge_field()
-    staging_edge = SqliteGraphStore._row_to_staging_edge(row)
-    for field_name, field_info in StagingEdge.model_fields.items():
-        value = getattr(staging_edge, field_name)
-        annotation = field_info.annotation
-        default = field_info.default
-        # Three-branch closure-test idiom. StagingEdge.confidence_tier
-        # defaults to 2; the sentinel sets it to 3 so the non-None-default
-        # branch trips if the factory drops the field (Pydantic would supply
-        # the default and 'is not None' would still pass).
-        if annotation == list[str] or annotation == (dict | None):
-            assert value, (
-                f"StagingEdge.{field_name} not populated by _row_to_staging_edge "
-                "(empty/falsy default would pass a naive 'is not None' check)"
-            )
-        elif default is not PydanticUndefined and default is not None:
-            assert value != default, (
-                f"StagingEdge.{field_name} matches its default ({default!r}) — "
-                "_row_to_staging_edge may have dropped this field (coincidental "
-                "pass: Pydantic supplies the default and 'is not None' would still pass)"
-            )
-        else:
-            assert value is not None, (
-                f"StagingEdge.{field_name} not populated by _row_to_staging_edge"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -1222,27 +733,6 @@ async def test_t0157_query_edges_null_target_on_retracts_preserved(graph_store):
 # ---------------------------------------------------------------------------
 
 
-async def test_close_sets_closed_flag_idempotent(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """A second close() returns cleanly; _closed stays True; bookkeeping
-    stays released. Idempotency is the ADR-036 contract for nested
-    cleanup paths (a rollback during partial allocation may
-    double-terminate).
-    """
-    assert graph_store._closed is False
-    assert graph_store._executor is not None
-
-    await graph_store.close()
-    assert graph_store._closed is True
-    assert graph_store._executor is None
-    assert graph_store._all_connections == []
-
-    await graph_store.close()
-    assert graph_store._closed is True
-    assert graph_store._executor is None
-    assert graph_store._all_connections == []
-
-
 async def test_run_raises_on_closed_store(graph_store):
     """Post-close dispatch through the _run boundary raises
     RuntimeError naming the closed state. Simplest expression of the
@@ -1253,129 +743,15 @@ async def test_run_raises_on_closed_store(graph_store):
         await graph_store.list_all_documents()
 
 
-async def test_run_raises_from_fresh_thread_after_close(graph_store):
-    """Post-close dispatch raises even when the dispatch would otherwise
-    fall through to asyncio's default executor (with `self._executor` set
-    to None, `loop.run_in_executor(None, ...)` spawns a fresh worker
-    thread; `_get_connection()` opens a brand-new SQLite handle against
-    the on-disk file; pre-fix the query returned rows silently). The
-    warm-up call ensures the store's own executor pool cached at least
-    one thread-local connection, isolating this test's failure mode from
-    the no-warm-up case.
+async def test_run_raises_after_close_with_warmed_store(graph_store):
+    """Post-close dispatch raises even after a successful prior dispatch.
+
+    Complements the cold-store case above: a store that has already served
+    a call may hold warmed per-connection state (cached handles, pooled
+    workers) that a buggy close barrier could keep silently serving from.
+    The warm-up call stages exactly that state before close().
     """
     await graph_store.list_all_documents()
     await graph_store.close()
     with pytest.raises(RuntimeError, match="closed"):
         await graph_store.list_all_documents()
-
-
-async def test_close_during_in_flight_dispatch_completes_then_raises(sqlite_graph_store):
-    graph_store = sqlite_graph_store
-    """Three-regime check: in-flight call (already past the _run barrier
-    when close() is awaited) drains via `executor.shutdown(wait=True)`
-    and completes; close() returns; subsequent dispatch raises.
-    """
-    import time
-
-    loop = asyncio.get_running_loop()
-    in_flight_entered = asyncio.Event()
-    in_flight_completed = asyncio.Event()
-    captured: list = []
-
-    original_sync = graph_store._list_all_documents_sync
-
-    def slow_sync(*args, **kwargs):
-        loop.call_soon_threadsafe(in_flight_entered.set)
-        time.sleep(0.2)
-        result = original_sync(*args, **kwargs)
-        loop.call_soon_threadsafe(in_flight_completed.set)
-        return result
-
-    graph_store._list_all_documents_sync = slow_sync
-
-    async def run_in_flight():
-        captured.append(await graph_store.list_all_documents())
-
-    in_flight_task = asyncio.create_task(run_in_flight())
-    await in_flight_entered.wait()
-    await graph_store.close()
-    await in_flight_task
-
-    assert in_flight_completed.is_set()
-    assert isinstance(captured[0], list)
-
-    with pytest.raises(RuntimeError, match="closed"):
-        await graph_store.list_all_documents()
-
-
-async def test_get_edges_by_source_with_failures_contains_malformed_row(
-    sqlite_graph_store, tmp_vault_dir
-):
-    """A non-UUID edge row is reported per-row, not raised; strict reads stay strict.
-
-    Rows like this predate boundary validation and can only be staged below
-    the validated API, so the fixture writes the bad row with raw SQL.
-    """
-    from pydantic import ValidationError
-
-    now = datetime.now(timezone.utc)
-    user_id = str(uuid.uuid4())
-
-    def _make_doc(doc_id: str) -> Document:
-        return Document(
-            id=doc_id,
-            title=f"Doc {doc_id}",
-            source_type=SourceType.MARKDOWN,
-            source_path=f"imports/{doc_id}.md",
-            source_content_hash="sha256:" + "a" * 64,
-            adapter_version="0.5.0",
-            created_by=user_id,
-            created_at=now,
-            last_modified_by=user_id,
-            updated_at=now,
-            pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
-        )
-
-    await sqlite_graph_store.insert_document(_make_doc(_id("doc_src")))
-    await sqlite_graph_store.insert_document(_make_doc(_id("doc_tgt")))
-    valid_id = str(uuid.uuid4())
-    await sqlite_graph_store.insert_edge(
-        Edge(
-            id=valid_id,
-            source_id=_id("doc_src"),
-            target_id=_id("doc_tgt"),
-            edge_type=EdgeType.REFERENCES,
-            created_at=now,
-        )
-    )
-
-    raw = sqlite3.connect(tmp_vault_dir / "brain" / "graph.db")
-    try:
-        raw.execute(
-            "INSERT INTO edges (id, source_id, target_id, edge_type, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                "deadbeef_not_a_uuid",
-                _id("doc_src"),
-                _id("doc_tgt"),
-                "derived_from",
-                now.isoformat(),
-            ),
-        )
-        raw.commit()
-    finally:
-        raw.close()
-
-    edges, failures = await sqlite_graph_store.get_edges_by_source_with_failures(_id("doc_src"))
-    assert [e.id for e in edges] == [valid_id]
-    assert len(failures) == 1
-    failure = failures[0]
-    assert failure.raw_id == "deadbeef_not_a_uuid"
-    assert failure.source_id == _id("doc_src")
-    assert failure.target_id == _id("doc_tgt")
-    assert failure.edge_type == "derived_from"
-    assert failure.error
-
-    # Strict read semantics are unchanged: the same store still raises.
-    with pytest.raises(ValidationError):
-        await sqlite_graph_store.get_edges_by_source(_id("doc_src"))
