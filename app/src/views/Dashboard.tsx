@@ -65,11 +65,10 @@ export default function Dashboard() {
 
         {/* Storage */}
         <StatGroupLabel>Storage</StatGroupLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           <CountCard value={formatCount(stats.content_store_chunk_count)} label="Content Store Chunks" />
           <CountCard value={formatBytes(stats.content_store_size_bytes)} label="Content Store" />
           <CountCard value={formatBytes(stats.graph_store_size_bytes)} label="Graph Store" />
-          <CountCard value={formatBytes(stats.sqlite_size_bytes)} label="SQLite" />
           <CountCard
             value={stats.last_ingestion_at ? new Date(stats.last_ingestion_at).toLocaleDateString() : '-'}
             label="Last Ingestion"

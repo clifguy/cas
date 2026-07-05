@@ -45,7 +45,6 @@ export interface VaultStats {
   content_store_chunk_count: number;
   content_store_version_count: number;
   content_store_small_fragment_count: number;
-  sqlite_size_bytes: number;
   last_ingestion_at: string | null;
   health: HealthIndicators;
   last_optimize: LastOptimizeSummary | null;
