@@ -465,6 +465,29 @@ class StubGraphStore(GraphStore):
             if d.source_content_hash in wanted
         }
 
+    async def remove_document(self, document_id: str) -> None:
+        self._docs.pop(document_id, None)
+        self._edges = {
+            eid: e
+            for eid, e in self._edges.items()
+            if document_id not in (e.source_id, e.target_id)
+        }
+        self._staging = {
+            sid: s
+            for sid, s in self._staging.items()
+            if document_id not in (s.source_id, s.target_id)
+        }
+
+    async def find_documents_ingested_between(
+        self, since: datetime, until: datetime | None = None
+    ) -> list[Document]:
+        matched = [
+            d
+            for d in self._docs.values()
+            if d.created_at >= since and (until is None or d.created_at < until)
+        ]
+        return sorted(matched, key=lambda d: d.created_at)
+
     # --- Staging edges ---
     async def list_staging_edges(self) -> list[StagingEdge]:
         return list(self._staging.values())

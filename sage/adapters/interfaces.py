@@ -482,6 +482,33 @@ class GraphStore(ABC):
     async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
         """Map source content hashes to the document ids that carry them."""
 
+    # --- Out-of-band removal / selection ---
+    # These exist to support out-of-band operator purge tooling. Document
+    # removal is absent from the SAGE request surface by the No-Delete
+    # Invariant (CAS-ADR-029); it lives behind the port for maintenance use.
+    @abstractmethod
+    async def remove_document(self, document_id: str) -> None:
+        """Delete a document's entire graph footprint in one transaction.
+
+        Removes the ``documents`` row together with its tags and every edge
+        and staging edge that references it at either end. Coordination is
+        internal to this store only; no cross-store atomicity is implied
+        (CAS-ADR-042 weakest-binding), so the content store is removed in a
+        separate call. Absent target is a no-op.
+        """
+
+    @abstractmethod
+    async def find_documents_ingested_between(
+        self, since: datetime, until: datetime | None = None
+    ) -> list[Document]:
+        """Return documents whose ingest time falls in a half-open window.
+
+        Selects on ``created_at`` (ingest time): lower bound inclusive, upper
+        bound exclusive (``since <= created_at < until``). ``until=None``
+        leaves the window open at the top. Results are ordered by
+        ``created_at`` ascending.
+        """
+
     # --- Staging edges ---
     @abstractmethod
     async def list_staging_edges(self) -> list[StagingEdge]:
