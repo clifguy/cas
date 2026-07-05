@@ -395,6 +395,83 @@ def test_live_openapi_matches_yaml_error_envelope(
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: Documented per-error-code HTTP status matches the status the
+# endpoint actually raises (eval-retrieval)
+# ---------------------------------------------------------------------------
+
+
+def _eval_retrieval_error_instances() -> list:
+    """The eval-retrieval assertions errors, instantiated so `.code` and the
+    status the endpoint actually returns (`.status_code`) can be read.
+
+    Throwaway constructor args -- only the code and status are inspected.
+    """
+    from sage.api.errors import (
+        AssertionsFileInvalidError,
+        AssertionsFileNotFoundError,
+        AssertionsNotConfiguredError,
+    )
+
+    return [
+        AssertionsFileNotFoundError("x"),
+        AssertionsFileInvalidError("x", "reason"),
+        AssertionsNotConfiguredError(),
+    ]
+
+
+def _documented_status_for_code(spec: dict, path: str, method: str, code: str) -> str | None:
+    """The numeric response status under which `code` is documented for
+    (path, method) in `spec`, located by the backtick token `` `code` `` in
+    the response description. None if no response documents it.
+    """
+    operation = ((spec.get("paths") or {}).get(path) or {}).get(method) or {}
+    for status, response in (operation.get("responses") or {}).items():
+        if not status.isdigit():
+            continue
+        description = (response or {}).get("description", "") or ""
+        if f"`{code}`" in description:
+            return status
+    return None
+
+
+def test_eval_retrieval_error_status_matches_documented(sage_core_spec: dict | None):
+    """Every eval-retrieval assertions error is documented in the committed
+    OpenAPI under exactly the HTTP status the endpoint actually raises for it.
+
+    Closes the gate gap that let F34 through: Test 2a
+    (test_live_openapi_matches_yaml_error_envelope) pins router == YAML and the
+    service tests in test_utilities.py pin the raised status, but nothing
+    cross-checked documented-vs-actual -- so the two halves could each be green
+    while contradicting each other (the endpoint raised 400 while the spec
+    documented 404). This test compares the status the error class carries
+    against the status its `code` is documented under, per CAS-ADR-008 (the
+    committed YAML is the contract of record).
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+
+    path = "/sage_vaults/{vault_id}/eval-retrieval"
+    issues: list[str] = []
+    for error in _eval_retrieval_error_instances():
+        documented = _documented_status_for_code(sage_core_spec, path, "post", error.code)
+        if documented is None:
+            issues.append(
+                f"{error.code}: endpoint raises {error.status_code} but no "
+                f"eval-retrieval response documents the code"
+            )
+            continue
+        if str(error.status_code) != documented:
+            issues.append(
+                f"{error.code}: endpoint raises {error.status_code} but the OpenAPI "
+                f"documents the code under {documented}"
+            )
+
+    assert not issues, (
+        "eval-retrieval error-code HTTP status drift (implementation vs. committed "
+        "OpenAPI):\n  " + "\n  ".join(issues)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 3: Spec is a syntactically valid OpenAPI 3.1 document
 # ---------------------------------------------------------------------------
 

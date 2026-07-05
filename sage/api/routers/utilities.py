@@ -140,14 +140,14 @@ async def list_headings(
             "model": ErrorResponse,
             "description": (
                 "`assertions_file_invalid`: the referenced YAML is malformed "
-                "or has the wrong structure."
+                "or has the wrong structure.\n\n"
+                "`assertions_not_configured`: the vault config has no "
+                "`retrieval_health.assertions_file` entry."
             ),
         },
         404: {
             "model": ErrorResponse,
             "description": (
-                "`assertions_not_configured`: the vault config has no "
-                "`retrieval_health.assertions_file` entry.\n\n"
                 "`assertions_file_not_found`: the configured assertions "
                 "file does not exist under the vault's `storage_root`.\n\n"
                 "Or vault not found."

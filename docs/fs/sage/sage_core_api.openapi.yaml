@@ -1087,16 +1087,16 @@ paths:
           description: >-
             `assertions_file_invalid`: the referenced YAML is malformed
             or has the wrong structure.
+
+
+            `assertions_not_configured`: the vault config has no
+            `retrieval_health.assertions_file` entry.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `assertions_not_configured`: the vault config has no
-            `retrieval_health.assertions_file` entry.
-
-
             `assertions_file_not_found`: the configured assertions
             file does not exist under the vault's `storage_root`.
 
