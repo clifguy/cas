@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as client from '../client';
-import { getDocumentDownloadUrl } from '../documents';
+import { getDocumentDownloadUrl, documentContentUrl } from '../documents';
 
 vi.mock('../client', async () => {
   const actual = await vi.importActual<typeof import('../client')>('../client');
@@ -27,5 +27,13 @@ describe('getDocumentDownloadUrl', () => {
       '/sage_vaults/test_vault/documents/doc-42/download-url',
     );
     expect(result).toEqual({ download_url: 'https://sp.example/dl?t=xyz' });
+  });
+});
+
+describe('documentContentUrl', () => {
+  it('builds the same-origin streaming content-route path', () => {
+    expect(documentContentUrl('test_vault', 'doc-42')).toBe(
+      '/sage_vaults/test_vault/documents/doc-42/content',
+    );
   });
 });
