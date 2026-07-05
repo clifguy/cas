@@ -64,6 +64,40 @@ VAULT_SOURCE_BACKEND_ENV_VAR = "SAGE_TEST_VAULT_SOURCE_BACKEND"
 _VALID_BACKENDS = ("filesystem", "document_store")
 
 
+class VaultRootEscapeError(ValueError):
+    """A filesystem teardown target resolved outside the process-bound vault root.
+
+    Raised by :func:`resolve_and_assert_within_root` when a path a destructive
+    operation is about to remove does not realpath-resolve to a strict descendant
+    of the bound vault root. A ``ValueError`` subclass so an existing
+    ``except ValueError`` handler routes it like any other shape failure.
+    """
+
+
+def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
+    """Realpath-resolve ``path`` and require it to be a strict descendant of ``vault_root``.
+
+    The safety primitive behind every vault-teardown ``rmtree``: a vault's
+    ``storage_root`` / ``brain_root`` / config path come from its
+    (operator- or typo-authorable) configuration, so before any recursive delete
+    each is resolved through symlinks and asserted to live *strictly under* the
+    bound vault root (CAS-ADR-043's ``get_vault_root``). A path that resolves
+    outside the root -- or to the root itself, since removing the root would
+    destroy every vault -- raises :class:`VaultRootEscapeError` and nothing is
+    deleted. Returns the resolved path on success so the caller removes the
+    canonical (symlink-free) target. ``path`` need not exist: an already-absent
+    target still resolves, keeping the teardown idempotent.
+    """
+    resolved = path.expanduser().resolve()
+    root = vault_root.expanduser().resolve()
+    if resolved == root or root not in resolved.parents:
+        raise VaultRootEscapeError(
+            f"refusing to operate on {path} (resolved {resolved}): it is not a "
+            f"strict descendant of the bound vault root {root}."
+        )
+    return resolved
+
+
 @dataclass(frozen=True)
 class DiscoveredVault:
     """A vault located by discovery, before its configuration is loaded.
@@ -166,6 +200,18 @@ class VaultSourceStore(ABC):
     @abstractmethod
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         """SHA-256 of a retained source in canonical ``sha256:<hex>`` form."""
+
+    @abstractmethod
+    def delete_source_tree(self, vault_id: str, storage_root: Path) -> None:
+        """Remove a vault's retained-source tree (idempotent).
+
+        The teardown counterpart of :meth:`retain_source`: removes the whole
+        source tree the store holds for one vault, used by the out-of-band
+        vault-teardown path. The filesystem binding removes ``storage_root``
+        (guarded against escaping the bound vault root); a binding that addresses
+        sources by vault id removes by that id. Idempotent -- an already-absent
+        tree is a no-op.
+        """
 
 
 @runtime_checkable
@@ -456,6 +502,14 @@ class FilesystemVaultSourceStore(VaultSourceStore):
                 digest.update(chunk)
         return f"sha256:{digest.hexdigest()}"
 
+    def delete_source_tree(self, vault_id: str, storage_root: Path) -> None:
+        # Guard the (config-authorable) storage_root against escaping the bound
+        # vault root before the recursive delete, then remove it. Idempotent: an
+        # already-absent tree resolves fine and the rmtree is skipped.
+        resolved = resolve_and_assert_within_root(storage_root, self._vault_root)
+        if resolved.exists():
+            shutil.rmtree(resolved)
+
 
 class DocumentStoreVaultSourceStore(VaultSourceStore):
     """The cloud document-store binding: a SharePoint library over Graph (CAS-ADR-043).
@@ -579,6 +633,14 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
 
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         return self._get_client().hash_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
+
+    def delete_source_tree(self, vault_id: str, storage_root: Path) -> None:
+        # Deferred to the cloud document-store teardown slice (the tenant-native
+        # source-tree delete over Graph). A concrete method so the ABC still
+        # instantiates; the local-profile teardown never reaches this binding.
+        raise NotImplementedError(
+            "delete_source_tree is not implemented for the document-store vault-source binding yet."
+        )
 
     def download_url(self, vault_id: str, storage_root: Path, source_path: str) -> str | None:
         """Return a short-lived pre-authenticated download URL for a retained source.

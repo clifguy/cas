@@ -116,6 +116,31 @@ def test_disposable_target_guard():
             pgschema.assert_disposable_target(bad)
 
 
+def test_drop_schema_statement_is_schema_scoped():
+    """`drop_schema_statement` emits exactly one schema-scoped DROP ... CASCADE.
+
+    Anti-coincidental-pass: the exact string is asserted, so any change to the
+    verb (a DROP DATABASE in particular), the target, or the CASCADE/IF EXISTS
+    clauses fails here. The statement is structurally incapable of dropping the
+    database -- there is no code path in the module that emits DROP DATABASE.
+    """
+    assert pgschema.drop_schema_statement("myvault") == 'DROP SCHEMA IF EXISTS "myvault" CASCADE'
+
+
+def test_drop_schema_statement_rejects_bad_id():
+    """`drop_schema_statement` validates the schema name before interpolating it.
+
+    Anti-coincidental-pass: a safe name is the positive control (it returns a
+    statement); each bad name -- quote/semicolon injection, a space, mixed case,
+    empty, leading digit -- must raise, proving the guard runs before the
+    identifier reaches SQL.
+    """
+    assert pgschema.drop_schema_statement("sage_test_abc").endswith('"sage_test_abc" CASCADE')
+    for bad in ('v"; DROP DATABASE sage', "has space", "Mixed", "", "1abc"):
+        with pytest.raises(ValueError):
+            pgschema.drop_schema_statement(bad)
+
+
 # ---------------------------------------------------------------------------
 # PG-touching (skip without SAGE_TEST_PG_DSN)
 # ---------------------------------------------------------------------------
@@ -262,3 +287,49 @@ async def test_natural_key_uniqueness_enforced(pg_pool):
         await conn.execute(insert_edge, ("e1", "d1", "d2", "references", "t"))
         with pytest.raises(psycopg.errors.UniqueViolation):
             await conn.execute(insert_edge, ("e2", "d1", "d2", "references", "t"))
+
+
+async def test_drop_schema_removes_a_provisioned_schema(pg_dsn):
+    """After bootstrap, `drop_schema` removes the schema entirely: its tables and
+    the schema row itself are gone from the catalog. The pre-drop existence probe
+    is the positive control proving the drop, not a never-created schema, is why
+    the post-drop probe is empty."""
+    import psycopg
+
+    from sage.storage.postgres.schema import (
+        assert_disposable_target,
+        bootstrap_schema,
+        drop_schema,
+    )
+
+    schema = assert_disposable_target("sage_test_drop_" + os.urandom(3).hex())
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+        cur = await conn.execute(
+            "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (schema,)
+        )
+        assert await cur.fetchone() is not None
+
+        await drop_schema(conn, schema)
+
+        cur = await conn.execute(
+            "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (schema,)
+        )
+        assert await cur.fetchone() is None
+        cur = await conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = %s", (schema,)
+        )
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_drop_schema_is_idempotent(pg_dsn):
+    """Dropping an already-absent schema is a silent no-op (IF EXISTS): neither
+    the first nor a repeat drop raises."""
+    import psycopg
+
+    from sage.storage.postgres.schema import drop_schema
+
+    schema = "sage_test_absent_" + os.urandom(3).hex()
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        await drop_schema(conn, schema)
+        await drop_schema(conn, schema)

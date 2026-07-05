@@ -342,3 +342,31 @@ async def bootstrap_schema(
     async with conn.transaction():
         for stmt in statements:
             await conn.execute(stmt)
+
+
+def drop_schema_statement(schema: str) -> str:
+    """The single ``DROP SCHEMA IF EXISTS "<schema>" CASCADE`` statement.
+
+    The teardown counterpart of :func:`schema_statements`. ``schema`` is
+    validated as a lowercase identifier (storage tenancy is one schema per vault,
+    named by the vault id) and interpolated as a quoted identifier -- it cannot be
+    a bind parameter. ``IF EXISTS`` makes the drop idempotent; ``CASCADE`` removes
+    the vault's tables, indexes, and generated columns in one statement. The
+    statement is schema-scoped by construction: there is no code path here that
+    can emit ``DROP DATABASE``, which would destroy every vault's schema in the
+    shared database (CAS-ADR-042).
+    """
+    validate_schema_name(schema)
+    return f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'  # noqa: S608
+
+
+async def drop_schema(conn, schema: str) -> None:
+    """Idempotently drop one vault's schema on a Postgres connection.
+
+    ``conn`` is an open async psycopg connection. Runs the single
+    :func:`drop_schema_statement`; re-running against an already-absent schema is
+    a no-op (``IF EXISTS``). The caller owns the connection's transaction mode --
+    the teardown path opens an autocommit connection, mirroring
+    :meth:`PostgresVaultStorageProvisioner._bootstrap`.
+    """
+    await conn.execute(drop_schema_statement(schema))

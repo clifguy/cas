@@ -80,6 +80,16 @@ class VaultStorageProvisioner(ABC):
     ) -> VaultStorageHandle:
         """Open the requested stores for one vault and return their handle."""
 
+    @abstractmethod
+    async def drop_vault_schema(self, vault_id: str) -> None:
+        """Drop one vault's durable schema -- the teardown counterpart of open.
+
+        The irreversible half of the storage port: removes the vault's entire
+        schema from the shared database. Reached only from the out-of-band
+        vault-teardown CLI, never on the request surface. Idempotent: dropping an
+        already-absent schema is a no-op.
+        """
+
 
 class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
     """The Postgres binding: both stores over one per-vault connection pool.
@@ -200,6 +210,29 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
             await pool.close()
             raise
         return VaultStorageHandle(graph_store=graph_store, content_store=content_store, pool=pool)
+
+    async def drop_vault_schema(self, vault_id: str) -> None:
+        """Drop the vault's schema over a plain connection under the profile's auth.
+
+        Reuses the provisioner's own connection path -- the same credentials the
+        local (env password) and cloud (managed-identity token) bindings open a
+        plain connection with -- so the destructive drop runs under the active
+        profile, exactly as :meth:`_bootstrap` provisions under it. The vault id
+        is validated as a schema identifier before any connection is opened, so a
+        malformed id fails loud without touching the database; the drop itself is
+        idempotent (``DROP SCHEMA IF EXISTS ... CASCADE``).
+        """
+        import psycopg
+        from psycopg.conninfo import make_conninfo
+
+        from sage.storage.postgres.pool import build_conn_kwargs
+        from sage.storage.postgres.schema import drop_schema, validate_schema_name
+
+        validate_schema_name(vault_id)
+        conninfo = make_conninfo(**build_conn_kwargs(self._connection_params(), self._conn_environ))
+        conn_class = self._connection_class or psycopg.AsyncConnection
+        async with await conn_class.connect(conninfo, autocommit=True) as conn:
+            await drop_schema(conn, vault_id)
 
 
 def build_stack_storage_provisioner(
