@@ -240,3 +240,94 @@ def test_sto_007_local_postgres_binding_creates_extensions():
     )
     assert isinstance(prov, PostgresVaultStorageProvisioner)
     assert prov._create_extensions is True
+
+
+# ---------------------------------------------------------------------------
+# drop_vault_schema: the teardown counterpart of open_vault_storage
+# ---------------------------------------------------------------------------
+
+
+async def test_sto_020_drop_vault_schema_validates_before_connecting():
+    """A vault id that is not a safe schema identifier raises ValueError before
+    any connection is opened.
+
+    Anti-coincidental-pass: the recording connection class exposes every opened
+    connection; asserting it opened NONE proves the validate guard runs before
+    connect (a drop that connected first would record a connection).
+    """
+    pytest.importorskip("psycopg")
+    from sage.config import StackPostgresConfig
+
+    conn_class = _recording_conn_class()
+    provisioner = PostgresVaultStorageProvisioner(
+        StackPostgresConfig(host="db.example", user="svc"),
+        connection_class=conn_class,
+        read_env_password=False,
+    )
+
+    for bad in ("test-vault", "2026vault", "Test_Vault"):
+        with pytest.raises(ValueError, match=bad):
+            await provisioner.drop_vault_schema(bad)
+    assert conn_class.connections == []
+
+
+async def test_sto_021_drop_vault_schema_emits_drop_cascade():
+    """The provisioner opens one connection and executes exactly the schema-scoped
+    DROP ... CASCADE for the vault, over its own connection path.
+
+    Anti-coincidental-pass: the recorded statement is the DROP for THIS vault's
+    schema; a drop that targeted the wrong schema (or the database) would fail the
+    equality, and a drop that never connected would fail the length check.
+    """
+    pytest.importorskip("psycopg")
+    from sage.config import StackPostgresConfig
+
+    conn_class = _recording_conn_class()
+    provisioner = PostgresVaultStorageProvisioner(
+        StackPostgresConfig(host="db.example", user="svc"),
+        connection_class=conn_class,
+        read_env_password=False,
+    )
+
+    await provisioner.drop_vault_schema("sage_test_v")
+
+    assert len(conn_class.connections) == 1
+    assert conn_class.connections[0].statements == ['DROP SCHEMA IF EXISTS "sage_test_v" CASCADE']
+
+
+@pytest.mark.usefixtures("pg_dsn")
+async def test_sto_022_drop_vault_schema_drops_the_schema(pg_dsn, tmp_vault_dir, monkeypatch):
+    """End-to-end through the provisioner's own auth path: open a vault (which
+    bootstraps its schema), drop it via `drop_vault_schema`, and confirm the
+    schema is gone from the catalog. The pre-drop existence probe is the positive
+    control. This is the drop path the cloud in-VNet job reuses.
+    """
+    psycopg = pytest.importorskip("psycopg")
+    from tests.sage.conftest import stack_postgres_config_from_dsn
+
+    pg_config = stack_postgres_config_from_dsn(pg_dsn, monkeypatch)
+    vault_id = f"sage_test_{uuid.uuid4().hex[:10]}"
+    provisioner = PostgresVaultStorageProvisioner(pg_config)
+    try:
+        handle = await provisioner.open_vault_storage(
+            vault_id, tmp_vault_dir / "brain", need_graph=True, need_content=False, migrate=True
+        )
+        await handle.graph_store.close()
+        await handle.close()
+
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            cur = await conn.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (vault_id,)
+            )
+            assert await cur.fetchone() is not None
+
+        await provisioner.drop_vault_schema(vault_id)
+
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            cur = await conn.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (vault_id,)
+            )
+            assert await cur.fetchone() is None
+    finally:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{vault_id}" CASCADE')

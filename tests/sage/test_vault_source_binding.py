@@ -25,7 +25,9 @@ from sage.vault_source_binding import (
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
     SupportsSourceDownloadUrl,
+    VaultRootEscapeError,
     build_stack_vault_source_store,
+    resolve_and_assert_within_root,
 )
 
 
@@ -183,3 +185,95 @@ def test_vsb_005_filesystem_store_rejects_pathless_discovered_vault(tmp_path):
     store = FilesystemVaultSourceStore(tmp_path)
     with pytest.raises(ValueError, match="config_path"):
         store.load_config(DiscoveredVault(config_path=None))
+
+
+# ---------------------------------------------------------------------------
+# delete_source_tree + the root-escape guard (vault teardown, CAS-ADR-043)
+# ---------------------------------------------------------------------------
+
+
+def test_vsb_030_delete_source_tree_removes_the_storage_root(tmp_path):
+    """The filesystem binding removes a populated storage_root under its vault root.
+
+    Anti-coincidental-pass: the tree is populated (a positive control that it
+    existed), and a sibling vault's tree under the same root is asserted to
+    survive -- so a delete that walked the wrong subtree would be caught.
+    """
+    root = tmp_path / "vaults"
+    storage_root = root / "victim" / "sources"
+    (storage_root / "imports").mkdir(parents=True)
+    (storage_root / "imports" / "a.md").write_text("x")
+    sibling = root / "keep" / "sources"
+    sibling.mkdir(parents=True)
+    (sibling / "b.md").write_text("y")
+
+    FilesystemVaultSourceStore(root).delete_source_tree("victim", storage_root)
+
+    assert not storage_root.exists()
+    assert (sibling / "b.md").exists()
+
+
+def test_vsb_031_delete_source_tree_is_idempotent(tmp_path):
+    """Removing an already-absent storage_root is a no-op (does not raise)."""
+    root = tmp_path / "vaults"
+    root.mkdir()
+    store = FilesystemVaultSourceStore(root)
+    store.delete_source_tree("gone", root / "gone" / "sources")
+    store.delete_source_tree("gone", root / "gone" / "sources")
+
+
+def test_vsb_032_delete_source_tree_refuses_root_escape(tmp_path):
+    """A storage_root that resolves outside the bound vault root is refused and
+    nothing is deleted -- including a symlink under the root that escapes it.
+
+    Anti-coincidental-pass: the outside tree is populated and asserted to survive
+    both the direct-escape and symlink-escape attempts, so a guard that failed
+    open (rmtree ran anyway) would be caught.
+    """
+    root = tmp_path / "vaults"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("do not delete")
+
+    store = FilesystemVaultSourceStore(root)
+
+    with pytest.raises(VaultRootEscapeError):
+        store.delete_source_tree("evil", outside)
+    assert (outside / "precious.txt").exists()
+
+    link = root / "evil" / "sources"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(VaultRootEscapeError):
+        store.delete_source_tree("evil", link)
+    assert (outside / "precious.txt").exists()
+
+
+def test_vsb_033_document_store_delete_source_tree_deferred(tmp_path):
+    """The document-store binding's delete_source_tree is deferred (raises
+    NotImplementedError) but the class still instantiates -- the concrete method
+    keeps the ABC satisfiable."""
+    ds = DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=object())
+    with pytest.raises(NotImplementedError):
+        ds.delete_source_tree("v", tmp_path)
+
+
+def test_vsb_034_resolve_and_assert_within_root_boundaries(tmp_path):
+    """The guard returns the resolved path for a strict descendant, and raises for
+    the root itself and for any path outside it.
+
+    Anti-coincidental-pass: the equal-to-root case is the load-bearing one --
+    removing the vault root would destroy every vault -- so it must raise, not be
+    treated as 'within'.
+    """
+    root = tmp_path / "vaults"
+    (root / "v" / "sources").mkdir(parents=True)
+
+    resolved = resolve_and_assert_within_root(root / "v" / "sources", root)
+    assert resolved == (root / "v" / "sources").resolve()
+
+    with pytest.raises(VaultRootEscapeError):
+        resolve_and_assert_within_root(root, root)
+    with pytest.raises(VaultRootEscapeError):
+        resolve_and_assert_within_root(tmp_path / "elsewhere", root)
