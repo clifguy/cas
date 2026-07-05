@@ -63,7 +63,7 @@ async def test_di_002_injected_abstraction_provider(minimal_vault_config_dict, t
 
 async def test_di_003_injected_content_store(minimal_vault_config_dict, tmp_vault_dir):
     """When content_store is passed, initialize_services uses it
-    instead of constructing a LanceDBContentStore."""
+    instead of constructing the default Postgres content store."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     stub_cs = StubContentStore()
 
@@ -291,8 +291,6 @@ async def test_di_014_no_overrides_postgres_backend_builds_postgres_stores(
     from sage.storage.postgres.graph_store import PostgresGraphStore
     from tests.sage.conftest import stack_postgres_config_from_dsn
 
-    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
-
     vault_id = f"sage_test_{uuid.uuid4().hex[:10]}"
     cfg_dict = copy.deepcopy(minimal_vault_config_dict)
     cfg_dict["vault"]["id"] = vault_id
@@ -350,8 +348,6 @@ async def test_di_015_postgres_services_run_ingest_search_traverse_lifecycle(
         TraverseRequest,
     )
     from tests.sage.conftest import stack_postgres_config_from_dsn
-
-    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
 
     vault_id = f"sage_test_{uuid.uuid4().hex[:10]}"
     cfg_dict = copy.deepcopy(minimal_vault_config_dict)
@@ -488,9 +484,9 @@ async def test_reload_vault_in_registry_closes_old_storage_handle(
 # ---------------------------------------------------------------------------
 
 
-def _write_stack_config(path, *, storage_backend: str, provider: str) -> None:
+def _write_stack_config(path, *, provider: str) -> None:
     path.write_text(
-        f"storage_backend: {storage_backend}\nabstraction:\n  provider: {provider}\n",
+        f"abstraction:\n  provider: {provider}\n",
         encoding="utf-8",
     )
 
@@ -499,18 +495,17 @@ def test_cfg_001_env_var_redirects_config_load(tmp_path, monkeypatch):
     """A set SAGE_CONFIG_PATH is loaded by the no-argument call.
 
     Anti-coincidental-pass: the committed sage/config.yaml selects
-    postgres/local-mlx, so an ignored env var would surface those; asserting
-    embedded/stub means only an honored override passes.
+    local-mlx, so an ignored env var would surface that; asserting stub
+    means only an honored override passes.
     """
     from sage.mcp_init import load_stack_config_or_default
 
     cfg_path = tmp_path / "container.yaml"
-    _write_stack_config(cfg_path, storage_backend="embedded", provider="stub")
+    _write_stack_config(cfg_path, provider="stub")
     monkeypatch.setenv("SAGE_CONFIG_PATH", str(cfg_path))
 
     cfg = load_stack_config_or_default()
 
-    assert cfg.storage_backend == "embedded"
     assert cfg.abstraction.provider == "stub"
 
 
@@ -524,13 +519,12 @@ def test_cfg_002_explicit_path_arg_beats_env(tmp_path, monkeypatch):
 
     file_a = tmp_path / "a.yaml"
     file_b = tmp_path / "b.yaml"
-    _write_stack_config(file_a, storage_backend="embedded", provider="stub")
-    _write_stack_config(file_b, storage_backend="postgres", provider="anthropic")
+    _write_stack_config(file_a, provider="stub")
+    _write_stack_config(file_b, provider="anthropic")
     monkeypatch.setenv("SAGE_CONFIG_PATH", str(file_a))
 
     cfg = load_stack_config_or_default(file_b)
 
-    assert cfg.storage_backend == "postgres"
     assert cfg.abstraction.provider == "anthropic"
 
 

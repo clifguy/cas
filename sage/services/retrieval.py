@@ -71,7 +71,7 @@ from sage.utils.rrf import rrf_fuse
 # Filter keys the content store can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
 # document_id IN-clause resolution entirely. Keep in sync with
-# ``_FILTERABLE_COLUMNS`` in sage/adapters/content_store_lancedb.py.
+# ``_FILTERABLE_COLUMNS`` in sage/adapters/content_store_postgres.py.
 _CHUNK_PUSHDOWN_KEYS = frozenset({"doc_type", "lifecycle_status", "project"})
 
 # Over-fetch multipliers applied to ``DiscoverRequest.limit`` when
@@ -446,9 +446,9 @@ class RetrievalService:
         Supports pagination via limit + offset.
 
         ``RetrievalFilters.tier3_metadata`` is pushed into SQL as
-        ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates;
-        the high-frequency canonical keys (``ticket_id``, ``failure_id``,
-        ``tool_name``) are backed by SQLite expression indexes. When the
+        ``tier3_metadata->>'<key>' = %s`` predicates; the high-frequency
+        canonical keys (``ticket_id``, ``failure_id``, ``tool_name``) are
+        backed by Postgres expression indexes. When the
         request also names a ``doc_type`` that declares a
         ``metadata_schema``, tier3 keys are validated against that
         schema's declared properties before the query runs -- a typo'd

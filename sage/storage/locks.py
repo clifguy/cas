@@ -2,7 +2,7 @@
 
 Application-level locking: different documents can be written concurrently;
 writes to the same document are serialized. Prevents callers from seeing
-raw SQLITE_BUSY errors.
+raw store-level lock-contention errors.
 """
 
 import asyncio

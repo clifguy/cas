@@ -120,7 +120,7 @@ paths:
         plural-noun convention. Each item carries `document_id`,
         `action`, and optional `successor_id`. Items are processed in
         order, each holding the per-document lock and a per-item
-        SQLite transaction. Length-1 is fully supported.
+        database transaction. Length-1 is fully supported.
 
 
         **The action vocabulary is vault-config-defined**, not a fixed
@@ -197,7 +197,7 @@ paths:
         `version_label`, `project`, `tags`, `doc_type`,
         `authority_scope`, `document_date`, `tier3_metadata`,
         `expected_version`). Items are processed in order, each holding
-        the per-document lock and a per-item SQLite transaction.
+        the per-document lock and a per-item database transaction.
         Length-1 is fully supported.
 
 
@@ -646,7 +646,7 @@ paths:
         (`source_id`, `target_id`, `edge_type`) returns the existing
         edge with `created=false` rather than raising. Items are
         processed in order under the process-wide link lock and
-        per-item SQLite transactions. Length-1 is fully supported.
+        per-item database transactions. Length-1 is fully supported.
 
 
         **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
@@ -1224,11 +1224,9 @@ paths:
         Response contents: total document count; counts per lifecycle
         state; counts per `doc_type`; counts per `pipeline_status`;
         storage figures (`graph_store_size_bytes` is the live graph-store
-        footprint under whichever storage binding is active, `content_store_size_bytes`
-        is computed by walking the on-disk content-store directory,
-        `content_store_chunk_count` is the row count from the chunks table,
-        `sqlite_size_bytes` covers the graph.db file and WAL/SHM siblings
-        when present in the MCP variant); and health indicators.
+        footprint, `content_store_size_bytes` is the live content-store
+        footprint, `content_store_chunk_count` is the row count from the
+        chunks table); and health indicators.
 
 
         Health indicators include pending metadata reviews, pending
@@ -2113,8 +2111,8 @@ paths:
 
 
         Audits the vault-local source files (the ``imports/`` copies that
-        ``get_document`` delivers), distinct from the LanceDB content
-        store reclaimed by ``admin_optimize_vault_content_store``.
+        ``get_document`` delivers), distinct from the content store
+        reclaimed by ``admin_optimize_vault_content_store``.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2250,39 +2248,34 @@ paths:
   /sage_vaults/{vault_id}/admin/optimize-content-store:
     post:
       operationId: admin_optimize_vault_content_store
-      summary: Compact LanceDB content-store fragments and prune retained versions for a single vault.
+      summary: Reclaim bloat in the per-vault content store.
       description: >-
         Per-vault content-store reclamation operation for the SAGE Core
-        API maintenance surface (CAS-ADR-029). Wraps LanceDB's
-        ``Table.optimize()`` against the per-vault chunks table, which
-        performs three reclamation tasks in one pass: merge small
-        fragment files, prune dataset versions older than the
-        ``cleanup_older_than_days`` threshold, and fold incremental rows
-        into existing vector indexes without a full rebuild.
+        API maintenance surface (CAS-ADR-029). Runs a
+        ``VACUUM (FULL, ANALYZE)`` against the per-vault chunks table:
+        removes dead tuples, returns free space to the OS, and shrinks
+        the relation.
 
 
-        LanceDB is copy-on-write with version retention; every add,
-        update, or delete writes a new fragment and a new manifest, and
-        nothing is reclaimed unless this operation is called explicitly.
-        Disk usage on actively-churned vaults can grow to hundreds of
-        times the size of current data without periodic optimize calls.
+        Postgres MVCC writes a new row version on every update or
+        delete rather than reclaiming space in place, so disk usage on
+        actively-churned vaults grows until this operation is called.
 
 
-        Runs synchronously against the LanceDB connection the running
-        SAGE process already holds open; a parallel connection is
-        deliberately avoided (LanceDB's ``delete_unverified`` safety
-        floor depends on the dataset being held by a single writer, so
-        the parameter is not exposed). On a first run against a highly
-        churned vault the call may take minutes and exceed an MCP
-        client's call timeout; subsequent runs against the same vault
-        settle to seconds.
+        Runs on its own autocommit connection (VACUUM cannot run inside
+        a transaction block) and holds no lock that blocks concurrent
+        reads or writes. On a first run against a highly churned vault
+        the call may take minutes and exceed an MCP client's call
+        timeout; subsequent runs against the same vault settle to
+        seconds.
 
 
-        LanceDB's ``Table.optimize()`` return value is ignored; the
-        caller-visible evidence of reclamation comes from the pre/post
-        observations of on-disk byte count,
-        ``Table.list_versions()`` length, and ``Table.stats()``
-        fragment counts captured by this report.
+        The underlying operation returns nothing; the caller-visible
+        evidence of reclamation comes from the pre/post observations of
+        relation byte size, retained version count, and fragment counts
+        captured by this report. ``cleanup_older_than_days`` has no
+        Postgres analog (VACUUM reclaims every eligible dead tuple
+        regardless of age) and is accepted only for the port contract.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2941,7 +2934,7 @@ components:
         - keyword: query is required. Use query="*" for filter-only listing.
 
         - catalog: no query required. Returns document-level metadata only
-          (no chunks or scores). Queries SQLite directly with filter predicates.
+          (no chunks or scores). Queries the graph store directly with filter predicates.
           Supports pagination via limit + offset.
 
         - deterministic: document_id and heading_path are required.
@@ -4030,7 +4023,7 @@ components:
             $ref: "#/components/schemas/BulkLifecycleItem"
           description: >-
             Items processed in order. Each item runs in its own
-            per-document lock and its own SQLite transaction; the batch
+            per-document lock and its own database transaction; the batch
             as a whole is NOT atomic (CAS-ADR-029). A bad item does not
             roll back earlier-or-later successful items.
         response_mode:
@@ -4233,7 +4226,7 @@ components:
             $ref: "#/components/schemas/BulkLinkItem"
           description: >-
             Items processed in order. Each item runs under the
-            process-wide `_link_lock` and a per-item SQLite transaction;
+            process-wide `_link_lock` and a per-item database transaction;
             the batch as a whole is NOT atomic (CAS-ADR-029). A bad
             item does not roll back earlier-or-later successful items.
         response_mode:
@@ -4440,7 +4433,7 @@ components:
             $ref: "#/components/schemas/BulkMetadataItem"
           description: >-
             Items processed in order. Each item runs in its own
-            per-document lock and its own SQLite transaction; the batch
+            per-document lock and its own database transaction; the batch
             as a whole is NOT atomic (CAS-ADR-029). A bad item does not
             roll back earlier-or-later successful items.
         response_mode:
@@ -5191,7 +5184,6 @@ components:
         - content_store_chunk_count
         - content_store_version_count
         - content_store_small_fragment_count
-        - sqlite_size_bytes
         - health
       description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
       properties:
@@ -5226,7 +5218,7 @@ components:
           description: Number of edges in the Tier 2 staging table awaiting review.
         graph_store_size_bytes:
           type: integer
-          description: Live on-disk byte footprint of the graph store under the vault's active storage binding (CAS-ADR-042) -- the graph.db file plus WAL/SHM siblings under the embedded binding, or the summed relation size of the documents/edges/staging_edges/users/document_tags tables under the Postgres binding. Backend-neutral, unlike sqlite_size_bytes.
+          description: Live on-disk byte footprint of the graph store (CAS-ADR-042) -- the summed relation size of the documents/edges/staging_edges/users/document_tags tables.
         content_store_size_bytes:
           type: integer
           description: On-disk size of the content store in bytes.
@@ -5239,9 +5231,6 @@ components:
         content_store_small_fragment_count:
           type: integer
           description: Count of small (un-compacted) content-store fragments for the chunks table; rises with un-optimized write churn and is merged away by optimize.
-        sqlite_size_bytes:
-          type: integer
-          description: Size of the embedded graph store's graph.db SQLite file in bytes. Under the Postgres durable-storage binding this reports the intact embedded fallback file -- 0 when the vault never had one, frozen at its pre-cutover size for a migrated vault.
         last_ingestion_at:
           type: string
           format: date-time
@@ -5701,7 +5690,7 @@ components:
       properties:
         table:
           type: string
-          description: SQLite table name whose schema was altered (e.g., 'documents', 'edges').
+          description: Table name whose schema was altered (e.g., 'documents', 'edges').
         column:
           type: string
           description: Column name added to the table by this migration.
@@ -5823,10 +5812,9 @@ components:
           minimum: 0
           default: 7
           description: >-
-            Number of days. LanceDB dataset versions older than this
-            threshold are pruned; the latest version is never removed.
-            Default 7 days matches LanceDB's own default. Set to 0 to
-            remove every version except the latest.
+            Accepted for the port contract; has no effect on the Postgres
+            binding, whose VACUUM reclaims every eligible dead tuple
+            regardless of age.
 
     OptimizeContentStoreReport:
       type: object
@@ -5845,12 +5833,11 @@ components:
         - pre_small_fragments
         - post_small_fragments
       description: >-
-        Result of an optimize_vault_content_store call. LanceDB's
-        Table.optimize() return value is ignored; the caller-visible
-        evidence of reclamation is the delta
-        between pre- and post-optimize observations of on-disk byte
-        count, version-history length, and fragment counts captured by
-        this report.
+        Result of an optimize_vault_content_store call. The underlying
+        VACUUM returns nothing; the caller-visible evidence of
+        reclamation is the delta between pre- and post-optimize
+        observations of relation byte size, dead-tuple count, and page
+        counts captured by this report.
       properties:
         vault_id:
           $ref: "#/components/schemas/VaultId"
@@ -5873,55 +5860,42 @@ components:
         pre_bytes:
           type: integer
           minimum: 0
-          description: >-
-            Sum of file sizes under the LanceDB table directory
-            (recursive walk) immediately before optimize was called.
+          description: Total relation size (table plus indexes and toast) immediately before optimize was called.
         post_bytes:
           type: integer
           minimum: 0
-          description: >-
-            Sum of file sizes under the LanceDB table directory
-            immediately after optimize returned.
+          description: Total relation size immediately after optimize returned.
         bytes_reclaimed:
           type: integer
           minimum: 0
           description: >-
             max(0, pre_bytes - post_bytes). Bounded at zero because
-            optimize can occasionally produce a slightly larger
-            directory (rewritten compact fragments) on near-clean
-            tables.
+            optimize can occasionally leave the relation the same size
+            on a near-clean table.
         pre_versions:
           type: integer
           minimum: 0
-          description: >-
-            Count returned by Table.list_versions() before optimize.
-            Each retained version is a manifest plus its referenced
-            (possibly shared) data files.
+          description: Dead-tuple count (MVCC row versions pending reclamation) before optimize.
         post_versions:
           type: integer
           minimum: 0
-          description: Count returned by Table.list_versions() after optimize.
+          description: Dead-tuple count after optimize.
         pre_fragments:
           type: integer
           minimum: 0
-          description: >-
-            Total fragment count from
-            Table.stats()["fragment_stats"]["num_fragments"] before
-            optimize.
+          description: Table length in pages before optimize.
         post_fragments:
           type: integer
           minimum: 0
-          description: Total fragment count from Table.stats() after optimize.
+          description: Table length in pages after optimize.
         pre_small_fragments:
           type: integer
           minimum: 0
-          description: >-
-            Small-fragment count (fragments below LanceDB's compaction
-            threshold) before optimize.
+          description: Free space in pages before optimize.
         post_small_fragments:
           type: integer
           minimum: 0
-          description: Small-fragment count after optimize.
+          description: Free space in pages after optimize.
 
     ReabstractReportEntry:
       type: object

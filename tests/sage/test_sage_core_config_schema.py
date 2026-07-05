@@ -284,29 +284,28 @@ def test_sch_s_012_postgres_config_carries_no_secret():
 
 def test_sch_s_013_storage_backend_field_shape():
     """Structural assertion: the schema declares a top-level `storage_backend`
-    as a string enum of `postgres` and `embedded`, defaulting to `postgres`.
+    as a string enum with the sole value `postgres`, defaulting to `postgres`.
 
     Catches drift in any single property — a missing `enum` makes SCH-S-014
-    incapable of detecting an unknown backend value; a missing `default` makes
+    incapable of detecting a retired backend value; a missing `default` makes
     SCH-S-015's Pydantic default test depend on the Pydantic side alone.
     """
     schema = _stack_schema()
     backend = schema["properties"]["storage_backend"]
     assert backend["type"] == "string"
-    assert backend["enum"] == ["postgres", "embedded"]
+    assert backend["enum"] == ["postgres"]
     assert backend["default"] == "postgres"
 
 
 def test_sch_s_014_unknown_storage_backend_rejected():
     """A stack config whose `storage_backend` is outside the enum fails
-    validation against the JSON Schema *and* against SageCoreConfig; both
-    in-enum values pass both gates.
+    validation against the JSON Schema *and* against SageCoreConfig; the
+    sole in-enum value passes both gates.
 
-    Anti-coincidental-pass: the positive controls must pass so the failure is
-    attributable to the enum. `lancedb` is asserted to fail specifically — the
-    embedded pair is selected as one coherent binding (`embedded`), so a
-    store-name value passing would mean the selector decomposed into per-store
-    knobs, which CAS-ADR-042's co-variation rule forbids.
+    Anti-coincidental-pass: the positive control must pass so the failure is
+    attributable to the enum. `embedded` is asserted to fail specifically --
+    the retired fallback binding must not silently re-validate now that the
+    storage port has a single binding.
     """
     from pydantic import ValidationError
 
@@ -314,11 +313,10 @@ def test_sch_s_014_unknown_storage_backend_rejected():
 
     schema = _stack_schema()
 
-    for good in ("postgres", "embedded"):
-        jsonschema.validate({"storage_backend": good}, schema)
-        SageCoreConfig.model_validate({"storage_backend": good})
+    jsonschema.validate({"storage_backend": "postgres"}, schema)
+    SageCoreConfig.model_validate({"storage_backend": "postgres"})
 
-    for bad in ("lancedb", "sqlite"):
+    for bad in ("embedded", "lancedb", "sqlite"):
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate({"storage_backend": bad}, schema)
         with pytest.raises(ValidationError):
@@ -332,7 +330,7 @@ def test_sch_s_015_storage_backend_absent_passes_default_applied():
 
     Confirms the two single-source-of-truth points (JSON Schema and Pydantic
     model) agree on the default per CAS principle 1: the local profile binds
-    Postgres unless the config selects the embedded fallback.
+    Postgres, the storage port's sole binding.
     """
     schema = _stack_schema()
     instance: dict = {}  # storage_backend deliberately absent

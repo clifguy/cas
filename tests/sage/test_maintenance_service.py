@@ -53,22 +53,14 @@ def _maintenance_for(
     registry_service=None,
     vault_dir: Path | None = None,
 ) -> MaintenanceService:
-    """Build a MaintenanceService over the given store pair.
-
-    ``db_path`` and ``storage_backend`` are embedded-backend constructor
-    holdovers slated for retirement with that backend; until the
-    signature drops them, tests pass the Postgres backend explicitly and
-    a brain-root path that must never be created (MNT-001 asserts it).
-    """
+    """Build a MaintenanceService over the given store pair."""
     return MaintenanceService(
         vault_id=config.vault.id,
-        db_path=Path(config.vault.brain_root) / "graph.db",
         graph_store=graph_store,
         config=config,
         registry_service=registry_service,
         content_store=content_store if content_store is not None else StubContentStore(),
         vault_dir=vault_dir,
-        storage_backend="postgres",
     )
 
 

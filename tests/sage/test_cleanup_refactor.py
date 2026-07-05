@@ -267,30 +267,6 @@ class TestTypeAnnotations:
 
 
 # ---------------------------------------------------------------------------
-# TEST-CLN-011: Graph traversal helper naming
-# ---------------------------------------------------------------------------
-
-
-class TestTraversalNaming:
-    """Traversal helpers use clear parameter names (match_col, follow_col)."""
-
-    def test_cln_011_traversal_still_works(self, vault):
-        """Traversal produces correct results after rename (regression)."""
-        # This is a regression test -- actual logic tested in test_graph_ops.py
-        # We just verify the rename didn't break anything by importing
-        import inspect
-
-        from sage.storage.graph_store import SqliteGraphStore
-
-        source = inspect.getsource(SqliteGraphStore._traverse_sync)
-        assert "match_col" in source
-        assert "follow_col" in source
-        # Old names should be gone
-        assert "from_col" not in source
-        assert "to_col" not in source
-
-
-# ---------------------------------------------------------------------------
 # TEST-CLN-012: IngestResult dataclass
 # ---------------------------------------------------------------------------
 

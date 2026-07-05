@@ -468,7 +468,7 @@ class IngestionService:
         ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in vault config)
         enforce per-vault uniqueness on the named tier3 field at ingest
-        time. Uniqueness is checked in the same SQLite transaction as
+        time. Uniqueness is checked in the same database transaction as
         the row insert, so a collision leaves the existing document
         undisturbed and raises ``Tier3UniqueConstraintViolation`` with
         ``doc_type``, ``field``, ``colliding_value``, and
@@ -802,7 +802,7 @@ class IngestionService:
         else:
             # New document. When a predecessor is being superseded the
             # doc insert + predecessor lifecycle flip + supersedes edge
-            # commit as a single SQLite transaction (BH-136). This
+            # commit as a single database transaction (BH-136). This
             # eliminates the orphan class where a successor record exists
             # but the predecessor was never archived. Without a
             # predecessor it is a single-row insert. The pre-merged
@@ -902,7 +902,7 @@ class IngestionService:
             is_new = True
 
         # The supersede lifecycle transition was bundled into the same
-        # SQLite transaction as the new-document insert above (BH-129,
+        # database transaction as the new-document insert above (BH-129,
         # BH-136). The version chain is therefore complete here for both
         # the new-document and force-reingest branches.
 
@@ -1064,8 +1064,8 @@ class IngestionService:
         # Stamp document-level scalars on body chunks for content-store
         # pre-filtering. doc_type, lifecycle_status, and project
         # are all stable per-document fields whose values must
-        # ride along with each chunk row so LanceDB can pre-filter at
-        # top-K time without a graph-store round trip.
+        # ride along with each chunk row so the content store can
+        # pre-filter at top-K time without a graph-store round trip.
         if doc and body_chunks:
             for chunk in body_chunks:
                 if doc.doc_type:
@@ -1281,7 +1281,7 @@ class IngestionService:
         """Re-run Stages 1-3 against an existing document via the abstraction queue.
 
         Operator-facing repair for a document stuck non-terminal with stale or
-        missing LanceDB chunks. Re-projects from the document's ``source_path``
+        missing chunks. Re-projects from the document's ``source_path``
         synchronously (so adapter/source errors surface in the caller's
         response envelope rather than as a FAILED stamp), claims the document,
         wipes stale chunks, and enqueues a Stage 2-3 job onto the worker.
@@ -1760,7 +1760,7 @@ class IngestionService:
         compound identifiers (e.g. ``PortfolioDashboard`` →
         ``portfolio dashboard``) so the BM25 leg can match natural-
         language queries against camelcased identifiers that the
-        LanceDB ``simple`` tokenizer leaves intact.
+        text-search tokenizer leaves intact.
         """
         title = doc.title or ""
         stem = ""

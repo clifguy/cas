@@ -36,8 +36,9 @@ CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 # is included because its CPU build is index-routed and especially skew-prone.
 # The Postgres serving stack (binary libpq driver, its async pool, and the
 # pgvector type adapter) joined when the local profile's durable-storage
-# binding flipped to the Postgres adapters.
-LOCK_TRACKED = ("lancedb", "pyarrow", "torch", "psycopg", "psycopg-pool", "pgvector")
+# binding flipped to the Postgres adapters; ``lancedb``/``pyarrow`` dropped
+# when the embedded fallback binding was retired.
+LOCK_TRACKED = ("torch", "psycopg", "psycopg-pool", "pgvector")
 
 
 def _pyproject() -> dict:

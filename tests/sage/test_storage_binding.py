@@ -1,11 +1,9 @@
 """Tests for the durable-storage binding of the local profile (CAS-ADR-042).
 
-The binding is a provisioner per backend: the embedded provisioner reproduces
-the SQLite/LanceDB construction the service initializer previously hardcoded,
-and the Postgres provisioner builds a per-vault search_path-bound connection
-pool over the stack config's postgres block. `build_stack_storage_provisioner`
-is the dispatch between them: the `SAGE_TEST_STORAGE_BACKEND` environment
-override first, then the stack config's `storage_backend` key.
+Postgres is the storage port's sole binding: ``build_stack_storage_provisioner``
+always returns a ``PostgresVaultStorageProvisioner`` over the stack config's
+``postgres`` block, with ``managed_identity`` selecting the cloud profile's
+token-auth path.
 
 Test IDs follow STO-NNN (STOrage binding).
 """
@@ -16,101 +14,43 @@ import pytest
 
 from sage.config import SageCoreConfig
 from sage.storage_binding import (
-    STORAGE_BACKEND_ENV_VAR,
-    EmbeddedVaultStorageProvisioner,
     PostgresVaultStorageProvisioner,
     build_stack_storage_provisioner,
-    resolved_storage_backend,
 )
 
 
-def test_sto_001_config_key_selects_the_provisioner(monkeypatch):
-    """With the env override unset, `storage_backend: embedded` dispatches to
-    the embedded provisioner and `storage_backend: postgres` to the Postgres
-    provisioner carrying the stack's postgres connection block.
+def test_sto_011_provisioner_is_unconditionally_postgres(monkeypatch):
+    """`build_stack_storage_provisioner` returns a Postgres provisioner
+    regardless of environment state -- the retired embedded-selecting
+    environment variable in particular must have no effect.
 
-    Happy path for the selector key. The Postgres provisioner must carry the
-    config's postgres block (not a default-constructed one), or a non-default
-    host/database in sage/config.yaml would be silently ignored.
+    Anti-coincidental-pass: setting the retired variable to a value that used
+    to select the embedded provisioner is deliberate. If any dispatch on it
+    lingered, this would either return the wrong provisioner type or raise on
+    the now-meaningless value; passing proves the env-override machinery is
+    gone from the resolution path, not just unused elsewhere.
     """
-    monkeypatch.delenv(STORAGE_BACKEND_ENV_VAR, raising=False)
-
-    embedded = build_stack_storage_provisioner(
-        SageCoreConfig.model_validate({"storage_backend": "embedded"})
-    )
-    assert isinstance(embedded, EmbeddedVaultStorageProvisioner)
+    monkeypatch.setenv("SAGE_TEST_STORAGE_BACKEND", "embedded")
 
     cfg = SageCoreConfig.model_validate(
-        {"storage_backend": "postgres", "postgres": {"database": "sage_sto_001"}}
+        {"storage_backend": "postgres", "postgres": {"database": "sage_sto_011"}}
     )
-    postgres = build_stack_storage_provisioner(cfg)
-    assert isinstance(postgres, PostgresVaultStorageProvisioner)
-    assert postgres.postgres_config.database == "sage_sto_001"
+    provisioner = build_stack_storage_provisioner(cfg)
+    assert isinstance(provisioner, PostgresVaultStorageProvisioner)
+    assert provisioner.postgres_config.database == "sage_sto_011"
 
 
-def test_sto_002_env_override_wins_over_config(monkeypatch):
-    """`SAGE_TEST_STORAGE_BACKEND` overrides the config key in both
-    directions, mirroring the SAGE_TEST_STUB_PROVIDERS dispatch contract.
-
-    Anti-coincidental-pass: this is the property the whole test suite's
-    insulation depends on (tests/conftest.py pins the env to `embedded`
-    while the committed config selects `postgres`). A dispatch that read the
-    config before the env would fail both directions here while STO-001
-    still passed.
+def test_sto_012_embedded_dispatch_machinery_is_gone():
+    """The module carries no embedded-provisioner class or env-dispatch
+    symbols; `PostgresVaultStorageProvisioner` is the positive control
+    proving this checks the right module rather than a renamed/moved one.
     """
-    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "postgres")
-    via_env_pg = build_stack_storage_provisioner(
-        SageCoreConfig.model_validate({"storage_backend": "embedded"})
-    )
-    assert isinstance(via_env_pg, PostgresVaultStorageProvisioner)
+    import sage.storage_binding as storage_binding
 
-    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "embedded")
-    via_env_embedded = build_stack_storage_provisioner(
-        SageCoreConfig.model_validate({"storage_backend": "postgres"})
-    )
-    assert isinstance(via_env_embedded, EmbeddedVaultStorageProvisioner)
-
-    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "lancedb")
-    with pytest.raises(ValueError, match="lancedb"):
-        build_stack_storage_provisioner(SageCoreConfig())
-
-
-async def test_sto_003_embedded_provisioner_builds_todays_stores(tmp_vault_dir):
-    """The embedded provisioner honors the need flags and builds the same
-    SQLite/LanceDB pair the service initializer previously hardcoded: an
-    initialized `SqliteGraphStore` at `brain_root/graph.db` and a
-    `LanceDBContentStore` over `brain_root`.
-
-    The need flags matter for injection precedence: a caller that injects
-    only a content stub must not pay a LanceDB construction (and vice
-    versa), so a flag set False must leave that slot None.
-    """
-    from sage.adapters.content_store_lancedb import LanceDBContentStore
-    from sage.storage.graph_store import SqliteGraphStore
-
-    brain_root = tmp_vault_dir / "brain"
-    provisioner = EmbeddedVaultStorageProvisioner()
-
-    graph_only = await provisioner.open_vault_storage(
-        "test_vault", brain_root, need_graph=True, need_content=False, migrate=True
-    )
-    try:
-        assert isinstance(graph_only.graph_store, SqliteGraphStore)
-        assert graph_only.content_store is None
-        # initialize() ran: the SQLite database file exists and serves reads.
-        assert (brain_root / "graph.db").exists()
-        assert await graph_only.graph_store.list_all_documents() == []
-    finally:
-        await graph_only.graph_store.close()
-        await graph_only.close()
-
-    content_only = await provisioner.open_vault_storage(
-        "test_vault", brain_root, need_graph=False, need_content=True, migrate=True
-    )
-    assert content_only.graph_store is None
-    assert isinstance(content_only.content_store, LanceDBContentStore)
-    await content_only.close()  # embedded handle owns no pool; close is a no-op
-    await content_only.close()  # and is idempotent
+    assert not hasattr(storage_binding, "EmbeddedVaultStorageProvisioner")
+    assert not hasattr(storage_binding, "STORAGE_BACKEND_ENV_VAR")
+    assert not hasattr(storage_binding, "resolved_storage_backend")
+    assert hasattr(storage_binding, "PostgresVaultStorageProvisioner")
 
 
 @pytest.mark.usefixtures("pg_dsn")
@@ -286,7 +226,7 @@ async def test_sto_006_bootstrap_emits_create_extension_only_when_enabled(create
     assert any("CREATE EXTENSION" in s for s in executed) is create_extensions
 
 
-def test_sto_007_local_postgres_binding_creates_extensions(monkeypatch):
+def test_sto_007_local_postgres_binding_creates_extensions():
     """The local Postgres binding (no managed identity) leaves extension
     creation on: the connecting role can create extensions and no admin
     bootstrap runs ahead of it.
@@ -295,45 +235,8 @@ def test_sto_007_local_postgres_binding_creates_extensions(monkeypatch):
     the managed-identity binding turns the flag off), a binding that set the
     flag the same way on both paths would fail one of the two.
     """
-    monkeypatch.delenv(STORAGE_BACKEND_ENV_VAR, raising=False)
-
     prov = build_stack_storage_provisioner(
         SageCoreConfig.model_validate({"storage_backend": "postgres"})
     )
     assert isinstance(prov, PostgresVaultStorageProvisioner)
     assert prov._create_extensions is True
-
-
-def test_sto_008_resolved_storage_backend_returns_config_when_env_unset(monkeypatch):
-    """With the env override unset, `resolved_storage_backend` returns the
-    stack config's `storage_backend` key verbatim -- the single source of
-    truth the provisioner dispatch and the maintenance service both read."""
-    monkeypatch.delenv(STORAGE_BACKEND_ENV_VAR, raising=False)
-
-    assert resolved_storage_backend(SageCoreConfig()) == "postgres"
-    assert (
-        resolved_storage_backend(SageCoreConfig.model_validate({"storage_backend": "embedded"}))
-        == "embedded"
-    )
-
-
-def test_sto_009_resolved_storage_backend_env_override_wins(monkeypatch):
-    """The `SAGE_TEST_STORAGE_BACKEND` override takes precedence over the
-    config key, in both directions."""
-    embedded_cfg = SageCoreConfig.model_validate({"storage_backend": "embedded"})
-    postgres_cfg = SageCoreConfig.model_validate({"storage_backend": "postgres"})
-
-    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "postgres")
-    assert resolved_storage_backend(embedded_cfg) == "postgres"
-
-    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "embedded")
-    assert resolved_storage_backend(postgres_cfg) == "embedded"
-
-
-def test_sto_010_resolved_storage_backend_rejects_unknown(monkeypatch):
-    """An unrecognized backend fails loud rather than silently falling
-    through to the configured value -- a typo'd override must not point a
-    run at the wrong store."""
-    monkeypatch.setenv(STORAGE_BACKEND_ENV_VAR, "lancedb")
-    with pytest.raises(ValueError, match="lancedb"):
-        resolved_storage_backend(SageCoreConfig())

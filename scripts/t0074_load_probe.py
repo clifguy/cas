@@ -22,13 +22,13 @@ The probe deliberately:
   rather than coalesced into a periodic summary record.
 - Uses StubAbstractionProvider so Qwen3 / MLX never loads.
 - Skips the embedding provider entirely (no semantic mode used).
-- Runs against the real cas vault SQLite file. SQLite supports
+- Runs against the real cas vault's Postgres store. Postgres supports
   concurrent readers, so the running MCP server's open connection
   does not block the probe.
 
 Usage::
 
-    # Pre-migration baseline (run first, before editing migrations.py)
+    # Pre-migration baseline (run first, before applying a schema change)
     .venv/bin/python -m scripts.t0074_load_probe --label before
 
     # Post-migration A/B (run after migration applies via fresh init)

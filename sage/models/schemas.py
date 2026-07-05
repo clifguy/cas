@@ -1253,7 +1253,7 @@ class BulkLifecycleRequest(BaseModel):
     items: list[BulkLifecycleItem] = Field(
         description=(
             "Items processed in order. Each item runs in its own "
-            "per-document lock and its own SQLite transaction; the batch "
+            "per-document lock and its own database transaction; the batch "
             "as a whole is NOT atomic (CAS-ADR-029). A bad item does not "
             "roll back earlier-or-later successful items."
         ),
@@ -1734,7 +1734,7 @@ class BulkMetadataRequest(BaseModel):
     items: list[BulkMetadataItem] = Field(
         description=(
             "Items processed in order. Each item runs in its own "
-            "per-document lock and its own SQLite transaction; the batch "
+            "per-document lock and its own database transaction; the batch "
             "as a whole is NOT atomic (CAS-ADR-029). A bad item does not "
             "roll back earlier-or-later successful items."
         ),
@@ -2189,7 +2189,7 @@ class BulkLinkRequest(BaseModel):
     items: list[BulkLinkItem] = Field(
         description=(
             "Items processed in order. Each item runs under the process-"
-            "wide `_link_lock` and a per-item SQLite transaction; the "
+            "wide `_link_lock` and a per-item database transaction; the "
             "batch as a whole is NOT atomic (CAS-ADR-029). A bad item "
             "does not roll back earlier-or-later successful items."
         ),
@@ -2737,7 +2737,7 @@ class DiscoverRequest(BaseModel):
     - semantic: query is required.
     - keyword: query is required. Use query="*" for filter-only listing.
     - catalog: no query required. Returns document-level metadata only
-      (no chunks or scores). Queries SQLite directly with filter
+      (no chunks or scores). Queries the graph store directly with filter
       predicates. Supports pagination via limit + offset.
     - deterministic: document_id and heading_path are required.
     """
@@ -3385,7 +3385,7 @@ class RefreshViewsResponse(BaseModel):
 
 class MigrationReportEntry(BaseModel):
     table: str = Field(
-        description="SQLite table name whose schema was altered (e.g., 'documents', 'edges')."
+        description="Table name whose schema was altered (e.g., 'documents', 'edges')."
     )
     column: str = Field(description="Column name added to the table by this migration.")
 
@@ -3475,10 +3475,9 @@ class OptimizeContentStoreRequest(BaseModel):
         default=7,
         ge=0,
         description=(
-            "Number of days. LanceDB dataset versions older than this "
-            "threshold are pruned; the latest version is never removed. "
-            "Default 7 days matches LanceDB's own default. Set to 0 to "
-            "remove every version except the latest."
+            "Accepted for the port contract; has no effect on the Postgres "
+            "binding, whose VACUUM reclaims every eligible dead tuple "
+            "regardless of age."
         ),
     )
 
@@ -3504,59 +3503,45 @@ class OptimizeContentStoreReport(BaseModel):
     pre_bytes: int = Field(
         ge=0,
         description=(
-            "Sum of file sizes under the LanceDB table directory "
-            "(recursive walk) immediately before optimize was called."
+            "Total relation size (table plus indexes and toast) immediately "
+            "before optimize was called."
         ),
     )
     post_bytes: int = Field(
         ge=0,
-        description=(
-            "Sum of file sizes under the LanceDB table directory "
-            "immediately after optimize returned."
-        ),
+        description="Total relation size immediately after optimize returned.",
     )
     bytes_reclaimed: int = Field(
         ge=0,
         description=(
             "max(0, pre_bytes - post_bytes). Bounded at zero because "
-            "optimize can occasionally produce a slightly larger "
-            "directory (rewritten compact fragments) on near-clean "
-            "tables."
+            "optimize can occasionally leave the relation the same size "
+            "on a near-clean table."
         ),
     )
     pre_versions: int = Field(
         ge=0,
-        description=(
-            "Count returned by Table.list_versions() before optimize. "
-            "Each retained version is a manifest plus its referenced "
-            "(possibly shared) data files."
-        ),
+        description="Dead-tuple count (MVCC row versions pending reclamation) before optimize.",
     )
     post_versions: int = Field(
         ge=0,
-        description="Count returned by Table.list_versions() after optimize.",
+        description="Dead-tuple count after optimize.",
     )
     pre_fragments: int = Field(
         ge=0,
-        description=(
-            "Total fragment count from "
-            'Table.stats()["fragment_stats"]["num_fragments"] before '
-            "optimize."
-        ),
+        description="Table length in pages before optimize.",
     )
     post_fragments: int = Field(
         ge=0,
-        description="Total fragment count from Table.stats() after optimize.",
+        description="Table length in pages after optimize.",
     )
     pre_small_fragments: int = Field(
         ge=0,
-        description=(
-            "Small-fragment count (fragments below LanceDB's compaction threshold) before optimize."
-        ),
+        description="Free space in pages before optimize.",
     )
     post_small_fragments: int = Field(
         ge=0,
-        description="Small-fragment count after optimize.",
+        description="Free space in pages after optimize.",
     )
 
 
@@ -4204,12 +4189,9 @@ class VaultStatsResponse(BaseModel):
     )
     graph_store_size_bytes: int = Field(
         description=(
-            "Live on-disk byte footprint of the graph store under the vault's "
-            "active storage binding (CAS-ADR-042) -- the graph.db file plus "
-            "WAL/SHM siblings under the embedded binding, or the summed "
-            "relation size of the documents/edges/staging_edges/users/document_tags "
-            "tables under the Postgres binding. Backend-neutral, unlike "
-            "sqlite_size_bytes."
+            "Live on-disk byte footprint of the graph store (CAS-ADR-042) -- "
+            "the summed relation size of the "
+            "documents/edges/staging_edges/users/document_tags tables."
         )
     )
     content_store_size_bytes: int = Field(description="On-disk size of the content store in bytes.")
@@ -4227,14 +4209,6 @@ class VaultStatsResponse(BaseModel):
             "Count of small (un-compacted) content-store fragments for the chunks "
             "table; rises with un-optimized write churn and is merged away by "
             "optimize."
-        )
-    )
-    sqlite_size_bytes: int = Field(
-        description=(
-            "Size of the embedded graph store's graph.db SQLite file in "
-            "bytes. Under the Postgres durable-storage binding this reports "
-            "the intact embedded fallback file -- 0 when the vault never had "
-            "one, frozen at its pre-cutover size for a migrated vault."
         )
     )
     last_ingestion_at: datetime | None = Field(

@@ -334,12 +334,12 @@ class MetadataService:
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             doc = await self._store.update_document(document_id, updates)
 
-            # Sync chunk-pushdownable scalars to the content store so
-            # LanceDB pre-filter pushdown (for doc_type,
-            # for lifecycle_status and project) stays accurate after
-            # the document update. update_metadata never touches
-            # lifecycle_status (that lives on LifecycleService); only
-            # doc_type and project flow through here.
+            # Sync chunk-pushdownable scalars to the content store so its
+            # pre-filter pushdown (for doc_type, lifecycle_status, and
+            # project) stays accurate after the document update.
+            # update_metadata never touches lifecycle_status (that lives
+            # on LifecycleService); only doc_type and project flow
+            # through here.
             if self._content:
                 chunk_updates: dict[str, str | None] = {}
                 if "doc_type" in updates:
@@ -387,7 +387,7 @@ class MetadataService:
         The performance win versus N sequential ``update_metadata``
         MCP calls comes from eliminating per-call MCP framing overhead
         and asyncio scheduling between items; the per-document lock and
-        the per-item SQLite transaction are unchanged.
+        the per-item database transaction are unchanged.
 
         ``request.response_mode`` controls per-item payload
         depth. ``light`` drops the per-item ``document`` body from

@@ -204,10 +204,9 @@ class _SentinelHashStore(FilesystemVaultSourceStore):
         return self.SENTINEL_HASH
 
 
-def _maintenance(vault_id, tmp_vault_dir, graph_store, config, content_store):
+def _maintenance(vault_id, graph_store, config, content_store):
     return MaintenanceService(
         vault_id=vault_id,
-        db_path=tmp_vault_dir / "brain" / "graph.db",
         graph_store=graph_store,
         config=config,
         registry_service=None,
@@ -225,7 +224,7 @@ async def test_vsbb_016_audit_hash_via_port(
 
     _patch_store(monkeypatch, _SentinelHashStore(_UNUSED_ROOT))
     maintenance = _maintenance(
-        minimal_config.vault.id, tmp_vault_dir, graph_store, minimal_config, stub_content_store
+        minimal_config.vault.id, graph_store, minimal_config, stub_content_store
     )
 
     report = await maintenance.verify_vault_source_files(check_hashes=True)
@@ -246,7 +245,7 @@ async def test_vsbb_017_audit_missing_via_port(
 
     _patch_store(monkeypatch, _MissingStore(_UNUSED_ROOT))
     maintenance = _maintenance(
-        minimal_config.vault.id, tmp_vault_dir, graph_store, minimal_config, stub_content_store
+        minimal_config.vault.id, graph_store, minimal_config, stub_content_store
     )
 
     report = await maintenance.verify_vault_source_files(check_hashes=False)

@@ -32,7 +32,7 @@ Both runs append to timing.log; ``--label`` distinguishes them.
 The probe touches only the semantic discover surface plus a small set
 of tier3 filter shapes drawn from the cas vault's seeded ticket
 portfolio. ``StubAbstractionProvider`` is used so Qwen3/MLX never
-loads. SQLite supports concurrent readers, so the running MCP server's
+loads. Postgres supports concurrent readers, so the running MCP server's
 open connection does not block the probe.
 """
 

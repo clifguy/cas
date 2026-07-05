@@ -1,6 +1,6 @@
 """Supersede transactional atomicity tests: BH-135, BH-136.
 
-Pin the SQLite-transaction guarantees of the supersede transition at
+Pin the database-transaction guarantees of the supersede transition at
 both the lifecycle service boundary and the ingestion service boundary.
 The failure mode these tests prevent is the orphan class observed with
 PV02: a successor record exists, the predecessor is still active, and
@@ -99,7 +99,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     await graph_store.insert_document(succ)
 
     # supersede_atomic uses the inner _exec_insert_edge helper inside its
-    # SQLite transaction; patch that to provoke a mid-transaction failure.
+    # database transaction; patch that to provoke a mid-transaction failure.
     original_exec_insert_edge = graph_store._exec_insert_edge
 
     def failing_exec_insert_edge(conn, edge):
@@ -154,7 +154,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
 
     # Force the atomic insert+supersede primitive to raise mid-transaction,
     # simulating a DB lock / constraint failure during the commit. The
-    # SQLite transaction must roll back so the new doc record is not
+    # database transaction must roll back so the new doc record is not
     # persisted.
     original_atomic = graph_store.insert_with_supersede_atomic
 

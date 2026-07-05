@@ -9,9 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
-import sqlite3
-import tempfile
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,7 +23,6 @@ from sage.models.schemas import (
     DriftEntry,
     DriftReport,
     MigrationReport,
-    MigrationReportEntry,
     OptimizeContentStoreReport,
     ReabstractProgressEvent,
     ReabstractReport,
@@ -38,16 +34,6 @@ from sage.models.schemas import (
     Tier3UniquenessCollision,
 )
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
-from sage.storage.graph_store import SqliteGraphStore
-from sage.storage.migrations import (
-    BACKFILL_PLAN,
-    MIGRATION_PLAN,
-    TABLES,
-    Backfill,
-    Migration,
-    pending_backfills,
-    pending_migrations,
-)
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
 
@@ -69,82 +55,25 @@ if TYPE_CHECKING:
 _POLL_INTERVAL_SECONDS = 0.05
 
 
-def _detect_pending_work(db_path: Path) -> tuple[list[Migration], list[Backfill]]:
-    """Detect what GraphStore.initialize(migrate=True) would apply.
-
-    Returns ``(pending_alters, pending_bfs)`` as the graph_store would
-    see them after applying the pending ALTER TABLE migrations: backfill
-    detection runs against a temp copy of the db whose schema has the
-    post-migration columns. This mirrors the re-detect step in
-    ``GraphStore._initialize_sync`` so backfills that depend on newly-
-    added columns (e.g., the rationale_kind backfill, whose
-    detector queries the ``rationale_kind`` column that the migration
-    itself adds) are surfaced rather than silently skipped.
-
-    The live db file is not touched; the temp copy is discarded.
-    """
-    live = sqlite3.connect(str(db_path))
-    try:
-        pending_alters = pending_migrations(live, MIGRATION_PLAN)
-    finally:
-        live.close()
-
-    with tempfile.NamedTemporaryFile(
-        suffix=".db", delete=False, prefix="sage_migrate_detect_"
-    ) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
-        shutil.copy2(db_path, tmp_path)
-        sim = sqlite3.connect(str(tmp_path))
-        try:
-            # Mirror GraphStore._initialize_sync ordering: CREATE TABLE
-            # IF NOT EXISTS for every table (so a backfill detector that
-            # queries a not-yet-extant table like ``document_tags`` does
-            # not raise OperationalError and get silently swallowed),
-            # then apply pending ALTER TABLE migrations so backfills
-            # whose detectors query newly-added columns see them.
-            for ddl in TABLES:
-                sim.execute(ddl)
-            for m in pending_alters:
-                sim.execute(m.ddl)
-            pending_bfs = pending_backfills(sim, BACKFILL_PLAN)
-        finally:
-            sim.close()
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    return pending_alters, pending_bfs
-
-
 class MaintenanceService:
     """Pilot of the maintenance/admin API surface (CAS-ADR-029)."""
 
     def __init__(
         self,
         vault_id: str,
-        db_path: Path,
         graph_store: GraphStore,
         config: VaultConfig,
         registry_service: "VaultRegistryService | None",
         content_store: ContentStore,
         ingestion_service: "IngestionService | None" = None,
         vault_dir: Path | None = None,
-        storage_backend: str = "embedded",
     ) -> None:
         self._vault_id = vault_id
-        self._db_path = db_path
         self._graph_store = graph_store
         self._config = config
         self._registry_service = registry_service
         self._content_store = content_store
         self._ingestion = ingestion_service
-        # Durable-storage backend this vault is bound to (CAS-ADR-042).
-        # migrate_vault() branches on it: the SQLite detect-then-apply path is
-        # meaningful only for the embedded backend; Postgres schema is
-        # provisioned externally. Defaults to "embedded" so directly-constructed
-        # (non-production) instances keep the SQLite path; the production
-        # construction site passes the resolved backend explicitly.
-        self._storage_backend = storage_backend
         # vault_dir resolves where the audit log lives. Production
         # invocations through mcp_init don't pass it -- the canonical
         # ~/sage_vaults/<vault_id>/ location is derived on demand from
@@ -161,94 +90,30 @@ class MaintenanceService:
         self._reabstract_started_at: datetime | None = None
 
     async def migrate_vault(self) -> MigrationReport:
-        """Apply pending schema migrations and reload the vault in-session.
+        """Run the schema-migration surface's tier3-uniqueness scan (CAS-ADR-042).
 
-        Backend-aware (CAS-ADR-042). The detect-then-apply path below is a
-        SQLite-runtime flow; it runs only for the embedded backend. On a
-        Postgres-backed vault the schema is provisioned externally and
-        PostgresGraphStore.initialize(migrate=True) is a deliberate no-op, so
-        this method short-circuits that path -- it touches no local file and
-        reports no column/backfill work -- and still runs the backend-agnostic
-        tier3-uniqueness scan below.
+        Postgres provisions each vault's schema externally, so there is no
+        pending-column or backfill work for this method to detect or apply --
+        ``columns_added`` and ``backfills_applied`` are always empty. The
+        method's substantive work is the tier3-uniqueness scan below.
 
-        Read-only pre-detect (embedded backend): enumerate which MIGRATION_PLAN
-        columns and BACKFILL_PLAN entries are pending, simulating the
-        post-migration schema on a temp copy so backfills that depend on
-        newly-added columns are surfaced. If nothing is pending, return an empty
-        report without touching the running graph_store -- the
-        idempotent no-op path.
-
-        Otherwise: open a fresh GraphStore alongside the running one,
-        run ``initialize(migrate=True)`` through it, close the fresh
-        handle, then ask the VaultRegistryService to reload the vault.
-        The reload builds new services before tearing down the old, so
-        the running graph_store stays live until the new bundle is
-        ready. If the migration step raises, the original graph_store
-        is untouched; if the reload raises, the migration is durable
-        on disk and the registry continues to serve the prior
-        services.
-
-        After the schema migration step settles, scan every
-        ``unique_keys`` declaration in vault config. For each declared
-        (doc_type, field), build the chain-head-grouped value map and
+        Scan every ``unique_keys`` declaration in vault config. For each
+        declared (doc_type, field), build the chain-head-grouped value map and
         report any collisions; for each clean declaration, ensure the
         underlying partial UNIQUE index exists. The substrate refuses to
         activate a declaration while collisions remain (CAS-ADR-031 §5);
         existing index state for a colliding declaration is preserved
-        (no implicit DROP) so a previously-clean activation is not
-        silently torn down. The returned MigrationReport carries both
+        (no implicit DROP) so a previously-clean activation is not silently
+        torn down. The returned MigrationReport carries both
         ``tier3_uniqueness_activations`` (successful installs) and
-        ``tier3_uniqueness_collisions`` (refused activations) -- callers
-        must inspect both even on a no-op migration path, because the
-        tier3 scan runs every call regardless of whether columns_added
-        or backfills_applied are non-empty.
+        ``tier3_uniqueness_collisions`` (refused activations).
         """
-        if self._storage_backend == "postgres":
-            # Backend-aware branch (CAS-ADR-042). A Postgres vault's schema is
-            # provisioned externally and PostgresGraphStore.initialize(migrate=
-            # True) is a deliberate port-symmetry no-op, so there is nothing for
-            # the SQLite detect-then-apply path to do. Skip it entirely --
-            # touching brain_root/graph.db would open (and create) a stray
-            # SQLite file that is not the real store -- and report no schema
-            # work. The tier3-uniqueness scan below reads through
-            # self._graph_store, not raw SQLite, so it still runs.
-            columns_added: list[MigrationReportEntry] = []
-            backfills_applied: list[str] = []
-        else:
-            pending_alters, pending_bfs = _detect_pending_work(self._db_path)
-
-            columns_added = [
-                MigrationReportEntry(table=m.table, column=m.column) for m in pending_alters
-            ]
-            backfills_applied = [b.name for b in pending_bfs]
-
-            if columns_added or backfills_applied:
-                # Build-new-first: apply the migration through a fresh handle
-                # while self._graph_store stays open. SQLite WAL mode permits
-                # an idle reader connection to coexist with a brief EXCLUSIVE
-                # lock for ALTER TABLE, so the original graph_store does not
-                # need to be torn down pre-migration. If fresh.initialize
-                # raises, self._graph_store is untouched and the registry
-                # view remains live.
-                fresh = SqliteGraphStore(self._db_path)
-                try:
-                    await fresh.initialize(migrate=True)
-                finally:
-                    await fresh.close()
-
-                # Migration is durable on disk. The registry reload builds new
-                # services first and only tears down self._graph_store on
-                # success (per reload_vault_in_registry's atomicity contract);
-                # if reload raises, the old services -- including
-                # self._graph_store -- remain installed.
-                await self._registry_service.reload(self._vault_id, self._config)
-
         activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
             vault_id=self._vault_id,
-            columns_added=columns_added,
-            backfills_applied=backfills_applied,
+            columns_added=[],
+            backfills_applied=[],
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
         )
@@ -296,8 +161,8 @@ class MaintenanceService:
         recorded ``source_content_hash``. Read-only; mutates nothing.
 
         Audits the vault-local source files (the ``imports/`` copies that
-        ``get_document`` delivers), distinct from the LanceDB content
-        store reclaimed by ``optimize_content_store``.
+        ``get_document`` delivers), distinct from the content store
+        reclaimed by ``optimize_content_store``.
 
         Returns a SourceFileIntegrityReport with per-document entries for
         missing or hash-mismatched files and aggregate counts; documents
@@ -382,19 +247,18 @@ class MaintenanceService:
         self,
         cleanup_older_than_days: int = 7,
     ) -> OptimizeContentStoreReport:
-        """Reclaim disk in the LanceDB content store and audit the call.
+        """Reclaim disk in the content store and audit the call.
 
-        Captures pre/post substrate observations (directory bytes,
-        retained version count, fragment count) around the
-        ContentStore.optimize() call so the caller sees what was
-        reclaimed. Appends a JSONL line to ``<vault_dir>/.maintenance_log.jsonl``
-        following the per-document purge precedent.
+        Captures pre/post substrate observations (bytes, retained version
+        count, fragment count) around the ContentStore.optimize() call so the
+        caller sees what was reclaimed. Appends a JSONL line to
+        ``<vault_dir>/.maintenance_log.jsonl`` following the per-document
+        purge precedent.
 
-        cleanup_older_than_days must be a non-negative integer. The
-        latest dataset version is never removed regardless of the
-        threshold. LanceDB's safety floor on partial-write detection
-        is preserved (``delete_unverified`` is not exposed): the running
-        SAGE process holds the dataset open, so the floor must apply.
+        cleanup_older_than_days must be a non-negative integer. The Postgres
+        binding's optimize() has no age-threshold analog (VACUUM reclaims
+        every eligible dead tuple); the parameter is preserved for the port
+        contract and passed through unconditionally.
         """
         if cleanup_older_than_days < 0:
             raise ValueError("cleanup_older_than_days must be >= 0")
@@ -602,7 +466,7 @@ class MaintenanceService:
                     await self._graph_store.ensure_tier3_unique_index(dt.value, field)
                 except Tier3UniqueIndexBlockedError as exc:
                     # Defensive: a chain-head SELECT-based scan returned
-                    # clean, but the SQLite CREATE UNIQUE INDEX still
+                    # clean, but the store's CREATE UNIQUE INDEX still
                     # rejected. Surface as a synthetic collision entry so
                     # the operator sees the substrate's view rather than
                     # losing the diagnostic to a swallowed exception.
@@ -610,7 +474,7 @@ class MaintenanceService:
                         Tier3UniquenessCollision(
                             doc_type=exc.doc_type,
                             field=exc.field,
-                            value="<reported by SQLite, value not recovered>",
+                            value="<reported by the store, value not recovered>",
                             document_ids=[],
                         )
                     )

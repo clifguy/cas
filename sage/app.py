@@ -113,8 +113,8 @@ async def _initialize_vault(
 ) -> None:
     """Initialize services for one vault and add to the registry.
 
-    Schema migrations are no longer applied here. Run ``python -m sage.migrate``
-    out of band before starting the server when a vault's schema has advanced.
+    The durable store provisions its schema externally, so there is no
+    startup-time migration concern here.
     """
     registry_service = _ensure_registry_service(app)
     services = await initialize_services(
@@ -275,8 +275,8 @@ def create_app(
         configs: Pre-loaded VaultConfig list (used in testing).
         content_store_factory: Test-only hook. When provided, the lifespan
             invokes the callable with each vault's ``brain_root`` to build
-            that vault's ``ContentStore`` instead of constructing a
-            ``LanceDBContentStore``. Forwarded to ``initialize_services``
+            that vault's ``ContentStore`` instead of constructing the default
+            Postgres content store. Forwarded to ``initialize_services``
             via ``_initialize_vault`` and persisted on ``SAGEServices`` so
             ``reload_vault`` reuses the same stub on disk-driven
             reload. Sibling embedding and abstraction stubs are gated by
@@ -292,8 +292,8 @@ def create_app(
     validator the request middleware enforces; tests pass it to exercise the
     enabled-auth path without a config file on disk.
 
-    Schema migrations are not applied at startup. Use
-    ``python -m sage.migrate`` to advance schemas before starting the server.
+    The durable store provisions its schema externally, so there is no
+    startup-time migration concern.
     """
 
     # Resolve the stack config once. The auth middleware (added at

@@ -185,17 +185,12 @@ def _build_maintenance(
 ) -> MaintenanceService:
     """Construct a MaintenanceService with the ingestion dependency.
 
-    db_path, registry_service, and content_store are not exercised by
-    reabstract_deferred (migrate_vault, optimize_content_store, etc.
-    touch those); we still pass concrete values so the constructor
-    signature is satisfied. registry_service is None, matching test
-    paths that do not exercise the migration reload.
+    registry_service is not exercised by reabstract_deferred (migrate_vault,
+    optimize_content_store, etc. touch that); None matches test paths that
+    do not exercise the migration reload.
     """
-    from pathlib import Path
-
     return MaintenanceService(
         vault_id=config.vault.id,
-        db_path=Path(config.vault.brain_root) / "graph.db",
         graph_store=graph_store,
         config=config,
         registry_service=None,

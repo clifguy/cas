@@ -7,7 +7,7 @@ identifier strings (CAS-ADR-NNN, T-NNNN, F-N). It does not retroactively
 process documents already in the vault.
 
 This script sweeps every active document in the named vault, reads its
-projected body text from LanceDB, scans for configured identifier
+projected body text from the content store, scans for configured identifier
 patterns, and writes `references` edges via the same code path as the
 live rule (``plan_identifier_mention_edges`` +
 ``GraphOpsService._create_edge``). Idempotent: re-running produces no

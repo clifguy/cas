@@ -39,10 +39,9 @@ CLOUD_PROFILE = "cloud"
 ABSTRACTION_SEAM = "abstraction_provider"
 
 # Seam name for the durable-storage binding (CAS-ADR-042): the provisioner
-# that opens a vault's graph and content stores as one co-varying pair --
-# Postgres adapters over a per-vault pool, or the embedded SQLite/LanceDB
-# fallback. One seam rather than two because the stores share their backing
-# resource (the pool) and the embedded pair is one coherent fallback binding.
+# that opens a vault's graph and content stores as one co-varying pair over a
+# per-vault Postgres connection pool. One seam rather than two because the
+# stores share that backing resource.
 STORAGE_SEAM = "storage_provisioner"
 
 # Seam name for the vault-source-store binding (CAS-ADR-043): the store that

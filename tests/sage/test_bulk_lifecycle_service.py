@@ -1,7 +1,7 @@
 """Service-layer tests for LifecycleService.bulk_set_lifecycle.
 
 The bulk method holds the per-document lock per item and the per-item
-SQLite transaction; the batch as a whole is NOT atomic. A bad item does
+database transaction; the batch as a whole is NOT atomic. A bad item does
 not roll back earlier-or-later successful items (CAS-ADR-029).
 """
 
@@ -204,7 +204,7 @@ async def test_bulk_set_lifecycle_distinct_items_run_per_item_transactions(
     graph_store, lifecycle_service
 ):
     """Item 1's commit must persist even when item 2 raises a SAGEError;
-    proves each item runs in its own SQLite transaction (no batch-wide
+    proves each item runs in its own database transaction (no batch-wide
     rollback)."""
     real = _id("doc_iso_real")
     ghost = _id("doc_iso_ghost")
