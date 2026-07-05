@@ -6,7 +6,7 @@ CAS is a personal, experimental agentic ecosystem for working with personal-scal
 
 CAS has three loosely-coupled pieces:
 
-- **SAGE** (Salience-Aware Graph Engine) — knowledge graph, document store, and retrieval subsystem. Built on SQLite for the graph store and LanceDB for vector / full-text content. Exposes a Core API (FastAPI) and an MCP server.
+- **SAGE** (Salience-Aware Graph Engine) — knowledge graph, document store, and retrieval subsystem. Built on Postgres with pgvector for the graph store and vector / full-text content. Exposes a Core API (FastAPI) and an MCP server.
 - **ROOT Harness** (Runtime for Orchestration, Operations, and Testing) — LangGraph-based orchestration layer for stewards (agents that own canonical artifacts) and orchestrators (agents that own coordination lifecycles). Calls into SAGE via the Core API.
 - **CAS Application** — HTML5 web client (React + TypeScript) for human oversight, approval, and browsing of the graph and pipeline state.
 

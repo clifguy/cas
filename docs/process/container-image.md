@@ -34,7 +34,8 @@ native `arm64` image for a quick local boot check.
 ## Run
 
 With no extra configuration the container boots on the baked **smoke-minimal**
-config (`deploy/sage.config.container.yaml`: embedded storage, stub abstraction)
+config (`deploy/sage.config.container.yaml`: stub abstraction, and zero vaults
+discovered so the Postgres storage binding never opens a connection)
 — enough to start cleanly and answer the health check with no external
 services:
 

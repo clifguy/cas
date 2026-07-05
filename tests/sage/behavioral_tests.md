@@ -62,20 +62,12 @@ re-ingestion of a changed file with `force: true`).
 reuses the existing ID (see TEST-SAGE-BH-019); this test covers the non-force case
 where a genuinely new document record is created.
 
-### TEST-SAGE-BH-004: SQLite WAL mode enabled at startup
+### TEST-SAGE-BH-004: RETIRED (was: SQLite WAL mode enabled at startup)
 
-**Artifact:** SAGE graph store initialization
-**Category:** storage
-**Decision:** WAL mode with per-document locking.
-
-**Precondition:** Fresh vault initialization.
-
-**Input:** Initialize vault, then query `PRAGMA journal_mode;` on the graph store.
-
-**Expected:** Returns `wal`.
-
-**Rationale:** WAL mode enables concurrent readers and is required for the
-per-document locking strategy.
+Covered SQLite-specific journal-mode PRAGMA introspection on the now-retired
+embedded storage backend (CAS-ADR-042). The graph store's sole binding is
+Postgres, which has no journal-mode concept; the test was removed rather than
+ported. Concurrent-write behavior remains covered by TEST-SAGE-BH-005 below.
 
 ### TEST-SAGE-BH-005: Concurrent writes to different documents succeed
 
@@ -142,19 +134,17 @@ contention from reaching callers.
 **Rationale:** indexed_at captures when content entered the content store,
 independent of abstraction.
 
-### TEST-SAGE-BH-137: SqliteGraphStore.close() is a dispatch barrier (post-close raise-on-use)
+### TEST-SAGE-BH-137: PostgresGraphStore.close() is a dispatch barrier (post-close raise-on-use)
 
-**Artifact:** `sage/storage/graph_store.py` (`SqliteGraphStore._run`, `SqliteGraphStore.close`)
+**Artifact:** `sage/storage/postgres/graph_store.py` (`PostgresGraphStore.close`, `_check_open`)
 **Category:** storage, lifecycle, test-pattern
-**Decision:** After `close()` returns, the dispatch boundary in `_run` raises
-`RuntimeError("SqliteGraphStore is closed")` for any subsequent operation, including
-from threads or asyncio tasks that never touched the store before close. Per
-CAS-ADR-036. The barrier is the primary signal; the pre-barrier internal-state
-idiom (`_executor is None`, `_all_connections == []`) is the legacy signal.
+**Decision:** After `close()` returns, the dispatch boundary raises
+`RuntimeError("PostgresGraphStore is closed")` for any subsequent operation.
+Per CAS-ADR-036. The barrier is the primary signal; the pool-state idiom
+(`store._pool.closed is True`) is the internal-state signal.
 
-**Precondition:** Live `SqliteGraphStore` instance with at least one operation
-already dispatched (so `_executor` is non-`None` and `_all_connections` is
-non-empty).
+**Precondition:** Live `PostgresGraphStore` instance over an opened pool, with
+at least one operation already dispatched.
 
 **Input:**
 1. Call `await store.close()`.
@@ -165,18 +155,15 @@ non-empty).
 - The first `close()` returns; the second `close()` is a no-op (idempotent,
   no error).
 - The post-close dispatch raises `RuntimeError` matching `"closed"`.
-- `store._executor is None` and `store._all_connections == []` (legacy
-  internal-state signals, retained for tests that document idempotency or
-  detect resource-leak shapes distinct from the barrier itself).
+- `store._pool.closed is True` (internal-state signal, retained for tests
+  that document idempotency or detect resource-leak shapes distinct from
+  the barrier itself).
 
-**Rationale:** Pre-barrier, `close()` was a bookkeeping label: the underlying
-SQLite handle remained usable from any thread that had not seen the closed
-connection, so behavioural close-checks were coincidental — `_run` fell
-through to asyncio's default executor and transparently re-opened the
-database on a fresh worker thread. The barrier converts the dispatch
-boundary into an enforced terminator so the post-close contract is
-verifiable from a single check, regardless of which thread, task, or
-executor would otherwise serve the call.
+**Rationale:** Pre-barrier, `close()` was a bookkeeping label with no
+enforcement: nothing stopped a caller from dispatching through an already-
+closed store. The barrier converts `close()` into an enforced terminator so
+the post-close contract is verifiable from a single check, regardless of
+which caller reaches it.
 
 **Canonical test pattern.** Tests that need to assert close-state SHOULD use
 the behavioural probe as the primary signal:
@@ -191,17 +178,16 @@ preserved the live store) SHOULD pair the internal-state check with a
 successful dispatch probe:
 
 ```python
-assert store._executor is not None
-assert store._all_connections
+assert not store._pool.closed
 docs = await store.list_all_documents()
 assert isinstance(docs, list)
 ```
 
 Internal-state-only assertions are retained where they document a specific
-invariant the behavioural probe does not exercise — e.g.,
-`test_close_sets_closed_flag_idempotent` and the failure-cleanup tests in
-`tests/sage/test_initialize_services_cleanup.py`, which guard against
-resource leaks that the barrier check alone would not surface.
+invariant the behavioural probe does not exercise — e.g., the
+failure-cleanup tests in `tests/sage/test_initialize_services_cleanup.py`,
+which guard against resource leaks that the barrier check alone would not
+surface.
 
 
 ---
@@ -1055,9 +1041,9 @@ should reflect the current state of the source.
 
 ### TEST-SAGE-BH-051: source_modified_at round-trips through graph store
 
-**Artifact:** `sage/storage/graph_store.py` (insert_document, get_document)
+**Artifact:** `sage/storage/postgres/graph_store.py` (insert_document, get_document)
 **Category:** graph_store, serialization
-**Decision:** `source_modified_at` is serialized as ISO 8601 text in SQLite
+**Decision:** `source_modified_at` is serialized as ISO 8601 text in Postgres
 and deserialized back to a datetime on retrieval, following the same pattern
 as `projected_at` and `indexed_at`.
 
@@ -1070,7 +1056,7 @@ Retrieve it via `get_document`.
 - Retrieved `doc.source_modified_at` equals the original value
 - The value is a timezone-aware datetime
 
-**Rationale:** Nullable datetime fields must survive the SQLite TEXT round-trip.
+**Rationale:** Nullable datetime fields must survive the Postgres TEXT round-trip.
 This test guards the serialization and deserialization paths.
 
 ### TEST-SAGE-BH-052: created_at remains SAGE ingestion time, distinct from source_modified_at
@@ -1426,10 +1412,10 @@ provenance. Better to leave it null and let the UI indicate "unknown."
 
 ### TEST-SAGE-BH-065: document_date round-trips through graph store
 
-**Artifact:** `sage/storage/graph_store.py` (insert_document, get_document)
+**Artifact:** `sage/storage/postgres/graph_store.py` (insert_document, get_document)
 **Category:** graph_store, serialization
 
-**Decision:** `document_date` is stored as a TEXT column in SQLite containing
+**Decision:** `document_date` is stored as a TEXT column in Postgres containing
 a YYYY-MM-DD string. Unlike datetime fields (source_modified_at, created_at),
 no ISO 8601 datetime parsing is needed -- it is a pure date string.
 
@@ -1444,7 +1430,7 @@ via `get_document`.
 
 **Rationale:** document_date has no time component. Storing it as a date
 string avoids unnecessary datetime parsing and timezone considerations. The
-round-trip test guards the SQLite TEXT serialization path for this field,
+round-trip test guards the Postgres TEXT serialization path for this field,
 following the same pattern as BH-051 for source_modified_at.
 
 ### TEST-SAGE-BH-066: Hash-only duplicate detection across different paths
@@ -1604,7 +1590,7 @@ repeated imports of unchanged files.
 **Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
 **Category:** retrieval
 
-**Decision:** Catalog mode queries the SQLite documents table directly with
+**Decision:** Catalog mode queries the documents table directly with
 filter predicates, bypassing vector/BM25 search entirely. Returns document-level
 metadata only. No query string required.
 
@@ -1662,7 +1648,7 @@ signal. Every returned document has ALL specified tags. Documents missing any
 specified tag are excluded, regardless of other matching criteria.
 
 **Precondition:** Vault with 5 documents (as in BH-072). Tags are JSON arrays
-stored in SQLite.
+stored in Postgres.
 
 **Input:** `discover(mode="catalog", scope="filtered", filters={"tags": ["PV07"]})`
 
@@ -1798,7 +1784,7 @@ tables work, project tracker v0.9.4).
 ### TEST-SAGE-BH-080: Catalog default sort -- lifecycle then document_date desc
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
-sort_order); `sage/storage/graph_store.py` (query_documents)
+sort_order); `sage/storage/postgres/graph_store.py` (query_documents)
 **Category:** retrieval
 
 **Decision:** When no `sort_by` is supplied to a catalog-mode discover
@@ -1826,7 +1812,7 @@ from email- and file-browser conventions.
 ### TEST-SAGE-BH-081: Catalog sort by title ascending
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
-sort_order); `sage/storage/graph_store.py` (query_documents)
+sort_order); `sage/storage/postgres/graph_store.py` (query_documents)
 **Category:** retrieval
 
 **Decision:** `sort_by="title"` with `sort_order="asc"` returns documents
@@ -1849,7 +1835,7 @@ recency-based ordering does not place it on the first page.
 ### TEST-SAGE-BH-082: Catalog sort by document_date descending, nulls last
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
-sort_order); `sage/storage/graph_store.py` (query_documents)
+sort_order); `sage/storage/postgres/graph_store.py` (query_documents)
 **Category:** retrieval
 
 **Decision:** `sort_by="document_date"` with `sort_order="desc"` orders
@@ -2031,7 +2017,7 @@ parameter.)
 - Response is identical (in chunk-content terms) to `discover(mode="catalog")`
   without `response_mode`.
 
-**Rationale:** Catalog mode operates on the SQLite documents table and never
+**Rationale:** Catalog mode operates on the documents table and never
 touches the content store. `response_mode=full` cannot conjure chunks that
 were never retrieved.
 
@@ -2405,7 +2391,7 @@ orientation aid.
 
 ### TEST-SAGE-BH-105: Abstract prefilter boosts documents whose abstract matches query
 
-**Artifact:** `sage/services/retrieval.py`, `sage/storage/graph_store.py`
+**Artifact:** `sage/services/retrieval.py`, `sage/storage/postgres/graph_store.py`
 **Category:** retrieval, abstraction, two-pass
 
 **Decision:** When `use_abstract_prefilter` is true (default), documents whose
@@ -3208,7 +3194,7 @@ provider's strict-quality contract for non-empty inputs.
 **Artifact:** `sage/services/lifecycle.py` (set_lifecycle, supersede branch)
 **Category:** lifecycle, atomicity
 **Decision:** The predecessor lifecycle-status flip and the supersedes-edge
-insert run inside a single SQLite transaction. If the edge insert raises,
+insert run inside a single database transaction. If the edge insert raises,
 the lifecycle flip is rolled back; the predecessor remains `active` and
 no `supersedes` edge exists. The caller can retry without leaving partial
 state behind.
@@ -3240,7 +3226,7 @@ eliminates the half-applied state by construction.
 **Artifact:** `sage/services/ingestion.py` (ingest, supersede block)
 **Category:** ingestion, atomicity
 **Decision:** The new document record insert and the supersede transition
-run inside a single SQLite transaction. If the supersede transition fails
+run inside a single database transaction. If the supersede transition fails
 (for example, because the predecessor was concurrently archived between
 pre-validation and the supersede call), the new document record is not
 persisted. Callers either see a complete version chain or no new document
@@ -3249,8 +3235,8 @@ at all -- never an orphan successor with an active predecessor.
 **Precondition:** Document A active, pipeline terminal. A second source
 file present in the vault (would-be successor).
 
-**Input:** Monkeypatch `SqliteGraphStore.insert_with_supersede_atomic` to raise
-`RuntimeError` mid-transaction (simulating a SQLite lock / constraint
+**Input:** Monkeypatch the graph store's `insert_with_supersede_atomic` to raise
+`RuntimeError` mid-transaction (simulating a lock / constraint
 failure during the commit). Then call
 `ingest(source=successor_file, predecessor_id=A.id)`.
 

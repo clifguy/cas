@@ -363,7 +363,7 @@ is in play here.
 
 **Input:** `link(source_id=c1, target_id=a8, edge_type=merged_from)`.
 
-**Expected:** In a single SQLite transaction: the `merged_from` edge is created AND the `covers` edge (and any other predecessor-downstream edges) has `valid_until_version` set to a8. If the transaction is aborted mid-operation (test injection), neither change persists.
+**Expected:** In a single database transaction: the `merged_from` edge is created AND the `covers` edge (and any other predecessor-downstream edges) has `valid_until_version` set to a8. If the transaction is aborted mid-operation (test injection), neither change persists.
 
 ### TEST-SAGE-CR-033: after merge, query from c2 does NOT inherit the covers edge
 

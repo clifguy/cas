@@ -17,7 +17,7 @@ Python 3.14+, FastAPI + uvicorn, Pydantic v2, pytest. JSON Schema for schemas, O
 
 ## Storage & deployment profiles
 
-Storage is a single co-varying backend choice (CAS-ADR-042): **Postgres** (with pgvector) is the default durable store for both graph and content state — a local socket on a workstation, a managed endpoint in the cloud; an **embedded** backend (SQLite graph + LanceDB content) is the retained fallback (`storage_backend: embedded`). SAGE runs under a **local** or **cloud** profile; the cloud profile targets Azure Container Apps / APIM / Entra ID / Key Vault / Postgres. Infrastructure-as-code is in `infra/` (Bicep); container images and deploy scripts in `deploy/`.
+Storage is a single binding (CAS-ADR-042): **Postgres** (with pgvector) is the storage port's sole durable store for both graph and content state — a local socket on a workstation, a managed endpoint in the cloud. SAGE runs under a **local** or **cloud** profile; the cloud profile targets Azure Container Apps / APIM / Entra ID / Key Vault / Postgres. Infrastructure-as-code is in `infra/` (Bicep); container images and deploy scripts in `deploy/`.
 
 ## Environment & setup
 
@@ -25,7 +25,7 @@ Python venv at `.venv/`; always invoke `.venv/bin/python`, never the system Pyth
 
 Dependencies are lockfile-pinned: `pyproject.toml` carries abstract compatibility ranges; `uv.lock` carries the exact resolved versions and is the source of truth. Move versions deliberately with `uv lock --upgrade` (everything) or `uv lock --upgrade-package <name>` (one package), then `uv sync`, run the suite, and commit the updated lock. `uv lock --check` verifies the lock against `pyproject.toml`; CI installs with `uv sync --locked`, so a drifted lock fails the build.
 
-SAGE's durable store lives outside the repository — the Postgres database by default, or the embedded SQLite/LanceDB files when that backend is selected (connection details and paths in `sage/config.yaml`) — and is not touched by `git reset` or `git clean`.
+SAGE's durable store lives outside the repository, in Postgres (connection details in `sage/config.yaml`), and is not touched by `git reset` or `git clean`.
 
 ## Standing architectural principles
 

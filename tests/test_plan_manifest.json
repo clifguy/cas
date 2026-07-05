@@ -95,9 +95,9 @@
         "sage/adapters/interfaces.py",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 99,
+      "test_count": 80,
       "decision_date": "2026-04-06",
-      "notes": "nomic-embed-text EmbeddingProvider (8 tests, AD-001..AD-008), LanceDB ContentStore (17 tests, AD-009..AD-025), Qwen3 AbstractionProvider (8 tests, AD-026..AD-033), Markdown adapter provenance (1 test, AD-034), Docx source adapter (18 tests, AD-035..AD-052), Xlsx source adapter (15 tests, AD-053..AD-067), Word template .dotx adapter (8 tests, AD-068..AD-075), PDF source adapter v0.1 native-text only (19 tests, AD-076..AD-094), Qwen3 lazy loading (3 tests, AD-095..AD-097, relocated from AD-035..AD-037 in v0.9.15), LanceDB has_chunks existence check (2 tests, AD-098..AD-099, renumbered from AD-068..AD-069 in v0.9.16 to resolve cross-class collision with dotx specs). Numbering is contiguous AD-001..AD-099."
+      "notes": "nomic-embed-text EmbeddingProvider (8 tests, AD-001..AD-008), LanceDB ContentStore (RETIRED with the embedded storage backend, CAS-ADR-042; was 17 tests, AD-009..AD-025 -- Postgres content-store coverage lives in tests/sage/test_content_store_postgres.py), Qwen3 AbstractionProvider (8 tests, AD-026..AD-033), Markdown adapter provenance (1 test, AD-034), Docx source adapter (18 tests, AD-035..AD-052), Xlsx source adapter (15 tests, AD-053..AD-067), Word template .dotx adapter (8 tests, AD-068..AD-075), PDF source adapter v0.1 native-text only (19 tests, AD-076..AD-094), Qwen3 lazy loading (3 tests, AD-095..AD-097, relocated from AD-035..AD-037 in v0.9.15), LanceDB has_chunks existence check (RETIRED with the embedded storage backend; was 2 tests, AD-098..AD-099, renumbered from AD-068..AD-069 in v0.9.16 to resolve cross-class collision with dotx specs -- the has_chunks contract is covered against Postgres by test_has_chunks in tests/sage/test_content_store_postgres.py). Numbering is contiguous AD-001..AD-099 with two retired ranges; test_count reflects only active specs."
     },
     {
       "path": "tests/app/frontend_tests.md",
@@ -218,21 +218,6 @@
       "test_count": 5,
       "decision_date": "2026-04-10",
       "notes": "Code hygiene and refactoring safety for app/backend modules after iterative development. Two sections: import hygiene (TEST-APP-CL-002..003 cover scan pathlib-only convention, router HTTPException at module level; CL-001 retired by T-0138 when app/backend/edge_inference.py was deleted); metadata conversion fidelity (TEST-APP-CL-004..006 cover ScanResult to response, response to file descriptor, full round-trip preservation of all ParsedMetadata fields)."
-    },
-    {
-      "path": "tests/sage/migrate_flag_tests.md",
-      "tier": 2,
-      "title": "SAGE Schema Migration CLI Gating Tests",
-      "status": "specified",
-      "covers": [
-        "sage/storage/graph_store.py",
-        "sage/storage/lancedb_content_store.py",
-        "sage/__main__.py",
-        "sage/mcp_init.py"
-      ],
-      "test_count": 13,
-      "decision_date": "2026-04-25",
-      "notes": "--migrate CLI switch on python -m sage. OFF by default; SAGE refuses to start when a schema migration is required and the flag is OFF. Owner bootstrap remains always-on (data initialization, not schema conversion). TEST-SAGE-MIG-001..004 cover GraphStore SQLite migration detection and gating; MIG-005..009 cover LanceDB column-addition migration including destructive rebuild from parquet backup with row-count logging and refusal-to-overwrite-backup safety; MIG-010 covers initialize_services threading the flag; MIG-011..012 cover __main__ default-off and --migrate flag wiring; MIG-013 confirms owner bootstrap is unaffected by the gate."
     },
     {
       "path": "tests/sage/test_cleanup_refactor.md",
