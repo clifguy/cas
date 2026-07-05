@@ -53,3 +53,18 @@ def read_last_optimize_summary(vault_dir: Path) -> LastOptimizeSummary | None:
         versions_cleaned=max(0, latest["pre_versions"] - latest["post_versions"]),
         fragments_merged=max(0, latest["pre_fragments"] - latest["post_fragments"]),
     )
+
+
+def append_purge_audit_record(vault_dir: Path, record: dict) -> None:
+    """Append one JSONL purge audit record to the vault's maintenance log.
+
+    Shares the append-only, one-object-per-line contract with the optimize
+    audit path, so purge records live in the same ``.maintenance_log.jsonl``
+    file and read back the same way. The caller owns the record shape and is
+    responsible for writing it *before* the destructive delete; this helper only
+    appends. The parent directory is created if absent.
+    """
+    audit_path = vault_dir / MAINTENANCE_LOG_FILENAME
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(audit_path, "a") as f:
+        f.write(json.dumps(record) + "\n")

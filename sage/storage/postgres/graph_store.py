@@ -976,6 +976,50 @@ class PostgresGraphStore(GraphStore):
             )
             return {row["source_content_hash"]: row["id"] for row in rows}
 
+    async def remove_document(self, document_id: str) -> None:
+        with self._query_timer.measure("remove_document"):
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    # Edges and staging edges reference documents with no ON
+                    # DELETE CASCADE, so they must go before the documents row
+                    # or the delete is FK-blocked. document_tags cascades, but
+                    # is cleared explicitly for parity and independence from the
+                    # cascade. All in one transaction: a single coordinated
+                    # graph-store removal (CAS-ADR-042 weakest-binding).
+                    await conn.execute(
+                        "DELETE FROM document_tags WHERE document_id = %s", (document_id,)
+                    )
+                    await conn.execute(
+                        "DELETE FROM edges WHERE source_id = %s OR target_id = %s",
+                        (document_id, document_id),
+                    )
+                    await conn.execute(
+                        "DELETE FROM staging_edges WHERE source_id = %s OR target_id = %s",
+                        (document_id, document_id),
+                    )
+                    await conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))
+
+    async def find_documents_ingested_between(
+        self, since: datetime, until: datetime | None = None
+    ) -> list[Document]:
+        with self._query_timer.measure("find_documents_ingested_between"):
+            # created_at is stored as an ISO-8601 UTC string (see insert_document
+            # and get_last_ingestion_at); consistent-format ISO strings compare
+            # lexicographically in chronological order, so the window bounds are
+            # bound as isoformat strings.
+            if until is None:
+                rows = await self._fetch_rows(
+                    "SELECT * FROM documents WHERE created_at >= %s ORDER BY created_at",
+                    (since.isoformat(),),
+                )
+            else:
+                rows = await self._fetch_rows(
+                    "SELECT * FROM documents WHERE created_at >= %s AND created_at < %s "
+                    "ORDER BY created_at",
+                    (since.isoformat(), until.isoformat()),
+                )
+            return [self._row_to_document(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Staging edge operations
     # ------------------------------------------------------------------
