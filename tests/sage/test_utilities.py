@@ -548,7 +548,7 @@ async def test_bh042_missing_assertions_file(
         await service.eval_retrieval()
 
     assert exc_info.value.code == "assertions_file_not_found"
-    assert exc_info.value.status_code == 400
+    assert exc_info.value.status_code == 404
 
 
 async def test_bh042_malformed_assertions_file(
@@ -627,6 +627,7 @@ async def test_no_assertions_configured(
         await service.eval_retrieval()
 
     assert exc_info.value.code == "assertions_not_configured"
+    assert exc_info.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
