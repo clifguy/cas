@@ -1,0 +1,109 @@
+# Disposable smoke-vault configuration template.
+#
+# The driver substitutes __VAULT_ID__, __STORAGE_ROOT__, and __BRAIN_ROOT__
+# and submits the result as the POST /sage_vaults body. Design points:
+# - `covers` is assigned to Tier 2 with filename_code_match so a batch
+#   ingest of two fixtures sharing a series code populates the staging
+#   edge table (the staging-edge review checks need real suggestions).
+# - `retrieval_health.assertions_file` is declared up front; the driver
+#   writes the assertions YAML under storage_root after ingest, once the
+#   expected document ids exist.
+# - Abstraction is enabled so ingest exercises the full three-stage
+#   pipeline against live model providers.
+vault:
+  id: __VAULT_ID__
+  name: Disposable API smoke vault
+  owner: cas
+  storage_root: __STORAGE_ROOT__
+  brain_root: __BRAIN_ROOT__
+  visibility: personal
+document_types:
+  doc_types:
+    - value: document
+      label: Document
+      description: Catch-all document type.
+      source_types:
+        - markdown
+    - value: checklist
+      label: Checklist
+      description: Workflow artifact; drives Tier-2 covers inference.
+      source_types:
+        - markdown
+    - value: misc
+      label: Miscellaneous
+      description: Default document type applied when ingest resolves no explicit type.
+lifecycle:
+  base_states_required: true
+  states:
+    - value: active
+      label: Active
+    - value: completed
+      label: Completed
+    - value: archived
+      label: Archived
+      is_terminal: true
+  transitions:
+    - from_state: (new)
+      action: ingest
+      to_state: active
+    - from_state: active
+      action: supersede
+      to_state: archived
+      creates_edge: supersedes
+    - from_state: active
+      action: complete
+      to_state: completed
+    - from_state: active
+      action: archive
+      to_state: archived
+    - from_state: completed
+      action: archive
+      to_state: archived
+    - from_state: archived
+      action: reactivate
+      to_state: active
+source_adapters:
+  adapters:
+    - source_type: markdown
+      enabled: true
+metadata_extraction:
+  filename_extraction:
+    # The pattern key activates the parser; without it every parse-filename
+    # response is all-null and edge inference sees no codes or doc_types.
+    pattern: '{date}_{code}_{title}_{version}'
+    separator: _
+    known_code_patterns:
+      - '^SPC-\d{3}$'
+    # covers inference fires only between a workflow-typed item and a
+    # content-typed item sharing a code; both classifications come from
+    # these parse-time mappings, not from the committed document record.
+    keyword_to_doc_type:
+      - keyword: checklist
+        doc_type: checklist
+    code_to_doc_type:
+      - code: SPC-001
+        doc_type: document
+      - code: SPC-002
+        doc_type: document
+      - code: SPC-003
+        doc_type: document
+      - code: SPC-004
+        doc_type: document
+      - code: SPC-005
+        doc_type: document
+edge_inference:
+  tier_assignments:
+    - edge_type: supersedes
+      tier: 1
+      inference_rules:
+        - method: version_chain
+    - edge_type: covers
+      tier: 2
+      inference_rules:
+        - method: filename_code_match
+    - edge_type: references
+      tier: 3
+abstraction:
+  enabled: true
+retrieval_health:
+  assertions_file: retrieval_assertions.yaml
