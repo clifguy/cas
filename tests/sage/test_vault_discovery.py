@@ -222,6 +222,29 @@ async def test_lifespan_populates_registry_from_discovered_vaults(
     assert set(calls) == {"vault_a", "vault_b"}
 
 
+async def test_lifespan_publishes_and_clears_vault_root(
+    vault_root, minimal_vault_config_dict, monkeypatch
+):
+    """The FastAPI lifespan publishes the resolved root to mcp_init so the
+    config write paths honor it, and clears it on teardown.
+
+    Trap (anti-coincidental): without ``set_vault_root(vault_root)`` after
+    ``set_stack_config``, ``get_vault_root()`` stays None inside the lifespan;
+    without the teardown clear, it stays set after exit.
+    """
+    from sage import mcp_init
+
+    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
+    _patch_initialize_vault(monkeypatch)
+    monkeypatch.setattr("sage.mcp_init._vault_root", None)
+
+    app = create_app(vault_root=vault_root)
+    assert mcp_init.get_vault_root() is None
+    async with app.router.lifespan_context(app):
+        assert mcp_init.get_vault_root() == vault_root
+    assert mcp_init.get_vault_root() is None
+
+
 async def test_lifespan_with_empty_vault_root_starts_clean(vault_root, monkeypatch):
     """#9: Empty discovery yields an empty registry; app still starts."""
     calls = _patch_initialize_vault(monkeypatch)

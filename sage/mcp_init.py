@@ -302,6 +302,35 @@ def set_stack_config(cfg: SageCoreConfig | None) -> None:
     _stack_config = cfg
 
 
+# Process-bound vault root (CAS-ADR-043). The transport lifespans resolve it from
+# ``--vault-root`` / ``SAGE_VAULT_ROOT`` / the default and publish it here, so the
+# vault-config write paths resolve the same filesystem binding discovery used.
+# Nullable: mirrors ``_stack_config`` for callers (in-process FastAPI mounts,
+# injected-config test paths) that construct services without a transport lifespan.
+_vault_root: Path | None = None
+
+
+def get_vault_root() -> Path | None:
+    """Return the process-bound vault root the active transport lifespan resolved.
+
+    The mirror of ``get_stack_config`` for the filesystem vault-source binding's
+    root: the standalone MCP lifespan and the FastAPI lifespan publish the root
+    they resolved from ``--vault-root`` / ``SAGE_VAULT_ROOT`` / the default so the
+    config write paths (``create_vault``, ``update_config``) resolve the same
+    binding discovery used. ``None`` when no lifespan has run (injected-config or
+    in-process test paths) or when the active profile's vault-source backend is
+    not the filesystem (the cloud document store publishes no filesystem root); in
+    both cases the write paths fall through to the profile seam, unchanged.
+    """
+    return _vault_root
+
+
+def set_vault_root(root: Path | None) -> None:
+    """Set or clear the process-bound vault root. Used by lifespan paths."""
+    global _vault_root
+    _vault_root = root
+
+
 _DEFAULT_STACK_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
 #: Environment variable that overrides the stack-config source path when the
@@ -670,9 +699,13 @@ def resolve_stack_vault_source_store(
     profile seam's ``(SageCoreConfig) -> binding`` factory signature cannot
     carry. When a root is injected, the binding is built directly so the
     explicitly-resolved root is honored (the filesystem path the lifespans take);
-    the backend is still chosen by the config/env dispatch. When no root is
-    injected (the create-vault / update-config write paths), the binding resolves
-    through the profile seam with the default root.
+    the backend is still chosen by the config/env dispatch. The lifespans publish
+    the resolved root to :func:`get_vault_root`, and every caller that needs the
+    process-bound root -- discovery and the create-vault / update-config write
+    paths alike -- injects it here. When no root is injected (in-process /
+    injected-config paths, or a non-filesystem backend such as the cloud document
+    store, which has no filesystem root), the binding resolves through the profile
+    seam with the default root.
     """
     if vault_root is not None:
         return build_stack_vault_source_store(stack_config, vault_root=vault_root)

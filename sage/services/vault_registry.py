@@ -156,13 +156,16 @@ class VaultRegistryService:
         # store rather than a hard-coded filesystem write.
         from sage.mcp_init import (
             get_stack_config,
+            get_vault_root,
             resolve_stack_abstraction_provider,
             resolve_stack_vault_source_store,
         )
 
         stack_config = get_stack_config()
         stack_provider = resolve_stack_abstraction_provider(stack_config)
-        vault_source_store = resolve_stack_vault_source_store(stack_config)
+        vault_source_store = resolve_stack_vault_source_store(
+            stack_config, vault_root=get_vault_root()
+        )
 
         config_path = vault_source_store.config_locator(vault_id)
         Path(config.vault.storage_root).expanduser().mkdir(parents=True, exist_ok=True)

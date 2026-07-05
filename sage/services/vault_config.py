@@ -230,9 +230,15 @@ class VaultConfigService:
 
         # CAS-ADR-043: persist the merged configuration through the active
         # profile's vault-source store so the write is binding-agnostic.
-        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+        from sage.mcp_init import (
+            get_stack_config,
+            get_vault_root,
+            resolve_stack_vault_source_store,
+        )
 
-        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        vault_source_store = resolve_stack_vault_source_store(
+            get_stack_config(), vault_root=get_vault_root()
+        )
         config_path = vault_source_store.config_locator(vault_id)
         # Snapshot the pre-write bytes so a reload failure below can
         # restore the on-disk yaml byte-for-byte. Snapshotting bytes
