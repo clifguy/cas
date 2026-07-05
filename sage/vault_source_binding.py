@@ -56,9 +56,9 @@ _HASH_CHUNK_BYTES = 65536
 _SOURCE_CHUNK_BYTES = 65536
 
 # Environment override for the vault-source-backend dispatch, consulted before
-# the stack config's ``vault_source_backend`` key. Mirrors
-# ``SAGE_TEST_STORAGE_BACKEND`` so the test suite can pin the filesystem binding
-# process-wide while a committed cloud config selects the document store.
+# the stack config's ``vault_source_backend`` key, so the test suite can pin
+# the filesystem binding process-wide while a committed cloud config selects
+# the document store.
 VAULT_SOURCE_BACKEND_ENV_VAR = "SAGE_TEST_VAULT_SOURCE_BACKEND"
 
 _VALID_BACKENDS = ("filesystem", "document_store")

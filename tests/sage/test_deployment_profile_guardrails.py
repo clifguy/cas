@@ -27,8 +27,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from sage.profiles import (
     ABSTRACTION_SEAM,
     AUTH_SEAM,
@@ -94,12 +92,11 @@ from sage.mcp_init import (
 # boundary a cloud boot hits it -- rather than only on the next on-box cloud
 # restart (CAS-ADR-042).
 #
-# storage_backend="postgres" is load-bearing: the embedded override short-circuits
-# the storage builder before the managed-identity branch, which would make this
-# positive control vacuous. vault_source_backend="document_store" plays the same
-# role for the vault-source seam: the filesystem default would resolve a binding
-# that imports no cloud SDK, so the document-store backend must be selected for
-# this control to exercise the SharePoint/Graph adapter (CAS-ADR-043).
+# vault_source_backend="document_store" is load-bearing: the filesystem default
+# would resolve a binding that imports no cloud SDK, so the document-store
+# backend must be selected for this control to exercise the SharePoint/Graph
+# adapter (CAS-ADR-043). storage_backend has a single binding (postgres), so
+# no equivalent selection risk exists on the storage seam.
 try:
     resolve_stack_storage_provisioner(
         SageCoreConfig(profile="cloud", storage_backend="postgres")
@@ -149,9 +146,7 @@ def _is_azure(module: str) -> bool:
     return module == "azure" or module.startswith("azure.")
 
 
-def _run_boot_probe(
-    boot_code: str, *, storage_backend: str, stub_providers: str = "1"
-) -> list[str]:
+def _run_boot_probe(boot_code: str, *, stub_providers: str = "1") -> list[str]:
     """Run a boot snippet in a clean interpreter; return the cloud modules it left.
 
     PYTHONPATH is pinned to this checkout's root (prepended, so a worktree shadows
@@ -167,7 +162,6 @@ def _run_boot_probe(
         **os.environ,
         "PYTHONPATH": pythonpath,
         "SAGE_TEST_STUB_PROVIDERS": stub_providers,
-        "SAGE_TEST_STORAGE_BACKEND": storage_backend,
     }
     result = subprocess.run(
         [sys.executable, "-c", boot_code + _SCAN_TAIL],
@@ -183,24 +177,20 @@ def _run_boot_probe(
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-@pytest.mark.parametrize("storage_backend", ["embedded", "postgres"])
-def test_local_profile_boot_imports_no_cloud_dependencies(storage_backend: str) -> None:
+def test_local_profile_boot_imports_no_cloud_dependencies() -> None:
     """A fresh local-profile boot imports no Azure SDK and neither cloud-owner module.
 
-    Covers both durable-storage backends. The ``postgres`` variant is the
-    load-bearing one for the boundary's shape: it drives the local profile down the
-    Postgres adapters (which may import the shared psycopg driver) and proves that
-    even there the boot pulls no Azure module and neither managed-identity nor Key
-    Vault owner module. psycopg is intentionally not asserted on -- it is shared.
+    Drives the local profile down the Postgres adapters (which may import the
+    shared psycopg driver) and proves the boot pulls no Azure module and
+    neither managed-identity nor Key Vault owner module. psycopg is
+    intentionally not asserted on -- it is shared.
     """
-    matched = _run_boot_probe(
-        _LOCAL_BOOT.format(backend=storage_backend), storage_backend=storage_backend
-    )
+    matched = _run_boot_probe(_LOCAL_BOOT.format(backend="postgres"))
     leaked = [m for m in matched if _is_azure(m) or m in CLOUD_OWNER_MODULES]
     assert leaked == [], (
-        f"the local profile ({storage_backend} backend) imported cloud-only "
-        f"dependencies {leaked}; a cloud import reached the local boot path and "
-        "would load on the next on-box restart (CAS-ADR-042)."
+        f"the local profile imported cloud-only dependencies {leaked}; a cloud "
+        "import reached the local boot path and would load on the next "
+        "on-box restart (CAS-ADR-042)."
     )
 
 
@@ -213,18 +203,16 @@ def test_cloud_profile_bindings_import_the_cloud_dependency_stack() -> None:
     managed-identity Postgres path via the storage binding, the Key Vault reader via
     the abstraction binding). If a rename, a removed import, or an uninstalled SDK
     meant a cloud path no longer imported one of them, the negative test would pass
-    vacuously -- but this control would fail, exposing the coincidence. It also
-    proves the embedded-override guard: were the override to leak through, the cloud
-    storage binding would return the embedded provisioner and import no Azure module,
-    failing the Azure assertion here. Because the cloud boot snippet lets an
-    ImportError propagate (rather than swallowing every exception), this control
+    vacuously -- but this control would fail, exposing the coincidence. Because
+    the cloud boot snippet lets an ImportError propagate (rather than
+    swallowing every exception), this control
     also fails if a cloud binding's transitive closure is incomplete: a missing
     async-transport peer for the managed-identity credential surfaces here, at the
     boundary a cloud boot hits it, instead of only on the next on-box cloud
     restart. psycopg is not asserted: it is a shared driver for both the local and
     cloud Postgres paths, so its presence is not a cloud-only marker.
     """
-    matched = _run_boot_probe(_CLOUD_BOOT, storage_backend="postgres", stub_providers="0")
+    matched = _run_boot_probe(_CLOUD_BOOT, stub_providers="0")
     assert any(_is_azure(m) for m in matched), (
         f"the cloud bindings imported no Azure module (got {matched}); the positive "
         "control is vacuous, so the local-profile negative test cannot be trusted."

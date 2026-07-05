@@ -375,7 +375,7 @@ class UtilitiesService:
     async def list_headings(self, document_id: str) -> ListHeadingsResponse:
         """Return the distinct heading paths of a document in document order.
 
-        Body content is not read; the column-only LanceDB select in
+        Body content is not read; the column-only select in
         get_heading_paths returns the structural table of contents without
         loading chunk content. Replaces the antipattern of harvesting
         available_headings from a deliberately-wrong read_section call.

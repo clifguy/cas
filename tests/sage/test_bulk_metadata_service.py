@@ -1,7 +1,7 @@
 """Service-layer tests for MetadataService.bulk_update_metadata.
 
 The bulk method holds the per-document lock per item and the per-item
-SQLite transaction; the batch as a whole is NOT atomic. A bad item does
+database transaction; the batch as a whole is NOT atomic. A bad item does
 not roll back earlier-or-later successful items (CAS-ADR-029). Patch
 semantics per item match CAS-ADR-028 single-item rules.
 """

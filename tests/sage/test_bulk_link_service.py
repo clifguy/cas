@@ -1,7 +1,7 @@
 """Service-layer tests for GraphOpsService.create_edges.
 
 The bulk method holds the process-wide ``_link_lock`` per item and runs
-each item under its own SQLite transaction via ``_create_edge``; the
+each item under its own database transaction via ``_create_edge``; the
 batch as a whole is NOT atomic. A bad item does not roll back earlier-
 or-later successful items (CAS-ADR-029). The natural-key
 idempotency contract is preserved per item: a duplicate triple returns

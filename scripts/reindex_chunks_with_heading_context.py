@@ -3,9 +3,10 @@
 
 Recomputes embeddings for every chunk in a vault so the embedder receives
 ``heading_path + content`` instead of ``content`` alone, and rebuilds the
-LanceDB FTS indexes (which now cover both ``content`` and ``heading_path``
-columns). Result: BM25 and semantic search both find chunks via heading-
-text-only queries — the agent equivalent of Word's Find on a heading.
+content store's FTS indexes (which now cover both ``content`` and
+``heading_path`` columns). Result: BM25 and semantic search both find
+chunks via heading-text-only queries — the agent equivalent of Word's Find
+on a heading.
 
 Does NOT re-run projection or abstraction. Only the chunk store is touched:
 ``heading_path`` and ``content`` fields stay the same; only the embedding
@@ -165,20 +166,17 @@ async def reindex_with_services(
     elapsed = datetime.now(timezone.utc) - started
     print(f"\nDone. {n_done} document(s) re-indexed in {elapsed.total_seconds():.1f}s.")
 
-    # Compact LanceDB fragments, fold the FTS delta into the index, and
-    # prune old version metadata. ``cleanup_older_than=timedelta(0)`` removes
-    # every version except the latest, reclaiming the fragment and version
-    # churn from the bulk re-index above.
+    # Reclaim the dead-tuple bloat the bulk re-index above generated: each
+    # index_chunks call is a delete-then-insert, and optimize's VACUUM
+    # reclaims the superseded rows.
     try:
-        table = store._get_table()
-        if table is not None:
-            print("\nCompacting LanceDB fragments and pruning old versions...")
-            opt_started = datetime.now(timezone.utc)
-            table.optimize(cleanup_older_than=timedelta(0))
-            opt_elapsed = datetime.now(timezone.utc) - opt_started
-            print(f"Compaction done in {opt_elapsed.total_seconds():.1f}s.")
+        print("\nReclaiming content-store bloat...")
+        opt_started = datetime.now(timezone.utc)
+        await store.optimize(cleanup_older_than=timedelta(0))
+        opt_elapsed = datetime.now(timezone.utc) - opt_started
+        print(f"Reclaim done in {opt_elapsed.total_seconds():.1f}s.")
     except Exception as exc:
-        print(f"Compaction step failed (non-fatal): {exc!r}", file=sys.stderr)
+        print(f"Reclaim step failed (non-fatal): {exc!r}", file=sys.stderr)
 
     return 0
 

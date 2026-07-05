@@ -11,18 +11,16 @@ import asyncio
 import contextlib
 from datetime import datetime, timezone
 
-import pytest
-
 from sage import mcp_server
 from sage.adapters.interfaces import AbstractionProvider, Chunk
 from sage.adapters.stubs import StubContentStore
+from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.models.enums import ReabstractOutcome, SourceType
 from sage.models.schemas import ReabstractReport
 from sage.services.vault_registry import VaultRegistryService
 from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_lifecycle import _id
-from tests.sage.test_maintenance_service import _minimal_config
 from tests.sage.test_reabstract_deferred_service import (
     _GatedAbstractionProvider,
     _make_skipped_doc,
@@ -30,22 +28,9 @@ from tests.sage.test_reabstract_deferred_service import (
 )
 
 
-@pytest.fixture
-def empty_registry() -> None:
-    """Snapshot _vaults before each test and restore after."""
-    saved = dict(mcp_server._vaults)
-    mcp_server._vaults.clear()
-    try:
-        yield
-    finally:
-        mcp_server._vaults.clear()
-        mcp_server._vaults.update(saved)
-
-
 @contextlib.asynccontextmanager
 async def _publish_vault(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
+    minimal_vault_config_dict: dict,
     *,
     abstraction_provider=None,
 ):
@@ -54,14 +39,14 @@ async def _publish_vault(
     get_vault finds it.
 
     Yields ``(vault_id, services)``. On exit the timing thread is stopped
-    and the graph store is closed (via ``initialize_services_for_test``).
-    Mirrors ``_bootstrap_post_migration_vault`` in
-    ``test_maintenance_service.py`` but allows an optional abstraction
-    provider override for the gated-lock test (and otherwise relies on
-    ``SAGE_TEST_STUB_PROVIDERS=1`` to load ``StubAbstractionProvider``).
+    and the storage is released (via ``initialize_services_for_test``).
+    The graph store is the real Postgres binding under the test-harness
+    stack-config pin; the content store is a stub. Allows an optional
+    abstraction provider override for the gated-lock test (and otherwise
+    relies on the suite-wide ``SAGE_TEST_STUB_PROVIDERS=1`` default to
+    load ``StubAbstractionProvider``).
     """
-    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
-    config = _minimal_config(tmp_path)
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
     registry: dict[str, SAGEServices] = {}
     registry_service = VaultRegistryService(registry, initialize_services)
     overrides: dict = {"content_store_factory": lambda _brain: StubContentStore()}
@@ -69,14 +54,16 @@ async def _publish_vault(
         overrides["abstraction_provider"] = abstraction_provider
     async with initialize_services_for_test(
         config,
-        migrate=True,
         registry_service=registry_service,
         **overrides,
     ) as services:
         vault_id = config.vault.id
         registry[vault_id] = services
         mcp_server._vaults[vault_id] = services
-        yield vault_id, services
+        try:
+            yield vault_id, services
+        finally:
+            mcp_server._vaults.pop(vault_id, None)
 
 
 async def _seed_one_skipped(services: SAGEServices, *, doc_id_label: str) -> str:
@@ -92,14 +79,10 @@ async def _seed_one_skipped(services: SAGEServices, *, doc_id_label: str) -> str
     return doc.id
 
 
-async def test_sage_admin_reabstract_deferred_vault_happy_path(
-    tmp_path,
-    monkeypatch,
-    empty_registry,
-):
+async def test_sage_admin_reabstract_deferred_vault_happy_path(minimal_vault_config_dict):
     """Returns a dict that round-trips through ReabstractReport with the
     seeded document's outcome recorded."""
-    async with _publish_vault(tmp_path, monkeypatch) as (vault_id, services):
+    async with _publish_vault(minimal_vault_config_dict) as (vault_id, services):
         doc_id = await _seed_one_skipped(services, doc_id_label="tool_happy")
         try:
             result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
@@ -116,9 +99,7 @@ async def test_sage_admin_reabstract_deferred_vault_happy_path(
 
 
 async def test_sage_admin_reabstract_deferred_vault_returns_structured_409(
-    tmp_path,
-    monkeypatch,
-    empty_registry,
+    minimal_vault_config_dict,
 ):
     """Concurrent invocation returns the reabstract_already_in_flight
     envelope (not a raised exception) with the start_time in the detail
@@ -126,7 +107,7 @@ async def test_sage_admin_reabstract_deferred_vault_returns_structured_409(
     raise out of the wrapper is the bug this test guards against.
     """
     gated = _GatedAbstractionProvider()
-    async with _publish_vault(tmp_path, monkeypatch, abstraction_provider=gated) as (
+    async with _publish_vault(minimal_vault_config_dict, abstraction_provider=gated) as (
         vault_id,
         services,
     ):
@@ -157,9 +138,7 @@ async def test_sage_admin_reabstract_deferred_vault_returns_structured_409(
             await asyncio.sleep(0.1)
 
 
-async def test_sage_admin_reabstract_deferred_vault_unknown_vault_returns_error_envelope(
-    empty_registry,
-):
+async def test_sage_admin_reabstract_deferred_vault_unknown_vault_returns_error_envelope():
     """An unregistered vault id returns the unknown_vault envelope rather
     than raising; matches the existing migrate_vault contract."""
     result = await mcp_server.recompute_deferred_vault_abstracts(vault_id="ghost")
@@ -171,9 +150,7 @@ async def test_sage_admin_reabstract_deferred_vault_unknown_vault_returns_error_
 
 
 async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
-    tmp_path,
-    monkeypatch,
-    empty_registry,
+    minimal_vault_config_dict,
 ):
     """regression guard for the MCP-layer contract.
 
@@ -194,7 +171,7 @@ async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
     # Use _SelectivelyFailingProvider so the first dispatched markdown
     # doc lands as llm_failure; subsequent docs succeed.
     failing: AbstractionProvider = _SelectivelyFailingProvider()
-    async with _publish_vault(tmp_path, monkeypatch, abstraction_provider=failing) as (
+    async with _publish_vault(minimal_vault_config_dict, abstraction_provider=failing) as (
         vault_id,
         services,
     ):

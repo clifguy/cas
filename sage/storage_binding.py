@@ -2,21 +2,13 @@
 
 A deployment profile co-binds the adapter ports as one switch; this module
 carries the storage half of that bundle for both profiles. The binding object is
-a *provisioner*: it opens a vault's graph and content stores together, because
-the two stores co-vary as one binding — the Postgres pair shares a per-vault
-connection pool, and the embedded SQLite/LanceDB pair is the one coherent
-fallback the stack config's ``storage_backend`` key can select instead. The two
-profiles share the Postgres provisioner and differ only in how it authenticates:
-the local profile reads a password from the environment (or peer-authenticates a
-unix socket), the cloud profile injects a per-connection managed-identity Entra
-token (``managed_identity=True``) because its endpoint has password auth
-disabled.
-
-:func:`build_stack_storage_provisioner` is the dispatch between the two
-backends. Mirroring the abstraction provider's dispatch contract, a test
-environment override (``SAGE_TEST_STORAGE_BACKEND``) is consulted before the
-config key, so the test suite pins service construction to the embedded
-stores while the committed configuration selects Postgres.
+a *provisioner*: it opens a vault's graph and content stores together over one
+per-vault connection pool, because the two stores co-vary as one binding. The
+two profiles share the same provisioner and differ only in how it
+authenticates: the local profile reads a password from the environment (or
+peer-authenticates a unix socket), the cloud profile injects a per-connection
+managed-identity Entra token (``managed_identity=True``) because its endpoint
+has password auth disabled.
 
 This module sits in the wiring layer (alongside the service initializer): it
 imports the storage adapters and the stack config, and nothing below
@@ -25,7 +17,6 @@ imports the storage adapters and the stack config, and nothing below
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,15 +25,6 @@ from typing import Any
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.config import SageCoreConfig, StackPostgresConfig
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
-
-# Environment override for the storage-backend dispatch, consulted before the
-# stack config's ``storage_backend`` key. The test suite sets it to
-# ``embedded`` process-wide so the hundreds of tests that construct services
-# without injecting stores never require a provisioned Postgres; tests that
-# exercise the Postgres binding clear it per-test.
-STORAGE_BACKEND_ENV_VAR = "SAGE_TEST_STORAGE_BACKEND"
-
-_VALID_BACKENDS = ("postgres", "embedded")
 
 # A vault whose Postgres server is reachable opens its pool well inside this
 # bound; an unreachable server fails the vault's load loudly at startup
@@ -56,10 +38,9 @@ class VaultStorageHandle:
 
     ``graph_store`` / ``content_store`` are ``None`` for the slots the caller
     did not request (it injects its own). :meth:`close` releases the backing
-    resource the handle owns — the per-vault connection pool on the Postgres
-    binding, nothing on the embedded binding (its stores close through their
-    own ``close``). Idempotent; closing the stores themselves remains the
-    service teardown's job so injected stores keep their existing lifecycle.
+    resource the handle owns — the per-vault connection pool. Idempotent;
+    closing the stores themselves remains the service teardown's job so
+    injected stores keep their existing lifecycle.
     """
 
     graph_store: GraphStore | None
@@ -98,43 +79,6 @@ class VaultStorageProvisioner(ABC):
         migrate: bool = False,
     ) -> VaultStorageHandle:
         """Open the requested stores for one vault and return their handle."""
-
-
-class EmbeddedVaultStorageProvisioner(VaultStorageProvisioner):
-    """The embedded fallback binding: SQLite graph + LanceDB content.
-
-    Reproduces the construction the service initializer carried before the
-    storage seam existed: an initialized ``SqliteGraphStore`` at
-    ``brain_root/graph.db`` and a ``LanceDBContentStore`` over ``brain_root``.
-    The handle owns no backing resource beyond the stores themselves.
-    """
-
-    async def open_vault_storage(
-        self,
-        vault_id: str,
-        brain_root: Path,
-        *,
-        need_graph: bool,
-        need_content: bool,
-        storage_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
-        content_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
-        migrate: bool = False,
-    ) -> VaultStorageHandle:
-        from sage.adapters.content_store_lancedb import LanceDBContentStore
-        from sage.storage.graph_store import SqliteGraphStore
-
-        graph_store: GraphStore | None = None
-        content_store: ContentStore | None = None
-        if need_graph:
-            graph_store = SqliteGraphStore(brain_root / "graph.db", query_timer=storage_timer)
-            await graph_store.initialize(migrate=migrate)
-        if need_content:
-            content_store = LanceDBContentStore(
-                brain_root,
-                migrate=migrate,
-                query_timer=content_timer,
-            )
-        return VaultStorageHandle(graph_store=graph_store, content_store=content_store)
 
 
 class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
@@ -228,8 +172,7 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
             raise ValueError(
                 f"vault id {vault_id!r} is not usable as a Postgres schema name "
                 f"({exc}); the Postgres binding names each vault's schema by its "
-                "vault id. Rename the vault or select the embedded fallback "
-                "(storage_backend: embedded)."
+                "vault id. Rename the vault."
             ) from exc
 
         from sage.storage.postgres.pool import create_pool
@@ -259,58 +202,24 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         return VaultStorageHandle(graph_store=graph_store, content_store=content_store, pool=pool)
 
 
-def resolved_storage_backend(stack_config: SageCoreConfig) -> str:
-    """Return the durable-storage backend the active dispatch selects (CAS-ADR-042).
-
-    Single source of truth for the backend precedence: the
-    ``SAGE_TEST_STORAGE_BACKEND`` environment override is consulted before the
-    stack config's ``storage_backend`` key, so the test suite can pin the
-    embedded stores process-wide while the committed config selects Postgres.
-    An unrecognized value fails loud rather than silently falling through to the
-    configured backend. Consumed both by ``build_stack_storage_provisioner``
-    (which store pair to open) and by the maintenance service construction site
-    (which migration semantics the vault has), so the two never drift.
-    """
-    backend = os.environ.get(STORAGE_BACKEND_ENV_VAR) or stack_config.storage_backend
-    if backend not in _VALID_BACKENDS:
-        raise ValueError(
-            f"Unknown storage backend {backend!r} (from {STORAGE_BACKEND_ENV_VAR}); "
-            f"expected one of {_VALID_BACKENDS}."
-        )
-    return backend
-
-
 def build_stack_storage_provisioner(
     stack_config: SageCoreConfig, *, managed_identity: bool = False
 ) -> VaultStorageProvisioner:
     """Construct the stack-wide storage provisioner (CAS-ADR-042).
 
-    Dispatch contract:
-      1. ``SAGE_TEST_STORAGE_BACKEND`` set -> that backend (env override,
-         topmost so the test suite can pin the embedded stores process-wide
-         while the committed config selects Postgres)
-      2. ``stack.storage_backend == "embedded"`` -> embedded fallback pair
-      3. ``stack.storage_backend == "postgres"`` -> Postgres adapters over
-         the stack's ``postgres`` connection block
+    Postgres is the storage port's sole binding: this always returns a
+    ``PostgresVaultStorageProvisioner`` over the stack's ``postgres`` block.
 
-    An unrecognized env value fails loud: a typo'd override silently falling
-    through to the configured backend would point a test run at live data.
-
-    ``managed_identity`` is the cloud profile's selector for the Postgres path:
-    when set (and the resolved backend is Postgres), the provisioner authenticates
-    with a per-connection managed-identity Entra token instead of an env password
-    -- the cloud endpoint has password auth disabled -- and it is built with
-    ``create_extensions=False``: the Entra endpoint rejects an untrusted
-    ``CREATE EXTENSION`` from any role outside ``azure_pg_admin`` (the command-level
-    privilege check is not bypassed by ``IF NOT EXISTS`` even when the extension is
-    already present), so the per-vault self-bootstrap relies on an administrator
-    having pre-created the extensions rather than creating them itself. The
-    embedded override still wins first, so the test suite never needs a managed
-    identity.
+    ``managed_identity`` is the cloud profile's selector: when set, the
+    provisioner authenticates with a per-connection managed-identity Entra
+    token instead of an env password -- the cloud endpoint has password auth
+    disabled -- and it is built with ``create_extensions=False``: the Entra
+    endpoint rejects an untrusted ``CREATE EXTENSION`` from any role outside
+    ``azure_pg_admin`` (the command-level privilege check is not bypassed by
+    ``IF NOT EXISTS`` even when the extension is already present), so the
+    per-vault self-bootstrap relies on an administrator having pre-created the
+    extensions rather than creating them itself.
     """
-    backend = resolved_storage_backend(stack_config)
-    if backend == "embedded":
-        return EmbeddedVaultStorageProvisioner()
     if managed_identity:
         from sage.storage.postgres.managed_identity import (
             get_postgres_credential,

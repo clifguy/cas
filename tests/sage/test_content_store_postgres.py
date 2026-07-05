@@ -1,10 +1,8 @@
-"""PostgresContentStore: behaviour, stats/bloat, and RRF parity (CAS-ADR-042).
+"""PostgresContentStore: behaviour, stats/bloat, and RRF fusion (CAS-ADR-042).
 
 Runs against a real Postgres named by ``SAGE_TEST_PG_DSN`` via the ``pg_pool``
 harness (a disposable per-session schema, truncated per test); skips cleanly
-when no server is configured. The parity tests additionally stand up a real
-embedded ``LanceDBContentStore`` in ``tmp_path`` to compare fused rankings
-across bindings.
+when no server is configured.
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ from datetime import timedelta
 
 import pytest
 
-from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, Chunk
 from sage.storage.postgres.schema import EMBEDDING_DIM
@@ -480,11 +477,11 @@ async def test_measured_byte_size_grows_with_ingest(store):
 
 
 # ---------------------------------------------------------------------------
-# Group F -- RRF parity + RetrievalService runs unchanged (criterion 1)
+# Group F -- RRF fusion + RetrievalService runs unchanged (criterion 1)
 # ---------------------------------------------------------------------------
 
 
-def _parity_corpus() -> dict[str, list[Chunk]]:
+def _rrf_fusion_corpus() -> dict[str, list[Chunk]]:
     """Strictly graded semantic similarity to ``_emb(0)`` (d0>d1>d2>d3), with the
     keyword term living only in d3's *heading*. With heading coverage the keyword
     arm lifts d3 above the semantic order; without it, d3 stays last -- so the
@@ -529,21 +526,15 @@ async def _fused(store, query_emb, query_text, limit=5):
     return [(r.document_id, r.heading_path) for r in rrf_fuse(sem, kw, limit)]
 
 
-async def test_rrf_parity_lancedb_vs_postgres(store, tmp_path):
-    """The same corpus + query fuse to the same ranking on both bindings.
-
-    The keyword arm matches d3's heading only, so this also fails if the
-    Postgres keyword arm lost heading coverage (d3 would not be lifted)."""
-    lance = LanceDBContentStore(tmp_path)
-    for doc_id, chunks in _parity_corpus().items():
+async def test_rrf_fusion_lifts_heading_only_keyword_match(store):
+    """The keyword arm matches d3's heading only; fusion must still lift it
+    to the top -- this fails if the Postgres keyword arm lost heading
+    coverage."""
+    for doc_id, chunks in _rrf_fusion_corpus().items():
         await store.index_chunks(doc_id, chunks)
-        await lance.index_chunks(doc_id, chunks)
 
     pg_fused = await _fused(store, _emb(0), "zephyrword")
-    lance_fused = await _fused(lance, _emb(0), "zephyrword")
 
-    assert pg_fused == lance_fused
-    # heading-only keyword lifted d3 to the top
     assert pg_fused[0] == ("d3", "zephyrword summary")
 
 

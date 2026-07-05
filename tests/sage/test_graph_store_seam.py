@@ -1,10 +1,10 @@
 """GraphStore adapter-seam contract: ABC, concrete impl, stub, and injection.
 
 Proves the graph store has a real swappable seam: a ``GraphStore`` ABC port, a
-concrete ``SqliteGraphStore`` implementing it, a hermetic ``StubGraphStore``, and
-``initialize_services`` injection mirroring the content-store seam. The
+concrete ``PostgresGraphStore`` implementing it, a hermetic ``StubGraphStore``,
+and ``initialize_services`` injection mirroring the content-store seam. The
 structural tests (T1-T5) guard the port surface; the substitutability tests
-(T6-T7) prove a stub can stand in for the SQLite store end to end.
+(T6-T7) prove a stub can stand in for the concrete store end to end.
 """
 
 from __future__ import annotations
@@ -22,20 +22,21 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-from sage.storage.graph_store import SqliteGraphStore
+from sage.storage.postgres.graph_store import PostgresGraphStore
 
-# The only public methods on the concrete store that are intentionally NOT part
-# of the port: SQLite PRAGMA introspection with no cross-backend meaning. Any
-# OTHER public concrete method that drifts out of the ABC is a seam regression
-# (see T4). This is the one documented, intentional ABC-vs-concrete divergence.
-SQLITE_ONLY_METHODS = {"get_journal_mode", "get_busy_timeout", "get_synchronous"}
+# Public methods on the concrete store that are intentionally NOT part of the
+# port. Deliberately empty: the Postgres store's public surface is exactly the
+# port. Any public concrete method that drifts out of the ABC is a seam
+# regression (see T4); a backend-specific helper belongs under a leading
+# underscore or, if consumers need it, on the port itself.
+POSTGRES_ONLY_METHODS: frozenset[str] = frozenset()
 
 
 def _concrete_public_methods() -> set[str]:
-    """Public methods defined directly on SqliteGraphStore (not inherited)."""
+    """Public methods defined directly on PostgresGraphStore (not inherited)."""
     return {
         name
-        for name, val in vars(SqliteGraphStore).items()
+        for name, val in vars(PostgresGraphStore).items()
         if not name.startswith("_") and inspect.isfunction(val)
     }
 
@@ -44,9 +45,9 @@ def _port_default_methods() -> set[str]:
     """Public concrete (defaulted) methods defined directly on the GraphStore ABC.
 
     A defaulted port method is port surface even though it is not abstract:
-    implementations may override it (the SQLite store overrides the lenient
-    edge enumeration for per-row failure containment), and T4/T5 must treat
-    such an override as port-conformant rather than as seam drift.
+    implementations may override it for backend-specific failure containment,
+    and T4/T5 must treat such an override as port-conformant rather than as
+    seam drift.
     """
     return {
         name
@@ -74,15 +75,15 @@ def test_graphstore_abc_is_abstract():
         GraphStore()  # type: ignore[abstract]
 
 
-def test_sqlite_graph_store_is_concrete_graphstore():
-    """T2: SqliteGraphStore implements the full port (no abstract leftovers).
+def test_postgres_graph_store_is_concrete_graphstore():
+    """T2: PostgresGraphStore implements the full port (no abstract leftovers).
 
     Trap: a single un-implemented abstract method flips isabstract back to
     True and makes the class un-instantiable — exactly the failure mode of a
     50-method port that is easy to under-fill.
     """
-    assert issubclass(SqliteGraphStore, GraphStore)
-    assert not inspect.isabstract(SqliteGraphStore)
+    assert issubclass(PostgresGraphStore, GraphStore)
+    assert not inspect.isabstract(PostgresGraphStore)
 
 
 def test_stub_graph_store_is_concrete_graphstore():
@@ -99,11 +100,13 @@ def test_stub_graph_store_is_concrete_graphstore():
 def test_abc_surface_matches_consumed_concrete_surface():
     """T4: the port captures exactly the consumed concrete surface.
 
-    ``public(SqliteGraphStore) - SQLITE_ONLY_METHODS`` must equal the ABC's
-    abstract-method set. Trap: if a service-consumed method were dropped from
-    the ABC, it would appear in this difference (and not in SQLITE_ONLY_METHODS),
+    ``public(PostgresGraphStore) - POSTGRES_ONLY_METHODS`` must equal the ABC's
+    port surface. Trap: if a service-consumed method were dropped from the ABC,
+    it would appear in this difference (and not in POSTGRES_ONLY_METHODS),
     failing the test. Without this guard, the stub could "pass" merely by also
-    omitting the method. This is the strongest structural guard on the seam.
+    omitting the method. This is the strongest structural guard on the seam,
+    and with an empty divergence set it also proves the concrete store exposes
+    nothing backend-specific.
     """
     concrete_public = _concrete_public_methods()
     abc_methods = set(GraphStore.__abstractmethods__)
@@ -111,10 +114,10 @@ def test_abc_surface_matches_consumed_concrete_surface():
 
     # Every abstract method is implemented as a public concrete method.
     assert abc_methods <= concrete_public
-    # The only public concrete methods outside the port are the SQLite-only trio.
-    assert concrete_public - port_surface == SQLITE_ONLY_METHODS
+    # No public concrete method exists outside the port.
+    assert concrete_public - port_surface == POSTGRES_ONLY_METHODS
     # And nothing in the divergence list leaked into the port.
-    assert port_surface.isdisjoint(SQLITE_ONLY_METHODS)
+    assert port_surface.isdisjoint(POSTGRES_ONLY_METHODS)
 
 
 @pytest.mark.parametrize(
@@ -128,8 +131,11 @@ def test_concrete_signature_matches_port(method_name):
     green. Strict signature equality surfaces it per method. Defaulted port
     methods are included so an override cannot drift from the port shape.
     """
-    abc_sig = inspect.signature(getattr(GraphStore, method_name))
-    concrete_sig = inspect.signature(getattr(SqliteGraphStore, method_name))
+    # eval_str resolves stringized annotations (the concrete module uses
+    # `from __future__ import annotations`; the port module does not), so the
+    # comparison is between resolved types, not their spellings.
+    abc_sig = inspect.signature(getattr(GraphStore, method_name), eval_str=True)
+    concrete_sig = inspect.signature(getattr(PostgresGraphStore, method_name), eval_str=True)
     assert concrete_sig == abc_sig, f"{method_name}: concrete {concrete_sig} != port {abc_sig}"
 
 
@@ -159,14 +165,14 @@ async def _teardown(services) -> None:
 
 
 async def test_substitutability_instance_injection(minimal_vault_config_dict):
-    """T6: an injected StubGraphStore stands in for SQLite end to end.
+    """T6: an injected StubGraphStore stands in for the concrete store end to end.
 
     The services must hold the exact injected instance (not a freshly-built
-    SqliteGraphStore), and the write performed during init (bootstrap_owner)
+    concrete store), and the write performed during init (bootstrap_owner)
     must land in the stub.
 
     Trap: if initialize_services ignored the injection and built its own
-    SqliteGraphStore, ``services.graph_store is stub`` fails. If it stored the
+    default store, ``services.graph_store is stub`` fails. If it stored the
     stub but wired services to a different store, the bootstrapped-owner read
     returns None.
     """
@@ -193,7 +199,7 @@ async def test_substitutability_factory_injection_persists_factory(minimal_vault
     product becomes services.graph_store, and the factory itself is stored on
     SAGEServices so reload paths can reuse it.
 
-    Trap: if the factory result were discarded (default SQLite built instead),
+    Trap: if the factory result were discarded (default store built instead),
     the identity assertion fails; if the factory were not persisted, the
     graph_store_factory assertion fails.
     """
@@ -229,22 +235,6 @@ async def test_injection_precedence_instance_over_factory(minimal_vault_config_d
     try:
         assert services.graph_store is instance
         assert factory_built == []  # factory never consulted
-    finally:
-        await _teardown(services)
-
-
-async def test_default_path_builds_sqlite_graph_store(minimal_vault_config_dict):
-    """T7b: with no injection, the default concrete SqliteGraphStore is built.
-
-    Trap: if the default branch were wired to the wrong class (e.g. left as the
-    ABC, or a stub), this isinstance check fails. This is the no-local-behavior-
-    change guarantee.
-    """
-    config = VaultConfig.model_validate(minimal_vault_config_dict)
-    services = await _init_with_stubs(config)
-    try:
-        assert isinstance(services.graph_store, SqliteGraphStore)
-        assert services.graph_store_factory is None
     finally:
         await _teardown(services)
 

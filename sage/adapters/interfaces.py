@@ -1,6 +1,6 @@
 """Abstract base classes for swappable external dependencies.
 
-Production implementations: SQLite (GraphStore), LanceDB (ContentStore),
+Production implementations: Postgres (GraphStore, ContentStore),
 sentence-transformers (EmbeddingProvider), MLX/Qwen3 (AbstractionProvider).
 Stubs in stubs.py provide deterministic behavior for testing.
 
@@ -70,8 +70,8 @@ class ContentStoreOptimizeSnapshot(TypedDict):
     """Pre/post observations captured around ContentStore.optimize().
 
     Substrates with no on-disk presence (StubContentStore) return zeros.
-    LanceDB returns measured directory byte sum, Table.list_versions()
-    length, and Table.stats() fragment counts.
+    Postgres returns the relation's measured byte size, the retained
+    dataset-version count, and the fragment counts from its bloat snapshot.
     """
 
     pre_bytes: int
@@ -85,7 +85,7 @@ class ContentStoreOptimizeSnapshot(TypedDict):
 
 
 class ContentStore(ABC):
-    """Interface for vector/full-text content store (LanceDB in production)."""
+    """Interface for vector/full-text content store (Postgres in production)."""
 
     @abstractmethod
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
@@ -231,12 +231,14 @@ class ContentStore(ABC):
         Snapshots substrate state immediately before and after the
         reclamation call; returns the pair so callers can observe
         what changed. Substrates with no on-disk presence
-        (StubContentStore) return zeros; LanceDB returns measured
-        directory bytes, version count, and fragment counts.
+        (StubContentStore) return zeros; Postgres returns the relation's
+        measured byte size, version count, and fragment counts.
 
         cleanup_older_than: how old a retained dataset version must be
-        to be eligible for pruning. timedelta(0) prunes every version
-        except the latest. LanceDB's own default is 7 days.
+        to be eligible for pruning. Postgres has no age-threshold analog
+        (VACUUM reclaims every eligible dead tuple) and ignores this
+        parameter; it is preserved for substrates that do support pruning
+        by age. The service-layer default is 7 days.
         """
 
 
@@ -267,12 +269,11 @@ class NaturalKeyConflict(Exception):
     ``(source_id, target_id, edge_type)`` already exists.
 
     Backend-neutral by design: every concrete store translates its driver's
-    unique-violation (SQLite's ``IntegrityError`` on the natural-key index,
-    Postgres's ``UniqueViolation`` on the same index) into this one type, so
-    callers above the port — and the cross-backend parity tests — never branch
-    on the driver. Raised at every write escape point where a natural-key
-    duplicate surfaces under ``on_conflict="raise"``; the ``on_conflict="noop"``
-    path resolves the duplicate internally and never raises this.
+    unique-violation (Postgres's ``UniqueViolation`` on the natural-key index)
+    into this one type, so callers above the port never branch on the driver.
+    Raised at every write escape point where a natural-key duplicate surfaces
+    under ``on_conflict="raise"``; the ``on_conflict="noop"`` path resolves
+    the duplicate internally and never raises this.
     """
 
     def __init__(self, source_id: str, target_id: str | None, edge_type: str) -> None:
@@ -286,11 +287,11 @@ class NaturalKeyConflict(Exception):
 
 
 class GraphStore(ABC):
-    """Interface for the document/edge/user graph store (SQLite in production).
+    """Interface for the document/edge/user graph store (Postgres in production).
 
     Captures the surface the service layer consumes. Backend-specific
-    introspection that has no cross-store meaning (SQLite PRAGMA readers) is
-    intentionally omitted from the port and lives only on the concrete impl.
+    introspection that has no cross-store meaning is intentionally omitted
+    from the port and lives only on the concrete impl.
     """
 
     # --- Lifecycle ---

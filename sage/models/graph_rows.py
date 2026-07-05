@@ -2,7 +2,7 @@
 
 Return shapes shared between the ``GraphStore`` port
 (``sage.adapters.interfaces``) and its concrete implementations
-(SQLite today). They live in the models leaf so the port can reference
+(Postgres today). They live in the models leaf so the port can reference
 them without importing any concrete store module — keeping the port's
 dependency direction one-way (port -> models) and substitution clean.
 """

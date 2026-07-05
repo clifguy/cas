@@ -163,8 +163,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m sage",
         description=(
             "Start the SAGE Core API server. Vaults are auto-discovered "
-            "from the vault root (every directory containing vault_config.yaml). "
-            "To advance schemas, run python -m sage.migrate separately."
+            "from the vault root (every directory containing vault_config.yaml)."
         ),
     )
     parser.add_argument(

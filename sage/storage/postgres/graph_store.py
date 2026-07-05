@@ -47,7 +47,7 @@ from sage.models.enums import (
 )
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
-from sage.storage.migrations import (
+from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
     Tier3UniqueIndexBlockedError,
     Tier3UniqueViolation,
@@ -108,12 +108,11 @@ def _validate_tier3_identifier(doc_type: str, field: str) -> None:
 def tier3_unique_index_ddl_pg(doc_type: str, field: str) -> str:
     """Postgres DDL for the partial UNIQUE expression index on (doc_type, field).
 
-    The dialect twin of the embedded store's ``tier3_unique_index_ddl``: the
-    ``json_extract(tier3_metadata, '$.<field>')`` expression becomes the
-    ``tier3_metadata->>'<field>'`` jsonb text accessor and the boolean filter
-    drops the ``= 1`` comparison. Uniqueness is global within ``doc_type`` across
-    all lifecycle statuses, excluding non-chain-heads (the supersession-lineage
-    exception) and null values (so optional fields do not collide on null).
+    The ``tier3_metadata->>'<field>'`` jsonb text accessor is the filter
+    predicate; the boolean filter has no ``= 1`` comparison. Uniqueness is
+    global within ``doc_type`` across all lifecycle statuses, excluding
+    non-chain-heads (the supersession-lineage exception) and null values
+    (so optional fields do not collide on null).
     """
     name = tier3_unique_index_name(doc_type, field)
     return (

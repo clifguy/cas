@@ -15,8 +15,8 @@ filename-derived field blank and letting the adapter's `ProjectionResult.title`
 win unconditionally.
 
 Test environment: these tests use the in-memory stub content/embedding
-providers from `tests/sage/conftest.py`, real graph store (SQLite on
-`tmp_path`), and real source adapters (MarkdownAdapter, DocxAdapter).
+providers from `tests/sage/conftest.py`, a real graph store (Postgres),
+and real source adapters (MarkdownAdapter, DocxAdapter).
 Each test gets an isolated temp vault directory.
 
 ---

@@ -370,7 +370,7 @@ class TestVaultStatistics:
         assert body["content_store_chunk_count"] >= 0
         assert isinstance(body["content_store_version_count"], int)
         assert body["content_store_version_count"] >= 0
-        assert isinstance(body["sqlite_size_bytes"], int)
+        assert isinstance(body["graph_store_size_bytes"], int)
         assert body["last_ingestion_at"] is not None
 
     async def test_be_004_stats_includes_health_indicators(self, multi_vault_app, multi_client):

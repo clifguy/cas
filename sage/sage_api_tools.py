@@ -434,7 +434,7 @@ def register_sage_tools(
 
         Each item carries ``document_id``, ``action``, and optional
         ``successor_id``. Items are processed in order, each holding the
-        per-document lock and a per-item SQLite transaction.
+        per-document lock and a per-item database transaction.
 
         The ``action`` vocabulary is vault-config-defined, not a fixed
         SAGE-wide set. Read ``lifecycle.transitions`` in the vault config
@@ -540,7 +540,7 @@ def register_sage_tools(
         (``source_id``, ``target_id``, ``edge_type``) returns the existing
         edge with ``created=false`` rather than raising. Items are
         processed in order, each under the process-wide link lock and a
-        per-item SQLite transaction.
+        per-item database transaction.
 
         **For ``supersedes`` edges, prefer ``update_lifecycles`` with
         ``action="supersede"``** (or ``ingest_document(..., predecessor_id=...)``
@@ -672,7 +672,7 @@ def register_sage_tools(
         fields (``title``, ``version_label``, ``project``, ``tags``,
         ``doc_type``, ``authority_scope``, ``document_date``,
         ``tier3_metadata``, ``expected_version``). Items are processed in
-        order, each holding the per-document lock and a per-item SQLite
+        order, each holding the per-document lock and a per-item database
         transaction.
 
         Scalars (``title``, ``version_label``, ``project``, ``doc_type``,
@@ -1989,7 +1989,7 @@ def register_sage_tools(
     ) -> dict:
         """Re-run the full ingestion pipeline against an existing document
         (fire-and-forget). Operator repair for documents stuck at
-        ``pipeline_status=projection_complete`` with no LanceDB chunks — the
+        ``pipeline_status=projection_complete`` with no chunks — the
         silent-loss state when a Stage 2 background dispatch is
         garbage-collected or its host process dies mid-execution.
 
@@ -2083,50 +2083,26 @@ def register_sage_tools(
 
     @mcp.tool(name="admin_migrate_vault")
     async def migrate_vault(vault_id: str) -> dict:
-        """Apply pending schema migrations to a single vault in the running session.
+        """Run the schema-migration surface's tier3-uniqueness scan for a vault.
 
-        Wraps the ``GraphStore.initialize(migrate=True)`` codepath: detects
-        pending ALTER TABLE migrations and backfills, applies any that are
-        pending, then reloads the vault in this MCP process's registry so
-        subsequent operations observe the new schema.
+        The durable store provisions its schema externally, so there is no
+        pending schema or backfill work for this tool to apply: it always
+        returns an empty no-op report (``columns_added`` and
+        ``backfills_applied`` both empty). Idempotent for the same reason —
+        a re-call returns the same empty shape with no error.
 
-        Backend-aware: the detect-then-apply step above runs only for vaults on
-        the embedded (SQLite) store. When the vault's durable store is Postgres,
-        the schema is provisioned externally and there is nothing to migrate, so
-        the tool returns the empty no-op report (``columns_added`` and
-        ``backfills_applied`` both empty) without touching any local file — the
-        tier3 scan below still runs.
-
-        Idempotent: a re-call against an already-migrated vault returns a
-        MigrationReport with empty ``columns_added`` and ``backfills_applied``
-        and no error; the registry reload is skipped on the no-op path.
-
-        Cross-process staleness caveat: the operation closes and reopens this
-        process's view of the vault, but other MCP server processes holding
-        imports of the same vault directory must be restarted to observe the
-        new schema.
-
-        tier3 uniqueness activation: after the schema step settles, every
-        ``unique_keys`` declaration in vault config is scanned. Clean
-        declarations get partial UNIQUE indexes installed; declarations whose
-        existing data violates the constraint are recorded in
-        ``tier3_uniqueness_collisions``, the index is not activated (see
-        ``Tier3UniqueIndexBlockedError`` below), and any previously-clean
-        index is preserved (no implicit DROP). Activated declarations are
-        listed in ``tier3_uniqueness_activations``. **Callers must inspect
-        both fields** — a report with empty ``columns_added`` /
-        ``backfills_applied`` may still carry tier3 activations or collisions.
+        tier3 uniqueness activation: every ``unique_keys`` declaration in
+        vault config is scanned. Clean declarations get partial UNIQUE
+        indexes installed; declarations whose existing data violates the
+        constraint are recorded in ``tier3_uniqueness_collisions``, the index
+        is not activated (see ``Tier3UniqueIndexBlockedError`` below), and any
+        previously-clean index is preserved (no implicit DROP). Activated
+        declarations are listed in ``tier3_uniqueness_activations``.
+        **Callers must inspect both fields** on every call, no-op or not.
         Query ``admin_get_vault_config`` for the ``unique_keys`` declarations.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
-        - ``schema_migration_required`` (409): a chained post-migration
-          operation detected a second migration queued behind the first.
-        - MIGRATION_PLAN errors (500): an ALTER TABLE statement failed at
-          ``initialize(migrate=True)`` (SQLite ``OperationalError`` rewrapped
-          as a SAGEError).
-        - BACKFILL_PLAN errors (500): a backfill entry failed at the
-          post-schema step.
         - ``Tier3UniqueIndexBlockedError``: a ``unique_keys`` declaration's
           existing data violates the constraint, so its partial UNIQUE index
           cannot be installed; the collisions are captured in
@@ -2181,7 +2157,7 @@ def register_sage_tools(
         - ``chain_nonlinear`` (reported as ``DriftEntry`` rows, not an
           envelope error, per the bucket above, so one forked chain does not
           mask drift on other edges).
-        - Graph-store query failures (500): unexpected SQLite errors while
+        - Graph-store query failures (500): unexpected storage errors while
           walking edges or resolving chain heads — infrastructure
           conditions, retrying is appropriate.
 
@@ -2219,8 +2195,8 @@ def register_sage_tools(
         false performs an existence check only.
 
         Note: this audits the vault-local source files (the ``imports/``
-        copies that ``get_document`` delivers), distinct from the LanceDB
-        content store that ``admin_optimize_vault_content_store`` reclaims.
+        copies that ``get_document`` delivers), distinct from the content
+        store that ``admin_optimize_vault_content_store`` reclaims.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
@@ -2300,31 +2276,27 @@ def register_sage_tools(
 
     @mcp.tool(name="admin_optimize_vault_content_store")
     async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
-        """Compact LanceDB content-store fragments and prune retained versions.
+        """Reclaim bloat in the per-vault content store.
 
-        Wraps ``Table.optimize()`` against the per-vault chunks table: merges
-        small fragment files, prunes retained dataset versions older than the
-        threshold, and folds incremental rows into existing vector indexes
-        without a full rebuild.
+        Wraps a ``VACUUM (FULL, ANALYZE)`` against the vault's chunks table:
+        removes dead tuples, returns free space to the OS, and shrinks the
+        relation. Postgres MVCC writes a new row version on every update or
+        delete rather than reclaiming space in place, so disk usage on
+        actively-churned vaults grows until this is called.
 
-        LanceDB is copy-on-write with version retention — every add, update,
-        or delete writes a new fragment and manifest, and nothing is
-        reclaimed unless this is called explicitly. Disk usage on
-        actively-churned vaults can grow to hundreds of times the current
-        data size without periodic optimize calls.
-
-        Runs synchronously against the LanceDB connection this MCP server
-        already holds open (``delete_unverified`` is not exposed; LanceDB's
-        safety floor assumes the single-writer ownership the running server
-        provides). A first run against a highly-churned vault may take
-        minutes and exceed an MCP client timeout; subsequent runs settle to
-        seconds.
+        Runs on its own autocommit connection (VACUUM cannot run inside a
+        transaction block) and holds no lock that blocks concurrent reads or
+        writes; a first run against a highly-churned vault may still take
+        minutes and exceed an MCP client timeout, with subsequent runs
+        settling to seconds.
 
         Returns an OptimizeContentStoreReport with pre/post observations
-        (directory byte sum, retained version count, fragment counts) — the
-        caller-visible evidence of reclamation, since ``Table.optimize()``
-        itself returns None. ``cleanup_older_than_days`` is echoed for
-        audit-log alignment.
+        (relation byte size, retained version count, fragment counts) — the
+        caller-visible evidence of reclamation, since the underlying
+        operation itself returns nothing. ``cleanup_older_than_days`` has no
+        Postgres analog (VACUUM reclaims every eligible dead tuple
+        regardless of age) and is accepted only for the port contract; it is
+        echoed for audit-log alignment.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
@@ -2332,10 +2304,8 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            cleanup_older_than_days: Dataset versions older than this
-                threshold are pruned; the latest version is never removed.
-                Default 7 matches LanceDB's default. Set to 0 to remove every
-                version except the latest.
+            cleanup_older_than_days: Accepted for the port contract; has no
+                effect on the Postgres binding (see above).
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

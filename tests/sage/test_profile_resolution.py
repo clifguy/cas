@@ -173,9 +173,9 @@ def test_prf_007_local_profile_registers_the_storage_binding():
     Anti-coincidental-pass: if the `register_binding(LOCAL_PROFILE,
     STORAGE_SEAM, ...)` line were dropped, the seam would be absent from the
     resolved bindings and the `binding()` accessor would raise KeyError -- so
-    this asserts both seam membership and the provisioner type. (Under the
-    test session's SAGE_TEST_STORAGE_BACKEND=embedded pin the assembled
-    provisioner is the embedded one regardless of the config key.)
+    this asserts both seam membership and the provisioner type. The
+    storage port has a single binding (Postgres), so the resolved
+    provisioner's concrete type is fixed regardless of the config key.
     """
     from sage.storage_binding import VaultStorageProvisioner
 
@@ -212,10 +212,13 @@ def test_prf_009_cloud_profile_registers_all_three_seams():
     Anti-coincidental-pass: dropping any one `register_binding(CLOUD_PROFILE, ...)`
     line drops that seam, so `binding()` would raise KeyError -- this asserts seam
     membership AND the resolved binding types. Under the suite's stub abstraction
-    config and the embedded storage override the assembled bindings are the stub
-    provider, an embedded provisioner, and a token validator: no Key Vault call
-    and no managed identity are exercised here (those have their own mocked
-    tests), so the registration is proven without any cloud credential.
+    config the assembled bindings are the stub provider, a Postgres provisioner,
+    and a token validator: no Key Vault call and no managed identity are
+    exercised here (those have their own mocked tests), so the registration is
+    proven without any cloud credential. Because the storage port has a single
+    binding, the isinstance check alone cannot tell a cloud-wired provisioner
+    from a local one -- PRF-010 below checks the managed-identity-specific
+    signature that does distinguish them.
     """
     from sage.auth import NoAuthValidator
     from sage.storage_binding import VaultStorageProvisioner
@@ -240,14 +243,17 @@ def test_prf_010_cloud_profile_resolves_to_cloud_distinct_abstraction_and_storag
     provisioner authenticating by managed-identity token with no env password.
 
     Anti-coincidental-pass: PRF-009 also resolves the cloud profile, but under
-    the suite's SAGE_TEST_STUB_PROVIDERS / SAGE_TEST_STORAGE_BACKEND=embedded
-    overrides both the cloud and local abstraction/storage factories collapse to
-    the same stub/embedded result, so PRF-009 would stay green if a cloud seam
-    were mis-registered against a *local* factory. This test removes those
-    overrides and asserts the cloud-only signatures: `fetch_secret` is called
-    (the local anthropic binding reads its key from ANTHROPIC_API_KEY and never
-    imports the Key Vault module, so a recorded call is false on the local path
-    by construction) and the provisioner suppresses the env password. The CLD-*
+    the suite's SAGE_TEST_STUB_PROVIDERS override the cloud and local
+    abstraction factories collapse to the same stub result, and both the
+    cloud and local storage factories construct the same
+    `PostgresVaultStorageProvisioner` class (differing only in
+    managed-identity-specific internal fields an isinstance check cannot see),
+    so PRF-009 would stay green if a cloud seam were mis-registered against a
+    *local* factory. This test removes the stub override and asserts the
+    cloud-only signatures: `fetch_secret` is called (the local anthropic
+    binding reads its key from ANTHROPIC_API_KEY and never imports the Key
+    Vault module, so a recorded call is false on the local path by
+    construction) and the provisioner suppresses the env password. The CLD-*
     tests prove the same signatures by calling `_cloud_*_binding` directly; this
     proves the *registry* routes the cloud profile to them.
     """
@@ -255,7 +261,6 @@ def test_prf_010_cloud_profile_resolves_to_cloud_distinct_abstraction_and_storag
     from sage.storage_binding import PostgresVaultStorageProvisioner
 
     monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
-    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
     monkeypatch.setenv("SAGE_PG_PASSWORD", "envpw")
     monkeypatch.setattr(
         "sage.secrets.key_vault.resolve_vault_uri", lambda environ=None: "https://kv.example/"

@@ -24,14 +24,6 @@ from tests.helpers.timing_leaks import (
 # monkeypatch.delenv calls (see test_di_005).
 os.environ.setdefault("SAGE_TEST_STUB_PROVIDERS", "1")
 
-# Pin the durable-storage binding to the embedded SQLite/LanceDB pair for
-# every pytest invocation. The stack default is postgres, so without this
-# pin each of the hundreds of tests that build services without injecting
-# stores would require a provisioned Postgres. Tests that exercise the
-# Postgres binding clear the variable per-test (monkeypatch.delenv) and
-# gate on SAGE_TEST_PG_DSN.
-os.environ.setdefault("SAGE_TEST_STORAGE_BACKEND", "embedded")
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"
 
@@ -46,6 +38,150 @@ def schema_validator() -> SchemaValidator:
 def project_root() -> Path:
     """Path to the CAS repository root."""
     return PROJECT_ROOT
+
+
+# Host name pinned into the sentinel stack config when SAGE_TEST_PG_DSN is
+# unset. Deliberately unresolvable: any test that reaches storage without a
+# configured test server fails fast at connect with this name in the error,
+# instead of silently opening the developer's live local-socket Postgres.
+SENTINEL_PG_HOST = "sage-test-pg-dsn-unset.invalid"
+
+
+def _test_stack_config():
+    """Build the stack config every test runs under.
+
+    With ``SAGE_TEST_PG_DSN`` set, storage binds to that server (a throwaway;
+    the suite creates and drops schemas in it). Without it, storage binds to
+    ``SENTINEL_PG_HOST`` so an accidental open cannot touch live data.
+    """
+    from sage.config import SageCoreConfig, StackPostgresConfig
+
+    dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if dsn:
+        from psycopg.conninfo import conninfo_to_dict
+
+        parsed = conninfo_to_dict(dsn)
+        postgres = StackPostgresConfig(
+            host=parsed.get("host"),
+            port=int(parsed.get("port") or 5432),
+            database=str(parsed.get("dbname") or "postgres"),
+            user=parsed.get("user"),
+            extensions=["vector", "pgstattuple"],
+        )
+        password = parsed.get("password")
+    else:
+        postgres = StackPostgresConfig(host=SENTINEL_PG_HOST)
+        password = None
+    return SageCoreConfig(storage_backend="postgres", postgres=postgres), password
+
+
+@pytest.fixture(scope="session")
+def _test_stack_config_path(tmp_path_factory) -> Path:
+    """Write the test stack config to a YAML file, for the env-path prong.
+
+    Lifespan-shaped code paths (``create_app``, ``python -m sage``) do not
+    read the module singleton -- they call ``load_stack_config_or_default``,
+    which without an override loads the committed ``sage/config.yaml`` whose
+    postgres block points at the local socket: the live database. Pointing
+    ``SAGE_CONFIG_PATH`` here makes those paths resolve to the same test
+    server (or sentinel) as everything else.
+    """
+    cfg, _password = _test_stack_config()
+    pg = cfg.postgres
+    doc: dict[str, Any] = {
+        "storage_backend": "postgres",
+        "postgres": {
+            "host": pg.host,
+            "port": pg.port,
+            "database": pg.database,
+            "extensions": list(pg.extensions),
+        },
+    }
+    if pg.user:
+        doc["postgres"]["user"] = pg.user
+    path = tmp_path_factory.mktemp("stack_config") / "test_stack_config.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _pin_test_stack_config(monkeypatch, _test_stack_config_path):
+    """Pin every stack-config resolution path to the test Postgres.
+
+    Three prongs, all derived from ``SAGE_TEST_PG_DSN`` (or the sentinel):
+
+    1. The ``sage.mcp_init`` module singleton -- uninjected service
+       construction resolves its storage provisioner from
+       ``get_stack_config()``, whose empty default points at the local
+       socket, the developer's live database.
+    2. ``SAGE_CONFIG_PATH`` -- lifespan-shaped paths re-load the stack
+       config from disk (overwriting the singleton), and subprocesses never
+       see the singleton at all.
+    3. ``PGHOST`` -- the libpq-level backstop: a connection built from a
+       default-constructed config (host None -> local socket) resolves the
+       unroutable sentinel instead of the socket and fails fast.
+
+    Re-applied per test (and restored on teardown) so no test can leak a
+    cleared or custom stack config into the next one. Tests that assert
+    stack-config loading behavior set their own config or env in-body,
+    which overrides these pins.
+    """
+    import sage.mcp_init as mcp_init
+
+    prior = mcp_init._stack_config
+    cfg, password = _test_stack_config()
+    if password:
+        monkeypatch.setenv("SAGE_PG_PASSWORD", str(password))
+    monkeypatch.setenv("SAGE_CONFIG_PATH", str(_test_stack_config_path))
+    monkeypatch.setenv("PGHOST", SENTINEL_PG_HOST)
+    mcp_init.set_stack_config(cfg)
+    yield
+    mcp_init.set_stack_config(prior)
+
+
+@pytest.fixture(scope="session")
+def _pg_hygiene_session():
+    """Session connection + schema baseline for per-test vault-schema cleanup.
+
+    ``None`` when no test server is configured (nothing can have connected).
+    """
+    dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if not dsn:
+        yield None
+        return
+    import psycopg
+
+    conn = psycopg.connect(dsn, autocommit=True)
+    conn.execute("SET lock_timeout = '5s'")
+    baseline = {row[0] for row in conn.execute("SELECT nspname FROM pg_namespace").fetchall()}
+    try:
+        yield (conn, baseline)
+    finally:
+        conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _drop_leaked_vault_schemas(_pg_hygiene_session):
+    """Drop vault schemas a test provisioned, restoring per-test isolation.
+
+    The Postgres binding names each vault's schema by its vault id, and many
+    tests open the same ids (``test_vault`` above all) without a per-test
+    suffix -- under the embedded binding a fresh tmp directory per test gave
+    isolation structurally; here the schema outlives the test unless dropped.
+    Schemas present at session start and the ``sage_test_*`` session schemas
+    (managed by their own fixtures) are left alone.
+    """
+    yield
+    if _pg_hygiene_session is None:
+        return
+    conn, baseline = _pg_hygiene_session
+    rows = conn.execute(
+        "SELECT nspname FROM pg_namespace "
+        "WHERE nspname NOT LIKE 'pg\\_%' AND nspname NOT LIKE 'sage\\_test\\_%'"
+    ).fetchall()
+    for (name,) in rows:
+        if name not in baseline:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
 
 
 @pytest.fixture(autouse=True)

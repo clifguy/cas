@@ -1,18 +1,24 @@
 # Linux-safe default stack config baked into the SAGE container image.
 #
-# This is a deliberately minimal, dependency-free configuration: it lets the
-# image boot on a non-Apple Linux host with no external services -- no
-# Postgres, no hosted model, no API key. It is NOT a production cloud
-# configuration; it exists so the image starts cleanly out of the box and so
-# the boot smoke is hermetic.
+# This is a deliberately minimal configuration: it lets the image boot on a
+# non-Apple Linux host with no hosted model and no API key. It is NOT a
+# production cloud configuration; it exists so the image starts cleanly out
+# of the box and so the boot smoke is hermetic.
 #
-# Operators override it at deploy time by pointing SAGE_CONFIG_PATH at a stack
-# config that binds the cloud durable-storage and abstraction providers
-# (storage_backend: postgres plus the postgres block; abstraction.provider:
-# anthropic plus a Claude model id), supplying ANTHROPIC_API_KEY and
-# SAGE_PG_PASSWORD through the environment. See docs/process/container-image.md
-# and the config schema at docs/fs/sage/sage_core_config.schema.json.
+# storage_backend: postgres is the storage port's only binding, but the boot
+# stays hermetic without a reachable server: with zero vaults discovered
+# (the smoke's zero-vault boot), the storage provisioner is constructed but
+# its connection-opening method is never called, so no network I/O happens
+# at stack init.
+#
+# Operators override this file at deploy time by pointing SAGE_CONFIG_PATH at
+# a stack config that binds the cloud abstraction provider and the reachable
+# postgres block (abstraction.provider: anthropic plus a Claude model id;
+# postgres: host/port/database for the managed endpoint), supplying
+# ANTHROPIC_API_KEY and SAGE_PG_PASSWORD through the environment. See
+# docs/process/container-image.md and the config schema at
+# docs/fs/sage/sage_core_config.schema.json.
 profile: local
-storage_backend: embedded
+storage_backend: postgres
 abstraction:
   provider: stub

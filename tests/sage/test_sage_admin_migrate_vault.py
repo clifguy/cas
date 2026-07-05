@@ -7,62 +7,51 @@ payload through the MCP serialize path.
 
 from __future__ import annotations
 
-import pytest
-
 from sage import mcp_server
+from sage.config import VaultConfig
+from sage.mcp_init import initialize_services
 from sage.models.schemas import MigrationReport
-from tests.sage.test_maintenance_service import (
-    _bootstrap_post_migration_vault,
-    _close_registry_vault,
-    _swap_in_legacy_db,
-)
+from sage.services.vault_registry import VaultRegistryService
+from tests.sage.conftest import initialize_services_for_test
 
 
-@pytest.fixture
-def empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Snapshot _vaults before each test and restore after."""
-    saved = dict(mcp_server._vaults)
-    mcp_server._vaults.clear()
-    try:
-        yield
-    finally:
-        mcp_server._vaults.clear()
-        mcp_server._vaults.update(saved)
+async def test_sage_admin_migrate_vault_returns_report_dict(minimal_vault_config_dict):
+    """Happy path: returns a dict that round-trips through MigrationReport
+    as the Postgres no-op report, with both tier3 keys present.
 
-
-async def test_sage_admin_migrate_vault_returns_report_dict(tmp_path, monkeypatch, empty_registry):
-    """Happy path: returns a dict that round-trips through MigrationReport."""
-    # Build the same registry/services structure as the service tests, then
-    # publish it on mcp_server._vaults so the MCP tool's get_vault finds it.
-    async with _bootstrap_post_migration_vault(tmp_path, monkeypatch) as (
-        registry,
-        services,
-        registry_service,
-    ):
-        vault_id = services.config.vault.id
+    The vault registers through the uninjected production path, so the
+    maintenance service resolves ``storage_backend`` from the pinned stack
+    config (Postgres) exactly as the running server does — a report claiming
+    column or backfill work here would mean the embedded-backend detect path
+    ran against a store that is not SQLite.
+    """
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    # mcp_server._vaults IS the registry that mcp_server's get_vault reads;
+    # wire the registry service over it so the tool-side maintenance service
+    # is constructed (it requires a registry service).
+    registry_service = VaultRegistryService(mcp_server._vaults, initialize_services)
+    async with initialize_services_for_test(config, registry_service=registry_service) as services:
+        vault_id = config.vault.id
+        mcp_server._vaults[vault_id] = services
         try:
-            _db_path, _maintenance = await _swap_in_legacy_db(registry, services, registry_service)
-            # mcp_server._vaults IS the registry that mcp_server._get_vault
-            # reads. Mirror the entry we just built so the tool sees it.
-            mcp_server._vaults[vault_id] = registry[vault_id]
-
             result = await mcp_server.migrate_vault(vault_id=vault_id)
 
+            assert isinstance(result, dict)
+            assert "error" not in result, f"expected report, got {result!r}"
             # The tool returns a dict that must validate cleanly as a
             # MigrationReport.
             report = MigrationReport.model_validate(result)
             assert report.vault_id == vault_id
-            assert len(report.columns_added) > 0, "expected pending alters on legacy DB"
+            assert report.columns_added == []
+            assert report.backfills_applied == []
+            # Both tier3 keys are present even on the no-op path.
+            assert "tier3_uniqueness_activations" in result
+            assert "tier3_uniqueness_collisions" in result
         finally:
-            # Close the post-migration graph_store currently bound to
-            # the local registry; the in-tool reload swapped a fresh
-            # SAGEServices in here whose graph_store would otherwise leak.
-            await _close_registry_vault(registry, vault_id)
+            mcp_server._vaults.pop(vault_id, None)
 
 
-async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_envelope(
-    empty_registry,
-):
+async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_envelope():
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
     and surfaces as the structured invalid_vault_id (400) envelope carrying
     the offending value, not a raised exception."""
@@ -76,9 +65,7 @@ async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_env
     assert result["detail"]["vault_id"] == "not a vault id!"
 
 
-async def test_sage_admin_migrate_vault_unknown_vault_returns_error_envelope(
-    empty_registry,
-):
+async def test_sage_admin_migrate_vault_unknown_vault_returns_error_envelope():
     """An unregistered vault_id returns the unknown_vault envelope."""
     result = await mcp_server.migrate_vault(vault_id="ghost")
 

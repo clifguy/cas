@@ -36,7 +36,7 @@
         },
         "brain_root": {
           "type": "string",
-          "description": "Directory containing this vault's content store and graph store databases. Absolute path. Must be outside cloud-synced directories (SQLite and LanceDB are incompatible with cloud sync)."
+          "description": "Directory holding this vault's local runtime artifacts (e.g. the timing log). Absolute path. Must be outside cloud-synced directories."
         },
         "visibility": {
           "type": "string",

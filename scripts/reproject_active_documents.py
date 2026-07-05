@@ -66,10 +66,11 @@ Usage::
     .venv/bin/python -m scripts.reproject_active_documents \\
         --execute --allow-hash-drift
 
-Safe to run while the SAGE MCP server is running. LanceDB's
-``index_chunks`` delete-then-insert is atomic; SQLite transactions
-serialize concurrent writes. There is no DocumentLockManager
-coordination between this script and the MCP server, so avoid running
+Safe to run while the SAGE MCP server is running. The content store's
+``index_chunks`` delete-then-insert runs in a single database transaction;
+Postgres serializes concurrent writes to the same rows. There is no
+DocumentLockManager coordination between this script and the MCP server,
+so avoid running
 this script in parallel with an MCP-initiated re-ingest of the same
 document.
 """
@@ -271,21 +272,18 @@ async def reproject_vault_with_services(
         f"{n_failed} failed in {elapsed.total_seconds():.1f}s."
     )
 
-    # Compact LanceDB: fold the FTS delta into the index, compact fragments,
-    # and prune old version metadata. Each index_chunks call writes a new
-    # fragment and leaves added rows in the unindexed FTS delta; version
-    # metadata accumulates without optimize().
+    # Reclaim the dead-tuple bloat this rewrite generated: each
+    # index_chunks call is a delete-then-insert, and optimize's VACUUM
+    # reclaims the superseded rows.
     if n_done > 0:
         try:
-            table = content_store._get_table()
-            if table is not None:
-                print("  Compacting LanceDB fragments and pruning old versions...")
-                opt_started = datetime.now(timezone.utc)
-                table.optimize(cleanup_older_than=timedelta(0))
-                opt_elapsed = datetime.now(timezone.utc) - opt_started
-                print(f"  Compaction done in {opt_elapsed.total_seconds():.1f}s.")
+            print("  Reclaiming content-store bloat...")
+            opt_started = datetime.now(timezone.utc)
+            await content_store.optimize(cleanup_older_than=timedelta(0))
+            opt_elapsed = datetime.now(timezone.utc) - opt_started
+            print(f"  Reclaim done in {opt_elapsed.total_seconds():.1f}s.")
         except Exception as exc:
-            print(f"  Compaction step failed (non-fatal): {exc!r}", file=sys.stderr)
+            print(f"  Reclaim step failed (non-fatal): {exc!r}", file=sys.stderr)
 
     return (n_done, skipped_total, n_failed)
 

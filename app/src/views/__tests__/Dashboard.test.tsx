@@ -48,7 +48,6 @@ function makeStats(
     content_store_chunk_count: 5,
     content_store_version_count: versionCount,
     content_store_small_fragment_count: smallFragmentCount,
-    sqlite_size_bytes: 500,
     last_ingestion_at: null,
     last_optimize: lastOptimize,
     health: {
@@ -134,13 +133,14 @@ describe('Dashboard last-optimize card', () => {
 });
 
 describe('Dashboard storage stats', () => {
-  it('renders the backend-neutral graph-store size alongside the SQLite stat', async () => {
+  it('renders the backend-neutral graph-store size and omits the retired SQLite stat', async () => {
     mockGetVaultStats.mockResolvedValue(makeStats(3, 0));
     renderDashboard();
 
     await screen.findByText('Graph Store');
     expect(screen.getByText('800 B')).toBeInTheDocument();
-    // sqlite_size_bytes keeps its own card and narrow meaning alongside the new metric.
-    expect(screen.getByText('SQLite')).toBeInTheDocument();
+    expect(screen.getByText('Content Store')).toBeInTheDocument();
+    // sqlite_size_bytes is retired; its card must not render.
+    expect(screen.queryByText('SQLite')).not.toBeInTheDocument();
   });
 });

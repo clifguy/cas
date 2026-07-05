@@ -299,14 +299,27 @@ class TestSageVaultStats:
         result = _parse(await get_vault_stats("nonexistent"))
         assert result["error"] == "unknown_vault"
 
-    async def test_sqlite_size_bytes_nonzero_after_ingest(self, single_vault):
-        """sqlite_size_bytes reflects actual graph.db file size."""
+    async def test_stats_omit_sqlite_size_bytes(self, single_vault):
+        """The retired sqlite_size_bytes field is absent; the backend-neutral
+        graph_store_size_bytes carries the signal.
+
+        A lingering field with a stale default would pass a naive presence
+        check silently; asserting the key's absence catches it.
+        """
         services, config = single_vault
         await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.3)
 
         result = _parse(await get_vault_stats("test_vault"))
-        assert result["sqlite_size_bytes"] > 0
+        assert "sqlite_size_bytes" not in result
+        assert result["graph_store_size_bytes"] > 0
+
+    def test_vault_stats_response_model_has_no_sqlite_size_bytes_field(self):
+        """Pydantic posture check: catches re-introduction on the model
+        independent of the producer."""
+        from sage.models.schemas import VaultStatsResponse
+
+        assert "sqlite_size_bytes" not in VaultStatsResponse.model_fields
 
     async def test_content_store_size_bytes_nonzero_after_indexing(self, single_vault):
         """content_store_size_bytes reflects actual content-store directory size."""
@@ -317,13 +330,19 @@ class TestSageVaultStats:
         result = _parse(await get_vault_stats("test_vault"))
         assert result["content_store_size_bytes"] > 0
 
-    async def test_storage_sizes_zero_for_empty_vault(self, single_vault):
-        """Empty vault has sqlite overhead but zero content store (no table yet)."""
+    async def test_storage_sizes_for_empty_vault(self, single_vault):
+        """Empty vault reports provisioned-relation overhead, no content.
+
+        Guards the meters' wiring on a fresh vault: a meter that fails to
+        resolve its relations degrades to 0, so the nonzero floor below
+        distinguishes "measured an empty relation" from "measured nothing".
+        """
         result = _parse(await get_vault_stats("test_vault"))
-        # SQLite file exists with schema, so it has some size
-        assert result["sqlite_size_bytes"] > 0
-        # Content-store directory may not exist or be empty before first ingest
-        assert result["content_store_size_bytes"] >= 0
+        assert "sqlite_size_bytes" not in result
+        # Empty relations still carry index metapages and heap headers, so
+        # both live meters read nonzero overhead even before first ingest.
+        assert result["graph_store_size_bytes"] > 0
+        assert result["content_store_size_bytes"] > 0
         # Chunk count is 0 before any indexing
         assert result["content_store_chunk_count"] == 0
 

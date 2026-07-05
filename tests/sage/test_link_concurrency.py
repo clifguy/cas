@@ -1,13 +1,13 @@
-"""Concurrency and fan-out tests for GraphOpsService._create_edge_strict.
+"""Concurrency tests for GraphOpsService._create_edge_strict.
 
-Covers the post-ADR-017 regression where a single link call submitted
-7+ SQLite tasks to a small ThreadPoolExecutor. Under parallel load,
-cancelled MCP calls left the executor saturated with orphaned work.
+Covers the post-ADR-017 regression where parallel link calls could
+interleave their pre-insert reads and inserts, and cancelled MCP calls
+left orphaned in-flight work behind.
 
-The fix (a) batches all pre-insert reads into a single executor
-submission via GraphStore.read_link_context and (b) serializes
-GraphOpsService._create_edge_strict with an asyncio.Lock so parallel callers queue
-cheaply instead of compounding fan-out.
+The fix (a) batches all pre-insert reads into a single store call via
+GraphStore.read_link_context and (b) serializes GraphOpsService
+._create_edge_strict with a service-level asyncio.Lock so parallel
+callers queue cheaply instead of overlapping inside the store.
 """
 
 import asyncio
@@ -67,119 +67,42 @@ def _make_doc(doc_id: str) -> Document:
 
 
 # ---------------------------------------------------------------------------
-# Fan-out: single link call issues a bounded number of executor submissions
-# ---------------------------------------------------------------------------
-
-
-async def test_link_transitive_both_bounded_executor_submissions(
-    sqlite_graph_store, sqlite_graph_ops_service, monkeypatch
-):
-    graph_store = sqlite_graph_store
-    graph_ops_service = sqlite_graph_ops_service
-    """A transitive_both link must issue ≤ 2 executor submissions.
-
-    Pre-fix baseline was 7 (get_document × 4, get_supersedes_lineage × 2,
-    insert_edge × 1). The fix batches all reads into one submission via
-    read_link_context, plus one submission for insert_edge.
-    """
-    await graph_store.insert_document(_make_doc(_id("doc_a")))
-    await graph_store.insert_document(_make_doc(_id("doc_b")))
-
-    counter = {"count": 0}
-    original_run = graph_store._run
-
-    async def counting_run(fn, *args):
-        counter["count"] += 1
-        return await original_run(fn, *args)
-
-    monkeypatch.setattr(graph_store, "_run", counting_run)
-
-    await graph_ops_service._create_edge_strict(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.REFERENCES,  # transitive_both per default registry
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
-        )
-    )
-
-    assert counter["count"] <= 2, (
-        f"expected ≤ 2 executor submissions per link, got {counter['count']}"
-    )
-
-
-async def test_link_merged_from_bounded_executor_submissions(
-    sqlite_graph_store, sqlite_graph_ops_service, monkeypatch
-):
-    graph_store = sqlite_graph_store
-    graph_ops_service = sqlite_graph_ops_service
-    """A merged_from link must issue ≤ 2 executor submissions.
-
-    Pre-fix baseline was 8+ (get_document × 2, has_supersedes_predecessor,
-    has_supersedes_successor, get_supersedes_lineage, find_tombstone_candidates,
-    merge_atomic). The fix batches all reads plus the merge into two.
-    """
-    # Two chain heads with no outbound / inbound supersedes.
-    await graph_store.insert_document(_make_doc(_id("c1")))
-    await graph_store.insert_document(_make_doc(_id("p1")))
-
-    counter = {"count": 0}
-    original_run = graph_store._run
-
-    async def counting_run(fn, *args):
-        counter["count"] += 1
-        return await original_run(fn, *args)
-
-    monkeypatch.setattr(graph_store, "_run", counting_run)
-
-    await graph_ops_service._create_edge_strict(
-        LinkRequest(
-            source_id=_id("c1"),
-            target_id=_id("p1"),
-            edge_type=EdgeType.MERGED_FROM,
-        )
-    )
-
-    assert counter["count"] <= 2, (
-        f"expected ≤ 2 executor submissions per merged_from link, got {counter['count']}"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Serialization: the asyncio.Lock gates concurrent link calls
 # ---------------------------------------------------------------------------
 
 
-async def test_link_serializes_concurrent_calls(
-    sqlite_graph_store, sqlite_graph_ops_service, monkeypatch
-):
-    graph_store = sqlite_graph_store
-    graph_ops_service = sqlite_graph_ops_service
+async def test_link_serializes_concurrent_calls(graph_store, graph_ops_service, monkeypatch):
     """Concurrent link calls must not overlap inside the store.
 
-    We wrap graph_store._run to count simultaneous calls. With the
-    asyncio.Lock in place, the peak should be 1 (one link call's reads
-    and its insert never interleave with another's).
+    One link call's batched pre-insert read (read_link_context) and its
+    insert_edge must never interleave with another call's — the
+    interleaving window is where a stale read produces a duplicate or
+    lost edge. We wrap both store entry points to count simultaneous
+    in-flight calls; with the service-level lock in place, the peak
+    should be 1. Dropping the lock lets the asyncio.sleep(0) yield below
+    interleave the wrapped calls and the peak exceeds 1.
     """
     for name in ("doc_a", "doc_b", "doc_c", "doc_d"):
         await graph_store.insert_document(_make_doc(_id(name)))
 
     active = {"count": 0, "peak": 0}
-    original_run = graph_store._run
 
-    async def tracking_run(fn, *args):
-        active["count"] += 1
-        active["peak"] = max(active["peak"], active["count"])
-        try:
-            # Small yield to give other coroutines a chance to interleave
-            # if the lock were not in place.
-            await asyncio.sleep(0)
-            return await original_run(fn, *args)
-        finally:
-            active["count"] -= 1
+    def _tracking(method):
+        async def wrapper(*args, **kwargs):
+            active["count"] += 1
+            active["peak"] = max(active["peak"], active["count"])
+            try:
+                # Small yield to give other coroutines a chance to
+                # interleave if the lock were not in place.
+                await asyncio.sleep(0)
+                return await method(*args, **kwargs)
+            finally:
+                active["count"] -= 1
 
-    monkeypatch.setattr(graph_store, "_run", tracking_run)
+        return wrapper
+
+    monkeypatch.setattr(graph_store, "read_link_context", _tracking(graph_store.read_link_context))
+    monkeypatch.setattr(graph_store, "insert_edge", _tracking(graph_store.insert_edge))
 
     # Four concurrent link calls on disjoint document pairs.
     async def do_link(src, tgt):
@@ -210,20 +133,20 @@ async def test_link_serializes_concurrent_calls(
 
 
 # ---------------------------------------------------------------------------
-# Cancellation bound: cancelled link calls do not leak executor work
+# Cancellation bound: cancelled link calls do not leak in-flight work
 # ---------------------------------------------------------------------------
 
 
 async def test_cancelled_parallel_link_calls_drain_quickly(graph_store, graph_ops_service):
     """Spawning many link tasks and cancelling them must drain fast.
 
-    Before the fix, each in-flight link fanned out 7+ executor tasks
-    that kept running past asyncio cancellation. Twelve parallel calls
-    could leave ~80 orphaned tasks, making `store.close()` block for
-    minutes. With the batched-read fix and handler-level lock, at most
-    one call holds the lock at a time and each holds ≤ 2 executor
-    submissions; the rest queue at the asyncio layer and exit
-    immediately on cancel.
+    Before the fix, each in-flight link fanned out many independent
+    store calls that kept running past asyncio cancellation; a dozen
+    parallel calls could leave the store saturated with orphaned work,
+    making the next operation block for minutes. With the batched-read
+    fix and handler-level lock, at most one call is inside the store at
+    a time; the rest queue at the asyncio layer and exit immediately on
+    cancel.
 
     We assert a strict wall-clock bound: even N parallel cancels should
     settle in well under a second on any reasonable machine.
@@ -256,13 +179,13 @@ async def test_cancelled_parallel_link_calls_drain_quickly(graph_store, graph_op
     # CancelledError doesn't abort this coroutine.
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    # After cancellation, any remaining executor work should drain fast.
+    # After cancellation, any remaining in-flight work should drain fast.
     # We measure the store's ability to respond: one more fast read.
     t0 = time.monotonic()
     await graph_store.get_total_edge_count()
     elapsed = time.monotonic() - t0
 
     assert elapsed < 2.0, (
-        f"executor appears saturated post-cancellation: simple read took "
+        f"store appears saturated post-cancellation: simple read took "
         f"{elapsed:.2f}s (expected < 2s)"
     )

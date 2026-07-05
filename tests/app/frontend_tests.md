@@ -100,8 +100,8 @@ especially when multiple vaults are configured.
 
 **Decision:** Ten statistics are displayed: document count (total), documents by
 lifecycle state, documents by doc_type, documents by source adapter, edge count
-(total), edges by type, staging edge count, LanceDB size, SQLite size, last
-ingestion timestamp.
+(total), edges by type, staging edge count, content store size, graph store
+size, last ingestion timestamp.
 
 **Precondition:** Vault loaded with documents and edges.
 
@@ -115,8 +115,8 @@ ingestion timestamp.
 - Total edge count shown
 - Edge type breakdown shown (all seven types represented in labels)
 - Staging edge count shown
-- LanceDB disk size shown
-- SQLite disk size shown
+- Content store disk size shown
+- Graph store disk size shown
 - Last ingestion timestamp shown
 
 **Rationale:** Statistics provide the vault health overview without requiring

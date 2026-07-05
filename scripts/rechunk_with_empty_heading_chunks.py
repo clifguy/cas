@@ -210,24 +210,18 @@ async def rechunk_vault(vault_id: str, *, execute: bool, batch_size: int) -> int
         elapsed = datetime.now(timezone.utc) - started
         print(f"\nDone. {n_done} re-chunked, {n_failed} failed, in {elapsed.total_seconds():.1f}s.")
 
-        # Compact LanceDB fragments, fold the FTS delta into the index, and
-        # prune old version metadata. Each index_chunks call writes a new
-        # fragment and leaves the added rows in the unindexed FTS delta;
-        # optimize folds them in and removes superseded versions so a
-        # vault-wide rewrite does not retain stale fragments and versions.
-        # ``cleanup_older_than=timedelta(0)`` removes every version except
-        # the latest. Safe for one-shot maintenance scripts where
-        # time-travel is not needed.
+        # Reclaim the dead-tuple bloat this vault-wide rewrite generated:
+        # each index_chunks call is a delete-then-insert, and optimize's
+        # VACUUM reclaims the superseded rows. ``cleanup_older_than`` is
+        # accepted for the port contract but has no Postgres analog.
         try:
-            table = store._get_table()
-            if table is not None:
-                print("\nCompacting LanceDB fragments and pruning old versions...")
-                opt_started = datetime.now(timezone.utc)
-                table.optimize(cleanup_older_than=timedelta(0))
-                opt_elapsed = datetime.now(timezone.utc) - opt_started
-                print(f"Compaction done in {opt_elapsed.total_seconds():.1f}s.")
+            print("\nReclaiming content-store bloat...")
+            opt_started = datetime.now(timezone.utc)
+            await store.optimize(cleanup_older_than=timedelta(0))
+            opt_elapsed = datetime.now(timezone.utc) - opt_started
+            print(f"Reclaim done in {opt_elapsed.total_seconds():.1f}s.")
         except Exception as exc:
-            print(f"Compaction step failed (non-fatal): {exc!r}", file=sys.stderr)
+            print(f"Reclaim step failed (non-fatal): {exc!r}", file=sys.stderr)
 
         return 0 if n_failed == 0 else 1
     finally:

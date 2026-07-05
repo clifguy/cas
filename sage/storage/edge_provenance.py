@@ -1,14 +1,10 @@
 """Rationale-prefix to ``RationaleKind`` mapping and derivation helper.
 
 CAS-ADR-019 introduced a rationale-text prefix convention as the
-provenance discriminator for auto-inferred edges. promoted that
-convention to a typed, indexed column on the edges table.
+provenance discriminator for auto-inferred edges, later promoted to a
+typed, indexed column on the edges table.
 
 This module is the single source of truth for the prefix → kind map.
-The storage layer's one-time backfill SQL in ``sage.storage.migrations``
-is generated from the same mapping (verified by
-``tests/sage/test_rationale_kind.py::test_t2_backfill_sql_mirrors_helper_map``)
-so the two surfaces cannot drift.
 """
 
 from __future__ import annotations

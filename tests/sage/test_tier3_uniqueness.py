@@ -30,7 +30,6 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from sage.adapters.stubs import StubGraphStore
 from sage.api.errors import (
     Tier3UniqueConstraintViolation,
     VaultConfigValidationError,
@@ -47,7 +46,7 @@ from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import MaintenanceService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.migrations import (
+from sage.storage.tier3_uniqueness import (
     Tier3UniqueViolation,
     tier3_unique_index_name,
 )
@@ -166,35 +165,10 @@ def unique_keys_ingestion_service(
 
 
 @pytest.fixture
-def unique_keys_maintenance_service(
-    graph_store, unique_keys_config, tmp_vault_dir, stub_content_store
-):
+def unique_keys_maintenance_service(graph_store, unique_keys_config, stub_content_store):
     return MaintenanceService(
         vault_id="test_tier3_unique_vault",
-        db_path=tmp_vault_dir / "brain" / "graph.db",
         graph_store=graph_store,
-        config=unique_keys_config,
-        registry_service=None,
-        content_store=stub_content_store,
-    )
-
-
-@pytest.fixture
-def sqlite_unique_keys_maintenance_service(
-    sqlite_graph_store, unique_keys_config, tmp_vault_dir, stub_content_store
-):
-    """MaintenanceService pinned to SQLite.
-
-    ``migrate_vault``'s detect-then-apply path is a SQLite-runtime flow (it
-    simulates ALTERs on a throwaway sqlite db and inspects ``sqlite_master``);
-    tests that exercise that path run SQLite-only. The Postgres analog is the
-    short-circuit no-op, covered by
-    ``test_t15_migrate_vault_postgres_backend_still_runs_tier3_scan``.
-    """
-    return MaintenanceService(
-        vault_id="test_tier3_unique_vault",
-        db_path=tmp_vault_dir / "brain" / "graph.db",
-        graph_store=sqlite_graph_store,
         config=unique_keys_config,
         registry_service=None,
         content_store=stub_content_store,
@@ -783,16 +757,29 @@ async def test_t14_migration_scan_treats_supersession_chain_as_one_artifact(
 # ---------------------------------------------------------------------------
 
 
+async def _index_exists_in_catalog(pg_pool, doc_type: str, field: str) -> bool:
+    """Check the partial UNIQUE index in pg_indexes directly.
+
+    Bypasses the store's own ``tier3_unique_index_exists`` so an
+    activation bug and a broken existence check cannot mask each other.
+    """
+    name = tier3_unique_index_name(doc_type, field)
+    async with pg_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = %s",
+            (name,),
+        )
+        return await cur.fetchone() is not None
+
+
 async def test_t15_migrate_vault_refuses_activation_on_collision(
-    sqlite_graph_store, sqlite_unique_keys_maintenance_service, tmp_vault_dir
+    graph_store, unique_keys_maintenance_service, pg_pool
 ):
-    graph_store = sqlite_graph_store
-    unique_keys_maintenance_service = sqlite_unique_keys_maintenance_service
     """T15: `migrate_vault` returns the collision in
     `tier3_uniqueness_collisions` and the partial UNIQUE index is NOT
     created. Anti-coincidental: unconditionally creating the index would
     leave the constraint live despite the collision; we verify both the
-    report shape and the absence of the index in sqlite_master."""
+    report shape and the absence of the index in pg_indexes."""
     await graph_store.insert_document(_make_ticket_doc("a", "T-0001"))
     await graph_store.insert_document(_make_ticket_doc("b", "T-0001"))
 
@@ -806,16 +793,16 @@ async def test_t15_migrate_vault_refuses_activation_on_collision(
     assert len(ticket_collisions) == 1
     assert ticket_collisions[0].field == "ticket_id"
 
-    # Verify the ticket index is absent: a follow-on insert with the
-    # colliding value would NOT raise (constraint is not active).
-    assert not await graph_store.tier3_unique_index_exists("ticket", "ticket_id")
+    # Verify against the catalog: the blocked pair's index is absent
+    # (a follow-on colliding insert would NOT raise) while the clean
+    # pair's index landed.
+    assert not await _index_exists_in_catalog(pg_pool, "ticket", "ticket_id")
+    assert await _index_exists_in_catalog(pg_pool, "failure_record", "failure_id")
 
 
 async def test_t16_migrate_vault_creates_index_on_clean_portfolio(
-    sqlite_graph_store, sqlite_unique_keys_maintenance_service
+    graph_store, unique_keys_maintenance_service, pg_pool
 ):
-    graph_store = sqlite_graph_store
-    unique_keys_maintenance_service = sqlite_unique_keys_maintenance_service
     """T16: a portfolio without collisions activates cleanly: the partial
     UNIQUE index is created and a subsequent colliding insert raises
     `Tier3UniqueViolation`. Anti-coincidental: gating index creation on
@@ -828,8 +815,9 @@ async def test_t16_migrate_vault_creates_index_on_clean_portfolio(
     assert ("failure_record", "failure_id") in activated_pairs
     assert report.tier3_uniqueness_collisions == []
 
-    # Index now exists in the SQLite schema.
-    assert await graph_store.tier3_unique_index_exists("ticket", "ticket_id")
+    # Index now exists in the catalog.
+    assert await _index_exists_in_catalog(pg_pool, "ticket", "ticket_id")
+    assert await _index_exists_in_catalog(pg_pool, "failure_record", "failure_id")
 
     # And it actually enforces -- inserting a colliding pair raises.
     await graph_store.insert_document(_make_ticket_doc("a", "T-0001"))
@@ -837,8 +825,7 @@ async def test_t16_migrate_vault_creates_index_on_clean_portfolio(
         await graph_store.insert_document(_make_ticket_doc("b", "T-0001"))
 
 
-async def test_t16_migration_is_idempotent(sqlite_unique_keys_maintenance_service):
-    unique_keys_maintenance_service = sqlite_unique_keys_maintenance_service
+async def test_t16_migration_is_idempotent(unique_keys_maintenance_service):
     """Re-running `migrate_vault` on an already-activated vault produces
     the same activations and no side effects. The CREATE UNIQUE INDEX
     IF NOT EXISTS makes index creation idempotent; this guards the
@@ -848,67 +835,6 @@ async def test_t16_migration_is_idempotent(sqlite_unique_keys_maintenance_servic
     assert {(a.doc_type, a.field) for a in first.tier3_uniqueness_activations} == {
         (a.doc_type, a.field) for a in second.tier3_uniqueness_activations
     }
-
-
-class _Tier3SpyGraphStore(StubGraphStore):
-    """A StubGraphStore that records tier3-scan calls and reports a clean
-    portfolio, standing in for a PostgresGraphStore in a pure-unit test.
-
-    StubGraphStore's tier3 methods raise ``_unsupported`` by default; these
-    overrides make the scan observable without a live Postgres pool.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.chain_head_scans: list[tuple[str, str]] = []
-        self.index_ensures: list[tuple[str, str]] = []
-
-    async def find_chain_heads_with_tier3_value(
-        self, doc_type: str, field: str
-    ) -> list[tuple[object, list[str]]]:
-        self.chain_head_scans.append((doc_type, field))
-        return []  # no groups -> no collisions -> clean activation
-
-    async def ensure_tier3_unique_index(self, doc_type: str, field: str) -> None:
-        self.index_ensures.append((doc_type, field))
-
-
-async def test_t15_migrate_vault_postgres_backend_still_runs_tier3_scan(
-    unique_keys_config, tmp_vault_dir, stub_content_store
-):
-    """On the postgres backend, migrate_vault short-circuits the SQLite
-    detect-then-apply path but STILL runs the backend-agnostic tier3 scan.
-
-    Anti-coincidental: a fix that short-circuited the entire method (rather
-    than just the SQLite detect/apply) would leave the declared unique_keys
-    unactivated and the scan un-run -- the recorded scans and activations
-    below would both be empty.
-    """
-    spy = _Tier3SpyGraphStore()
-    db_path = tmp_vault_dir / "brain" / "graph.db"
-    maintenance = MaintenanceService(
-        vault_id="test_tier3_unique_vault",
-        db_path=db_path,
-        graph_store=spy,
-        config=unique_keys_config,
-        registry_service=None,
-        content_store=stub_content_store,
-        storage_backend="postgres",
-    )
-
-    report = await maintenance.migrate_vault()
-
-    # The tier3 scan ran against both declared unique_keys pairs...
-    assert ("ticket", "ticket_id") in spy.chain_head_scans
-    assert ("failure_record", "failure_id") in spy.chain_head_scans
-    # ...and, the portfolio being clean, both activated.
-    activated_pairs = {(a.doc_type, a.field) for a in report.tier3_uniqueness_activations}
-    assert ("ticket", "ticket_id") in activated_pairs
-    assert ("failure_record", "failure_id") in activated_pairs
-    # The SQLite detect-then-apply path was skipped entirely.
-    assert report.columns_added == []
-    assert report.backfills_applied == []
-    assert not db_path.exists()
 
 
 # ---------------------------------------------------------------------------

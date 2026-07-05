@@ -115,7 +115,7 @@ class LifecycleService:
 
             # Supersede-specific validation (BH-016, BH-017) and atomic commit.
             # The lifecycle flip and the supersedes edge insert run in a
-            # single SQLite transaction so a mid-operation failure cannot
+            # single database transaction so a mid-operation failure cannot
             # leave the predecessor archived without the corresponding
             # edge (BH-135).
             if request.action == "supersede":
@@ -164,7 +164,7 @@ class LifecycleService:
                 else:
                     updated_doc = await self._store.update_document(document_id, updates)
 
-            # Sync the new lifecycle_status to the chunk store so LanceDB
+            # Sync the new lifecycle_status to the chunk store so its
             # pre-filter pushdown stays accurate after the
             # transition. Best-effort: legacy wiring that omits
             # content_store falls through as a no-op.
@@ -237,7 +237,7 @@ class LifecycleService:
         The performance win versus N sequential ``update_lifecycle``
         MCP calls comes from eliminating per-call MCP framing overhead
         and asyncio scheduling between items; the per-document lock and
-        the per-item SQLite transaction are unchanged.
+        the per-item database transaction are unchanged.
 
         ``request.response_mode`` controls per-item payload
         depth. ``light`` drops the per-item ``document`` body from
@@ -334,7 +334,7 @@ class LifecycleService:
     ) -> SupersedeTransition:
         """Validate the supersede transition and build the writes for it
         without committing. Used by IngestionService to bundle the
-        predecessor flip and edge insert into the same SQLite transaction
+        predecessor flip and edge insert into the same database transaction
         as the new document insert (BH-136).
 
         The caller is responsible for ensuring `predecessor` is freshly

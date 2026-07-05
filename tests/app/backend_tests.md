@@ -83,7 +83,7 @@ not cached.
   - `by_edge_type` (object: type -> count)
   - `staging_edge_count` (integer)
   - `content_store_size_bytes` (integer)
-  - `sqlite_size_bytes` (integer)
+  - `graph_store_size_bytes` (integer)
   - `last_ingestion_at` (nullable ISO 8601 timestamp)
 
 **Rationale:** A dedicated stats endpoint avoids the frontend having to make

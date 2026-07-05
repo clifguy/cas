@@ -50,7 +50,6 @@ from sage.storage_binding import (
     VaultStorageHandle,
     VaultStorageProvisioner,
     build_stack_storage_provisioner,
-    resolved_storage_backend,
 )
 from sage.vault_source_binding import (
     VaultSourceStore,
@@ -243,8 +242,7 @@ class SAGEServices:
     timing_handler: logging.Handler | None = None
     # Handle for the durable-storage pair the storage provisioner opened for
     # this vault (CAS-ADR-042). Owns the backing resource — the per-vault
-    # connection pool on the Postgres binding; nothing beyond the stores on
-    # the embedded binding. None when the caller filled both store slots
+    # Postgres connection pool. None when the caller filled both store slots
     # itself, in which case the provisioner was never consulted.
     storage: "VaultStorageHandle | None" = None
 
@@ -454,10 +452,10 @@ def _local_storage_binding(stack_config: SageCoreConfig) -> VaultStorageProvisio
 
 
 # Register the durable-storage binding for the local deployment profile
-# (CAS-ADR-042). The binding is the backend dispatch in sage.storage_binding:
-# Postgres adapters over a per-vault pool by default, with the embedded
-# SQLite/LanceDB pair selectable as the fallback. A future profile attaches
-# its own storage binding by registering a different factory here.
+# (CAS-ADR-042). The binding is the Postgres provisioner in
+# sage.storage_binding, authenticating from the environment or a peer-
+# authenticated unix socket. A future profile attaches its own storage
+# binding by registering a different factory here.
 profiles.register_binding(
     profiles.LOCAL_PROFILE,
     profiles.STORAGE_SEAM,
@@ -762,9 +760,10 @@ async def initialize_services(
             failure does NOT close it.
         embedding_provider: Optional override (default: NomicEmbeddingProvider).
         abstraction_provider: Optional override (default: from config).
-        migrate: If True, apply any pending schema migrations to the graph
-            store and content store. If False (default), raise
-            ``SchemaMigrationRequired`` when a migration is needed.
+        migrate: Threaded into the graph and content store initializers for
+            port symmetry; the Postgres bindings provision their schema
+            externally and treat every initialization statement as
+            replace-or-create, so the flag does not change behavior.
         config_path: Source path of the vault_config.yaml file. Stored on
             the returned ``SAGEServices`` so that ``reload_vault`` can
             re-read the file from disk to pick up edits made externally.
@@ -796,8 +795,7 @@ async def initialize_services(
 
         # Durable stores: explicit instance > factory > the provisioner the
         # active deployment profile binds for the storage seam (CAS-ADR-042) —
-        # Postgres adapters over a per-vault pool, or the embedded
-        # SQLite/LanceDB fallback, per the stack config's storage_backend key.
+        # Postgres adapters over a per-vault connection pool.
         # Only provisioner-built stores (no external handle) are tracked for
         # cleanup; caller-supplied and factory-supplied stores remain the
         # caller's responsibility and are assumed ready for use. The
@@ -929,16 +927,11 @@ async def initialize_services(
         if registry_service is not None:
             maintenance_service = MaintenanceService(
                 vault_id=config.vault.id,
-                db_path=brain_root / "graph.db",
                 graph_store=graph_store,
                 config=config,
                 registry_service=registry_service,
                 content_store=content_store,
                 ingestion_service=ingestion_service,
-                # Resolve the backend the store was actually provisioned with
-                # (env override > config) so migrate_vault's SQLite path runs
-                # only for the embedded backend (CAS-ADR-042).
-                storage_backend=resolved_storage_backend(get_stack_config()),
             )
 
         # Bootstrap vault owner

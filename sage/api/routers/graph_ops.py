@@ -39,7 +39,7 @@ router = APIRouter(tags=["Graph Operations"])
         "dispatched through the idempotent variant: a duplicate natural-key "
         "triple (source_id, target_id, edge_type) returns the existing edge "
         "with `created=false` rather than raising. Items are processed in "
-        "order under the process-wide link lock and per-item SQLite "
+        "order under the process-wide link lock and per-item database "
         "transactions. The batch is NOT atomic: a per-item SAGEError "
         "surfaces in the per-item error envelope while earlier-or-later "
         "successful items remain committed. The endpoint returns 200 even "

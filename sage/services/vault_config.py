@@ -16,7 +16,6 @@ registry state stays encapsulated in the registry service.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
@@ -80,10 +79,6 @@ class VaultConfigService:
         pending_metadata_docs = await self._store.list_pending_metadata_documents()
         pending_metadata_count = len(pending_metadata_docs)
 
-        brain_root = Path(config.vault.brain_root).expanduser()
-        sqlite_path = brain_root / "graph.db"
-        sqlite_size = sqlite_path.stat().st_size if sqlite_path.exists() else 0
-
         graph_store_size_bytes = await self._store.measured_byte_size()
         content_store_size_bytes = await self._content_store.measured_byte_size()
         content_store_chunk_count = await self._content_store.count_chunks()
@@ -106,7 +101,6 @@ class VaultConfigService:
             content_store_chunk_count=content_store_chunk_count,
             content_store_version_count=content_store_version_count,
             content_store_small_fragment_count=content_store_small_fragment_count,
-            sqlite_size_bytes=sqlite_size,
             last_ingestion_at=last_ingestion,
             last_optimize=last_optimize,
             health=HealthIndicators(

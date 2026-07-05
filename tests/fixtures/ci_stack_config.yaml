@@ -1,0 +1,14 @@
+# Stack config for CI jobs that boot a real SAGE server (e.g. the frontend
+# e2e job's Playwright webServer). Points the durable-storage binding at the
+# job's throwaway Postgres service container; the password travels via
+# SAGE_PG_PASSWORD in the job env, never in config. Selected by exporting
+# SAGE_CONFIG_PATH at this file.
+storage_backend: postgres
+postgres:
+  host: localhost
+  port: 5432
+  database: postgres
+  user: postgres
+  extensions:
+    - vector
+    - pgstattuple

@@ -145,12 +145,11 @@ class GraphOpsService:
         self._store = graph_store
         self._config = config
         self._edge_type_registry = edge_type_registry or EdgeTypeRegistry.default()
-        # Serializes link() across concurrent callers. Rationale: SQLite
-        # writes serialize at the DB layer anyway, and per-call fan-out
-        # into the graph-store executor compounded under parallel load,
-        # filling the pool with orphaned work when MCP clients cancelled.
-        # Queueing at the asyncio layer is cheap and bounds the pool's
-        # backlog to one in-flight link's worth of submissions.
+        # Serializes link() across concurrent callers: a read-then-write
+        # sequence (read_link_context, then insert_edge) that must not
+        # interleave with another call's, else the two race on the same
+        # natural-key slot. Queueing at the asyncio layer is cheap and
+        # bounds concurrent fan-out to one in-flight link's worth of work.
         self._link_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -295,7 +294,7 @@ class GraphOpsService:
         The performance win versus N sequential ``create_edge`` MCP calls
         comes from eliminating per-call MCP framing overhead and the
         asyncio scheduling between items; the process-wide ``_link_lock``
-        and the per-item SQLite transaction are unchanged.
+        and the per-item database transaction are unchanged.
 
         ``request.response_mode`` controls per-item payload
         depth. ``light`` drops the per-item ``edge`` body from success

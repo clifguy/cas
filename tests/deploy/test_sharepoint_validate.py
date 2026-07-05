@@ -8,12 +8,13 @@ restart. Three layers prove it:
 * **Structural** -- ``--dry-run`` enumerates exactly the checks each phase runs,
   derived from the driver's own registry (a dropped check must surface here).
 * **Faithful** -- run the driver (as a subprocess, the production caller path)
-  against the *real* SAGE REST app served by uvicorn-in-thread with the embedded
-  SQLite store and the filesystem vault-source binding standing in for the
-  document-store binding (the driver speaks REST and is binding-agnostic, so the
-  ingest -> retain -> readback -> audit chain is exercised end-to-end). This is
-  the anti-divergence guard: a driver hand-fitted to the stubs below would pass
-  the trap tests yet fail here against the genuine endpoints.
+  against the *real* SAGE REST app served by uvicorn-in-thread with the
+  Postgres storage binding and the filesystem vault-source binding standing in
+  for the document-store binding (the driver speaks REST and is
+  binding-agnostic, so the ingest -> retain -> readback -> audit chain is
+  exercised end-to-end). This is the anti-divergence guard: a driver
+  hand-fitted to the stubs below would pass the trap tests yet fail here
+  against the genuine endpoints.
 * **Trap** -- a controllable HTTP stub reproduces the pathologies a real server
   will not produce on demand (a readback whose bytes do not hash-match the
   ingest, an audit that reports the probe missing, an ingest summary with no
@@ -134,9 +135,10 @@ def test_dry_run_lists_expected_checks(phase: str, expected: str, tmp_path: Path
 # --------------------------------------------------------------------------- #
 @contextmanager
 def _serve_real(tmp_path: Path) -> Iterator[str]:
-    """Serve the real SAGE REST app with the embedded store + filesystem
-    vault-source binding (pinned by ``SAGE_TEST_STORAGE_BACKEND=embedded`` in the
-    global conftest), stub providers, and a single ``test`` vault rooted in tmp.
+    """Serve the real SAGE REST app with the Postgres storage binding (the test
+    server named by ``SAGE_TEST_PG_DSN``, pinned by the root conftest) plus
+    the filesystem vault-source binding, stub providers, and a single ``test``
+    vault rooted in tmp.
     """
     raw = yaml.safe_load(_CI_VAULT_CONFIG.read_text(encoding="utf-8"))
     storage = tmp_path / "sources"

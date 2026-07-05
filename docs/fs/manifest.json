@@ -17,7 +17,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "0.3",
+      "version": "0.4",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
@@ -27,8 +27,8 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.8",
-      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres default, embedded SQLite/LanceDB fallback), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), and the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers). The on-disk file is sage/config.yaml at the repo root.",
+      "version": "0.9",
+      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), and the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
     {
@@ -93,7 +93,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.8",
+      "version": "0.9",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.42",
+  "substrate_version": "1.43",
   "revision_history": [
+    {
+      "version": "1.43",
+      "date": "2026-07-04",
+      "summary": "Retire the embedded (SQLite + LanceDB) storage backend, leaving Postgres + pgvector as the storage port's sole binding (CAS-ADR-042 successor). sage/sage_core_config.schema.json bumped v0.8->v0.9: the `storage_backend` string enum collapses from ['postgres','embedded'] to ['postgres'] (default unchanged); the `postgres` block description drops the embedded-fallback clause. Pydantic SageCoreConfig.storage_backend in sage/config.py mirrors the collapsed Literal verbatim; sage/config.yaml and deploy/sage.config.container.yaml both keep/flip to `storage_backend: postgres` (the container's zero-vault boot stays hermetic -- the provisioner never opens a connection until a vault is discovered). sage_core_api.openapi.yaml bumped v0.8->v0.9: VaultStatsResponse drops the deprecated `sqlite_size_bytes` field (property, `required` entry, and narrative), mirrored in sage/models/schemas.py and the producer in sage/services/vault_config.py; the dashboard already read the backend-neutral `graph_store_size_bytes`/`content_store_size_bytes`, so the app/ change is a type-and-fixture-only removal. vault_config.schema.json bumped v0.3->v0.4: brain_root's description drops the SQLite/LanceDB framing (the directory now holds only the per-vault timing log). Code deleted outright: sage/storage_binding.py's EmbeddedVaultStorageProvisioner and env-override dispatch (build_stack_storage_provisioner is now unconditionally Postgres); sage/storage/graph_store.py, sage/storage/migrations.py (the four tier3-uniqueness symbols it carried relocate to a new backend-neutral sage/storage/tier3_uniqueness.py, re-imported by the surviving Postgres graph store, ingestion, and maintenance service), sage/adapters/content_store_lancedb.py; sage/migrate.py (the standalone schema-migration CLI, whose whole contract was the embedded SchemaMigrationRequired path) and its test_initialize_services_conformance.py surface entry; sage/migration/ (the embedded-to-Postgres cutover machinery, cutover complete since 2026-06-10); the sage/maintenance/ out-of-band purge CLI package (its only content-store import was LanceDB; a follow-on ticket tracks Postgres-native purge tooling); fourteen embedded-era one-time scripts (repair/migrate/backfill/dedup CLIs) plus scripts/eval_keyword_fidelity.py (the LanceDB-vs-Postgres keyword-arm evaluation harness that already answered its question; sage/utils/keyword_fidelity_eval.py itself is kept). MaintenanceService.migrate_vault de-branches to the Postgres no-op path unconditionally (empty columns_added/backfills_applied, tier3-uniqueness scan still runs every call); its constructor drops the now-meaningless db_path/storage_backend parameters. lancedb and pyarrow drop from [project].dependencies (uv.lock relocked, transitively dropping lance-namespace*); LOCK_TRACKED in test_dependency_pins.py drops both. The test suite's local-run reliance on the embedded backend is retired ahead of the code deletion: the root conftest pins every stack-config resolution path (the sage.mcp_init module singleton, SAGE_CONFIG_PATH for lifespan/subprocess boots, and PGHOST as a libpq-level backstop) to SAGE_TEST_PG_DSN, with an unresolvable sentinel host when unset so an accidental storage open fails fast instead of reaching a developer's live database; per-test vault-schema hygiene drops any schema a test provisioned. The graph_store fixture collapses from a sqlite/postgres parametrize to a straight delegate onto postgres_graph_store. The GraphStore adapter-seam test (test_graph_store_seam.py) now guards PostgresGraphStore with an empty divergence set (all 53 public methods are port members) instead of SQLite's three PRAGMA-only methods. Tests deleted outright: the SQLite-mechanism-only files (PRAGMA/WAL, on-disk join-table introspection, the thread-pool close barrier, raw sqlite3 traces, the sentinel-row closure scaffolding once its one stronger idiom ported into the Postgres C1 tests), the migration-era test files, the purge-CLI tests, and tests/test_maintenance_isolation.py (its subject deleted). CI: the test job drops its embedded-backend env pin (the pgvector service container was already present); the playwright-e2e job -- which had no Postgres service and pinned the embedded backend as its only option -- gains one, plus a checked-in tests/fixtures/ci_stack_config.yaml selected via SAGE_CONFIG_PATH. Tests: HAR-001..005 in new tests/sage/test_storage_harness.py (the harness pin itself, all three resolution paths, the DSN-unset sentinel); STO-011/012 (env-override-has-no-effect, embedded symbols gone); SCH-S-013/014 (collapsed enum, embedded rejected on both the JSON Schema and Pydantic sides); MNT-001/002 in test_maintenance_service.py (the no-op migrate contract gets direct coverage for the first time); a coverage transfer in test_instrumentation_timing.py (query-timer threading through the Postgres adapters, previously asserted only on the embedded pair) and in test_graph_ops.py (transaction-poisoning-after-failed-write, previously an SQLite-lock-specific assertion); the verbatim-description, YAML<->Pydantic parity, MCP-tool-conformance, typed-alias, dependency-pins, and deployment-profile-guardrail gates pass with no new allowlist additions."
+    },
     {
       "version": "1.42",
       "date": "2026-07-04",

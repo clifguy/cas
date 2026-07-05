@@ -37,9 +37,10 @@ production architecture under emulation (slower), or omit it for a native
 ## Run
 
 With no extra configuration the container boots on the baked **smoke-minimal**
-config (`deploy/sage.config.container.yaml`: the `local` profile, embedded
-storage) — enough to start cleanly, serve the SPA, and answer the health check
-with no external services. With no identity-provider coordinates set, the
+config (`deploy/sage.config.container.yaml`: the `local` profile, zero vaults
+discovered so the Postgres storage binding never opens a connection) — enough
+to start cleanly, serve the SPA, and answer the health check with no external
+services. With no identity-provider coordinates set, the
 interactive sign-in and the SAGE reverse proxy answer `auth_not_configured`; the
 SPA and `/health` are served regardless.
 

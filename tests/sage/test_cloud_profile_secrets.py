@@ -142,7 +142,6 @@ def test_cld_005_storage_binding_uses_token_auth_and_suppresses_env_password(mon
     user is preserved). A binding that left read_env_password=True would leak the
     env password into the kwargs and fail.
     """
-    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
     monkeypatch.setenv("SAGE_PG_PASSWORD", "envpw")
     # Avoid constructing a real azure credential; the connection class is never
     # exercised in this structural test.
@@ -184,7 +183,6 @@ def test_cld_005a_storage_binding_skips_workload_extension_creation(monkeypatch)
     creation ON), a binding that did not flip the flag under managed identity
     would leave `_create_extensions` True and fail here.
     """
-    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
     # Avoid constructing a real azure credential; the connection class is never
     # exercised in this structural test.
     monkeypatch.setattr(
@@ -205,25 +203,6 @@ def test_cld_005a_storage_binding_skips_workload_extension_creation(monkeypatch)
 
     assert isinstance(prov, PostgresVaultStorageProvisioner)
     assert prov._create_extensions is False
-
-
-def test_cld_006_storage_binding_honors_embedded_override(monkeypatch):
-    """With the embedded storage override set, the cloud storage binding returns
-    the embedded provisioner -- the test suite never needs a managed identity."""
-    monkeypatch.setenv("SAGE_TEST_STORAGE_BACKEND", "embedded")
-
-    from sage.storage_binding import (
-        EmbeddedVaultStorageProvisioner,
-        build_stack_storage_provisioner,
-    )
-
-    cfg = SageCoreConfig(
-        profile="cloud",
-        storage_backend="postgres",
-        postgres=StackPostgresConfig(host="db.example", user="svc"),
-    )
-    prov = build_stack_storage_provisioner(cfg, managed_identity=True)
-    assert isinstance(prov, EmbeddedVaultStorageProvisioner)
 
 
 def test_cld_008_storage_binding_delegates_with_managed_identity(monkeypatch):

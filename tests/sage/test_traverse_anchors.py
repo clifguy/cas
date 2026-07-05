@@ -350,25 +350,21 @@ async def test_cr_020_mixed_traverse_per_edge_policy(graph_store, graph_ops_serv
 
 
 async def test_cr_021_anchor_document_missing_suppresses_with_warn(
-    sqlite_graph_store, sqlite_graph_ops_service, caplog
+    graph_store, graph_ops_service, caplog
 ):
-    graph_store = sqlite_graph_store
-    graph_ops_service = sqlite_graph_ops_service
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
     # Purge a3 (the source anchor) directly from the documents table.
     # This simulates the rare repair scenario covered by CR-021 without
-    # requiring a public delete_document helper.
-    def _purge(doc_id: str) -> None:
-        conn = graph_store._get_connection()
-        conn.execute("PRAGMA foreign_keys=OFF;")
+    # requiring a public delete_document helper. Edges still reference
+    # the purged row, so the FK triggers on documents are suspended for
+    # the one DELETE (the inconsistency is the scenario under test).
+    async with graph_store._pool.connection() as conn:
+        await conn.execute("ALTER TABLE documents DISABLE TRIGGER ALL")
         try:
-            conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-            conn.commit()
+            await conn.execute("DELETE FROM documents WHERE id = %s", (_id("a3"),))
         finally:
-            conn.execute("PRAGMA foreign_keys=ON;")
-
-    await graph_store._run(_purge, _id("a3"))
+            await conn.execute("ALTER TABLE documents ENABLE TRIGGER ALL")
 
     with caplog.at_level(logging.WARNING, logger="sage.services.graph_ops"):
         out = await graph_ops_service.traverse(

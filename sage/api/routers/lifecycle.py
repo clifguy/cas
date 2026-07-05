@@ -24,7 +24,7 @@ router = APIRouter(tags=["Document Lifecycle"])
         "(CAS-ADR-029 v4 plural-noun convention). Accepts an `items` array "
         "of N>=1 per-item transition requests; length-1 is fully supported. "
         "Each item is processed under its own per-document lock and per-item "
-        "SQLite transaction. The batch is NOT atomic: a per-item SAGEError "
+        "database transaction. The batch is NOT atomic: a per-item SAGEError "
         "surfaces in the per-item error envelope while earlier-or-later "
         "successful items remain committed. The endpoint returns 200 even "
         "when some items fail; check `success_count` / `error_count` on the "

@@ -45,6 +45,26 @@ jobs:
     outputs:
       image_tag: ${{ steps.ver.outputs.image_tag }}
       sage_build_version: ${{ steps.ver.outputs.sage_build_version }}
+    services:
+      # Real Postgres + pgvector for the smoke step's pytest run: tests/deploy/
+      # includes suites (e.g. the sharepoint-validate faithful path) that boot
+      # the real SAGE REST app, whose storage binding externalizes state to
+      # Postgres (CAS-ADR-042). The storage harness creates disposable schemas
+      # in this throwaway container DB; SAGE_TEST_PG_DSN (set on the smoke
+      # step) points at it.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -119,6 +139,9 @@ jobs:
           SAGE_TEST_BFF_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
           # Native amd64 runner; no cross-platform emulation overhead.
           SAGE_TEST_DOCKER_PLATFORM: ""
+          # Points the storage harness at the Postgres service container above,
+          # for the deploy suites that boot the real SAGE app in-process.
+          SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
           .venv/bin/pytest -v --tb=short tests/deploy/
 

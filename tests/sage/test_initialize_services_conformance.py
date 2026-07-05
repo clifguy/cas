@@ -3,14 +3,13 @@
 This module gates the closure-pair invariant declared in
 ``sage/mcp_init.py`` as ``REQUIRED_TRANSPORT_KWARGS``: every
 transport-reachable production call site of ``initialize_services`` threads
-each kwarg listed in the canonical set. Six call sites are surveyed:
+each kwarg listed in the canonical set. Five call sites are surveyed:
 
   Transport lifespans / one-shot entrypoints
   ------------------------------------------
   - ``sage/mcp_server.py:_lifespan`` -- MCP standalone lifespan
   - ``sage/mcp_server.py:reload_vault`` -- MCP reload tool
   - ``sage/app.py:_initialize_vault`` -- FastAPI lifespan
-  - ``sage/migrate.py:_migrate_vault`` -- standalone schema-migration CLI
 
   Feature-operation call sites (reachable via FastAPI routers + MCP tools)
   -----------------------------------------------------------------------
@@ -39,7 +38,7 @@ the F13 tests there assert the stricter MCP-specific identity invariant
 (``registry_service is mcp_server._vault_registry_service``). The
 conformance test here asserts the weaker, parallel-surface key-presence
 invariant -- silent omission fails; explicit ``None`` with a rationale
-comment (as in ``sage/migrate.py:91``) passes.
+comment passes.
 """
 
 from __future__ import annotations
@@ -55,7 +54,6 @@ import yaml
 import sage.app as sage_app
 import sage.mcp_init as sage_mcp_init
 import sage.mcp_server as mcp_server
-import sage.migrate as sage_migrate
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import REQUIRED_TRANSPORT_KWARGS, initialize_services
 from sage.models.schemas import CreateVaultRequest
@@ -276,30 +274,6 @@ async def _drive_fastapi_lifespan(
     return captured
 
 
-async def _drive_migrate_cli(
-    *,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    minimal_vault_config_dict: dict,
-) -> list[dict]:
-    """Drive sage.migrate._migrate_vault (the standalone schema-migration CLI)."""
-    vault_root = tmp_path / "vault_root"
-    vault_root.mkdir()
-    config_path = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    config = load_vault_config(config_path)
-
-    captured: list[dict] = []
-
-    async def capturing_init(config, **kwargs):
-        captured.append(kwargs)
-        return _FakeServices(config)
-
-    monkeypatch.setattr("sage.migrate.initialize_services", capturing_init)
-
-    await sage_migrate._migrate_vault(config, config_path)
-    return captured
-
-
 async def _drive_reload_vault_in_registry(
     *,
     monkeypatch: pytest.MonkeyPatch,
@@ -391,11 +365,6 @@ TRANSPORT_SURFACES: tuple[TransportSurface, ...] = (
         driver=_drive_fastapi_lifespan,
     ),
     TransportSurface(
-        label="migrate_cli",
-        module_path="sage.migrate",
-        driver=_drive_migrate_cli,
-    ),
-    TransportSurface(
         label="reload_vault_in_registry",
         module_path="sage.mcp_init",
         driver=_drive_reload_vault_in_registry,
@@ -456,7 +425,7 @@ async def test_transport_threads_required_kwargs(
     """Every transport-reachable production call site of
     ``initialize_services`` must thread every key listed in
     ``REQUIRED_TRANSPORT_KWARGS``. Presence is the contract; explicit
-    ``None`` (as in sage/migrate.py) satisfies it.
+    ``None`` satisfies it.
     """
     captured = await surface.driver(
         monkeypatch=monkeypatch,
@@ -497,7 +466,6 @@ def test_transport_surface_is_complete():
         "mcp_standalone_lifespan",
         "mcp_reload_vault",
         "fastapi_lifespan",
-        "migrate_cli",
         "reload_vault_in_registry",
         "vault_registry_create_vault",
     }

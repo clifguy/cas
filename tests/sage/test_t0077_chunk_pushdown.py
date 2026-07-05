@@ -1,7 +1,9 @@
-"""Expand LanceDB pre-filter coverage to include lifecycle_status and project.
+"""Chunk-store pre-filter pushdown for lifecycle_status and project.
 
-Block 1 tests — Schema, Chunk dataclass, ingest row population, and
-schema-migration null-fill for the two new columns.
+Block 1 test — the Chunk dataclass carries the two document-level
+scalars so the ingest path can populate them at chunk-write time.
+(Store-level persistence and filter semantics for these columns are
+covered per adapter in test_content_store_postgres.py.)
 
 Block 2 tests — _content_filters() pushdown: pushdownable filter keys
 (lifecycle_status, project, doc_type) flow straight to the chunk store
@@ -13,7 +15,7 @@ Block 3 tests — Tiered over-fetch multiplier: pure-pushdown filters
 warrant a smaller fetch headroom than mixed-filter cases.
 
 Implements the parent audit ticket finding F-7. Reduces the
-hybrid RRF over-fetch multiplier dependency by letting LanceDB
+hybrid RRF over-fetch multiplier dependency by letting the chunk store
 pre-filter on these document-level scalars at chunk-search time
 instead of resolving them via a graph-store document_id IN clause.
 """
@@ -23,68 +25,10 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timezone
-from pathlib import Path
-
-import pyarrow as pa
-import pytest
-
-try:
-    import lancedb
-
-    _HAS_LANCEDB = True
-except ImportError:
-    _HAS_LANCEDB = False
-
-if _HAS_LANCEDB:
-    from sage.adapters.content_store_lancedb import (
-        _FILTERABLE_COLUMNS,
-        CHUNKS_SCHEMA,
-        CHUNKS_TABLE,
-        VECTOR_DIMENSIONS,
-        LanceDBContentStore,
-    )
 
 from sage.adapters.interfaces import Chunk
 
-requires_lancedb = pytest.mark.skipif(not _HAS_LANCEDB, reason="lancedb not available")
-
-
-# ── Block 1 / T1: CHUNKS_SCHEMA carries lifecycle_status and project ───
-
-
-@requires_lancedb
-def test_t0077_chunks_schema_includes_lifecycle_status_and_project():
-    """CHUNKS_SCHEMA must declare lifecycle_status and project as
-    nullable utf8 columns so LanceDB can pre-filter on them at top-K
-    time (without a graph-store round trip).
-    """
-    names = set(CHUNKS_SCHEMA.names)
-    assert "lifecycle_status" in names, (
-        "lifecycle_status must be a chunk-table column so it can be "
-        "pre-filtered at LanceDB query time."
-    )
-    assert "project" in names, (
-        "project must be a chunk-table column so it can be pre-filtered at LanceDB query time."
-    )
-
-    # Schema field types must match the document-level shape.
-    for col in ("lifecycle_status", "project"):
-        field = CHUNKS_SCHEMA.field(col)
-        assert field.type == pa.utf8(), f"{col} must be utf8"
-        assert field.nullable, f"{col} must be nullable to permit backfill"
-
-
-@requires_lancedb
-def test_t0077_filterable_columns_includes_lifecycle_status_and_project():
-    """_FILTERABLE_COLUMNS must accept the new keys so _build_where()
-    will pass them through to LanceDB instead of dropping them on the
-    floor (the existing whitelist behavior).
-    """
-    assert "lifecycle_status" in _FILTERABLE_COLUMNS
-    assert "project" in _FILTERABLE_COLUMNS
-
-
-# ── Block 1 / T2: Chunk dataclass carries the fields ──────────────────
+# ── Block 1: Chunk dataclass carries the fields ──────────────────
 
 
 def test_t0077_chunk_dataclass_carries_lifecycle_status_and_project():
@@ -112,178 +56,6 @@ def test_t0077_chunk_dataclass_carries_lifecycle_status_and_project():
     )
     assert chunk_default.lifecycle_status is None
     assert chunk_default.project is None
-
-
-# ── Block 1 / T3: index_chunks writes the new columns ─────────────────
-
-
-@requires_lancedb
-async def test_t0077_index_chunks_writes_lifecycle_status_and_project(tmp_path):
-    """When the ingest path builds a Chunk with lifecycle_status and
-    project populated, index_chunks must persist those values to the
-    underlying LanceDB row.
-    """
-    brain_root = tmp_path / "brain"
-    brain_root.mkdir()
-    store = LanceDBContentStore(brain_root)
-
-    chunk = Chunk(
-        document_id="doc_t0077_a",
-        heading_path="Body",
-        content="document content",
-        embedding=[0.1] * VECTOR_DIMENSIONS,
-        chunk_index=0,
-        doc_type="note",
-        lifecycle_status="active",
-        project="CAS",
-    )
-    await store.index_chunks("doc_t0077_a", [chunk])
-
-    db = lancedb.connect(str(brain_root / "lancedb"))
-    table = db.open_table(CHUNKS_TABLE)
-    rows = table.to_arrow().to_pylist()
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["lifecycle_status"] == "active", (
-        "index_chunks must persist Chunk.lifecycle_status to the LanceDB "
-        "row so the column can be used for pre-filter pushdown."
-    )
-    assert row["project"] == "CAS"
-
-
-@requires_lancedb
-async def test_t0077_replace_synthetic_header_writes_lifecycle_status_and_project(
-    tmp_path,
-):
-    """The synthetic header chunk path must also persist the new
-    columns. writes this chunk separately at Stage-3 abstraction
-    completion, and it must carry the same lifecycle_status/project as
-    the body chunks so the pre-filter is consistent across header and
-    body rows.
-    """
-    brain_root = tmp_path / "brain"
-    brain_root.mkdir()
-    store = LanceDBContentStore(brain_root)
-
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
-
-    # Seed a body chunk first so the table exists.
-    await store.index_chunks(
-        "doc_t0077_b",
-        [
-            Chunk(
-                document_id="doc_t0077_b",
-                heading_path="Body",
-                content="body content",
-                embedding=[0.0] * VECTOR_DIMENSIONS,
-                chunk_index=1,
-                lifecycle_status="active",
-                project="CAS",
-            )
-        ],
-    )
-
-    header = Chunk(
-        document_id="doc_t0077_b",
-        heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-        content="title and abstract",
-        embedding=[0.0] * VECTOR_DIMENSIONS,
-        chunk_index=0,
-        doc_type="note",
-        lifecycle_status="active",
-        project="CAS",
-    )
-    await store.replace_synthetic_header_chunk("doc_t0077_b", header)
-
-    db = lancedb.connect(str(brain_root / "lancedb"))
-    table = db.open_table(CHUNKS_TABLE)
-    rows = table.to_arrow().to_pylist()
-    header_rows = [r for r in rows if r["heading_path"] == SYNTHETIC_HEADER_HEADING_PATH]
-    assert len(header_rows) == 1
-    assert header_rows[0]["lifecycle_status"] == "active"
-    assert header_rows[0]["project"] == "CAS"
-
-
-# ── Block 1 / T4: Schema migration adds columns as NULL ───────────────
-
-
-if _HAS_LANCEDB:
-    _PRE_T0077_CHUNKS_SCHEMA = pa.schema(
-        [
-            pa.field("document_id", pa.utf8()),
-            pa.field("heading_path", pa.utf8()),
-            pa.field("content", pa.utf8()),
-            pa.field("chunk_index", pa.int32()),
-            pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
-            pa.field("doc_type", pa.utf8(), nullable=True),
-        ]
-    )
-
-    def _build_pre_t0077_lancedb(brain_root: Path, *, n_rows: int = 1) -> None:
-        """Create a LanceDB chunks table at the pre-schema
-        (doc_type only; no lifecycle_status or project columns).
-        Mirrors the MIG-007 helper in test_migrate_flag.py for the
-        earlier doc_type migration.
-        """
-        brain_root.mkdir(parents=True, exist_ok=True)
-        db = lancedb.connect(str(brain_root / "lancedb"))
-        rows = [
-            {
-                "document_id": f"doc_{i}",
-                "heading_path": f"H{i}",
-                "content": f"content {i}",
-                "chunk_index": i,
-                "vector": [0.0] * VECTOR_DIMENSIONS,
-                "doc_type": "note",
-            }
-            for i in range(n_rows)
-        ]
-        db.create_table(CHUNKS_TABLE, data=rows, schema=_PRE_T0077_CHUNKS_SCHEMA)
-
-
-@requires_lancedb
-def test_t0077_schema_migration_adds_missing_columns_as_null(tmp_path):
-    """When a vault was built before (no lifecycle_status /
-    project columns on the chunks table) and the operator runs with
-    --migrate, the destructive rebuild must add the new columns and
-    leave existing rows with NULL for those columns (backfill is a
-    separate, follow-on step).
-
-    Mirrors test_mig_007_lancedb_applies_with_flag's contract for the
-    earlier doc_type migration.
-    """
-    brain = tmp_path / "brain"
-    _build_pre_t0077_lancedb(brain, n_rows=3)
-
-    store = LanceDBContentStore(brain, migrate=True)
-    assert store.pending_schema_columns() == set()
-
-    db = lancedb.connect(str(brain / "lancedb"))
-    table = db.open_table(CHUNKS_TABLE)
-    names = set(table.schema.names)
-    assert "lifecycle_status" in names, (
-        "Migration must add the lifecycle_status column to existing tables."
-    )
-    assert "project" in names, "Migration must add the project column to existing tables."
-    assert table.count_rows() == 3, "Migration must preserve row count."
-
-    rows = table.to_arrow().to_pylist()
-    docs = sorted(r["document_id"] for r in rows)
-    assert docs == ["doc_0", "doc_1", "doc_2"], "Migration must preserve document IDs."
-    assert all(r["lifecycle_status"] is None for r in rows), (
-        "Migration must add lifecycle_status as NULL on legacy rows; the "
-        "backfill script populates real values in a separate step."
-    )
-    assert all(r["project"] is None for r in rows), (
-        "Migration must add project as NULL on legacy rows; the backfill "
-        "script populates real values in a separate step."
-    )
-
-    # The existing doc_type column must be preserved verbatim.
-    assert all(r["doc_type"] == "note" for r in rows)
-
-    backup = brain / "chunks_migration_backup.parquet"
-    assert not backup.exists(), "backup must be deleted on success"
 
 
 # ── Block 2 / Block 3 fixtures ────────────────────────────────────────

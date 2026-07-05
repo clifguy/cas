@@ -103,10 +103,9 @@ class VaultIdentity(BaseModel):
     )
     brain_root: str = Field(
         description=(
-            "Directory containing this vault's content store and graph "
-            "store databases. Absolute path. Must be outside cloud-synced "
-            "directories (SQLite and LanceDB are incompatible with cloud "
-            "sync)."
+            "Directory holding this vault's local runtime artifacts (e.g. "
+            "the timing log). Absolute path. Must be outside cloud-synced "
+            "directories."
         )
     )
     visibility: str = Field(description="Access scope for this vault.")
@@ -558,19 +557,17 @@ class SageCoreConfig(BaseModel):
             "unrecognized value fails loud at startup."
         ),
     )
-    storage_backend: Literal["postgres", "embedded"] = Field(
+    storage_backend: Literal["postgres"] = Field(
         default="postgres",
         description=(
-            "Durable-storage binding selector (CAS-ADR-042). 'postgres' (the "
-            "default) binds the graph and content stores to the Postgres "
-            "adapters configured by the 'postgres' block; each vault's rows "
-            "live in a Postgres schema named by its vault id. 'embedded' "
-            "selects the file-based fallback pair -- SQLite graph store and "
-            "LanceDB content store under each vault's brain root. The two "
-            "stores co-vary as one binding and are not selectable "
-            "individually. Flipping the key repoints the binding at restart "
-            "and never moves data; copying state between backends is the "
-            "operator migration tooling's job."
+            "Durable-storage binding selector (CAS-ADR-042). 'postgres', the "
+            "storage port's sole binding, binds the graph and content stores "
+            "to the Postgres adapters configured by the 'postgres' block; "
+            "each vault's rows live in a Postgres schema named by its vault "
+            "id. The port contract remains satisfiable by a future binding "
+            "regardless of how many bindings currently exist (the "
+            "weakest-binding rule); a config still carrying a retired value "
+            "fails loud at startup rather than silently degrading."
         ),
     )
     vault_source_backend: Literal["filesystem", "document_store"] = Field(
@@ -610,14 +607,12 @@ class SageCoreConfig(BaseModel):
             "(CAS-ADR-042). Both deployment targets externalize durable graph "
             "and content state to a networked relational engine -- a local "
             "unix socket on the on-box target, a managed endpoint on the "
-            "hosted target -- with the embedded SQLite/LanceDB stores "
-            "retained as a fallback binding. Non-secret parameters only: the "
-            "password is read from the environment (SAGE_PG_PASSWORD), never "
-            "from this file. The block configures the async driver and "
-            "connection pool the store adapters share and the idempotent "
-            "schema bootstrap; it is consumed by the live storage binding "
-            "(when 'storage_backend' selects 'postgres'), the provisioning "
-            "CLI, and the storage test harness."
+            "hosted target. Non-secret parameters only: the password is read "
+            "from the environment (SAGE_PG_PASSWORD), never from this file. "
+            "The block configures the async driver and connection pool the "
+            "store adapters share and the idempotent schema bootstrap; it is "
+            "consumed by the live storage binding, the provisioning CLI, and "
+            "the storage test harness."
         ),
     )
     document_store: StackDocumentStoreConfig = Field(
