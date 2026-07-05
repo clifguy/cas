@@ -3,7 +3,13 @@ import { Link, useParams, useOutletContext, useNavigate } from 'react-router-dom
 import type { VaultContext } from '../App';
 import type { Document, Edge, EdgeType, LinkRequest, ResolutionPolicy } from '../api/types';
 import { DEFAULT_EDGE_POLICIES } from '../api/types';
-import { getDocument, openDocument, getDocumentDownloadUrl, reabstractDocument } from '../api/documents';
+import {
+  getDocument,
+  openDocument,
+  getDocumentDownloadUrl,
+  documentContentUrl,
+  reabstractDocument,
+} from '../api/documents';
 import { detectIngestProfile } from '../api/ingest';
 import { traverse } from '../api/graph';
 import { createEdge } from '../api/graph';
@@ -116,8 +122,19 @@ export default function DocumentDetail() {
       // download URL the browser fetches directly from the backing store.
       const profile = await detectIngestProfile(vaultId);
       if (profile === 'hosted') {
-        const { download_url } = await getDocumentDownloadUrl(vaultId, id);
-        window.open(download_url, '_blank', 'noopener');
+        try {
+          const { download_url } = await getDocumentDownloadUrl(vaultId, id);
+          window.open(download_url, '_blank', 'noopener');
+        } catch (err) {
+          // The filesystem-backed binding cannot presign and answers 501
+          // download_url_unavailable; fall back to the same-origin streaming
+          // content route, which the BFF proxies chunk-by-chunk (CAS-ADR-043).
+          if (err instanceof ApiError && err.code === 'download_url_unavailable') {
+            window.open(documentContentUrl(vaultId, id), '_blank', 'noopener');
+          } else {
+            throw err;
+          }
+        }
         setOpenStatus({ kind: 'ok', message: 'Opened in browser' });
       } else {
         await openDocument(vaultId, id);

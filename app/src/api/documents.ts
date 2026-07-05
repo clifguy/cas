@@ -49,6 +49,16 @@ export async function getDocumentDownloadUrl(
   return apiGet(`/sage_vaults/${vaultId}/documents/${documentId}/download-url`);
 }
 
+// Binding-agnostic browser delivery (CAS-ADR-043): the same-origin BFF streams
+// the retained source bytes chunk-by-chunk from the vault-source store, so a
+// document whose backing binding cannot presign a download URL can still be
+// fetched by the browser. Returns the relative content-route path for direct
+// navigation, which preserves the streamed, non-buffered delivery the proxy
+// provides (fetching to a Blob first would buffer the whole file in memory).
+export function documentContentUrl(vaultId: string, documentId: string): string {
+  return `/sage_vaults/${vaultId}/documents/${documentId}/content`;
+}
+
 // Regenerate a single document's semantic abstract. Fire-and-forget: SAGE
 // enqueues the re-abstraction against its shared per-document queue and returns
 // immediately, so the caller polls getDocument until pipeline_status leaves

@@ -16,12 +16,18 @@ import { vi } from 'vitest';
  */
 
 // --- Mocks ---
-vi.mock('../../api/documents', () => ({
-  getDocument: vi.fn(),
-  openDocument: vi.fn(),
-  getDocumentDownloadUrl: vi.fn(),
-  reabstractDocument: vi.fn(),
-}));
+vi.mock('../../api/documents', async () => {
+  const actual = await vi.importActual<typeof import('../../api/documents')>('../../api/documents');
+  // Keep the real (pure, no-network) documentContentUrl builder; only the
+  // network-touching functions are replaced with spies.
+  return {
+    ...actual,
+    getDocument: vi.fn(),
+    openDocument: vi.fn(),
+    getDocumentDownloadUrl: vi.fn(),
+    reabstractDocument: vi.fn(),
+  };
+});
 vi.mock('../../api/graph', () => ({
   traverse: vi.fn(),
   createEdge: vi.fn(),
@@ -243,6 +249,70 @@ describe('DocumentDetail: Back to search', () => {
     await user.click(screen.getByRole('button', { name: /^open$/i }));
 
     await waitFor(() => expect(screen.getByText(/download_url_unavailable/)).toBeInTheDocument());
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
+  it('falls back to the streaming content route when the download URL is unavailable (501)', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockDiscover.mockResolvedValue(emptyDiscover);
+    mockDetectIngestProfile.mockResolvedValue('hosted');
+    // The filesystem binding cannot presign: download-url answers 501 and the
+    // client surfaces it as an ApiError whose code is the 501 body's code.
+    mockGetDownloadUrl.mockRejectedValue(
+      new ApiError(
+        'download_url_unavailable',
+        'The active vault-source binding cannot issue a download URL for document doc-42.',
+      ),
+    );
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+    await screen.findByRole('heading', { name: mockDoc.title });
+
+    await user.click(screen.getByRole('button', { name: /^open$/i }));
+
+    await waitFor(() => expect(mockGetDownloadUrl).toHaveBeenCalledWith('test_vault', 'doc-42'));
+    expect(openSpy).toHaveBeenCalledWith(
+      '/sage_vaults/test_vault/documents/doc-42/content',
+      '_blank',
+      'noopener',
+    );
+    await waitFor(() => expect(screen.getByText(/Opened in browser/)).toBeInTheDocument());
+    openSpy.mockRestore();
+  });
+
+  it('does not fall back to the content route when the download URL fails with a non-501 error', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockDiscover.mockResolvedValue(emptyDiscover);
+    mockDetectIngestProfile.mockResolvedValue('hosted');
+    // A different error code must NOT trigger the content-route fallback: the
+    // fallback keys on download_url_unavailable specifically, not any failure.
+    mockGetDownloadUrl.mockRejectedValue(new ApiError('HTTP_500', 'boom'));
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+    await screen.findByRole('heading', { name: mockDoc.title });
+
+    await user.click(screen.getByRole('button', { name: /^open$/i }));
+
+    await waitFor(() => expect(screen.getByText(/boom/)).toBeInTheDocument());
     expect(openSpy).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
