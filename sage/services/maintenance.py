@@ -285,12 +285,9 @@ class MaintenanceService:
         """Append one JSONL line capturing this optimize call to the vault's
         ``.maintenance_log.jsonl``.
 
-        Mirrors the per-document purge precedent at
-        sage/maintenance/_internal.py:_write_audit_record. Stays inline
-        here rather than borrowing from sage.maintenance._internal --
-        that module's docstring asserts package-internal scope, and the
-        per-document audit record carries document-shaped fields that
-        do not apply to an optimize call.
+        The record carries the optimize report's own fields plus a
+        timestamp and operation tag; maintenance operations share the
+        one log file, discriminated by that tag.
         """
         vault_dir = self._vault_dir or config_path_for_vault(self._vault_id).parent
         audit_path = vault_dir / MAINTENANCE_LOG_FILENAME
