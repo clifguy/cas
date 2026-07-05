@@ -47,7 +47,7 @@ from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import MaintenanceService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.migrations import (
+from sage.storage.tier3_uniqueness import (
     Tier3UniqueViolation,
     tier3_unique_index_name,
 )

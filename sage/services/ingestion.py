@@ -61,7 +61,7 @@ from sage.services.identity import generate_document_id
 from sage.services.metadata import _wire_version
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
-from sage.storage.migrations import Tier3UniqueViolation
+from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
 logger = logging.getLogger(__name__)
 

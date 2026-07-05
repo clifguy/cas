@@ -28,7 +28,7 @@ from sage.models.enums import (
     UserType,
 )
 from sage.models.schemas import Document, Edge, StagingEdge, User
-from sage.storage.migrations import Tier3UniqueViolation
+from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
 # Skips the whole module if psycopg is absent (the import below pulls it in).
 # The C0/C1 unit tests then run anywhere psycopg is installed; C2+ use the

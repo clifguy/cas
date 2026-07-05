@@ -47,7 +47,7 @@ from sage.models.enums import (
 )
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
-from sage.storage.migrations import (
+from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
     Tier3UniqueIndexBlockedError,
     Tier3UniqueViolation,

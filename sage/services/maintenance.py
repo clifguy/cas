@@ -45,10 +45,10 @@ from sage.storage.migrations import (
     TABLES,
     Backfill,
     Migration,
-    Tier3UniqueIndexBlockedError,
     pending_backfills,
     pending_migrations,
 )
+from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
 
 # Union type for events yielded by reabstract_deferred_events.
