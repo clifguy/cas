@@ -19,7 +19,10 @@ Safeguards:
   ``DROP DATABASE`` (which would destroy every vault).
 - Each filesystem target is realpath-resolved and asserted to be a strict
   descendant of the process-bound vault root (``get_vault_root``, CAS-ADR-043)
-  before any ``rmtree``; a path resolving outside the root is refused, not deleted.
+  before any ``rmtree``. The guard is per-target: a target resolving outside the
+  root is refused for that target only -- left in place and recorded as skipped in
+  the receipt -- while the in-root work (schema drop, config and enclosing-directory
+  removal) still runs. An out-of-root tree is never deleted.
 - ``--apply`` requires typed confirmation of the vault_id at the prompt. The only
   auto-confirm carve-out is the literal disposable ``test`` vault.
 - Snapshot-before-destroy is ON by default (``--no-snapshot`` opts out): a
@@ -162,10 +165,13 @@ async def delete_vault(
     """Tear one vault down through injected dependencies. Returns a process exit code.
 
     ``apply=False`` prints the plan and returns 0. ``apply=True`` runs the ordered
-    envelope: root-escape guard -> typed confirmation -> snapshot (default ON) ->
-    audit record -> (in-process eviction) -> schema drop -> filesystem removal ->
-    receipt. Every store/filesystem removal tolerates an already-absent target, so
-    a re-run after a partial failure completes cleanly.
+    envelope: per-target root-escape guard -> typed confirmation -> snapshot
+    (default ON) -> audit record -> (in-process eviction) -> schema drop ->
+    filesystem removal -> receipt. A filesystem target that escapes the bound root
+    is skipped (left in place, recorded in the receipt) rather than aborting the
+    teardown; the receipt marks each target removed or skipped. Every store/
+    filesystem removal tolerates an already-absent target, so a re-run after a
+    partial failure completes cleanly.
     """
     config_path = source_store.config_locator(vault_id)
     config = None
@@ -188,19 +194,26 @@ async def delete_vault(
         print("(dry-run; pass --apply to execute)")
         return 0
 
-    # Root-escape guard on every filesystem target, before any change. Refusal
-    # here removes nothing.
+    # Per-target root-escape guard, before any change. A target that resolves
+    # outside the bound vault root is refused for that target only -- left in
+    # place and recorded as skipped -- rather than aborting the whole teardown,
+    # so the in-root work (schema drop, config and enclosing-dir removal) still
+    # runs. Refusal removes nothing.
     guarded: dict[str, Path] = {}
-    try:
-        if storage_root is not None:
-            guarded["storage_root"] = resolve_and_assert_within_root(storage_root, vault_root)
-        if brain_root is not None:
-            guarded["brain_root"] = resolve_and_assert_within_root(brain_root, vault_root)
-        if config_path is not None:
-            guarded["vault_dir"] = resolve_and_assert_within_root(config_path.parent, vault_root)
-    except VaultRootEscapeError as exc:
-        print(f"refuse: {exc}", file=sys.stderr)
-        return 3
+    skipped: dict[str, str] = {}
+    fs_targets: list[tuple[str, Path]] = []
+    if storage_root is not None:
+        fs_targets.append(("storage_root", storage_root))
+    if brain_root is not None:
+        fs_targets.append(("brain_root", brain_root))
+    if config_path is not None:
+        fs_targets.append(("vault_dir", config_path.parent))
+    for name, target in fs_targets:
+        try:
+            guarded[name] = resolve_and_assert_within_root(target, vault_root)
+        except VaultRootEscapeError as exc:
+            skipped[name] = str(exc)
+            print(f"skip {name}: {exc}", file=sys.stderr)
 
     # Typed vault-id confirmation. The only auto-confirm is the disposable
     # ``test`` vault.
@@ -231,6 +244,20 @@ async def delete_vault(
                 json.dumps(_source_manifest(storage_root), indent=2) + "\n"
             )
 
+    # Per-target disposition, carried in both the audit record and the receipt:
+    # an in-root target is removed, an out-of-root target is skipped (left in
+    # place), so a partially-retired vault is traceable.
+    targets: dict[str, dict[str, str]] = {}
+    for name, target in fs_targets:
+        if name in guarded:
+            targets[name] = {"path": str(target), "status": "removed"}
+        else:
+            targets[name] = {
+                "path": str(target),
+                "status": "skipped (outside bound root)",
+                "detail": skipped[name],
+            }
+
     # Audit-first: record intent BEFORE any destruction, outside the vault.
     record = {
         "timestamp": _now().isoformat(),
@@ -240,6 +267,7 @@ async def delete_vault(
         "storage_root": str(storage_root) if storage_root is not None else None,
         "brain_root": str(brain_root) if brain_root is not None else None,
         "vault_config": str(config_path) if config_path is not None else None,
+        "targets": targets,
         "snapshot_dir": str(run_dir),
         "reason": reason,
     }
@@ -254,8 +282,9 @@ async def delete_vault(
         await provisioner.drop_vault_schema(vault_id)
 
         # Filesystem: sources tree (via the port), brain tree, config, then the
-        # enclosing vault dir (each guarded, idempotent).
-        if storage_root is not None:
+        # enclosing vault dir. Each in-root tree is removed; a target that escaped
+        # the guard is skipped (left in place). All removals are idempotent.
+        if "storage_root" in guarded:
             source_store.delete_source_tree(vault_id, storage_root)
         if "brain_root" in guarded and guarded["brain_root"].exists():
             shutil.rmtree(guarded["brain_root"])
