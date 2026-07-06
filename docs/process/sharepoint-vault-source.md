@@ -305,6 +305,35 @@ and revoke. Remove the throwaway vault config afterwards.
 Capture the `result=pass` verdict lines from 6.2 and 6.4, together with the
 least-privilege outcome from 6.5, as the validation evidence.
 
+## Workstation-bound SAGE against the cloud stores
+
+The path-bearing MCP tools (`ingest_document` / `bulk_ingest_document` sources,
+`get_document` / `read_projection` `write_to_path`, `list_directory`) resolve
+their paths on the machine running the SAGE server process. To use them against
+a cloud-hosted vault, run the server on the workstation and bind the vault's
+stores remotely — the server stays co-located with the caller's files, and only
+the vault's storage moves (CAS-ADR-042, CAS-ADR-043):
+
+- **Vault sources:** `vault_source_backend: document_store` with the
+  `document_store:` coordinates from this runbook. Off-container, the Graph
+  client authenticates via the Azure SDK's default developer-credential chain
+  (`az login`) instead of a managed identity; the signed-in user needs access
+  to the granted site.
+- **Graph/content state:** point the `postgres:` block at the vault's server.
+  A cloud deployment's Postgres is VNet-private, so reaching it from a
+  workstation requires network enablement (private endpoint, VPN, or a
+  temporary firewall allowance) provisioned out of band — without it the
+  workstation binding simply cannot connect; nothing degrades silently.
+- **Local staging:** the stored vault configs' `storage_root` and `brain_root`
+  paths must be creatable on the workstation; they serve as the projection
+  staging area and timing-log locus, not as the source of truth.
+
+The remote `/mcp` HTTP mount is unaffected: a path only means something on the
+machine that can see the file, so its path-bearing tools operate on the
+container's own filesystem. The inline read modes (`get_document
+(include_content=true)`, `read_projection` inline, `read_section`, `search`)
+work identically over any transport.
+
 ## Rotation and teardown
 
 The grant follows the managed identity: deleting the SAGE identity removes the

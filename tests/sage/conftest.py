@@ -9,7 +9,9 @@ dropped by the root conftest's hygiene fixture).
 
 import asyncio
 import contextlib
+import dataclasses
 import os
+from pathlib import Path
 
 import pytest
 
@@ -442,3 +444,47 @@ async def pg_pool(pg_dsn, pg_schema):
         yield pool
     finally:
         await pool.close()
+
+
+@dataclasses.dataclass
+class VaultSourceBackendHandle:
+    """Handle a binding-parameterized test uses to inspect the active backend.
+
+    ``retained_bytes`` answers "what bytes does the vault's source store hold
+    at this vault-relative path?" against whichever binding the fixture
+    selected, so one assertion body serves both legs.
+    """
+
+    backend: str
+    fake_client: object | None
+
+    def retained_bytes(self, storage_root: Path, rel: str) -> bytes:
+        if self.fake_client is not None:
+            return self.fake_client.sources[rel]
+        return (Path(storage_root) / rel).read_bytes()
+
+
+@pytest.fixture(params=["filesystem", "document_store"])
+def vault_source_backend(request, monkeypatch):
+    """Pin the stack's vault-source binding for the test, one leg per backend.
+
+    Both legs exercise the real dispatch in ``build_stack_vault_source_store``
+    via the env override. The document-store leg fakes only the Graph
+    transport: one shared ``FakeGraphClient`` is returned by the (call-time
+    resolved) client factory, so state persists across the fresh store
+    constructions the stack resolver performs per service call while every
+    line of ``DocumentStoreVaultSourceStore`` still runs.
+    """
+    backend = request.param
+    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", backend)
+    if backend == "filesystem":
+        return VaultSourceBackendHandle(backend=backend, fake_client=None)
+
+    from tests.helpers.fake_graph_client import FakeGraphClient
+
+    fake = FakeGraphClient()
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda *args, **kwargs: fake,
+    )
+    return VaultSourceBackendHandle(backend=backend, fake_client=fake)

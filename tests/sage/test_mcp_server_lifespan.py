@@ -155,6 +155,55 @@ async def test_standalone_mode_populates_registry_from_discovery(
         assert set(mcp_server._vaults.keys()) == {"vault_a", "vault_b"}
 
 
+async def test_standalone_mode_discovers_document_store_vault_without_local_tree(
+    isolate_module_state,
+    monkeypatch,
+    vault_root,
+    minimal_vault_config_dict,
+):
+    """MPI-008: under the document-store binding the standalone lifespan
+    discovers and registers a vault held only by the backing store -- no
+    local vault directory exists or is created.
+
+    Trap (anti-coincidental): discovery regressed to a filesystem walk of
+    ``_vault_root`` would find nothing (the root stays empty), and a
+    ``load_config`` that demanded a filesystem locator would fail on the
+    pathless ``DiscoveredVault`` (``config_path=None``).
+    """
+    import yaml as _yaml
+
+    from tests.helpers.fake_graph_client import FakeGraphClient
+
+    fake = FakeGraphClient()
+    cfg = copy.deepcopy(minimal_vault_config_dict)
+    cfg["vault"]["id"] = "store_vault"
+    fake.store["store_vault"] = _yaml.safe_dump(cfg).encode()
+
+    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda *args, **kwargs: fake,
+    )
+    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
+    mcp_server._vaults.clear()
+
+    captured_kwargs: dict = {}
+
+    async def fake_init(config, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeServices(config)
+
+    monkeypatch.setattr("sage.mcp_server.initialize_services", fake_init)
+
+    async with mcp_server._lifespan(mcp_server.mcp):
+        assert set(mcp_server._vaults.keys()) == {"store_vault"}
+        # The pathless binding threads config_path=None through to init.
+        assert captured_kwargs.get("config_path") is None
+
+    # The local vault root was never required: nothing was created under it.
+    assert list(vault_root.iterdir()) == []
+
+
 async def test_standalone_lifespan_publishes_and_clears_vault_root(
     isolate_module_state,
     monkeypatch,
