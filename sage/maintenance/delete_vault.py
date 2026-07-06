@@ -1,15 +1,24 @@
 """Whole-vault teardown (permanently out-of-band per CAS-ADR-029/034).
 
-Permanently retires one SAGE vault under the local deployment profile: drops the
-vault's Postgres schema (storage tenancy is one schema per vault in the shared
-database, CAS-ADR-042), removes its two filesystem trees (``storage_root``,
-``brain_root``) and its ``vault_config.yaml``, and evicts it from a live server's
-in-memory registry. It is the asymmetric opposite of ``admin_create_vault``:
-create is a reachable, idempotent admin operation; delete is the most irreversible
-operation in SAGE, so it is a CLI entrypoint, **not** an MCP tool or REST route
+Permanently retires one SAGE vault: drops the vault's Postgres schema (storage
+tenancy is one schema per vault in the shared database, CAS-ADR-042), removes its
+retained-source tree and its ``vault_config.yaml`` through the vault-source port,
+removes the filesystem ``brain_root``, and evicts it from a live server's in-memory
+registry. It is the asymmetric opposite of ``admin_create_vault``: create is a
+reachable, idempotent admin operation; delete is the most irreversible operation in
+SAGE, so it is an out-of-band entrypoint, **not** an MCP tool or REST route
 (CAS-ADR-034's uniform-auth admin surface carries no destructive API). This module
 is unreachable from the SAGE Core API and MCP server by architectural invariant
 (the import-topology test).
+
+The ``delete_vault`` core is binding-agnostic -- the source-store and
+storage-provisioner ports are injected -- so the same ordered envelope drives both
+the local-profile CLI here (``main``) and the cloud in-VNet teardown job
+(``sage.maintenance.delete_vault_cloud``), which injects the document-store binding
+(a SharePoint library over Microsoft Graph) and the managed-identity Postgres
+provisioner (CAS-ADR-043). A binding with no filesystem locator has its source tree
+removed through the port by vault id, like the config; the filesystem removals below
+apply only to the local binding's on-disk trees.
 
 Safeguards:
 - Dry-run is the default. ``--apply`` is required for any state change; it prints
@@ -106,6 +115,17 @@ def _run_pg_dump(argv: list[str]) -> None:
     subprocess.run(argv, check=True)  # noqa: S603
 
 
+def _noop_sink(run_dir: Path) -> None:
+    """The default snapshot sink: a no-op.
+
+    Under the local profile the snapshot files ``delete_vault`` writes into
+    ``run_dir`` are already durable (the dir is outside the vault root), so no
+    further copy is needed. A profile whose snapshot dir is ephemeral -- the
+    in-cloud teardown job's container filesystem -- injects a sink that copies the
+    snapshot to a durable off-box store before any destruction.
+    """
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -164,6 +184,7 @@ async def delete_vault(
     registry: dict[str, Any] | None = None,
     input_fn: Callable[[str], str] = input,
     dump_runner: Callable[[list[str]], None] = _run_pg_dump,
+    snapshot_sink: Callable[[Path], None] = _noop_sink,
 ) -> int:
     """Tear one vault down through injected dependencies. Returns a process exit code.
 
@@ -254,6 +275,17 @@ async def delete_vault(
             (run_dir / "sources_manifest.json").write_text(
                 json.dumps(_source_manifest(storage_root), indent=2) + "\n"
             )
+        # Push the snapshot to a durable off-box store when the profile's snapshot
+        # dir is ephemeral (the cloud teardown job). A failed push halts before any
+        # destruction, like a failed dump. The default sink is a no-op.
+        try:
+            snapshot_sink(run_dir)
+        except Exception as exc:  # noqa: BLE001 -- operator tool surfaces any sink error
+            print(
+                f"refuse: snapshot sink failed ({exc}); no destruction performed.",
+                file=sys.stderr,
+            )
+            return 4
 
     # Per-target disposition, carried in both the audit record and the receipt:
     # an in-root target is removed, an out-of-root target is skipped (left in
@@ -268,6 +300,15 @@ async def delete_vault(
                 "status": "skipped (outside bound root)",
                 "detail": skipped[name],
             }
+    # A binding with no filesystem locator (config_locator -> None, the document
+    # store) contributes no filesystem target; record its store-level source-tree
+    # removal so a cloud teardown's receipt is not misleadingly empty.
+    if config_path is None:
+        targets["source_tree"] = {
+            "path": vault_id,
+            "status": "removed",
+            "detail": "document-store source tree (no filesystem target)",
+        }
 
     # Audit-first: record intent BEFORE any destruction, outside the vault.
     record = {
@@ -296,7 +337,13 @@ async def delete_vault(
         # enclosing vault dir. Each in-root tree is removed; a target that escaped
         # the guard is skipped (left in place). Every removal is idempotent and
         # tolerates a concurrent writer repopulating a directory mid-removal.
-        if "storage_root" in guarded:
+        #
+        # The retained-source tree is removed via the port when its filesystem
+        # target is in-root (filesystem binding) or when the store has no
+        # filesystem locator at all (document-store binding: config_locator returns
+        # None, so storage_root never entered the per-target guard). In the latter
+        # case the store addresses the tree by vault id, like delete_config below.
+        if "storage_root" in guarded or config_path is None:
             source_store.delete_source_tree(vault_id, storage_root)
         if "brain_root" in guarded and guarded["brain_root"].exists():
             remove_tree_tolerating_concurrent_writer(guarded["brain_root"])

@@ -49,6 +49,9 @@ class _FakeGraphClient:
         self.store: dict[str, bytes] = {}
         self.uploads = 0
         self.deletes = 0
+        self.tree_deletes = 0
+        self.deleted_trees: list[str] = []
+        self.archives: dict[str, bytes] = {}
         # Source-byte half: vault-relative path -> bytes, with op counters so a
         # test can prove a cheap stat did not pull content and a reuse did not
         # re-upload.
@@ -71,6 +74,19 @@ class _FakeGraphClient:
     def delete_config(self, vault_id: str) -> None:
         self.deletes += 1
         self.store.pop(vault_id, None)
+
+    def delete_tree(self, vault_id: str) -> None:
+        # A folder delete removes the whole vault folder: its config and every
+        # retained source. Idempotent -- an absent vault is tolerated.
+        self.tree_deletes += 1
+        self.deleted_trees.append(vault_id)
+        self.store.pop(vault_id, None)
+
+    def list_sources(self, vault_id: str) -> list[dict]:
+        return [{"path": p, "size": len(d)} for p, d in sorted(self.sources.items())]
+
+    def write_archive(self, archive_path: str, data: bytes) -> None:
+        self.archives[archive_path] = data
 
     # -- source-byte half --------------------------------------------------
 
@@ -355,6 +371,40 @@ def test_vsb_ds_051_download_url_none_when_source_absent(tmp_path):
     """
     store = _binding(_FakeGraphClient())  # nothing retained
     assert store.download_url("v", tmp_path, "imports/missing.pdf") is None
+
+
+def test_vsb_ds_060_delete_source_tree_removes_the_vault_folder(minimal_vault_config_dict):
+    """``delete_source_tree`` delegates to the client's folder delete (by vault id),
+    removing the whole vault folder so ``discover`` no longer lists it.
+    ``storage_root`` is unused under this binding (passed ``None`` by the core).
+
+    Anti-coincidental-pass: assert both the recorded ``delete_tree`` call *and* that
+    discovery drops the vault -- a delegate that deleted only the config item, or
+    nothing, would fail one or the other.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+    store.write_config("v", minimal_vault_config_dict)
+    assert [d.vault_id for d in store.discover()] == ["v"]
+
+    store.delete_source_tree("v", None)
+
+    assert fake.deleted_trees == ["v"]
+    assert store.discover() == []
+
+
+def test_vsb_ds_061_delete_source_tree_idempotent(minimal_vault_config_dict):
+    """A second ``delete_source_tree`` on an already-removed vault does not raise --
+    the client tolerates a missing folder."""
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+    store.write_config("v", minimal_vault_config_dict)
+
+    store.delete_source_tree("v", None)
+    store.delete_source_tree("v", None)  # idempotent second pass
+
+    assert fake.deleted_trees == ["v", "v"]
+    assert store.discover() == []
 
 
 # --------------------------------------------------------------------------
@@ -868,6 +918,128 @@ def test_vsb_ds_052_source_download_url_reads_graph_annotation():
     assert _client(handler).source_download_url("vault_a", "imports/x.pdf") == dl
     # An item metadata GET, not a content download.
     assert not str(seen[0].url).endswith(":/content")
+
+
+def test_vsb_ds_062_delete_tree_issues_scoped_authenticated_folder_delete():
+    """``delete_tree`` issues one DELETE against the vault *folder* URL
+    (site/drive-scoped, bearer-authed), not the config item and not a content
+    endpoint.
+
+    Anti-coincidental-pass: assert the DELETE targets ``.../root:/vaults/v`` with no
+    ``vault_config.yaml`` and no ``:/content`` suffix -- a delegate that deleted only
+    the config file (the existing ``delete_config`` behaviour) would leave the
+    sources, and a tenant-wide path would breach least privilege (CAS-ADR-043 §3).
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204)
+
+    client = _client(handler)
+    client.delete_tree("v")
+
+    assert len(seen) == 1
+    req = seen[0]
+    assert req.method == "DELETE"
+    assert req.headers["authorization"] == "Bearer tok"
+    url = str(req.url)
+    assert url.endswith(f"/sites/{_SITE}/drives/{_DRIVE}/root:/vaults/v")
+    assert "vault_config.yaml" not in url
+    assert ":/content" not in url
+
+
+def test_vsb_ds_063_delete_tree_is_404_tolerant_and_fails_closed():
+    """A 404 (folder already gone) is tolerated; any other 4xx/5xx fails closed."""
+    absent = _client(lambda r: httpx.Response(404))
+    absent.delete_tree("v")  # no raise
+
+    denied = _client(lambda r: httpx.Response(403, text="denied"))
+    with pytest.raises(RuntimeError, match="403"):
+        denied.delete_tree("v")
+
+
+def test_vsb_ds_064_delete_tree_retries_once_on_throttle():
+    """A single 429 with ``Retry-After`` is retried once and then succeeds (reusing
+    the shared ``_request`` retry).
+
+    Anti-coincidental-pass: assert exactly two attempts and that the sleep honored
+    ``Retry-After`` -- a delete that never retried, or looped forever, would fail.
+    """
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def transient(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(204)
+
+    client = _client(transient, sleep=sleeps.append)
+    client.delete_tree("v")
+    assert calls["n"] == 2
+    assert sleeps == [0.0]
+
+
+def test_vsb_ds_065_write_archive_targets_drive_root_sibling_of_root_path():
+    """``write_archive`` PUTs to a drive-root-relative content path that is NOT under
+    the vault ``root_path``, so the archive survives the vault-folder delete and is
+    invisible to vault discovery.
+
+    Anti-coincidental-pass: the archive URL must contain ``/root:/_teardown_archives/``
+    and must NOT contain the ``/vaults/`` root_path segment -- an archive written
+    under ``root_path/<vault_id>/`` would be deleted with the vault folder, and one
+    written under ``root_path`` would be enumerated as a stray vault by discovery.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201, json={})
+
+    client = _client(handler)  # root_path defaults to "vaults"
+    client.write_archive("_teardown_archives/v-20260101T000000Z/schema.dump", b"DUMP")
+
+    assert len(seen) == 1
+    req = seen[0]
+    assert req.method == "PUT"
+    assert req.headers["authorization"] == "Bearer tok"
+    url = str(req.url)
+    assert f"/sites/{_SITE}/drives/{_DRIVE}/root:/_teardown_archives/" in url
+    assert url.endswith("/schema.dump:/content")
+    assert "/vaults/" not in url  # NOT under the vault root_path
+
+
+def test_vsb_ds_066_list_sources_enumerates_vault_folder_recursively():
+    """``list_sources`` walks the vault folder, recursing into subfolders, and
+    returns each file's vault-relative path and size, ordered by path.
+
+    Anti-coincidental-pass: the fixture nests a file one folder deep, so a
+    non-recursive walk (top-level only) would miss it; assert both the nested path
+    and its size are present.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/vaults/v:/children"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"name": "notes.md", "file": {}, "size": 4},
+                        {"name": "imports", "folder": {}},
+                    ]
+                },
+            )
+        if url.endswith("/vaults/v/imports:/children"):
+            return httpx.Response(200, json={"value": [{"name": "a.pdf", "file": {}, "size": 9}]})
+        return httpx.Response(500, text="unexpected")
+
+    client = _client(handler)
+    assert client.list_sources("v") == [
+        {"path": "imports/a.pdf", "size": 9},
+        {"path": "notes.md", "size": 4},
+    ]
 
     # Item exists but Graph returned no downloadUrl -> None.
     no_anno = _client(lambda r: httpx.Response(200, json={"name": "x.pdf", "size": 8}))

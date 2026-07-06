@@ -255,13 +255,27 @@ def test_vsb_032_delete_source_tree_refuses_root_escape(tmp_path):
     assert (outside / "precious.txt").exists()
 
 
-def test_vsb_033_document_store_delete_source_tree_deferred(tmp_path):
-    """The document-store binding's delete_source_tree is deferred (raises
-    NotImplementedError) but the class still instantiates -- the concrete method
-    keeps the ABC satisfiable."""
-    ds = DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=object())
-    with pytest.raises(NotImplementedError):
-        ds.delete_source_tree("v", tmp_path)
+def test_vsb_033_document_store_delete_source_tree_delegates_to_client_by_id():
+    """The document-store binding's ``delete_source_tree`` delegates to the Graph
+    client's folder delete, addressing the vault by id and ignoring ``storage_root``
+    (None under this binding, which has no filesystem locator).
+
+    Anti-coincidental-pass: assert the client's ``delete_tree`` was called with the
+    exact vault id -- a binding that (still) raised, or that reached for the config
+    delete or a filesystem path, would fail.
+    """
+
+    class _RecordingClient:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_tree(self, vault_id):
+            self.deleted.append(vault_id)
+
+    client = _RecordingClient()
+    ds = DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=client)
+    ds.delete_source_tree("v", None)
+    assert client.deleted == ["v"]
 
 
 def test_vsb_034_resolve_and_assert_within_root_boundaries(tmp_path):

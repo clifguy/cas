@@ -525,3 +525,129 @@ async def test_snapshot_runs_when_the_schema_is_present(built_vault):
 
     assert rc == 0
     assert dump.calls  # snapshot attempted
+
+
+# ---------------------------------------------------------------------------
+# D.26 -- document-store binding: the retained-source tree is removed as a store
+# op even though config_locator returns None (no filesystem locator, so nothing
+# enters the per-target guard). Guards the cloud teardown path (CAS-ADR-043).
+# ---------------------------------------------------------------------------
+
+
+class _FakeDocStoreSourceStore:
+    """A document-store-like source store: no filesystem locator (``config_locator``
+    returns ``None``), recording the teardown store ops the core issues."""
+
+    def __init__(self):
+        self.deleted_trees = []
+        self.deleted_configs = []
+
+    def config_locator(self, vault_id):
+        return None
+
+    def delete_source_tree(self, vault_id, storage_root):
+        self.deleted_trees.append((vault_id, storage_root))
+
+    def delete_config(self, vault_id):
+        self.deleted_configs.append(vault_id)
+
+
+async def test_delete_source_tree_called_when_config_locator_returns_none(tmp_path):
+    """A binding with no filesystem locator (``config_locator`` -> ``None``, the
+    cloud document store) still has its retained-source tree removed via the port,
+    like ``delete_config`` -- otherwise the external source tree is orphaned while
+    the schema and config are removed.
+
+    Anti-coincidental-pass: fails under the per-target guard alone, where the
+    source-tree removal is gated on ``"storage_root" in guarded``; with
+    ``config_locator`` returning ``None`` that key is never present, so
+    ``delete_source_tree`` is skipped.
+    """
+    store = _FakeDocStoreSourceStore()
+    prov = _SpyProvisioner()
+    rc = await delete_vault(
+        vault_id="cas_smoke",
+        source_store=store,
+        provisioner=prov,
+        vault_root=tmp_path / "vaults",
+        snapshot_dir=tmp_path / "deletions",
+        reason="retire",
+        apply=True,
+        snapshot=False,
+        dump_runner=_SpyDump(),
+        input_fn=lambda _p: "cas_smoke",
+    )
+
+    assert rc == 0
+    assert store.deleted_trees == [("cas_smoke", None)]
+    assert store.deleted_configs == ["cas_smoke"]
+    assert prov.dropped == ["cas_smoke"]
+
+
+# ---------------------------------------------------------------------------
+# D.27 -- injectable snapshot sink: runs inside the snapshot's fail-closed block,
+# after the local dump/manifest write and before any destruction. The default is
+# a no-op (the local snapshot files are already durable); a profile that needs a
+# durable off-box sink (e.g. the cloud archive) injects one.
+# ---------------------------------------------------------------------------
+
+
+async def test_snapshot_sink_invoked_after_local_write_before_destroy(built_vault):
+    """The sink runs after the local dump was attempted and before the schema drop.
+
+    Anti-coincidental-pass: the sink captures ``len(dump.calls)`` at call time (must
+    be 1 -- the dump already ran) and appends to a shared log the provisioner also
+    writes to (``["sink", "drop"]`` -- the sink precedes destruction). A sink wired
+    before the dump would see 0 calls; one wired after the drop would log
+    ``["drop", "sink"]``.
+    """
+    log = []
+    dump = _SpyDump()
+    captured = {}
+
+    def sink(run_dir):
+        log.append("sink")
+        captured["run_dir"] = run_dir
+        captured["dump_calls_at_sink"] = len(dump.calls)
+
+    prov = _SpyProvisioner(log=log)
+    rc = await delete_vault(
+        **_common(built_vault, provisioner=prov, dump_runner=dump, snapshot_sink=sink)
+    )
+
+    assert rc == 0
+    assert captured["dump_calls_at_sink"] == 1
+    assert log == ["sink", "drop"]
+    assert captured["run_dir"].exists()
+
+
+async def test_snapshot_sink_failure_halts_before_destroy(built_vault):
+    """A raising sink returns 4 and performs no destruction (fail-closed, like a
+    failed pg_dump).
+
+    Anti-coincidental-pass: a sink wired after the destruction (or outside the
+    fail-closed block) would leave ``prov.dropped`` non-empty and the trees gone.
+    """
+    prov = _SpyProvisioner()
+
+    def sink(_run_dir):
+        raise RuntimeError("archive upload failed")
+
+    rc = await delete_vault(**_common(built_vault, provisioner=prov, snapshot_sink=sink))
+
+    assert rc == 4
+    assert prov.dropped == []
+    assert built_vault.storage_root.exists()
+    assert built_vault.config_path.exists()
+
+
+async def test_default_snapshot_sink_is_noop(built_vault):
+    """Not passing ``snapshot_sink`` uses the default no-op; the local teardown
+    behaves exactly as before (snapshot ON, full cascade, receipt written)."""
+    prov = _SpyProvisioner()
+    rc = await delete_vault(**_common(built_vault, provisioner=prov))
+
+    assert rc == 0
+    assert prov.dropped == [built_vault.vault_id]
+    assert not built_vault.config_path.exists()
+    assert not built_vault.vault_dir.exists()
