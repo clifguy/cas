@@ -4,7 +4,7 @@
 // outer wrapper + per-operation rows. Each row is its own state
 // machine (idle → confirming → running → done). Operations:
 //   - ReabstractOperation: SSE-streamed Qwen3 reabstract.
-//   - OptimizeOperation: synchronous content-store compaction (vector database).
+//   - OptimizeOperation: synchronous content-store VACUUM (Postgres).
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
@@ -318,21 +318,12 @@ function ReabstractOperation({ vaultId }: { vaultId: string }) {
 
 type OptimizePhase = 'idle' | 'confirming' | 'running' | 'done';
 
-const DEFAULT_CLEANUP_DAYS = 7;
-
 function OptimizeOperation({ vaultId }: { vaultId: string }) {
-  const [daysInput, setDaysInput] = useState<string>(String(DEFAULT_CLEANUP_DAYS));
   const [phase, setPhase] = useState<OptimizePhase>('idle');
   const [report, setReport] = useState<OptimizeContentStoreReport | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
 
-  const parsed = Number(daysInput);
-  // Non-negative integer: rejects negative, fractional, and NaN.
-  const daysValid =
-    daysInput.trim() !== '' && Number.isInteger(parsed) && parsed >= 0;
-
   const handleConfirmClick = () => {
-    if (!daysValid) return;
     setPhase('confirming');
     setOpError(null);
   };
@@ -342,12 +333,11 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
   };
 
   const handleStart = async () => {
-    if (!daysValid) return;
     setPhase('running');
     setReport(null);
     setOpError(null);
     try {
-      const result = await startOptimizeContentStore(vaultId, parsed);
+      const result = await startOptimizeContentStore(vaultId);
       setReport(result);
       setPhase('done');
     } catch (err) {
@@ -375,8 +365,8 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
         <h3 style={{ margin: 0, fontSize: 15 }}>Optimize content store</h3>
       </div>
       <p style={{ margin: '0 0 12px', fontSize: 13, color: '#666' }}>
-        Compact the vector database's tables and prune old dataset versions.
-        Reclaims disk space; the latest version is never removed.
+        Run VACUUM (FULL, ANALYZE) on the content-store table: removes dead row
+        versions and returns free space to the OS.
       </p>
 
       {opError && (
@@ -385,49 +375,11 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
         </div>
       )}
 
-      {(phase === 'idle' || phase === 'confirming') && (
-        <div style={{ marginBottom: 12 }}>
-          <label
-            htmlFor="optimize-days-input"
-            style={{ fontSize: 13, color: '#444', marginRight: 8 }}
-          >
-            Prune versions older than
-          </label>
-          <input
-            id="optimize-days-input"
-            data-testid="optimize-days-input"
-            type="number"
-            min={0}
-            step={1}
-            value={daysInput}
-            onChange={(e) => setDaysInput(e.target.value)}
-            disabled={phase === 'confirming'}
-            style={{
-              width: 70,
-              padding: '4px 6px',
-              border: '1px solid #ccc',
-              borderRadius: 3,
-              fontSize: 13,
-            }}
-          />
-          <span style={{ fontSize: 13, color: '#444', marginLeft: 6 }}>days</span>
-          {!daysValid && (
-            <div
-              data-testid="optimize-days-error"
-              style={{ fontSize: 12, color: '#c62828', marginTop: 4 }}
-            >
-              Enter a non-negative integer.
-            </div>
-          )}
-        </div>
-      )}
-
       {phase === 'idle' && (
         <button
           data-testid="optimize-button"
           onClick={handleConfirmClick}
-          disabled={!daysValid}
-          style={daysValid ? primaryBtnStyle : disabledBtnStyle}
+          style={primaryBtnStyle}
         >
           Optimize content store
         </button>
@@ -436,20 +388,9 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
       {phase === 'confirming' && (
         <div data-testid="optimize-confirm" style={confirmPanelStyle}>
           <p style={{ margin: '0 0 8px', fontSize: 13 }}>
-            Compact this vault's vector database tables
-            {parsed > 0 ? (
-              <>
-                {' '}
-                and prune dataset versions older than{' '}
-                <strong>{parsed}</strong> day{parsed === 1 ? '' : 's'}
-              </>
-            ) : (
-              <>
-                {' '}
-                and prune <strong>every</strong> non-latest dataset version
-              </>
-            )}
-            ? <strong>This is not undoable.</strong>
+            Run <strong>VACUUM FULL</strong> on this vault's content-store table?
+            It reclaims dead rows and returns free space to the OS, and holds an{' '}
+            <strong>exclusive lock</strong> on the table while it runs.
           </p>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button onClick={handleCancel} style={secondaryBtnStyle}>
@@ -481,13 +422,9 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
             <li data-testid="optimize-bytes-reclaimed">
               Reclaimed: <strong>{formatBytes(report.bytes_reclaimed)}</strong>
             </li>
-            <li data-testid="optimize-versions-cleaned">
-              Versions cleaned up:{' '}
+            <li data-testid="optimize-dead-rows-removed">
+              Dead rows removed:{' '}
               <strong>{report.pre_versions - report.post_versions}</strong>
-            </li>
-            <li data-testid="optimize-fragments-merged">
-              Fragments merged:{' '}
-              <strong>{report.pre_fragments - report.post_fragments}</strong>
             </li>
           </ul>
           <button

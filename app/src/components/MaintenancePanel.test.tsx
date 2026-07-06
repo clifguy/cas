@@ -352,50 +352,16 @@ function makeReport(
 }
 
 // ---------------------------------------------------------------------------
-// Idle / validation (O1–O4)
+// Idle (O1)
 // ---------------------------------------------------------------------------
 
-describe('OptimizeOperation — idle + validation', () => {
-  it('O1: idle pre-fills the days input with the backend default (7) and enables the button', async () => {
+describe('OptimizeOperation — idle', () => {
+  it('O1: idle shows an enabled optimize button and no days input', async () => {
     render(<MaintenancePanel />);
 
-    const input = await screen.findByTestId('optimize-days-input');
-    expect(input).toHaveValue(7);
-    expect(screen.getByTestId('optimize-button')).not.toBeDisabled();
-  });
-
-  it('O2: negative days disables the button and shows the validation error', async () => {
-    render(<MaintenancePanel />);
-    const input = await screen.findByTestId('optimize-days-input');
-
-    await userEvent.clear(input);
-    await userEvent.type(input, '-1');
-
-    expect(screen.getByTestId('optimize-button')).toBeDisabled();
-    expect(screen.getByTestId('optimize-days-error')).toBeInTheDocument();
-  });
-
-  it('O3: non-integer input (3.5) disables the button', async () => {
-    render(<MaintenancePanel />);
-    const input = await screen.findByTestId('optimize-days-input');
-
-    await userEvent.clear(input);
-    await userEvent.type(input, '3.5');
-
-    expect(screen.getByTestId('optimize-button')).toBeDisabled();
-    expect(screen.getByTestId('optimize-days-error')).toBeInTheDocument();
-  });
-
-  it('O4: zero is accepted (lower bound of ge=0)', async () => {
-    render(<MaintenancePanel />);
-    const input = await screen.findByTestId('optimize-days-input');
-
-    await userEvent.clear(input);
-    await userEvent.type(input, '0');
-
-    expect(input).toHaveValue(0);
-    expect(screen.getByTestId('optimize-button')).not.toBeDisabled();
-    expect(screen.queryByTestId('optimize-days-error')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('optimize-button')).not.toBeDisabled();
+    // The LanceDB-era age-prune control is gone — VACUUM has no age threshold.
+    expect(screen.queryByTestId('optimize-days-input')).not.toBeInTheDocument();
   });
 });
 
@@ -404,11 +370,17 @@ describe('OptimizeOperation — idle + validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('OptimizeOperation — confirmation flow', () => {
-  it('O5: clicking the button shows the confirm panel and does NOT fire the API', async () => {
+  it('O5: clicking the button shows the confirm panel with Postgres-accurate copy and does NOT fire the API', async () => {
     render(<MaintenancePanel />);
     await userEvent.click(await screen.findByTestId('optimize-button'));
 
-    expect(screen.getByTestId('optimize-confirm')).toBeInTheDocument();
+    const confirm = screen.getByTestId('optimize-confirm');
+    expect(confirm).toBeInTheDocument();
+    // VACUUM + exclusive-lock caveat, not LanceDB dataset-version pruning.
+    expect(confirm).toHaveTextContent(/VACUUM FULL/);
+    expect(confirm).toHaveTextContent(/exclusive lock/i);
+    expect(confirm).not.toHaveTextContent(/not undoable/i);
+    expect(confirm).not.toHaveTextContent(/dataset version/i);
     expect(startOptimizeContentStoreMock).not.toHaveBeenCalled();
   });
 
@@ -428,7 +400,7 @@ describe('OptimizeOperation — confirmation flow', () => {
 // ---------------------------------------------------------------------------
 
 describe('OptimizeOperation — apply', () => {
-  it('O7: confirm-apply fires startOptimizeContentStore with the typed days value (14, not the default 7)', async () => {
+  it('O7: confirm-apply fires startOptimizeContentStore with just the vault id (no days argument)', async () => {
     // Promise never resolves — pins the panel in 'running' so the
     // call-args assertion isn't racing teardown.
     startOptimizeContentStoreMock.mockImplementation(
@@ -436,15 +408,13 @@ describe('OptimizeOperation — apply', () => {
     );
 
     render(<MaintenancePanel />);
-    const input = await screen.findByTestId('optimize-days-input');
-    await userEvent.clear(input);
-    await userEvent.type(input, '14');
-
-    await userEvent.click(screen.getByTestId('optimize-button'));
+    await userEvent.click(await screen.findByTestId('optimize-button'));
     await userEvent.click(screen.getByTestId('optimize-confirm-apply'));
 
     expect(startOptimizeContentStoreMock).toHaveBeenCalledTimes(1);
-    expect(startOptimizeContentStoreMock).toHaveBeenCalledWith('v1', 14);
+    expect(startOptimizeContentStoreMock).toHaveBeenCalledWith('v1');
+    // The dropped age-prune knob must not sneak back as a second argument.
+    expect(startOptimizeContentStoreMock.mock.calls[0]).toHaveLength(1);
   });
 });
 
@@ -472,14 +442,12 @@ describe('OptimizeOperation — running state', () => {
 // ---------------------------------------------------------------------------
 
 describe('OptimizeOperation — completion', () => {
-  it('O9: summary renders humanized reclaimed bytes, versions cleaned, and fragments merged with distinct values', async () => {
+  it('O9: summary renders humanized reclaimed bytes and dead rows removed, with no fragments row', async () => {
     startOptimizeContentStoreMock.mockResolvedValue(
       makeReport({
         bytes_reclaimed: 1234,
         pre_versions: 10,
-        post_versions: 5, // → 5 cleaned
-        pre_fragments: 12,
-        post_fragments: 4, // → 8 merged
+        post_versions: 5, // → 5 dead rows removed
       }),
     );
 
@@ -493,8 +461,10 @@ describe('OptimizeOperation — completion', () => {
     // bytes_reclaimed=1234 renders humanized (1.2 KB), not as a raw integer.
     expect(screen.getByTestId('optimize-bytes-reclaimed')).toHaveTextContent('1.2 KB');
     expect(screen.getByTestId('optimize-bytes-reclaimed')).not.toHaveTextContent('1234');
-    expect(screen.getByTestId('optimize-versions-cleaned')).toHaveTextContent('5');
-    expect(screen.getByTestId('optimize-fragments-merged')).toHaveTextContent('8');
+    expect(screen.getByTestId('optimize-dead-rows-removed')).toHaveTextContent('5');
+    // The LanceDB versions/fragments rows are gone.
+    expect(screen.queryByTestId('optimize-fragments-merged')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('optimize-versions-cleaned')).not.toBeInTheDocument();
 
     // Dismiss → back to idle.
     await userEvent.click(screen.getByTestId('optimize-dismiss'));

@@ -64,18 +64,17 @@ export async function getDeferredCount(vaultId: string): Promise<number> {
 }
 
 /**
- * Compact the vault's vector database content store. Synchronous JSON POST:
- * the backend optimize call blocks until the store returns, then sends the
- * pre/post snapshot back in one shot. `cleanupOlderThanDays` defaults to 7
- * (the embedded backend's own default); 0 prunes every version except the
- * latest.
+ * Reclaim disk in the vault's content store. Synchronous JSON POST: the backend
+ * runs VACUUM (FULL, ANALYZE) on the content-store table — removing dead row
+ * versions and returning free space to the OS — and sends the pre/post snapshot
+ * back in one shot. The body is empty; VACUUM has no age threshold, so there is
+ * no caller-tunable parameter.
  */
 export async function startOptimizeContentStore(
   vaultId: string,
-  cleanupOlderThanDays: number,
 ): Promise<OptimizeContentStoreReport> {
   return apiPost<OptimizeContentStoreReport>(
     `/sage_vaults/${vaultId}/admin/optimize-content-store`,
-    { cleanup_older_than_days: cleanupOlderThanDays },
+    {},
   );
 }

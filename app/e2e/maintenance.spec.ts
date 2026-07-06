@@ -84,8 +84,8 @@ test('maintenance page surfaces reabstract count and is reachable via the sideba
 test('optimize-content-store row triggers the backend and renders the report', async ({
   page,
 }) => {
-  // C3: stub the optimize endpoint so the test doesn't actually touch
-  // the vector database. A recognizable bytes_reclaimed value (2_500_000 -> "2.5 MB"
+  // C3: stub the optimize endpoint so the test doesn't actually run a
+  // VACUUM on the content store. A recognizable bytes_reclaimed value (2_500_000 -> "2.5 MB"
   // humanized) makes a route mismatch (stub never fires) loudly visible.
   //
   // The API client uses relative paths that Vite proxies to the FastAPI
@@ -124,7 +124,7 @@ test('optimize-content-store row triggers the backend and renders the report', a
   await page.getByRole('link', { name: 'Maintenance' }).click();
   await expect(page.getByTestId('optimize-operation')).toBeVisible();
 
-  // Default value (7) is already pre-filled; click through.
+  // No parameters to set (VACUUM has no age threshold); click straight through.
   await page.getByTestId('optimize-button').click();
   await page.getByTestId('optimize-confirm-apply').click();
 

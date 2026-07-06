@@ -96,8 +96,9 @@ export default function Dashboard() {
           )}
           <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
           <BloatIndicator
-            versionCount={stats.content_store_version_count}
-            smallFragmentCount={stats.content_store_small_fragment_count}
+            deadTuples={stats.content_store_version_count}
+            liveChunks={stats.content_store_chunk_count}
+            freePages={stats.content_store_small_fragment_count}
           />
           <LastOptimizeCard summary={stats.last_optimize} />
         </div>

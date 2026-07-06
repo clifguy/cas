@@ -1,9 +1,11 @@
 // Vitest specs for the Dashboard's content-store bloat + last-optimize wiring.
 //
-// Proves the Dashboard threads content_store_version_count and
-// content_store_small_fragment_count from the stats payload into the BloatIndicator
-// card (healthy below the flag thresholds, flagged above either), and renders
-// the last-optimize summary card from stats.last_optimize.
+// Proves the Dashboard threads content_store_version_count (dead tuples),
+// content_store_chunk_count (live rows), and content_store_small_fragment_count
+// (free pages) from the stats payload into the BloatIndicator card (ok below the
+// autovacuum-anchored dead-tuple threshold, flagged above it, and unmoved by
+// free space alone), and renders the last-optimize summary card from
+// stats.last_optimize.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -31,8 +33,9 @@ const mockVault: VaultSummary = {
 };
 
 function makeStats(
-  versionCount: number,
-  smallFragmentCount = 0,
+  deadTuples: number,
+  liveChunks: number,
+  freePages = 0,
   lastOptimize: LastOptimizeSummary | null = null,
 ): VaultStats {
   return {
@@ -45,9 +48,9 @@ function makeStats(
     staging_edge_count: 0,
     graph_store_size_bytes: 800,
     content_store_size_bytes: 1000,
-    content_store_chunk_count: 5,
-    content_store_version_count: versionCount,
-    content_store_small_fragment_count: smallFragmentCount,
+    content_store_chunk_count: liveChunks,
+    content_store_version_count: deadTuples,
+    content_store_small_fragment_count: freePages,
     last_ingestion_at: null,
     last_optimize: lastOptimize,
     health: {
@@ -77,8 +80,9 @@ beforeEach(() => {
 });
 
 describe('Dashboard bloat indicator wiring', () => {
-  it('renders a healthy bloat card with no remediation below the flag thresholds', async () => {
-    mockGetVaultStats.mockResolvedValue(makeStats(3, 2));
+  it('renders a healthy live-vault snapshot with no remediation', async () => {
+    // 50 dead / 8,469 live = 0.6% — the case the old absolute thresholds red-flagged.
+    mockGetVaultStats.mockResolvedValue(makeStats(50, 8469, 161));
     renderDashboard();
 
     const card = await screen.findByTestId('bloat-card');
@@ -86,8 +90,8 @@ describe('Dashboard bloat indicator wiring', () => {
     expect(screen.queryByRole('link', { name: /optimize/i })).toBeNull();
   });
 
-  it('renders a flagged bloat card with remediation above the version threshold', async () => {
-    mockGetVaultStats.mockResolvedValue(makeStats(120, 0));
+  it('renders a flagged bloat card with remediation above the dead-tuple threshold', async () => {
+    mockGetVaultStats.mockResolvedValue(makeStats(40, 60, 0)); // 40% dead
     renderDashboard();
 
     const card = await screen.findByTestId('bloat-card');
@@ -96,20 +100,20 @@ describe('Dashboard bloat indicator wiring', () => {
     expect(link).toHaveAttribute('href', '/maintenance');
   });
 
-  it('flags on the small-fragment signal even when versions are healthy', async () => {
-    mockGetVaultStats.mockResolvedValue(makeStats(3, 40));
+  it('does not flag on free space alone when the dead-tuple ratio is healthy', async () => {
+    mockGetVaultStats.mockResolvedValue(makeStats(1, 999, 100_000)); // 0.1% dead, big free space
     renderDashboard();
 
     const card = await screen.findByTestId('bloat-card');
-    expect(card).toHaveAttribute('data-bloat-state', 'red');
-    expect(screen.getByTestId('bloat-small-fragment-count')).toHaveTextContent('40');
+    expect(card).toHaveAttribute('data-bloat-state', 'ok');
+    expect(screen.queryByRole('link', { name: /optimize/i })).toBeNull();
   });
 });
 
 describe('Dashboard last-optimize card', () => {
   it('renders the humanized reclaimed bytes when a last optimize exists', async () => {
     mockGetVaultStats.mockResolvedValue(
-      makeStats(3, 0, {
+      makeStats(3, 100, 0, {
         at: '2026-06-01T12:00:00Z',
         bytes_reclaimed: 169_379_435,
         versions_cleaned: 94,
@@ -124,7 +128,7 @@ describe('Dashboard last-optimize card', () => {
   });
 
   it('renders a never-optimized affordance when last_optimize is null', async () => {
-    mockGetVaultStats.mockResolvedValue(makeStats(3, 0, null));
+    mockGetVaultStats.mockResolvedValue(makeStats(3, 100, 0, null));
     renderDashboard();
 
     const card = await screen.findByTestId('last-optimize-card');
@@ -134,7 +138,7 @@ describe('Dashboard last-optimize card', () => {
 
 describe('Dashboard storage stats', () => {
   it('renders the backend-neutral graph-store size and omits the retired SQLite stat', async () => {
-    mockGetVaultStats.mockResolvedValue(makeStats(3, 0));
+    mockGetVaultStats.mockResolvedValue(makeStats(3, 100));
     renderDashboard();
 
     await screen.findByText('Graph Store');
