@@ -302,6 +302,38 @@ def set_stack_config(cfg: SageCoreConfig | None) -> None:
     _stack_config = cfg
 
 
+def caller_local_filesystem_reachable() -> bool:
+    """Whether the active profile lets the server see the caller's filesystem.
+
+    Reads the active deployment profile and defers to
+    :func:`sage.profiles.caller_local_filesystem_available`. Path-bearing tools
+    consult this to decide whether a caller-supplied local path can be honored
+    (local profile) or must be refused in favor of the in-request byte channel
+    (cloud profile).
+    """
+    return profiles.caller_local_filesystem_available(get_stack_config().profile)
+
+
+def require_caller_local_filesystem(operation: str, remedy: str) -> None:
+    """Refuse a caller-path operation the running server cannot honor.
+
+    Under a profile where SAGE cannot see the calling client's filesystem (the
+    cloud profile: a remote container), a caller-supplied local path would
+    silently resolve against the server's own tree -- the usability gap and the
+    container-walk disclosure in one. Path-bearing tools call this before
+    touching such a path so the operation is refused with a structured error
+    naming the sanctioned in-request mechanism, instead of reading, writing, or
+    enumerating the container. A no-op under the local profile.
+
+    ``operation`` names the refused affordance and ``remedy`` names the
+    in-request mechanism to use instead; both land in the error envelope.
+    """
+    if not caller_local_filesystem_reachable():
+        from sage.api.errors import CallerFilesystemUnavailableError
+
+        raise CallerFilesystemUnavailableError(operation, remedy)
+
+
 # Process-bound vault root (CAS-ADR-043). The transport lifespans resolve it from
 # ``--vault-root`` / ``SAGE_VAULT_ROOT`` / the default and publish it here, so the
 # vault-config write paths resolve the same filesystem binding discovery used.

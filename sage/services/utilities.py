@@ -293,6 +293,19 @@ class UtilitiesService:
             )
         spill_to_disk = write_to_path is not None  # holds for both auto and spill
 
+        # write_to_path names a path on the *caller's* machine. Under the cloud
+        # profile the server cannot see it, so refuse rather than writing the
+        # projection to the container's own tree; inline delivery is the
+        # sanctioned alternative. Refuse before reading the projection so the
+        # refusal never depends on the document or its chunks resolving.
+        if spill_to_disk:
+            from sage.mcp_init import require_caller_local_filesystem
+
+            require_caller_local_filesystem(
+                "read_projection with write_to_path",
+                "receive the projection inline by omitting write_to_path",
+            )
+
         doc, projection_text = await self._get_projection_text(document_id)
 
         if not spill_to_disk:
