@@ -6,8 +6,8 @@ name: maintenance
 # operator dispatches this workflow, selects the tenant Environment (whose required
 # reviewer is the approval gate) and the command, and supplies the per-invocation
 # request. The workflow does not apply infrastructure — the in-VNet maintenance job
-# is already deployed by infra.yml (main.bicep); this only starts it, threading the
-# request as job-start environment overrides, and waits.
+# is already deployed by infra.yml (main.bicep); this only applies the request to
+# the job's environment, starts it, and waits.
 #
 # Per-command input semantics (workflow_dispatch caps the input count, so the
 # generic target/confirm inputs carry per-command meanings):
@@ -110,10 +110,16 @@ jobs:
 
       - name: Start the in-VNet maintenance job and wait
         # Resolve the already-deployed job name from the last deployment's output,
-        # start it with the per-invocation request injected as env-var overrides
-        # (the job as deployed bakes none of these, so it is inert until started),
-        # and poll to a terminal status. Dry-run is the job's default; APPLY=true is
-        # required for any destruction, and each entrypoint still enforces its typed
+        # apply the per-invocation request to the job's environment
+        # (`--set-env-vars` merges, so the baked coordinate env survives), then
+        # start the job plain so the execution inherits the full deployed
+        # template — a start-time override flag (`--env-vars`, `--image`,
+        # `--command`) would make the CLI rebuild the execution's container spec
+        # from the flags alone, dropping the image and command. The applied
+        # request persists in the job definition until the next run or redeploy
+        # overwrites it; the job stays inert between dispatches because nothing
+        # starts it. Dry-run is the job's default; APPLY=true is required for any
+        # destruction, and each entrypoint still enforces its typed
         # confirmation(s).
         run: |
           set -euo pipefail
@@ -158,9 +164,12 @@ jobs:
             *)
               echo "unknown command: $COMMAND"; exit 2 ;;
           esac
+          az containerapp job update \
+            --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+            --set-env-vars "${ENV_VARS[@]}" \
+            --output none
           EXECUTION="$(az containerapp job start \
             --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
-            --env-vars "${ENV_VARS[@]}" \
             --query name -o tsv)"
           echo "Started maintenance job execution: $EXECUTION (command: $COMMAND, vault: $VAULT_ID, apply: $APPLY)"
           MAINTENANCE_SUCCEEDED=false
@@ -180,6 +189,6 @@ jobs:
             echo "maintenance job did not reach Succeeded (last status: ${STATUS:-unknown}); recent logs:"
             az containerapp job logs show \
               --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
-              --execution "$EXECUTION" --tail 100 || true
+              --execution "$EXECUTION" --container maintenance --tail 100 || true
             exit 1
           fi

@@ -333,7 +333,7 @@ output sageContainerAppFqdn string = containerApps.outputs.sageFqdn
 @description('Name of the in-VNet Postgres bootstrap job — the deploy pipeline starts it after the apply to create the application managed-identity database roles and pre-create the extensions.')
 output bootstrapJobName string = postgresBootstrap.outputs.bootstrapJobName
 
-@description('Name of the in-VNet maintenance job — the dedicated maintenance workflow starts it out-of-band with the per-invocation request injected as env-var overrides.')
+@description('Name of the in-VNet maintenance job — the dedicated maintenance workflow starts it out-of-band after applying the per-invocation request to its environment.')
 output maintenanceJobName string = maintenanceJob.outputs.maintenanceJobName
 
 @description('Name of the SAGE container app — the deploy pipeline restarts it to converge the app tier after the bootstrap job runs.')
