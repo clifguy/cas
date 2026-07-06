@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ApiError } from './client';
 import * as client from './client';
-import { startReabstract, getDeferredCount } from './maintenance';
+import { startReabstract, getDeferredCount, startOptimizeContentStore } from './maintenance';
 import type { ReabstractEvent } from './types';
 
 vi.mock('./client', async () => {
@@ -179,5 +179,24 @@ describe('getDeferredCount', () => {
     } as never);
 
     expect(await getDeferredCount('v1')).toBe(0);
+  });
+});
+
+describe('startOptimizeContentStore', () => {
+  beforeEach(() => {
+    apiPostMock.mockReset();
+  });
+
+  it('A5: posts to the admin optimize URL with an empty body (no age-prune field)', async () => {
+    apiPostMock.mockResolvedValue({ vault_id: 'v1', bytes_reclaimed: 0 } as never);
+
+    await startOptimizeContentStore('v1');
+
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+    const [path, body] = apiPostMock.mock.calls[0];
+    expect(path).toBe('/sage_vaults/v1/admin/optimize-content-store');
+    // Empty body: VACUUM has no age threshold, so cleanup_older_than_days is gone.
+    expect(body).toEqual({});
+    expect(body).not.toHaveProperty('cleanup_older_than_days');
   });
 });

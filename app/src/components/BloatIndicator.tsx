@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
-import { bloatState, type BloatState } from '../utils/bloat';
+import { bloatState, deadTupleRatio, reclaimableBytes, type BloatState } from '../utils/bloat';
+import { formatBytes } from '../utils/format';
 
 const STATE_STYLE: Record<BloatState, React.CSSProperties> = {
   ok: { background: '#f5f5f5', color: '#333' },
@@ -8,20 +9,24 @@ const STATE_STYLE: Record<BloatState, React.CSSProperties> = {
 };
 
 /**
- * Vault-health card for vector-database content-store bloat. Surfaces the retained
- * dataset-version count and the small (un-compacted) fragment count as a
- * thresholded state rather than bare numbers, and points a drifting store at
- * the Maintenance-page optimize action.
+ * Vault-health card for Postgres content-store bloat. Surfaces the dead-tuple
+ * fraction of the chunks relation as a thresholded ok/warn/red state (anchored
+ * to autovacuum's 20% trigger), with the reclaimable free space shown as an
+ * informational figure. Points a genuinely bloated store at the Maintenance-page
+ * VACUUM action.
  */
 export default function BloatIndicator({
-  versionCount,
-  smallFragmentCount,
+  deadTuples,
+  liveChunks,
+  freePages,
 }: {
-  versionCount: number;
-  smallFragmentCount: number;
+  deadTuples: number;
+  liveChunks: number;
+  freePages: number;
 }) {
-  const state = bloatState(versionCount, smallFragmentCount);
+  const state = bloatState(deadTuples, liveChunks);
   const flagged = state !== 'ok';
+  const pct = deadTupleRatio(deadTuples, liveChunks) * 100;
   return (
     <div
       data-testid="bloat-card"
@@ -36,11 +41,14 @@ export default function BloatIndicator({
       }}
     >
       <div style={{ fontSize: 24, fontWeight: 700 }}>
-        <span data-testid="bloat-version-count">{versionCount}</span>
-        <span style={{ color: '#999' }}> / </span>
-        <span data-testid="bloat-small-fragment-count">{smallFragmentCount}</span>
+        <span data-testid="bloat-dead-pct">{pct.toFixed(1)}%</span>
       </div>
-      <div style={{ fontSize: 12, color: '#666' }}>Content-store versions / small fragments</div>
+      <div style={{ fontSize: 12, color: '#666' }}>
+        Dead-row bloat ({deadTuples} dead / {liveChunks} live)
+      </div>
+      <div data-testid="bloat-reclaimable" style={{ fontSize: 12, color: '#666' }}>
+        ~{formatBytes(reclaimableBytes(freePages))} reclaimable
+      </div>
       {flagged && (
         <Link
           to="/maintenance"

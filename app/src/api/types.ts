@@ -674,8 +674,10 @@ export interface ReabstractStartedResponse {
   dispatched_at: string;
 }
 
-// Vector-database content-store compaction report. Returned by
-// POST /sage_vaults/{vault_id}/admin/optimize-content-store.
+// Postgres content-store VACUUM report. Returned by
+// POST /sage_vaults/{vault_id}/admin/optimize-content-store. The pre/post
+// version and fragment fields map to Postgres MVCC internals (dead tuples and
+// relation pages); the app renders only bytes reclaimed and dead rows removed.
 export interface OptimizeContentStoreReport {
   vault_id: string;
   cleanup_older_than_days: number;
