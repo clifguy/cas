@@ -90,6 +90,16 @@ class VaultStorageProvisioner(ABC):
         already-absent schema is a no-op.
         """
 
+    @abstractmethod
+    async def schema_exists(self, vault_id: str) -> bool:
+        """Whether the vault's durable schema is present in the shared database.
+
+        The read-only companion to :meth:`drop_vault_schema`. Reached only from the
+        out-of-band vault-teardown CLI, whose snapshot step consults it to skip a
+        schema dump when the schema is already gone (a resume after a partial
+        teardown) rather than erroring against an absent schema.
+        """
+
 
 class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
     """The Postgres binding: both stores over one per-vault connection pool.
@@ -233,6 +243,25 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         conn_class = self._connection_class or psycopg.AsyncConnection
         async with await conn_class.connect(conninfo, autocommit=True) as conn:
             await drop_schema(conn, vault_id)
+
+    async def schema_exists(self, vault_id: str) -> bool:
+        """Probe the shared database for the vault's schema over the profile's auth.
+
+        Reuses the provisioner's own connection path -- the same plain-connection
+        credentials :meth:`drop_vault_schema` and :meth:`_bootstrap` open under --
+        so the read runs under the active profile. Delegates to
+        :func:`sage.storage.postgres.schema.schema_exists`.
+        """
+        import psycopg
+        from psycopg.conninfo import make_conninfo
+
+        from sage.storage.postgres.pool import build_conn_kwargs
+        from sage.storage.postgres.schema import schema_exists as _schema_exists
+
+        conninfo = make_conninfo(**build_conn_kwargs(self._connection_params(), self._conn_environ))
+        conn_class = self._connection_class or psycopg.AsyncConnection
+        async with await conn_class.connect(conninfo, autocommit=True) as conn:
+            return await _schema_exists(conn, vault_id)
 
 
 def build_stack_storage_provisioner(

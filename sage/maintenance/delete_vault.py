@@ -34,8 +34,11 @@ Safeguards:
   drop and the filesystem removals are separate coordinated operations with no
   cross-store atomicity (CAS-ADR-042 weakest-binding).
 - Idempotent and resumable: already-missing pieces are tolerated (``IF EXISTS``
-  drop, guarded-but-skipped ``rmtree``, ``missing_ok`` config unlink), and a
-  deletion receipt is written outside the vault.
+  drop, guarded-but-skipped removal, ``missing_ok`` config unlink); each recursive
+  removal tolerates a concurrent writer repopulating a directory mid-removal
+  (bounded retry, CAS-ADR-016); and a resume with the default snapshot ON tolerates
+  an already-dropped schema (the schema dump is skipped). A deletion receipt is
+  written outside the vault.
 
 Usage::
 
@@ -54,7 +57,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -65,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 from sage.vault_source_binding import (
     DiscoveredVault,
     VaultRootEscapeError,
+    remove_tree_tolerating_concurrent_writer,
     resolve_and_assert_within_root,
 )
 
@@ -170,8 +173,10 @@ async def delete_vault(
     filesystem removal -> receipt. A filesystem target that escapes the bound root
     is skipped (left in place, recorded in the receipt) rather than aborting the
     teardown; the receipt marks each target removed or skipped. Every store/
-    filesystem removal tolerates an already-absent target, so a re-run after a
-    partial failure completes cleanly.
+    filesystem removal tolerates an already-absent target and a concurrent writer
+    repopulating a directory mid-removal, and the snapshot skips its dump when the
+    schema is already gone, so a re-run after a partial failure completes cleanly --
+    even with the default snapshot ON.
     """
     config_path = source_store.config_locator(vault_id)
     config = None
@@ -230,15 +235,21 @@ async def delete_vault(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Snapshot-before-destroy (default ON). A failed dump halts before any delete.
+    # The schema dump is skipped when the schema is already gone (a resume after a
+    # partial teardown): pg_dump errors against an absent schema, so gating on
+    # schema_exists keeps a resume from having to pass --no-snapshot.
     if snapshot:
-        try:
-            dump_runner(build_schema_dump_argv(pg_conninfo, vault_id, run_dir / "schema.dump"))
-        except Exception as exc:  # noqa: BLE001 -- operator tool surfaces any dump error
-            print(
-                f"refuse: snapshot failed ({exc}); no destruction performed.",
-                file=sys.stderr,
-            )
-            return 4
+        if await provisioner.schema_exists(vault_id):
+            try:
+                dump_runner(build_schema_dump_argv(pg_conninfo, vault_id, run_dir / "schema.dump"))
+            except Exception as exc:  # noqa: BLE001 -- operator tool surfaces any dump error
+                print(
+                    f"refuse: snapshot failed ({exc}); no destruction performed.",
+                    file=sys.stderr,
+                )
+                return 4
+        else:
+            print(f"snapshot: schema {vault_id} already absent; skipping schema dump (resume).")
         if storage_root is not None:
             (run_dir / "sources_manifest.json").write_text(
                 json.dumps(_source_manifest(storage_root), indent=2) + "\n"
@@ -283,14 +294,15 @@ async def delete_vault(
 
         # Filesystem: sources tree (via the port), brain tree, config, then the
         # enclosing vault dir. Each in-root tree is removed; a target that escaped
-        # the guard is skipped (left in place). All removals are idempotent.
+        # the guard is skipped (left in place). Every removal is idempotent and
+        # tolerates a concurrent writer repopulating a directory mid-removal.
         if "storage_root" in guarded:
             source_store.delete_source_tree(vault_id, storage_root)
         if "brain_root" in guarded and guarded["brain_root"].exists():
-            shutil.rmtree(guarded["brain_root"])
+            remove_tree_tolerating_concurrent_writer(guarded["brain_root"])
         source_store.delete_config(vault_id)
         if "vault_dir" in guarded and guarded["vault_dir"].exists():
-            shutil.rmtree(guarded["vault_dir"])
+            remove_tree_tolerating_concurrent_writer(guarded["vault_dir"])
     except Exception as exc:  # noqa: BLE001 -- operator tool surfaces any teardown error
         print(
             f"error during teardown: {exc}; the deletion audit record is retained "
