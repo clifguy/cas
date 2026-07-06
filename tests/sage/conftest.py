@@ -388,8 +388,12 @@ _PG_TABLES = ("documents", "edges", "staging_edges", "users", "document_tags", "
 
 
 @pytest.fixture(scope="session")
-def pg_dsn():
-    """Session Postgres DSN, or skip when no test server is configured."""
+def pg_dsn(_provision_isolated_test_database):
+    """Session Postgres DSN, or skip when no test server is configured.
+
+    Depends on the isolation provisioner (root conftest) so the DSN it returns is
+    this process's throwaway database, not the shared maintenance database.
+    """
     pytest.importorskip("psycopg")
     dsn = os.environ.get("SAGE_TEST_PG_DSN")
     if not dsn:

@@ -23,6 +23,9 @@ from app.backend.auth.session_store import (
     Session,
 )
 
+# Presence flag for the class-level skip only. The live DSN each test connects
+# with comes from the ``pg_dsn`` fixture, read at runtime after the isolation
+# provisioner has rewritten SAGE_TEST_PG_DSN to this process's throwaway db.
 PG_DSN = os.environ.get("SAGE_TEST_PG_DSN")
 
 
@@ -87,20 +90,31 @@ async def _drop_schema(dsn: str, schema: str) -> None:
 @pytest.mark.skipif(not PG_DSN, reason="SAGE_TEST_PG_DSN not set")
 class TestPostgresSessionStore:
     @pytest.fixture
+    def pg_dsn(self, _provision_isolated_test_database) -> str:
+        # Read at runtime, not from the module-level PG_DSN captured at import:
+        # the isolation provisioner (root conftest) rewrites SAGE_TEST_PG_DSN to
+        # this process's throwaway database only after fixtures start, so an
+        # import-time capture would connect to the shared maintenance database.
+        dsn = os.environ.get("SAGE_TEST_PG_DSN")
+        if not dsn:
+            pytest.skip("SAGE_TEST_PG_DSN not set")
+        return dsn
+
+    @pytest.fixture
     def schema(self) -> str:
         # Disposable, validated lowercase identifier; dropped by each test.
         return "sage_test_bff_" + uuid.uuid4().hex[:12]
 
-    async def test_h1_roundtrip_across_fresh_instances(self, schema):
+    async def test_h1_roundtrip_across_fresh_instances(self, pg_dsn, schema):
         """A session written by one instance is read by a fresh one (scale-out)."""
-        writer = PostgresSessionStore(PG_DSN, schema=schema)
+        writer = PostgresSessionStore(pg_dsn, schema=schema)
         await writer.open()
         try:
             await writer.create_session(_session("sid-1"))
         finally:
             await writer.close()
 
-        reader = PostgresSessionStore(PG_DSN, schema=schema)
+        reader = PostgresSessionStore(pg_dsn, schema=schema)
         await reader.open()
         try:
             got = await reader.get_session("sid-1")
@@ -110,34 +124,34 @@ class TestPostgresSessionStore:
             assert got.token_cache == "cache-blob"
         finally:
             await reader.close()
-            await _drop_schema(PG_DSN, schema)
+            await _drop_schema(pg_dsn, schema)
 
-    async def test_h1b_bootstrap_is_idempotent(self, schema):
+    async def test_h1b_bootstrap_is_idempotent(self, pg_dsn, schema):
         """Opening (and so bootstrapping) twice on one schema is a no-op."""
-        first = PostgresSessionStore(PG_DSN, schema=schema)
+        first = PostgresSessionStore(pg_dsn, schema=schema)
         await first.open()
         await first.close()
-        second = PostgresSessionStore(PG_DSN, schema=schema)
+        second = PostgresSessionStore(pg_dsn, schema=schema)
         await second.open()
         try:
             await second.create_session(_session("sid-2"))
             assert (await second.get_session("sid-2")) is not None
         finally:
             await second.close()
-            await _drop_schema(PG_DSN, schema)
+            await _drop_schema(pg_dsn, schema)
 
-    async def test_h3_expired_session_is_absent(self, schema):
-        store = PostgresSessionStore(PG_DSN, schema=schema)
+    async def test_h3_expired_session_is_absent(self, pg_dsn, schema):
+        store = PostgresSessionStore(pg_dsn, schema=schema)
         await store.open()
         try:
             await store.create_session(_session("sid-x", ttl=-1.0))
             assert await store.get_session("sid-x") is None
         finally:
             await store.close()
-            await _drop_schema(PG_DSN, schema)
+            await _drop_schema(pg_dsn, schema)
 
-    async def test_pending_single_use(self, schema):
-        store = PostgresSessionStore(PG_DSN, schema=schema)
+    async def test_pending_single_use(self, pg_dsn, schema):
+        store = PostgresSessionStore(pg_dsn, schema=schema)
         await store.open()
         try:
             await store.put_pending(
@@ -148,7 +162,7 @@ class TestPostgresSessionStore:
             assert await store.take_pending("st") is None
         finally:
             await store.close()
-            await _drop_schema(PG_DSN, schema)
+            await _drop_schema(pg_dsn, schema)
 
 
 # ---------------------------------------------------------------------------
