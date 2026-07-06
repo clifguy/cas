@@ -12,7 +12,8 @@ MCP tool or REST route (CAS-ADR-034's uniform-auth admin surface carries no
 destructive API).
 
 The teardown request is per-invocation and arrives as environment variables the CI
-dispatch overrides on the job execution (never baked into the job): the vault id, a
+dispatch applies to the job before starting it (never baked into the job's
+deployed template): the vault id, a
 typed confirmation that must match it, and the apply / snapshot flags. Everything
 else -- the Postgres coordinates and the SharePoint site/drive -- is the deployed
 configuration the job's image already carries (``get_stack_config``), resolved to
@@ -43,8 +44,9 @@ from sage.maintenance._cloud_env import config_from_env as _config_from_env
 from sage.maintenance._cloud_env import truthy as _truthy
 from sage.maintenance.delete_vault import delete_vault
 
-# Per-invocation teardown request, supplied by the CI dispatch as
-# ``az containerapp job start --env-vars`` overrides (never baked into the job).
+# Per-invocation teardown request, applied to the job's environment by the CI
+# dispatch (``az containerapp job update --set-env-vars``) immediately before
+# each start — never baked into the job's deployed template.
 _ENV_VAULT_ID = "SAGE_DELETE_VAULT_ID"
 _ENV_CONFIRM = "SAGE_DELETE_CONFIRM"
 _ENV_APPLY = "SAGE_DELETE_APPLY"

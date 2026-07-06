@@ -11,7 +11,8 @@ REST route (CAS-ADR-029's No-Delete Invariant keeps document removal off the
 request surface).
 
 The purge request is per-invocation and arrives as environment variables the CI
-dispatch overrides on the job execution (never baked into the job): the mode
+dispatch applies to the job before starting it (never baked into the job's
+deployed template): the mode
 selector, the vault id, the target, the typed confirmation(s), and the apply
 flag. Everything else -- the Postgres coordinates and the SharePoint
 site/drive -- is the deployed configuration the job's image already carries,
@@ -46,8 +47,9 @@ from sage.maintenance.purge_document import purge_document
 # The mode selector, shared with the dispatcher that routes to this entrypoint.
 _ENV_COMMAND = "SAGE_MAINTENANCE_COMMAND"
 
-# Per-invocation purge request, supplied by the CI dispatch as
-# ``az containerapp job start --env-vars`` overrides (never baked into the job).
+# Per-invocation purge request, applied to the job's environment by the CI
+# dispatch (``az containerapp job update --set-env-vars``) immediately before
+# each start — never baked into the job's deployed template.
 _ENV_VAULT_ID = "SAGE_PURGE_VAULT_ID"
 _ENV_REASON = "SAGE_PURGE_REASON"
 _ENV_APPLY = "SAGE_PURGE_APPLY"

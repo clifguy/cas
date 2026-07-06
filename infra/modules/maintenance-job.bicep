@@ -20,11 +20,12 @@
 // second role assignment with the same deterministic name would clash).
 //
 // Manual trigger: the job is declared by the deploy and started out-of-band by the
-// dedicated maintenance workflow, which supplies the per-invocation request (the
-// command selector, the target, typed confirmations, apply/snapshot flags) as
-// `az containerapp job start --env-vars` overrides — never baked here. Like the
-// sibling postgres-bootstrap job, this is provisioning-as-code: declared by the
-// deploy, started on demand.
+// dedicated maintenance workflow, which applies the per-invocation request (the
+// command selector, the target, typed confirmations, apply/snapshot flags) to the
+// job's environment (`az containerapp job update --set-env-vars`, a merge that
+// preserves the coordinates below) immediately before each start — never baked
+// here. Like the sibling postgres-bootstrap job, this is provisioning-as-code:
+// declared by the deploy, started on demand.
 
 @description('Azure region for the maintenance job.')
 param location string
@@ -71,8 +72,8 @@ param vaultSourceRootPath string
 var sageDbRole = last(split(sageIdentityId, '/'))
 
 // The one-shot maintenance job. Manual trigger: declared by the deploy, started
-// out-of-band by the maintenance workflow with the per-invocation request injected
-// as env-var overrides. No auto-retry — a destructive operation re-runs only on an
+// out-of-band by the maintenance workflow after it applies the per-invocation
+// request to the job's environment. No auto-retry — a destructive operation re-runs only on an
 // explicit operator dispatch (the entrypoints are idempotent, so a resumed run is
 // safe, but re-execution stays deliberate).
 resource maintenanceJob 'Microsoft.App/jobs@2024-03-01' = {
@@ -114,9 +115,12 @@ resource maintenanceJob 'Microsoft.App/jobs@2024-03-01' = {
           ]
           // Standing coordinates only. The per-invocation maintenance request —
           // the command selector plus its per-command request (the
-          // SAGE_DELETE_* and SAGE_PURGE_* families) — is supplied by the
-          // maintenance workflow as job-start env-var overrides, never baked
-          // here — so the job as deployed cannot delete or purge anything.
+          // SAGE_DELETE_* and SAGE_PURGE_* families) — is applied to the job's
+          // environment by the maintenance workflow immediately before each
+          // start (`az containerapp job update --set-env-vars`, a merge, so
+          // these coordinates survive), never baked here — the job as deployed
+          // cannot delete or purge anything, and a redeploy resets the
+          // environment to exactly this list.
           env: [
             {
               name: 'AZURE_CLIENT_ID'

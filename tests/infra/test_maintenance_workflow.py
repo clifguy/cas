@@ -61,6 +61,19 @@ def _job_run_text(job: dict) -> str:
     return "\n".join(s.get("run", "") for s in (job.get("steps") or []) if isinstance(s, dict))
 
 
+def _invocation(run: str, marker: str) -> str:
+    """The single shell invocation starting at ``marker``: its first line plus
+    every backslash-continued line, so flag assertions scope to one command
+    rather than the whole script."""
+    lines = run[run.index(marker) :].splitlines()
+    taken: list[str] = []
+    for line in lines:
+        taken.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    return "\n".join(taken)
+
+
 def _job_environment(job: dict) -> str | None:
     env = job.get("environment")
     if isinstance(env, str):
@@ -113,22 +126,39 @@ def test_oidc_login_no_stored_secret() -> None:
     assert any(u.startswith("azure/login") for u in uses), "the job must log in via azure/login"
 
 
-def test_starts_job_with_request_overrides_and_polls() -> None:
-    """The job resolves the deployed maintenance job, starts it with the command
-    selector and request threaded as env-var overrides, and polls to a terminal
-    status.
+def test_request_applied_via_update_then_plain_start() -> None:
+    """The job resolves the deployed maintenance job, applies the command
+    selector and request to the job's environment with ``az containerapp job
+    update --set-env-vars`` (a merge, so the baked coordinates survive), starts
+    the job plain so the execution inherits the full deployed template, and
+    polls to a terminal status.
 
-    Anti-coincidental-pass: anchor on the exact ``az containerapp job start``
-    ``--env-vars`` command carrying ``SAGE_MAINTENANCE_COMMAND`` plus both request
-    families, and on the ``az containerapp job execution show`` poll — a workflow
-    that merely mentioned these in prose, or started the job without the
-    overrides, would fail.
+    Anti-coincidental-pass: ``--set-env-vars`` contains ``--env-vars`` as a
+    substring, so the no-override check scopes to the extracted start
+    invocation via ``_invocation``. A start carrying any container-override
+    flag (``--env-vars``, ``--image``, ``--command``) makes the CLI rebuild the
+    execution's container spec from the flags alone — dropping the deployed
+    image and command — so that shape must fail here, as must an update placed
+    after the start (the request would miss the execution).
     """
     run = _job_run_text(_maintenance_job(_load()))
     assert "maintenanceJobName" in run, "the job name must resolve from the deployment output"
+    assert "az containerapp job update" in run, "the request must be applied to the job env"
+    update = _invocation(run, "az containerapp job update")
+    assert '--set-env-vars "${ENV_VARS[@]}"' in update, (
+        "the update must merge the request env (not replace it)"
+    )
     assert "az containerapp job start" in run, "the job must be started"
-    assert "--env-vars" in run, "the request must be injected as env-var overrides"
-    assert "SAGE_MAINTENANCE_COMMAND=$COMMAND" in run, "the start must thread the command selector"
+    assert run.index("az containerapp job update") < run.index("az containerapp job start"), (
+        "the env must be applied before the start"
+    )
+    start = _invocation(run, "az containerapp job start")
+    for flag in ("--env-vars", "--image", "--command"):
+        assert flag not in start, (
+            f"the start must not carry {flag} — any container-override flag makes the"
+            " execution's container spec rebuild from the flags, dropping the template"
+        )
+    assert "SAGE_MAINTENANCE_COMMAND=$COMMAND" in run, "the update must thread the command selector"
     for var in (
         "SAGE_DELETE_VAULT_ID",
         "SAGE_DELETE_CONFIRM",
@@ -137,8 +167,25 @@ def test_starts_job_with_request_overrides_and_polls() -> None:
         "SAGE_PURGE_CONFIRM",
         "SAGE_PURGE_APPLY",
     ):
-        assert var in run, f"the start must thread {var}"
+        assert var in run, f"the update must thread {var}"
     assert "az containerapp job execution show" in run, "the job must poll for a terminal status"
+
+
+def test_failure_log_fetch_names_the_container() -> None:
+    """The failure-path log fetch passes ``--container maintenance`` — the
+    container name the maintenance-job module declares.
+
+    Anti-coincidental-pass: the assertion scopes to the ``az containerapp job
+    logs show`` invocation via ``_invocation``, so a comment elsewhere naming
+    the container cannot satisfy it. Without the flag the fetch errors instead
+    of resolving logs, hiding the diagnostics of a failed destructive run.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    assert "az containerapp job logs show" in run, "a failed run must fetch recent logs"
+    logs = _invocation(run, "az containerapp job logs show")
+    assert "--container maintenance" in logs, (
+        "the log fetch must name the deployed container explicitly"
+    )
 
 
 def test_does_not_apply_infrastructure() -> None:
