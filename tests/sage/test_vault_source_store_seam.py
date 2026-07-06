@@ -93,19 +93,35 @@ _OPTIONAL_CAPABILITIES: dict[type, tuple[type, ...]] = {
     DocumentStoreVaultSourceStore: (SupportsSourceDownloadUrl,),
 }
 
+# Concrete port methods: non-abstract public methods the ABC defines with a
+# default (lifecycle helpers such as ``close``). They are part of the sanctioned
+# surface whether a binding inherits the default (absent from its direct methods)
+# or overrides it (present) -- so the binding's surface is bounded above by the
+# full sanctioned set, not required to equal it. Derived, so a new concrete port
+# method joins automatically.
+_CONCRETE_PORT_METHODS = _public_methods(VaultSourceStore) - set(
+    VaultSourceStore.__abstractmethods__
+)
+
 
 @pytest.mark.parametrize("binding", _BINDINGS)
 def test_vss_t4_binding_surface_matches_port(binding):
     """T4: each binding's public surface is the port's abstract set, plus any
-    optional richer-binding capability protocol it implements (CAS-ADR-043 s5).
+    optional richer-binding capability protocol it implements (CAS-ADR-043 s5),
+    plus any concrete port lifecycle method it may override.
 
-    Trap: a binding-private public method that is NOT part of a declared optional
-    capability (drift) would appear in the difference, and a port method dropped
-    from a binding would too."""
-    allowed = set(VaultSourceStore.__abstractmethods__)
+    Trap: a binding-private public method that is NOT part of the port surface, a
+    declared optional capability, or a concrete port method (drift) would fall
+    outside ``allowed``; and a port method dropped from a binding would leave an
+    abstract method unimplemented."""
+    allowed = set(VaultSourceStore.__abstractmethods__) | _CONCRETE_PORT_METHODS
     for proto in _OPTIONAL_CAPABILITIES.get(binding, ()):
         allowed |= _public_methods(proto)
-    assert _public_methods(binding) == allowed
+    surface = _public_methods(binding)
+    # Drift guard: every public method the binding exposes is sanctioned.
+    assert surface <= allowed, f"unsanctioned public methods: {sorted(surface - allowed)}"
+    # Completeness: every abstract port method is implemented directly on the binding.
+    assert set(VaultSourceStore.__abstractmethods__) <= surface
 
 
 @pytest.mark.parametrize("binding", _BINDINGS)
