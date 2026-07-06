@@ -7,15 +7,15 @@ Tools are defined in:
   - sage.sage_api_tools: SAGE protocol and API query tools
   - sage.app_tools: Application backend tools (scan, batch ingest)
 
-Usage:
-    python -m sage.mcp_server <config1.yaml> [config2.yaml...]
+The surface is served over the MCP Streamable HTTP transport by the SAGE
+FastAPI app (``sage/app.py``), which builds one partitioned server per
+mount via ``build_partitioned_server``.
 """
 
 import json as _json
 import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 # Quiet huggingface library noise before any sage import pulls in
@@ -55,11 +55,6 @@ from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
 from sage.mcp_init import (
     SAGEServices,
     initialize_services,
-    load_stack_config_or_default,
-    resolve_stack_abstraction_provider,
-    resolve_stack_vault_source_store,
-    set_stack_config,
-    set_vault_root,
 )
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
@@ -160,88 +155,17 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: discover vault configs and initialize services
+# Lifespan
 # ---------------------------------------------------------------------------
-
-_vault_root: Path | None = None
 
 
 @asynccontextmanager
 async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
-    # When mounted on FastAPI, _vault_root is None and _vaults is
-    # pre-populated by the parent app's lifespan. Skip init/teardown
-    # so the FastAPI lifespan owns the vault lifecycle.
-    standalone = _vault_root is not None
-
-    if standalone:
-        # CAS-ADR-042: resolve the active deployment profile once at process
-        # startup and share its abstraction binding across every vault that
-        # doesn't opt out via vault.abstraction.enabled = False. For the local
-        # profile the binding is the stack-wide provider built per CAS-ADR-030.
-        stack_cfg = load_stack_config_or_default()
-        set_stack_config(stack_cfg)
-        # CAS-ADR-043: publish the resolved vault root so the config write paths
-        # (create_vault / update_config) resolve the same filesystem binding this
-        # discovery uses, rather than falling through to the default root.
-        set_vault_root(_vault_root)
-        stack_abstraction_provider = resolve_stack_abstraction_provider(stack_cfg)
-
-        # CAS-ADR-043: vault discovery and config load go through the active
-        # profile's vault-source store. The filesystem binding (the on-box
-        # default) discovers vaults under the resolved root and yields each
-        # config's filesystem path, threaded into initialize_services unchanged;
-        # a malformed vault is skipped per-vault, the rest still load.
-        vault_source_store = resolve_stack_vault_source_store(stack_cfg, vault_root=_vault_root)
-
-        for discovered in vault_source_store.discover():
-            try:
-                config = vault_source_store.load_config(discovered)
-                services = await initialize_services(
-                    config,
-                    config_path=discovered.config_path,
-                    abstraction_provider=stack_abstraction_provider,
-                    registry_service=_vault_registry_service,
-                )
-                _vaults[config.vault.id] = services
-            except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).error(
-                    "Skipping vault %s: failed to load (%s)",
-                    # Pathless bindings discover by id only; name whichever
-                    # locator this one carries.
-                    discovered.vault_id or discovered.config_path,
-                    exc,
-                )
-
-        # Re-derive abstraction work left pending by a prior crash or a stopped
-        # worker across every registered vault. The in-memory queue is not
-        # itself durable; pipeline_status in the graph store is the durable
-        # record the worker reconstructs from. Best-effort per vault.
-        for vault_id, services in list(_vaults.items()):
-            try:
-                recovered = await services.ingestion_service.recover_incomplete_documents()
-                if recovered:
-                    _logging.getLogger(__name__).info(
-                        "Recovered %d incomplete document(s) for vault %s",
-                        recovered,
-                        vault_id,
-                    )
-            except Exception:
-                _logging.getLogger(__name__).exception(
-                    "Abstraction recovery failed for vault %s", vault_id
-                )
-
+    # The FastAPI lifespan (sage/app.py) owns the vault lifecycle: it
+    # discovers vaults, populates the shared `_vaults` registry, and tears
+    # it down. The MCP server's own lifespan must therefore be a no-op —
+    # any init or teardown here would fight the parent app's.
     yield
-
-    if standalone:
-        for services in _vaults.values():
-            await services.ingestion_service.stop_worker()
-            services.close_timing()
-            await services.close_storage()
-        _vaults.clear()
-        set_stack_config(None)
-        set_vault_root(None)
 
 
 def _envelope_error_kind(result: Any) -> str | None:
@@ -390,7 +314,7 @@ class _LoggingFastMCP(FastMCP):
         # Disable the SDK's loopback-host DNS-rebinding allow-list on every SAGE
         # MCP server (see _MCP_TRANSPORT_SECURITY) unless a caller pins its own
         # transport security. Covers both HTTP-mounted partitions and the
-        # standalone full-surface mount; stdio carries no Host header.
+        # standalone full-surface mount.
         kwargs.setdefault("transport_security", _MCP_TRANSPORT_SECURITY)
         super().__init__(*args, **kwargs)
 
@@ -479,14 +403,13 @@ bulk_ingest_document = _app_tools["bulk_ingest_document"]
 # Surface partition (CAS-ADR-034 / CAS-ADR-029)
 # ---------------------------------------------------------------------------
 #
-# The SAGE MCP surface is split into two: ``sage`` (the ordinary surface,
-# always enabled) and ``sage_admin`` (the maintenance surface, opt-in
-# additive). Per CAS-ADR-034 v7 the partition is realized over both
-# transports — two stdio servers, and two Streamable HTTP mounts on the
-# SAGE app (``/mcp`` = ordinary, ``/mcp_admin`` = maintenance; see
-# ``sage/app.py``). Server/mount selection *is* the role declaration.
-# Surface assignment is derived purely from each tool name's first segment
-# per CAS-ADR-029's prefix-encodes-surface rule — there is no per-tool
+# The SAGE MCP surface is split into two: ``sage`` (the ordinary surface)
+# and ``sage_admin`` (the maintenance surface, opt-in additive). Per
+# CAS-ADR-034 the partition is realized as two Streamable HTTP mounts on
+# the SAGE app (``/mcp`` = ordinary, ``/mcp_admin`` = maintenance; see
+# ``sage/app.py``). Mount selection *is* the role declaration. Surface
+# assignment is derived purely from each tool name's first segment per
+# CAS-ADR-029's prefix-encodes-surface rule — there is no per-tool
 # override table. The module-level ``mcp`` above remains the full,
 # unpartitioned surface whose tool functions are re-exported for direct
 # import; the partitioned servers are built by ``build_partitioned_server``
@@ -515,7 +438,7 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
     ``admin_`` prefix and so resolves to ``sage``.
 
     The server carries the Streamable HTTP transport settings its HTTP
-    mounting requires; stdio use never reads them. ``stateless_http=True``
+    mounting requires. ``stateless_http=True``
     because the cloud runtime scales out with no session affinity — an
     in-memory per-session transport would strand a session on its minting
     replica. ``json_response=True`` so a tool response is a plain JSON body
@@ -539,55 +462,3 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
         if _surface_of(name) != surface:
             server.remove_tool(name)
     return server
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
-def run_stdio(surface: str, prog: str = "python -m sage.mcp_server") -> None:
-    """Run a partitioned SAGE MCP server over stdio.
-
-    ``surface`` selects which tools register: ``"sage"`` for the ordinary
-    surface, ``"sage_admin"`` for the maintenance surface. Assignment is
-    derived from each tool name's first segment per CAS-ADR-029's
-    prefix-encodes-surface rule (see ``build_partitioned_server``). Vaults
-    are auto-discovered from the vault root, resolved from ``--vault-root``,
-    then ``$SAGE_VAULT_ROOT``, then ``~/sage_vaults``.
-
-    ``prog`` sets the argparse program name so each entry module reports its
-    own ``python -m ...`` invocation in ``--help``.
-    """
-    global _vault_root
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog=prog,
-        description=(
-            "Run the SAGE MCP server over stdio. Vaults are auto-discovered from the vault root."
-        ),
-    )
-    parser.add_argument(
-        "--vault-root",
-        type=Path,
-        default=None,
-        help=(
-            "Directory containing one subdirectory per vault. "
-            "Defaults to $SAGE_VAULT_ROOT, then ~/sage_vaults."
-        ),
-    )
-    args = parser.parse_args()
-
-    if args.vault_root is not None:
-        _vault_root = args.vault_root.expanduser()
-    elif os.environ.get("SAGE_VAULT_ROOT"):
-        _vault_root = Path(os.environ["SAGE_VAULT_ROOT"]).expanduser()
-    else:
-        _vault_root = Path.home() / "sage_vaults"
-
-    build_partitioned_server(surface).run(transport="stdio")
-
-
-if __name__ == "__main__":
-    run_stdio("sage", prog="python -m sage.mcp_server")

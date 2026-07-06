@@ -108,8 +108,8 @@ def extract_verb(tool_name: str) -> str:
 #: registration site and gives downstream consumers a single canonical
 #: source.
 #:
-#: The two-server registration split (CAS-ADR-034) is live: the ``sage`` and
-#: ``sage_admin`` stdio servers register their tools by deriving the server
+#: The two-surface registration split (CAS-ADR-034) is live: the ``sage``
+#: and ``sage_admin`` surfaces register their tools by deriving the surface
 #: from each tool name's first segment (``sage.mcp_server._surface_of``), so
 #: this table is **not** consumed by registration. It serves as the
 #: conformance oracle — the in-code transcription of the *SAGE MCP Tool

@@ -3,11 +3,10 @@
 This module gates the closure-pair invariant declared in
 ``sage/mcp_init.py`` as ``REQUIRED_TRANSPORT_KWARGS``: every
 transport-reachable production call site of ``initialize_services`` threads
-each kwarg listed in the canonical set. Five call sites are surveyed:
+each kwarg listed in the canonical set. Four call sites are surveyed:
 
   Transport lifespans / one-shot entrypoints
   ------------------------------------------
-  - ``sage/mcp_server.py:_lifespan`` -- MCP standalone lifespan
   - ``sage/mcp_server.py:reload_vault`` -- MCP reload tool
   - ``sage/app.py:_initialize_vault`` -- FastAPI lifespan
 
@@ -100,7 +99,7 @@ class _FakeUserService:
 class _FakeIngestionService:
     """Satisfies VaultRegistryService._build_vault_summary's iteration over
     ``services.ingestion_service.registered_adapters``, plus the abstraction-
-    queue hooks the standalone/FastAPI lifespans and reload path now call."""
+    queue hooks the FastAPI lifespan and reload path call."""
 
     registered_adapters: dict = {}
 
@@ -132,8 +131,8 @@ class _FakeServices:
         self.storage: Any = None
 
     def close_timing(self) -> None:
-        # reload_vault_in_registry, the migrate CLI, and both lifespans call
-        # services.close_timing() on teardown; the fake owns no timing
+        # reload_vault_in_registry, the migrate CLI, and the FastAPI lifespan
+        # call services.close_timing() on teardown; the fake owns no timing
         # thread/handler, so this is a no-op.
         pass
 
@@ -148,11 +147,9 @@ class _FakeServices:
 def isolate_module_state():
     """Save and restore mcp_server module state mutated by drivers."""
     saved_vaults = dict(mcp_server._vaults)
-    saved_root = mcp_server._vault_root
     yield
     mcp_server._vaults.clear()
     mcp_server._vaults.update(saved_vaults)
-    mcp_server._vault_root = saved_root
 
 
 # ---------------------------------------------------------------------------
@@ -170,33 +167,6 @@ class TransportSurface(NamedTuple):
     label: str
     module_path: str
     driver: _Driver
-
-
-async def _drive_mcp_standalone_lifespan(
-    *,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    minimal_vault_config_dict: dict,
-) -> list[dict]:
-    """Drive sage.mcp_server._lifespan in standalone mode."""
-    vault_root = tmp_path / "vault_root"
-    vault_root.mkdir()
-    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    mcp_server._vaults.clear()
-
-    captured: list[dict] = []
-
-    async def capturing_init(config, **kwargs):
-        captured.append(kwargs)
-        return _FakeServices(config)
-
-    monkeypatch.setattr("sage.mcp_server.initialize_services", capturing_init)
-
-    async with mcp_server._lifespan(mcp_server.mcp):
-        pass
-
-    return captured
 
 
 async def _drive_mcp_reload(
@@ -217,7 +187,6 @@ async def _drive_mcp_reload(
     vault_root = tmp_path / "vault_root"
     vault_root.mkdir()
     config_path = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
     mcp_server._vaults.clear()
 
     config = load_vault_config(config_path)
@@ -350,11 +319,6 @@ async def _drive_vault_registry_create_vault(
 
 TRANSPORT_SURFACES: tuple[TransportSurface, ...] = (
     TransportSurface(
-        label="mcp_standalone_lifespan",
-        module_path="sage.mcp_server",
-        driver=_drive_mcp_standalone_lifespan,
-    ),
-    TransportSurface(
         label="mcp_reload_vault",
         module_path="sage.mcp_server",
         driver=_drive_mcp_reload,
@@ -463,7 +427,6 @@ def test_transport_surface_is_complete():
     through unnoticed.
     """
     expected_labels = {
-        "mcp_standalone_lifespan",
         "mcp_reload_vault",
         "fastapi_lifespan",
         "reload_vault_in_registry",

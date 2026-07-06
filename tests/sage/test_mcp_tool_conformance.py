@@ -272,7 +272,7 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ): (
         "Multipart upload + SSE batch-ingest endpoint for the hosted profile "
         "(content delivered by upload across the BFF/SAGE container boundary). "
-        "Has no stdio MCP counterpart: the path-based bulk_ingest_document MCP "
+        "Has no MCP tool counterpart: the path-based bulk_ingest_document MCP "
         "tool serves the co-located local-filesystem case, and multipart file "
         "upload has no MCP-transport equivalent (CAS-ADR-042)."
     ),

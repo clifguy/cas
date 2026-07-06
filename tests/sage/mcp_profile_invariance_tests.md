@@ -182,18 +182,18 @@ running the SAGE server process.
 **Anti-coincidental-pass:** catches silent docstring drift that would erase
 the caller-local path contract from the tool surface's self-documentation.
 
-## MPI-008: stdio lifespan discovers and registers a document-store-backed vault with no local vault tree
+## MPI-008: app lifespan discovers and registers a document-store-backed vault with no local vault tree
 
-**Artifact:** `sage/mcp_server.py` (`_lifespan`)
+**Artifact:** `sage/app.py` (lifespan)
 **Category:** lifespan, profile_invariance
 
-Lives in `tests/sage/test_mcp_server_lifespan.py` (that module's fixtures own
+Lives in `tests/sage/test_vault_discovery.py` (that module's fixtures own
 lifespan faking); listed here for the invariance suite's completeness.
 
 **Precondition:** `SAGE_TEST_VAULT_SOURCE_BACKEND=document_store`; a fake Graph
-client holding one vault config; `initialize_services` faked.
+client holding one vault config; `_initialize_vault` faked.
 
-**Input:** run the server lifespan.
+**Input:** run the app lifespan.
 
 **Expected:** the vault registers; the discovered vault carries
 `config_path=None`; no local vault directory is required or created.

@@ -150,8 +150,7 @@ UVICORN_LOG_CONFIG: dict = {
         # ``_LoggingFastMCP.call_tool`` already surfaces. Pinning these two
         # loggers to WARNING drops the INFO records at creation so nothing
         # reaches the root RichHandler; genuine WARNING/ERROR still propagate
-        # and stay visible. Scoped to this uvicorn process — the stdio MCP
-        # servers do not apply this config.
+        # and stay visible.
         "mcp.server.streamable_http": {"level": "WARNING"},
         "mcp.server.lowlevel.server": {"level": "WARNING"},
     },

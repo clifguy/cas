@@ -1,14 +1,9 @@
-"""Tests for sage.mcp_server standalone lifespan behavior.
+"""Tests for sage.mcp_server lifespan and reload behavior.
 
-The MCP server runs in two modes:
-  - **Mounted**: FastAPI's lifespan owns the vault registry; mcp_server's
-    lifespan must be a no-op so the parent app's setup is not disturbed.
-  - **Standalone**: invoked as ``python -m sage.mcp_server``, the lifespan
-    discovers vaults from ``_vault_root`` and populates ``_vaults`` itself.
-
-These tests exercise both modes by setting the module-level globals
-directly. ``initialize_services`` is monkeypatched so tests do not pull
-in heavy provider initialization.
+The MCP servers are mounted on the SAGE FastAPI app, whose lifespan owns
+the vault registry; mcp_server's own lifespan must be a no-op so the
+parent app's setup is not disturbed. The reload path threads the
+module-scope registry service (F13 conformance).
 """
 
 from __future__ import annotations
@@ -27,25 +22,19 @@ from sage.config import VaultConfig
 # ---------------------------------------------------------------------------
 
 
-def _materialize_vault(
-    root: Path, vault_id: str, base_config: dict, malformed: bool = False
-) -> Path:
+def _materialize_vault(root: Path, vault_id: str, base_config: dict) -> Path:
     """Write a vault directory and return its config path."""
     vault_dir = root / vault_id
     vault_dir.mkdir(parents=True, exist_ok=True)
     (vault_dir / "sources").mkdir(exist_ok=True)
     (vault_dir / "brain").mkdir(exist_ok=True)
 
-    config_path = vault_dir / "vault_config.yaml"
-    if malformed:
-        config_path.write_text("not: valid: yaml: ::: [unclosed")
-        return config_path
-
     cfg = copy.deepcopy(base_config)
     cfg["vault"]["id"] = vault_id
     cfg["vault"]["name"] = vault_id.replace("_", " ").title()
     cfg["vault"]["storage_root"] = str(vault_dir / "sources")
     cfg["vault"]["brain_root"] = str(vault_dir / "brain")
+    config_path = vault_dir / "vault_config.yaml"
     config_path.write_text(yaml.safe_dump(cfg))
     return config_path
 
@@ -59,7 +48,7 @@ class _FakeGraphStore:
 
 
 class _FakeIngestionService:
-    """Stub abstraction-queue hooks the standalone lifespan + reload path call."""
+    """Stub abstraction-queue hooks the reload path calls."""
 
     async def recover_incomplete_documents(self) -> int:
         return 0
@@ -73,10 +62,10 @@ class _FakeServices:
         self.config = config
         self.graph_store = _FakeGraphStore()
         self.ingestion_service = _FakeIngestionService()
-        # reload_vault_in_registry and the standalone-lifespan teardown call
-        # close_timing() on each services. None is the no-timing-thread
-        # sentinel; the no-op close_timing below stands in for the real
-        # stop-thread-and-release-handler teardown.
+        # reload_vault_in_registry calls close_timing() on each services.
+        # None is the no-timing-thread sentinel; the no-op close_timing
+        # below stands in for the real stop-thread-and-release-handler
+        # teardown.
         self.timing_thread = None
 
     def close_timing(self) -> None:
@@ -89,16 +78,14 @@ class _FakeServices:
 
 
 @pytest.fixture
-def isolate_module_state(monkeypatch):
+def isolate_module_state():
     """Save and restore module-level state used by the lifespan."""
     saved_vaults = dict(mcp_server._vaults)
-    saved_root = mcp_server._vault_root
 
     yield
 
     mcp_server._vaults.clear()
     mcp_server._vaults.update(saved_vaults)
-    mcp_server._vault_root = saved_root
 
 
 @pytest.fixture
@@ -108,24 +95,19 @@ def vault_root(tmp_path) -> Path:
     return root
 
 
-def _patch_initialize_services(monkeypatch):
-    """Monkeypatch initialize_services to return a fake services object."""
-
-    async def fake_init(config, **kwargs):
-        return _FakeServices(config)
-
-    monkeypatch.setattr("sage.mcp_server.initialize_services", fake_init)
-
-
 # ---------------------------------------------------------------------------
 # Surface 5
 # ---------------------------------------------------------------------------
 
 
-async def test_mounted_mode_does_not_touch_registry(isolate_module_state, monkeypatch):
-    """#23: When _vault_root is None, the lifespan must leave _vaults alone."""
+async def test_lifespan_does_not_touch_registry(isolate_module_state):
+    """#23: The lifespan must leave _vaults alone.
+
+    The FastAPI lifespan (sage/app.py) owns the vault lifecycle and
+    pre-populates the shared registry; mcp_server's lifespan doing any
+    init or teardown would fight it.
+    """
     sentinel = object()
-    monkeypatch.setattr(mcp_server, "_vault_root", None)
     mcp_server._vaults.clear()
     mcp_server._vaults["external_vault"] = sentinel
 
@@ -133,142 +115,8 @@ async def test_mounted_mode_does_not_touch_registry(isolate_module_state, monkey
         # Inside the lifespan: registry must be unchanged.
         assert mcp_server._vaults == {"external_vault": sentinel}
 
-    # After teardown: still unchanged. Standalone teardown would clear it,
-    # but mounted mode must not.
+    # After teardown: still unchanged — teardown is the parent app's job.
     assert mcp_server._vaults == {"external_vault": sentinel}
-
-
-async def test_standalone_mode_populates_registry_from_discovery(
-    isolate_module_state,
-    monkeypatch,
-    vault_root,
-    minimal_vault_config_dict,
-):
-    """#24: Standalone discovers vaults under _vault_root and registers each."""
-    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    _materialize_vault(vault_root, "vault_b", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    mcp_server._vaults.clear()
-    _patch_initialize_services(monkeypatch)
-
-    async with mcp_server._lifespan(mcp_server.mcp):
-        assert set(mcp_server._vaults.keys()) == {"vault_a", "vault_b"}
-
-
-async def test_standalone_mode_discovers_document_store_vault_without_local_tree(
-    isolate_module_state,
-    monkeypatch,
-    vault_root,
-    minimal_vault_config_dict,
-):
-    """MPI-008: under the document-store binding the standalone lifespan
-    discovers and registers a vault held only by the backing store -- no
-    local vault directory exists or is created.
-
-    Trap (anti-coincidental): discovery regressed to a filesystem walk of
-    ``_vault_root`` would find nothing (the root stays empty), and a
-    ``load_config`` that demanded a filesystem locator would fail on the
-    pathless ``DiscoveredVault`` (``config_path=None``).
-    """
-    import yaml as _yaml
-
-    from tests.helpers.fake_graph_client import FakeGraphClient
-
-    fake = FakeGraphClient()
-    cfg = copy.deepcopy(minimal_vault_config_dict)
-    cfg["vault"]["id"] = "store_vault"
-    fake.store["store_vault"] = _yaml.safe_dump(cfg).encode()
-
-    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
-    monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client",
-        lambda *args, **kwargs: fake,
-    )
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    mcp_server._vaults.clear()
-
-    captured_kwargs: dict = {}
-
-    async def fake_init(config, **kwargs):
-        captured_kwargs.update(kwargs)
-        return _FakeServices(config)
-
-    monkeypatch.setattr("sage.mcp_server.initialize_services", fake_init)
-
-    async with mcp_server._lifespan(mcp_server.mcp):
-        assert set(mcp_server._vaults.keys()) == {"store_vault"}
-        # The pathless binding threads config_path=None through to init.
-        assert captured_kwargs.get("config_path") is None
-
-    # The local vault root was never required: nothing was created under it.
-    assert list(vault_root.iterdir()) == []
-
-
-async def test_standalone_lifespan_publishes_and_clears_vault_root(
-    isolate_module_state,
-    monkeypatch,
-    vault_root,
-    minimal_vault_config_dict,
-):
-    """The standalone lifespan publishes the resolved root to mcp_init so the
-    config write paths honor it, and clears it on teardown.
-
-    Trap (anti-coincidental): without ``set_vault_root(_vault_root)`` in the
-    standalone branch, ``get_vault_root()`` stays None inside the lifespan;
-    without the teardown clear, it stays set after exit.
-    """
-    from sage import mcp_init
-
-    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    monkeypatch.setattr(mcp_init, "_vault_root", None)
-    mcp_server._vaults.clear()
-    _patch_initialize_services(monkeypatch)
-
-    assert mcp_init.get_vault_root() is None
-    async with mcp_server._lifespan(mcp_server.mcp):
-        assert mcp_init.get_vault_root() == vault_root
-    assert mcp_init.get_vault_root() is None
-
-
-async def test_standalone_mode_isolates_bad_vault(
-    isolate_module_state,
-    monkeypatch,
-    vault_root,
-    minimal_vault_config_dict,
-    caplog,
-):
-    """#25: A vault whose config fails to parse is logged and skipped."""
-    _materialize_vault(vault_root, "good_vault", minimal_vault_config_dict)
-    _materialize_vault(vault_root, "broken_vault", minimal_vault_config_dict, malformed=True)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    mcp_server._vaults.clear()
-    _patch_initialize_services(monkeypatch)
-
-    with caplog.at_level("ERROR"):
-        async with mcp_server._lifespan(mcp_server.mcp):
-            assert "good_vault" in mcp_server._vaults
-            assert "broken_vault" not in mcp_server._vaults
-
-    assert any("broken_vault" in r.message or "broken" in r.message.lower() for r in caplog.records)
-
-
-async def test_standalone_teardown_clears_registry(
-    isolate_module_state,
-    monkeypatch,
-    vault_root,
-    minimal_vault_config_dict,
-):
-    """#26: After exiting the standalone lifespan, _vaults is empty."""
-    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    mcp_server._vaults.clear()
-    _patch_initialize_services(monkeypatch)
-
-    async with mcp_server._lifespan(mcp_server.mcp):
-        assert "vault_a" in mcp_server._vaults
-
-    assert mcp_server._vaults == {}
 
 
 # ---------------------------------------------------------------------------
@@ -277,40 +125,6 @@ async def test_standalone_teardown_clears_registry(
 # not constructed (sage/mcp_init.py:392) and the admin tools refuse the call.
 # Discovered 2026-05-21; fix commit c0bf7ed.
 # ---------------------------------------------------------------------------
-
-
-async def test_standalone_lifespan_threads_registry_service_into_initialize_services(
-    isolate_module_state,
-    monkeypatch,
-    vault_root,
-    minimal_vault_config_dict,
-):
-    """F13 conformance: standalone lifespan must pass registry_service=
-    _vault_registry_service to every initialize_services call. Asserted for
-    every discovered vault."""
-    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    _materialize_vault(vault_root, "vault_b", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
-    mcp_server._vaults.clear()
-
-    captured: list[dict] = []
-
-    async def capturing_init(config, **kwargs):
-        captured.append(kwargs)
-        return _FakeServices(config)
-
-    monkeypatch.setattr("sage.mcp_server.initialize_services", capturing_init)
-
-    async with mcp_server._lifespan(mcp_server.mcp):
-        pass
-
-    assert len(captured) == 2
-    for call_kwargs in captured:
-        assert call_kwargs.get("registry_service") is mcp_server._vault_registry_service, (
-            "lifespan must thread _vault_registry_service into initialize_services; "
-            "without it, services.maintenance_service is None and the admin tools "
-            "refuse the call (F13)"
-        )
 
 
 async def test_sage_reload_vault_threads_registry_service_into_initialize_services(
@@ -322,7 +136,6 @@ async def test_sage_reload_vault_threads_registry_service_into_initialize_servic
     """F13 conformance for the reload path: reload_vault must pass
     registry_service=_vault_registry_service to initialize_services."""
     config_path = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
-    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
     mcp_server._vaults.clear()
 
     # Seed the registry with a fake services entry to satisfy the reload
