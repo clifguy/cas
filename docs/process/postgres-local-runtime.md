@@ -81,8 +81,7 @@ the root conftest pins storage to an unresolvable sentinel host instead of
 falling back to the local `sage` socket, so an accidental open fails fast
 rather than touching live data; most of the suite then fails outright instead
 of skipping. Point the variable at a **separate** throwaway database — never
-the working `sage` database — so the harness's disposable `sage_test_*`
-schemas and its per-test vault schemas never touch live data:
+the working `sage` database:
 
 ```sh
 createdb sage_test
@@ -92,9 +91,22 @@ export SAGE_TEST_PG_DSN="postgresql:///sage_test"   # socket form (peer auth)
 .venv/bin/pytest tests/                             # full suite, all green
 ```
 
-The harness creates and drops its own `sage_test_*` schemas inside that database;
-the one-time bootstrap above is only needed to enable the `vector` extension in
-the throwaway database (extensions are database-global; schemas are not).
+`SAGE_TEST_PG_DSN` names a **maintenance** database on a server, not the
+database the tests actually run against. At session start the harness derives a
+private, per-process database on that same server — `sage_test_db_<hex>` — via
+`CREATE DATABASE`, seeds its extensions, and rewrites `SAGE_TEST_PG_DSN` in the
+process environment to point at it; the private database is dropped at session
+end (and any orphans a crashed run left behind are swept, without disturbing a
+concurrent run's live database). This is what lets **two pytest processes run
+against the same `SAGE_TEST_PG_DSN` concurrently** without colliding on the
+shared `test_vault` schema. The `createdb sage_test` + bootstrap above is
+unchanged: `sage_test` becomes the maintenance database the harness connects to
+in order to create each per-process database. Within each per-process database
+the harness still creates and drops its own disposable `sage_test_*` schemas
+and per-test vault schemas.
+
+The connecting role must be able to `CREATE DATABASE` and `CREATE EXTENSION`
+(the local superuser role and CI's `postgres` role both do).
 
 ## 6. Storage binding and per-vault connection footprint
 

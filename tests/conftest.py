@@ -10,6 +10,16 @@ import pytest
 import yaml
 
 from sage.mcp_init import _timing_handlers
+from tests.helpers.pg_isolation import (
+    IsolatedTestDB,
+    create_database,
+    create_extensions,
+    dbname_of,
+    derive_throwaway_dbname,
+    drop_database,
+    rewrite_dsn_dbname,
+    sweep_orphan_databases,
+)
 from tests.helpers.schema_validation import SchemaValidator
 from tests.helpers.timing_leaks import (
     alive_timing_thread_idents,
@@ -75,8 +85,52 @@ def _test_stack_config():
     return SageCoreConfig(storage_backend="postgres", postgres=postgres), password
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _provision_isolated_test_database():
+    """Give this pytest process its own throwaway Postgres database.
+
+    ``SAGE_TEST_PG_DSN`` names a *maintenance* database on a server; this fixture
+    derives a per-process ``sage_test_db_<hex>`` database on that server, seeds
+    its extensions, and rewrites ``SAGE_TEST_PG_DSN`` in the environment to point
+    at it. Every downstream DSN reader -- the stack-config prongs, ``pg_dsn``,
+    ``pg_schema``, ``_pg_hygiene_session`` -- then binds to the private database,
+    so concurrent pytest processes never collide on the shared ``test_vault``
+    schema. Yields an ``IsolatedTestDB`` (or ``None`` when no server is
+    configured, leaving the no-Postgres path untouched).
+
+    Autouse + session scope, plus the explicit dependency the DSN readers take on
+    this fixture, guarantees the env rewrite lands before any of them read it.
+    """
+    maintenance_dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if not maintenance_dsn:
+        yield None
+        return
+
+    maintenance_db = dbname_of(maintenance_dsn)
+    throwaway_dbname = derive_throwaway_dbname()
+    throwaway_dsn = rewrite_dsn_dbname(maintenance_dsn, throwaway_dbname)
+
+    # Reclaim databases crashed prior runs left behind. Cross-process-safe: only
+    # idle sage_test_db_* databases are dropped, never a live sibling's.
+    sweep_orphan_databases(maintenance_dsn)
+    create_database(maintenance_dsn, throwaway_dbname, maintenance_db=maintenance_db)
+    create_extensions(throwaway_dsn)
+
+    os.environ["SAGE_TEST_PG_DSN"] = throwaway_dsn
+    try:
+        yield IsolatedTestDB(
+            maintenance_dsn=maintenance_dsn,
+            maintenance_dbname=maintenance_db,
+            throwaway_dsn=throwaway_dsn,
+            throwaway_dbname=throwaway_dbname,
+        )
+    finally:
+        os.environ["SAGE_TEST_PG_DSN"] = maintenance_dsn
+        drop_database(maintenance_dsn, throwaway_dbname, force=True, maintenance_db=maintenance_db)
+
+
 @pytest.fixture(scope="session")
-def _test_stack_config_path(tmp_path_factory) -> Path:
+def _test_stack_config_path(_provision_isolated_test_database, tmp_path_factory) -> Path:
     """Write the test stack config to a YAML file, for the env-path prong.
 
     Lifespan-shaped code paths (``create_app``, ``python -m sage``) do not
@@ -105,7 +159,7 @@ def _test_stack_config_path(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _pin_test_stack_config(monkeypatch, _test_stack_config_path):
+def _pin_test_stack_config(monkeypatch, _provision_isolated_test_database, _test_stack_config_path):
     """Pin every stack-config resolution path to the test Postgres.
 
     Three prongs, all derived from ``SAGE_TEST_PG_DSN`` (or the sentinel):
@@ -140,10 +194,12 @@ def _pin_test_stack_config(monkeypatch, _test_stack_config_path):
 
 
 @pytest.fixture(scope="session")
-def _pg_hygiene_session():
+def _pg_hygiene_session(_provision_isolated_test_database):
     """Session connection + schema baseline for per-test vault-schema cleanup.
 
     ``None`` when no test server is configured (nothing can have connected).
+    Depends on the isolation provisioner so it connects to this process's
+    throwaway database, not the shared maintenance database.
     """
     dsn = os.environ.get("SAGE_TEST_PG_DSN")
     if not dsn:
