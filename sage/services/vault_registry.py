@@ -127,14 +127,84 @@ class VaultRegistryService:
         }
 
     async def list_vaults(self) -> list[VaultSummary]:
-        """Return all vaults registered with the running SAGE instance."""
+        """Return all vaults registered with the running SAGE instance.
+
+        Resilient per vault: if a vault's backing store errors (e.g. its
+        Postgres schema was dropped out of band by a completed teardown), that
+        vault is skipped and logged and the surviving vaults still list -- one
+        dead vault never fails the whole listing. Mirrors the log-and-drop
+        discipline of the startup discovery loop.
+
+        Self-healing: when the errored vault is also gone from vault-source
+        discovery (a completed teardown removes both the schema and the config),
+        it is evicted from the live registry so the stale entry does not linger
+        until the next restart. A vault whose store errors but whose config is
+        still present is left in place -- a transient error must not destroy the
+        registry entry.
+        """
         results: list[VaultSummary] = []
-        for _vault_id, services in self._registry.items():
-            cfg = services.config
-            project_counts = await services.graph_store.get_document_counts_by_field("project")
-            projects = sorted(project_counts.keys())
-            results.append(self._build_vault_summary(cfg, services, projects))
+        # Computed once, lazily, only if a vault errors -- discovery can be a
+        # remote round-trip under the document-store binding.
+        discovered_ids: set[str] | None = None
+        # Snapshot: an eviction below mutates self._registry mid-iteration.
+        for vault_id, services in list(self._registry.items()):
+            try:
+                project_counts = await services.graph_store.get_document_counts_by_field("project")
+                projects = sorted(project_counts.keys())
+                results.append(self._build_vault_summary(services.config, services, projects))
+            except Exception:
+                logger.exception(
+                    "Skipping vault %s from the listing: backing store error", vault_id
+                )
+                # Best-effort reconcile -- must never re-break the listing.
+                try:
+                    if discovered_ids is None:
+                        discovered_ids = self._discovered_vault_ids()
+                    if vault_id not in discovered_ids:
+                        await self._evict(vault_id)
+                        logger.warning(
+                            "Evicted vault %s from the registry: no longer present in "
+                            "vault-source discovery",
+                            vault_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Registry reconcile for vault %s failed; left in place", vault_id
+                    )
         return results
+
+    def _discovered_vault_ids(self) -> set[str]:
+        """Ids of the vaults the active profile's vault-source store currently holds.
+
+        Resolves the store the same way ``create_vault`` does (CAS-ADR-043).
+        ``discover()`` -- not ``config_locator`` -- is the profile-invariant
+        existence signal: the document-store binding returns ``None`` from
+        ``config_locator`` by design, so a config-locator check would wrongly
+        report every cloud vault as gone.
+        """
+        from sage.mcp_init import (
+            get_stack_config,
+            get_vault_root,
+            resolve_stack_vault_source_store,
+        )
+
+        store = resolve_stack_vault_source_store(get_stack_config(), vault_root=get_vault_root())
+        return {d.vault_id for d in store.discover() if d.vault_id}
+
+    async def _evict(self, vault_id: str) -> None:
+        """Drop a vault from the live registry and release its resources.
+
+        Same teardown order the reload path uses -- stop the ingestion worker,
+        close the timing flusher, release the per-vault storage pool. Pops
+        first so a concurrent lister that also hit the error path gets ``None``
+        and does not double-close.
+        """
+        services = self._registry.pop(vault_id, None)
+        if services is None:
+            return
+        await services.ingestion_service.stop_worker()
+        services.close_timing()
+        await services.close_storage()
 
     async def create_vault(self, body: CreateVaultRequest) -> VaultSummary:
         """Create a new vault from a full config dict.

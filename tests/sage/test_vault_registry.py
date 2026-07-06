@@ -17,8 +17,10 @@ with the model.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import psycopg
 from pydantic_core import PydanticUndefined
 
 from sage.config import (
@@ -38,6 +40,7 @@ from sage.models.schemas import (
     VaultSummary,
 )
 from sage.services.vault_registry import VaultRegistryService
+from sage.vault_source_binding import DiscoveredVault
 
 
 class _SentinelAdapter:
@@ -249,3 +252,195 @@ def test_build_vault_summary_populates_every_vault_summary_field():
             assert value is not None, (
                 f"VaultAdapterInfo.{field_name} not populated by _build_vault_summary"
             )
+
+
+# ---------------------------------------------------------------------------
+# list_vaults resilience + self-healing registry reconcile
+# ---------------------------------------------------------------------------
+#
+# list_vaults fans a per-vault graph-store query over every registered vault.
+# A vault whose backing schema was dropped out of band (e.g. by a completed
+# teardown) makes that query raise; without a per-vault guard, one dead vault
+# fails the whole listing. When such a vault is also gone from vault-source
+# discovery, it is evicted from the live registry so the stale entry does not
+# linger. These tests pin both behaviors and are anti-coincidental: each names
+# the regression it catches.
+
+
+class _FakeGraphStore:
+    """Per-vault graph store that either returns counts or raises."""
+
+    def __init__(
+        self,
+        *,
+        counts: dict[str, int] | None = None,
+        raises: BaseException | None = None,
+    ) -> None:
+        self._counts = counts
+        self._raises = raises
+
+    async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
+        if self._raises is not None:
+            raise self._raises
+        return dict(self._counts or {})
+
+
+class _FakeIngestionService:
+    """Stand-in exposing the one adapter ``_build_vault_summary`` reads plus a
+    ``stop_worker`` spy the eviction path calls."""
+
+    def __init__(self) -> None:
+        self.registered_adapters: dict[SourceType, Any] = {SourceType.MARKDOWN: _SentinelAdapter()}
+        self.stop_worker_called = False
+
+    async def stop_worker(self) -> None:
+        self.stop_worker_called = True
+
+
+class _FakeServices:
+    """Minimal ``SAGEServices`` stand-in covering exactly what ``list_vaults``
+    and the eviction path touch: ``config``, ``graph_store``,
+    ``ingestion_service``, and the two ``close_*`` handles (spied so a test can
+    assert whether eviction ran)."""
+
+    def __init__(
+        self,
+        *,
+        config: VaultConfig,
+        counts: dict[str, int] | None = None,
+        raises: BaseException | None = None,
+    ) -> None:
+        self.config = config
+        self.graph_store = _FakeGraphStore(counts=counts, raises=raises)
+        self.ingestion_service = _FakeIngestionService()
+        self.close_timing_called = False
+        self.close_storage_called = False
+
+    def close_timing(self) -> None:
+        self.close_timing_called = True
+
+    async def close_storage(self) -> None:
+        self.close_storage_called = True
+
+
+class _FakeSourceStore:
+    """Vault-source store whose ``discover()`` yields a controlled id set (or raises)."""
+
+    def __init__(
+        self, *, discovered_ids: list[str] | None = None, discover_raises: bool = False
+    ) -> None:
+        self._ids = discovered_ids or []
+        self._discover_raises = discover_raises
+
+    def discover(self) -> list[DiscoveredVault]:
+        if self._discover_raises:
+            raise RuntimeError("vault-source discovery failed")
+        return [DiscoveredVault(config_path=None, vault_id=vid) for vid in self._ids]
+
+
+async def _unused_initialize_services(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("initialize_services must not be called by list_vaults")
+
+
+def _patch_source_store(monkeypatch: Any, store: _FakeSourceStore) -> None:
+    """Route the service's on-demand vault-source-store resolution to ``store``.
+
+    ``list_vaults`` resolves the store the same way ``create_vault`` does -- a
+    late import of ``resolve_stack_vault_source_store`` (plus the stack-config
+    and vault-root accessors) from ``sage.mcp_init``. Patching all three keeps
+    the unit test independent of any running lifespan.
+    """
+    monkeypatch.setattr("sage.mcp_init.get_stack_config", lambda: None)
+    monkeypatch.setattr("sage.mcp_init.get_vault_root", lambda: None)
+    monkeypatch.setattr("sage.mcp_init.resolve_stack_vault_source_store", lambda *a, **k: store)
+
+
+def _undefined_table() -> psycopg.errors.UndefinedTable:
+    """The exact error production raises when a vault's schema was dropped."""
+    return psycopg.errors.UndefinedTable('relation "documents" does not exist')
+
+
+async def test_list_vaults_evicts_a_vault_whose_schema_and_config_are_gone(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """A registered vault whose store errors AND whose config is gone from
+    discovery is skipped from the listing and evicted from the registry; the
+    surviving vault still lists.
+
+    Anti-coincidental: ``gone`` is registered FIRST, so a loop that aborted on
+    the first error would never reach ``healthy`` -- asserting ``healthy`` lists
+    proves the loop continued past the error, not merely that it did not raise.
+    Asserting ``gone`` left the registry (and its stop_worker/close_storage
+    ran) proves the evict fired, not a bare ``except: pass``.
+    """
+    config = _vault_config_with_every_summary_field()
+    gone = _FakeServices(config=config, raises=_undefined_table())
+    healthy = _FakeServices(config=config, counts={"proj_a": 2})
+    registry: dict[str, Any] = {"gone": gone, "healthy": healthy}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=["healthy"]))
+
+    with caplog.at_level(logging.WARNING, logger="sage.services.vault_registry"):
+        result = await svc.list_vaults()
+
+    assert len(result) == 1  # only the healthy vault lists
+    assert result[0].id == "sentinel_vault"
+    assert "gone" not in registry  # evicted
+    assert gone.ingestion_service.stop_worker_called
+    assert gone.close_timing_called
+    assert gone.close_storage_called
+    assert any(r.levelno == logging.WARNING and "gone" in r.getMessage() for r in caplog.records)
+
+
+async def test_list_vaults_skips_but_keeps_a_transiently_failing_vault(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """A vault whose store errors but whose config is STILL present in discovery
+    is skipped from the listing but NOT evicted -- a transient store error must
+    not destroy the registry entry.
+
+    Anti-coincidental: an unconditional evict (dropping the discovery-membership
+    guard, or reaching for the ``config_locator(...) is None`` shortcut that
+    false-positives on the cloud binding) would remove ``flaky``; asserting it
+    remains -- and that its stop_worker/close_storage did NOT run -- fails such
+    a regression.
+    """
+    config = _vault_config_with_every_summary_field()
+    flaky = _FakeServices(config=config, raises=_undefined_table())
+    healthy = _FakeServices(config=config, counts={"proj_a": 1})
+    registry: dict[str, Any] = {"flaky": flaky, "healthy": healthy}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=["flaky", "healthy"]))
+
+    with caplog.at_level(logging.ERROR, logger="sage.services.vault_registry"):
+        result = await svc.list_vaults()
+
+    assert len(result) == 1  # healthy listed, flaky skipped
+    assert "flaky" in registry  # NOT evicted (config still present)
+    assert not flaky.ingestion_service.stop_worker_called
+    assert not flaky.close_storage_called
+    assert any(r.levelno == logging.ERROR and "flaky" in r.getMessage() for r in caplog.records)
+
+
+async def test_list_vaults_survives_a_reconcile_failure(monkeypatch: Any, caplog: Any) -> None:
+    """If the reconcile itself fails (discovery raises), ``list_vaults`` still
+    returns the surviving vaults and leaves the errored vault in place -- the
+    reconcile is best-effort and must never re-break the listing.
+
+    Anti-coincidental: without wrapping the reconcile in its own try/except, a
+    raising ``discover()`` would propagate and fail the whole call; asserting
+    the healthy vault still lists proves the failure was contained.
+    """
+    config = _vault_config_with_every_summary_field()
+    broken = _FakeServices(config=config, raises=_undefined_table())
+    healthy = _FakeServices(config=config, counts={"proj_a": 1})
+    registry: dict[str, Any] = {"broken": broken, "healthy": healthy}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discover_raises=True))
+
+    with caplog.at_level(logging.ERROR, logger="sage.services.vault_registry"):
+        result = await svc.list_vaults()
+
+    assert len(result) == 1  # healthy still lists
+    assert "broken" in registry  # couldn't determine -> left in place
+    assert any("reconcile" in r.getMessage().lower() for r in caplog.records)
