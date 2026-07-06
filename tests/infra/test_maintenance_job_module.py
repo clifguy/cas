@@ -1,14 +1,16 @@
-"""Structural gate for the in-VNet vault-teardown job module.
+"""Structural gate for the in-VNet maintenance job module.
 
-Locks the shape of ``infra/modules/vault-teardown-job.bicep`` — the Container Apps
-Job in the CAS cloud deployment profile (CAS-ADR-043/034) that runs the out-of-band
-whole-vault teardown from inside the VNet, since both the Postgres schema and the
-SharePoint source tree are reachable only from in-cloud. The job runs as the SAGE
-workload identity — the one identity that already holds both grants the teardown
-needs (schema owner + SharePoint ``Sites.Selected`` writer), so no new identity and
-no new Azure permission are introduced — and invokes the codified
-``sage.maintenance.delete_vault_cloud`` entrypoint. The per-invocation request is
-injected by the teardown workflow at job-start, never baked into the job.
+Locks the shape of ``infra/modules/maintenance-job.bicep`` — the Container Apps
+Job in the CAS cloud deployment profile (CAS-ADR-043/034/029) that runs the
+out-of-band maintenance operations (whole-vault teardown, document purge) from
+inside the VNet, since both the Postgres schemas and the SharePoint source tree
+are reachable only from in-cloud. The job runs as the SAGE workload identity — the
+one identity that already holds every grant the operations need (schema owner +
+SharePoint ``Sites.Selected`` writer), so no new identity and no new Azure
+permission are introduced — and invokes the codified
+``sage.maintenance.cloud_job`` dispatcher, which routes on the per-invocation
+``SAGE_MAINTENANCE_COMMAND`` override. The per-invocation request is injected by
+the maintenance workflow at job-start, never baked into the job.
 
 These checks read the tracked Bicep text only — they need no Azure or Bicep tooling,
 so they run in the ordinary Python test job. The authoritative compile + lint is the
@@ -29,13 +31,13 @@ import pytest
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 INFRA_DIR: Final[Path] = REPO_ROOT / "infra"
 MAIN_BICEP: Final[Path] = INFRA_DIR / "main.bicep"
-MODULE: Final[Path] = INFRA_DIR / "modules" / "vault-teardown-job.bicep"
+MODULE: Final[Path] = INFRA_DIR / "modules" / "maintenance-job.bicep"
 
 _JOB_TYPE: Final[str] = "Microsoft.App/jobs"
 _ROLE_ASSIGNMENT_TYPE: Final[str] = "Microsoft.Authorization/roleAssignments"
 
-# The codified teardown entrypoint the job invokes.
-_ENTRYPOINT: Final[str] = "sage.maintenance.delete_vault_cloud"
+# The codified maintenance dispatcher the job invokes.
+_ENTRYPOINT: Final[str] = "sage.maintenance.cloud_job"
 
 # Standing coordinates the job bakes for the entrypoint's env-driven config.
 _REQUIRED_ENV: Final[tuple[str, ...]] = (
@@ -48,14 +50,19 @@ _REQUIRED_ENV: Final[tuple[str, ...]] = (
     "SHAREPOINT_ROOT_PATH",
 )
 
-# The per-invocation teardown request must NOT be baked into the deployed job — it
-# is supplied by the teardown workflow as job-start env-var overrides, so the job as
-# deployed cannot delete anything.
+# The per-invocation maintenance request — the command selector and both
+# per-command request families — must NOT be baked into the deployed job. It is
+# supplied by the maintenance workflow as job-start env-var overrides, so the job
+# as deployed cannot delete or purge anything.
 _FORBIDDEN_BAKED_ENV: Final[tuple[str, ...]] = (
+    "SAGE_MAINTENANCE_COMMAND",
     "SAGE_DELETE_VAULT_ID",
     "SAGE_DELETE_CONFIRM",
     "SAGE_DELETE_APPLY",
     "SAGE_DELETE_SNAPSHOT",
+    "SAGE_PURGE_VAULT_ID",
+    "SAGE_PURGE_CONFIRM",
+    "SAGE_PURGE_APPLY",
 )
 
 _GUID_RE: Final[re.Pattern[str]] = re.compile(
@@ -87,14 +94,14 @@ def _module_text() -> str:
 
 
 def test_module_exists() -> None:
-    """The teardown-job module the orchestrator wires must exist."""
-    assert MODULE.is_file(), "infra/modules/vault-teardown-job.bicep missing"
+    """The maintenance-job module the orchestrator wires must exist."""
+    assert MODULE.is_file(), "infra/modules/maintenance-job.bicep missing"
 
 
 def test_declares_container_apps_job() -> None:
     """The module declares a Container Apps Job — the in-VNet reach mechanism."""
     assert _declares_resource_type(_module_text(), _JOB_TYPE), (
-        f"vault-teardown-job.bicep must declare a {_JOB_TYPE} resource"
+        f"maintenance-job.bicep must declare a {_JOB_TYPE} resource"
     )
 
 
@@ -121,7 +128,7 @@ def test_job_runs_as_sage_identity_not_bootstrap() -> None:
     )
     assert "sageIdentityId" in text, "the job must attach the SAGE identity parameter"
     assert "bootstrapIdentity" not in text, (
-        "the teardown job must run as the SAGE identity, never the bootstrap identity"
+        "the maintenance job must run as the SAGE identity, never the bootstrap identity"
     )
 
 
@@ -147,13 +154,13 @@ def test_does_not_redeclare_acrpull() -> None:
     stray copy of the bootstrap module's grant block.
     """
     assert not _declares_resource_type(_module_text(), _ROLE_ASSIGNMENT_TYPE), (
-        "the teardown job must not re-declare an AcrPull role assignment; the SAGE "
+        "the maintenance job must not re-declare an AcrPull role assignment; the SAGE "
         "identity's grant is owned by the container-apps module"
     )
 
 
 def test_job_invokes_codified_entrypoint() -> None:
-    """The job invokes the committed, unit-tested cloud teardown entrypoint."""
+    """The job invokes the committed, unit-tested cloud maintenance dispatcher."""
     assert _ENTRYPOINT in _module_text(), (
         f"the job command must invoke the codified entrypoint {_ENTRYPOINT!r}"
     )
@@ -171,11 +178,12 @@ def test_job_bakes_standing_coordinates() -> None:
 def test_per_invocation_request_not_baked() -> None:
     """The destructive per-invocation request is never baked into the deployed job.
 
-    Anti-coincidental-pass: assert each ``SAGE_DELETE_*`` request variable is absent
-    from the module's live text (comments stripped, so the explanatory comment naming
-    them is fine). A job that baked the vault id + apply flag would be able to delete a
-    vault the moment it started, with no operator confirmation — the request must
-    arrive only as a job-start override from the teardown workflow.
+    Anti-coincidental-pass: assert the command selector and each ``SAGE_DELETE_*`` /
+    ``SAGE_PURGE_*`` request variable is absent from the module's live text (comments
+    stripped, so the explanatory comment naming them is fine). A job that baked a
+    command + target + apply flag would be able to destroy state the moment it
+    started, with no operator confirmation — the request must arrive only as a
+    job-start override from the maintenance workflow.
     """
     text = _strip_line_comments(_module_text())
     for name in _FORBIDDEN_BAKED_ENV:
@@ -186,7 +194,7 @@ def test_per_invocation_request_not_baked() -> None:
 
 def test_manual_trigger() -> None:
     """The job is manually triggered — declared by the deploy, started out-of-band by
-    the teardown workflow."""
+    the maintenance workflow."""
     assert re.search(r"triggerType:\s*'Manual'", _strip_line_comments(_module_text())), (
         "the job must declare triggerType: 'Manual'"
     )
@@ -197,7 +205,7 @@ def test_no_auto_retry() -> None:
     dispatch (the entrypoint is idempotent, so a resumed run is safe, but not silent).
     """
     assert re.search(r"replicaRetryLimit:\s*0", _strip_line_comments(_module_text())), (
-        "the teardown job must set replicaRetryLimit: 0 (no silent re-execution)"
+        "the maintenance job must set replicaRetryLimit: 0 (no silent re-execution)"
     )
 
 
@@ -205,7 +213,7 @@ def test_rg_scoped() -> None:
     """The module is resource-group scoped (the Bicep default)."""
     text = _strip_line_comments(_module_text())
     assert not re.search(r"targetScope\s*=\s*'(subscription|managementGroup|tenant)'", text), (
-        "vault-teardown-job.bicep is a resource-group module; it must not retarget the scope"
+        "maintenance-job.bicep is a resource-group module; it must not retarget the scope"
     )
 
 
@@ -215,31 +223,31 @@ def test_no_hardcoded_identity() -> None:
     exempt: any GUID at all is a leak.
     """
     assert not _GUID_RE.search(_module_text()), (
-        "vault-teardown-job.bicep must not hardcode a GUID (identities arrive as parameters)"
+        "maintenance-job.bicep must not hardcode a GUID (identities arrive as parameters)"
     )
 
 
-def test_main_wires_teardown_module() -> None:
-    """The orchestrator wires the teardown-job module live, feeds it the ACA
+def test_main_wires_maintenance_module() -> None:
+    """The orchestrator wires the maintenance-job module live, feeds it the ACA
     environment, the SAGE identity, the Postgres server FQDN, and the SharePoint
     coordinates, and exposes the job name as an output for the workflow to start.
     """
     text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/vault-teardown-job\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/vault-teardown-job.bicep"
+    assert re.search(r"module\s+\w+\s+'modules/maintenance-job\.bicep'\s*=", text), (
+        "main.bicep must wire a live module from modules/maintenance-job.bicep"
     )
     assert "identity.outputs.sageIdentityId" in text, (
-        "the teardown module must consume the SAGE identity"
+        "the maintenance module must consume the SAGE identity"
     )
     assert "postgres.outputs.postgresServerFqdn" in text, (
-        "the teardown module must consume the Postgres server FQDN"
+        "the maintenance module must consume the Postgres server FQDN"
     )
     assert "sharepointSiteId: sharepointSiteId" in text, (
-        "the teardown module must consume the SharePoint site id"
+        "the maintenance module must consume the SharePoint site id"
     )
-    assert (
-        "output vaultTeardownJobName string = vaultTeardown.outputs.vaultTeardownJobName" in text
-    ), "main.bicep must output the teardown job name for the workflow to start"
+    assert "output maintenanceJobName string = maintenanceJob.outputs.maintenanceJobName" in text, (
+        "main.bicep must output the maintenance job name for the workflow to start"
+    )
 
 
 @pytest.mark.skipif(
@@ -249,7 +257,7 @@ def test_main_wires_teardown_module() -> None:
 def test_module_compiles(tmp_path: Path) -> None:
     """The module compiles to ARM JSON with no error (local fast check; the infra
     workflow validate job is the authoritative gate)."""
-    outfile = tmp_path / "vault-teardown-job.json"
+    outfile = tmp_path / "maintenance-job.json"
     if shutil.which("bicep") is not None:
         cmd = ["bicep", "build", str(MODULE), "--outfile", str(outfile)]
     else:

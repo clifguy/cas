@@ -1,35 +1,38 @@
-// CAS cloud deployment — vault-teardown job module.
+// CAS cloud deployment — maintenance job module.
 //
-// Declares the Container Apps Job that runs the out-of-band whole-vault teardown
-// for the cloud deployment profile (CAS-ADR-043/042/034). A cloud vault's durable
-// state lives in two places a developer laptop cannot reach: the Postgres schema on
-// the Entra-only, VNet-integrated Flexible Server, and the retained-source tree in
-// a SharePoint document library reached over Microsoft Graph. So the teardown runs
-// from a job inside the same VNet-integrated Container Apps environment, invoking
-// the committed, unit-tested `sage.maintenance.delete_vault_cloud` entrypoint.
+// Declares the Container Apps Job that runs the out-of-band cloud maintenance
+// operations for the cloud deployment profile (CAS-ADR-043/042/029): whole-vault
+// teardown and document purge. A cloud vault's durable state lives in places a
+// developer laptop cannot reach: the Postgres schemas on the Entra-only,
+// VNet-integrated Flexible Server, and the retained-source tree in a SharePoint
+// document library reached over Microsoft Graph. So these operations run from one
+// generalized job inside the same VNet-integrated Container Apps environment,
+// invoking the committed, unit-tested `sage.maintenance.cloud_job` dispatcher,
+// which routes on the per-invocation `SAGE_MAINTENANCE_COMMAND` override.
 //
 // The job runs as the SAGE workload identity — the one identity that already holds
-// both grants the teardown needs: it owns the per-vault Postgres schemas it created
-// at provision time (so it can DROP them) and holds the SharePoint `Sites.Selected`
-// write grant (so it can delete the vault folder). No new identity and no new Azure
-// permission are introduced. The image is pulled by that identity, whose registry
-// AcrPull grant the container-apps module already declares — this module does not
-// re-declare it (a second role assignment with the same deterministic name would
-// clash).
+// every grant the maintenance operations need: it owns the per-vault Postgres
+// schemas it created at provision time (so it can DROP them and write their audit
+// tables) and holds the SharePoint `Sites.Selected` write grant (so it can delete
+// the vault folder). No new identity and no new Azure permission are introduced.
+// The image is pulled by that identity, whose registry AcrPull grant the
+// container-apps module already declares — this module does not re-declare it (a
+// second role assignment with the same deterministic name would clash).
 //
 // Manual trigger: the job is declared by the deploy and started out-of-band by the
-// dedicated teardown workflow, which supplies the per-invocation request (vault id,
-// typed confirmation, apply/snapshot flags) as `az containerapp job start
-// --env-vars` overrides — never baked here. Like the sibling postgres-bootstrap
-// job, this is provisioning-as-code: declared by the deploy, started on demand.
+// dedicated maintenance workflow, which supplies the per-invocation request (the
+// command selector, the target, typed confirmations, apply/snapshot flags) as
+// `az containerapp job start --env-vars` overrides — never baked here. Like the
+// sibling postgres-bootstrap job, this is provisioning-as-code: declared by the
+// deploy, started on demand.
 
-@description('Azure region for the teardown job.')
+@description('Azure region for the maintenance job.')
 param location string
 
 @description('Short environment name, e.g. prod. Used in resource naming.')
 param environmentName string
 
-@description('Tags applied to the teardown job.')
+@description('Tags applied to the maintenance job.')
 param tags object
 
 @description('Resource id of the Azure Container Apps environment the job runs in (VNet-integrated, so it can reach the private Postgres subnet and Microsoft Graph).')
@@ -50,7 +53,7 @@ param sageIdentityClientId string
 @description('Fully qualified domain name of the managed Postgres server.')
 param postgresServerFqdn string
 
-@description('Name of the database the vault schema is dropped from.')
+@description('Name of the database the maintenance operations run against.')
 param postgresDatabaseName string
 
 @description('Microsoft Graph site id of the SharePoint site that hosts the cloud vault tree.')
@@ -67,13 +70,13 @@ param vaultSourceRootPath string
 // modules apply for each app's libpq user.
 var sageDbRole = last(split(sageIdentityId, '/'))
 
-// The one-shot teardown job. Manual trigger: declared by the deploy, started
-// out-of-band by the teardown workflow with the per-invocation request injected as
-// env-var overrides. No auto-retry — a destructive operation re-runs only on an
-// explicit operator dispatch (the entrypoint is idempotent, so a resumed run is
+// The one-shot maintenance job. Manual trigger: declared by the deploy, started
+// out-of-band by the maintenance workflow with the per-invocation request injected
+// as env-var overrides. No auto-retry — a destructive operation re-runs only on an
+// explicit operator dispatch (the entrypoints are idempotent, so a resumed run is
 // safe, but re-execution stays deliberate).
-resource teardownJob 'Microsoft.App/jobs@2024-03-01' = {
-  name: 'job-vault-teardown-${environmentName}'
+resource maintenanceJob 'Microsoft.App/jobs@2024-03-01' = {
+  name: 'job-maintenance-${environmentName}'
   location: location
   tags: tags
   identity: {
@@ -102,17 +105,18 @@ resource teardownJob 'Microsoft.App/jobs@2024-03-01' = {
     template: {
       containers: [
         {
-          name: 'vault-teardown'
+          name: 'maintenance'
           image: '${acrLoginServer}/sage:${imageTag}'
           command: [
             'python'
             '-m'
-            'sage.maintenance.delete_vault_cloud'
+            'sage.maintenance.cloud_job'
           ]
-          // Standing coordinates only. The per-invocation teardown request
-          // (SAGE_DELETE_VAULT_ID / _CONFIRM / _APPLY / _SNAPSHOT / _REASON) is
-          // supplied by the teardown workflow as job-start env-var overrides,
-          // never baked here — so the job as deployed cannot delete anything.
+          // Standing coordinates only. The per-invocation maintenance request —
+          // the command selector plus its per-command request (the
+          // SAGE_DELETE_* and SAGE_PURGE_* families) — is supplied by the
+          // maintenance workflow as job-start env-var overrides, never baked
+          // here — so the job as deployed cannot delete or purge anything.
           env: [
             {
               name: 'AZURE_CLIENT_ID'
@@ -153,5 +157,5 @@ resource teardownJob 'Microsoft.App/jobs@2024-03-01' = {
   }
 }
 
-@description('Name of the vault-teardown Container Apps Job (the teardown workflow starts it out-of-band).')
-output vaultTeardownJobName string = teardownJob.name
+@description('Name of the maintenance Container Apps Job (the maintenance workflow starts it out-of-band).')
+output maintenanceJobName string = maintenanceJob.name

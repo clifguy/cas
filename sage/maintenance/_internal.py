@@ -12,12 +12,13 @@ should import it, and nothing on the SAGE request surface (``sage.mcp_server``,
 that surface by the No-Delete Invariant (CAS-ADR-029), and the import-topology
 test enforces the boundary.
 
-Convention: the per-document cascade writes the audit record **before** it
-mutates either store. The worst-case partial-failure outcome is "audit record
-with no delete", never "delete with no audit record". The graph store and
-content store are removed in separate coordinated operations with no cross-store
-atomicity (CAS-ADR-042 weakest-binding); the result object records how far the
-cascade got so a partial failure is fully traceable.
+Convention: the per-document cascade writes the audit record -- through the
+storage binding's purge-audit sink -- **before** it mutates either store. The
+worst-case partial-failure outcome is "audit record with no delete", never
+"delete with no audit record". The graph store and content store are removed in
+separate coordinated operations with no cross-store atomicity (CAS-ADR-042
+weakest-binding); the result object records how far the cascade got so a
+partial failure is fully traceable.
 """
 
 from __future__ import annotations
@@ -27,12 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sage.services.maintenance_log import append_purge_audit_record
-
 if TYPE_CHECKING:
     from sage.adapters.interfaces import ContentStore, GraphStore
     from sage.models.schemas import Document
-    from sage.storage_binding import VaultStorageHandle
+    from sage.storage_binding import PurgeAuditSink, VaultStorageHandle, VaultStorageProvisioner
+    from sage.vault_source_binding import VaultSourceStore
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ def _audit_record(
     batch_id: str | None = None,
     chain_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build the JSONL audit record for one document purge.
+    """Build the audit record for one document purge.
 
     ``batch_id`` / ``chain_id`` are included only when supplied: single-document
     callers pass neither, batch callers pass a shared ``batch_id``, chain callers
@@ -88,7 +88,7 @@ async def _purge_one(
     document_id: str,
     graph_store: GraphStore,
     content_store: ContentStore,
-    vault_dir: Path,
+    audit_sink: PurgeAuditSink,
     reason: str,
     operation: str,
     batch_id: str | None = None,
@@ -98,9 +98,11 @@ async def _purge_one(
 
     The caller owns all precondition checks (existence, staging edges, pipeline
     status, typed confirmation). This helper does not validate; it executes:
-    fetch the document, append its audit record, remove its graph footprint in
-    one transaction, then remove its content chunks. Each store removal is a
-    separate coordinated operation (no cross-store atomicity, CAS-ADR-042).
+    fetch the document, append its audit record through the sink, remove its
+    graph footprint in one transaction, then remove its content chunks. Each
+    store removal is a separate coordinated operation (no cross-store
+    atomicity, CAS-ADR-042). A failed audit append propagates before any store
+    mutation -- no audit, no destruction.
     """
     doc = await graph_store.get_document(document_id)
     if doc is None:
@@ -113,8 +115,8 @@ async def _purge_one(
             content_removed=False,
         )
 
-    append_purge_audit_record(
-        vault_dir, _audit_record(doc, reason, operation, batch_id=batch_id, chain_id=chain_id)
+    await audit_sink.append(
+        _audit_record(doc, reason, operation, batch_id=batch_id, chain_id=chain_id)
     )
 
     try:
@@ -240,34 +242,56 @@ def _order_chain_from_head(
 
 async def open_vault_stores(
     vault_id: str,
-) -> tuple[GraphStore, ContentStore, Path, VaultStorageHandle] | None:
-    """Open a live graph/content store pair for ``vault_id``.
+    *,
+    source_store: VaultSourceStore | None = None,
+    provisioner: VaultStorageProvisioner | None = None,
+) -> tuple[GraphStore, ContentStore, PurgeAuditSink, VaultStorageHandle] | None:
+    """Open a live graph/content store pair plus the audit sink for ``vault_id``.
 
-    Returns ``(graph_store, content_store, vault_dir, handle)``, or ``None`` when
-    the vault config cannot be found. ``vault_dir`` is where the maintenance
-    audit log lives. The caller owns ``handle`` and must ``await handle.close()``
-    when done. The vault declaration is located and loaded through the active
-    profile's vault-source store (CAS-ADR-043); the stores are opened through the
-    profile's storage provisioner (CAS-ADR-042).
+    Returns ``(graph_store, content_store, audit_sink, handle)``, or ``None``
+    when no discovered vault matches. The caller owns ``handle`` and must
+    ``await handle.close()`` when done. The vault declaration is located and
+    loaded through the vault-source store (CAS-ADR-043); the stores and the
+    purge-audit sink are opened through the storage provisioner (CAS-ADR-042).
+    Both bindings default to the active profile's stack resolution; a caller
+    with no populated stack singleton (the in-cloud job entrypoints) injects
+    its own.
+
+    Resolution iterates ``discover()`` rather than asking for a filesystem
+    locator, so it works under a pathless vault-source binding. Discovery's
+    binding-opaque ``vault_id`` prefilters the candidates -- only a discovered
+    vault that may match is config-loaded, so a sibling vault's load cost (or
+    load failure) never touches the target's resolution -- and the loaded
+    config's own id confirms the match.
     """
-    from sage.mcp_init import (
-        get_stack_config,
-        resolve_stack_storage_provisioner,
-        resolve_stack_vault_source_store,
-    )
-    from sage.vault_source_binding import DiscoveredVault
+    if source_store is None or provisioner is None:
+        from sage.mcp_init import (
+            get_stack_config,
+            resolve_stack_storage_provisioner,
+            resolve_stack_vault_source_store,
+        )
 
-    stack_config = get_stack_config()
-    source_store = resolve_stack_vault_source_store(stack_config)
-    config_path = source_store.config_locator(vault_id)
-    if config_path is None or not config_path.exists():
+        stack_config = get_stack_config()
+        if source_store is None:
+            source_store = resolve_stack_vault_source_store(stack_config)
+        if provisioner is None:
+            provisioner = resolve_stack_storage_provisioner(stack_config)
+
+    config = None
+    for discovered in source_store.discover():
+        if discovered.vault_id not in (None, vault_id):
+            continue
+        candidate = source_store.load_config(discovered)
+        if candidate.vault.id == vault_id:
+            config = candidate
+            break
+    if config is None:
         return None
-    config = source_store.load_config(DiscoveredVault(config_path=config_path))
     brain_root = Path(config.vault.brain_root).expanduser()
 
-    provisioner = resolve_stack_storage_provisioner(stack_config)
+    audit_sink = provisioner.purge_audit_sink(vault_id)
     handle = await provisioner.open_vault_storage(
         vault_id, brain_root, need_graph=True, need_content=True
     )
     # need_graph/need_content are True, so both stores are present.
-    return handle.graph_store, handle.content_store, config_path.parent, handle
+    return handle.graph_store, handle.content_store, audit_sink, handle

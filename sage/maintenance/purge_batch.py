@@ -37,11 +37,14 @@ import sys
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.maintenance import _internal
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+
+if TYPE_CHECKING:
+    from sage.storage_binding import PurgeAuditSink
 
 _TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
@@ -50,7 +53,7 @@ async def purge_batch(
     *,
     graph_store: GraphStore,
     content_store: ContentStore,
-    vault_dir: Path,
+    audit_sink: PurgeAuditSink,
     since: datetime,
     until: datetime | None,
     reason: str,
@@ -138,7 +141,7 @@ async def purge_batch(
             document_id=doc.id,
             graph_store=graph_store,
             content_store=content_store,
-            vault_dir=vault_dir,
+            audit_sink=audit_sink,
             reason=reason,
             operation="purge_batch",
             batch_id=batch_id,
@@ -164,12 +167,12 @@ async def _run(
     if opened is None:
         print(f"error: vault config not found for vault {vault_id!r}", file=sys.stderr)
         return 2
-    graph_store, content_store, vault_dir, handle = opened
+    graph_store, content_store, audit_sink, handle = opened
     try:
         return await purge_batch(
             graph_store=graph_store,
             content_store=content_store,
-            vault_dir=vault_dir,
+            audit_sink=audit_sink,
             since=since,
             until=until,
             reason=reason,

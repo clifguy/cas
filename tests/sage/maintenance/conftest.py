@@ -10,7 +10,6 @@ conftest).
 """
 
 import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
 
@@ -20,7 +19,6 @@ from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubContentStore, StubGraphStore
 from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import Document, Edge, StagingEdge
-from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 
 
 def did(name: str) -> str:
@@ -38,21 +36,27 @@ def stub_content() -> StubContentStore:
     return StubContentStore()
 
 
-@pytest.fixture
-def vault_dir(tmp_path):
-    """Directory that stands in for the vault dir where the audit log is written."""
-    return tmp_path
+class StubAuditSink:
+    """In-memory purge-audit sink recording appended records in order."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    async def append(self, record) -> None:
+        self.records.append(dict(record))
 
 
 @pytest.fixture
-def audit_records(vault_dir):
-    """Return a reader that parses the vault's ``.maintenance_log.jsonl`` lines."""
+def stub_audit_sink() -> StubAuditSink:
+    return StubAuditSink()
+
+
+@pytest.fixture
+def audit_records(stub_audit_sink):
+    """Return a reader over the stub sink's appended records."""
 
     def _read() -> list[dict]:
-        log_path = vault_dir / MAINTENANCE_LOG_FILENAME
-        if not log_path.exists():
-            return []
-        return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        return list(stub_audit_sink.records)
 
     return _read
 

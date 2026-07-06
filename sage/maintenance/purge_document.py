@@ -17,7 +17,7 @@ Safeguards (SAGE No-Delete Invariant; CAS-ADR-029):
   record with no delete", never "delete with no audit record". The content-store
   removal is a separate coordinated operation (no cross-store atomicity,
   CAS-ADR-042).
-- Appends a JSONL audit record to ``~/sage_vaults/{vault_id}/.maintenance_log.jsonl``.
+- Writes the audit record to the vault schema's ``purge_audit`` Postgres table.
 
 If a new ``PipelineStatus`` is added, declare its terminality in
 ``sage.models.enums.TERMINAL_PIPELINE_STATUSES``; this script reads that set.
@@ -34,11 +34,14 @@ import argparse
 import asyncio
 import sys
 from collections.abc import Callable
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.maintenance import _internal
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+
+if TYPE_CHECKING:
+    from sage.storage_binding import PurgeAuditSink
 
 _TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
@@ -47,7 +50,7 @@ async def purge_document(
     *,
     graph_store: GraphStore,
     content_store: ContentStore,
-    vault_dir: Path,
+    audit_sink: PurgeAuditSink,
     document_id: str,
     reason: str,
     apply: bool,
@@ -118,7 +121,7 @@ async def purge_document(
         document_id=document_id,
         graph_store=graph_store,
         content_store=content_store,
-        vault_dir=vault_dir,
+        audit_sink=audit_sink,
         reason=reason,
         operation="purge_document",
         batch_id=None,
@@ -142,12 +145,12 @@ async def _run(*, vault_id: str, document_id: str, reason: str, apply: bool) -> 
     if opened is None:
         print(f"error: vault config not found for vault {vault_id!r}", file=sys.stderr)
         return 2
-    graph_store, content_store, vault_dir, handle = opened
+    graph_store, content_store, audit_sink, handle = opened
     try:
         return await purge_document(
             graph_store=graph_store,
             content_store=content_store,
-            vault_dir=vault_dir,
+            audit_sink=audit_sink,
             document_id=document_id,
             reason=reason,
             apply=apply,

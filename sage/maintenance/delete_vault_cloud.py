@@ -37,9 +37,10 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
 
+from sage.maintenance._cloud_env import config_from_env as _config_from_env
+from sage.maintenance._cloud_env import truthy as _truthy
 from sage.maintenance.delete_vault import delete_vault
 
 # Per-invocation teardown request, supplied by the CI dispatch as
@@ -54,48 +55,6 @@ _ENV_REASON = "SAGE_DELETE_REASON"
 # tree (root_path), so it survives the vault-folder delete and is invisible to
 # vault discovery (which enumerates only root_path's children).
 _ARCHIVE_ROOT = "_teardown_archives"
-
-
-def _truthy(value: str | None, *, default: bool) -> bool:
-    if not value:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _config_from_env(env: Mapping[str, str]):
-    """Build the cloud stack config from the baked job environment.
-
-    A lifespan-less ``python -m`` job never populates the stack-config singleton, so
-    the coordinates are read straight from the environment the job carries (the same
-    self-contained pattern the sibling ``cloud_bootstrap`` job uses): the private
-    Postgres FQDN/database and the SAGE role to connect as, and the SharePoint
-    site/drive/root the document-store binding addresses. The teardown is cloud-only,
-    so the profile and vault-source backend are fixed here. A missing required
-    coordinate fails loud.
-    """
-    from sage.config import SageCoreConfig, StackDocumentStoreConfig, StackPostgresConfig
-
-    def _required(key: str) -> str:
-        value = env.get(key)
-        if not value:
-            raise ValueError(f"missing required environment variable {key!r}")
-        return value
-
-    return SageCoreConfig(
-        profile="cloud",
-        vault_source_backend="document_store",
-        postgres=StackPostgresConfig(
-            host=_required("PG_FQDN"),
-            database=_required("PG_DATABASE"),
-            user=_required("PG_USER"),
-            sslmode="require",
-        ),
-        document_store=StackDocumentStoreConfig(
-            site_id=_required("SHAREPOINT_SITE_ID"),
-            drive_id=_required("SHAREPOINT_DRIVE_ID"),
-            root_path=env.get("SHAREPOINT_ROOT_PATH") or "vaults",
-        ),
-    )
 
 
 def upload_teardown_archive(client, vault_id: str, run_dir: Path) -> None:

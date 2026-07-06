@@ -7,6 +7,8 @@ unit-tested directly on the ``{"documents", "edges"}`` dict shape that
 ``GraphStore.chain_walk`` returns.
 """
 
+import pytest
+
 from sage.adapters.stubs import StubContentStore, StubGraphStore
 from sage.maintenance._internal import (
     _chain_head_ids,
@@ -23,6 +25,35 @@ class _GraphRemoveFails(StubGraphStore):
         raise RuntimeError("simulated graph failure")
 
 
+class _CallOrderGraph(StubGraphStore):
+    """Stub graph store recording each ``remove_document`` into a shared log."""
+
+    def __init__(self, calls: list) -> None:
+        super().__init__()
+        self._calls = calls
+
+    async def remove_document(self, document_id: str) -> None:
+        self._calls.append(("remove_document", document_id))
+        await super().remove_document(document_id)
+
+
+class _CallOrderSink:
+    """Audit sink recording each append into a shared log."""
+
+    def __init__(self, calls: list) -> None:
+        self._calls = calls
+
+    async def append(self, record) -> None:
+        self._calls.append(("append", dict(record)))
+
+
+class _AppendFailsSink:
+    """Audit sink whose ``append`` always raises."""
+
+    async def append(self, record) -> None:
+        raise RuntimeError("simulated audit sink failure")
+
+
 class _ContentRemoveFails(StubContentStore):
     """Stub content store whose ``remove_document`` always raises."""
 
@@ -36,7 +67,7 @@ class _ContentRemoveFails(StubContentStore):
 
 
 async def test_audit_carries_batch_id_when_supplied(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     doc = make_doc("d")
     await stub_graph.insert_document(doc)
@@ -45,7 +76,7 @@ async def test_audit_carries_batch_id_when_supplied(
         document_id=doc.id,
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         reason="r",
         operation="purge_batch",
         batch_id="BATCH-1",
@@ -58,7 +89,7 @@ async def test_audit_carries_batch_id_when_supplied(
 
 
 async def test_audit_carries_chain_id_when_supplied(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     doc = make_doc("d")
     await stub_graph.insert_document(doc)
@@ -67,7 +98,7 @@ async def test_audit_carries_chain_id_when_supplied(
         document_id=doc.id,
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         reason="r",
         operation="purge_chain",
         chain_id="CHAIN-1",
@@ -79,7 +110,7 @@ async def test_audit_carries_chain_id_when_supplied(
 
 
 async def test_audit_omits_grouping_ids_when_none(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     """A ``None`` grouping id must be absent from the record, not JSON null."""
     doc = make_doc("d")
@@ -89,7 +120,7 @@ async def test_audit_omits_grouping_ids_when_none(
         document_id=doc.id,
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         reason="r",
         operation="purge_document",
     )
@@ -100,13 +131,13 @@ async def test_audit_omits_grouping_ids_when_none(
 
 
 async def test_missing_document_returns_failure_and_writes_no_audit(
-    stub_graph, stub_content, vault_dir, audit_records
+    stub_graph, stub_content, stub_audit_sink, audit_records
 ):
     result = await _purge_one(
         document_id="deadbeef_missing",
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         reason="r",
         operation="purge_document",
     )
@@ -120,8 +151,57 @@ async def test_missing_document_returns_failure_and_writes_no_audit(
 # ---------------------------------------------------------------------------
 
 
-async def test_audit_written_before_graph_delete(stub_content, vault_dir, make_doc, audit_records):
-    """When the graph cascade fails, the audit record is already on disk and the
+async def test_audit_append_precedes_graph_removal(stub_content, make_doc):
+    """The sink append happens exactly once and strictly before the graph
+    removal — the CAS-ADR-029 audit-first invariant, asserted on call order so
+    a remove-then-append reordering fails."""
+    calls: list = []
+    graph = _CallOrderGraph(calls)
+    doc = make_doc("d")
+    await graph.insert_document(doc)
+
+    result = await _purge_one(
+        document_id=doc.id,
+        graph_store=graph,
+        content_store=stub_content,
+        audit_sink=_CallOrderSink(calls),
+        reason="r",
+        operation="purge_document",
+    )
+
+    assert result.succeeded
+    kinds = [kind for kind, _ in calls]
+    assert kinds == ["append", "remove_document"]
+    (_, record) = calls[0]
+    assert record["document_id"] == doc.id
+    assert record["operation"] == "purge_document"
+
+
+async def test_failing_audit_append_aborts_before_any_store_mutation(
+    stub_graph, stub_content, make_doc
+):
+    """No audit, no destruction: a sink whose append raises propagates the
+    error and the document survives — ``remove_document`` is never reached."""
+    doc = make_doc("d")
+    await stub_graph.insert_document(doc)
+
+    with pytest.raises(RuntimeError, match="simulated audit sink failure"):
+        await _purge_one(
+            document_id=doc.id,
+            graph_store=stub_graph,
+            content_store=stub_content,
+            audit_sink=_AppendFailsSink(),
+            reason="r",
+            operation="purge_document",
+        )
+
+    assert await stub_graph.get_document(doc.id) is not None
+
+
+async def test_audit_written_before_graph_delete(
+    stub_content, stub_audit_sink, make_doc, audit_records
+):
+    """When the graph cascade fails, the audit record is already appended and the
     result reports graph_committed=False -- the worst case is audit-with-no-delete,
     never delete-with-no-audit."""
     graph = _GraphRemoveFails()
@@ -132,7 +212,7 @@ async def test_audit_written_before_graph_delete(stub_content, vault_dir, make_d
         document_id=doc.id,
         graph_store=graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         reason="r",
         operation="purge_document",
     )
@@ -148,7 +228,7 @@ async def test_audit_written_before_graph_delete(stub_content, vault_dir, make_d
 
 
 async def test_content_failure_after_graph_success_is_traceable(
-    stub_graph, vault_dir, make_doc, audit_records
+    stub_graph, stub_audit_sink, make_doc, audit_records
 ):
     """Graph removed, content removal fails: the result distinguishes this from a
     total failure (graph_committed=True, content_removed=False) so an operator can
@@ -161,7 +241,7 @@ async def test_content_failure_after_graph_success_is_traceable(
         document_id=doc.id,
         graph_store=stub_graph,
         content_store=content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         reason="r",
         operation="purge_document",
     )
