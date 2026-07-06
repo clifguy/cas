@@ -14,7 +14,14 @@ _NONTERMINAL = [s for s in PipelineStatus if s not in TERMINAL_PIPELINE_STATUSES
 
 
 async def test_dry_run_enumerates_and_writes_nothing(
-    stub_graph, stub_content, vault_dir, make_doc, make_edge, make_chunk, audit_records, capsys
+    stub_graph,
+    stub_content,
+    stub_audit_sink,
+    make_doc,
+    make_edge,
+    make_chunk,
+    audit_records,
+    capsys,
 ):
     doc = make_doc("target")
     other = make_doc("other")
@@ -26,7 +33,7 @@ async def test_dry_run_enumerates_and_writes_nothing(
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id=doc.id,
         reason="r",
         apply=False,
@@ -43,11 +50,11 @@ async def test_dry_run_enumerates_and_writes_nothing(
     assert audit_records() == []
 
 
-async def test_refuses_unknown_document(stub_graph, stub_content, vault_dir, audit_records):
+async def test_refuses_unknown_document(stub_graph, stub_content, stub_audit_sink, audit_records):
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id="deadbeef_missing",
         reason="r",
         apply=True,
@@ -59,7 +66,7 @@ async def test_refuses_unknown_document(stub_graph, stub_content, vault_dir, aud
 
 @pytest.mark.parametrize("as_source", [True, False], ids=["staging-as-source", "staging-as-target"])
 async def test_refuses_when_staging_edge_references_target(
-    as_source, stub_graph, stub_content, vault_dir, make_doc, make_staging, audit_records
+    as_source, stub_graph, stub_content, stub_audit_sink, make_doc, make_staging, audit_records
 ):
     doc = make_doc("target")
     other = make_doc("other")
@@ -71,7 +78,7 @@ async def test_refuses_when_staging_edge_references_target(
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id=doc.id,
         reason="r",
         apply=True,
@@ -84,7 +91,7 @@ async def test_refuses_when_staging_edge_references_target(
 
 @pytest.mark.parametrize("status", _NONTERMINAL)
 async def test_refuses_non_terminal_pipeline_status(
-    status, stub_graph, stub_content, vault_dir, make_doc, audit_records
+    status, stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     doc = make_doc("target", pipeline_status=status)
     await stub_graph.insert_document(doc)
@@ -92,7 +99,7 @@ async def test_refuses_non_terminal_pipeline_status(
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id=doc.id,
         reason="r",
         apply=True,
@@ -104,7 +111,7 @@ async def test_refuses_non_terminal_pipeline_status(
 
 
 async def test_apply_wrong_confirmation_refuses(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     doc = make_doc("target")
     await stub_graph.insert_document(doc)
@@ -112,7 +119,7 @@ async def test_apply_wrong_confirmation_refuses(
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id=doc.id,
         reason="r",
         apply=True,
@@ -124,7 +131,7 @@ async def test_apply_wrong_confirmation_refuses(
 
 
 async def test_apply_removes_footprint_and_leaves_control(
-    stub_graph, stub_content, vault_dir, make_doc, make_edge, make_chunk, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, make_edge, make_chunk, audit_records
 ):
     target = make_doc("target")
     n1 = make_doc("n1")
@@ -141,7 +148,7 @@ async def test_apply_removes_footprint_and_leaves_control(
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id=target.id,
         reason="r",
         apply=True,
@@ -161,20 +168,20 @@ async def test_apply_removes_footprint_and_leaves_control(
 
 
 async def test_apply_writes_single_audit_record_and_appends(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     pre_existing = make_doc("pre")
     doc = make_doc("target")
     for d in (pre_existing, doc):
         await stub_graph.insert_document(d)
 
-    # A pre-existing audit line the purge must not clobber.
-    (vault_dir / ".maintenance_log.jsonl").write_text('{"operation": "prior"}\n')
+    # A pre-existing audit record the purge must append after, never clobber.
+    stub_audit_sink.records.append({"operation": "prior"})
 
     rc = await purge_document(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         document_id=doc.id,
         reason="wrong-vault",
         apply=True,

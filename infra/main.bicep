@@ -263,11 +263,13 @@ module postgresBootstrap 'modules/postgres-bootstrap.bicep' = {
   }
 }
 
-// In-VNet vault-teardown job (CAS-ADR-043/034). Declared by the deploy and started
-// out-of-band by the dedicated teardown workflow; runs as the SAGE identity, which
-// already holds both grants the teardown needs (schema owner + SharePoint writer).
-module vaultTeardown 'modules/vault-teardown-job.bicep' = {
-  name: 'vault-teardown-job'
+// In-VNet maintenance job (CAS-ADR-043/029). Declared by the deploy and started
+// out-of-band by the dedicated maintenance workflow, which selects the operation
+// (vault teardown, document purge) per invocation; runs as the SAGE identity,
+// which already holds every grant the operations need (schema owner + SharePoint
+// writer).
+module maintenanceJob 'modules/maintenance-job.bicep' = {
+  name: 'maintenance-job'
   scope: rg
   params: {
     location: location
@@ -331,8 +333,8 @@ output sageContainerAppFqdn string = containerApps.outputs.sageFqdn
 @description('Name of the in-VNet Postgres bootstrap job — the deploy pipeline starts it after the apply to create the application managed-identity database roles and pre-create the extensions.')
 output bootstrapJobName string = postgresBootstrap.outputs.bootstrapJobName
 
-@description('Name of the in-VNet vault-teardown job — the dedicated teardown workflow starts it out-of-band with the per-invocation request injected as env-var overrides.')
-output vaultTeardownJobName string = vaultTeardown.outputs.vaultTeardownJobName
+@description('Name of the in-VNet maintenance job — the dedicated maintenance workflow starts it out-of-band with the per-invocation request injected as env-var overrides.')
+output maintenanceJobName string = maintenanceJob.outputs.maintenanceJobName
 
 @description('Name of the SAGE container app — the deploy pipeline restarts it to converge the app tier after the bootstrap job runs.')
 output sageContainerAppName string = containerApps.outputs.sageContainerAppName

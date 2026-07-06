@@ -42,7 +42,7 @@ async def _seed_in_window(stub_graph, make_doc, count=3):
     return docs
 
 
-async def test_selector_window_is_half_open(stub_graph, stub_content, vault_dir, make_doc):
+async def test_selector_window_is_half_open(stub_graph, stub_content, stub_audit_sink, make_doc):
     """Apply purges only the in-window docs; the doc exactly at _UNTIL and the
     docs outside the window survive."""
     inside = await _seed_in_window(stub_graph, make_doc, count=3)
@@ -55,7 +55,7 @@ async def test_selector_window_is_half_open(stub_graph, stub_content, vault_dir,
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -70,7 +70,7 @@ async def test_selector_window_is_half_open(stub_graph, stub_content, vault_dir,
         assert await stub_graph.get_document(d.id) is not None
 
 
-async def test_until_none_defaults_to_now(stub_graph, stub_content, vault_dir, make_doc):
+async def test_until_none_defaults_to_now(stub_graph, stub_content, stub_audit_sink, make_doc):
     """With ``until=None`` the upper bound is 'now', so a far-future doc is out of
     window and survives while a past doc is purged."""
     past = make_doc("past", created_at=datetime.now(timezone.utc) - timedelta(days=1))
@@ -81,7 +81,7 @@ async def test_until_none_defaults_to_now(stub_graph, stub_content, vault_dir, m
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=datetime.now(timezone.utc) - timedelta(days=2),
         until=None,
         reason="r",
@@ -95,7 +95,7 @@ async def test_until_none_defaults_to_now(stub_graph, stub_content, vault_dir, m
 
 
 async def test_empty_window_zero_targets_no_audit(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records, capsys
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records, capsys
 ):
     out_of_window = make_doc("x", created_at=_UNTIL + timedelta(hours=1))
     await stub_graph.insert_document(out_of_window)
@@ -103,7 +103,7 @@ async def test_empty_window_zero_targets_no_audit(
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -117,7 +117,7 @@ async def test_empty_window_zero_targets_no_audit(
 
 
 async def test_dry_run_enumerates_and_writes_nothing(
-    stub_graph, stub_content, vault_dir, make_doc, make_chunk, audit_records, capsys
+    stub_graph, stub_content, stub_audit_sink, make_doc, make_chunk, audit_records, capsys
 ):
     docs = await _seed_in_window(stub_graph, make_doc, count=2)
     await stub_content.index_chunks(docs[0].id, [make_chunk(docs[0].id, 0)])
@@ -128,7 +128,7 @@ async def test_dry_run_enumerates_and_writes_nothing(
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -147,14 +147,14 @@ async def test_dry_run_enumerates_and_writes_nothing(
 
 @pytest.mark.parametrize("typed", ["", "yes", "3 ", "03", "2"])
 async def test_typed_count_confirmation_strict_refuses(
-    typed, stub_graph, stub_content, vault_dir, make_doc, audit_records
+    typed, stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     docs = await _seed_in_window(stub_graph, make_doc, count=3)
 
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -169,14 +169,14 @@ async def test_typed_count_confirmation_strict_refuses(
 
 
 async def test_typed_count_confirmation_exact_proceeds(
-    stub_graph, stub_content, vault_dir, make_doc
+    stub_graph, stub_content, stub_audit_sink, make_doc
 ):
     docs = await _seed_in_window(stub_graph, make_doc, count=3)
 
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -190,7 +190,7 @@ async def test_typed_count_confirmation_exact_proceeds(
 
 
 async def test_preflight_rejects_when_any_target_has_staging(
-    stub_graph, stub_content, vault_dir, make_doc, make_staging, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, make_staging, audit_records
 ):
     docs = await _seed_in_window(stub_graph, make_doc, count=3)
     other = make_doc("other")
@@ -200,7 +200,7 @@ async def test_preflight_rejects_when_any_target_has_staging(
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -215,7 +215,7 @@ async def test_preflight_rejects_when_any_target_has_staging(
 
 
 async def test_preflight_rejects_when_any_target_non_terminal(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     good = [
         await _insert(stub_graph, make_doc(f"g{i}", created_at=_SINCE + timedelta(minutes=i)))
@@ -233,7 +233,7 @@ async def test_preflight_rejects_when_any_target_non_terminal(
     rc = await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -248,14 +248,14 @@ async def test_preflight_rejects_when_any_target_non_terminal(
 
 
 async def test_audit_one_entry_per_target_sharing_batch_id(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     docs = await _seed_in_window(stub_graph, make_doc, count=3)
 
     await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -272,13 +272,13 @@ async def test_audit_one_entry_per_target_sharing_batch_id(
 
 
 async def test_two_batches_have_distinct_batch_ids(
-    stub_graph, stub_content, vault_dir, make_doc, audit_records
+    stub_graph, stub_content, stub_audit_sink, make_doc, audit_records
 ):
     first = await _insert(stub_graph, make_doc("a", created_at=_SINCE + timedelta(minutes=1)))
     await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",
@@ -291,7 +291,7 @@ async def test_two_batches_have_distinct_batch_ids(
     await purge_batch(
         graph_store=stub_graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE + timedelta(days=1),
         until=_UNTIL + timedelta(days=1),
         reason="r",
@@ -305,7 +305,7 @@ async def test_two_batches_have_distinct_batch_ids(
 
 
 async def test_halt_on_failure_preserves_prior_and_untouched(
-    stub_content, vault_dir, make_doc, audit_records
+    stub_content, stub_audit_sink, make_doc, audit_records
 ):
     docs = [make_doc(f"in{i}", created_at=_SINCE + timedelta(minutes=i)) for i in range(3)]
     graph = _GraphFailsFor(docs[1].id)  # the middle target (by created_at) fails
@@ -315,7 +315,7 @@ async def test_halt_on_failure_preserves_prior_and_untouched(
     rc = await purge_batch(
         graph_store=graph,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         since=_SINCE,
         until=_UNTIL,
         reason="r",

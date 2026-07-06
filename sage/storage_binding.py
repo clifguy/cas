@@ -18,9 +18,10 @@ imports the storage adapters and the stack config, and nothing below
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.config import SageCoreConfig, StackPostgresConfig
@@ -55,6 +56,19 @@ class VaultStorageHandle:
         self._closed = True
         if self.pool is not None:
             await self.pool.close()
+
+
+class PurgeAuditSink(Protocol):
+    """Durable sink for the purge audit record (CAS-ADR-029).
+
+    The out-of-band purge tooling appends one record per removed document,
+    *before* the removal — the audit-first invariant. Implementations own the
+    record's durable home; callers own its shape.
+    """
+
+    async def append(self, record: Mapping[str, Any]) -> None:
+        """Persist one audit record. Must complete before any removal runs."""
+        ...
 
 
 class VaultStorageProvisioner(ABC):
@@ -98,6 +112,16 @@ class VaultStorageProvisioner(ABC):
         out-of-band vault-teardown CLI, whose snapshot step consults it to skip a
         schema dump when the schema is already gone (a resume after a partial
         teardown) rather than erroring against an absent schema.
+        """
+
+    @abstractmethod
+    def purge_audit_sink(self, vault_id: str) -> PurgeAuditSink:
+        """Build the vault's purge-audit sink (CAS-ADR-029).
+
+        Reached only from the out-of-band purge tooling, which appends its
+        audit record through the sink before any removal. Construction is
+        cheap and connectionless; the sink authenticates under the profile's
+        own connection path on first append.
         """
 
 
@@ -262,6 +286,23 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         conn_class = self._connection_class or psycopg.AsyncConnection
         async with await conn_class.connect(conninfo, autocommit=True) as conn:
             return await _schema_exists(conn, vault_id)
+
+    def purge_audit_sink(self, vault_id: str) -> PurgeAuditSink:
+        """Build a sink over the vault's own schema, under the profile's auth.
+
+        Reuses the provisioner's connection path -- the same credentials the
+        local (env password) and cloud (managed-identity token) bindings open
+        plain connections with -- so the audit write runs under the active
+        profile, exactly as :meth:`drop_vault_schema` drops under it.
+        """
+        from sage.storage.postgres.purge_audit import PostgresPurgeAuditSink
+
+        return PostgresPurgeAuditSink(
+            self._connection_params(search_path=f"{vault_id},public"),
+            schema=vault_id,
+            connection_class=self._connection_class,
+            environ=self._conn_environ,
+        )
 
 
 def build_stack_storage_provisioner(

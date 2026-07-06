@@ -48,14 +48,14 @@ async def _linear_chain(store, make_doc, make_edge):
 
 
 async def test_dry_run_enumerates_linear_chain(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, audit_records, capsys
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, audit_records, capsys
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
 
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=False,
@@ -71,11 +71,11 @@ async def test_dry_run_enumerates_linear_chain(
     assert audit_records() == []
 
 
-async def test_refuses_unknown_head(postgres_graph_store, stub_content, vault_dir):
+async def test_refuses_unknown_head(postgres_graph_store, stub_content, stub_audit_sink):
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id="deadbeef_missing",
         reason="r",
         apply=False,
@@ -84,14 +84,14 @@ async def test_refuses_unknown_head(postgres_graph_store, stub_content, vault_di
 
 
 async def test_refuses_non_head_id(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, capsys
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, capsys
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
 
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v2.id,  # middle, not the head
         reason="r",
         apply=False,
@@ -102,7 +102,7 @@ async def test_refuses_non_head_id(
 
 
 async def test_refuses_branched_without_flag_but_allows_with_flag(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge
 ):
     v3, v2a, v2b = make_doc("v3"), make_doc("v2a"), make_doc("v2b")
     for d in (v3, v2a, v2b):
@@ -113,7 +113,7 @@ async def test_refuses_branched_without_flag_but_allows_with_flag(
     refused = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=False,
@@ -123,7 +123,7 @@ async def test_refuses_branched_without_flag_but_allows_with_flag(
     allowed = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=False,
@@ -133,7 +133,13 @@ async def test_refuses_branched_without_flag_but_allows_with_flag(
 
 
 async def test_refuses_when_member_has_staging(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, make_staging, audit_records
+    postgres_graph_store,
+    stub_content,
+    stub_audit_sink,
+    make_doc,
+    make_edge,
+    make_staging,
+    audit_records,
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
     other = make_doc("other")
@@ -143,7 +149,7 @@ async def test_refuses_when_member_has_staging(
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=True,
@@ -157,7 +163,7 @@ async def test_refuses_when_member_has_staging(
 
 
 async def test_refuses_when_member_non_terminal(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, audit_records
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, audit_records
 ):
     v1 = make_doc("v1")
     v2 = make_doc("v2", pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
@@ -170,7 +176,7 @@ async def test_refuses_when_member_non_terminal(
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=True,
@@ -184,14 +190,14 @@ async def test_refuses_when_member_non_terminal(
 
 
 async def test_wrong_head_confirmation_refuses(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, audit_records
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, audit_records
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
 
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=True,
@@ -204,14 +210,14 @@ async def test_wrong_head_confirmation_refuses(
 
 
 async def test_wrong_length_confirmation_refuses(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, audit_records
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, audit_records
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
 
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=True,
@@ -224,7 +230,7 @@ async def test_wrong_length_confirmation_refuses(
 
 
 async def test_apply_purges_all_members_sharing_chain_id(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, audit_records
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, audit_records
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
     control = make_doc("control")
@@ -233,7 +239,7 @@ async def test_apply_purges_all_members_sharing_chain_id(
     rc = await purge_chain(
         graph_store=postgres_graph_store,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=True,
@@ -254,7 +260,7 @@ async def test_apply_purges_all_members_sharing_chain_id(
 
 
 async def test_halt_on_member_failure_preserves_prior_and_untouched(
-    postgres_graph_store, stub_content, vault_dir, make_doc, make_edge, audit_records
+    postgres_graph_store, stub_content, stub_audit_sink, make_doc, make_edge, audit_records
 ):
     v1, v2, v3 = await _linear_chain(postgres_graph_store, make_doc, make_edge)
     wrapped = _FailOne(postgres_graph_store, v2.id)  # middle member fails
@@ -262,7 +268,7 @@ async def test_halt_on_member_failure_preserves_prior_and_untouched(
     rc = await purge_chain(
         graph_store=wrapped,
         content_store=stub_content,
-        vault_dir=vault_dir,
+        audit_sink=stub_audit_sink,
         head_id=v3.id,
         reason="r",
         apply=True,

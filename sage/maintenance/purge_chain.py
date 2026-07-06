@@ -40,11 +40,14 @@ import asyncio
 import sys
 import uuid
 from collections.abc import Callable
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.maintenance import _internal
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+
+if TYPE_CHECKING:
+    from sage.storage_binding import PurgeAuditSink
 
 _TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
@@ -53,7 +56,7 @@ async def purge_chain(
     *,
     graph_store: GraphStore,
     content_store: ContentStore,
-    vault_dir: Path,
+    audit_sink: PurgeAuditSink,
     head_id: str,
     reason: str,
     edge_type: str = "supersedes",
@@ -165,7 +168,7 @@ async def purge_chain(
             document_id=doc_id,
             graph_store=graph_store,
             content_store=content_store,
-            vault_dir=vault_dir,
+            audit_sink=audit_sink,
             reason=reason,
             operation="purge_chain",
             chain_id=chain_id,
@@ -199,12 +202,12 @@ async def _run(
     if opened is None:
         print(f"error: vault config not found for vault {vault_id!r}", file=sys.stderr)
         return 2
-    graph_store, content_store, vault_dir, handle = opened
+    graph_store, content_store, audit_sink, handle = opened
     try:
         return await purge_chain(
             graph_store=graph_store,
             content_store=content_store,
-            vault_dir=vault_dir,
+            audit_sink=audit_sink,
             head_id=head_id,
             reason=reason,
             edge_type=edge_type,

@@ -1,0 +1,185 @@
+name: maintenance
+
+# Out-of-band cloud vault maintenance (CAS-ADR-043/034/029). The irreversible
+# operations in SAGE — whole-vault teardown and document purge — stay OFF the
+# reachable API surface and off the routine deploy pipeline: they run only when an
+# operator dispatches this workflow, selects the tenant Environment (whose required
+# reviewer is the approval gate) and the command, and supplies the per-invocation
+# request. The workflow does not apply infrastructure — the in-VNet maintenance job
+# is already deployed by infra.yml (main.bicep); this only starts it, threading the
+# request as job-start environment overrides, and waits.
+#
+# Per-command input semantics (workflow_dispatch caps the input count, so the
+# generic target/confirm inputs carry per-command meanings):
+#   delete_vault:   target unused; confirm retypes the vault id.
+#   purge_document: target is the document id; confirm retypes it.
+#   purge_chain:    target is the chain head id; confirm retypes it and
+#                   confirm_length retypes the chain length.
+#   purge_batch:    target is the ingested-since timestamp, target_extra the
+#                   optional ingested-until; confirm retypes the target count.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Tenant GitHub Environment (carries its deploy identity + coordinates).
+        type: environment
+        required: true
+      command:
+        description: Maintenance operation to run.
+        type: choice
+        required: true
+        options:
+          - delete_vault
+          - purge_document
+          - purge_chain
+          - purge_batch
+      vault_id:
+        description: Vault id the operation targets (e.g. cas_smoke).
+        type: string
+        required: true
+      target:
+        description: 'Operation target: document id / chain head id / ingested-since timestamp (unused for delete_vault).'
+        type: string
+        required: false
+        default: ''
+      target_extra:
+        description: 'purge_batch only: optional ingested-until timestamp (exclusive).'
+        type: string
+        required: false
+        default: ''
+      confirm:
+        description: 'Typed confirmation of PERMANENT deletion: retype the vault id (delete_vault), the target id (purge_document/purge_chain), or the target count (purge_batch).'
+        type: string
+        required: true
+      confirm_length:
+        description: 'purge_chain only: retype the chain length.'
+        type: string
+        required: false
+        default: ''
+      apply:
+        description: Apply the operation. Leave unchecked for a dry-run (prints the plan only).
+        type: boolean
+        default: false
+      snapshot:
+        description: 'delete_vault only: snapshot before destroy (pg_dump + manifest to the SharePoint archive).'
+        type: boolean
+        default: true
+      reason:
+        description: Reason for the operation (recorded in the audit record / deletion receipt).
+        type: string
+        required: true
+
+concurrency:
+  # Never run two maintenance operations against the same tenant concurrently.
+  group: ${{ github.workflow }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+# OIDC: the tenant's federated deploy identity requests a token; no stored secret.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The environment binding is the approval gate: its required reviewer must
+    # approve before the job runs, and its scoped variables carry the identity and
+    # the resource-group coordinate.
+    environment: ${{ inputs.environment }}
+    env:
+      ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}
+      RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+      # The per-invocation request. Interpolated into env vars (never into the run
+      # script directly), so a crafted input cannot inject shell.
+      COMMAND: ${{ inputs.command }}
+      VAULT_ID: ${{ inputs.vault_id }}
+      TARGET: ${{ inputs.target }}
+      TARGET_EXTRA: ${{ inputs.target_extra }}
+      CONFIRM: ${{ inputs.confirm }}
+      CONFIRM_LENGTH: ${{ inputs.confirm_length }}
+      APPLY: ${{ inputs.apply }}
+      SNAPSHOT: ${{ inputs.snapshot }}
+      REASON: ${{ inputs.reason }}
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Start the in-VNet maintenance job and wait
+        # Resolve the already-deployed job name from the last deployment's output,
+        # start it with the per-invocation request injected as env-var overrides
+        # (the job as deployed bakes none of these, so it is inert until started),
+        # and poll to a terminal status. Dry-run is the job's default; APPLY=true is
+        # required for any destruction, and each entrypoint still enforces its typed
+        # confirmation(s).
+        run: |
+          set -euo pipefail
+          MAINTENANCE_JOB="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
+            --query properties.outputs.maintenanceJobName.value -o tsv)"
+          ENV_VARS=("SAGE_MAINTENANCE_COMMAND=$COMMAND")
+          case "$COMMAND" in
+            delete_vault)
+              ENV_VARS+=(
+                "SAGE_DELETE_VAULT_ID=$VAULT_ID"
+                "SAGE_DELETE_CONFIRM=$CONFIRM"
+                "SAGE_DELETE_APPLY=$APPLY"
+                "SAGE_DELETE_SNAPSHOT=$SNAPSHOT"
+                "SAGE_DELETE_REASON=$REASON"
+              ) ;;
+            purge_document)
+              ENV_VARS+=(
+                "SAGE_PURGE_VAULT_ID=$VAULT_ID"
+                "SAGE_PURGE_DOCUMENT_ID=$TARGET"
+                "SAGE_PURGE_CONFIRM=$CONFIRM"
+                "SAGE_PURGE_APPLY=$APPLY"
+                "SAGE_PURGE_REASON=$REASON"
+              ) ;;
+            purge_chain)
+              ENV_VARS+=(
+                "SAGE_PURGE_VAULT_ID=$VAULT_ID"
+                "SAGE_PURGE_HEAD_ID=$TARGET"
+                "SAGE_PURGE_CONFIRM=$CONFIRM"
+                "SAGE_PURGE_CONFIRM_LENGTH=$CONFIRM_LENGTH"
+                "SAGE_PURGE_APPLY=$APPLY"
+                "SAGE_PURGE_REASON=$REASON"
+              ) ;;
+            purge_batch)
+              ENV_VARS+=(
+                "SAGE_PURGE_VAULT_ID=$VAULT_ID"
+                "SAGE_PURGE_INGESTED_SINCE=$TARGET"
+                "SAGE_PURGE_INGESTED_UNTIL=$TARGET_EXTRA"
+                "SAGE_PURGE_CONFIRM=$CONFIRM"
+                "SAGE_PURGE_APPLY=$APPLY"
+                "SAGE_PURGE_REASON=$REASON"
+              ) ;;
+            *)
+              echo "unknown command: $COMMAND"; exit 2 ;;
+          esac
+          EXECUTION="$(az containerapp job start \
+            --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+            --env-vars "${ENV_VARS[@]}" \
+            --query name -o tsv)"
+          echo "Started maintenance job execution: $EXECUTION (command: $COMMAND, vault: $VAULT_ID, apply: $APPLY)"
+          MAINTENANCE_SUCCEEDED=false
+          STATUS=""
+          for _ in $(seq 1 60); do
+            STATUS="$(az containerapp job execution show \
+              --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+              --job-execution-name "$EXECUTION" --query properties.status -o tsv)"
+            echo "maintenance job status: $STATUS"
+            case "$STATUS" in
+              Succeeded) MAINTENANCE_SUCCEEDED=true; break ;;
+              Failed|Degraded|Stopped) echo "maintenance job did not succeed: $STATUS"; break ;;
+            esac
+            sleep 10
+          done
+          if [ "$MAINTENANCE_SUCCEEDED" != true ]; then
+            echo "maintenance job did not reach Succeeded (last status: ${STATUS:-unknown}); recent logs:"
+            az containerapp job logs show \
+              --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+              --execution "$EXECUTION" --tail 100 || true
+            exit 1
+          fi
