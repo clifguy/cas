@@ -30,7 +30,10 @@ storage_backend: postgres
 # selects the tenant-native external binding for a stateless deployment where the
 # local filesystem is ephemeral. Independently selectable from either profile;
 # like `storage_backend`, flipping it repoints the binding at restart and never
-# moves data.
+# moves data. A workstation server bound to `document_store` (plus a remote
+# `postgres:` endpoint) is the supported way to run the path-bearing MCP tools
+# against a cloud-hosted vault: the server stays co-located with the caller's
+# files, and only the vault's storage moves.
 vault_source_backend: filesystem
 
 abstraction:

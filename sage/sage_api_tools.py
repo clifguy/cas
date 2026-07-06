@@ -213,9 +213,13 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             source: Source file path relative to the vault's storage_root,
                 or an absolute path to an external file (copied verbatim
-                into the vault's imports/ directory). The vault's internal
-                copy at storage_root/source_path is authoritative after
-                ingest; the path passed here is temporary.
+                into the vault's imports/ directory). An absolute path is
+                read from the filesystem of the machine running the SAGE
+                server process; the retained copy lands on the vault's
+                configured source store (CAS-ADR-043) and is authoritative
+                after ingest, wherever that store lives -- the path passed
+                here is temporary. Behavior is identical whether the
+                vault's stores are local or cloud-hosted.
             source_type: Source artifact format (markdown, docx, pdf, email,
                 onenote, teams_chat). Selects the source adapter.
             config: Adapter-specific configuration (optional). Not a
@@ -385,11 +389,14 @@ def register_sage_tools(
             doc_id: Alias for ``document_id``; supply exactly one.
             include_content: When true, add `content` (base64) and
                 `content_size` to the response. Default: false.
-            write_to_path: Absolute filesystem path. When set, SAGE
-                writes bytes there and populates `written_to`,
-                `content_size`, and `content_hash` in the response.
-                The target must not exist; its parent must exist and
-                be writable. Mutually exclusive with `include_content`.
+            write_to_path: Absolute filesystem path, resolved on the
+                machine running the SAGE server process. When set, SAGE
+                streams the retained source bytes there (from the vault's
+                configured source store, unbounded by the inline-content
+                ceiling) and populates `written_to`, `content_size`, and
+                `content_hash` in the response. The target must not exist;
+                its parent must exist and be writable. Mutually exclusive
+                with `include_content`.
         """
         try:
             # Validate each id-bearing parameter by its literal name (so the
@@ -1294,7 +1301,8 @@ def register_sage_tools(
             document_id: The document's unique identifier. Alias: ``doc_id``.
                 Supply exactly one of ``document_id`` or ``doc_id``.
             doc_id: Alias for ``document_id``; supply exactly one.
-            write_to_path: Absolute filesystem path. When set, SAGE
+            write_to_path: Absolute filesystem path, resolved on the
+                machine running the SAGE server process. When set, SAGE
                 writes the projection text to this path and returns
                 metadata only. The target must not exist; its parent
                 must exist and be writable.

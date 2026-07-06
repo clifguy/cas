@@ -207,7 +207,11 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
                 import logging
 
                 logging.getLogger(__name__).error(
-                    "Skipping vault at %s: failed to load (%s)", discovered.config_path, exc
+                    "Skipping vault %s: failed to load (%s)",
+                    # Pathless bindings discover by id only; name whichever
+                    # locator this one carries.
+                    discovered.vault_id or discovered.config_path,
+                    exc,
                 )
 
         # Re-derive abstraction work left pending by a prior crash or a stopped

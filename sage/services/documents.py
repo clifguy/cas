@@ -105,8 +105,9 @@ def _deliver_to_path(
 ) -> None:
     """Copy the vault file to `write_to_path` and populate delivery fields.
 
-    Reads the retained source through the vault-source store (CAS-ADR-043)
-    and writes the bytes to the caller-specified local path.
+    Streams the retained source through the vault-source store (CAS-ADR-043)
+    to the caller-specified local path, so no hop holds the whole file and
+    the delivery is not bounded by the inline-content ceiling.
 
     Raises WritePathInvalidError, WritePathExistsError, or
     ContentFileMissingError on failure.
@@ -129,14 +130,25 @@ def _deliver_to_path(
     if not store.source_exists(vault_id, storage_root, doc.source_path):
         raise ContentFileMissingError(doc.id, doc.source_path)
 
-    data = store.read_source(vault_id, storage_root, doc.source_path)
-    target.write_bytes(data)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with target.open("wb") as out:
+            for chunk in store.iter_source(vault_id, storage_root, doc.source_path):
+                out.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+    except BaseException:
+        # Remove the partial target so a retry does not trip the
+        # target-must-not-exist check on a file this delivery created.
+        target.unlink(missing_ok=True)
+        raise
 
     response.written_to = str(target)
-    response.content_size = len(data)
+    response.content_size = size
     # Canonicalize to the Sha256Str shape (`sha256:` + 64 hex).
     # DocumentWithContent.content_hash is typed; hashlib emits raw hex.
-    response.content_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
+    response.content_hash = f"sha256:{digest.hexdigest()}"
 
 
 class DocumentsService:

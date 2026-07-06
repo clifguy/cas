@@ -31,6 +31,12 @@ from sage.vault_source_document_store import (
     SharePointGraphClient,
     build_sharepoint_graph_client,
 )
+from tests.helpers.fake_graph_client import (
+    STREAM_CHUNK_BYTES,
+)
+from tests.helpers.fake_graph_client import (
+    FakeGraphClient as _FakeGraphClient,
+)
 
 _SITE = "contoso.sharepoint.com,site-guid,web-guid"
 _DRIVE = "b!drive-id"
@@ -38,85 +44,8 @@ _DRIVE = "b!drive-id"
 
 # --------------------------------------------------------------------------
 # Binding tests, against an in-memory fake Graph client
+# (shared with the MCP profile-invariance suite; see tests/helpers)
 # --------------------------------------------------------------------------
-
-
-class _FakeGraphClient:
-    """In-memory stand-in for SharePointGraphClient: config bytes per vault_id
-    and retained source bytes per vault-relative path."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
-        self.uploads = 0
-        self.deletes = 0
-        self.tree_deletes = 0
-        self.deleted_trees: list[str] = []
-        self.archives: dict[str, bytes] = {}
-        # Source-byte half: vault-relative path -> bytes, with op counters so a
-        # test can prove a cheap stat did not pull content and a reuse did not
-        # re-upload.
-        self.sources: dict[str, bytes] = {}
-        self.source_uploads = 0
-        self.source_reads = 0
-        self.source_stats = 0
-        self.source_streams: list[tuple[str, str]] = []
-
-    def list_vault_ids(self) -> list[str]:
-        return sorted(self.store)
-
-    def read_config_bytes(self, vault_id: str) -> bytes | None:
-        return self.store.get(vault_id)
-
-    def write_config_bytes(self, vault_id: str, data: bytes) -> None:
-        self.uploads += 1
-        self.store[vault_id] = data
-
-    def delete_config(self, vault_id: str) -> None:
-        self.deletes += 1
-        self.store.pop(vault_id, None)
-
-    def delete_tree(self, vault_id: str) -> None:
-        # A folder delete removes the whole vault folder: its config and every
-        # retained source. Idempotent -- an absent vault is tolerated.
-        self.tree_deletes += 1
-        self.deleted_trees.append(vault_id)
-        self.store.pop(vault_id, None)
-
-    def list_sources(self, vault_id: str) -> list[dict]:
-        return [{"path": p, "size": len(d)} for p, d in sorted(self.sources.items())]
-
-    def write_archive(self, archive_path: str, data: bytes) -> None:
-        self.archives[archive_path] = data
-
-    # -- source-byte half --------------------------------------------------
-
-    def source_item(self, vault_id: str, source_path: str) -> dict | None:
-        self.source_stats += 1
-        data = self.sources.get(source_path)
-        if data is None:
-            return None
-        return {"name": source_path.rsplit("/", 1)[-1], "size": len(data)}
-
-    def read_source_bytes(self, vault_id: str, source_path: str) -> bytes:
-        self.source_reads += 1
-        return self.sources[source_path]
-
-    def upload_source(self, vault_id: str, source_path: str, data: bytes) -> None:
-        self.source_uploads += 1
-        self.sources[source_path] = data
-
-    def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
-        return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()
-
-    def stream_source_bytes(self, vault_id: str, source_path: str):
-        self.source_streams.append((vault_id, source_path))
-        yield b"SENTINEL-"
-        yield b"CHUNKS"
-
-    def source_download_url(self, vault_id: str, source_path: str) -> str | None:
-        if source_path not in self.sources:
-            return None
-        return f"https://sp.example/download/{source_path}?t=fake"
 
 
 def _binding(fake: _FakeGraphClient) -> DocumentStoreVaultSourceStore:
@@ -329,17 +258,21 @@ def test_vsb_ds_037_iter_source_delegates_to_client_stream():
     """``iter_source`` yields the chunks the Graph client streams and never
     routes through the buffered whole-body read.
 
-    Anti-coincidental-pass: the sentinel chunks can only come from the fake's
+    Anti-coincidental-pass: the payload spans more than one stream chunk, so a
+    multi-chunk reassembly can only come from the fake's
     ``stream_source_bytes``; assert ``source_reads == 0`` so a binding wired to
-    ``read_source_bytes`` (the easy wrong delegation) fails.
+    ``read_source_bytes`` (the easy wrong delegation) fails, and assert the
+    chunk count so a whole-body single yield would too.
     """
     fake = _FakeGraphClient()
-    fake.sources["imports/x.md"] = b"real bytes the stream must not touch"
+    payload = b"x" * (STREAM_CHUNK_BYTES + 10)
+    fake.sources["imports/x.md"] = payload
     store = _binding(fake)
 
     chunks = list(store.iter_source("v1", Path("/unused"), "imports/x.md"))
 
-    assert chunks == [b"SENTINEL-", b"CHUNKS"]
+    assert b"".join(chunks) == payload
+    assert len(chunks) == 2
     assert fake.source_streams == [("v1", "imports/x.md")]
     assert fake.source_reads == 0
 

@@ -69,9 +69,13 @@ def register_app_tools(
 
         Args:
             vault_id: Target vault identifier.
-            directory: Absolute path to the directory to scan. Single
-                and double quote wrappers are stripped, so paths
-                round-tripped from shell pasting are accepted.
+            directory: Absolute path to the directory to scan, resolved
+                on the machine running the SAGE server process; the
+                already-in-vault check goes through the vault's stores, so
+                results are identical whether those are local or
+                cloud-hosted. Single and double quote wrappers are
+                stripped, so paths round-tripped from shell pasting are
+                accepted.
             max_depth: Max recursion depth (null = unlimited,
                 0 = scan only the named directory with no descent).
         """
@@ -184,7 +188,10 @@ def register_app_tools(
 
         Args:
             vault_id: Target vault identifier.
-            files: List of file objects. Each has ``file_path`` (str),
+            files: List of file objects. Each has ``file_path`` (str, read
+                from the filesystem of the machine running the SAGE server
+                process; the retained copy lands on the vault's configured
+                source store),
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
                 ``markdown``, ``docx``, ``xlsx``, ``pdf``; the vault's
                 actually-enabled subset is whatever appears under
