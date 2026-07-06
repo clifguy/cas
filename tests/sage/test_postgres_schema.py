@@ -333,3 +333,30 @@ async def test_drop_schema_is_idempotent(pg_dsn):
     async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
         await drop_schema(conn, schema)
         await drop_schema(conn, schema)
+
+
+async def test_schema_exists_reflects_bootstrap_and_drop(pg_dsn):
+    """`schema_exists` is False before bootstrap, True after, and False after drop.
+
+    Anti-coincidental-pass: the False->True->False transition across bootstrap and
+    drop is the whole predicate; a schema_exists hard-wired to a constant would fail
+    one of the three probes.
+    """
+    import psycopg
+
+    from sage.storage.postgres.schema import (
+        assert_disposable_target,
+        bootstrap_schema,
+        drop_schema,
+        schema_exists,
+    )
+
+    schema = assert_disposable_target("sage_test_exists_" + os.urandom(3).hex())
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        assert await schema_exists(conn, schema) is False
+        await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+        try:
+            assert await schema_exists(conn, schema) is True
+        finally:
+            await drop_schema(conn, schema)
+        assert await schema_exists(conn, schema) is False

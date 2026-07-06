@@ -14,19 +14,24 @@ Test IDs follow VSB-NNN (Vault-Source Binding).
 """
 
 import copy
+import errno
+import shutil
 
 import pytest
 import yaml
 
 from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
 from sage.vault_source_binding import (
+    _RMTREE_MAX_ATTEMPTS,
     VAULT_SOURCE_BACKEND_ENV_VAR,
     DiscoveredVault,
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
     SupportsSourceDownloadUrl,
     VaultRootEscapeError,
+    _strip_macos_ui_artifacts,
     build_stack_vault_source_store,
+    remove_tree_tolerating_concurrent_writer,
     resolve_and_assert_within_root,
 )
 
@@ -277,3 +282,138 @@ def test_vsb_034_resolve_and_assert_within_root_boundaries(tmp_path):
         resolve_and_assert_within_root(root, root)
     with pytest.raises(VaultRootEscapeError):
         resolve_and_assert_within_root(tmp_path / "elsewhere", root)
+
+
+# ---------------------------------------------------------------------------
+# remove_tree_tolerating_concurrent_writer: rmtree resilient to a concurrent
+# writer repopulating a directory mid-removal (macOS .DS_Store precedent,
+# CAS-ADR-016)
+# ---------------------------------------------------------------------------
+
+
+def test_vsb_035_remove_tree_removes_a_populated_tree(tmp_path):
+    """The resilient remove deletes a populated tree; a sibling tree survives.
+
+    Anti-coincidental-pass: the tree is populated (a positive control that it
+    existed) and a sibling under the same parent is asserted to survive, so a
+    remove that walked the wrong subtree would be caught.
+    """
+    victim = tmp_path / "victim"
+    (victim / "a").mkdir(parents=True)
+    (victim / "a" / "f.txt").write_text("x")
+    sibling = tmp_path / "keep"
+    sibling.mkdir()
+    (sibling / "b.txt").write_text("y")
+
+    remove_tree_tolerating_concurrent_writer(victim)
+
+    assert not victim.exists()
+    assert (sibling / "b.txt").exists()
+
+
+def test_vsb_036_remove_tree_retries_a_transient_enotempty(tmp_path, monkeypatch):
+    """A concurrent writer that repopulates a directory between rmtree's scan and
+    its final rmdir (ENOTEMPTY) is tolerated: the removal retries and completes.
+
+    Anti-coincidental-pass: reproduces the race the fix targets. The first rmtree
+    re-creates a .DS_Store inside the tree and raises ENOTEMPTY; only the retry
+    completes the removal, so a single-attempt remove would leave the tree.
+    """
+    victim = tmp_path / "victim"
+    (victim / "sub").mkdir(parents=True)
+    (victim / "sub" / "f.txt").write_text("x")
+
+    real_rmtree = shutil.rmtree
+    calls = {"n": 0}
+
+    def flaky(path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The concurrent writer: a .DS_Store reappears, so the final rmdir
+            # would see a non-empty directory.
+            (victim / "sub" / ".DS_Store").write_text("finder")
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", str(victim / "sub"))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", flaky)
+    monkeypatch.setattr("sage.vault_source_binding._RMTREE_RETRY_BACKOFF_SECONDS", 0)
+
+    remove_tree_tolerating_concurrent_writer(victim)
+
+    assert calls["n"] == 2
+    assert not victim.exists()
+
+
+def test_vsb_037_strip_macos_ui_artifacts_removes_ds_store(tmp_path):
+    """`_strip_macos_ui_artifacts` deletes .DS_Store files at every level and keeps
+    real content.
+
+    Anti-coincidental-pass: `keep.md` is a positive control -- a strip that walked
+    too broadly (deleted more than .DS_Store) would remove it.
+    """
+    root = tmp_path / "tree"
+    (root / "a").mkdir(parents=True)
+    (root / ".DS_Store").write_text("finder")
+    (root / "a" / ".DS_Store").write_text("finder")
+    (root / "a" / "keep.md").write_text("body")
+
+    _strip_macos_ui_artifacts(root)
+
+    assert not (root / ".DS_Store").exists()
+    assert not (root / "a" / ".DS_Store").exists()
+    assert (root / "a" / "keep.md").exists()
+
+
+def test_vsb_038_remove_tree_propagates_a_non_transient_oserror(tmp_path, monkeypatch):
+    """A non-transient OSError (EACCES) is not swallowed or retried: it propagates
+    on the first attempt.
+
+    Anti-coincidental-pass: asserting a single call proves the helper does not treat
+    every OSError as a retryable race -- an over-broad except would loop and change
+    the call count.
+    """
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    calls = {"n": 0}
+
+    def eacces(path, *args, **kwargs):
+        calls["n"] += 1
+        raise OSError(errno.EACCES, "Permission denied", str(path))
+
+    monkeypatch.setattr(shutil, "rmtree", eacces)
+
+    with pytest.raises(OSError) as exc_info:
+        remove_tree_tolerating_concurrent_writer(victim)
+
+    assert exc_info.value.errno == errno.EACCES
+    assert calls["n"] == 1
+
+
+def test_vsb_039_remove_tree_gives_up_after_bounded_attempts(tmp_path, monkeypatch):
+    """A writer that never stops (persistent ENOTEMPTY) does not hang the removal:
+    it gives up after a bounded number of attempts and raises.
+
+    Anti-coincidental-pass: asserting an exact call count proves the retry loop is
+    bounded -- an unbounded loop would never return to be counted.
+    """
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    calls = {"n": 0}
+
+    def always_enotempty(path, *args, **kwargs):
+        calls["n"] += 1
+        raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+
+    monkeypatch.setattr(shutil, "rmtree", always_enotempty)
+    monkeypatch.setattr("sage.vault_source_binding._RMTREE_RETRY_BACKOFF_SECONDS", 0)
+
+    with pytest.raises(OSError) as exc_info:
+        remove_tree_tolerating_concurrent_writer(victim)
+
+    assert exc_info.value.errno == errno.ENOTEMPTY
+    assert calls["n"] == _RMTREE_MAX_ATTEMPTS
+
+
+def test_vsb_040_remove_tree_is_idempotent_on_an_absent_path(tmp_path):
+    """Removing an already-absent path is a silent no-op (does not raise)."""
+    remove_tree_tolerating_concurrent_writer(tmp_path / "does-not-exist")

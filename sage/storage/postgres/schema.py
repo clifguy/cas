@@ -370,3 +370,19 @@ async def drop_schema(conn, schema: str) -> None:
     :meth:`PostgresVaultStorageProvisioner._bootstrap`.
     """
     await conn.execute(drop_schema_statement(schema))
+
+
+async def schema_exists(conn, schema: str) -> bool:
+    """Whether ``schema`` is present in the shared database (CAS-ADR-042).
+
+    The read-only companion to :func:`drop_schema`: probes ``information_schema``
+    for the named schema. ``conn`` is an open async psycopg connection. The schema
+    name is a bind parameter (data, not an interpolated identifier), so no
+    identifier validation is required. Used by the out-of-band teardown's snapshot
+    step to skip a schema dump when the schema is already gone (a resume after a
+    partial teardown), rather than erroring on ``pg_dump`` against an absent schema.
+    """
+    cur = await conn.execute(
+        "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (schema,)
+    )
+    return await cur.fetchone() is not None

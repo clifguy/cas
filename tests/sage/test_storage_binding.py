@@ -331,3 +331,37 @@ async def test_sto_022_drop_vault_schema_drops_the_schema(pg_dsn, tmp_vault_dir,
     finally:
         async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{vault_id}" CASCADE')
+
+
+@pytest.mark.usefixtures("pg_dsn")
+async def test_sto_023_schema_exists_reflects_open_and_drop(pg_dsn, tmp_vault_dir, monkeypatch):
+    """Through the provisioner's own auth path: `schema_exists` is False before a
+    vault is opened, True after open (which bootstraps its schema), and False after
+    `drop_vault_schema` -- the read-only companion to the drop this file also proves.
+
+    Anti-coincidental-pass: the False->True->False transition is the predicate; the
+    post-open True is the positive control that the schema was actually created.
+    """
+    psycopg = pytest.importorskip("psycopg")
+    from tests.sage.conftest import stack_postgres_config_from_dsn
+
+    pg_config = stack_postgres_config_from_dsn(pg_dsn, monkeypatch)
+    vault_id = f"sage_test_{uuid.uuid4().hex[:10]}"
+    provisioner = PostgresVaultStorageProvisioner(pg_config)
+    try:
+        assert await provisioner.schema_exists(vault_id) is False
+
+        handle = await provisioner.open_vault_storage(
+            vault_id, tmp_vault_dir / "brain", need_graph=True, need_content=False, migrate=True
+        )
+        await handle.graph_store.close()
+        await handle.close()
+
+        assert await provisioner.schema_exists(vault_id) is True
+
+        await provisioner.drop_vault_schema(vault_id)
+
+        assert await provisioner.schema_exists(vault_id) is False
+    finally:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{vault_id}" CASCADE')

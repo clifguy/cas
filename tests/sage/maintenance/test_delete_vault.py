@@ -9,11 +9,13 @@ that never shells out to ``pg_dump``. The real Postgres schema drop is proven in
 """
 
 import copy
+import errno
 import json
 from types import SimpleNamespace
 
 import pytest
 
+import sage.vault_source_binding as vsb
 from sage.maintenance.delete_vault import delete_vault
 from sage.vault_source_binding import FilesystemVaultSourceStore
 
@@ -57,12 +59,18 @@ def _materialize(vault_root, vault_id, base_cfg, *, storage_outside=None, brain_
 
 
 class _SpyProvisioner:
-    """Records drop_vault_schema calls; optionally raises to simulate a failure."""
+    """Records drop_vault_schema calls; optionally raises to simulate a failure.
 
-    def __init__(self, *, raises=None, log=None):
+    ``schema_present`` backs the ``schema_exists`` predicate the snapshot step
+    consults: the default ``True`` reflects a live schema (dump attempted), and
+    ``False`` reflects a resume after the schema was already dropped (dump skipped).
+    """
+
+    def __init__(self, *, raises=None, log=None, schema_present=True):
         self.dropped = []
         self._raises = raises
         self._log = log
+        self._schema_present = schema_present
 
     async def drop_vault_schema(self, vault_id):
         if self._log is not None:
@@ -70,6 +78,9 @@ class _SpyProvisioner:
         self.dropped.append(vault_id)
         if self._raises is not None:
             raise self._raises
+
+    async def schema_exists(self, vault_id):
+        return self._schema_present
 
 
 class _SpyDump:
@@ -429,3 +440,88 @@ async def test_idempotent_rerun(built_vault):
     # Second run: schema/trees/config are already gone; it tolerates all of them.
     rc2 = await delete_vault(**_common(built_vault, provisioner=prov))
     assert rc2 == 0
+
+
+# ---------------------------------------------------------------------------
+# D.23 -- every teardown removal tolerates a concurrent writer repopulating a
+# directory mid-removal (storage_root, brain_root, and the enclosing vault dir)
+# ---------------------------------------------------------------------------
+
+
+async def test_teardown_tolerates_concurrent_writer_on_every_tree(built_vault, monkeypatch):
+    """Each recursive removal in the teardown -- storage_root (via the source-store
+    port), brain_root, and the enclosing vault dir -- tolerates a directory
+    repopulated between rmtree's scan and its final rmdir (ENOTEMPTY).
+
+    Anti-coincidental-pass: the FIRST removal of each target is sabotaged once with
+    ENOTEMPTY and its path recorded. A target whose removal did not route through
+    the resilient helper would never be sabotaged (the subset assertion catches it),
+    and a removal that aborted on the transient error would leave the tree behind.
+    """
+    real_rmtree = vsb.shutil.rmtree
+    sabotaged = set()
+
+    def flaky(path, *args, **kwargs):
+        key = str(path)
+        if key not in sabotaged:
+            sabotaged.add(key)
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", key)
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(vsb.shutil, "rmtree", flaky)
+    monkeypatch.setattr(vsb, "_RMTREE_RETRY_BACKOFF_SECONDS", 0)
+
+    rc = await delete_vault(**_common(built_vault, provisioner=_SpyProvisioner()))
+
+    assert rc == 0
+    assert not built_vault.storage_root.exists()
+    assert not built_vault.brain_root.exists()
+    assert not built_vault.vault_dir.exists()
+    expected = {
+        str(built_vault.storage_root.resolve()),
+        str(built_vault.brain_root.resolve()),
+        str(built_vault.vault_dir.resolve()),
+    }
+    assert expected <= sabotaged
+
+
+# ---------------------------------------------------------------------------
+# D.24 / D.25 -- the snapshot tolerates an already-dropped schema on resume: the
+# schema dump is skipped rather than erroring on pg_dump against an absent schema
+# ---------------------------------------------------------------------------
+
+
+async def test_resume_with_snapshot_tolerates_already_dropped_schema(built_vault):
+    """A resume after a partial teardown -- schema already dropped -- with the
+    default snapshot ON skips the schema dump instead of erroring on pg_dump against
+    the absent schema, and the teardown completes.
+
+    Anti-coincidental-pass: the injected dump runner RAISES if called, so a snapshot
+    that still attempted the dump would return 4; rc == 0 with no dump call proves
+    the schema-exists gate skipped it.
+    """
+    prov = _SpyProvisioner(schema_present=False)
+    dump = _SpyDump(raises=AssertionError("pg_dump must be skipped when the schema is absent"))
+    rc = await delete_vault(**_common(built_vault, provisioner=prov, dump_runner=dump))
+
+    assert rc == 0
+    assert dump.calls == []
+    assert not built_vault.config_path.exists()
+    snapshot_dir = _deletions_dir(built_vault)
+    receipts = list(snapshot_dir.glob(f"{built_vault.vault_id}-*/receipt.json"))
+    assert len(receipts) == 1
+
+
+async def test_snapshot_runs_when_the_schema_is_present(built_vault):
+    """The AC-5 gate does not skip a needed snapshot: with the schema present
+    (default), the dump still runs.
+
+    Anti-coincidental-pass: asserting dump.calls is non-empty catches an inverted
+    gate that skipped the dump whenever schema_exists was consulted.
+    """
+    prov = _SpyProvisioner(schema_present=True)
+    dump = _SpyDump()
+    rc = await delete_vault(**_common(built_vault, provisioner=prov, dump_runner=dump))
+
+    assert rc == 0
+    assert dump.calls  # snapshot attempted

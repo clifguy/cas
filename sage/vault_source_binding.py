@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import errno
 import hashlib
 import logging
 import os
 import shutil
 import stat
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -414,6 +416,72 @@ def _strip_ui_invisibility(path: Path) -> None:
         logger.debug("FinderInfo sanitization failed for %s: %s", path, exc)
 
 
+# ---------------------------------------------------------------------------
+# Resilient recursive removal (vault teardown)
+# ---------------------------------------------------------------------------
+#
+# A vault teardown removes whole directory trees (storage_root, brain_root, and
+# the enclosing vault dir). A directory can be repopulated between shutil.rmtree's
+# scan and its final os.rmdir -- macOS re-creates a .DS_Store inside a directory
+# as it is being removed, and a live server's per-vault timing.log writer keeps
+# writing into a tree the standalone teardown CLI (which cannot evict a foreign
+# server's registry) is removing -- leaving the rmdir raising ENOTEMPTY. The
+# removal is bounded-retried, stripping macOS UI-artifact files (the .DS_Store
+# companion to _strip_ui_invisibility's invisibility markers, CAS-ADR-016) before
+# each retry.
+
+_MACOS_UI_ARTIFACT_NAME = ".DS_Store"
+_RMTREE_MAX_ATTEMPTS = 5
+_RMTREE_RETRY_BACKOFF_SECONDS = 0.1
+
+
+def _strip_macos_ui_artifacts(root: Path) -> None:
+    """Delete macOS Finder scratch files (``.DS_Store``) from a tree.
+
+    Finder re-creates ``.DS_Store`` inside a directory even as it is being removed,
+    which can leave ``shutil.rmtree``'s final ``os.rmdir`` seeing a non-empty
+    directory. Removing these Finder-owned files clears that. Best-effort, mirroring
+    :func:`_strip_ui_invisibility` (CAS-ADR-016): a file that reappears after this
+    pass is caught by the caller's bounded retry. Not platform-gated -- a file named
+    ``.DS_Store`` under a vault tree is Finder scratch on any host, and the tree is
+    being deleted regardless.
+    """
+    if not root.exists():
+        return
+    for artifact in root.rglob(_MACOS_UI_ARTIFACT_NAME):
+        try:
+            artifact.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("could not strip %s: %s", artifact, exc)
+
+
+def remove_tree_tolerating_concurrent_writer(path: Path) -> None:
+    """``shutil.rmtree`` that tolerates a concurrent writer repopulating a directory.
+
+    A directory can gain a file between ``rmtree``'s scan and its final ``os.rmdir``
+    -- macOS re-creating a ``.DS_Store``, or a live server's per-vault ``timing.log``
+    writer under ``brain_root`` that the standalone teardown CLI cannot evict --
+    leaving the ``rmdir`` raising ``ENOTEMPTY``. Retries the removal a bounded number
+    of times, stripping macOS UI-artifact files (CAS-ADR-016) before each retry; a
+    non-transient error, or a persistent one on the final attempt, propagates.
+    Idempotent: an already-absent ``path`` is a no-op.
+    """
+    for attempt in range(_RMTREE_MAX_ATTEMPTS):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return  # already gone -- keep the teardown idempotent
+        except OSError as exc:
+            last_attempt = attempt == _RMTREE_MAX_ATTEMPTS - 1
+            if exc.errno != errno.ENOTEMPTY or last_attempt:
+                raise
+            # A concurrent writer repopulated the directory. Strip known macOS
+            # UI-artifact files and retry.
+            _strip_macos_ui_artifacts(path)
+            time.sleep(_RMTREE_RETRY_BACKOFF_SECONDS)
+
+
 class FilesystemVaultSourceStore(VaultSourceStore):
     """The filesystem binding: the local vault tree under a single vault root.
 
@@ -508,7 +576,7 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # already-absent tree resolves fine and the rmtree is skipped.
         resolved = resolve_and_assert_within_root(storage_root, self._vault_root)
         if resolved.exists():
-            shutil.rmtree(resolved)
+            remove_tree_tolerating_concurrent_writer(resolved)
 
 
 class DocumentStoreVaultSourceStore(VaultSourceStore):
