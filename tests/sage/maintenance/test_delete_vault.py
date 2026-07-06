@@ -22,16 +22,16 @@ from sage.vault_source_binding import FilesystemVaultSourceStore
 # ---------------------------------------------------------------------------
 
 
-def _materialize(vault_root, vault_id, base_cfg, *, storage_outside=None):
+def _materialize(vault_root, vault_id, base_cfg, *, storage_outside=None, brain_outside=None):
     """Write a real vault tree under ``vault_root`` and return its coordinates.
 
-    ``storage_outside``, when given, points ``storage_root`` at a path outside the
-    vault root (the root-escape case). Otherwise both trees live under
-    ``<vault_root>/<vault_id>/``.
+    ``storage_outside`` / ``brain_outside``, when given, point the respective tree
+    at a path outside the vault root (the root-escape case). Either or both can
+    escape; an unspecified tree lives under ``<vault_root>/<vault_id>/``.
     """
     vault_dir = vault_root / vault_id
     storage_root = storage_outside if storage_outside is not None else vault_dir / "sources"
-    brain_root = vault_dir / "brain"
+    brain_root = brain_outside if brain_outside is not None else vault_dir / "brain"
     (storage_root / "imports").mkdir(parents=True, exist_ok=True)
     (storage_root / "imports" / "doc.md").write_text("body")
     brain_root.mkdir(parents=True, exist_ok=True)
@@ -178,6 +178,11 @@ async def test_apply_full_cascade_and_receipt_outside_vault(built_vault):
     receipt = json.loads(receipts[0].read_text())
     assert receipt["status"] == "deleted"
     assert receipt["reason"] == "retire"
+    # Fully-in-root pole: every filesystem target is recorded as removed.
+    targets = receipt["targets"]
+    assert targets["storage_root"]["status"] == "removed"
+    assert targets["brain_root"]["status"] == "removed"
+    assert targets["vault_dir"]["status"] == "removed"
     # Nothing was written inside the (now-removed) vault root.
     assert list(built_vault.vault_root.rglob("receipt.json")) == []
 
@@ -243,11 +248,12 @@ async def test_auto_confirm_only_for_literal_test(tmp_path, minimal_vault_config
 
 
 # ---------------------------------------------------------------------------
-# D.16 -- root-escape refusal at the core level
+# D.16 -- per-target root-escape skip: only the escaping tree is left in place;
+# the in-root work still runs
 # ---------------------------------------------------------------------------
 
 
-async def test_root_escape_refused(tmp_path, minimal_vault_config_dict):
+async def test_root_escape_skips_only_the_escaping_target(tmp_path, minimal_vault_config_dict):
     outside = tmp_path / "outside_sources"
     esc = _materialize(
         tmp_path / "vaults", "escaper", minimal_vault_config_dict, storage_outside=outside
@@ -255,14 +261,69 @@ async def test_root_escape_refused(tmp_path, minimal_vault_config_dict):
     (outside / "precious").write_text("keep")
     prov = _SpyProvisioner()
     dump = _SpyDump()
+    snapshot_dir = _deletions_dir(esc)
 
     rc = await delete_vault(**_common(esc, provisioner=prov, dump_runner=dump))
 
-    assert rc == 3
-    assert prov.dropped == []
-    assert dump.calls == []
-    assert (outside / "precious").exists()
-    assert esc.config_path.exists()
+    # The escaping storage_root is refused (left in place), but the in-root work
+    # is no longer aborted: the schema drops and the in-root config, brain tree,
+    # and enclosing dir are removed.
+    assert rc == 0
+    assert (outside / "precious").exists()  # escaping tree untouched
+    assert prov.dropped == [esc.vault_id]  # schema still dropped
+    assert not esc.brain_root.exists()  # in-root brain removed
+    assert not esc.config_path.exists()  # in-root config removed
+    assert not esc.vault_dir.exists()  # enclosing dir removed
+
+    # The receipt distinguishes the skipped (escaping) target from the removed ones.
+    receipts = list(snapshot_dir.glob(f"{esc.vault_id}-*/receipt.json"))
+    assert len(receipts) == 1
+    targets = json.loads(receipts[0].read_text())["targets"]
+    assert targets["storage_root"]["status"] == "skipped (outside bound root)"
+    assert targets["storage_root"]["path"] == str(outside)
+    assert targets["brain_root"]["status"] == "removed"
+    assert targets["vault_dir"]["status"] == "removed"
+
+
+async def test_wholly_outside_roots_still_retire_in_root_work(tmp_path, minimal_vault_config_dict):
+    """Both source trees escape the bound root; the in-root work still retires the vault.
+
+    Mirrors the leaked local-profile orphans whose ``storage_root``/``brain_root``
+    point at cleaned-up temp dirs outside the bound vault root while the config and
+    enclosing directory remain in-root. Both escaping trees are left untouched; the
+    schema drops and the in-root config + enclosing dir are removed.
+    """
+    out_storage = tmp_path / "out_storage"
+    out_brain = tmp_path / "out_brain"
+    orphan = _materialize(
+        tmp_path / "vaults",
+        "orphan",
+        minimal_vault_config_dict,
+        storage_outside=out_storage,
+        brain_outside=out_brain,
+    )
+    (out_storage / "keep_s").write_text("s")
+    (out_brain / "keep_b").write_text("b")
+    prov = _SpyProvisioner()
+    snapshot_dir = _deletions_dir(orphan)
+
+    rc = await delete_vault(**_common(orphan, provisioner=prov))
+
+    assert rc == 0
+    # Both escaping trees are untouched.
+    assert (out_storage / "keep_s").exists()
+    assert (out_brain / "keep_b").exists()
+    # In-root work still ran.
+    assert prov.dropped == [orphan.vault_id]
+    assert not orphan.config_path.exists()
+    assert not orphan.vault_dir.exists()
+
+    receipts = list(snapshot_dir.glob(f"{orphan.vault_id}-*/receipt.json"))
+    assert len(receipts) == 1
+    targets = json.loads(receipts[0].read_text())["targets"]
+    assert targets["storage_root"]["status"] == "skipped (outside bound root)"
+    assert targets["brain_root"]["status"] == "skipped (outside bound root)"
+    assert targets["vault_dir"]["status"] == "removed"
 
 
 # ---------------------------------------------------------------------------
