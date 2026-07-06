@@ -105,6 +105,20 @@ def test_smk_004_mlx_absent(image: str) -> None:
     )
 
 
+def test_smk_005_pg_dump_on_path(image: str) -> None:
+    # The maintenance job's snapshot-before-destroy step shells out to a bare
+    # ``pg_dump`` on PATH; a missing binary raises FileNotFoundError and aborts the
+    # teardown. This is the runtime proof the structural gate cannot give: the
+    # client actually resolves, at the major that matches the Flexible Server (16).
+    out = subprocess.run(
+        ["docker", "run", "--rm", *_platform_args(), "--entrypoint", "pg_dump", image, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "(PostgreSQL) 16" in out, f"pg_dump is not the expected major 16: {out!r}"
+
+
 def test_smk_002_nomic_weights_load_offline(image: str) -> None:
     # If weights were not baked, offline construction raises -> non-zero exit.
     subprocess.run(

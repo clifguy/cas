@@ -431,3 +431,57 @@ def test_vsb_039_remove_tree_gives_up_after_bounded_attempts(tmp_path, monkeypat
 def test_vsb_040_remove_tree_is_idempotent_on_an_absent_path(tmp_path):
     """Removing an already-absent path is a silent no-op (does not raise)."""
     remove_tree_tolerating_concurrent_writer(tmp_path / "does-not-exist")
+
+
+# --------------------------------------------------------------------------
+# Store lifecycle: close() releases the document-store binding's Graph client
+# --------------------------------------------------------------------------
+
+
+class _RecordingGraphClient:
+    """A Graph-client stand-in that records its close."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_vsb_050_document_store_close_closes_client():
+    """``DocumentStoreVaultSourceStore.close`` closes the Graph client it holds
+    (built eagerly under managed identity, or injected for tests).
+
+    Anti-coincidental-pass: the recording client flips ``closed`` only if the store
+    delegates to its client's ``close()`` -- a store ``close`` that ignored the
+    client would leave it False.
+    """
+    client = _RecordingGraphClient()
+    store = DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=client)
+
+    store.close()
+
+    assert client.closed is True
+
+
+def test_vsb_051_document_store_close_noop_when_client_unbuilt():
+    """A lazily-bound store that never built its client holds no transport, so
+    ``close`` is a no-op and does not construct one.
+
+    Anti-coincidental-pass: assert the client cache stays ``None`` after close -- a
+    close that called ``_get_client()`` would eagerly build (and try to reach
+    Azure) exactly when there is nothing to release.
+    """
+    store = DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=None)
+
+    store.close()  # must not raise, must not build
+
+    assert store._client is None
+
+
+def test_vsb_052_filesystem_store_close_is_noop(tmp_path):
+    """The filesystem binding holds no client, so it inherits the port's no-op
+    ``close`` -- callers can close any binding without branching on the backend."""
+    store = FilesystemVaultSourceStore(tmp_path)
+
+    store.close()  # must not raise

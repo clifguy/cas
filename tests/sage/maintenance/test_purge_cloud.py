@@ -74,24 +74,47 @@ class _StubHandle:
         self.closed = True
 
 
+class _FakeSourceStore:
+    """A source store stand-in that records its (synchronous) close."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _CredentialCloseRecorder:
+    """Async stand-in for ``close_postgres_credential`` that counts its calls."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self):
+        self.calls += 1
+
+
 def _clear_env(monkeypatch):
     for name in _PURGE_ENV:
         monkeypatch.delenv(name, raising=False)
 
 
-def _patch_resolution(monkeypatch, *, graph=None, content=None, sink=None, handle=None, seen=None):
+def _patch_resolution(
+    monkeypatch, *, graph=None, content=None, sink=None, handle=None, seen=None, source_store=None
+):
     """Patch the env-config builder, binding factories, and vault resolution."""
     graph = graph if graph is not None else StubGraphStore()
     content = content if content is not None else StubContentStore()
     sink = sink if sink is not None else _StubSink()
     handle = handle if handle is not None else _StubHandle()
+    source_store = source_store if source_store is not None else _FakeSourceStore()
 
     monkeypatch.setattr(pc, "_config_from_env", lambda env: _FAKE_STACK)
 
     def _rec_source(cfg, **kw):
         if seen is not None:
             seen["source_mi"] = kw.get("managed_identity")
-        return object()
+        return source_store
 
     def _rec_prov(cfg, **kw):
         if seen is not None:
@@ -316,3 +339,37 @@ def test_cloud_typed_confirm_mismatch_refuses(monkeypatch):
     assert rc == 3
     assert asyncio.run(graph.get_document(doc.id)) is not None
     assert sink.records == []
+
+
+# ---------------------------------------------------------------------------
+# Shutdown hygiene: the short-lived job releases its HTTP/aiohttp clients
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_shutdown_closes_source_store_and_credential(monkeypatch):
+    """A purge run closes, at shutdown, the vault-store handle (existing), the
+    source store's Graph client, and the cached Entra credential's aiohttp session.
+
+    Anti-coincidental-pass: assert the source-store and credential recorders fired
+    in addition to ``handle.closed`` -- an entrypoint whose ``finally`` closed only
+    the handle would leave the source store and credential open.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+    _, _, _, handle = _patch_resolution(monkeypatch, source_store=store)
+
+    async def _fake_core(**kwargs):
+        return 0
+
+    monkeypatch.setattr(pc, "purge_document", _fake_core)
+    cred = _CredentialCloseRecorder()
+    monkeypatch.setattr("sage.storage.postgres.managed_identity.close_postgres_credential", cred)
+
+    monkeypatch.setenv("SAGE_MAINTENANCE_COMMAND", "purge_document")
+    monkeypatch.setenv("SAGE_PURGE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_PURGE_DOCUMENT_ID", "deadbeef_doc")
+
+    assert pc.main() == 0
+    assert handle.closed is True
+    assert store.closed is True
+    assert cred.calls == 1

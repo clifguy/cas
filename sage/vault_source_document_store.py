@@ -82,6 +82,15 @@ class SharePointGraphClient:
         self._http = http_client
         self._sleep = sleep
 
+    def close(self) -> None:
+        """Close the underlying HTTP client, releasing its connection pool.
+
+        Long-lived server processes keep the client open; short-lived jobs (the
+        cloud maintenance entrypoints) should close it at shutdown so its sockets
+        are released deterministically rather than on garbage collection.
+        """
+        self._http.close()
+
     # -- path construction (always site/drive-scoped) ----------------------
 
     def _drive_root(self) -> str:

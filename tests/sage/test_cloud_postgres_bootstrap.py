@@ -518,6 +518,72 @@ def test_config_from_env_reads_job_env() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _run shutdown hygiene: the short-lived job closes the cached Entra credential
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_env() -> dict[str, str]:
+    return {
+        "PG_FQDN": "psql.example.private.postgres.database.azure.com",
+        "PG_DATABASE": "sage",
+        "PG_ADMIN_USER": "id-pg-bootstrap-prod",
+        "SAGE_DB_ROLE": _SAGE_ROLE,
+        "BFF_DB_ROLE": _BFF_ROLE,
+    }
+
+
+def _patch_run_deferred(monkeypatch) -> dict[str, int]:
+    """Patch _run's deferred credential collaborators; return the close-call counter."""
+    import sage.storage.postgres.managed_identity as mi
+
+    monkeypatch.setattr(mi, "get_postgres_credential", lambda: object())
+    monkeypatch.setattr(mi, "make_token_auth_connection_class", lambda cred: object())
+    closed = {"n": 0}
+
+    async def _fake_close():
+        closed["n"] += 1
+
+    monkeypatch.setattr(mi, "close_postgres_credential", _fake_close)
+    return closed
+
+
+async def test_run_closes_credential_at_shutdown(monkeypatch):
+    """``_run`` closes the cached aio Entra credential at shutdown so the short-lived
+    bootstrap job does not leak its aiohttp session on exit.
+
+    Anti-coincidental-pass: the counter increments only if ``_run`` awaits
+    ``close_postgres_credential`` -- a run without the cleanup ``finally`` leaves it
+    at zero.
+    """
+    closed = _patch_run_deferred(monkeypatch)
+
+    async def _ok_bootstrap(connect, **kwargs):
+        return None
+
+    monkeypatch.setattr(cb, "bootstrap_cloud_postgres", _ok_bootstrap)
+
+    await cb._run(env=_bootstrap_env())
+
+    assert closed["n"] == 1
+
+
+async def test_run_closes_credential_even_when_bootstrap_raises(monkeypatch):
+    """Cleanup is ``finally``-guaranteed: a bootstrap failure still closes the
+    credential before the error propagates."""
+    closed = _patch_run_deferred(monkeypatch)
+
+    async def _boom_bootstrap(connect, **kwargs):
+        raise RuntimeError("bootstrap blew up")
+
+    monkeypatch.setattr(cb, "bootstrap_cloud_postgres", _boom_bootstrap)
+
+    with pytest.raises(RuntimeError, match="bootstrap blew up"):
+        await cb._run(env=_bootstrap_env())
+
+    assert closed["n"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Lazy-import boundary (anti-coincidental for the deployment-profile guardrails)
 # ---------------------------------------------------------------------------
 

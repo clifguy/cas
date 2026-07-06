@@ -357,6 +357,22 @@ def _client(handler, *, root_path: str = "vaults", sleep=lambda _s: None) -> Sha
     )
 
 
+def test_vsb_ds_009_close_closes_http_client():
+    """``SharePointGraphClient.close`` closes its underlying ``httpx.Client`` so a
+    short-lived job releases the connection pool at shutdown.
+
+    Anti-coincidental-pass: assert the real client reports ``is_closed`` after the
+    call -- a ``close`` that did not delegate to ``self._http.close()`` would leave
+    it open (``is_closed`` False).
+    """
+    client = _client(lambda r: httpx.Response(200, json={"value": []}))
+    assert client._http.is_closed is False
+
+    client.close()
+
+    assert client._http.is_closed is True
+
+
 def test_vsb_ds_010_client_issues_scoped_authenticated_requests():
     """Each operation issues the expected method against a site/drive-scoped path
     carrying a bearer token.

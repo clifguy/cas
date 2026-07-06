@@ -94,53 +94,64 @@ async def _run_cloud(*, command: str, vault_id: str, env: Mapping[str, str]) -> 
     source_store = build_stack_vault_source_store(stack_config, managed_identity=True)
     provisioner = build_stack_storage_provisioner(stack_config, managed_identity=True)
 
-    opened = await open_vault_stores(vault_id, source_store=source_store, provisioner=provisioner)
-    if opened is None:
-        print(f"error: vault config not found for vault {vault_id!r}", file=sys.stderr)
-        return 2
-    graph_store, content_store, audit_sink, handle = opened
-
-    reason = env.get(_ENV_REASON, "").strip() or "cloud purge (in-VNet job)"
-    apply = _truthy(env.get(_ENV_APPLY), default=False)
-    confirm = env.get(_ENV_CONFIRM, "")
-
     try:
-        if command == "purge_document":
-            return await purge_document(
+        opened = await open_vault_stores(
+            vault_id, source_store=source_store, provisioner=provisioner
+        )
+        if opened is None:
+            print(f"error: vault config not found for vault {vault_id!r}", file=sys.stderr)
+            return 2
+        graph_store, content_store, audit_sink, handle = opened
+
+        reason = env.get(_ENV_REASON, "").strip() or "cloud purge (in-VNet job)"
+        apply = _truthy(env.get(_ENV_APPLY), default=False)
+        confirm = env.get(_ENV_CONFIRM, "")
+
+        try:
+            if command == "purge_document":
+                return await purge_document(
+                    graph_store=graph_store,
+                    content_store=content_store,
+                    audit_sink=audit_sink,
+                    document_id=env[_ENV_DOCUMENT_ID].strip(),
+                    reason=reason,
+                    apply=apply,
+                    input_fn=_sequential_input_fn([confirm]),
+                )
+            if command == "purge_chain":
+                return await purge_chain(
+                    graph_store=graph_store,
+                    content_store=content_store,
+                    audit_sink=audit_sink,
+                    head_id=env[_ENV_HEAD_ID].strip(),
+                    reason=reason,
+                    edge_type=env.get(_ENV_EDGE_TYPE, "").strip() or "supersedes",
+                    apply=apply,
+                    allow_branched=_truthy(env.get(_ENV_ALLOW_BRANCHED), default=False),
+                    input_fn=_sequential_input_fn([confirm, env.get(_ENV_CONFIRM_LENGTH, "")]),
+                )
+            # purge_batch -- the selector was validated in main().
+            until_raw = env.get(_ENV_INGESTED_UNTIL, "").strip()
+            return await purge_batch(
                 graph_store=graph_store,
                 content_store=content_store,
                 audit_sink=audit_sink,
-                document_id=env[_ENV_DOCUMENT_ID].strip(),
+                since=_parse_timestamp(env[_ENV_INGESTED_SINCE].strip()),
+                until=_parse_timestamp(until_raw) if until_raw else None,
                 reason=reason,
                 apply=apply,
                 input_fn=_sequential_input_fn([confirm]),
             )
-        if command == "purge_chain":
-            return await purge_chain(
-                graph_store=graph_store,
-                content_store=content_store,
-                audit_sink=audit_sink,
-                head_id=env[_ENV_HEAD_ID].strip(),
-                reason=reason,
-                edge_type=env.get(_ENV_EDGE_TYPE, "").strip() or "supersedes",
-                apply=apply,
-                allow_branched=_truthy(env.get(_ENV_ALLOW_BRANCHED), default=False),
-                input_fn=_sequential_input_fn([confirm, env.get(_ENV_CONFIRM_LENGTH, "")]),
-            )
-        # purge_batch -- the selector was validated in main().
-        until_raw = env.get(_ENV_INGESTED_UNTIL, "").strip()
-        return await purge_batch(
-            graph_store=graph_store,
-            content_store=content_store,
-            audit_sink=audit_sink,
-            since=_parse_timestamp(env[_ENV_INGESTED_SINCE].strip()),
-            until=_parse_timestamp(until_raw) if until_raw else None,
-            reason=reason,
-            apply=apply,
-            input_fn=_sequential_input_fn([confirm]),
-        )
+        finally:
+            await handle.close()
     finally:
-        await handle.close()
+        # Short-lived job: release the source store's Graph client and the cached
+        # Entra credential's aiohttp session at shutdown, so neither surfaces an
+        # unclosed-session warning on exit. Runs even on the config-not-found path.
+        source_store.close()
+        from sage.storage.postgres.managed_identity import close_postgres_credential
+
+        await close_postgres_credential()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -12,8 +12,10 @@ Test IDs follow PGMI-NNN.
 import psycopg
 import pytest
 
+import sage.storage.postgres.managed_identity as mi
 from sage.storage.postgres.managed_identity import (
     POSTGRES_AAD_SCOPE,
+    close_postgres_credential,
     make_token_auth_connection_class,
 )
 
@@ -105,3 +107,42 @@ async def test_pgmi_003_token_failure_fails_closed(monkeypatch):
     assert POSTGRES_AAD_SCOPE in str(excinfo.value)
     assert isinstance(excinfo.value.__cause__, ClientAuthenticationError)
     assert captured["calls"] == []
+
+
+class _RecordingCredential:
+    """A cached-credential stand-in that records its (awaited) close."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_pgmi_004_close_credential_closes_and_resets(monkeypatch):
+    """``close_postgres_credential`` awaits the cached credential's ``close`` and
+    drops the module cache so a subsequent ``get_postgres_credential`` rebuilds.
+
+    Anti-coincidental-pass: assert the fake's ``closed`` flag flipped *and* the
+    module global reset to ``None`` -- a close that forgot the ``await`` would not
+    flip the flag, and one that skipped the reset would leave a closed credential
+    cached for the next caller to reuse.
+    """
+    fake = _RecordingCredential()
+    monkeypatch.setattr(mi, "_credential", fake)
+
+    await close_postgres_credential()
+
+    assert fake.closed is True
+    assert mi._credential is None
+
+
+async def test_pgmi_005_close_credential_noop_when_unbuilt(monkeypatch):
+    """With no credential ever built (the cache is ``None``),
+    ``close_postgres_credential`` is a safe no-op -- a short-lived job that never
+    opened a cloud connection can still call it unconditionally at shutdown."""
+    monkeypatch.setattr(mi, "_credential", None)
+
+    await close_postgres_credential()  # must not raise
+
+    assert mi._credential is None

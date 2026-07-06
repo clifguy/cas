@@ -7,7 +7,12 @@ The image is application-agnostic: it carries no frontend SPA, and MLX (the only
 Apple-Silicon dependency) is excluded — the cloud profile uses the hosted
 abstraction provider. The Nomic CPU embedder and the Postgres adapters are
 cross-platform and ship in the image, with the Nomic weights baked in so the
-runtime loads them with no HuggingFace egress.
+runtime loads them with no HuggingFace egress. The runtime layer also installs
+the PostgreSQL client (`pg_dump`), pinned to the Flexible Server major
+(`infra/modules/postgres.bicep`): the in-VNet maintenance job runs this image,
+and its whole-vault teardown takes a `pg_dump` schema snapshot before destroying
+anything, so an older or absent client would fail the snapshot and abort the
+teardown.
 
 ## Build
 

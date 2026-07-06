@@ -59,6 +59,27 @@ FROM ${PYTHON_IMAGE} AS runtime
 RUN groupadd --system sage \
     && useradd --system --gid sage --create-home --home-dir /home/sage sage
 
+# pg_dump for the maintenance job's snapshot-before-destroy step. The Flexible
+# Server is major 16 (infra/modules/postgres.bicep); pin the client major to it
+# so pg_dump does not refuse a newer-server dump. Debian stock ships an older
+# client, so add the PostgreSQL Global Development Group (PGDG) apt repo for the
+# 16 client. The distro codename is read from /etc/os-release so this survives a
+# base-image Debian bump. Build-time egress only (like the uv install); apt lists
+# are dropped so the runtime layer stays minimized.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    install -d /usr/share/postgresql-common/pgdg; \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-client-16; \
+    apt-get purge -y --auto-remove curl gnupg; \
+    rm -rf /var/lib/apt/lists/*
+
 # Baked at build time so a .git-less image reports its real version and
 # commit (build_info resolves SAGE_BUILD_VERSION and SAGE_BUILD_IDENTITY when
 # no live git checkout is present).

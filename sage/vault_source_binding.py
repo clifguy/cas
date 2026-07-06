@@ -154,6 +154,14 @@ class VaultSourceStore(ABC):
     def delete_config(self, vault_id: str) -> None:
         """Remove a vault's configuration declaration if present (idempotent)."""
 
+    def close(self) -> None:
+        """Release any transport the binding holds. A no-op by default.
+
+        The filesystem binding holds no client, so it inherits this no-op; the
+        document-store binding overrides it to close its Graph client. Callers can
+        always call ``close()`` on the port without branching on the backend.
+        """
+
     # -- Source-byte half ---------------------------------------------------
     #
     # The store also owns the source files retained from each ingest. These
@@ -619,6 +627,16 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
                 self._config, managed_identity=self._managed_identity
             )
         return self._client
+
+    def close(self) -> None:
+        """Close the Graph client if one was built (eagerly or on first use).
+
+        A no-op when the client was never constructed -- a lazily-bound store that
+        served no request holds no transport to release.
+        """
+        client = self._client
+        if client is not None and hasattr(client, "close"):
+            client.close()
 
     def discover(self) -> list[DiscoveredVault]:
         client = self._get_client()
