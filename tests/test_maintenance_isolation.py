@@ -3,9 +3,8 @@
 The ``sage.maintenance`` package is operator-only by construction: document
 removal is absent from the SAGE request surface by the No-Delete Invariant
 (CAS-ADR-029), so no module on that surface -- ``sage.mcp_server``,
-``sage.mcp_server_admin``, ``sage.sage_api_tools``, or anything under
-``sage.api`` -- may import any ``sage.maintenance`` module, directly or
-transitively.
+``sage.sage_api_tools``, or anything under ``sage.api`` -- may import any
+``sage.maintenance`` module, directly or transitively.
 
 This test parses every ``.py`` file under ``sage/`` with ``ast``, builds a
 module-to-imports graph, and runs BFS from each request-surface module. If any
@@ -147,10 +146,6 @@ def _assert_no_breach(graph: dict[str, set[str]], surface: str, seeds: Iterable[
 
 def test_mcp_server_does_not_reach_maintenance(import_graph: dict[str, set[str]]) -> None:
     _assert_no_breach(import_graph, "sage.mcp_server", ["sage.mcp_server"])
-
-
-def test_mcp_server_admin_does_not_reach_maintenance(import_graph: dict[str, set[str]]) -> None:
-    _assert_no_breach(import_graph, "sage.mcp_server_admin", ["sage.mcp_server_admin"])
 
 
 def test_sage_api_tools_does_not_reach_maintenance(import_graph: dict[str, set[str]]) -> None:

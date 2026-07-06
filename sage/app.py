@@ -482,8 +482,7 @@ def create_app(
     app.add_api_route("/health", _health, methods=["GET"], include_in_schema=False)
 
     # Serve the partitioned MCP surfaces (Streamable HTTP transport) for
-    # external clients. Per CAS-ADR-034 v7 the HTTP transport is
-    # partitioned like the stdio servers: /mcp = ordinary, /mcp_admin =
+    # external clients. Per CAS-ADR-034: /mcp = ordinary, /mcp_admin =
     # maintenance. Full surface = connect to both.
     _mount_partitioned_mcp(app)
 

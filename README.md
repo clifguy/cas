@@ -37,28 +37,26 @@ uv sync --extra test --extra mlx --extra dev
 
 `uv sync` creates `.venv/` and installs the project editable from the lockfile. The `dev` extra provides `ruff` and `pre-commit` (the repo uses pre-commit hooks). `pyproject.toml` carries the abstract compatibility ranges; `uv.lock` carries the exact resolved versions.
 
-The SAGE MCP surface is split across two stdio servers. The **ordinary** server (`sage.mcp_server`) is always enabled and carries the read spine plus the everyday mutation spine. The **maintenance** server (`sage.mcp_server_admin`) is opt-in and additive — it registers the vault- and stack-level administrative tools (the `admin_*` tools) and does not duplicate the read spine; a maintenance session enables both servers and reads through the ordinary one. Server enablement in the client's MCP settings is the only role declaration.
+The SAGE MCP surface is served over the MCP Streamable HTTP transport by the `python -m sage` uvicorn process (default bind `127.0.0.1:8000`) and is split across two mounts. The **ordinary** mount (`/mcp`) carries the read spine plus the everyday mutation spine. The **maintenance** mount (`/mcp_admin`) is opt-in and additive — it serves the vault- and stack-level administrative tools (the `admin_*` tools) and does not duplicate the read spine; a maintenance session connects to both mounts and reads through the ordinary one. Both mounts run in the one process, sharing a single vault registry and abstraction model; mount selection in the client's MCP settings is the only role declaration.
 
-Configure them in your MCP client (e.g. Claude Code `settings.json`). The default case needs only `sage`; add `sage_admin` when you need maintenance tools:
+Configure the mounts in your MCP client (e.g. Claude Code `settings.json`). The default case needs only `sage`; add `sage_admin` when you need maintenance tools:
 
 ```json
 {
   "mcpServers": {
     "sage": {
-      "command": ".venv/bin/python",
-      "args": ["-m", "sage.mcp_server"]
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
     },
     "sage_admin": {
-      "command": ".venv/bin/python",
-      "args": ["-m", "sage.mcp_server_admin"]
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp_admin"
     }
   }
 }
 ```
 
-Restart the client after editing files in the MCP import path — the running server holds the old import.
-
-For HTTP clients, the same partition is exposed over the MCP Streamable HTTP transport by the `python -m sage` uvicorn process: `/mcp` serves the ordinary surface and `/mcp_admin` the maintenance (`admin_*`) surface, in one process that shares a single vault registry and abstraction model. The full surface is reached by connecting to both mounts.
+Restart the uvicorn process after editing files in its import path — the running server holds the old import. If the server is down when an MCP client session starts, the SAGE tools are simply absent from that session; start the server and reconnect.
 
 ## Status
 

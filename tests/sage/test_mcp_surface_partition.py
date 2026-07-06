@@ -1,17 +1,16 @@
-"""Partition conformance for the two-server SAGE MCP surface.
+"""Partition conformance for the two-surface SAGE MCP tool roster.
 
 Gates the CAS-ADR-034 / CAS-ADR-029 split of the SAGE MCP tool surface
-across two stdio servers and (per CAS-ADR-034 v7) the matching pair of
-Streamable HTTP mounts on the SAGE app — ``/mcp`` (ordinary) and ``/mcp_admin``
-(maintenance), both built by the same partition factory in the one
-uvicorn process:
+across the pair of Streamable HTTP mounts on the SAGE app — ``/mcp``
+(ordinary) and ``/mcp_admin`` (maintenance), both built by the same
+partition factory in the one uvicorn process:
 
 - ``sage`` — ordinary surface (read spine + everyday mutation spine +
-  multi-record operations); always enabled.
+  multi-record operations).
 - ``sage_admin`` — maintenance surface (every ``admin_*`` tool); opt-in,
   additive, and does **not** duplicate the read spine.
 
-Server assignment is derived purely from each tool name's first segment
+Surface assignment is derived purely from each tool name's first segment
 (``admin_`` -> ``sage_admin``; everything else -> ``sage``). These tests
 cross-check the built partitions against ``SERVER_ASSIGNMENT`` in
 ``sage/_tool_naming.py`` — the in-code transcription of the
@@ -23,13 +22,15 @@ tautology against the production logic.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.routing import Mount, Route
 
+import sage
 import sage.mcp_server as mcp_server
-import sage.mcp_server_admin as mcp_server_admin
 from sage._tool_naming import SERVER_ASSIGNMENT
 from sage.adapters.stubs import (
     StubAbstractionProvider,
@@ -112,9 +113,9 @@ def test_partition_is_disjoint_and_exhaustive():
 def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
     """The ``/mcp`` HTTP mount advertises exactly the ordinary roster.
 
-    Revises the prior full-surface assertion: per CAS-ADR-034 v7 the HTTP
-    transport is partitioned like the stdio servers, so ``/mcp`` carries the
-    ``sage`` surface only and no ``admin_*`` tool appears there.
+    Revises the prior full-surface assertion: per CAS-ADR-034 the HTTP
+    transport is partitioned, so ``/mcp`` carries the ``sage`` surface only
+    and no ``admin_*`` tool appears there.
     """
     app = create_app(config=minimal_config)
     names = _mounted_names(app, "/mcp")
@@ -206,10 +207,21 @@ async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
         mcp_server._vaults.pop(minimal_config.vault.id, None)
 
 
-def test_sage_admin_entry_module_builds_admin_surface():
-    """The ``sage.mcp_server_admin`` entry module is wired to the maintenance partition."""
-    assert mcp_server_admin.SURFACE == "sage_admin"
-    assert _registered_names(mcp_server_admin.SURFACE) == EXPECTED_ADMIN
+def test_stdio_entry_points_absent():
+    """The stdio transport is retired: no stdio entry point remains.
+
+    Per CAS-ADR-034 the MCP surface is served exclusively over the Streamable
+    HTTP mounts. A reappearing ``run_stdio`` or ``sage/mcp_server_admin.py``
+    means the retired transport is creeping back in. Absence is probed
+    against the imported package's own ``__path__`` (not ``find_spec``,
+    which an editable-install finder can satisfy from a different checkout);
+    the ``mcp_server.py`` existence check is a spelling/location control
+    proving the probe looks at the real package directory.
+    """
+    assert not hasattr(mcp_server, "run_stdio")
+    sage_pkg_dir = Path(next(iter(sage.__path__)))
+    assert (sage_pkg_dir / "mcp_server.py").exists()
+    assert not (sage_pkg_dir / "mcp_server_admin.py").exists()
 
 
 @pytest.mark.parametrize("surface", ["sage", "sage_admin"])

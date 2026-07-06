@@ -330,6 +330,49 @@ async def test_lifespan_forwards_config_path_to_initialize_services(
     assert captured["vault_b"].get("config_path") == cp_b
 
 
+async def test_lifespan_discovers_document_store_vault_without_local_tree(
+    vault_root, minimal_vault_config_dict, monkeypatch
+):
+    """MPI-008: under the document-store binding the lifespan discovers and
+    registers a vault held only by the backing store -- no local vault
+    directory exists or is created.
+
+    Trap (anti-coincidental): discovery regressed to a filesystem walk of
+    the vault root would find nothing (the root stays empty), and a
+    ``load_config`` that demanded a filesystem locator would fail on the
+    pathless ``DiscoveredVault`` (``config_path=None``).
+    """
+    from tests.helpers.fake_graph_client import FakeGraphClient
+
+    fake = FakeGraphClient()
+    cfg = copy.deepcopy(minimal_vault_config_dict)
+    cfg["vault"]["id"] = "store_vault"
+    fake.store["store_vault"] = yaml.safe_dump(cfg).encode()
+
+    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda *args, **kwargs: fake,
+    )
+
+    captured: dict[str, dict] = {}
+
+    async def recording_init(app: FastAPI, config, **kwargs) -> None:
+        captured[config.vault.id] = kwargs
+        app.state.vault_registry[config.vault.id] = _FakeServices(config.vault.id)
+
+    monkeypatch.setattr("sage.app._initialize_vault", recording_init)
+
+    app = create_app(vault_root=vault_root)
+    async with app.router.lifespan_context(app):
+        assert set(app.state.vault_registry.keys()) == {"store_vault"}
+
+    # The pathless binding threads config_path=None through to init.
+    assert captured["store_vault"].get("config_path") is None
+    # The local vault root was never required: nothing was created under it.
+    assert list(vault_root.iterdir()) == []
+
+
 async def test_lifespan_in_memory_config_branches_omit_config_path(minimal_config, monkeypatch):
     """#15: The pre-loaded ``config=`` and ``configs=`` branches intentionally
     have no on-disk config path to forward — confirm they continue to call
