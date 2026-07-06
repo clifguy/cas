@@ -195,6 +195,14 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     ("sage_core", "read_section"): frozenset({"doc_id"}),
     ("sage_core", "list_headings"): frozenset({"doc_id"}),
     ("sage_core", "chain"): frozenset({"doc_id"}),
+    # ``content_base64`` and ``filename`` are the MCP-only in-request byte
+    # channel for ``ingest_document``: a remote-mount caller whose local file
+    # the server cannot see supplies the source bytes inline instead of a
+    # ``source`` path. The REST surface has no counterpart on the JSON
+    # ``IngestRequest`` -- HTTP callers use the discrete multipart
+    # ``/documents:batch`` upload endpoint for inline bytes -- so these are
+    # permanent MCP-side divergences by design, not pending remediation.
+    ("sage_core", "ingest_document"): frozenset({"content_base64", "filename"}),
 }
 
 

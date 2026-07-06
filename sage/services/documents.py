@@ -204,6 +204,19 @@ class DocumentsService:
         if include_content and write_to_path:
             raise ContentDeliveryConflictError()
 
+        # write_to_path names a path on the *caller's* machine. Under the cloud
+        # profile the server cannot see it, so refuse rather than writing the
+        # bytes to the container's own tree; inline delivery (include_content)
+        # is unaffected and is the sanctioned alternative. Refuse before the
+        # document lookup so the refusal never depends on the id resolving.
+        if write_to_path:
+            from sage.mcp_init import require_caller_local_filesystem
+
+            require_caller_local_filesystem(
+                "get_document with write_to_path",
+                "receive the bytes inline with include_content=true",
+            )
+
         doc = await self._store.get_document(document_id)
         if doc is None:
             raise DocumentNotFoundError(

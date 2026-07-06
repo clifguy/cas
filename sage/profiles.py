@@ -32,6 +32,30 @@ LOCAL_PROFILE = "local"
 # Postgres endpoint authenticates by managed-identity Entra token.
 CLOUD_PROFILE = "cloud"
 
+
+def caller_local_filesystem_available(profile: str) -> bool:
+    """Whether the running SAGE server can see the calling client's filesystem.
+
+    ``True`` for the local profile, where the server is co-located with the
+    caller on one machine, so a caller-supplied path resolves to a file the
+    server can actually read, write, or enumerate. ``False`` for the cloud
+    profile, where the server is a remote container: a caller-supplied path
+    would silently resolve against the container's own tree instead of the
+    caller's, so path-bearing tools refuse it in favor of the in-request byte
+    channel.
+
+    The discriminator is the deployment profile, not the transport -- a local
+    server reached over its loopback HTTP mount still shares the caller's
+    machine, so it stays ``True``. This is the caller-visible half of
+    CAS-ADR-042 constraint 1: the tool surface is profile-invariant, and the
+    per-profile byte transport below it is a binding detail. It is expressed as
+    ``!= CLOUD_PROFILE`` so it stays uniform with the cloud-gated affordances
+    that already key off ``profile == "cloud"`` (the local OS opener, the
+    store-issued download URL).
+    """
+    return profile != CLOUD_PROFILE
+
+
 # Seam name for the abstraction-provider binding -- the keystone seam
 # (CAS-ADR-042): the only hard environmental coupling, and therefore the
 # binding whose substitutability determines whether the rest of the server is

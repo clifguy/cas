@@ -1124,6 +1124,116 @@ class DownloadUrlNotAvailableError(SAGEError):
         )
 
 
+class CallerFilesystemUnavailableError(SAGEError):
+    """501: a caller-supplied local path cannot be honored under this deployment.
+
+    Under the cloud profile SAGE runs as a remote container that cannot see the
+    calling client's filesystem, so a path-bearing operation -- reading a
+    ``source`` path, enumerating a ``directory``, or writing bytes to an
+    absolute ``write_to_path`` -- would silently resolve against the container's
+    own tree instead of the caller's. Such operations are refused with this
+    structured error naming the in-request byte channel to use instead, closing
+    both the usability gap (the path is unreachable) and the container-walk
+    disclosure in one move. Mirrors the "capability unavailable in this
+    deployment" shape of :class:`LocalOpenNotAvailableError` and
+    :class:`DownloadUrlNotAvailableError` (CAS-ADR-042 constraint 1: the
+    caller-visible surface stays profile-invariant; the per-profile byte
+    transport below it is a binding detail).
+    """
+
+    def __init__(self, operation: str, remedy: str) -> None:
+        super().__init__(
+            "caller_filesystem_unavailable",
+            (
+                f"{operation} resolves a path on the SAGE server, which cannot "
+                f"see the caller's filesystem under the cloud profile; {remedy}."
+            ),
+            501,
+            {"operation": operation, "remedy": remedy},
+        )
+
+
+class InlineContentTooLargeError(SAGEError):
+    """413: inline ingest content exceeds the configured byte ceiling.
+
+    The in-request byte channel (``content_base64`` on ``ingest_document`` /
+    ``bulk_ingest_document``) is bounded so a single request cannot carry an
+    unbounded payload. Exceeding the ceiling fails with this structured error
+    naming the observed size and the bound -- never a silent truncation. The
+    ceiling is ``SAGE_MAX_INLINE_INGEST_BYTES`` (default 100 MB).
+    """
+
+    def __init__(self, size_bytes: int, max_bytes: int) -> None:
+        super().__init__(
+            "inline_content_too_large",
+            (
+                f"Inline ingest content of {size_bytes} bytes exceeds the "
+                f"inline-ingest ceiling of {max_bytes} bytes; ingest a smaller "
+                f"file or raise SAGE_MAX_INLINE_INGEST_BYTES."
+            ),
+            413,
+            {"size_bytes": size_bytes, "max_bytes": max_bytes},
+        )
+
+
+class InvalidInlineContentError(SAGEError):
+    """400: ``content_base64`` is not valid base64.
+
+    The in-request byte channel carries the file bytes base64-encoded; a payload
+    that does not decode is a caller error surfaced with this structured 400
+    rather than a generic internal error.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            "invalid_inline_content",
+            f"content_base64 is not valid base64: {reason}",
+            400,
+            {"reason": reason},
+        )
+
+
+class AmbiguousIngestSourceError(SAGEError):
+    """400: both a path ``source`` and inline ``content_base64`` were supplied.
+
+    The two are mutually exclusive delivery shapes for the same logical source:
+    a ``source`` path resolved on the SAGE server, or ``content_base64`` bytes
+    carried in the request. Supplying both is refused so the caller learns which
+    to drop, mirroring the exactly-one-of contract of
+    :class:`AmbiguousDocumentIdentifierError`.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "ambiguous_ingest_source",
+            (
+                "Supply exactly one of `source` (a path resolved on the SAGE "
+                "server) or `content_base64` (inline caller bytes); both were "
+                "provided."
+            ),
+            400,
+        )
+
+
+class MissingIngestSourceError(SAGEError):
+    """400: neither a path ``source`` nor inline ``content_base64`` was supplied.
+
+    Companion to :class:`AmbiguousIngestSourceError`: a document to ingest must
+    arrive by exactly one of the two delivery shapes, and neither was provided.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "missing_ingest_source",
+            (
+                "Supply exactly one of `source` (a path resolved on the SAGE "
+                "server) or `content_base64` (inline caller bytes); neither was "
+                "provided."
+            ),
+            400,
+        )
+
+
 class DeliveryParameterConflictError(SAGEError):
     """400: an explicit ``delivery`` mode contradicts the write_to_path argument.
 

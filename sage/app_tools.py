@@ -6,15 +6,22 @@ SAGE substrate (``sage.services.scan``, ``sage.services.batch_ingest``);
 this module only adapts the dict-shaped MCP arguments to those services.
 """
 
+import shutil
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter
 
-from sage.api.errors import SAGEError
-from sage.mcp_init import SAGEServices
+from sage.api.errors import (
+    AmbiguousIngestSourceError,
+    MissingIngestSourceError,
+    SAGEError,
+)
+from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.schemas import VaultIdStr
+from sage.services.inline_ingest import decode_inline_content, staging_name
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
 # parallel adapter declarations and rationale in
@@ -66,6 +73,11 @@ def register_app_tools(
         Error modes:
         - ``invalid_directory`` (string in response, not a SAGE error):
           ``directory`` does not exist or is not readable.
+        - ``caller_filesystem_unavailable`` (501): under the cloud profile the
+          server cannot see the caller's filesystem, so directory discovery is
+          refused rather than walking the container's own tree. Enumerate the
+          files on the caller and ingest each via ``content_base64`` on
+          ``ingest_document``.
 
         Args:
             vault_id: Target vault identifier.
@@ -83,6 +95,15 @@ def register_app_tools(
 
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            # Directory discovery walks a path on the *caller's* machine. Under
+            # the cloud profile the server cannot see it, so refuse rather than
+            # walking and content-hashing the container's own tree; the caller
+            # enumerates locally and ingests each file's bytes inline instead.
+            require_caller_local_filesystem(
+                "list_directory",
+                "enumerate the files on the caller and ingest each via "
+                "content_base64 on ingest_document",
+            )
             v = get_vault(vault_id)
             d = Path(directory.strip("'\""))
             if not d.is_dir():
@@ -185,21 +206,40 @@ def register_app_tools(
           raised before any per-file work; per-file failures accumulate in
           ``summary.errors[]`` instead.
         - ``empty_file_list`` (string in response): ``files`` was empty.
+        - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
+          file entry set both ``file_path`` and ``content_base64``, or neither;
+          each entry needs exactly one.
+        - ``caller_filesystem_unavailable`` (501): an entry gave an absolute
+          ``file_path`` under the cloud profile, where the server cannot see the
+          caller's filesystem. Supply that file's bytes via ``content_base64``.
+        - ``inline_content_too_large`` (413) / ``invalid_inline_content`` (400):
+          an entry's ``content_base64`` exceeded the inline-ingest ceiling
+          (``SAGE_MAX_INLINE_INGEST_BYTES``, default 100 MB) or was not valid
+          base64. These are batch-boundary refusals raised before any per-file
+          work, not per-file ``summary.errors[]`` entries.
 
         Args:
             vault_id: Target vault identifier.
-            files: List of file objects. Each has ``file_path`` (str, read
-                from the filesystem of the machine running the SAGE server
-                process; the retained copy lands on the vault's configured
-                source store),
+            files: List of file objects. Each carries a source by exactly one
+                delivery shape: ``file_path`` (str, read from the filesystem of
+                the machine running the SAGE server process; the retained copy
+                lands on the vault's configured source store) or
+                ``content_base64`` (str, the file's bytes base64-encoded inline
+                in the request -- the profile-invariant channel for a
+                remote-mount caller whose local file the server cannot see;
+                staged to an ephemeral server-side temp file below the tool
+                surface). An inline entry may add ``filename`` (str) to preserve
+                the extension for adapter and filename-metadata inference. Under
+                the cloud profile an absolute ``file_path`` is refused -- use
+                ``content_base64``. Each entry also carries
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
                 ``markdown``, ``docx``, ``xlsx``, ``pdf``; the vault's
                 actually-enabled subset is whatever appears under
                 ``source_adapters.adapters`` in ``admin_get_vault_config``),
                 and optional ``parsed_metadata`` (dict with ``title``,
                 ``date``, ``project``, ``codes``, ``version``, ``doc_type``).
-                When ``parsed_metadata`` is omitted, the stem of
-                ``file_path`` is used as the title and the vault's
+                When ``parsed_metadata`` is omitted, the stem of the source
+                filename is used as the title and the vault's
                 ``FilenameParser`` still runs on the remaining fields (see
                 the divergence note above; ``get_filename_metadata`` to
                 preview).
@@ -224,35 +264,76 @@ def register_app_tools(
                     "message": "No files selected for ingestion",
                 }
 
-            # Convert raw dicts to FileDescriptors
-            descriptors: list[FileDescriptor] = []
-            for f in files:
-                pm = f.get("parsed_metadata")
-                parsed = None
-                if pm:
-                    parsed = ParsedMetadataInput(
-                        title=pm.get("title", Path(f["file_path"]).stem),
-                        date=pm.get("date"),
-                        project=pm.get("project"),
-                        codes=pm.get("codes", []),
-                        version=pm.get("version"),
-                        doc_type=pm.get("doc_type"),
-                    )
-                descriptors.append(
-                    FileDescriptor(
-                        file_path=f["file_path"],
-                        source_type=f["source_type"],
-                        parsed_metadata=parsed,
-                    )
-                )
+            # Inline entries are staged to one shared temp dir below the tool
+            # surface and removed once the batch run has read them (the run is
+            # fully awaited, so cleanup after it is safe).
+            staging_dir = Path(tempfile.mkdtemp(prefix="sage-inline-bulk-"))
+            try:
+                descriptors: list[FileDescriptor] = []
+                for index, f in enumerate(files):
+                    file_path = f.get("file_path")
+                    content_base64 = f.get("content_base64")
 
-            svc = BatchIngestService()
-            result = await svc.run(
-                files=descriptors,
-                vault_services=v,
-                infer_edges=infer_edges,
-            )
-            return result.to_dict()
+                    # Each entry arrives by exactly one delivery shape: a
+                    # ``file_path`` resolved on the SAGE server, or inline
+                    # ``content_base64`` bytes carried in the request.
+                    if file_path is not None and content_base64 is not None:
+                        raise AmbiguousIngestSourceError()
+                    if file_path is None and content_base64 is None:
+                        raise MissingIngestSourceError()
+
+                    if content_base64 is not None:
+                        raw = decode_inline_content(content_base64)
+                        # One subdirectory per entry: two entries carrying the
+                        # same filename must stage to distinct paths, or the
+                        # later write would clobber the earlier bytes before
+                        # the batch runs.
+                        entry_dir = staging_dir / str(index)
+                        entry_dir.mkdir()
+                        dest = entry_dir / staging_name(f.get("filename"), f"inline_source_{index}")
+                        dest.write_bytes(raw)
+                        resolved_path = str(dest)
+                    else:
+                        # An absolute path names a file on the caller's machine;
+                        # under the cloud profile refuse it in favor of the
+                        # inline channel rather than reading the container's own
+                        # tree. A relative path is a vault-store reference the
+                        # pipeline resolves (CAS-ADR-043).
+                        if Path(file_path).is_absolute():
+                            require_caller_local_filesystem(
+                                "bulk_ingest_document with an absolute file_path",
+                                "supply each file's bytes inline via content_base64",
+                            )
+                        resolved_path = file_path
+
+                    pm = f.get("parsed_metadata")
+                    parsed = None
+                    if pm:
+                        parsed = ParsedMetadataInput(
+                            title=pm.get("title", Path(resolved_path).stem),
+                            date=pm.get("date"),
+                            project=pm.get("project"),
+                            codes=pm.get("codes", []),
+                            version=pm.get("version"),
+                            doc_type=pm.get("doc_type"),
+                        )
+                    descriptors.append(
+                        FileDescriptor(
+                            file_path=resolved_path,
+                            source_type=f["source_type"],
+                            parsed_metadata=parsed,
+                        )
+                    )
+
+                svc = BatchIngestService()
+                result = await svc.run(
+                    files=descriptors,
+                    vault_services=v,
+                    infer_edges=infer_edges,
+                )
+                return result.to_dict()
+            finally:
+                shutil.rmtree(staging_dir, ignore_errors=True)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
