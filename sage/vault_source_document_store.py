@@ -106,6 +106,17 @@ class SharePointGraphClient:
     def _content_url(self, *parts: str) -> str:
         return f"{self._item_url(*parts)}:/content"
 
+    def _drive_content_url(self, *parts: str) -> str:
+        """Content URL for a drive-root-relative path, NOT under the vault root.
+
+        Unlike :meth:`_content_url` this does not prepend ``root_path``, so it
+        addresses a sibling of the vault tree (e.g. a ``_teardown_archives`` folder)
+        that vault discovery -- which enumerates only ``root_path``'s children --
+        never sees. Still site/drive-scoped, so the site-scoped grant suffices.
+        """
+        rel = "/".join(p for p in parts if p)
+        return f"{self._drive_root()}:/{rel}:/content"
+
     # -- transport ---------------------------------------------------------
 
     def _request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
@@ -181,6 +192,66 @@ class SharePointGraphClient:
             return
         if resp.status_code >= 400:
             self._fail(resp, "delete config", f"{vault_id}/{_CONFIG_FILENAME}")
+
+    def delete_tree(self, vault_id: str) -> None:
+        """Delete the vault's whole folder tree; a missing folder is tolerated.
+
+        A ``DELETE`` on the vault folder removes it and everything under it -- the
+        config and every retained source -- server-side (Graph cascades a folder
+        delete), so the out-of-band teardown's source-tree removal is one
+        site/drive-scoped request. Idempotent: a 404 (already gone) is tolerated;
+        any other failure fails closed.
+        """
+        resp = self._request("DELETE", self._item_url(vault_id))
+        if resp.status_code == 404:
+            return
+        if resp.status_code >= 400:
+            self._fail(resp, "delete tree", vault_id)
+
+    def list_sources(self, vault_id: str) -> list[dict]:
+        """Enumerate the vault folder's files recursively (path + size).
+
+        Best-effort snapshot manifest for the out-of-band teardown: walks the vault
+        folder, recording each file's vault-relative path and byte size. An absent
+        vault folder (or subfolder) yields no entries. Ordered by path so the
+        manifest is deterministic.
+        """
+        entries: list[dict] = []
+
+        def _walk(*parts: str) -> None:
+            resp = self._request("GET", self._children_url(vault_id, *parts))
+            if resp.status_code == 404:
+                return
+            if resp.status_code >= 400:
+                self._fail(resp, "list sources", "/".join((vault_id, *parts)))
+            for child in resp.json().get("value", []):
+                child_parts = (*parts, child["name"])
+                if "folder" in child:
+                    _walk(*child_parts)
+                else:
+                    entries.append(
+                        {"path": "/".join(child_parts), "size": int(child.get("size", 0))}
+                    )
+
+        _walk()
+        return sorted(entries, key=lambda e: e["path"])
+
+    def write_archive(self, archive_path: str, data: bytes) -> None:
+        """Create or replace bytes at a drive-root-relative path (outside root_path).
+
+        Used by the teardown snapshot to write a schema dump + manifest to a
+        ``_teardown_archives/...`` folder that is a sibling of the vault tree, so the
+        archive survives the vault-folder delete and is invisible to vault
+        discovery. A direct create-or-replace upload; fails closed on a Graph error.
+        """
+        resp = self._request(
+            "PUT",
+            self._drive_content_url(*archive_path.split("/")),
+            content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if resp.status_code >= 400:
+            self._fail(resp, "write archive", archive_path)
 
     # -- source-byte operations --------------------------------------------
     #

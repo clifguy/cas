@@ -204,15 +204,16 @@ class VaultSourceStore(ABC):
         """SHA-256 of a retained source in canonical ``sha256:<hex>`` form."""
 
     @abstractmethod
-    def delete_source_tree(self, vault_id: str, storage_root: Path) -> None:
+    def delete_source_tree(self, vault_id: str, storage_root: Path | None) -> None:
         """Remove a vault's retained-source tree (idempotent).
 
         The teardown counterpart of :meth:`retain_source`: removes the whole
         source tree the store holds for one vault, used by the out-of-band
         vault-teardown path. The filesystem binding removes ``storage_root``
         (guarded against escaping the bound vault root); a binding that addresses
-        sources by vault id removes by that id. Idempotent -- an already-absent
-        tree is a no-op.
+        sources by vault id removes by that id and ignores ``storage_root`` (which
+        is ``None`` for a binding with no filesystem locator). Idempotent -- an
+        already-absent tree is a no-op.
         """
 
 
@@ -570,10 +571,14 @@ class FilesystemVaultSourceStore(VaultSourceStore):
                 digest.update(chunk)
         return f"sha256:{digest.hexdigest()}"
 
-    def delete_source_tree(self, vault_id: str, storage_root: Path) -> None:
+    def delete_source_tree(self, vault_id: str, storage_root: Path | None) -> None:
         # Guard the (config-authorable) storage_root against escaping the bound
         # vault root before the recursive delete, then remove it. Idempotent: an
-        # already-absent tree resolves fine and the rmtree is skipped.
+        # already-absent tree resolves fine and the rmtree is skipped. The
+        # teardown core only reaches this binding with a real storage_root; a None
+        # (no filesystem locator) is a no-op.
+        if storage_root is None:
+            return
         resolved = resolve_and_assert_within_root(storage_root, self._vault_root)
         if resolved.exists():
             remove_tree_tolerating_concurrent_writer(resolved)
@@ -702,13 +707,13 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         return self._get_client().hash_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
 
-    def delete_source_tree(self, vault_id: str, storage_root: Path) -> None:
-        # Deferred to the cloud document-store teardown slice (the tenant-native
-        # source-tree delete over Graph). A concrete method so the ABC still
-        # instantiates; the local-profile teardown never reaches this binding.
-        raise NotImplementedError(
-            "delete_source_tree is not implemented for the document-store vault-source binding yet."
-        )
+    def delete_source_tree(self, vault_id: str, storage_root: Path | None) -> None:
+        # The document store addresses the vault's tree by id, not by a filesystem
+        # path: a single Graph folder delete removes the whole vault folder (its
+        # config and every retained source) server-side. ``storage_root`` is unused
+        # (None under this binding, which has no filesystem locator). Idempotent --
+        # a missing folder is tolerated by the client.
+        self._get_client().delete_tree(vault_id)  # type: ignore[attr-defined]
 
     def download_url(self, vault_id: str, storage_root: Path, source_path: str) -> str | None:
         """Return a short-lived pre-authenticated download URL for a retained source.
