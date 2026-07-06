@@ -31,6 +31,7 @@ class _FakeSourceStore:
     def __init__(self):
         self.deleted_trees = []
         self.deleted_configs = []
+        self.closed = False
 
     def config_locator(self, vault_id):
         return None
@@ -40,6 +41,26 @@ class _FakeSourceStore:
 
     def delete_config(self, vault_id):
         self.deleted_configs.append(vault_id)
+
+    def close(self):
+        self.closed = True
+
+
+class _RecordingGraphClient:
+    """A SharePoint archive client stand-in that records its close (the snapshot
+    sink upload is exercised separately by ``_FakeArchiveClient``)."""
+
+    def __init__(self):
+        self.closed = False
+
+    def list_sources(self, vault_id):
+        return []
+
+    def write_archive(self, archive_path, data):
+        pass
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeProvisioner:
@@ -88,7 +109,8 @@ def test_cloud_reads_env_params(monkeypatch):
     _clear_env(monkeypatch)
     _patch_resolvers(monkeypatch)
     monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client", lambda cfg, **kw: object()
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda cfg, **kw: _RecordingGraphClient(),
     )
 
     async def _fake_pw():
@@ -194,7 +216,8 @@ def test_cloud_binds_document_store_and_cloud_provisioner(monkeypatch):
     monkeypatch.setattr("sage.vault_source_binding.build_stack_vault_source_store", _rec_source)
     monkeypatch.setattr("sage.storage_binding.build_stack_storage_provisioner", _rec_prov)
     monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client", lambda cfg, **kw: object()
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda cfg, **kw: _RecordingGraphClient(),
     )
 
     async def _fake_pw():
@@ -333,3 +356,137 @@ def test_cloud_snapshot_sink_uploads_dump_and_manifest_to_archive(tmp_path):
     assert manifest == [{"path": "imports/a.md", "size": 3}]
     assert all(key.startswith("_teardown_archives/") for key in client.archives)
     assert all("vaults/" not in key for key in client.archives)
+
+
+# ---------------------------------------------------------------------------
+# Shutdown hygiene: the short-lived job releases its HTTP/aiohttp clients
+# ---------------------------------------------------------------------------
+
+
+class _CredentialCloseRecorder:
+    """Async stand-in for ``close_postgres_credential`` that counts its calls."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self):
+        self.calls += 1
+
+
+def _patch_cleanup_probes(monkeypatch, *, source_store, archive_client, delete_vault_impl):
+    """Wire the entrypoint to recording fakes and return the credential-close recorder."""
+    _patch_resolvers(monkeypatch, source_store=source_store)
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda cfg, **kw: archive_client,
+    )
+
+    async def _fake_pw():
+        return "tok"
+
+    monkeypatch.setattr(dvc, "_cloud_dump_password", _fake_pw)
+    monkeypatch.setattr(dvc, "delete_vault", delete_vault_impl)
+    cred = _CredentialCloseRecorder()
+    monkeypatch.setattr("sage.storage.postgres.managed_identity.close_postgres_credential", cred)
+    return cred
+
+
+def test_cloud_shutdown_closes_clients_and_credential(monkeypatch):
+    """A snapshot-ON run closes, at shutdown, the archive Graph client, the source
+    store's client, and the cached Entra credential's aiohttp session.
+
+    Anti-coincidental-pass: assert all three recorders fired -- an entrypoint that
+    returned without a cleanup ``finally`` would leave the archive client, the
+    source store, and the credential all open.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+    archive = _RecordingGraphClient()
+
+    async def _ok_delete(**kwargs):
+        return 0
+
+    cred = _patch_cleanup_probes(
+        monkeypatch, source_store=store, archive_client=archive, delete_vault_impl=_ok_delete
+    )
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "true")
+
+    rc = main()
+
+    assert rc == 0
+    assert archive.closed is True
+    assert store.closed is True
+    assert cred.calls == 1
+
+
+def test_cloud_shutdown_cleanup_runs_when_teardown_raises(monkeypatch):
+    """Cleanup is ``finally``-guaranteed: an exception mid-teardown still closes all
+    three clients before it propagates.
+
+    Anti-coincidental-pass: a ``try``/``return`` without ``finally`` would skip the
+    closes on the raising path, leaving the recorders unset.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+    archive = _RecordingGraphClient()
+
+    async def _boom_delete(**kwargs):
+        raise RuntimeError("teardown blew up")
+
+    cred = _patch_cleanup_probes(
+        monkeypatch, source_store=store, archive_client=archive, delete_vault_impl=_boom_delete
+    )
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "true")
+
+    with pytest.raises(RuntimeError, match="teardown blew up"):
+        main()
+
+    assert archive.closed is True
+    assert store.closed is True
+    assert cred.calls == 1
+
+
+def test_cloud_shutdown_snapshot_off_closes_source_and_credential(monkeypatch):
+    """With snapshot OFF no archive client is built, so cleanup closes only the
+    source store and the credential -- and never tries to close a nonexistent
+    archive client.
+
+    Anti-coincidental-pass: the ``build_sharepoint_graph_client`` sentinel raises if
+    called, proving the snapshot-off path builds no archive client; the source store
+    and credential still close.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+
+    def _must_not_build(cfg, **kw):
+        raise AssertionError("archive client built with snapshot off")
+
+    async def _ok_delete(**kwargs):
+        return 0
+
+    _patch_resolvers(monkeypatch, source_store=store)
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client", _must_not_build
+    )
+    monkeypatch.setattr(dvc, "delete_vault", _ok_delete)
+    cred = _CredentialCloseRecorder()
+    monkeypatch.setattr("sage.storage.postgres.managed_identity.close_postgres_credential", cred)
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
+
+    rc = main()
+
+    assert rc == 0
+    assert store.closed is True
+    assert cred.calls == 1

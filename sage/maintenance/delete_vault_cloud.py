@@ -127,37 +127,51 @@ async def _run_cloud(
     # pushes its contents to the durable SharePoint archive before any destruction.
     snapshot_dir = Path(tempfile.mkdtemp(prefix="sage-teardown-"))
 
-    if snapshot:
-        dump_runner = _build_dump_runner(await _cloud_dump_password())
-        archive_client = build_sharepoint_graph_client(
-            stack_config.document_store, managed_identity=True
+    archive_client = None
+    try:
+        if snapshot:
+            dump_runner = _build_dump_runner(await _cloud_dump_password())
+            archive_client = build_sharepoint_graph_client(
+                stack_config.document_store, managed_identity=True
+            )
+
+            def snapshot_sink(run_dir: Path) -> None:
+                upload_teardown_archive(archive_client, vault_id, run_dir)
+        else:
+
+            def dump_runner(_argv: list[str]) -> None:
+                return None
+
+            def snapshot_sink(_run_dir: Path) -> None:
+                return None
+
+        return await delete_vault(
+            vault_id=vault_id,
+            source_store=source_store,
+            provisioner=provisioner,
+            # unused under the document-store binding (config_locator -> None)
+            vault_root=snapshot_dir,
+            snapshot_dir=snapshot_dir,
+            reason=reason,
+            apply=apply,
+            snapshot=snapshot,
+            pg_conninfo=pg_conninfo,
+            registry=None,
+            input_fn=lambda _prompt: confirm,
+            dump_runner=dump_runner,
+            snapshot_sink=snapshot_sink,
         )
+    finally:
+        # Short-lived job: release the HTTP/aiohttp clients deterministically at
+        # shutdown so they do not surface unclosed-session warnings on exit. The
+        # archive client exists only on the snapshot path; the source store's Graph
+        # client and the cached Entra credential are always built.
+        if archive_client is not None:
+            archive_client.close()
+        source_store.close()
+        from sage.storage.postgres.managed_identity import close_postgres_credential
 
-        def snapshot_sink(run_dir: Path) -> None:
-            upload_teardown_archive(archive_client, vault_id, run_dir)
-    else:
-
-        def dump_runner(_argv: list[str]) -> None:
-            return None
-
-        def snapshot_sink(_run_dir: Path) -> None:
-            return None
-
-    return await delete_vault(
-        vault_id=vault_id,
-        source_store=source_store,
-        provisioner=provisioner,
-        vault_root=snapshot_dir,  # unused under the document-store binding (config_locator -> None)
-        snapshot_dir=snapshot_dir,
-        reason=reason,
-        apply=apply,
-        snapshot=snapshot,
-        pg_conninfo=pg_conninfo,
-        registry=None,
-        input_fn=lambda _prompt: confirm,
-        dump_runner=dump_runner,
-        snapshot_sink=snapshot_sink,
-    )
+        await close_postgres_credential()
 
 
 def main(argv: list[str] | None = None) -> int:

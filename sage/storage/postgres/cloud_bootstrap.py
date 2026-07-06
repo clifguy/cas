@@ -294,6 +294,7 @@ async def _run(env: dict[str, str] | None = None) -> None:
     from psycopg.conninfo import make_conninfo
 
     from sage.storage.postgres.managed_identity import (
+        close_postgres_credential,
         get_postgres_credential,
         make_token_auth_connection_class,
     )
@@ -316,18 +317,23 @@ async def _run(env: dict[str, str] | None = None) -> None:
         async with await connection_class.connect(conninfo, autocommit=True) as conn:
             yield conn
 
-    await bootstrap_cloud_postgres(
-        connect,
-        database=cfg.database,
-        app_roles=cfg.app_roles,
-        extensions=cfg.extensions,
-    )
-    print(
-        "cloud-postgres bootstrap complete: roles "
-        f"{', '.join(cfg.app_roles)} on database {cfg.database!r} "
-        f"(principals via the {MAINTENANCE_DATABASE!r} maintenance database; "
-        f"extensions: {', '.join(cfg.extensions)})"
-    )
+    try:
+        await bootstrap_cloud_postgres(
+            connect,
+            database=cfg.database,
+            app_roles=cfg.app_roles,
+            extensions=cfg.extensions,
+        )
+        print(
+            "cloud-postgres bootstrap complete: roles "
+            f"{', '.join(cfg.app_roles)} on database {cfg.database!r} "
+            f"(principals via the {MAINTENANCE_DATABASE!r} maintenance database; "
+            f"extensions: {', '.join(cfg.extensions)})"
+        )
+    finally:
+        # Short-lived job: close the cached aio credential's aiohttp session at
+        # shutdown so it does not surface unclosed-session warnings on exit.
+        await close_postgres_credential()
 
 
 def main(argv: list[str] | None = None) -> int:

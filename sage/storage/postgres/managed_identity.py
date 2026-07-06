@@ -35,6 +35,21 @@ def get_postgres_credential():
     return _credential
 
 
+async def close_postgres_credential() -> None:
+    """Close and drop the cached aio managed-identity credential, if one was built.
+
+    The aio ``DefaultAzureCredential`` holds an ``aiohttp`` session; a long-lived
+    server keeps it for the process lifetime, but a short-lived job should close it
+    at shutdown so the session and its connector are released cleanly rather than
+    surfacing ``Unclosed client session`` warnings on interpreter exit. Idempotent
+    and a no-op when no credential was ever built.
+    """
+    global _credential
+    if _credential is not None:
+        await _credential.close()
+        _credential = None
+
+
 def make_token_auth_connection_class(credential, *, scope: str = POSTGRES_AAD_SCOPE):
     """Build an ``AsyncConnection`` subclass that authenticates with an Entra token.
 
