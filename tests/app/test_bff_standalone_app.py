@@ -581,3 +581,41 @@ async def test_app_017_stream_open_failures_map_to_504_and_502():
 
         assert response.status_code == status
         assert response.json()["code"] == code
+
+
+class _CredentialCloseRecorder:
+    """Async stand-in for ``close_postgres_credential`` that counts its calls."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> None:
+        self.calls += 1
+
+
+async def test_app_018_shutdown_closes_postgres_credential(monkeypatch):
+    """The standalone backend releases the process-wide async Entra credential at
+    shutdown. The hosted profile builds it in ``_initialize_bff_auth`` for the
+    session store's managed-identity pool, so a clean shutdown must close it or it
+    leaks its aiohttp session as an ``Unclosed client session`` warning -- the same
+    hazard the co-located SAGE app's lifespan closes.
+
+    Anti-coincidental-pass: the unmodified lifespan closes the transport and the
+    session store but never the credential; ``cred.calls`` stays 0 without the
+    wiring. ``_initialize_bff_auth`` is stubbed to a hermetic no-op (no Postgres,
+    no identity provider), so the assertion isolates the shutdown close -- which is
+    unconditional -- from whether a credential was actually built.
+    """
+
+    async def _noop_bff_auth(app, stack_cfg):
+        app.state.bff_auth = None
+
+    monkeypatch.setattr("sage.app._initialize_bff_auth", _noop_bff_auth)
+    cred = _CredentialCloseRecorder()
+    monkeypatch.setattr("sage.storage.postgres.managed_identity.close_postgres_credential", cred)
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert cred.calls == 1
