@@ -2600,6 +2600,90 @@ class TestPdfAdapter:
         assert scanned_result.metadata.get("adapter_tag_prefixes") == ["pdf:"]
 
     @requires_pdf_with_image
+    async def test_ad_ocr_offloaded_to_worker_thread(self, tmp_path, monkeypatch):
+        """OCR runs on the dedicated ``sage-ocr`` executor thread, not the event
+        loop. The blocking pre-pass must be dispatched via run_in_executor like
+        the embedding/abstraction stages, so a large scan cannot stall the loop
+        (and the container liveness probe) mid-ingest. Monkeypatching the OCR
+        step lets this run without the real toolchain."""
+        import threading
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        recorded: dict[str, threading.Thread] = {}
+
+        def _spy_ocr(source_path):
+            # Record the thread the OCR pre-pass runs on, then hand back a PDF
+            # carrying known text so the post-OCR re-extraction yields a real
+            # pdf:ocr_applied projection (proving the offload is transparent).
+            recorded["thread"] = threading.current_thread()
+            out = tmp_path / "ocr-output.pdf"
+            _make_pdf_with_pages(out, [["OCRDONE marker text"]])
+            return out
+
+        monkeypatch.setattr(pdf_adapter_mod, "_ocr_to_tempfile", _spy_ocr)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-offload.pdf")
+        result = await PdfAdapter().project(path)
+
+        worker = recorded.get("thread")
+        assert worker is not None, "the OCR pre-pass never ran"
+        assert worker is not threading.main_thread(), (
+            "OCR ran on the main thread (still on the loop)"
+        )
+        assert worker.name.startswith("sage-ocr"), (
+            f"OCR ran off the dedicated executor: thread={worker.name!r}"
+        )
+        # Offload is transparent to projection output.
+        assert "pdf:ocr_applied" in result.metadata.get("adapter_tags", [])
+        assert "OCRDONE" in result.text
+
+    @requires_pdf_with_image
+    async def test_ad_ocr_bounds_passed_to_ocrmypdf(self, tmp_path, monkeypatch):
+        """The OCR call is bounded for the cor-prod container (2 vCPU / 4 GiB
+        alongside the resident embedder): ``ocrmypdf.ocr`` receives an explicit
+        ``jobs`` worker cap and a per-page ``tesseract_timeout``. A future edit
+        that drops the bounds would let a large scan fan out unbounded."""
+        import sys
+        import types
+        from pathlib import Path
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        captured: dict[str, object] = {}
+
+        def _capturing_ocr(input_path, output_path, *args, **kwargs):
+            captured.update(kwargs)
+            Path(output_path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+        fake_ocrmypdf.ocr = _capturing_ocr
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        # First extraction (against the source) trips is_scanned; the second
+        # (against the OCR output) returns empty so we do not need a real OCR'd
+        # PDF -- the assertion is on the kwargs the OCR call received.
+        original_extract = pdf_adapter_mod._extract_from_path
+        calls = {"n": 0}
+
+        def _stub_extract(p, max_pages):
+            calls["n"] += 1
+            return original_extract(p, max_pages) if calls["n"] == 1 else ([""], [], None, 1, 1)
+
+        monkeypatch.setattr(pdf_adapter_mod, "_extract_from_path", _stub_extract)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-bounds.pdf")
+        await PdfAdapter().project(path)
+
+        assert "jobs" in captured, "ocrmypdf.ocr must receive an explicit jobs worker cap"
+        assert captured["jobs"] == 1, f"jobs not bounded to 1: {captured.get('jobs')!r}"
+        assert "tesseract_timeout" in captured, "ocrmypdf.ocr must receive a per-page timeout"
+        assert isinstance(captured["tesseract_timeout"], (int, float))
+        assert captured["tesseract_timeout"] > 0
+
+    @requires_pdf_with_image
     async def test_ad_095_scanned_pdf_without_ocrmypdf_raises(self, tmp_path, monkeypatch):
         """AD-095: Scanned PDF with ocrmypdf unimportable raises ValueError naming [ocr] extra."""
         import sys

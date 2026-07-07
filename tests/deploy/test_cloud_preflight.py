@@ -69,6 +69,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "mcp_roundtrip",
         "edge_authn_backend",
         "liveness",
+        "ocr_capability",
         "transfer_upload_gate",
         "transfer_download_gate",
         "vault_load",
@@ -411,14 +412,19 @@ _DISCOVERY_BODY = (
     '["https://login.microsoftonline.com/t/v2.0"],"scopes_supported":["Sage.Access"]}'
 )
 _VAULTS_BODY = '[{"id":"cas","name":"CAS"},{"id":"test","name":"Test"}]'
-_HEALTH_BODY = '{"status":"ok","version":"2.0.0"}'
+_HEALTH_BODY = (
+    '{"status":"ok","version":"2.0.0","ocr":{"ocrmypdf":true,"tesseract":true,"ghostscript":true}}'
+)
 _DISCOVER_OK = '{"mode":"catalog","results":[{"document":{"id":"d1"}}],"total_available":5}'
 _LOGIN_BODY = (
     '{"authorization_url":"https://login.microsoftonline.com/t/oauth2/v2.0/authorize'
     "?client_id=abc&redirect_uri=https%3A%2F%2Fcas.test.invalid%2Fapp%2Fauth%2Fcallback"
     '&response_type=code&scope=openid","state":"xyz"}'
 )
-_HTTP_CHECKS = "edge_discovery,edge_mcp_unauth,edge_authn_backend,liveness,vault_load,retrieval_pg"
+_HTTP_CHECKS = (
+    "edge_discovery,edge_mcp_unauth,edge_authn_backend,liveness,"
+    "ocr_capability,vault_load,retrieval_pg"
+)
 
 
 def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
@@ -451,6 +457,59 @@ def test_all_green_passes() -> None:
     assert proc.returncode == 0, f"healthy tenant must pass:\n{proc.stdout}\n{proc.stderr}"
     assert all(v == "PASS" for v in verdicts.values()), verdicts
     assert set(verdicts) == set(_HTTP_CHECKS.split(",")), verdicts
+
+
+@_NEEDS_RUNTIME
+def test_ocr_capability_passes_when_all_true() -> None:
+    """/health advertising ocr with all three binaries true -> PASS. This is the
+    positive case: the cloud image ships the OCR toolchain and the container
+    computed the capability at startup."""
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="liveness,ocr_capability"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("ocr_capability") == "PASS", f"{verdicts}\n{proc.stdout}"
+
+
+@_NEEDS_RUNTIME
+def test_ocr_capability_fails_on_stale_image() -> None:
+    """THE anti-coincidental control: a stale image predating the ocr field
+    returns a healthy 2-field /health (status+version) with NO ocr block. That
+    must FAIL -- a blanket 200 must not read as green. This is exactly the
+    regression the gate exists to catch (the image that shipped without OCR)."""
+
+    def stale(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return 200, '{"status":"ok","version":"2.0.0"}', {}
+        return _green(method, path, body)
+
+    with serve(stale) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="liveness,ocr_capability"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("liveness") == "PASS", "the process is still up"
+    assert verdicts.get("ocr_capability") == "FAIL", f"{verdicts}\n{proc.stdout}"
+
+
+@_NEEDS_RUNTIME
+def test_ocr_capability_fails_on_missing_binary() -> None:
+    """/health advertises the ocr block but a binary is false (image built with
+    the ocr Python extra but without the tesseract apt package) -> FAIL. Proves
+    the check reads the per-binary booleans, not merely the block's presence."""
+
+    def missing_tesseract(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return (
+                200,
+                '{"status":"ok","version":"2.0.0",'
+                '"ocr":{"ocrmypdf":true,"tesseract":false,"ghostscript":true}}',
+                {},
+            )
+        return _green(method, path, body)
+
+    with serve(missing_tesseract) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="liveness,ocr_capability"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("ocr_capability") == "FAIL", f"{verdicts}\n{proc.stdout}"
+    assert "tesseract" in _detail(proc.stdout, "ocr_capability").lower()
 
 
 @_NEEDS_RUNTIME

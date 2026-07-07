@@ -21,7 +21,7 @@ Storage is a single binding (CAS-ADR-042): **Postgres** (with pgvector) is the s
 
 ## Environment & setup
 
-Python venv at `.venv/`; always invoke `.venv/bin/python`, never the system Python. Install with `uv sync --extra test --extra mlx --extra dev` (needs `uv` — `brew install uv`); this creates `.venv/` and installs the project editable from the committed `uv.lock`, so local, CI, and the deployed server resolve byte-identical builds. The `dev` extra provides `ruff` and `pre-commit`.
+Python venv at `.venv/`; always invoke `.venv/bin/python`, never the system Python. Install with `uv sync --extra test --extra mlx --extra dev --extra ocr` (needs `uv` — `brew install uv`; OCR needs `brew install tesseract ghostscript`); this creates `.venv/` and installs the project editable from the committed `uv.lock`, so local, CI, and the deployed server resolve byte-identical builds. The `dev` extra provides `ruff` and `pre-commit`.
 
 Dependencies are lockfile-pinned: `pyproject.toml` carries abstract compatibility ranges; `uv.lock` carries the exact resolved versions and is the source of truth. Move versions deliberately with `uv lock --upgrade` (everything) or `uv lock --upgrade-package <name>` (one package), then `uv sync`, run the suite, and commit the updated lock. `uv lock --check` verifies the lock against `pyproject.toml`; CI installs with `uv sync --locked`, so a drifted lock fails the build.
 

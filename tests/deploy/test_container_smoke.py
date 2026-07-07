@@ -38,6 +38,8 @@ _PLATFORM = os.environ.get("SAGE_TEST_DOCKER_PLATFORM", "linux/amd64")
 
 #: Exits 1 iff mlx is importable, so a leaked Apple-Silicon dep fails SMK-004.
 _MLX_PROBE = "import importlib.util,sys; sys.exit(1 if importlib.util.find_spec('mlx') else 0)"
+#: Exits 0 iff ocrmypdf is importable (the [ocr] extra is installed in the image).
+_OCRMYPDF_PROBE = "import importlib.util as u,sys; sys.exit(0 if u.find_spec('ocrmypdf') else 1)"
 #: Constructs the real embedder; raises if the baked weights are absent offline.
 _EMBED_PROBE = (
     "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()"
@@ -119,6 +121,43 @@ def test_smk_005_pg_dump_on_path(image: str) -> None:
     assert "(PostgreSQL) 16" in out, f"pg_dump is not the expected major 16: {out!r}"
 
 
+def test_smk_006_ocr_toolchain_on_path(image: str) -> None:
+    # The scanned-PDF OCR pre-pass imports ocrmypdf and shells out to tesseract
+    # and ghostscript; a toolchain-less image raises at ingest and surfaces a
+    # generic internal_error. This is the runtime proof the structural Dockerfile
+    # gate cannot give: the [ocr] extra is importable and the binaries actually
+    # resolve on PATH in the built image (the analog of the pg_dump smoke above).
+    for binary in ("tesseract", "gs"):
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                *_platform_args(),
+                "--entrypoint",
+                binary,
+                image,
+                "--version",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_platform_args(),
+            "--entrypoint",
+            "python",
+            image,
+            "-c",
+            _OCRMYPDF_PROBE,
+        ],
+        check=True,
+    )
+
+
 def test_smk_002_nomic_weights_load_offline(image: str) -> None:
     # If weights were not baked, offline construction raises -> non-zero exit.
     subprocess.run(
@@ -162,8 +201,15 @@ def test_smk_001_boots_health_green_version_baked(image: str) -> None:
             time.sleep(2)
         # Host reachability via the published port proves the non-loopback
         # (0.0.0.0) bind; the exact body proves health-green and the baked stamp.
+        # The ocr block being all-true proves the built image actually ships the
+        # OCR toolchain (the [ocr] extra + tesseract/ghostscript on PATH) -- a
+        # toolchain-less image reports false here and reds this gate at build.
         assert body is not None, "/health never became reachable on the published port"
-        assert body == {"status": "ok", "version": _VERSION}
+        assert body == {
+            "status": "ok",
+            "version": _VERSION,
+            "ocr": {"ocrmypdf": True, "tesseract": True, "ghostscript": True},
+        }
         # A baked version of 0.0.0/unknown means build_info resolved no v* tag at
         # image-build time and fell back to the setuptools-scm sentinel -- the mode
         # a tagless out-of-repo build degrades to. Refuse it explicitly so a
