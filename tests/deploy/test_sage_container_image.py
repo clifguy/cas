@@ -76,6 +76,28 @@ def test_pg_client_installed_in_runtime_stage() -> None:
     )
 
 
+def test_installs_ocr_extra() -> None:
+    # The scanned-PDF OCR pre-pass needs the ocrmypdf Python package, which lives
+    # in the optional [ocr] extra. A base-only sync ships an image that raises on
+    # the lazy `import ocrmypdf` and surfaces a generic internal_error.
+    text = _dockerfile_text()
+    assert "--extra ocr" in text, (
+        "the runtime image must `uv sync` the [ocr] extra so ocrmypdf is present"
+    )
+
+
+def test_installs_ocr_binaries_in_runtime_stage() -> None:
+    # ocrmypdf shells out to tesseract (OCR engine + English data) and ghostscript
+    # (gs). They must be apt-installed in the RUNTIME stage: a builder-only install
+    # never reaches the shipped image (the runtime copies the venv/source, not the
+    # builder's apt binaries), exactly like the postgresql-client gate above.
+    runtime = _runtime_stage_text()
+    for pkg in ("tesseract-ocr", "tesseract-ocr-eng", "ghostscript"):
+        assert pkg in runtime, (
+            f"{pkg} is not installed in the runtime stage; scanned-PDF OCR would fail on cloud"
+        )
+
+
 def test_runtime_nonroot_user() -> None:
     text = _dockerfile_text()
     assert "useradd" in text, "no non-root user is created"

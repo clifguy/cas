@@ -587,6 +587,35 @@ check_liveness() {
   return 1
 }
 
+check_ocr_capability() {
+  # The running SAGE container probes its OCR toolchain at startup (ocrmypdf
+  # importable + tesseract/ghostscript on PATH) and advertises the result on the
+  # store-free /health envelope, so this out-of-container harness can confirm the
+  # deployed image actually ships OCR. All three must report true. A stale image
+  # predating the ocr field returns a healthy 200 *without* it -- the greps then
+  # miss and the check FAILs. That is the anti-coincidental control: the field's
+  # presence (and per-binary truth) is the container's real probe, not a blanket
+  # 200. This is the gate that would have caught the toolchain-less image.
+  http_get "$SAGE_BASE_URL/health"
+  if [ "$HTTP_CODE" != 200 ]; then
+    DETAIL_MSG="/health not 200 (code=$HTTP_CODE); cannot read OCR capability"
+    return 1
+  fi
+  local missing=""
+  printf '%s' "$HTTP_BODY" | grep -qE '"ocrmypdf"[[:space:]]*:[[:space:]]*true' \
+    || missing="$missing ocrmypdf"
+  printf '%s' "$HTTP_BODY" | grep -qE '"tesseract"[[:space:]]*:[[:space:]]*true' \
+    || missing="$missing tesseract"
+  printf '%s' "$HTTP_BODY" | grep -qE '"ghostscript"[[:space:]]*:[[:space:]]*true' \
+    || missing="$missing ghostscript"
+  if [ -n "$missing" ]; then
+    DETAIL_MSG="/health OCR capability missing or false:$missing (image lacks the OCR toolchain or predates the ocr field)"
+    return 1
+  fi
+  DETAIL_MSG="/health advertises OCR toolchain: ocrmypdf+tesseract+ghostscript all true"
+  return 0
+}
+
 check_transfer_upload_gate() {
   # PUT /upload with a garbage token must come back as the app's structured
   # 410 transfer_token_invalid: that single status proves the dedicated APIM
@@ -876,6 +905,9 @@ register edge_authn_backend check_edge_authn_backend \
 register liveness check_liveness \
   "/health 200 status=ok" \
   "store-free endpoint; credited only as process-up, not store/vault readiness"
+register ocr_capability check_ocr_capability \
+  "/health advertises ocr with ocrmypdf, tesseract, and ghostscript all true (the cloud image ships the OCR toolchain)" \
+  "a stale image predating the ocr field, or any binary false, FAILs -- the field is the container's real find_spec/which probe, not a canned 200"
 register transfer_upload_gate check_transfer_upload_gate \
   "tokenless PUT /upload answers the app's 410 transfer_token_invalid" \
   "410 (not 401/404) proves the dedicated operation + no-base policy + app token gate together"

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from sage.app import create_app
 from sage.build_info import RELEASE_VERSION
+from sage.capabilities import ocr_capability
 
 
 def _client() -> TestClient:
@@ -24,8 +25,25 @@ def test_hlt_001_health_returns_ok_envelope() -> None:
     resp = _client().get("/health")
     assert resp.status_code == 200
     # Strict whole-body equality: a route returning a different shape, or a
-    # different 200 route masking a missing /health, fails here.
-    assert resp.json() == {"status": "ok", "version": RELEASE_VERSION}
+    # different 200 route masking a missing /health, fails here. The OCR
+    # capability block is computed from the same process, so comparing against a
+    # fresh ``ocr_capability()`` keeps this environment-independent (it does not
+    # hardcode which binaries are present).
+    assert resp.json() == {
+        "status": "ok",
+        "version": RELEASE_VERSION,
+        "ocr": ocr_capability(),
+    }
+
+
+def test_hlt_004_health_advertises_ocr_capability() -> None:
+    # The cloud preflight reads this block to verify the running image ships the
+    # OCR toolchain. The three keys must be present and boolean-valued.
+    body = _client().get("/health").json()
+    assert "ocr" in body, "/health must advertise the ocr capability block"
+    ocr = body["ocr"]
+    assert set(ocr) == {"ocrmypdf", "tesseract", "ghostscript"}
+    assert all(isinstance(v, bool) for v in ocr.values())
 
 
 def test_hlt_002_health_reports_build_info_version() -> None:

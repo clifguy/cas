@@ -33,11 +33,12 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /opt/sage
 
-# Dependency layer (cached unless the lock changes): base runtime deps only --
-# no test/mlx/dev/ocr extras. On Linux, torch resolves to the CPU wheel index
-# pinned in pyproject's [tool.uv.sources].
+# Dependency layer (cached unless the lock changes): base runtime deps plus the
+# [ocr] extra (ocrmypdf) so the scanned-PDF pre-pass runs on the cloud profile
+# with the same code path as local. Test/mlx/dev extras stay out. On Linux,
+# torch resolves to the CPU wheel index pinned in pyproject's [tool.uv.sources].
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project --extra ocr
 
 # Project source. app/backend rides along only because sage/app.py imports the
 # in-process application-backend router today; that COPY drops out once the
@@ -45,7 +46,7 @@ RUN uv sync --locked --no-dev --no-install-project
 # server and is omitted; the frontend SPA (app/src, app/dist) is never copied.
 COPY sage/ ./sage/
 COPY app/backend/ ./app/backend/
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --extra ocr
 
 # Pre-bake the Nomic embedder weights so the runtime loads them with no
 # HuggingFace egress at first vault init.
@@ -59,13 +60,19 @@ FROM ${PYTHON_IMAGE} AS runtime
 RUN groupadd --system sage \
     && useradd --system --gid sage --create-home --home-dir /home/sage sage
 
-# pg_dump for the maintenance job's snapshot-before-destroy step. The Flexible
-# Server is major 16 (infra/modules/postgres.bicep); pin the client major to it
-# so pg_dump does not refuse a newer-server dump. Debian stock ships an older
-# client, so add the PostgreSQL Global Development Group (PGDG) apt repo for the
-# 16 client. The distro codename is read from /etc/os-release so this survives a
-# base-image Debian bump. Build-time egress only (like the uv install); apt lists
-# are dropped so the runtime layer stays minimized.
+# System binaries for the runtime image:
+#   * pg_dump for the maintenance job's snapshot-before-destroy step. The
+#     Flexible Server is major 16 (infra/modules/postgres.bicep); pin the client
+#     major to it so pg_dump does not refuse a newer-server dump. Debian stock
+#     ships an older client, so add the PostgreSQL Global Development Group
+#     (PGDG) apt repo for the 16 client.
+#   * tesseract (+ English data) and ghostscript for the scanned-PDF OCR
+#     pre-pass, which ocrmypdf drives as child processes. These come from Debian
+#     main, so they need no extra repo; installing them here (runtime stage,
+#     before USER sage) is what gives the cloud image local↔cloud OCR parity.
+# The distro codename is read from /etc/os-release so this survives a base-image
+# Debian bump. Build-time egress only (like the uv install); apt lists are
+# dropped so the runtime layer stays minimized.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
@@ -76,7 +83,8 @@ RUN set -eux; \
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends postgresql-client-16; \
+    apt-get install -y --no-install-recommends \
+      postgresql-client-16 tesseract-ocr tesseract-ocr-eng ghostscript; \
     apt-get purge -y --auto-remove curl gnupg; \
     rm -rf /var/lib/apt/lists/*
 

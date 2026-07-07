@@ -15,6 +15,7 @@ Computes SHA-256 of raw PDF bytes for content_hash (the source PDF is
 the document's identity, not the OCR derivative).
 """
 
+import asyncio
 import contextlib
 import hashlib
 import io
@@ -23,6 +24,7 @@ import os
 import re
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +36,14 @@ from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapt
 _DEFAULT_MAX_PAGES = 1000
 _OUTLINE_MAX_DEPTH = 10
 _TITLE_MAX_LINE_CHARS = 120
+
+# OCR resource bounds for the cloud container (2 vCPU / 4 GiB shared with the
+# resident embedder). ocrmypdf fans tesseract/ghostscript out across `jobs`
+# child processes; pinning it to one keeps peak memory within the budget on the
+# single replica, and the per-page tesseract timeout caps the worst case so a
+# pathological page cannot stall the pipeline unbounded.
+_OCR_JOBS = 1
+_OCR_TESSERACT_TIMEOUT_SECONDS = 180.0
 
 # Path prefixes leptonica (via tesseract/ocrmypdf) cannot read on macOS: it
 # rewrites a leading ``/tmp`` in an image path to the Darwin per-user temp dir
@@ -325,11 +335,50 @@ def _ocr_to_tempfile(source_path: Path) -> Path:
                 language="eng",
                 progress_bar=False,
                 quiet=True,
+                jobs=_OCR_JOBS,
+                tesseract_timeout=_OCR_TESSERACT_TIMEOUT_SECONDS,
             )
         except Exception as e:
             Path(out.name).unlink(missing_ok=True)
             raise ValueError(f"OCR failed for {source_path}: {e}") from e
     return Path(out.name)
+
+
+_OCR_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _get_ocr_executor() -> ThreadPoolExecutor:
+    """Return the process-wide OCR executor, creating it on first use.
+
+    OCR is blocking (ocrmypdf drives tesseract and ghostscript), so it runs off
+    the event loop on a dedicated thread -- the same offload idiom the embedding
+    and abstraction stages use. ``max_workers=1`` serializes OCR: ocrmypdf keeps
+    process-global plugin state that is unsafe to run concurrently, and one
+    worker bounds peak memory on the single cloud replica. Module-level (not
+    per-adapter) so it is shared across adapter instances and lives for the
+    process, never leaking a thread per projection.
+    """
+    global _OCR_EXECUTOR
+    if _OCR_EXECUTOR is None:
+        _OCR_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-ocr")
+    return _OCR_EXECUTOR
+
+
+def _ocr_and_extract(
+    source_path: Path, max_pages: int
+) -> tuple[list[str], list[tuple[int, str, int]], str | None, int, int]:
+    """OCR ``source_path`` and re-extract from the OCR output, in one call.
+
+    Runs the whole blocking scanned-branch sequence -- OCR to a tempfile, then
+    the pypdf/pdfplumber re-extraction from that tempfile -- so ``project`` can
+    dispatch it to the OCR executor as a single unit, with the tempfile's
+    lifecycle contained here (unlinked whether extraction succeeds or raises).
+    """
+    ocr_path = _ocr_to_tempfile(source_path)
+    try:
+        return _extract_from_path(ocr_path, max_pages)
+    finally:
+        ocr_path.unlink(missing_ok=True)
 
 
 class PdfAdapter(SourceAdapter):
@@ -369,17 +418,19 @@ class PdfAdapter(SourceAdapter):
         headings: list[HeadingNode]
 
         if is_scanned:
-            ocr_path = _ocr_to_tempfile(source_path)
-            try:
-                (
-                    page_texts,
-                    outline_entries,
-                    info_title,
-                    _ocr_page_count,
-                    _ocr_pages_extracted,
-                ) = _extract_from_path(ocr_path, max_pages)
-            finally:
-                ocr_path.unlink(missing_ok=True)
+            # OCR is blocking; dispatch it (and the post-OCR re-extraction) to
+            # the dedicated OCR thread so a large scan never stalls the event
+            # loop -- and with it the container liveness probe -- mid-ingest.
+            loop = asyncio.get_running_loop()
+            (
+                page_texts,
+                outline_entries,
+                info_title,
+                _ocr_page_count,
+                _ocr_pages_extracted,
+            ) = await loop.run_in_executor(
+                _get_ocr_executor(), _ocr_and_extract, source_path, max_pages
+            )
 
             total_chars = sum(len(p.strip()) for p in page_texts)
             if total_chars > 0:

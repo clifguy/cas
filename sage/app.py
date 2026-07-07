@@ -37,6 +37,7 @@ from sage.api.routers import (
 )
 from sage.auth import AuthMiddleware
 from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
+from sage.capabilities import ocr_capability
 from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_init import (
     initialize_services,
@@ -479,8 +480,16 @@ def create_app(
     # readiness and answers before vaults finish loading. Kept out of the
     # documented OpenAPI surface via include_in_schema=False; the conformance
     # gate's _INFRA_PATHS allowlist covers the route.
-    async def _health() -> dict[str, str]:
-        return {"status": "ok", "version": RELEASE_VERSION}
+    #
+    # The envelope also advertises the OCR toolchain's runtime availability so
+    # an out-of-container probe (the cloud preflight, over public HTTPS) can
+    # catch an image built without it. The capability is probed once here, at
+    # app construction, and captured in the closure, so the probe stays store-
+    # free and O(1) per request (no re-probe, no import cost on the hot path).
+    ocr_caps = ocr_capability()
+
+    async def _health() -> dict[str, object]:
+        return {"status": "ok", "version": RELEASE_VERSION, "ocr": ocr_caps}
 
     app.add_api_route("/health", _health, methods=["GET"], include_in_schema=False)
 
