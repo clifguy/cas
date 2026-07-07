@@ -257,6 +257,26 @@ async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
     )
 
 
+async def _teardown_bff_auth(app: FastAPI) -> None:
+    """Symmetric teardown for ``_initialize_bff_auth`` at lifespan shutdown.
+
+    Closes the externalized session store (if one was built) and then releases the
+    process-wide managed-identity credential. The credential close is
+    unconditional -- it no-ops when none was built (the local profile) -- and is
+    done last so no in-flight Postgres connection still needs it. Keeping this in
+    the profile-aware application core, alongside the build, is also what lets the
+    standalone backend reach it without importing the cloud managed-identity module
+    directly (that import is fenced off from server-entry modules).
+    """
+    bff_auth = getattr(app.state, "bff_auth", None)
+    if bff_auth is not None:
+        await bff_auth.store.close()
+    app.state.bff_auth = None
+    from sage.storage.postgres.managed_identity import close_postgres_credential
+
+    await close_postgres_credential()
+
+
 def create_app(
     vault_root: Path | None = None,
     config: VaultConfig | None = None,
@@ -369,6 +389,11 @@ def create_app(
                 vault_source_store = resolve_stack_vault_source_store(
                     stack_cfg, vault_root=vault_root
                 )
+                # Retain the store so the lifespan shutdown can release its
+                # transport: the cloud document_store binding's SharePoint httpx
+                # client (built lazily on the first discover() below). The local
+                # filesystem binding's close() is an inherited no-op.
+                app.state.vault_source_store = vault_source_store
                 for discovered in vault_source_store.discover():
                     try:
                         vc = vault_source_store.load_config(discovered)
@@ -430,10 +455,20 @@ def create_app(
                 services.close_timing()
                 await services.close_storage()
             app.state.vault_registry.clear()
-            bff_auth = getattr(app.state, "bff_auth", None)
-            if bff_auth is not None:
-                await bff_auth.store.close()
-            app.state.bff_auth = None
+            # Release the vault-source store's transport (the cloud document_store
+            # binding's SharePoint httpx client); an inherited no-op on the local
+            # filesystem binding, and absent entirely when no vault_root was
+            # resolved (the config=/configs= branches).
+            vault_source_store = getattr(app.state, "vault_source_store", None)
+            if vault_source_store is not None:
+                vault_source_store.close()
+            app.state.vault_source_store = None
+            # Close the BFF session store and release the process-wide async Entra
+            # credential LAST: every Postgres consumer above (per-vault storage
+            # pools and the BFF session store) is now drained, so no in-flight
+            # connection needs the credential when it is closed. A no-op on the
+            # local profile, which never builds the aio credential.
+            await _teardown_bff_auth(app)
             set_stack_config(None)
             set_vault_root(None)
 

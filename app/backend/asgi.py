@@ -83,7 +83,7 @@ def create_bff_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        from sage.app import _initialize_bff_auth
+        from sage.app import _initialize_bff_auth, _teardown_bff_auth
 
         await _initialize_bff_auth(app, stack_cfg)
         await _assemble_transport(app, stack_cfg)
@@ -93,10 +93,12 @@ def create_bff_app(
         if aclose is not None:
             await aclose()
         app.state.sage_transport = None
-        bff_auth = getattr(app.state, "bff_auth", None)
-        if bff_auth is not None:
-            await bff_auth.store.close()
-        app.state.bff_auth = None
+        # Close the BFF session store and release the process-wide async Entra
+        # credential (built by _initialize_bff_auth for the session store's
+        # managed-identity pool). Delegated to the profile-aware application core
+        # so this server entry does not import the cloud managed-identity module
+        # directly; a no-op on the local profile.
+        await _teardown_bff_auth(app)
 
     app = FastAPI(
         title="CAS Application Backend",
