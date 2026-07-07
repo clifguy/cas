@@ -175,6 +175,13 @@ KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
     # identifier. Plain str is correct.
     ("StackDocumentStoreConfig", "site_id"): "Microsoft Graph site id, not a SAGE document id",
     ("StackDocumentStoreConfig", "drive_id"): "Microsoft Graph drive id, not a SAGE document id",
+    # The transfer channel's public identifier is an opaque server-minted
+    # handle round-tripped verbatim between a recipe and the transfer
+    # endpoints; it is not a SAGE document id, and the DocumentIdStr alias
+    # would impose SAGE's id grammar on it. Plain str is correct.
+    ("UploadRecipeItem", "transfer_id"): "opaque transfer handle, not a SAGE document id",
+    ("DownloadRecipe", "transfer_id"): "opaque transfer handle, not a SAGE document id",
+    ("TransferUploadResult", "transfer_id"): "opaque transfer handle, not a SAGE document id",
 }
 
 

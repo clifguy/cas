@@ -2301,6 +2301,129 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /upload:
+    put:
+      operationId: transfer_upload
+      summary: Deliver a pending transfer's bytes against a one-time upload token.
+      description: >-
+        The byte-delivery leg of a caller-local ingest against a deployment
+        that cannot see the caller's filesystem. The originating call mints a
+        short-lived one-time token and returns an upload recipe; the caller's
+        environment sends the raw file body here with the token, and the
+        bytes are staged server-side until the authenticated completion call
+        redeems them. The token is the sole credential on this path -- the
+        route carries no bearer authentication -- and admits exactly one
+        successful delivery. The body is streamed to staging under an
+        incremental byte ceiling, so an oversize upload aborts mid-stream
+        without filling the container's disk.
+      tags: [Transfer]
+      parameters:
+        - name: X-Upload-Token
+          in: header
+          required: true
+          description: >-
+            The one-time upload token from the recipe. Presented on exactly
+            one successful delivery; any later presentation is refused.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: The raw source file bytes, unencoded.
+      responses:
+        "201":
+          description: >-
+            Bytes staged. The receipt carries the size and digest of what the
+            server received, so the sender can verify the delivery against
+            the local file before issuing the completion call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferUploadResult"
+        "409":
+          description: >-
+            `transfer_token_already_used`: this transfer already holds staged
+            bytes awaiting completion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: >-
+            `transfer_token_invalid`: the token names no redeemable pending
+            transfer (unknown, expired, already used, or scoped to a
+            different direction).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: >-
+            `transfer_content_too_large`: the body exceeded the transfer
+            ceiling and the delivery was aborted; the partial staging file is
+            removed and the token stays retryable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /download/{transfer_id}:
+    get:
+      operationId: transfer_download
+      summary: Fetch a pending transfer's bytes against a one-time download token.
+      description: >-
+        The byte-fetch leg of a caller-local export against a deployment that
+        cannot write to the caller's filesystem. The originating call mints a
+        short-lived one-time token and returns a download recipe carrying
+        this URL together with the exact size and digest of the bytes it
+        serves; the caller's environment fetches here with the token and
+        verifies the result locally. The token is the sole credential on this
+        path -- the route carries no bearer authentication -- and is consumed
+        at redemption, so a failed fetch is retried by re-issuing the
+        originating call, never by replaying the token. Bytes stream chunked
+        from the vault-source store, so no hop holds the whole file.
+      tags: [Transfer]
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          description: Public identifier of the pending transfer, from the recipe URL.
+          schema:
+            type: string
+        - name: X-Download-Token
+          in: header
+          required: true
+          description: >-
+            The one-time download token from the recipe. Consumed at
+            redemption; a second presentation is refused.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The transfer's bytes, streamed.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: >-
+                  The raw bytes. The concrete Content-Type is derived from
+                  the transfer's filename and may be more specific than
+                  octet-stream.
+        "410":
+          description: >-
+            `transfer_token_invalid`: the token names no redeemable pending
+            transfer (unknown, expired, already redeemed, or scoped to a
+            different direction).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 
 # =============================================================================
 # Components
@@ -6500,6 +6623,197 @@ components:
             chains). Present only when warnings were produced.
 
     # -------------------------------------------------------------------------
+    # Transfer (caller-local byte channel)
+    # -------------------------------------------------------------------------
+
+    UploadRecipe:
+      type: object
+      description: >-
+        Returned in place of an ingest result when the call named a
+        caller-local source the server cannot read. Carries everything the
+        caller's environment needs to deliver the bytes to the upload
+        endpoint, after which the originating call is repeated with the
+        transfer token to complete the ingest. Every URL and token is used
+        verbatim; nothing is composed caller-side.
+      required:
+        - status
+        - method
+        - token_header
+        - expires_at
+        - max_bytes
+        - uploads
+      properties:
+        status:
+          type: string
+          enum: [upload_required]
+          description: >-
+            Recipe discriminator. Always `upload_required`: the call cannot
+            read the caller-local source, so the caller's environment must
+            deliver the bytes to the upload endpoint before repeating the
+            call with the transfer token.
+        method:
+          type: string
+          enum: [PUT]
+          description: HTTP method of the byte-delivery leg. Always `PUT`.
+        token_header:
+          type: string
+          enum: [X-Upload-Token]
+          description: >-
+            Name of the request header that carries the upload token on the
+            byte-delivery leg. Always `X-Upload-Token`.
+        expires_at:
+          type: string
+          format: date-time
+          description: >-
+            When the minted tokens lapse. The whole exchange (byte delivery
+            plus the completion call) must finish before this instant; after
+            it, re-issue the originating call to mint fresh tokens.
+        max_bytes:
+          type: integer
+          description: >-
+            Ceiling on a single delivered body in bytes; a larger upload is
+            aborted mid-stream.
+        uploads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UploadRecipeItem"
+          description: >-
+            One byte-delivery leg per caller-local source file. Deliver each
+            file with its own token to its own URL; a single-file call
+            carries exactly one entry.
+
+    UploadRecipeItem:
+      type: object
+      description: >-
+        One byte-delivery leg of an upload recipe: which caller-local file to
+        send, where, and with what one-time token.
+      required:
+        - source
+        - transfer_id
+        - token
+        - url
+      properties:
+        source:
+          type: string
+          description: >-
+            The caller-local source path this leg delivers, echoed verbatim
+            from the originating call.
+        transfer_id:
+          type: string
+          description: >-
+            Public identifier of the pending transfer; carried in error
+            envelopes and the delivery receipt so legs can be correlated.
+        token:
+          type: string
+          description: >-
+            One-time upload token for this leg, presented in the token
+            header. Valid for exactly one successful delivery.
+        url:
+          type: string
+          description: Complete URL of the byte-delivery leg, used verbatim.
+
+    DownloadRecipe:
+      type: object
+      description: >-
+        Returned in place of a written file when the call named a
+        caller-local target the server cannot write. Carries everything the
+        caller's environment needs to fetch the bytes from the download
+        endpoint and verify them locally against the promised size and
+        digest. Every URL and token is used verbatim; nothing is composed
+        caller-side.
+      required:
+        - status
+        - method
+        - url
+        - token
+        - token_header
+        - transfer_id
+        - expires_at
+        - content_hash
+        - content_size
+        - filename
+        - write_to_path
+      properties:
+        status:
+          type: string
+          enum: [download_required]
+          description: >-
+            Recipe discriminator. Always `download_required`: the call cannot
+            write to the caller-local target, so the caller's environment
+            must fetch the bytes from the download endpoint.
+        method:
+          type: string
+          enum: [GET]
+          description: HTTP method of the byte-fetch leg. Always `GET`.
+        url:
+          type: string
+          description: Complete URL of the byte-fetch leg, used verbatim.
+        token:
+          type: string
+          description: >-
+            One-time download token, presented in the token header. Consumed
+            at redemption; a failed fetch is retried by re-issuing the
+            originating call.
+        token_header:
+          type: string
+          enum: [X-Download-Token]
+          description: >-
+            Name of the request header that carries the download token on the
+            byte-fetch leg. Always `X-Download-Token`.
+        transfer_id:
+          type: string
+          description: Public identifier of the pending transfer.
+        expires_at:
+          type: string
+          format: date-time
+          description: >-
+            When the token lapses; after it, re-issue the originating call to
+            mint a fresh one.
+        content_hash:
+          type: string
+          description: >-
+            SHA-256 of the bytes the fetch will deliver, in canonical
+            `sha256:<hex>` form; verify the fetched file against it.
+        content_size:
+          type: integer
+          description: Exact byte count the fetch will deliver.
+        filename:
+          type: string
+          description: >-
+            Basename of the delivered content, suitable as a local filename
+            when the requested target is a directory.
+        write_to_path:
+          type: string
+          description: >-
+            The caller-local target path echoed verbatim from the originating
+            call; the fetched bytes belong there.
+
+    TransferUploadResult:
+      type: object
+      description: >-
+        Receipt for a completed byte delivery: what the server staged, so the
+        sender can verify the delivery against the local file before issuing
+        the completion call.
+      required:
+        - transfer_id
+        - size
+        - sha256
+      properties:
+        transfer_id:
+          type: string
+          description: >-
+            Public identifier of the pending transfer the bytes were staged
+            against.
+        size:
+          type: integer
+          description: Byte count received and staged.
+        sha256:
+          type: string
+          description: >-
+            SHA-256 hex digest of the staged bytes, bare hex to compare
+            directly against a local checksum of the source file.
+
+    # -------------------------------------------------------------------------
     # Error Response
     # -------------------------------------------------------------------------
 
@@ -6553,3 +6867,5 @@ tags:
     description: Tier 2 inferred edges awaiting review (list, confirm, dismiss).
   - name: Pending Metadata
     description: Documents with unconfirmed extracted metadata.
+  - name: Transfer
+    description: Token-gated byte legs of the caller-local transfer channel.

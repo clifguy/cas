@@ -671,3 +671,43 @@ def test_container_resource_parse_controls() -> None:
     assert _container_cpu_memory("cpu: json('2.0')\nmemory: '4Gi'") == (2.0, 4.0)
     assert _container_cpu_memory("cpu: json('0.5')\nmemory: '1Gi'") == (0.5, 1.0)
     assert _container_cpu_memory("name: 'sage'") == (None, None)
+
+
+def test_sage_config_carries_transfer_public_base_url() -> None:
+    """The assembled SAGE cloud config declares the transfer channel's public
+    base URL bound to the edge hostname param, so minted recipes embed the URL
+    the caller's environment can actually reach (the APIM custom domain), not
+    the container's internal FQDN.
+
+    Anti-coincidental-pass: assert both the ``transfer`` block and the
+    hostname binding -- a config carrying the block with a hardcoded or
+    internal host would mint recipes whose byte legs dead-end.
+    """
+    raw = CONTAINER_APPS.read_text(encoding="utf-8")
+    keys = _config_keys(raw)
+    assert "transfer" in keys, "the SAGE config must carry a transfer block"
+    # Searched in the raw text: the line-comment stripper would truncate the
+    # config line at the `//` inside the URL scheme.
+    assert re.search(r"'  public_base_url:\s*https://\$\{sageHostname\}'", raw), (
+        "transfer.public_base_url must bind https://${sageHostname} (the edge domain)"
+    )
+
+
+def test_sage_scale_pinned_to_single_replica() -> None:
+    """The SAGE app pins ``maxReplicas: 1``: the process holds in-memory state
+    that does not survive horizontal scale (document locks, the ingestion
+    queue, pending transfer tokens), so a scale-out would silently split that
+    state across replicas.
+
+    Anti-coincidental-pass: exactly one ``maxReplicas`` pin must exist -- the
+    BFF externalizes its session state to the relational store and stays
+    scalable, so pinning both apps (or neither) is a drift in opposite
+    directions.
+    """
+    text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
+    pins = re.findall(r"maxReplicas:\s*1", text)
+    assert len(pins) == 1, f"exactly the SAGE app must pin maxReplicas: 1 (found {len(pins)} pins)"
+    sage_block = _sage_app_block(text)
+    assert re.search(r"maxReplicas:\s*1", sage_block), (
+        "the maxReplicas: 1 pin must live in the SAGE app's scale block"
+    )

@@ -21,6 +21,7 @@ from sage.services.maintenance import MaintenanceService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.staging_edges import StagingEdgesService
+from sage.services.transfer import TransferStore, get_transfer_store
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
@@ -180,3 +181,13 @@ async def get_maintenance_service(
             "always supplies one (CAS-ADR-029)."
         )
     return services.maintenance_service
+
+
+def get_transfer_service() -> TransferStore:
+    """Resolve the process-wide transfer store behind the transfer endpoints.
+
+    The store is process-scoped, not vault-scoped -- the vault binding
+    travels inside each one-time token -- so this provider takes no
+    ``vault_id`` and resolves the singleton directly.
+    """
+    return get_transfer_store()

@@ -195,14 +195,15 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     ("sage_core", "read_section"): frozenset({"doc_id"}),
     ("sage_core", "list_headings"): frozenset({"doc_id"}),
     ("sage_core", "chain"): frozenset({"doc_id"}),
-    # ``content_base64`` and ``filename`` are the MCP-only in-request byte
-    # channel for ``ingest_document``: a remote-mount caller whose local file
-    # the server cannot see supplies the source bytes inline instead of a
-    # ``source`` path. The REST surface has no counterpart on the JSON
-    # ``IngestRequest`` -- HTTP callers use the discrete multipart
-    # ``/documents:batch`` upload endpoint for inline bytes -- so these are
-    # permanent MCP-side divergences by design, not pending remediation.
-    ("sage_core", "ingest_document"): frozenset({"content_base64", "filename"}),
+    # ``transfer_token`` is the MCP-only completion handle of the two-phase
+    # caller-local ingest: when the server cannot read the caller's
+    # filesystem, an absolute ``source`` returns an upload recipe, the
+    # caller's environment delivers the bytes to the transfer endpoint, and
+    # the same tool is called back with the recipe's token. The REST surface
+    # has no counterpart on the JSON ``IngestRequest`` -- HTTP callers use
+    # the discrete multipart ``/documents:batch`` upload endpoint -- so this
+    # is a permanent MCP-side divergence by design, not pending remediation.
+    ("sage_core", "ingest_document"): frozenset({"transfer_token"}),
 }
 
 
@@ -272,6 +273,27 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
         "source bytes as a raw download, chunked from the vault-source store so "
         "no hop holds the whole file. Agents read source bytes via "
         "get_document/read_projection, and a raw byte stream has no MCP "
+        "tool-result equivalent, so there is no MCP tool."
+    ),
+    (
+        "sage_core",
+        "transfer_upload",
+    ): (
+        "HTTP-only byte leg of the caller-local transfer channel: the raw "
+        "PUT body the caller's environment delivers against a one-time "
+        "upload token from a recipe. The MCP side of the exchange is the "
+        "recipe-minting and completion behavior on the ingest tools; a raw "
+        "byte stream has no MCP tool-result equivalent, so there is no MCP "
+        "tool."
+    ),
+    (
+        "sage_core",
+        "transfer_download",
+    ): (
+        "HTTP-only byte leg of the caller-local transfer channel: streams a "
+        "pending transfer's bytes against a one-time download token from a "
+        "recipe. The MCP side of the exchange is the recipe-minting behavior "
+        "on get_document/read_projection; a raw byte stream has no MCP "
         "tool-result equivalent, so there is no MCP tool."
     ),
     (

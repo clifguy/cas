@@ -1,28 +1,33 @@
-"""Caller-filesystem confinement + inline-ingest byte channel tests.
+"""Caller-filesystem confinement + transfer-recipe tests (cloud profile).
 
 Under the cloud profile the SAGE server is a remote container that cannot see
-the calling client's filesystem. These tests prove the two halves of the fix:
+the calling client's filesystem. These tests prove the two halves of the
+caller-local byte channel at the tool surface:
 
-- Confinement (B*): every path-bearing tool refuses a caller-supplied local
-  path with the structured ``caller_filesystem_unavailable`` error instead of
-  reading, writing, or enumerating the container's own tree.
-- Inline byte channel (A*): ``ingest_document`` / ``bulk_ingest_document``
-  accept the source bytes inline (``content_base64``), staged below the tool
-  surface, so a remote-mount caller ingests with the same call shape.
+- Recipes (B*): the path-bearing tools that move file bytes -- ingest with an
+  absolute ``source``, ``get_document``/``read_projection`` with
+  ``write_to_path`` -- return a structured transfer recipe instead of touching
+  the container's own tree. The caller's environment executes the recipe
+  against the token-gated transfer endpoints, and (for uploads) the same tool
+  is called back with the transfer token to complete the ingest.
+- Confinement: ``list_directory`` stays refused (the caller enumerates
+  locally), and the inline export modes keep working (B2/B5) -- the recipe
+  branch must not widen or narrow the T-series confinement perimeter.
 
-The co-located (local) profile stays unchanged: path forms still work (L*), and
-the existing ``test_mcp_profile_invariance`` suite is the broader local-profile
-regression. The new axis is the deployment profile, pinned per-test by the
-``_profile`` context manager. Each test runs once per vault-source backend via
-the parameterized ``vault_source_backend`` fixture (from conftest); store
-resolution stays on that backend because the vault-source builder's env override
-outranks the profile, so ``_profile("cloud")`` changes only the caller-visible
-confinement behavior, not which store answers.
+The co-located (local) profile stays unchanged: path forms still work (L*),
+and the existing ``test_mcp_profile_invariance`` suite is the broader
+local-profile regression. The new axis is the deployment profile, pinned
+per-test by the ``_profile`` context manager (which also pins the transfer
+coordinates recipes are minted from). Each test runs once per vault-source
+backend via the parameterized ``vault_source_backend`` fixture (from
+conftest); store resolution stays on that backend because the vault-source
+builder's env override outranks the profile, so ``_profile("cloud")`` changes
+only the caller-visible behavior, not which store answers.
 """
 
 import asyncio
-import base64
 import contextlib
+import hashlib
 import json
 
 import pytest
@@ -43,9 +48,13 @@ from sage.mcp_server import (
     read_projection,
 )
 from sage.profiles import caller_local_filesystem_available
+from sage.services.transfer import get_transfer_store, reset_transfer_store
 from tests.sage.conftest import initialize_services_for_test
 
 _VAULT_ID = "test_vault"
+
+# Pinned public base for recipe minting; recipes must embed it verbatim.
+_BASE = "https://sage.test.example"
 
 
 def _parse(result: str | dict) -> dict:
@@ -54,24 +63,33 @@ def _parse(result: str | dict) -> dict:
     return json.loads(result)
 
 
-def _b64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
-
-
 @contextlib.contextmanager
-def _profile(name: str):
+def _profile(name: str, transfer_base: str | None = None):
     """Pin the active deployment profile for the duration of the block.
 
     Sets the module-level stack config to the named profile and restores the
     prior value on exit, so a test can drive the cloud-profile code paths
-    without standing up a cloud stack.
+    without standing up a cloud stack. ``transfer_base``, when given, pins
+    the transfer channel's public base URL so recipe minting has coordinates;
+    leaving it unset exercises the not-configured refusal.
     """
     saved = _mcp_init._stack_config
-    _mcp_init.set_stack_config(SageCoreConfig(profile=name))
+    kwargs: dict = {"profile": name}
+    if transfer_base is not None:
+        kwargs["transfer"] = {"public_base_url": transfer_base}
+    _mcp_init.set_stack_config(SageCoreConfig(**kwargs))
     try:
         yield
     finally:
         _mcp_init.set_stack_config(saved)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_transfer_store():
+    """Isolate the process-wide transfer store per test."""
+    reset_transfer_store()
+    yield
+    reset_transfer_store()
 
 
 @pytest.fixture
@@ -110,6 +128,18 @@ async def _ingest_local_file(tmp_path, name: str, body: str) -> tuple:
     return src, result
 
 
+def _stage_upload(token: str, body: bytes) -> None:
+    """Deliver bytes for a minted upload the way the upload endpoint does.
+
+    The HTTP leg itself is covered by the endpoint tests; here the store is
+    driven directly so the tool-surface tests stay transport-free.
+    """
+    store = get_transfer_store()
+    entry = store.begin_upload(token)
+    entry.staged_path.write_bytes(body)
+    store.finish_upload(entry.transfer_id, size=len(body), sha256=hashlib.sha256(body).hexdigest())
+
+
 # ---------------------------------------------------------------------------
 # CFV-pred: the profile predicate
 # ---------------------------------------------------------------------------
@@ -120,175 +150,133 @@ def test_cfv_pred_predicate_maps_profile_to_visibility():
     profile and False under the cloud profile.
 
     Anti-coincidental: a predicate hardcoded to a constant fails one of the two
-    legs. The guard tests below assert refusal *under cloud*; this test is what
-    ties that refusal to the real profile.
+    legs. The recipe and confinement tests below assert behavior *under cloud*;
+    this test is what ties that behavior to the real profile.
     """
     assert caller_local_filesystem_available("local") is True
     assert caller_local_filesystem_available("cloud") is False
 
 
 # ---------------------------------------------------------------------------
-# A*: the inline-bytes byte channel (cloud profile)
+# B*: recipes from the path-bearing byte movers (cloud profile)
 # ---------------------------------------------------------------------------
 
 
-async def test_a1_inline_ingest_under_cloud(confined_vault):
-    """A1: under the cloud profile, ingest a caller-local file by passing its
-    bytes inline; it lands byte-identical on the active backend."""
-    _services, config, handle = confined_vault
-    body = b"# Cloud inline\n\nBody carried in the request."
+async def test_b1_ingest_absolute_source_returns_upload_recipe(confined_vault, tmp_path):
+    """B1: an absolute caller ``source`` path under the cloud profile returns
+    a structured upload recipe -- not an error, not a container read.
 
-    with _profile("cloud"):
+    The file exists on this (co-located test) machine, so without the profile
+    gate the ingest would *succeed*; the recipe is what proves the gate fires.
+    Field assertions pin the executable half of the recipe (URL embeds the
+    pinned base verbatim, header name, per-file token) so a refusal envelope
+    or a normal ingest response cannot pass.
+    """
+    _services, _config, _handle = confined_vault
+    src = tmp_path / "caller_inbox" / "confined.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Confined\n\nOn the caller machine.")
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+
+    assert "error" not in result, result
+    assert result["status"] == "upload_required"
+    assert result["method"] == "PUT"
+    assert result["token_header"] == "X-Upload-Token"
+    assert result["expires_at"]
+    assert len(result["uploads"]) == 1
+    item = result["uploads"][0]
+    assert item["source"] == str(src)
+    assert item["url"] == f"{_BASE}/upload"
+    assert item["token"].startswith(item["transfer_id"] + ".")
+    # No document was created by the mint.
+    assert "id" not in result
+
+
+async def test_b1b_ingest_completion_with_transfer_token(confined_vault, tmp_path):
+    """B1b: after the byte leg, calling ``ingest_document`` back with the
+    recipe's token completes a normal ingest of the staged bytes.
+
+    Anti-coincidental: the retained bytes must equal the caller file's bytes
+    -- a completion that ingested an empty or wrong staged file fails on
+    content, not just on status.
+    """
+    _services, config, handle = confined_vault
+    body = b"# B1b\n\nDelivered through the transfer channel."
+    src = tmp_path / "caller_inbox" / "b1b_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+        token = recipe["uploads"][0]["token"]
+        _stage_upload(token, body)
         result = _parse(
-            await ingest_document(
-                _VAULT_ID,
-                source_type="markdown",
-                content_base64=_b64(body),
-                filename="cloud_note.md",
-            )
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=token)
         )
 
     assert "error" not in result, result
-    assert result["source_path"] == "imports/cloud_note.md"
-    retained = handle.retained_bytes(config.vault.storage_root, "imports/cloud_note.md")
-    assert retained == body  # ingested bytes are the input bytes, not a coincidence
+    assert result["source_path"] == "imports/b1b_note.md"
+    retained = handle.retained_bytes(config.vault.storage_root, "imports/b1b_note.md")
+    assert retained == body
     if handle.fake_client is not None:
         assert handle.fake_client.source_uploads == 1
 
 
-async def test_a2_inline_bulk_ingest_under_cloud(confined_vault):
-    """A2: under the cloud profile, bulk-ingest caller-local files by passing
-    each file's bytes inline."""
-    _services, config, handle = confined_vault
-    alpha = b"# Alpha inline\n\nFirst."
-    beta = b"# Beta inline\n\nSecond."
-
-    with _profile("cloud"):
-        result = _parse(
-            await bulk_ingest_document(
-                _VAULT_ID,
-                [
-                    {
-                        "content_base64": _b64(alpha),
-                        "filename": "alpha_in.md",
-                        "source_type": "markdown",
-                    },
-                    {
-                        "content_base64": _b64(beta),
-                        "filename": "beta_in.md",
-                        "source_type": "markdown",
-                    },
-                ],
-            )
-        )
-
-    assert result.get("error_count") == 0, result
-    assert result["documents_created"]["new"] == 2
-    assert handle.retained_bytes(config.vault.storage_root, "imports/alpha_in.md") == alpha
-    assert handle.retained_bytes(config.vault.storage_root, "imports/beta_in.md") == beta
-
-
-async def test_a2b_inline_bulk_same_filename_entries_stage_independently(confined_vault):
-    """A2b: two inline entries carrying the same filename ingest independently
-    -- per-entry staging must keep their bytes distinct.
-
-    Anti-coincidental: with a shared flat staging directory the second entry's
-    write clobbers the first's bytes before the batch runs, so both descriptors
-    hash identically and the batch reports a duplicate-content error instead of
-    two clean documents.
-    """
+async def test_b1c_completion_token_failures(confined_vault, tmp_path):
+    """B1c: the completion leg's failure modes are structured and distinct --
+    an unredeemable token is ``transfer_token_invalid`` (whether unknown or
+    already consumed), and a valid token whose bytes never arrived is
+    ``transfer_not_staged`` (the token stays valid)."""
     _services, _config, _handle = confined_vault
-    alpha = b"# Same name\n\nFirst distinct body."
-    beta = b"# Same name\n\nSecond distinct body."
+    body = b"# B1c\n"
+    src = tmp_path / "caller_inbox" / "b1c_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
 
-    with _profile("cloud"):
-        result = _parse(
-            await bulk_ingest_document(
-                _VAULT_ID,
-                [
-                    {
-                        "content_base64": _b64(alpha),
-                        "filename": "same_name.md",
-                        "source_type": "markdown",
-                    },
-                    {
-                        "content_base64": _b64(beta),
-                        "filename": "same_name.md",
-                        "source_type": "markdown",
-                    },
-                ],
-            )
-        )
-
-    assert result.get("error_count") == 0, result
-    assert result["documents_created"]["new"] == 2
-
-
-async def test_a1b_inline_ingest_degenerate_filename_falls_back(confined_vault):
-    """A1b: a degenerate inline ``filename`` (a directory reference like
-    ``".."``) falls back to the synthetic staging name and ingests cleanly,
-    rather than resolving to the staging directory itself and surfacing an
-    unstructured OS error."""
-    _services, _config, _handle = confined_vault
-
-    with _profile("cloud"):
-        result = _parse(
+    with _profile("cloud", transfer_base=_BASE):
+        unknown = _parse(
             await ingest_document(
-                _VAULT_ID,
-                source_type="markdown",
-                content_base64=_b64(b"# Degenerate\n\nName was a dot-dot."),
-                filename="..",
+                _VAULT_ID, source_type="markdown", transfer_token="nope.not-a-token"
             )
         )
+        assert unknown["error"] == "transfer_token_invalid", unknown
 
-    assert "error" not in result, result
-    assert result["source_path"] == "imports/inline_source"
+        recipe = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+        token = recipe["uploads"][0]["token"]
 
-
-async def test_a3_inline_ingest_bound_is_a_real_threshold(confined_vault, monkeypatch):
-    """A3: with the inline-ingest ceiling pinned tiny, an under-bound payload
-    ingests and an over-bound payload is refused with a structured error --
-    never truncated.
-
-    Anti-coincidental: asserting both sides proves the bound is a threshold, not
-    an always-error.
-    """
-    _services, _config, _handle = confined_vault
-    monkeypatch.setenv("SAGE_MAX_INLINE_INGEST_BYTES", "32")
-
-    under = b"# ok\n"  # 5 bytes decoded, <= 32
-    over = b"# " + b"x" * 200  # > 32 bytes decoded
-
-    with _profile("cloud"):
-        ok = _parse(
-            await ingest_document(
-                _VAULT_ID, source_type="markdown", content_base64=_b64(under), filename="under.md"
-            )
+        premature = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=token)
         )
-        too_big = _parse(
-            await ingest_document(
-                _VAULT_ID, source_type="markdown", content_base64=_b64(over), filename="over.md"
-            )
+        assert premature["error"] == "transfer_not_staged", premature
+
+        _stage_upload(token, body)
+        done = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=token)
         )
+        assert "error" not in done, done
 
-    assert "error" not in ok, ok
-    assert too_big["error"] == "inline_content_too_large", too_big
+        replay = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=token)
+        )
+        assert replay["error"] == "transfer_token_invalid", replay
 
 
-async def test_a4_inline_ingest_exactly_one_source(confined_vault, tmp_path):
-    """A4: supplying both a path source and inline content, or neither, is a
-    structured validation error."""
+async def test_b1d_ingest_exactly_one_source(confined_vault, tmp_path):
+    """B1d: supplying both a path source and a transfer token, or neither, is
+    a structured validation error."""
     _services, _config, _handle = confined_vault
     src = tmp_path / "either.md"
     src.write_text("# Either\n")
 
-    with _profile("cloud"):
+    with _profile("cloud", transfer_base=_BASE):
         both = _parse(
             await ingest_document(
                 _VAULT_ID,
                 source=str(src),
                 source_type="markdown",
-                content_base64=_b64(b"# both\n"),
+                transfer_token="x.y",
             )
         )
         neither = _parse(await ingest_document(_VAULT_ID, source_type="markdown"))
@@ -297,30 +285,19 @@ async def test_a4_inline_ingest_exactly_one_source(confined_vault, tmp_path):
     assert neither["error"] == "missing_ingest_source", neither
 
 
-# ---------------------------------------------------------------------------
-# B*: confinement of the path-bearing tools (cloud profile)
-# ---------------------------------------------------------------------------
-
-
-async def test_b1_ingest_absolute_path_refused_under_cloud(confined_vault, tmp_path):
-    """B1: an absolute caller ``source`` path is refused under the cloud profile
-    -- naming the inline mechanism -- rather than read from the container.
-
-    The file exists on this (co-located test) machine, so without the guard the
-    ingest would *succeed*; the refusal is what proves the guard fires.
-    """
+async def test_b1e_mint_without_public_base_url_fails_loud(confined_vault, tmp_path):
+    """B1e: under the cloud profile with no ``transfer.public_base_url``
+    declared, minting fails with a structured config error rather than
+    emitting a recipe whose URL cannot work."""
     _services, _config, _handle = confined_vault
-    src = tmp_path / "caller_inbox" / "confined.md"
+    src = tmp_path / "caller_inbox" / "unconfigured.md"
     src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("# Confined\n\nOn the caller machine.")
+    src.write_text("# Unconfigured\n")
 
     with _profile("cloud"):
         result = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
 
-    assert result["error"] == "caller_filesystem_unavailable", result
-    # Not the original symptom (a container-path miss), and not a silent success
-    # reading the container tree.
-    assert result["error"] != "source_file_not_found"
+    assert result["error"] == "transfer_endpoint_not_configured", result
 
 
 async def test_b2_list_directory_refused_under_cloud(confined_vault, tmp_path):
@@ -330,61 +307,90 @@ async def test_b2_list_directory_refused_under_cloud(confined_vault, tmp_path):
     A real file is seeded in the scanned directory: without the guard,
     ``list_directory`` would enumerate it. The refusal (no ``files`` key) proves
     the walk never happened -- the direct analogue of the ``list_directory('/')``
-    disclosure probe.
+    disclosure probe. Discovery has no recipe: the caller enumerates its own
+    filesystem locally.
     """
     _services, _config, _handle = confined_vault
     scan_dir = tmp_path / "caller_scan"
     scan_dir.mkdir()
     (scan_dir / "seed_note.md").write_text("# Seed\n\nWould be enumerated without the guard.")
 
-    with _profile("cloud"):
+    with _profile("cloud", transfer_base=_BASE):
         result = _parse(await list_directory(_VAULT_ID, str(scan_dir)))
 
     assert result["error"] == "caller_filesystem_unavailable", result
     assert "files" not in result  # the walk never ran
 
 
-async def test_b3_get_document_write_to_path_refused_under_cloud(confined_vault, tmp_path):
-    """B3: ``get_document(write_to_path=...)`` is refused under the cloud
-    profile, and no file is written to the container."""
+async def test_b3_get_document_write_to_path_returns_download_recipe(confined_vault, tmp_path):
+    """B3: ``get_document(write_to_path=...)`` under the cloud profile returns
+    a download recipe, and no file is written to the container.
+
+    Anti-coincidental: the recipe's ``content_hash``/``content_size`` must
+    equal the independently computed hash and size of the ingested source
+    bytes -- a hardcoded or wrong-document promise fails here, and the skill's
+    local verification downstream would inherit the same guarantee.
+    """
     _services, _config, _handle = confined_vault
-    _src, ingest = await _ingest_local_file(tmp_path, "b3_note.md", "# B3\n\nExport me.")
+    body = "# B3\n\nExport me."
+    src, ingest = await _ingest_local_file(tmp_path, "b3_note.md", body)
     target = tmp_path / "caller_out" / "b3_export.md"
     target.parent.mkdir()
 
-    with _profile("cloud"):
+    with _profile("cloud", transfer_base=_BASE):
         result = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path=str(target)))
 
-    assert result["error"] == "caller_filesystem_unavailable", result
+    assert "error" not in result, result
+    assert result["status"] == "download_required"
+    assert result["method"] == "GET"
+    assert result["token_header"] == "X-Download-Token"
+    assert result["url"] == f"{_BASE}/download/{result['transfer_id']}"
+    assert result["write_to_path"] == str(target)
+    assert result["filename"] == "b3_note.md"
+    raw = src.read_bytes()
+    assert result["content_size"] == len(raw)
+    assert result["content_hash"] == "sha256:" + hashlib.sha256(raw).hexdigest()
     assert not target.exists()  # nothing written to the container
 
 
-async def test_b4_read_projection_write_to_path_refused_under_cloud(confined_vault, tmp_path):
-    """B4: ``read_projection(write_to_path=...)`` is refused under the cloud
-    profile, and no file is written to the container."""
+async def test_b4_read_projection_write_to_path_returns_download_recipe(confined_vault, tmp_path):
+    """B4: ``read_projection(write_to_path=...)`` under the cloud profile
+    returns a download recipe whose redemption yields the projection text, and
+    no file is written to the container."""
     _services, _config, _handle = confined_vault
     _src, ingest = await _ingest_local_file(tmp_path, "b4_note.md", "# B4\n\nProjection body.")
+    await asyncio.sleep(0.5)  # let the projection land
     target = tmp_path / "caller_out" / "b4_projection.md"
     target.parent.mkdir()
 
-    with _profile("cloud"):
+    with _profile("cloud", transfer_base=_BASE):
         result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path=str(target)))
 
-    assert result["error"] == "caller_filesystem_unavailable", result
-    assert not target.exists()
+        assert "error" not in result, result
+        assert result["status"] == "download_required"
+        assert result["url"] == f"{_BASE}/download/{result['transfer_id']}"
+        assert not target.exists()
+
+        # Redeem at the store seam (the HTTP leg is covered by the endpoint
+        # tests): the spooled bytes are the projection text the recipe promised.
+        entry = get_transfer_store().redeem_download(result["token"])
+        spooled = entry.spool_path.read_bytes()
+        entry.cleanup()
+
+    assert len(spooled) == result["content_size"]
+    assert "Projection body." in spooled.decode("utf-8")
 
 
 async def test_b5_inline_export_still_works_under_cloud(confined_vault, tmp_path):
     """B5: the inline export modes -- ``include_content`` and inline
     ``read_projection`` -- keep returning bytes under the cloud profile. They
-    are the sanctioned alternative to ``write_to_path`` and must not be
-    over-refused by the confinement guard."""
+    remain available alongside the recipe path and must not be over-gated."""
     _services, _config, _handle = confined_vault
     body = "# B5\n\nInline export body."
     _src, ingest = await _ingest_local_file(tmp_path, "b5_note.md", body)
     await asyncio.sleep(0.5)  # let the projection land
 
-    with _profile("cloud"):
+    with _profile("cloud", transfer_base=_BASE):
         doc = _parse(await get_document(_VAULT_ID, ingest["id"], include_content=True))
         projection = _parse(await read_projection(_VAULT_ID, ingest["id"]))
 
@@ -394,18 +400,76 @@ async def test_b5_inline_export_still_works_under_cloud(confined_vault, tmp_path
     assert projection.get("projection_text") is not None
 
 
+async def test_b6_bulk_ingest_returns_per_file_tokens_and_completes(confined_vault, tmp_path):
+    """B6: ``bulk_ingest_document`` with caller-local absolute paths mints one
+    upload leg per file in a single recipe; completion entries carrying the
+    tokens ingest the staged bytes.
+
+    Two files share a basename deliberately: per-entry staging must keep their
+    bytes distinct (the same property the shared-staging clobber bug violated),
+    so both documents land and neither is a duplicate of the other.
+    """
+    _services, _config, _handle = confined_vault
+    alpha = b"# Same name\n\nFirst distinct body."
+    beta = b"# Same name\n\nSecond distinct body."
+    dir_a = tmp_path / "caller_a"
+    dir_b = tmp_path / "caller_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    (dir_a / "same_name.md").write_bytes(alpha)
+    (dir_b / "same_name.md").write_bytes(beta)
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {"file_path": str(dir_a / "same_name.md"), "source_type": "markdown"},
+                    {"file_path": str(dir_b / "same_name.md"), "source_type": "markdown"},
+                ],
+            )
+        )
+
+        assert "error" not in recipe, recipe
+        assert recipe["status"] == "upload_required"
+        assert len(recipe["uploads"]) == 2
+        tokens = [item["token"] for item in recipe["uploads"]]
+        assert tokens[0] != tokens[1]
+        assert [item["source"] for item in recipe["uploads"]] == [
+            str(dir_a / "same_name.md"),
+            str(dir_b / "same_name.md"),
+        ]
+
+        _stage_upload(tokens[0], alpha)
+        _stage_upload(tokens[1], beta)
+
+        result = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {"transfer_token": tokens[0], "source_type": "markdown"},
+                    {"transfer_token": tokens[1], "source_type": "markdown"},
+                ],
+            )
+        )
+
+    assert result.get("error_count") == 0, result
+    assert result["documents_created"]["new"] == 2
+
+
 # ---------------------------------------------------------------------------
 # L: the local profile is unchanged (paired counterpart to B1/B2)
 # ---------------------------------------------------------------------------
 
 
 async def test_l_local_profile_allows_path_forms(confined_vault, tmp_path):
-    """L: under the local profile the path forms still work -- the confinement
-    guard must not fire when the server shares the caller's machine (including
-    the local-over-HTTP topology).
+    """L: under the local profile the path forms still work -- neither the
+    confinement guard nor the recipe branch may fire when the server shares
+    the caller's machine (including the local-over-HTTP topology).
 
     Anti-coincidental for the predicate: a predicate that mislabels local as
-    cloud would refuse here, so this test fails if confinement over-fires.
+    cloud would return a recipe or a refusal here, so this test fails if the
+    gate over-fires in either direction.
     """
     _services, _config, _handle = confined_vault
     src = tmp_path / "caller_inbox" / "local_ok.md"
@@ -420,4 +484,6 @@ async def test_l_local_profile_allows_path_forms(confined_vault, tmp_path):
         listing = _parse(await list_directory(_VAULT_ID, str(scan_dir)))
 
     assert "error" not in ingest, ingest
+    assert "status" not in ingest or ingest.get("status") != "upload_required"
+    assert ingest["source_path"] == "imports/local_ok.md"
     assert set(listing) == {"files", "warnings"}, listing

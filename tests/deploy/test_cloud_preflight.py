@@ -69,6 +69,8 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "mcp_roundtrip",
         "edge_authn_backend",
         "liveness",
+        "transfer_upload_gate",
+        "transfer_download_gate",
         "vault_load",
         "retrieval_pg",
         "kv_wildcard_tls",
@@ -328,13 +330,22 @@ def test_no_hardcoded_identity() -> None:
 
 def test_reports_not_fixes() -> None:
     """A verification artifact, never a deploy step: no infra mutation and no
-    SAGE write call. The read-only ``discover`` POST is allowed.
+    SAGE write call. The read-only ``discover`` POST is allowed, and so is the
+    transfer-gate probe's PUT: it carries a deliberately-invalid one-time
+    token, which the app refuses before any staging I/O, so it cannot mutate
+    -- the PUT verb is confined to the dedicated probe helper and asserted
+    absent everywhere else.
     """
     text = _script_text()
     assert not re.search(r"\baz\s+\S+\s+(?:create|update|delete|deploy|set|add|remove)\b", text), (
         "mutating `az` subcommand; the preflight reports, it does not fix"
     )
-    assert not re.search(r"-X\s*(?:PUT|DELETE|PATCH)\b", text), "a mutating HTTP verb leaked in"
+    probe_helper = re.search(r"http_put_transfer_probe\(\) \{ # url token\n(?:.*\n)*?\}", text)
+    assert probe_helper, "the transfer probe helper must exist and own the sole PUT"
+    outside = text.replace(probe_helper.group(0), "")
+    assert not re.search(r"-X\s*(?:PUT|DELETE|PATCH)\b", outside), (
+        "a mutating HTTP verb leaked in outside the invalid-token transfer probe"
+    )
     assert ":batch" not in text and "/documents" not in text, "a SAGE write endpoint leaked in"
 
 

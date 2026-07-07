@@ -154,6 +154,12 @@ var sageConfigLines = [
   '  enabled: true'
   '  tenant_id: ${tenantId}'
   '  audience: ${sageAudience}'
+  // The caller-local transfer channel mints recipes whose URLs the caller's
+  // environment executes verbatim, so the config must carry the externally
+  // reachable edge base -- the custom domain APIM serves, not the container's
+  // internal FQDN.
+  'transfer:'
+  '  public_base_url: https://${sageHostname}'
 ]
 var bffConfigLines = [
   'profile: cloud'
@@ -285,6 +291,11 @@ resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       scale: {
         minReplicas: minReplicas
+        // Pinned to one replica: the process holds in-memory state that does
+        // not survive horizontal scale (document locks, the ingestion queue,
+        // pending transfer tokens). Scaling out requires externalizing that
+        // state first.
+        maxReplicas: 1
       }
       volumes: [
         {

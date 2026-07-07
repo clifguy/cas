@@ -48,6 +48,7 @@ from sage.config import VaultConfig
 from sage.models.schemas import (
     AssertionFailure,
     Document,
+    DownloadRecipe,
     EvalRetrievalResult,
     ExportProjectionResponse,
     ListHeadingsResponse,
@@ -237,7 +238,7 @@ class UtilitiesService:
         document_id: str,
         write_to_path: str | None = None,
         delivery: Delivery = "auto",
-    ) -> ReadProjectionResponse:
+    ) -> ReadProjectionResponse | DownloadRecipe:
         """Read a document's full projection text with metadata.
 
         Two delivery modes:
@@ -293,18 +294,25 @@ class UtilitiesService:
             )
         spill_to_disk = write_to_path is not None  # holds for both auto and spill
 
-        # write_to_path names a path on the *caller's* machine. Under the cloud
-        # profile the server cannot see it, so refuse rather than writing the
-        # projection to the container's own tree; inline delivery is the
-        # sanctioned alternative. Refuse before reading the projection so the
-        # refusal never depends on the document or its chunks resolving.
+        # write_to_path names a path on the *caller's* machine. When the
+        # server cannot see it, return a download recipe rather than writing
+        # the projection to the container's own tree: the projection text is
+        # spooled at mint time, so the recipe's size and digest describe the
+        # exact bytes the caller's environment fetches from the transfer
+        # endpoint.
         if spill_to_disk:
-            from sage.mcp_init import require_caller_local_filesystem
+            from sage.mcp_init import caller_local_filesystem_reachable
 
-            require_caller_local_filesystem(
-                "read_projection with write_to_path",
-                "receive the projection inline by omitting write_to_path",
-            )
+            if not caller_local_filesystem_reachable():
+                from sage.services.transfer import mint_download_recipe_for_projection
+
+                doc, projection_text = await self._get_projection_text(document_id)
+                return mint_download_recipe_for_projection(
+                    self._config.vault.id,
+                    document_id=doc.id,
+                    text=projection_text,
+                    write_to_path=write_to_path,
+                )
 
         doc, projection_text = await self._get_projection_text(document_id)
 

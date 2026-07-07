@@ -1,10 +1,10 @@
 # MCP Profile-Invariance Tests (MPI)
 
 Behavioral tests proving the MCP document import/export byte channel is
-profile-invariant: an identical MCP call yields an identical result whether the
-vault's stores are bound locally (filesystem vault-source binding) or
-cloud-hosted (document-store binding). The caller supplies local paths, never
-learns the vault's location, and never selects a transport.
+binding-invariant: an identical MCP call yields an identical result whether
+the vault-source store is bound to the local filesystem or to the document
+store. The caller supplies local paths and never learns which binding
+retains the bytes.
 
 Every test in `test_mcp_profile_invariance.py` runs twice via the
 `vault_source_backend` fixture (`tests/sage/conftest.py`): once per binding.
@@ -16,10 +16,16 @@ anti-coincidental teeth — several scenarios were already green when authored
 green meaningful.
 
 Design decisions encoded here:
-- The supported topology for path-bearing tools is a server co-located with
-  the caller; a cloud-hosted vault is reached by binding the storage ports
-  remotely (CAS-ADR-042 invariance, CAS-ADR-043 swappable vault-source
-  binding). No caller-side transport selection exists.
+- These tests exercise the co-located topology: the server can read and
+  write the caller's paths directly, and the vault-source binding
+  (CAS-ADR-043) decides where the bytes are retained -- that is the
+  invariance axis under test. The remote topology, where the server cannot
+  see the caller's filesystem and the same calls return token-gated
+  transfer recipes whose byte legs the caller's environment runs, is
+  covered by `test_mcp_caller_fs_confinement.py` and
+  `test_transfer_endpoints.py`; the recipe plumbing lives below the tool
+  contract, so the call shape stays identical across deployments
+  (CAS-ADR-042 constraint 1).
 - Result-shape equality across legs means: identical top-level response keys,
   identical values for location-independent fields (`source_path`, counts,
   status strings, `content_hash`), and shape-only comparison for volatile

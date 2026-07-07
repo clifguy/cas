@@ -227,6 +227,18 @@ http_options() { # url
     "$1"
 }
 
+# A transfer-endpoint probe: a deliberately-invalid one-time transfer token on
+# the token-gated byte legs. The expected answer is the app's structured 410 --
+# reaching it proves the dedicated APIM operation exists AND its policy skipped
+# validate-jwt (a 401 means the edge intercepted the tokenless request instead).
+http_put_transfer_probe() { # url token
+  _probe_with_warmup -X PUT -H "X-Upload-Token: $2" --data "preflight-probe" "$1"
+}
+
+http_get_transfer_probe() { # url token
+  _probe_with_warmup -H "X-Download-Token: $2" "$1"
+}
+
 _is_2xx() { # status-code
   [ "$1" -ge 200 ] && [ "$1" -lt 300 ]
 }
@@ -575,6 +587,51 @@ check_liveness() {
   return 1
 }
 
+check_transfer_upload_gate() {
+  # PUT /upload with a garbage token must come back as the app's structured
+  # 410 transfer_token_invalid: that single status proves the dedicated APIM
+  # operation routes, its policy skipped validate-jwt, and the SAGE app's
+  # token check answered. A 401 means the edge intercepted the tokenless
+  # request (operation missing or its policy inherited <base/>); a 404 means
+  # the operation or the app route is absent.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); upload probe is the blanket-failure trap"
+    return 1
+  fi
+  http_put_transfer_probe "$SAGE_BASE_URL/upload" "preflight-probe.invalid"
+  if [ "$HTTP_CODE" = 410 ] && printf '%s' "$HTTP_BODY" | grep -q 'transfer_token_invalid'; then
+    DETAIL_MSG="/upload 410 transfer_token_invalid unauth (operation live, jwt skipped, app token gate answered)"
+    return 0
+  fi
+  if [ "$HTTP_CODE" = 401 ]; then
+    DETAIL_MSG="/upload 401: validate-jwt intercepted the tokenless byte leg (operation missing or policy inherits <base/>)"
+    return 1
+  fi
+  DETAIL_MSG="expected 410 transfer_token_invalid from /upload, got $HTTP_CODE"
+  return 1
+}
+
+check_transfer_download_gate() {
+  # GET /download/{id} with a garbage token: same three-way discrimination as
+  # the upload probe, on the templated operation (an undeclared template
+  # parameter surfaces here as the gateway's generic 404).
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); download probe is the blanket-failure trap"
+    return 1
+  fi
+  http_get_transfer_probe "$SAGE_BASE_URL/download/preflightprobe" "preflight-probe.invalid"
+  if [ "$HTTP_CODE" = 410 ] && printf '%s' "$HTTP_BODY" | grep -q 'transfer_token_invalid'; then
+    DETAIL_MSG="/download/{id} 410 transfer_token_invalid unauth (operation live, jwt skipped, app token gate answered)"
+    return 0
+  fi
+  if [ "$HTTP_CODE" = 401 ]; then
+    DETAIL_MSG="/download/{id} 401: validate-jwt intercepted the tokenless byte leg (operation missing or policy inherits <base/>)"
+    return 1
+  fi
+  DETAIL_MSG="expected 410 transfer_token_invalid from /download/{id}, got $HTTP_CODE"
+  return 1
+}
+
 check_vault_load() {
   http_get "$SAGE_BASE_URL/sage_vaults" "$AUTH_TOKEN"
   if [ "$HTTP_CODE" != 200 ]; then
@@ -819,6 +876,12 @@ register edge_authn_backend check_edge_authn_backend \
 register liveness check_liveness \
   "/health 200 status=ok" \
   "store-free endpoint; credited only as process-up, not store/vault readiness"
+register transfer_upload_gate check_transfer_upload_gate \
+  "tokenless PUT /upload answers the app's 410 transfer_token_invalid" \
+  "410 (not 401/404) proves the dedicated operation + no-base policy + app token gate together"
+register transfer_download_gate check_transfer_download_gate \
+  "tokenless GET /download/{id} answers the app's 410 transfer_token_invalid" \
+  "410 (not 401/404) proves the templated operation + no-base policy + app token gate together"
 register vault_load check_vault_load \
   "/sage_vaults lists >=1 vault including the expected ids" \
   "contrast with /health-green: empty here means startup aborted"

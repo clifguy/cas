@@ -166,6 +166,24 @@
           "description": "Optional protected-resource-metadata URL advertised in the 'WWW-Authenticate' challenge so a client can discover how to obtain a token. When null the challenge omits the pointer; the metadata document itself is served by the edge facade, not by this process."
         }
       }
+    },
+    "transfer": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Caller-local transfer channel (CAS-ADR-042). When the server cannot see the calling client's filesystem, the path-bearing tools mint short-lived one-time tokens and return structured recipes; the caller's environment moves the bytes against the token-gated transfer endpoints. This block carries the coordinates minting needs. Deployments that never mint recipes (every co-located deployment) omit it.",
+      "properties": {
+        "public_base_url": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Externally reachable base URL of this deployment's edge (for example 'https://sage.example.org'), prepended verbatim to the transfer endpoint paths in minted recipes. Null (the default) disables minting: a deployment whose profile requires recipes fails loud at mint time rather than emitting a URL that cannot work."
+        },
+        "token_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300,
+          "description": "Lifetime of a minted transfer token, covering the whole exchange (mint, byte delivery, completion). Short by design: a token secures exactly one transfer and is re-minted cheaply if it lapses."
+        }
+      }
     }
   }
 }

@@ -35,6 +35,7 @@ from sage.models.schemas import (
     Document,
     DocumentDownloadUrlResponse,
     DocumentWithContent,
+    DownloadRecipe,
     OpenDocumentResponse,
     ReadMeta,
 )
@@ -199,23 +200,49 @@ class DocumentsService:
         document_id: str,
         include_content: bool,
         write_to_path: str | None,
-    ) -> DocumentWithContent:
-        """Return a document, optionally with content inlined or written to disk."""
+    ) -> DocumentWithContent | DownloadRecipe:
+        """Return a document, optionally with content inlined or written to disk.
+
+        When ``write_to_path`` names a caller-local path the server cannot
+        write, the return value is a download recipe instead of a document.
+        """
         if include_content and write_to_path:
             raise ContentDeliveryConflictError()
 
-        # write_to_path names a path on the *caller's* machine. Under the cloud
-        # profile the server cannot see it, so refuse rather than writing the
-        # bytes to the container's own tree; inline delivery (include_content)
-        # is unaffected and is the sanctioned alternative. Refuse before the
-        # document lookup so the refusal never depends on the id resolving.
+        # write_to_path names a path on the *caller's* machine. When the
+        # server cannot see it, return a download recipe rather than writing
+        # the bytes to the container's own tree; inline delivery
+        # (include_content) is unaffected. The recipe promises the exact size
+        # and digest of the retained source, read through the active
+        # vault-source store so the promise is binding-agnostic (CAS-ADR-043).
         if write_to_path:
-            from sage.mcp_init import require_caller_local_filesystem
-
-            require_caller_local_filesystem(
-                "get_document with write_to_path",
-                "receive the bytes inline with include_content=true",
+            from sage.mcp_init import (
+                caller_local_filesystem_reachable,
+                get_stack_config,
+                resolve_stack_vault_source_store,
             )
+
+            if not caller_local_filesystem_reachable():
+                from sage.services.transfer import mint_download_recipe_for_source
+
+                doc = await self._store.get_document(document_id)
+                if doc is None:
+                    raise DocumentNotFoundError(
+                        document_id, await build_not_found_detail(self._store, document_id)
+                    )
+                storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+                store = resolve_stack_vault_source_store(get_stack_config())
+                vault_id = self._config.vault.id
+                if not store.source_exists(vault_id, storage_root, doc.source_path):
+                    raise ContentFileMissingError(doc.id, doc.source_path)
+                return mint_download_recipe_for_source(
+                    vault_id,
+                    document_id=doc.id,
+                    source_path=doc.source_path,
+                    content_hash=store.hash_source(vault_id, storage_root, doc.source_path),
+                    content_size=store.source_size(vault_id, storage_root, doc.source_path),
+                    write_to_path=write_to_path,
+                )
 
         doc = await self._store.get_document(document_id)
         if doc is None:

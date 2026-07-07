@@ -30,6 +30,7 @@ from sage.api.routers import (
     pending_metadata,
     retrieval,
     staging_edges,
+    transfer,
     users,
     utilities,
     vaults,
@@ -444,8 +445,10 @@ def create_app(
 
     register_exception_handlers(app)
 
-    # Cross-vault endpoint (no vault_id prefix)
+    # Cross-vault endpoints (no vault_id prefix). The transfer routes are
+    # process-scoped byte legs: the vault binding travels inside the token.
     app.include_router(vaults.router)
+    app.include_router(transfer.router)
 
     # Vault-scoped endpoints
     app.include_router(ingestion.router, prefix="/sage_vaults/{vault_id}")
@@ -496,7 +499,8 @@ def create_app(
     app.add_middleware(
         AuthMiddleware,
         validator=resolve_stack_auth_validator(stack_cfg),
-        exempt_paths=frozenset({"/health"}),
+        exempt_paths=frozenset({"/health", "/upload"}),
+        exempt_prefixes=frozenset({"/download/"}),
     )
 
     return app

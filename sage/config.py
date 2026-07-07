@@ -534,6 +534,42 @@ class StackAuthConfig(BaseModel):
         return None
 
 
+class StackTransferConfig(BaseModel):
+    """Caller-local transfer channel coordinates (CAS-ADR-042).
+
+    When the server cannot see the calling client's filesystem, the
+    path-bearing tools mint short-lived one-time tokens and return structured
+    recipes; the caller's environment moves the bytes against the token-gated
+    transfer endpoints. This block carries what minting needs: the externally
+    reachable base URL the recipe embeds, and the token lifetime. Deployments
+    that never mint recipes (every co-located deployment) omit the block.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    public_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Externally reachable base URL of this deployment's edge (for "
+            "example 'https://sage.example.org'), prepended verbatim to the "
+            "transfer endpoint paths in minted recipes. Null (the default) "
+            "disables minting: a deployment whose profile requires recipes "
+            "fails loud at mint time rather than emitting a URL that cannot "
+            "work."
+        ),
+    )
+    token_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        description=(
+            "Lifetime of a minted transfer token, covering the whole exchange "
+            "(mint, byte delivery, completion). Short by design: a token "
+            "secures exactly one transfer and is re-minted cheaply if it "
+            "lapses."
+        ),
+    )
+
+
 class SageCoreConfig(BaseModel):
     """Root configuration for the SAGE Core API process (CAS-ADR-030).
 
@@ -640,6 +676,18 @@ class SageCoreConfig(BaseModel):
             "directory coordinates only; token-signing keys are fetched from "
             "the issuer's published JWKS endpoint at runtime. Resolved "
             "once at startup through the deployment profile's auth seam."
+        ),
+    )
+    transfer: StackTransferConfig = Field(
+        default_factory=StackTransferConfig,
+        description=(
+            "Caller-local transfer channel (CAS-ADR-042). When the server "
+            "cannot see the calling client's filesystem, the path-bearing "
+            "tools mint short-lived one-time tokens and return structured "
+            "recipes; the caller's environment moves the bytes against the "
+            "token-gated transfer endpoints. This block carries the "
+            "coordinates minting needs. Deployments that never mint recipes "
+            "(every co-located deployment) omit it."
         ),
     )
 

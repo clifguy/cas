@@ -305,34 +305,30 @@ and revoke. Remove the throwaway vault config afterwards.
 Capture the `result=pass` verdict lines from 6.2 and 6.4, together with the
 least-privilege outcome from 6.5, as the validation evidence.
 
-## Workstation-bound SAGE against the cloud stores
+## Caller-local files against the cloud-hosted vault
 
-The path-bearing MCP tools (`ingest_document` / `bulk_ingest_document` sources,
-`get_document` / `read_projection` `write_to_path`, `list_directory`) resolve
-their paths on the machine running the SAGE server process. To use them against
-a cloud-hosted vault, run the server on the workstation and bind the vault's
-stores remotely — the server stays co-located with the caller's files, and only
-the vault's storage moves (CAS-ADR-042, CAS-ADR-043):
+The byte-moving path tools (`ingest_document` / `bulk_ingest_document` with
+absolute sources, `get_document` / `read_projection` with `write_to_path`)
+work against a cloud-hosted vault through the transfer channel (CAS-ADR-042):
+when the server cannot read or write the caller's filesystem, the call returns
+a structured transfer recipe carrying a short-lived one-time token, the
+caller's environment moves the raw bytes against the token-gated `/upload` or
+`/download/{transfer_id}` endpoints on the edge, and (for uploads) the same
+tool is called back with the token to complete the ingest. The MCP call shape
+is identical to the co-located deployment; only where the bytes physically
+move differs, below the tool contract.
 
-- **Vault sources:** `vault_source_backend: document_store` with the
-  `document_store:` coordinates from this runbook. Off-container, the Graph
-  client authenticates via the Azure SDK's default developer-credential chain
-  (`az login`) instead of a managed identity; the signed-in user needs access
-  to the granted site.
-- **Graph/content state:** point the `postgres:` block at the vault's server.
-  A cloud deployment's Postgres is VNet-private, so reaching it from a
-  workstation requires network enablement (private endpoint, VPN, or a
-  temporary firewall allowance) provisioned out of band — without it the
-  workstation binding simply cannot connect; nothing degrades silently.
-- **Local staging:** the stored vault configs' `storage_root` and `brain_root`
-  paths must be creatable on the workstation; they serve as the projection
-  staging area and timing-log locus, not as the source of truth.
+Uploaded bytes are retained through the vault's configured source store
+(CAS-ADR-043) — the `document_store` binding from this runbook — so the
+transfer channel and the SharePoint vault-source binding compose rather than
+compete: the channel moves bytes between the caller and the server, the
+binding persists them durably.
 
-The remote `/mcp` HTTP mount is unaffected: a path only means something on the
-machine that can see the file, so its path-bearing tools operate on the
-container's own filesystem. The inline read modes (`get_document
-(include_content=true)`, `read_projection` inline, `read_section`, `search`)
-work identically over any transport.
+`list_directory` remains server-local: directory discovery only means
+something on the machine that can see the files, so a cloud deployment
+refuses it and the caller enumerates its own filesystem locally. The inline
+read modes (`get_document(include_content=true)`, `read_projection` inline,
+`read_section`, `search`) work identically over any transport.
 
 ## Rotation and teardown
 
