@@ -107,6 +107,35 @@ def test_identifier_guards_reject_injection():
         pgschema.validate_extension("vector; DROP")
 
 
+def test_schema_statements_requires_an_explicit_schema():
+    """Provisioning-by-omission is impossible: ``schema`` carries no default.
+
+    Anti-coincidental: a restored ``schema="public"`` default would make this
+    zero-argument call succeed (and target the shared schema), so the TypeError
+    assertion fails exactly that regression.
+    """
+    with pytest.raises(TypeError):
+        pgschema.schema_statements()  # type: ignore[call-arg]
+
+
+def test_schema_statements_refuses_the_public_schema():
+    """'public' is never a provisioning target: it carries extension objects
+    only, not SAGE tables (CAS-ADR-042). A SAGE table in 'public' would sit
+    behind every per-vault search_path, so a dropped vault schema's unqualified
+    queries would silently resolve there instead of raising -- the assembly
+    point fails loud instead of permitting that."""
+    with pytest.raises(ValueError, match="public"):
+        pgschema.schema_statements(schema="public")
+
+
+async def test_bootstrap_schema_refuses_the_public_schema():
+    """The refusal reaches the bootstrap entry point too, and fires before the
+    connection is touched (the sentinel object would raise on any attribute
+    access, so a pass proves no statement was attempted)."""
+    with pytest.raises(ValueError, match="public"):
+        await pgschema.bootstrap_schema(object(), schema="public")
+
+
 def test_disposable_target_guard():
     """The disposable-target guard accepts sage_test_* schemas and refuses
     'public' and any non-prefixed name -- the 'never the dev DB' rule."""

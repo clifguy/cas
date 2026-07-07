@@ -129,48 +129,55 @@ class VaultRegistryService:
     async def list_vaults(self) -> list[VaultSummary]:
         """Return all vaults registered with the running SAGE instance.
 
-        Resilient per vault: if a vault's backing store errors (e.g. its
-        Postgres schema was dropped out of band by a completed teardown), that
-        vault is skipped and logged and the surviving vaults still list -- one
-        dead vault never fails the whole listing. Mirrors the log-and-drop
-        discipline of the startup discovery loop.
+        Resilient per vault: a vault is skipped from the listing (and logged)
+        when its backing store errors OR when the storage-presence probe says
+        its durable backing is gone -- one dead vault never fails the whole
+        listing. Mirrors the log-and-drop discipline of the startup discovery
+        loop. The explicit probe matters because an out-of-band teardown does
+        not reliably error: the per-vault search_path can resolve the store's
+        unqualified table names against a later entry, so a torn-down vault's
+        queries may keep succeeding against tables that are not its own.
 
-        Self-healing: when the errored vault is also gone from vault-source
+        Self-healing: when the skipped vault is also gone from vault-source
         discovery (a completed teardown removes both the schema and the config),
         it is evicted from the live registry so the stale entry does not linger
-        until the next restart. A vault whose store errors but whose config is
-        still present is left in place -- a transient error must not destroy the
-        registry entry.
+        until the next restart. A skipped vault whose config is still present is
+        left in place -- a transient error (or a half-completed teardown, which
+        a restart repairs by re-bootstrapping from the surviving config) must
+        not destroy the registry entry.
         """
         results: list[VaultSummary] = []
-        # Computed once, lazily, only if a vault errors -- discovery can be a
-        # remote round-trip under the document-store binding.
+        # Computed once, lazily, only if a vault is skipped -- discovery can be
+        # a remote round-trip under the document-store binding.
         discovered_ids: set[str] | None = None
         # Snapshot: an eviction below mutates self._registry mid-iteration.
         for vault_id, services in list(self._registry.items()):
             try:
-                project_counts = await services.graph_store.get_document_counts_by_field("project")
-                projects = sorted(project_counts.keys())
-                results.append(self._build_vault_summary(services.config, services, projects))
+                if await services.graph_store.storage_present(vault_id):
+                    project_counts = await services.graph_store.get_document_counts_by_field(
+                        "project"
+                    )
+                    projects = sorted(project_counts.keys())
+                    results.append(self._build_vault_summary(services.config, services, projects))
+                    continue
+                logger.error("Skipping vault %s from the listing: durable backing absent", vault_id)
             except Exception:
                 logger.exception(
                     "Skipping vault %s from the listing: backing store error", vault_id
                 )
-                # Best-effort reconcile -- must never re-break the listing.
-                try:
-                    if discovered_ids is None:
-                        discovered_ids = self._discovered_vault_ids()
-                    if vault_id not in discovered_ids:
-                        await self._evict(vault_id)
-                        logger.warning(
-                            "Evicted vault %s from the registry: no longer present in "
-                            "vault-source discovery",
-                            vault_id,
-                        )
-                except Exception:
-                    logger.exception(
-                        "Registry reconcile for vault %s failed; left in place", vault_id
+            # Best-effort reconcile -- must never re-break the listing.
+            try:
+                if discovered_ids is None:
+                    discovered_ids = self._discovered_vault_ids()
+                if vault_id not in discovered_ids:
+                    await self._evict(vault_id)
+                    logger.warning(
+                        "Evicted vault %s from the registry: no longer present in "
+                        "vault-source discovery",
+                        vault_id,
                     )
+            except Exception:
+                logger.exception("Registry reconcile for vault %s failed; left in place", vault_id)
         return results
 
     def _discovered_vault_ids(self) -> set[str]:

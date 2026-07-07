@@ -303,6 +303,18 @@ class GraphStore(ABC):
     async def close(self) -> None:
         """Release all backing resources. Idempotent; subsequent ops raise."""
 
+    async def storage_present(self, vault_id: str) -> bool:
+        """Whether the vault's durable backing still exists out of band.
+
+        Registry reconciliation consults this before trusting query results:
+        a backing removed outside the process (an out-of-band vault teardown)
+        must read as absent even when the store's queries would still resolve
+        somewhere and appear to succeed. Defaulted, not abstract: for a backend
+        whose backing cannot vanish independently of the open store handle,
+        presence is implied and this default answers True.
+        """
+        return True
+
     # --- Documents ---
     @abstractmethod
     async def insert_document(self, doc: Document) -> None:

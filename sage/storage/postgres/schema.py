@@ -288,7 +288,7 @@ def ddl_statements() -> list[str]:
 
 
 def schema_statements(
-    schema: str = "public",
+    schema: str,
     extensions: Iterable[str] = DEFAULT_EXTENSIONS,
     *,
     create_extensions: bool = True,
@@ -300,6 +300,13 @@ def schema_statements(
     tables are then created in ``schema``. Exposed for inspection so the
     idempotency of every DDL statement is unit-testable without a server.
 
+    ``schema`` is required and must not be ``public``: storage tenancy is one
+    schema per vault (CAS-ADR-042), and ``public`` carries extension objects
+    only, never SAGE tables. Because ``public`` trails every per-vault
+    search_path, a SAGE table there would silently absorb the unqualified
+    queries of any vault whose own schema was dropped out of band -- masking
+    the error those queries are expected to raise.
+
     ``create_extensions`` gates the ``CREATE EXTENSION`` statements. The default
     creates them, which the local runtime requires (the connecting role can
     create extensions and no separate bootstrap runs ahead of it). When False,
@@ -310,6 +317,13 @@ def schema_statements(
     created them (CAS-ADR-042).
     """
     validate_schema_name(schema)
+    if schema == "public":
+        raise ValueError(
+            "refusing to provision SAGE tables into the shared 'public' schema: "
+            "tenancy is one schema per vault (CAS-ADR-042) and 'public' carries "
+            "extension objects only -- a SAGE table there would mask a dropped "
+            "vault schema behind the per-vault search_path fallback"
+        )
     statements = [f'CREATE SCHEMA IF NOT EXISTS "{schema}"']  # noqa: S608
     if create_extensions:
         statements += [
@@ -324,7 +338,7 @@ def schema_statements(
 async def bootstrap_schema(
     conn,
     *,
-    schema: str = "public",
+    schema: str,
     extensions: Iterable[str] = DEFAULT_EXTENSIONS,
     create_extensions: bool = True,
 ) -> None:
@@ -332,7 +346,8 @@ async def bootstrap_schema(
 
     ``conn`` is an open async psycopg connection. The whole statement list runs
     in one transaction so a partial failure leaves nothing behind, and re-running
-    is a no-op because every statement is ``IF NOT EXISTS``.
+    is a no-op because every statement is ``IF NOT EXISTS``. ``schema`` is
+    required and must not be ``public`` (see :func:`schema_statements`).
 
     ``create_extensions`` is threaded to :func:`schema_statements`: pass False
     when the extensions are an out-of-band precondition the connecting role may
