@@ -1519,7 +1519,15 @@ def test_specs_respect_url_prefix_boundaries(
 
     issues: list[str] = []
 
-    sage_misplaced = [p for p in sage_paths if not p.startswith("/sage_vaults")]
+    # The transfer endpoints are process-scoped, not vault-scoped: the vault
+    # binding lives inside the one-time token, and the recipe embeds the URL
+    # verbatim, so the paths stay top-level by design. They remain part of
+    # the SAGE Core API surface.
+    sage_non_vault_paths = {"/upload", "/download/{transfer_id}"}
+
+    sage_misplaced = [
+        p for p in sage_paths if not p.startswith("/sage_vaults") and p not in sage_non_vault_paths
+    ]
     if sage_misplaced:
         issues.append("sage_core_api.openapi.yaml contains paths outside /sage_vaults/*:")
         for p in sorted(sage_misplaced):

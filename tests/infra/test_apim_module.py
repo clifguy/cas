@@ -127,6 +127,8 @@ DISCOVERY_MCP_ADMIN_OP_POLICY: Final[Path] = (
     POLICIES_DIR / "sage-discovery-mcp-admin-operation-policy.xml"
 )
 HEALTH_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-health-operation-policy.xml"
+UPLOAD_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-upload-operation-policy.xml"
+DOWNLOAD_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-download-operation-policy.xml"
 AS_METADATA_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-authorization-server-operation-policy.xml"
 REGISTER_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-register-operation-policy.xml"
 
@@ -1298,6 +1300,8 @@ def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
         HEALTH_OP_POLICY,
         AS_METADATA_OP_POLICY,
         REGISTER_OP_POLICY,
+        UPLOAD_OP_POLICY,
+        DOWNLOAD_OP_POLICY,
     )
     for policy in op_policies:
         assert policy.name in loaded_names, (
@@ -2249,3 +2253,73 @@ def test_apim_app_insights_detectors_control() -> None:
     assert not [g for g in _GUID_RE.findall(sanctioned) if g.lower() != _METRICS_PUBLISHER_ROLE]
     unsanctioned = "var other = '00000000-0000-0000-0000-000000000001'"
     assert [g for g in _GUID_RE.findall(unsanctioned) if g.lower() != _METRICS_PUBLISHER_ROLE]
+
+
+# ---------------------------------------------------------------------------
+# Transfer endpoints (caller-local byte channel)
+# ---------------------------------------------------------------------------
+
+_UPLOAD_PATH: Final[str] = "/upload"
+_DOWNLOAD_PATH: Final[str] = "/download/{transferId}"
+
+
+def test_apim_declares_transfer_upload_operation() -> None:
+    """``/upload`` is served by its own dedicated PUT operation ahead of the
+    catch-all, so its no-``<base/>`` policy can skip validate-jwt: the curl
+    byte leg carries only the one-time transfer token, never an Entra bearer.
+    """
+    assert _declares_literal_operation(APIM.read_text(encoding="utf-8"), _UPLOAD_PATH, "PUT"), (
+        f"apim.bicep must declare a dedicated PUT operation with urlTemplate '{_UPLOAD_PATH}'"
+    )
+
+
+def test_apim_declares_transfer_download_operation() -> None:
+    """``/download/{transferId}`` is served by its own dedicated GET operation
+    with a declared template parameter -- an undeclared parameter is the
+    silent-404 failure mode the catch-all's declared ``path`` parameter guards
+    against, reproduced here for the templated transfer path.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert _declares_literal_operation(text, _DOWNLOAD_PATH, "GET"), (
+        f"apim.bicep must declare a dedicated GET operation with urlTemplate '{_DOWNLOAD_PATH}'"
+    )
+    stripped = _strip_line_comments(text)
+    op_match = re.search(
+        r"urlTemplate:\s*'" + re.escape(_DOWNLOAD_PATH) + r"'[\s\S]*?templateParameters:"
+        r"[\s\S]*?name:\s*'transferId'",
+        stripped,
+    )
+    assert op_match, (
+        "the /download/{transferId} operation must declare its 'transferId' "
+        "template parameter -- an undeclared parameter never matches and the "
+        "gateway answers a generic 404"
+    )
+
+
+@pytest.mark.parametrize(
+    "policy_path", [UPLOAD_OP_POLICY, DOWNLOAD_OP_POLICY], ids=lambda p: p.name
+)
+def test_apim_transfer_operation_policy_routes_to_backend_unauthenticated(
+    policy_path: Path,
+) -> None:
+    """Each transfer operation routes to the SAGE backend with no JWT and no
+    ``<base/>`` (which would inherit the API-level validate-jwt and 401 the
+    tokenless curl), as a real backend passthrough -- the one-time transfer
+    token is validated by the SAGE app, not the edge.
+    """
+    xml = policy_path.read_text(encoding="utf-8")
+    inbound = _inbound_section(xml)
+    assert re.search(r"set-backend-service\s+backend-id=\"sage-backend\"", inbound), (
+        f"{policy_path.name}: inbound must route to the sage-backend"
+    )
+    assert "validate-jwt" not in inbound, (
+        f"{policy_path.name}: must not validate the JWT (the transfer token is "
+        "the sole credential, checked by the SAGE app)"
+    )
+    assert "<base" not in inbound, (
+        f"{policy_path.name}: inbound must not call <base/> -- that would "
+        "inherit the API-level validate-jwt and 401 the tokenless curl leg"
+    )
+    assert "return-response" not in inbound, (
+        f"{policy_path.name}: must be a real backend passthrough, not a canned edge response"
+    )

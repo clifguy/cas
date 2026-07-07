@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-05-23",
+  "manifest_date": "2026-07-07",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -28,7 +28,7 @@
       "title": "SAGE Core API Configuration",
       "status": "draft",
       "version": "0.9",
-      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), and the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers). The on-disk file is sage/config.yaml at the repo root.",
+      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers), and the caller-local transfer channel block (the public endpoint base minted recipes embed and the one-time token lifetime; omitted by deployments that never mint recipes). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
     {
@@ -94,7 +94,7 @@
       "title": "SAGE Core API",
       "status": "draft",
       "version": "0.9",
-      "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
+      "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
     {
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.43",
+  "substrate_version": "1.44",
   "revision_history": [
+    {
+      "version": "1.44",
+      "date": "2026-07-07",
+      "summary": "Caller-local transfer channel: bidirectional file movement between a caller's machine and a deployment whose server cannot see the caller's filesystem (CAS-ADR-042 constraint 1 -- the byte plumbing lives below the profile-invariant tool contract). Spec-side changes to sage_core_api.openapi.yaml: two new top-level paths, PUT /upload and GET /download/{transfer_id}, each token-gated by a short-lived one-time direction-scoped transfer token carried in X-Upload-Token / X-Download-Token (the sole credential on these routes; they are exempt from bearer auth at the app and the edge), plus four new component schemas -- UploadRecipe, UploadRecipeItem, DownloadRecipe, TransferUploadResult -- returned by the MCP tools in place of the prior cloud-profile refusals: ingest_document/bulk_ingest_document with an unreachable absolute source mint an upload recipe (one leg per file) and complete via a new MCP-only transfer_token argument; get_document/read_projection with an unreachable write_to_path mint a download recipe promising the exact content_hash/content_size the endpoint will stream. sage_core_config.schema.json gains the transfer block (public_base_url, token_ttl_seconds). The in-request content_base64/filename inline-ingest byte channel and its errors (inline_content_too_large, invalid_inline_content) are retired -- an LLM-mediated caller cannot carry file bytes through its own token stream; the transfer channel replaces it without a size regression. New errors: transfer_token_invalid (410), transfer_not_staged (409), transfer_token_already_used (409), transfer_content_too_large (413), transfer_endpoint_not_configured (500). Server pieces: sage/services/transfer.py (process-local pending-transfer store; tokens digest-at-rest; lazy TTL sweep), sage/api/routers/transfer.py (streamed upload under an incremental SAGE_MAX_TRANSFER_BYTES ceiling; download streamed from the vault-source store or the projection spool), AuthMiddleware exempt_prefixes, APIM dedicated operations + no-base policies, container-apps transfer config line + SAGE maxReplicas pin (in-process transfer state). Tests: tests/sage/test_transfer_service.py, test_transfer_endpoints.py, test_mcp_caller_fs_confinement.py B-series flip (recipes instead of refusals; list_directory stays refused), tests/infra additions; conformance gates updated (KNOWN_ARG_DRIFT transfer_token entry, HTTP_ONLY_OPERATIONS transfer entries, transfer paths allowlisted as non-vault SAGE Core paths)."
+    },
     {
       "version": "1.43",
       "date": "2026-07-04",

@@ -491,3 +491,77 @@ def test_sch_s_021_document_store_absent_passes_defaults_applied():
     assert cfg.document_store.graph_scope == "https://graph.microsoft.com/.default"
     assert cfg.document_store.site_id is None
     assert cfg.document_store.drive_id is None
+
+
+def test_sch_s_022_transfer_block_shape():
+    """The schema declares a top-level `transfer` object with
+    `additionalProperties: false` and the two properties the transfer-recipe
+    minting path reads: `public_base_url` (nullable string, default null) and
+    `token_ttl_seconds` (integer, default 300).
+
+    Catches drift in the block shape -- a missing `additionalProperties: false`
+    would make SCH-S-023 incapable of detecting a stray/typo'd key, and a
+    dropped property would silently strip a coordinate minting needs.
+    """
+    schema = _stack_schema()
+    block = schema["properties"]["transfer"]
+    assert block["type"] == "object"
+    assert block["additionalProperties"] is False
+    assert set(block["properties"]) == {"public_base_url", "token_ttl_seconds"}
+    assert block["properties"]["public_base_url"]["default"] is None
+    assert block["properties"]["token_ttl_seconds"]["default"] == 300
+
+
+def test_sch_s_023_transfer_unknown_property_rejected():
+    """A `transfer` block carrying an unknown property fails validation against
+    the JSON Schema *and* against SageCoreConfig; a block of only known
+    properties passes both gates.
+
+    Anti-coincidental-pass: the positive control (a fully-populated known
+    block) must pass so the failure is attributable to the unknown key, not to
+    a malformed block; both gates must refuse so the schema and the model
+    cannot drift apart on strictness.
+    """
+    from pydantic import ValidationError
+
+    from sage.config import SageCoreConfig
+
+    schema = _stack_schema()
+
+    good = {
+        "transfer": {
+            "public_base_url": "https://sage.example.org",
+            "token_ttl_seconds": 120,
+        }
+    }
+    jsonschema.validate(good, schema)
+    cfg = SageCoreConfig.model_validate(good)
+    assert cfg.transfer.public_base_url == "https://sage.example.org"
+    assert cfg.transfer.token_ttl_seconds == 120
+
+    bad = {"transfer": {"public_base_url": "https://x", "ttl": 5}}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+    with pytest.raises(ValidationError):
+        SageCoreConfig.model_validate(bad)
+
+
+def test_sch_s_024_transfer_absent_passes_defaults_applied():
+    """An instance with `transfer` absent validates against the schema, and
+    `SageCoreConfig.model_validate` applies the Pydantic defaults (no public
+    base URL, 300-second token TTL).
+
+    Confirms the JSON Schema and the Pydantic model agree on the block's
+    defaults per CAS principle 1: a deployment that never mints recipes (every
+    co-located deployment) is valid without the block, and one that does mint
+    fails loud at mint time -- not at load time -- when the URL is absent.
+    """
+    schema = _stack_schema()
+    instance: dict = {}  # transfer deliberately absent
+    jsonschema.validate(instance, schema)
+
+    from sage.config import SageCoreConfig
+
+    cfg = SageCoreConfig.model_validate(instance)
+    assert cfg.transfer.public_base_url is None
+    assert cfg.transfer.token_ttl_seconds == 300

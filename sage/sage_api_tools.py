@@ -6,8 +6,6 @@ discover, export, refresh) and API query tools (vault stats, hash check,
 staging edges, pending metadata).
 """
 
-import shutil
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -55,7 +53,7 @@ from sage.models.schemas import (
     UpdateVaultConfigRequest,
     VaultIdStr,
 )
-from sage.services.inline_ingest import decode_inline_content, staging_name
+from sage.services.transfer import get_transfer_store, mint_upload_recipe
 from sage.services.vault_registry import VaultRegistryService
 
 # Module-scope TypeAdapters for Pattern 2 boundary validation on FastMCP tool
@@ -133,8 +131,7 @@ def register_sage_tools(
         metadata: dict | None = None,
         tier3_metadata: dict | None = None,
         document_id: str | None = None,
-        content_base64: str | None = None,
-        filename: str | None = None,
+        transfer_token: str | None = None,
     ) -> dict:
         """Ingest a source file into SAGE, running the projection ->
         indexing -> abstraction pipeline.
@@ -180,17 +177,19 @@ def register_sage_tools(
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
-          ``content_base64`` were supplied; they are mutually exclusive.
+          ``transfer_token`` were supplied; they are mutually exclusive.
         - ``missing_ingest_source`` (400): neither ``source`` nor
-          ``content_base64`` was supplied.
-        - ``caller_filesystem_unavailable`` (501): an absolute ``source`` path
-          was supplied under the cloud profile, where the server cannot see the
-          caller's filesystem. Supply the bytes via ``content_base64`` instead.
-        - ``inline_content_too_large`` (413): the decoded ``content_base64``
-          exceeds the inline-ingest ceiling (default 100 MB; override via
-          ``SAGE_MAX_INLINE_INGEST_BYTES``). No silent truncation.
-        - ``invalid_inline_content`` (400): ``content_base64`` is not valid
-          base64.
+          ``transfer_token`` was supplied.
+        - ``transfer_token_invalid`` (410): ``transfer_token`` names no
+          redeemable pending transfer (unknown, expired, already used, or
+          scoped to a different vault). Re-issue the call with the original
+          ``source`` to mint a fresh recipe.
+        - ``transfer_not_staged`` (409): ``transfer_token`` is valid but the
+          bytes have not been delivered to the upload endpoint yet. Run the
+          recipe's byte leg, then repeat this call; the token stays valid.
+        - ``transfer_endpoint_not_configured`` (500): this deployment needs
+          the transfer channel but declares no public transfer endpoint, so
+          no recipe can be minted.
         - ``duplicate_content`` (409): a document with the same
           ``source_path`` and content hash exists. Override with
           ``force=true``.
@@ -233,16 +232,20 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             source: Source file path relative to the vault's storage_root,
                 or an absolute path to an external file (copied verbatim
-                into the vault's imports/ directory). An absolute path is
-                read from the filesystem of the machine running the SAGE
-                server process; the retained copy lands on the vault's
-                configured source store (CAS-ADR-043) and is authoritative
-                after ingest, wherever that store lives -- the path passed
-                here is temporary. Behavior is identical whether the
-                vault's stores are local or cloud-hosted. Supply exactly one
-                of ``source`` or ``content_base64``. Under the cloud profile,
-                where the server cannot see the caller's filesystem, an
-                absolute ``source`` is refused -- use ``content_base64``.
+                into the vault's imports/ directory). An absolute path names
+                a file on the caller's machine and is read directly only
+                when that machine is the machine running the SAGE server
+                process; the retained copy lands on the vault's configured
+                source store and is authoritative after ingest, wherever
+                that store lives -- the path passed here is temporary.
+                Behavior is identical whether the vault's stores are local
+                or cloud-hosted. Supply exactly one of ``source`` or
+                ``transfer_token``. When the server cannot read the caller's
+                filesystem directly, an absolute ``source`` returns an
+                upload recipe (``status: upload_required``) instead of
+                ingesting: deliver the file to the recipe's URL with its
+                one-time token, then repeat this call with
+                ``transfer_token`` to complete the ingest.
             source_type: Source artifact format (markdown, docx, pdf, email,
                 onenote, teams_chat). Selects the source adapter.
             config: Adapter-specific configuration (optional). Not a
@@ -295,21 +298,14 @@ def register_sage_tools(
                 different-path hash match is treated as a deliberate reuse
                 (for example, a moved file) rather than the unrelated-document
                 collision that ``force_reingest_path_mismatch`` guards against.
-            content_base64: The source file's bytes, base64-encoded, carried
-                inline in the request instead of via a ``source`` path. This is
-                the sanctioned in-request byte channel for a remote-mount caller
-                whose local file the server cannot see: the bytes are staged to
-                an ephemeral server-side temp file below the tool surface and
-                run through the identical pipeline, so the caller never selects
-                a transport and no server drop location is involved. Supply
-                exactly one of ``content_base64`` or ``source``. Bounded by
-                ``SAGE_MAX_INLINE_INGEST_BYTES`` (default 100 MB); an oversize
-                payload fails with ``inline_content_too_large`` rather than
-                truncating.
-            filename: Optional original filename for inline (``content_base64``)
-                ingest, used to preserve the file extension for adapter and
-                filename-metadata inference. Ignored when ``source`` is used
-                (the path already carries the name).
+            transfer_token: One-time token from a previously returned upload
+                recipe, redeemed after the recipe's byte leg has delivered
+                the file to the upload endpoint. The staged bytes run through
+                the identical pipeline as a path ingest, so the response is
+                indistinguishable from a co-located one. Supply exactly one
+                of ``transfer_token`` or ``source``; all other arguments are
+                passed again on this completion call exactly as on the
+                originating call.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -320,13 +316,13 @@ def register_sage_tools(
             v = get_vault(vault_id)
 
             # A document arrives by exactly one of two delivery shapes: a
-            # ``source`` path resolved on the SAGE server, or ``content_base64``
-            # bytes carried in the request. The inline shape is the
-            # profile-invariant channel for a remote-mount caller whose file the
-            # server cannot see; the tool signature is identical across profiles.
-            if source is not None and content_base64 is not None:
+            # ``source`` path, or a ``transfer_token`` redeeming bytes the
+            # caller's environment already delivered to the upload endpoint.
+            # The tool signature is identical across profiles; only where the
+            # bytes physically move differs, below the tool surface.
+            if source is not None and transfer_token is not None:
                 raise AmbiguousIngestSourceError()
-            if source is None and content_base64 is None:
+            if source is None and transfer_token is None:
                 raise MissingIngestSourceError()
 
             def _build_request(resolved_source: str) -> IngestRequest:
@@ -347,37 +343,32 @@ def register_sage_tools(
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP client
             # timeout (BH-130). Callers poll get_document for terminal
             # pipeline_status.
-            if content_base64 is not None:
-                # In-request byte channel: decode and bound-check, stage the
-                # bytes to an ephemeral server-side temp file below the tool
-                # surface, run the normal path-based pipeline, then remove the
-                # staging dir. ``ingest`` reads and retains the source
-                # synchronously (before the fire-and-forget stages, which act on
-                # the retained copy), so removing the staging dir after the await
-                # is safe.
-                raw = decode_inline_content(content_base64)
-                staging_dir = Path(tempfile.mkdtemp(prefix="sage-inline-ingest-"))
+            if transfer_token is not None:
+                # Completion leg of a two-phase caller-local ingest: redeem
+                # the token against the bytes the caller's environment already
+                # delivered, then run the normal path-based pipeline on the
+                # staged file. ``ingest`` reads and retains the source
+                # synchronously (before the fire-and-forget stages, which act
+                # on the retained copy), so removing the staging dir after the
+                # await is safe.
+                entry = get_transfer_store().consume_upload(transfer_token, vault_id)
                 try:
-                    dest = staging_dir / staging_name(filename, "inline_source")
-                    dest.write_bytes(raw)
                     result = await v.ingestion_service.ingest(
-                        _build_request(str(dest)), wait_for_pipeline=False
+                        _build_request(str(entry.staged_path)), wait_for_pipeline=False
                     )
                     return serialize(result.document)
                 finally:
-                    shutil.rmtree(staging_dir, ignore_errors=True)
+                    entry.cleanup()
 
             # Path shape: an absolute path names a file on the *caller's*
-            # machine, readable by the server only when co-located. Under the
-            # cloud profile refuse it (naming the inline channel) rather than
-            # reading the container's own tree. A relative source is a
-            # vault-store reference the active binding resolves (CAS-ADR-043),
-            # so it is left to the pipeline unchanged.
-            if Path(source).is_absolute():
-                sage.mcp_init.require_caller_local_filesystem(
-                    "ingest_document with an absolute source path",
-                    "supply the file bytes inline via content_base64",
-                )
+            # machine, readable by the server only when co-located. When the
+            # server cannot see it, mint an upload recipe rather than reading
+            # the container's own tree; the caller's environment delivers the
+            # bytes and calls back with the transfer token. A relative source
+            # is a vault-store reference the active binding resolves
+            # (CAS-ADR-043), so it is left to the pipeline unchanged.
+            if Path(source).is_absolute() and not sage.mcp_init.caller_local_filesystem_reachable():
+                return serialize(mint_upload_recipe(vault_id, [source]))
             result = await v.ingestion_service.ingest(
                 _build_request(source), wait_for_pipeline=False
             )

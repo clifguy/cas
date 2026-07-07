@@ -426,6 +426,41 @@ resource sageHealthOperation 'Microsoft.ApiManagement/service/apis/operations@20
   }
 }
 
+// The caller-local transfer channel's byte legs (CAS-ADR-042): two more
+// dedicated operations in the same round-trip-safe shape as /health. An
+// authenticated MCP call mints a short-lived one-time token and returns a
+// recipe; curl then moves the raw bytes through these paths with the token
+// as the sole credential, so the operation-scoped policies omit <base /> and
+// skip validate-jwt. All token validation (direction, expiry, one-time
+// redemption, byte ceiling) is enforced by the SAGE app.
+resource sageUploadOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'transfer-upload'
+  properties: {
+    displayName: 'Transfer upload (token-gated byte delivery)'
+    method: 'PUT'
+    urlTemplate: '/upload'
+    templateParameters: []
+  }
+}
+
+resource sageDownloadOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'transfer-download'
+  properties: {
+    displayName: 'Transfer download (token-gated byte fetch)'
+    method: 'GET'
+    urlTemplate: '/download/{transferId}'
+    templateParameters: [
+      {
+        name: 'transferId'
+        type: 'string'
+        required: true
+      }
+    ]
+  }
+}
+
 // The DCR-compatibility facade (CAS-ADR-042): two more dedicated,
 // unauthenticated operations, the same round-trip-safe shape as discovery and
 // /health. Entra offers no Dynamic Client Registration (RFC 7591); a
@@ -497,6 +532,30 @@ resource sageHealthOperationPolicy 'Microsoft.ApiManagement/service/apis/operati
   properties: {
     format: 'rawxml'
     value: loadTextContent('../policies/sage-health-operation-policy.xml')
+  }
+  dependsOn: [
+    sageBackend
+  ]
+}
+
+resource sageUploadOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageUploadOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-upload-operation-policy.xml')
+  }
+  dependsOn: [
+    sageBackend
+  ]
+}
+
+resource sageDownloadOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageDownloadOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-download-operation-policy.xml')
   }
   dependsOn: [
     sageBackend

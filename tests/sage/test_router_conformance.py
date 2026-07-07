@@ -81,7 +81,7 @@ ROUTER_TREES: tuple[RouterTree, ...] = (
                 "maintenance",
             }
         ),
-        cross_vault_routers=frozenset({"vaults"}),
+        cross_vault_routers=frozenset({"vaults", "transfer"}),
         dependencies_module="sage.api.dependencies",
     ),
     RouterTree(

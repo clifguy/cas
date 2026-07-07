@@ -4518,3 +4518,160 @@ class ErrorResponse(BaseModel):
             "error envelope, parallel to the success-response marker."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Transfer (caller-local byte channel)
+# ---------------------------------------------------------------------------
+
+
+class UploadRecipeItem(BaseModel):
+    """One byte-delivery leg of an upload recipe: which caller-local file to
+    send, where, and with what one-time token."""
+
+    source: str = Field(
+        description=(
+            "The caller-local source path this leg delivers, echoed verbatim "
+            "from the originating call."
+        )
+    )
+    transfer_id: str = Field(
+        description=(
+            "Public identifier of the pending transfer; carried in error "
+            "envelopes and the delivery receipt so legs can be correlated."
+        )
+    )
+    token: str = Field(
+        description=(
+            "One-time upload token for this leg, presented in the token "
+            "header. Valid for exactly one successful delivery."
+        )
+    )
+    url: str = Field(description="Complete URL of the byte-delivery leg, used verbatim.")
+
+
+class UploadRecipe(BaseModel):
+    """Returned in place of an ingest result when the call named a
+    caller-local source the server cannot read. Carries everything the
+    caller's environment needs to deliver the bytes to the upload endpoint,
+    after which the originating call is repeated with the transfer token to
+    complete the ingest. Every URL and token is used verbatim; nothing is
+    composed caller-side."""
+
+    status: Literal["upload_required"] = Field(
+        default="upload_required",
+        description=(
+            "Recipe discriminator. Always `upload_required`: the call cannot "
+            "read the caller-local source, so the caller's environment must "
+            "deliver the bytes to the upload endpoint before repeating the "
+            "call with the transfer token."
+        ),
+    )
+    method: Literal["PUT"] = Field(
+        default="PUT",
+        description="HTTP method of the byte-delivery leg. Always `PUT`.",
+    )
+    token_header: Literal["X-Upload-Token"] = Field(
+        default="X-Upload-Token",
+        description=(
+            "Name of the request header that carries the upload token on the "
+            "byte-delivery leg. Always `X-Upload-Token`."
+        ),
+    )
+    expires_at: datetime = Field(
+        description=(
+            "When the minted tokens lapse. The whole exchange (byte delivery "
+            "plus the completion call) must finish before this instant; after "
+            "it, re-issue the originating call to mint fresh tokens."
+        )
+    )
+    max_bytes: int = Field(
+        description=(
+            "Ceiling on a single delivered body in bytes; a larger upload is aborted mid-stream."
+        )
+    )
+    uploads: list[UploadRecipeItem] = Field(
+        description=(
+            "One byte-delivery leg per caller-local source file. Deliver each "
+            "file with its own token to its own URL; a single-file call "
+            "carries exactly one entry."
+        )
+    )
+
+
+class DownloadRecipe(BaseModel):
+    """Returned in place of a written file when the call named a
+    caller-local target the server cannot write. Carries everything the
+    caller's environment needs to fetch the bytes from the download endpoint
+    and verify them locally against the promised size and digest. Every URL
+    and token is used verbatim; nothing is composed caller-side."""
+
+    status: Literal["download_required"] = Field(
+        default="download_required",
+        description=(
+            "Recipe discriminator. Always `download_required`: the call "
+            "cannot write to the caller-local target, so the caller's "
+            "environment must fetch the bytes from the download endpoint."
+        ),
+    )
+    method: Literal["GET"] = Field(
+        default="GET",
+        description="HTTP method of the byte-fetch leg. Always `GET`.",
+    )
+    url: str = Field(description="Complete URL of the byte-fetch leg, used verbatim.")
+    token: str = Field(
+        description=(
+            "One-time download token, presented in the token header. "
+            "Consumed at redemption; a failed fetch is retried by re-issuing "
+            "the originating call."
+        )
+    )
+    token_header: Literal["X-Download-Token"] = Field(
+        default="X-Download-Token",
+        description=(
+            "Name of the request header that carries the download token on "
+            "the byte-fetch leg. Always `X-Download-Token`."
+        ),
+    )
+    transfer_id: str = Field(description="Public identifier of the pending transfer.")
+    expires_at: datetime = Field(
+        description=(
+            "When the token lapses; after it, re-issue the originating call to mint a fresh one."
+        )
+    )
+    content_hash: Sha256Str = Field(
+        description=(
+            "SHA-256 of the bytes the fetch will deliver, in canonical "
+            "`sha256:<hex>` form; verify the fetched file against it."
+        )
+    )
+    content_size: int = Field(description="Exact byte count the fetch will deliver.")
+    filename: str = Field(
+        description=(
+            "Basename of the delivered content, suitable as a local filename "
+            "when the requested target is a directory."
+        )
+    )
+    write_to_path: str = Field(
+        description=(
+            "The caller-local target path echoed verbatim from the "
+            "originating call; the fetched bytes belong there."
+        )
+    )
+
+
+class TransferUploadResult(BaseModel):
+    """Receipt for a completed byte delivery: what the server staged, so the
+    sender can verify the delivery against the local file before issuing the
+    completion call."""
+
+    transfer_id: str = Field(
+        description=("Public identifier of the pending transfer the bytes were staged against.")
+    )
+    size: int = Field(description="Byte count received and staged.")
+    sha256: str = Field(
+        description=(
+            "SHA-256 hex digest of the staged bytes, bare hex to compare "
+            "directly against a local checksum of the source file."
+        )
+    )

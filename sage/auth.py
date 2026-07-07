@@ -306,10 +306,13 @@ class AuthMiddleware:
     A pure-ASGI middleware on the parent application so the one validator
     guards the REST routes and the HTTP MCP transport routes identically
     -- authorization is uniform regardless of surface. Exempt paths (the
-    liveness probe) are answered without a token. A rejected request is
-    answered here with the validator's status and ``WWW-Authenticate``
-    challenge; an accepted request carries its principal forward on the ASGI
-    scope under :data:`SCOPE_PRINCIPAL_KEY`.
+    liveness probe, and the transfer endpoints whose one-time transfer
+    token is the sole credential by design) are answered without a bearer
+    token; ``exempt_prefixes`` covers exempt routes that carry path
+    parameters. A rejected request is answered here with the validator's
+    status and ``WWW-Authenticate`` challenge; an accepted request carries
+    its principal forward on the ASGI scope under
+    :data:`SCOPE_PRINCIPAL_KEY`.
     """
 
     def __init__(
@@ -318,13 +321,20 @@ class AuthMiddleware:
         *,
         validator: TokenValidator,
         exempt_paths: frozenset[str] = frozenset(),
+        exempt_prefixes: frozenset[str] = frozenset(),
     ) -> None:
         self.app = app
         self._validator = validator
         self._exempt_paths = exempt_paths
+        self._exempt_prefixes = exempt_prefixes
+
+    def _is_exempt(self, path: str) -> bool:
+        return path in self._exempt_paths or any(
+            path.startswith(prefix) for prefix in self._exempt_prefixes
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") in self._exempt_paths:
+        if scope["type"] != "http" or self._is_exempt(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
         try:

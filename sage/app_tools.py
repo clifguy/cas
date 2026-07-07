@@ -6,14 +6,13 @@ SAGE substrate (``sage.services.scan``, ``sage.services.batch_ingest``);
 this module only adapts the dict-shaped MCP arguments to those services.
 """
 
-import shutil
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter
 
+import sage.mcp_init
 from sage.api.errors import (
     AmbiguousIngestSourceError,
     MissingIngestSourceError,
@@ -21,7 +20,7 @@ from sage.api.errors import (
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.schemas import VaultIdStr
-from sage.services.inline_ingest import decode_inline_content, staging_name
+from sage.services.transfer import PendingTransfer, get_transfer_store, mint_upload_recipe
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
 # parallel adapter declarations and rationale in
@@ -76,8 +75,9 @@ def register_app_tools(
         - ``caller_filesystem_unavailable`` (501): under the cloud profile the
           server cannot see the caller's filesystem, so directory discovery is
           refused rather than walking the container's own tree. Enumerate the
-          files on the caller and ingest each via ``content_base64`` on
-          ``ingest_document``.
+          directory in the caller's environment instead, then ingest each file
+          by its absolute path -- the upload recipe the ingest tools return
+          carries the rest of the exchange.
 
         Args:
             vault_id: Target vault identifier.
@@ -101,8 +101,8 @@ def register_app_tools(
             # enumerates locally and ingests each file's bytes inline instead.
             require_caller_local_filesystem(
                 "list_directory",
-                "enumerate the files on the caller and ingest each via "
-                "content_base64 on ingest_document",
+                "enumerate the directory in the caller's environment and "
+                "ingest each file by its absolute path via ingest_document",
             )
             v = get_vault(vault_id)
             d = Path(directory.strip("'\""))
@@ -207,31 +207,35 @@ def register_app_tools(
           ``summary.errors[]`` instead.
         - ``empty_file_list`` (string in response): ``files`` was empty.
         - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
-          file entry set both ``file_path`` and ``content_base64``, or neither;
-          each entry needs exactly one.
-        - ``caller_filesystem_unavailable`` (501): an entry gave an absolute
-          ``file_path`` under the cloud profile, where the server cannot see the
-          caller's filesystem. Supply that file's bytes via ``content_base64``.
-        - ``inline_content_too_large`` (413) / ``invalid_inline_content`` (400):
-          an entry's ``content_base64`` exceeded the inline-ingest ceiling
-          (``SAGE_MAX_INLINE_INGEST_BYTES``, default 100 MB) or was not valid
-          base64. These are batch-boundary refusals raised before any per-file
-          work, not per-file ``summary.errors[]`` entries.
+          file entry set both ``file_path`` and ``transfer_token``, or
+          neither; each entry needs exactly one.
+        - ``transfer_token_invalid`` (410) / ``transfer_not_staged`` (409):
+          an entry's ``transfer_token`` was unredeemable, or its bytes have
+          not been delivered to the upload endpoint yet. These are
+          batch-boundary refusals raised before any per-file work, not
+          per-file ``summary.errors[]`` entries.
+        - ``transfer_endpoint_not_configured`` (500): the batch needs the
+          transfer channel but the deployment declares no public transfer
+          endpoint, so no recipe can be minted.
+
+        When the server cannot read the caller's filesystem and any entry
+        names an absolute ``file_path``, the call returns one upload recipe
+        (``status: upload_required``) covering those entries instead of
+        ingesting: deliver each file to its own URL with its own token, then
+        repeat the call with each such entry carrying ``transfer_token``
+        instead of ``file_path``.
 
         Args:
             vault_id: Target vault identifier.
             files: List of file objects. Each carries a source by exactly one
-                delivery shape: ``file_path`` (str, read from the filesystem of
-                the machine running the SAGE server process; the retained copy
+                delivery shape: ``file_path`` (str, a path to the source
+                file, read directly only when the caller's machine is the
+                machine running the SAGE server process; the retained copy
                 lands on the vault's configured source store) or
-                ``content_base64`` (str, the file's bytes base64-encoded inline
-                in the request -- the profile-invariant channel for a
-                remote-mount caller whose local file the server cannot see;
-                staged to an ephemeral server-side temp file below the tool
-                surface). An inline entry may add ``filename`` (str) to preserve
-                the extension for adapter and filename-metadata inference. Under
-                the cloud profile an absolute ``file_path`` is refused -- use
-                ``content_base64``. Each entry also carries
+                ``transfer_token`` (str, the one-time token from a
+                previously returned upload recipe, redeemed after the
+                recipe's byte leg delivered that file to the upload
+                endpoint). Each entry also carries
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
                 ``markdown``, ``docx``, ``xlsx``, ``pdf``; the vault's
                 actually-enabled subset is whatever appears under
@@ -264,47 +268,46 @@ def register_app_tools(
                     "message": "No files selected for ingestion",
                 }
 
-            # Inline entries are staged to one shared temp dir below the tool
-            # surface and removed once the batch run has read them (the run is
-            # fully awaited, so cleanup after it is safe).
-            staging_dir = Path(tempfile.mkdtemp(prefix="sage-inline-bulk-"))
+            # Each entry arrives by exactly one delivery shape: a
+            # ``file_path``, or a ``transfer_token`` redeeming bytes the
+            # caller's environment already delivered to the upload endpoint.
+            # Validated batch-wide before any redemption so a malformed batch
+            # consumes no tokens.
+            for f in files:
+                if f.get("file_path") is not None and f.get("transfer_token") is not None:
+                    raise AmbiguousIngestSourceError()
+                if f.get("file_path") is None and f.get("transfer_token") is None:
+                    raise MissingIngestSourceError()
+
+            # Absolute paths name files on the caller's machine. When the
+            # server cannot see them, answer with one upload recipe covering
+            # every such entry rather than reading the container's own tree;
+            # the caller's environment delivers each file and repeats the
+            # call with per-entry transfer tokens. Relative paths are
+            # vault-store references the pipeline resolves (CAS-ADR-043).
+            if not sage.mcp_init.caller_local_filesystem_reachable():
+                absolute_sources = [
+                    f["file_path"]
+                    for f in files
+                    if f.get("file_path") is not None and Path(f["file_path"]).is_absolute()
+                ]
+                if absolute_sources:
+                    return serialize(mint_upload_recipe(vault_id, absolute_sources))
+
+            # Redeemed entries own per-token staging directories, removed
+            # once the batch run has read them (the run is fully awaited, so
+            # cleanup after it is safe).
+            consumed: list[PendingTransfer] = []
             try:
                 descriptors: list[FileDescriptor] = []
-                for index, f in enumerate(files):
-                    file_path = f.get("file_path")
-                    content_base64 = f.get("content_base64")
-
-                    # Each entry arrives by exactly one delivery shape: a
-                    # ``file_path`` resolved on the SAGE server, or inline
-                    # ``content_base64`` bytes carried in the request.
-                    if file_path is not None and content_base64 is not None:
-                        raise AmbiguousIngestSourceError()
-                    if file_path is None and content_base64 is None:
-                        raise MissingIngestSourceError()
-
-                    if content_base64 is not None:
-                        raw = decode_inline_content(content_base64)
-                        # One subdirectory per entry: two entries carrying the
-                        # same filename must stage to distinct paths, or the
-                        # later write would clobber the earlier bytes before
-                        # the batch runs.
-                        entry_dir = staging_dir / str(index)
-                        entry_dir.mkdir()
-                        dest = entry_dir / staging_name(f.get("filename"), f"inline_source_{index}")
-                        dest.write_bytes(raw)
-                        resolved_path = str(dest)
+                for f in files:
+                    transfer_token = f.get("transfer_token")
+                    if transfer_token is not None:
+                        entry = get_transfer_store().consume_upload(transfer_token, vault_id)
+                        consumed.append(entry)
+                        resolved_path = str(entry.staged_path)
                     else:
-                        # An absolute path names a file on the caller's machine;
-                        # under the cloud profile refuse it in favor of the
-                        # inline channel rather than reading the container's own
-                        # tree. A relative path is a vault-store reference the
-                        # pipeline resolves (CAS-ADR-043).
-                        if Path(file_path).is_absolute():
-                            require_caller_local_filesystem(
-                                "bulk_ingest_document with an absolute file_path",
-                                "supply each file's bytes inline via content_base64",
-                            )
-                        resolved_path = file_path
+                        resolved_path = f["file_path"]
 
                     pm = f.get("parsed_metadata")
                     parsed = None
@@ -333,7 +336,8 @@ def register_app_tools(
                 )
                 return result.to_dict()
             finally:
-                shutil.rmtree(staging_dir, ignore_errors=True)
+                for entry in consumed:
+                    entry.cleanup()
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

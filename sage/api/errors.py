@@ -1127,15 +1127,14 @@ class DownloadUrlNotAvailableError(SAGEError):
 class CallerFilesystemUnavailableError(SAGEError):
     """501: a caller-supplied local path cannot be honored under this deployment.
 
-    Under the cloud profile SAGE runs as a remote container that cannot see the
-    calling client's filesystem, so a path-bearing operation -- reading a
-    ``source`` path, enumerating a ``directory``, or writing bytes to an
-    absolute ``write_to_path`` -- would silently resolve against the container's
-    own tree instead of the caller's. Such operations are refused with this
-    structured error naming the in-request byte channel to use instead, closing
-    both the usability gap (the path is unreachable) and the container-walk
-    disclosure in one move. Mirrors the "capability unavailable in this
-    deployment" shape of :class:`LocalOpenNotAvailableError` and
+    Under the cloud profile SAGE runs as a remote container that cannot see
+    the calling client's filesystem. The byte-moving path tools answer with a
+    transfer recipe instead, but ``list_directory`` has no byte leg to hand
+    off -- walking and content-hashing a directory only makes sense against
+    the caller's own tree -- so it is refused with this structured error
+    naming the caller-side alternative, closing the container-walk disclosure.
+    Mirrors the "capability unavailable in this deployment" shape of
+    :class:`LocalOpenNotAvailableError` and
     :class:`DownloadUrlNotAvailableError` (CAS-ADR-042 constraint 1: the
     caller-visible surface stays profile-invariant; the per-profile byte
     transport below it is a binding detail).
@@ -1153,53 +1152,126 @@ class CallerFilesystemUnavailableError(SAGEError):
         )
 
 
-class InlineContentTooLargeError(SAGEError):
-    """413: inline ingest content exceeds the configured byte ceiling.
+class TransferTokenInvalidError(SAGEError):
+    """410: a transfer token does not name a redeemable pending transfer.
 
-    The in-request byte channel (``content_base64`` on ``ingest_document`` /
-    ``bulk_ingest_document``) is bounded so a single request cannot carry an
-    unbounded payload. Exceeding the ceiling fails with this structured error
-    naming the observed size and the bound -- never a silent truncation. The
-    ceiling is ``SAGE_MAX_INLINE_INGEST_BYTES`` (default 100 MB).
+    Transfer tokens are short-lived, one-time, direction-scoped credentials
+    minted by an authenticated call and redeemed against the transfer
+    endpoints. One code covers every unredeemable state -- unknown, expired,
+    already consumed, wrong direction, or wrong vault -- so the error surface
+    is not an oracle distinguishing a token that never existed from one that
+    just expired. The remedy is always the same: re-issue the originating
+    call to mint a fresh token.
     """
 
-    def __init__(self, size_bytes: int, max_bytes: int) -> None:
+    def __init__(self) -> None:
         super().__init__(
-            "inline_content_too_large",
+            "transfer_token_invalid",
             (
-                f"Inline ingest content of {size_bytes} bytes exceeds the "
-                f"inline-ingest ceiling of {max_bytes} bytes; ingest a smaller "
-                f"file or raise SAGE_MAX_INLINE_INGEST_BYTES."
+                "The transfer token does not name a redeemable pending "
+                "transfer (unknown, expired, already used, or scoped to a "
+                "different direction or vault); re-issue the originating "
+                "call to mint a fresh token."
             ),
-            413,
-            {"size_bytes": size_bytes, "max_bytes": max_bytes},
+            410,
         )
 
 
-class InvalidInlineContentError(SAGEError):
-    """400: ``content_base64`` is not valid base64.
+class TransferNotStagedError(SAGEError):
+    """409: an upload's completion call arrived before its bytes.
 
-    The in-request byte channel carries the file bytes base64-encoded; a payload
-    that does not decode is a caller error surfaced with this structured 400
-    rather than a generic internal error.
+    Completing a caller-local ingest is a two-step exchange: the caller's
+    environment first delivers the bytes to the upload endpoint, then the
+    completion call redeems the token against the staged bytes. Arriving
+    here without a successful upload leg is an ordering error, not a token
+    error -- the token stays valid, and the remedy is to run the upload leg.
     """
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, transfer_id: str) -> None:
         super().__init__(
-            "invalid_inline_content",
-            f"content_base64 is not valid base64: {reason}",
-            400,
-            {"reason": reason},
+            "transfer_not_staged",
+            (
+                f"Transfer {transfer_id} has no staged bytes yet; deliver the "
+                f"file to the upload endpoint with the transfer token, then "
+                f"repeat this call."
+            ),
+            409,
+            {"transfer_id": transfer_id},
+        )
+
+
+class TransferAlreadyStagedError(SAGEError):
+    """409: a second upload attempted against an already-staged transfer.
+
+    Each upload token admits exactly one successful byte delivery; the staged
+    bytes then wait for the completion call. A repeat delivery is refused
+    rather than silently overwriting the staged bytes, so a duplicated curl
+    cannot race the completion.
+    """
+
+    def __init__(self, transfer_id: str) -> None:
+        super().__init__(
+            "transfer_token_already_used",
+            (
+                f"Transfer {transfer_id} already holds staged bytes; complete "
+                f"the originating call, or mint a fresh token to re-send."
+            ),
+            409,
+            {"transfer_id": transfer_id},
+        )
+
+
+class TransferContentTooLargeError(SAGEError):
+    """413: an upload exceeded the transfer byte ceiling mid-stream.
+
+    The upload endpoint bounds the body while streaming it to staging, so an
+    oversize payload is aborted at the ceiling instead of filling the
+    container's disk; the partial staging file is removed and the token
+    reverts to retryable. The ceiling is ``SAGE_MAX_TRANSFER_BYTES``
+    (default 100 MB).
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        super().__init__(
+            "transfer_content_too_large",
+            (
+                f"Upload exceeded the transfer ceiling of {max_bytes} bytes "
+                f"and was aborted; send a smaller file or raise "
+                f"SAGE_MAX_TRANSFER_BYTES."
+            ),
+            413,
+            {"max_bytes": max_bytes},
+        )
+
+
+class TransferEndpointNotConfiguredError(SAGEError):
+    """500: this deployment cannot mint transfer recipes.
+
+    Minting a recipe requires the stack config to declare the public base URL
+    the caller's environment can reach (``transfer.public_base_url``). A
+    deployment that needs the caller-local byte channel but does not declare
+    it fails loud at mint time with this structured error, rather than
+    emitting a recipe whose URL cannot work.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "transfer_endpoint_not_configured",
+            (
+                "This deployment does not declare transfer.public_base_url in "
+                "its stack config, so no transfer recipe can be minted."
+            ),
+            500,
         )
 
 
 class AmbiguousIngestSourceError(SAGEError):
-    """400: both a path ``source`` and inline ``content_base64`` were supplied.
+    """400: both a path ``source`` and a ``transfer_token`` were supplied.
 
     The two are mutually exclusive delivery shapes for the same logical source:
-    a ``source`` path resolved on the SAGE server, or ``content_base64`` bytes
-    carried in the request. Supplying both is refused so the caller learns which
-    to drop, mirroring the exactly-one-of contract of
+    a ``source`` path, or a ``transfer_token`` redeeming bytes already
+    delivered to the upload endpoint. Supplying both is refused so the caller
+    learns which to drop, mirroring the exactly-one-of contract of
     :class:`AmbiguousDocumentIdentifierError`.
     """
 
@@ -1207,16 +1279,16 @@ class AmbiguousIngestSourceError(SAGEError):
         super().__init__(
             "ambiguous_ingest_source",
             (
-                "Supply exactly one of `source` (a path resolved on the SAGE "
-                "server) or `content_base64` (inline caller bytes); both were "
-                "provided."
+                "Supply exactly one of `source` (a source file path) or "
+                "`transfer_token` (redeeming an already-delivered upload); "
+                "both were provided."
             ),
             400,
         )
 
 
 class MissingIngestSourceError(SAGEError):
-    """400: neither a path ``source`` nor inline ``content_base64`` was supplied.
+    """400: neither a path ``source`` nor a ``transfer_token`` was supplied.
 
     Companion to :class:`AmbiguousIngestSourceError`: a document to ingest must
     arrive by exactly one of the two delivery shapes, and neither was provided.
@@ -1226,9 +1298,9 @@ class MissingIngestSourceError(SAGEError):
         super().__init__(
             "missing_ingest_source",
             (
-                "Supply exactly one of `source` (a path resolved on the SAGE "
-                "server) or `content_base64` (inline caller bytes); neither was "
-                "provided."
+                "Supply exactly one of `source` (a source file path) or "
+                "`transfer_token` (redeeming an already-delivered upload); "
+                "neither was provided."
             ),
             400,
         )

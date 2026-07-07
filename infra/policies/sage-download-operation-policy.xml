@@ -1,0 +1,28 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET /download/{transferId}
+            (CAS-ADR-042). The byte-fetch leg of the caller-local transfer
+            channel: the request carries a short-lived one-time download
+            token minted by an authenticated MCP call, and that token is the
+            sole credential — the SAGE app validates it and consumes it at
+            redemption server-side.
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so curl can fetch the
+            bytes without an Entra bearer token. This is a real backend
+            passthrough — no CORS block because the caller is a shell, not a
+            browser.
+        -->
+        <set-backend-service backend-id="sage-backend" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
