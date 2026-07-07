@@ -268,16 +268,23 @@ def test_build_vault_summary_populates_every_vault_summary_field():
 
 
 class _FakeGraphStore:
-    """Per-vault graph store that either returns counts or raises."""
+    """Per-vault graph store that either returns counts or raises, with a
+    controllable storage-presence probe (defaults to present, matching a
+    healthy vault)."""
 
     def __init__(
         self,
         *,
         counts: dict[str, int] | None = None,
         raises: BaseException | None = None,
+        storage_present: bool = True,
     ) -> None:
         self._counts = counts
         self._raises = raises
+        self._storage_present = storage_present
+
+    async def storage_present(self, vault_id: str) -> bool:
+        return self._storage_present
 
     async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
         if self._raises is not None:
@@ -309,9 +316,12 @@ class _FakeServices:
         config: VaultConfig,
         counts: dict[str, int] | None = None,
         raises: BaseException | None = None,
+        storage_present: bool = True,
     ) -> None:
         self.config = config
-        self.graph_store = _FakeGraphStore(counts=counts, raises=raises)
+        self.graph_store = _FakeGraphStore(
+            counts=counts, raises=raises, storage_present=storage_present
+        )
         self.ingestion_service = _FakeIngestionService()
         self.close_timing_called = False
         self.close_storage_called = False
@@ -444,3 +454,77 @@ async def test_list_vaults_survives_a_reconcile_failure(monkeypatch: Any, caplog
     assert len(result) == 1  # healthy still lists
     assert "broken" in registry  # couldn't determine -> left in place
     assert any("reconcile" in r.getMessage().lower() for r in caplog.records)
+
+
+async def test_list_vaults_evicts_a_torn_down_vault_masked_by_search_path_fallback(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """An out-of-band schema drop does not reliably make the count query raise:
+    the per-vault search_path resolves the store's unqualified table names
+    against a later entry, so a torn-down vault's queries can keep *succeeding*
+    against tables that are not its own. The explicit storage-presence probe
+    must catch it: the vault is skipped from the listing and, with its config
+    also gone from discovery, evicted.
+
+    Anti-coincidental: ``masked`` returns healthy-looking counts (no exception
+    is ever raised), so a regression back to error-only reconciliation would
+    list it and leave it registered; the not-listed + evicted assertions fail
+    exactly that.
+    """
+    config = _vault_config_with_every_summary_field()
+    masked = _FakeServices(config=config, counts={"proj_ghost": 3}, storage_present=False)
+    healthy = _FakeServices(config=config, counts={"proj_a": 2})
+    registry: dict[str, Any] = {"masked": masked, "healthy": healthy}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=["healthy"]))
+
+    with caplog.at_level(logging.WARNING, logger="sage.services.vault_registry"):
+        result = await svc.list_vaults()
+
+    assert len(result) == 1  # only the healthy vault lists
+    assert result[0].id == "sentinel_vault"
+    assert "masked" not in registry  # evicted despite the succeeding query
+    assert masked.ingestion_service.stop_worker_called
+    assert masked.close_timing_called
+    assert masked.close_storage_called
+    assert any(r.levelno == logging.WARNING and "masked" in r.getMessage() for r in caplog.records)
+
+
+async def test_list_vaults_skips_but_keeps_a_backing_absent_vault_still_discovered(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """Probe says the durable backing is gone but the config is STILL present in
+    discovery: skipped from the listing but NOT evicted -- a half-completed
+    teardown (or a manual schema drop) must not destroy the registry entry; a
+    restart re-bootstraps the schema from the surviving config.
+
+    Anti-coincidental: an evict keyed on the probe alone (dropping the
+    discovery-membership guard) would remove ``halfway``; asserting it remains
+    -- and that its stop_worker/close_storage did NOT run -- fails such a
+    regression.
+    """
+    config = _vault_config_with_every_summary_field()
+    halfway = _FakeServices(config=config, counts={"proj_ghost": 1}, storage_present=False)
+    healthy = _FakeServices(config=config, counts={"proj_a": 1})
+    registry: dict[str, Any] = {"halfway": halfway, "healthy": healthy}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=["halfway", "healthy"]))
+
+    with caplog.at_level(logging.ERROR, logger="sage.services.vault_registry"):
+        result = await svc.list_vaults()
+
+    assert len(result) == 1  # healthy listed, halfway skipped
+    assert "halfway" in registry  # NOT evicted (config still present)
+    assert not halfway.ingestion_service.stop_worker_called
+    assert not halfway.close_storage_called
+    assert any(r.levelno == logging.ERROR and "halfway" in r.getMessage() for r in caplog.records)
+
+
+async def test_graph_store_port_reports_storage_present_by_default() -> None:
+    """Backends whose durable backing cannot vanish independently of the open
+    store handle inherit a True probe from the port, so ``list_vaults``'
+    presence check is a no-op for them (``StubGraphStore`` inherits the
+    default rather than overriding it)."""
+    from sage.adapters.stubs import StubGraphStore
+
+    assert await StubGraphStore().storage_present("any_vault") is True

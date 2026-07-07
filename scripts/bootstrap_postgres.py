@@ -9,17 +9,24 @@ extensions. Re-running is safe; every statement is ``IF NOT EXISTS``.
 For the on-box default the config connects over the local unix socket as the OS
 user (peer auth, no password). A password, when a TCP/hosted endpoint needs one,
 is read from ``$SAGE_PG_PASSWORD`` -- never from a file or an argument. Pass
-``--dsn`` to point at an explicit Postgres (e.g. a throwaway), ``--schema`` to
-provision a non-``public`` schema, and ``--extensions`` to override the list.
+``--dsn`` to point at an explicit Postgres (e.g. a throwaway) and
+``--extensions`` to override the list.
+
+``--schema`` is required, and ``public`` is refused at the DDL assembly point:
+storage tenancy is one schema per vault (CAS-ADR-042), and ``public`` -- which
+trails every per-vault search_path -- carries extension objects only. A SAGE
+table there would silently absorb the unqualified queries of any vault whose
+own schema was dropped out of band.
 
 Examples::
 
-    # Provision the local SAGE database from sage/config.yaml's postgres block:
-    .venv/bin/python scripts/bootstrap_postgres.py
+    # Provision a vault schema in the local SAGE database (connection from
+    # sage/config.yaml's postgres block):
+    .venv/bin/python scripts/bootstrap_postgres.py --schema myvault
 
     # Provision a throwaway:
     .venv/bin/python scripts/bootstrap_postgres.py \\
-        --dsn postgresql://localhost/sage_scratch
+        --dsn postgresql://localhost/sage_scratch --schema scratch
 """
 
 from __future__ import annotations
@@ -47,8 +54,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--schema",
-        default="public",
-        help="Target schema to create the tables in (default: public).",
+        required=True,
+        help=(
+            "Target schema to create the tables in. Required; 'public' is "
+            "refused -- tenancy is one schema per vault (CAS-ADR-042)."
+        ),
     )
     parser.add_argument(
         "--extensions",

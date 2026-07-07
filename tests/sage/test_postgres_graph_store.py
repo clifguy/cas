@@ -435,3 +435,57 @@ async def test_measured_byte_size_zero_when_tables_absent(pg_dsn):
     finally:
         async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+async def test_storage_present_sees_through_search_path_fallback(pg_dsn):
+    """storage_present probes the schema catalog, not search_path resolution.
+
+    Two disposable schemas share one pool's search_path. After the primary is
+    dropped out of band, the store's unqualified queries still *succeed* -- they
+    fall through to the second schema's same-named tables (the positive control:
+    this masking is exactly why an error-triggered registry reconcile never
+    fires) -- yet storage_present reports the primary absent. A probe built on
+    name resolution (``to_regclass('documents')``) would be masked the same way
+    the queries are; the ``information_schema`` probe cannot be.
+    """
+    import os
+
+    import psycopg
+
+    from sage.storage.postgres.pool import pool_from_conninfo
+    from sage.storage.postgres.schema import (
+        assert_disposable_target,
+        bootstrap_schema,
+        drop_schema,
+    )
+
+    primary = "sage_test_primary_" + os.urandom(4).hex()
+    decoy = "sage_test_decoy_" + os.urandom(4).hex()
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        await bootstrap_schema(conn, schema=primary, extensions=["vector", "pgstattuple"])
+        await bootstrap_schema(conn, schema=decoy, extensions=["vector", "pgstattuple"])
+    try:
+        pool = pool_from_conninfo(pg_dsn, search_path=f"{primary},{decoy},public")
+        await pool.open()
+        try:
+            store = PostgresGraphStore(pool)
+            assert await store.storage_present(primary) is True
+            assert await store.storage_present(decoy) is True
+
+            async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+                await drop_schema(conn, assert_disposable_target(primary))
+
+            # Positive control for the masking mechanism: the unqualified count
+            # query still succeeds against the fallback schema's table, so no
+            # error would ever surface the drop.
+            assert await store.get_total_document_count() == 0
+            assert await store.storage_present(primary) is False
+            assert await store.storage_present(decoy) is True
+        finally:
+            await pool.close()
+    finally:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            for schema in (primary, decoy):
+                await conn.execute(
+                    f'DROP SCHEMA IF EXISTS "{assert_disposable_target(schema)}" CASCADE'
+                )

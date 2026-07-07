@@ -1155,6 +1155,24 @@ class PostgresGraphStore(GraphStore):
             )
             return int(value)
 
+    async def storage_present(self, vault_id: str) -> bool:
+        """Whether the vault's schema is still present in the shared database.
+
+        The Postgres binding names each vault's schema by its vault id
+        (CAS-ADR-042), so an out-of-band ``DROP SCHEMA`` is what this probe
+        exists to see. It reads the schema catalog rather than resolving a
+        table name: name resolution walks the connection's search_path and can
+        fall through to a same-named table in a later entry, so a dropped
+        schema could read as present -- the catalog probe cannot be masked
+        that way.
+        """
+        with self._query_timer.measure("storage_present"):
+            value = await self._fetch_scalar(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = %s)",
+                (vault_id,),
+            )
+            return bool(value)
+
     # ------------------------------------------------------------------
     # Traversal
     # ------------------------------------------------------------------
