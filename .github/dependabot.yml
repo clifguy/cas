@@ -41,6 +41,17 @@ updates:
       # the Node runtime moves.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # typescript is held below 7 by typescript-eslint, which declares
+      # `peerDependencies.typescript: ">=4.8.4 <6.1.0"`. Every published
+      # typescript-eslint release carries that ceiling, so a TS 7 bump aborts
+      # `npm ci` with ERESOLVE and reds every npm-dependent job. TS 7 is the
+      # native-port rewrite; the lint toolchain has to catch up before the
+      # compiler can move, and forcing the resolution would run type-aware lint
+      # rules against a parser that does not support the compiler. Minor and
+      # patch updates within the major still flow. Drop this ignore once
+      # typescript-eslint publishes a peer range admitting TS 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       # react and react-dom are a lockstep pair: React's startup guard aborts
       # the app when the two packages resolve to different versions. Dependabot
