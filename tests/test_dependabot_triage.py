@@ -13,6 +13,7 @@ is unit-tested here.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Final
 
@@ -218,3 +219,71 @@ def test_allowlist_file_parses_with_accepted_list() -> None:
     data = yaml.safe_load(ALLOWLIST.read_text(encoding="utf-8"))
     assert isinstance(data, dict)
     assert isinstance(data.get("accepted"), list)
+
+
+# --- committed allowlist contents -------------------------------------------
+
+GHSA_ID_PATTERN: Final[str] = r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}"
+
+# Advisories with a published fix whose bump is deliberately deferred, so the
+# actionable filter would otherwise keep them in the standing tracking issue
+# indefinitely -- precisely the accepted-risk case this allowlist exists to
+# record. The two are coupled: the setuptools fix is unreachable while torch
+# is held back, because torch pins a setuptools ceiling.
+DEFERRED_ADVISORIES: Final[tuple[str, ...]] = (
+    "GHSA-rrmf-rvhw-rf47",  # torch
+    "GHSA-h35f-9h28-mq5c",  # setuptools, gated by the torch ceiling
+)
+
+
+def _accepted_entries() -> list[Any]:
+    data = yaml.safe_load(ALLOWLIST.read_text(encoding="utf-8")) or {}
+    return data.get("accepted") or []
+
+
+@pytest.mark.parametrize("advisory", DEFERRED_ADVISORIES)
+def test_deferred_advisory_is_allowlisted(advisory: str) -> None:
+    """W5: each deliberately deferred advisory is accepted, with a reason.
+
+    ``actionable_alerts`` drops an alert only when it has no published fix or
+    its id is allowlisted. These advisories have fixes, so without an entry
+    here the tracking issue never reaches zero actionable alerts and the close
+    path is unreachable.
+
+    The reason assertion is the load-bearing half: ``load_allowlist`` keys only
+    on ``ghsa_id`` and never reads ``reason``, so a bare ``- ghsa_id: ...``
+    entry would suppress the alert with no justification on record. This test
+    is what forces the *why* to be written down.
+    """
+    entries = _accepted_entries()
+    matches = [e for e in entries if isinstance(e, dict) and e.get("ghsa_id") == advisory]
+    assert len(matches) == 1, (
+        f"expected exactly one accepted entry for {advisory}, found {len(matches)} "
+        f"among {[e.get('ghsa_id') for e in entries if isinstance(e, dict)]}."
+    )
+    reason = matches[0].get("reason")
+    assert isinstance(reason, str) and reason.strip(), (
+        f"the accepted entry for {advisory} must carry a non-empty `reason` -- "
+        "an id-only entry is silent accepted risk."
+    )
+
+
+def test_allowlist_entries_are_well_formed() -> None:
+    """W6: every accepted entry is a well-formed id plus a non-empty reason.
+
+    Generalizes the discipline W5 asserts for one advisory so the next
+    deferral inherits it. A malformed or misspelled ``ghsa_id`` fails open:
+    ``load_allowlist`` carries it into the accepted set where it silently
+    matches nothing, leaving the real alert flagged with no signal that the
+    entry is inert.
+    """
+    for entry in _accepted_entries():
+        assert isinstance(entry, dict), f"accepted entry is not a mapping: {entry!r}"
+        ghsa_id = entry.get("ghsa_id")
+        assert isinstance(ghsa_id, str) and re.fullmatch(GHSA_ID_PATTERN, ghsa_id), (
+            f"accepted entry `ghsa_id` must match {GHSA_ID_PATTERN!r}, got {ghsa_id!r}."
+        )
+        reason = entry.get("reason")
+        assert isinstance(reason, str) and reason.strip(), (
+            f"accepted entry {ghsa_id} must carry a non-empty `reason`."
+        )

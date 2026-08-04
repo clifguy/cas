@@ -20,10 +20,12 @@ from __future__ import annotations
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
+from typing import Final
 
 import pytest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
@@ -39,6 +41,22 @@ CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 # binding flipped to the Postgres adapters; ``lancedb``/``pyarrow`` dropped
 # when the embedded fallback binding was retired.
 LOCK_TRACKED = ("torch", "psycopg", "psycopg-pool", "pgvector")
+
+# Minimum resolved versions carrying a published fix for a security advisory
+# remediated in this repository, keyed by package with the advisory id that
+# motivated the floor. ``pyproject.toml`` declares no floor for these -- they
+# are transitive, or their direct floor is deliberately permissive -- so the
+# lockfile is the only place the remediation is recorded, and a later
+# ``uv lock --upgrade`` or a revert could otherwise drop back below a fixed
+# version with nothing to catch it. This is a *minimum* guard and deliberately
+# distinct from ``LOCK_TRACKED`` above, which asserts exact installed-matches-lock
+# equality for the native stack: a floor must keep holding as versions move
+# forward, so conflating the two would make every future bump require a
+# ``uv sync`` before the suite could pass.
+SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
+    "aiohttp": ("3.14.3", "GHSA-cq5v-8q36-5273"),
+    "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
+}
 
 
 def _pyproject() -> dict:
@@ -119,6 +137,66 @@ def test_installed_matches_lock(name: str, locked: dict[str, set[str]]) -> None:
         f"installed {name} {installed} is not among the uv.lock pins "
         f"{sorted(locked[name])}; run `uv sync --locked` to reconcile the "
         "environment with the lockfile."
+    )
+
+
+def test_security_floor_packages_are_locked(locked: dict[str, set[str]]) -> None:
+    """Every package carrying a security floor is present in the lock.
+
+    Vacuity guard for ``test_security_floor_holds``: if a package leaves the
+    resolution entirely -- e.g. ``aiohttp`` disappears when the
+    ``azure-core[aio]`` extra is dropped -- that test's parametrization has
+    nothing left to compare and would report a pass. Assert presence
+    separately so a genuine removal fails loudly as "no longer locked",
+    distinct from "locked but below the floor".
+    """
+    missing = sorted(name for name in SECURITY_FLOORS if name not in locked)
+    assert not missing, (
+        f"security-floor packages absent from uv.lock: {missing}. If a package "
+        "legitimately left the dependency tree, drop its SECURITY_FLOORS entry "
+        "deliberately -- do not let the floor check pass vacuously."
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "floor", "advisory"),
+    [(name, floor, advisory) for name, (floor, advisory) in SECURITY_FLOORS.items()],
+    ids=list(SECURITY_FLOORS),
+)
+def test_security_floor_holds(
+    name: str, floor: str, advisory: str, locked: dict[str, set[str]]
+) -> None:
+    """Every resolved version of a remediated package is at or above its floor.
+
+    Regression guard: these floors are not expressible in ``pyproject.toml``
+    (the packages are transitive, or carry a deliberately permissive direct
+    floor), so without this check a resolve that walks one of them backwards
+    silently reintroduces a known-vulnerable version.
+
+    Checks *every* version the lock resolves for the package, not just one.
+    ``_locked_versions`` returns a set because a package can appear under
+    several ``[[package]]`` blocks differentiated by ``resolution-markers`` --
+    ``torch`` resolves to a PyPI wheel and an index-routed ``+cpu`` wheel, and
+    a package reached as its dependency inherits the same split. Comparing a
+    single element would let one platform's resolution sit below the floor
+    undetected.
+
+    Comparison is by ``packaging.version.Version``, not string ordering:
+    ``"3.9.0" >= "3.14.3"`` is True as strings, which would be a false pass on
+    a real downgrade.
+    """
+    assert Version("3.9.0") < Version("3.14.3"), (
+        "sanity check on the comparison semantics in force: this ordering is "
+        "True under string comparison and must be False under version "
+        "comparison, so its failure means the guard below is not doing what "
+        "it claims."
+    )
+    assert name in locked, f"{name!r} is not pinned in uv.lock."
+    below = sorted(v for v in locked[name] if Version(v) < Version(floor))
+    assert not below, (
+        f"uv.lock resolves {name} at {below}, below the {floor} security floor "
+        f"({advisory}). Raise it with `uv lock --upgrade-package {name}`; do not "
+        "lower the floor."
     )
 
 
