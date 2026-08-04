@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useOutletContext } from 'react-router-dom';
+import { Link, useOutletContext } from 'react-router';
 import type { VaultContext } from '../App';
 import type { LastOptimizeSummary, VaultStats } from '../api/types';
 import { getVaultStats } from '../api/vaults';

@@ -10,7 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, Outlet } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, Outlet } from 'react-router';
 import Dashboard from '../Dashboard';
 import type { VaultContext } from '../../App';
 import type { VaultSummary } from '../../api/types';

@@ -1,4 +1,4 @@
-import { Outlet } from 'react-router-dom';
+import { Outlet } from 'react-router';
 import Sidebar from './Sidebar';
 import type { VaultSummary } from '../api/types';
 import type { UserClaims } from '../api/auth';
