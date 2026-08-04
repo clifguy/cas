@@ -56,6 +56,7 @@ LOCK_TRACKED = ("torch", "psycopg", "psycopg-pool", "pgvector")
 SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
     "aiohttp": ("3.14.3", "GHSA-cq5v-8q36-5273"),
     "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
+    "mcp": ("1.28.1", "GHSA-vj7q-gjh5-988w"),
 }
 
 
