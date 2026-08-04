@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useOutletContext } from 'react-router';
 import type { VaultContext } from '../App';
 import type {
   VaultConfig,

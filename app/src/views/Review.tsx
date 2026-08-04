@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
+import { Link, useOutletContext, useSearchParams } from 'react-router';
 import type { VaultContext } from '../App';
 import type { PendingMetadata, StagingEdge, UpdateMetadataRequest } from '../api/types';
 import { listPendingMetadata, listStagingEdges, confirmStagingEdge, dismissStagingEdge } from '../api/review';

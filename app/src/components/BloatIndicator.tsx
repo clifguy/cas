@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { bloatState, deadTupleRatio, reclaimableBytes, type BloatState } from '../utils/bloat';
 import { formatBytes } from '../utils/format';
 

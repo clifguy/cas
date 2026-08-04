@@ -7,7 +7,7 @@
 //   - OptimizeOperation: synchronous content-store VACUUM (Postgres).
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useOutletContext } from 'react-router';
 import type { VaultContext } from '../App';
 import type {
   OptimizeContentStoreReport,

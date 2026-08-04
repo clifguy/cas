@@ -1,7 +1,7 @@
 // Vitest specs for MaintenancePanel (T-0117).
 //
 // Mocks:
-// - react-router-dom's useOutletContext → injects a stub VaultContext.
+// - react-router's useOutletContext → injects a stub VaultContext.
 // - ../api/maintenance exports → controllable spies for startReabstract
 //   and getDeferredCount.
 // - ApiError is imported from ../api/client (real class) so the panel's
@@ -22,8 +22,8 @@ import type {
   ReabstractSummaryEvent,
 } from '../api/types';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return {
     ...actual,
     useOutletContext: () => ({ vaultId: 'v1', vault: null, vaults: [] } as VaultContext),

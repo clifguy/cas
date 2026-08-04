@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useParams, useNavigate, useOutletContext } from 'react-router-dom';
+import { useParams, useNavigate, useOutletContext } from 'react-router';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import type { VaultContext } from '../App';

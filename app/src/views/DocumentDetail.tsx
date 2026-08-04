@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useParams, useOutletContext, useNavigate } from 'react-router-dom';
+import { Link, useParams, useOutletContext, useNavigate } from 'react-router';
 import type { VaultContext } from '../App';
 import type { Document, Edge, EdgeType, LinkRequest, ResolutionPolicy } from '../api/types';
 import { DEFAULT_EDGE_POLICIES } from '../api/types';

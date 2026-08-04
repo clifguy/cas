@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, Outlet } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, Outlet } from 'react-router';
 import { useState } from 'react';
 
 vi.mock('../../api/vaults', () => ({

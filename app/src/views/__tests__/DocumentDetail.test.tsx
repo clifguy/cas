@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, Outlet, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, Outlet, useLocation } from 'react-router';
 import DocumentDetail from '../DocumentDetail';
 import Search from '../Search';
 import type { VaultContext } from '../../App';

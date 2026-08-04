@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, Outlet } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, Outlet } from 'react-router';
 
 // Constructable stubs: the component uses `new Network(...)` / `new DataSet(...)`,
 // so the mocks must be `new`-able (arrow/`vi.fn` impls are not constructors).

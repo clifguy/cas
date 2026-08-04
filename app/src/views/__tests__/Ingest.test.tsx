@@ -1,7 +1,7 @@
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes, Outlet } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, Outlet } from 'react-router';
 import Ingest from '../Ingest';
 import * as ingestApi from '../../api/ingest';
 import type { VaultContext } from '../../App';

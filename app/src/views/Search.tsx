@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
+import { Link, useOutletContext, useSearchParams } from 'react-router';
 import type { VaultContext } from '../App';
 import type { DiscoverHit, DiscoverRequest } from '../api/types';
 import { discover } from '../api/discover';
