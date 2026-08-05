@@ -20,6 +20,7 @@ from pydantic import TypeAdapter, ValidationError
 # sidesteps the LEGB shadow that would otherwise make the inner tool function
 # recurse to itself.
 import sage.mcp_init  # noqa: I001 -- module import keeps the qualified call site alias-free
+from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
     AmbiguousIngestSourceError,
@@ -117,7 +118,7 @@ def register_sage_tools(
     # SAGE protocol tools
     # -------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def ingest_document(
         vault_id: str,
         source: str | None = None,
@@ -376,7 +377,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def get_filename_metadata(
         vault_id: str,
         filename: str,
@@ -419,7 +420,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def get_document(
         vault_id: str,
         document_id: str | None = None,
@@ -501,7 +502,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_lifecycles(
         vault_id: str,
         items: list[dict],
@@ -602,7 +603,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_ADDITIVE)
     async def create_edges(
         vault_id: str,
         items: list[dict],
@@ -737,7 +738,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_metadata(
         vault_id: str,
         items: list[dict],
@@ -886,7 +887,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def delete_edge(vault_id: str, edge_id: str, dry_run: bool = False) -> dict:
         """Delete a production edge from the graph.
 
@@ -925,7 +926,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def verify_preconditions(vault_id: str, function_id: str) -> dict:
         """Check whether all depends_on targets for a function document are
         satisfied (active or completed lifecycle, pipeline complete).
@@ -960,7 +961,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def traverse(
         vault_id: str,
         start_id: str | None = None,
@@ -1051,7 +1052,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def chain(
         vault_id: str,
         edge_type: str,
@@ -1121,7 +1122,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def search(
         vault_id: str,
         mode: RetrievalMode = RetrievalMode.SEMANTIC,
@@ -1321,7 +1322,7 @@ def register_sage_tools(
         except ValueError as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def read_projection(
         vault_id: str,
         document_id: str | None = None,
@@ -1410,7 +1411,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def read_section(
         vault_id: str,
         heading_path: str,
@@ -1466,7 +1467,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def list_headings(
         vault_id: str,
         document_id: str | None = None,
@@ -1514,7 +1515,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_recompute_views")
+    @mcp.tool(name="admin_recompute_views", annotations=WRITE_DESTRUCTIVE)
     async def recompute_views(vault_id: str) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
@@ -1562,7 +1563,7 @@ def register_sage_tools(
     # SAGE API tools for CAS Application (MCP-001 through MCP-014)
     # -------------------------------------------------------------------
 
-    @mcp.tool(name="admin_list_vaults")
+    @mcp.tool(name="admin_list_vaults", annotations=READ_ONLY)
     async def list_vaults() -> dict:
         """Enumerate all configured vaults. No vault_id parameter -- operates
         across all registered vaults.
@@ -1584,7 +1585,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_create_vault")
+    @mcp.tool(name="admin_create_vault", annotations=WRITE_ADDITIVE)
     async def create_vault(config: dict) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
@@ -1652,7 +1653,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_get_vault_config")
+    @mcp.tool(name="admin_get_vault_config", annotations=READ_ONLY)
     async def get_vault_config(vault_id: str) -> dict:
         """Return the full vault configuration as a dict.
 
@@ -1688,7 +1689,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_update_vault_config")
+    @mcp.tool(name="admin_update_vault_config", annotations=WRITE_DESTRUCTIVE)
     async def update_vault_config(
         vault_id: str,
         vault: dict | None = None,
@@ -1778,7 +1779,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_get_vault_stats")
+    @mcp.tool(name="admin_get_vault_stats", annotations=READ_ONLY)
     async def get_vault_stats(vault_id: str) -> dict:
         """Vault statistics and health indicators.
 
@@ -1800,7 +1801,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="verify_hashes")
+    @mcp.tool(name="verify_hashes", annotations=READ_ONLY)
     async def verify_hash(vault_id: str, hashes: list[str]) -> dict:
         """Bulk hash existence check against the graph store.
 
@@ -1849,7 +1850,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def list_staging_edges(vault_id: str) -> dict:
         """List Tier 2 suggested edges awaiting review.
 
@@ -1888,7 +1889,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_staging_edge(vault_id: str, edge_id: str, action: str) -> dict:
         """Confirm or dismiss a staging edge.
 
@@ -1953,7 +1954,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def list_pending_metadata(vault_id: str) -> dict:
         """List documents with unconfirmed metadata.
 
@@ -1992,7 +1993,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def recompute_abstract(
         vault_id: str,
         document_id: str,
@@ -2065,7 +2066,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def recompute_pipeline(
         vault_id: str,
         document_id: str,
@@ -2164,7 +2165,7 @@ def register_sage_tools(
     # they produce (e.g. ``invalid_vault_id``, ``vault_not_found``).
     # -------------------------------------------------------------------
 
-    @mcp.tool(name="admin_migrate_vault")
+    @mcp.tool(name="admin_migrate_vault", annotations=WRITE_ADDITIVE)
     async def migrate_vault(vault_id: str) -> dict:
         """Run the schema-migration surface's tier3-uniqueness scan for a vault.
 
@@ -2207,7 +2208,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_verify_vault_drift")
+    @mcp.tool(name="admin_verify_vault_drift", annotations=READ_ONLY)
     async def verify_vault_drift(vault_id: str) -> dict:
         """Audit active sync_target / derived_from edges for drift.
 
@@ -2260,7 +2261,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_verify_vault_source_files")
+    @mcp.tool(name="admin_verify_vault_source_files", annotations=READ_ONLY)
     async def verify_vault_source_files(vault_id: str, check_hashes: bool = False) -> dict:
         """Audit that every document's backing source file is present.
 
@@ -2304,7 +2305,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_recompute_deferred_vault_abstracts")
+    @mcp.tool(name="admin_recompute_deferred_vault_abstracts", annotations=WRITE_ADDITIVE)
     async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
@@ -2357,7 +2358,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="admin_optimize_vault_content_store")
+    @mcp.tool(name="admin_optimize_vault_content_store", annotations=WRITE_ADDITIVE)
     async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
         """Reclaim bloat in the per-vault content store.
 
@@ -2409,7 +2410,7 @@ def register_sage_tools(
     # Server-level operational tools (no HTTP counterpart by design)
     # -------------------------------------------------------------------
 
-    @mcp.tool(name="admin_reload_vault")
+    @mcp.tool(name="admin_reload_vault", annotations=WRITE_DESTRUCTIVE)
     async def reload_vault(vault_id: str) -> dict:
         """Reload a vault by closing its current services and reinitializing.
 
@@ -2505,7 +2506,7 @@ def register_sage_tools(
             "document_count": total_docs,
         }
 
-    @mcp.tool(name="admin_get_stack_config")
+    @mcp.tool(name="admin_get_stack_config", annotations=READ_ONLY)
     async def get_stack_config() -> dict:
         """Return the SAGE-stack-wide configuration.
 
