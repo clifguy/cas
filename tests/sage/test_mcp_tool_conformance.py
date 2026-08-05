@@ -932,3 +932,228 @@ def _annotation_resolves_to(annotation: Any, target: type) -> bool:
         non_none = [a for a in args if a is not type(None)]
         return len(non_none) == 1 and non_none[0] is target
     return False
+
+
+# ---------------------------------------------------------------------------
+# Tool annotation declaration (MCP `ToolAnnotations`)
+# ---------------------------------------------------------------------------
+#
+# Every tool advertised on either Streamable HTTP mount must carry an
+# explicit `ToolAnnotations` object so a client reading `tools/list` can
+# tell a pure read from a write from a destructive operation. The two
+# mounts and their partition are anchored to CAS-ADR-034.
+#
+# Declaration vocabulary. Every `ToolAnnotations` field defaults to None
+# and is dropped from the wire, at which point the MCP specification
+# applies its own client-side defaults -- `destructiveHint` true and
+# `openWorldHint` true. Declaring `readOnlyHint` alone would therefore
+# leave additive writers such as `create_edges` reading as destructive
+# and every vault-scoped tool reading as open-world. So:
+#
+#   - `readOnlyHint` is declared on all tools.
+#   - `destructiveHint` is declared on every tool that mutates state and
+#     left unset on read-only tools, where the specification says it
+#     carries no meaning.
+#   - `openWorldHint` is False everywhere: SAGE operates on a closed
+#     vault domain, and `list_directory` -- the one tool that reaches
+#     outside the vault -- reads a caller-local filesystem, which is
+#     still a closed, deterministic domain.
+#   - `idempotentHint` is deliberately left unset on every tool. Its
+#     specification default (false) is already the conservative reading,
+#     so omission claims nothing that must later be defended.
+#
+# `EXPECTED_ANNOTATIONS` is a hand-maintained oracle transcribed from
+# each tool's implementation, NOT derived from the registered
+# annotations. Deriving it would make the split test a tautology that
+# passes for any classification, including an inverted one -- the same
+# discipline `sage/_tool_naming.py` states for `SERVER_ASSIGNMENT`.
+#
+# Two gates:
+#   - A1 asserts exhaustiveness in both directions. A newly registered
+#     tool fails until it is classified here; an entry for a tool that
+#     no longer exists fails as stale.
+#   - A2 asserts the declared hints equal this table, per tool.
+#
+# Classification rule: a tool is read-only only if no code path mutates
+# vault state. Writing a cached or derived artifact counts as a write.
+
+#: tool name -> (readOnlyHint, destructiveHint, openWorldHint).
+#: `destructiveHint` is None exactly for read-only tools.
+EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
+    # -- Read-only ---------------------------------------------------
+    "search": (True, None, False),
+    "traverse": (True, None, False),
+    "chain": (True, None, False),
+    "read_section": (True, None, False),
+    "list_headings": (True, None, False),
+    "list_staging_edges": (True, None, False),
+    "list_pending_metadata": (True, None, False),
+    "verify_hashes": (True, None, False),
+    "verify_preconditions": (True, None, False),
+    "get_filename_metadata": (True, None, False),
+    # `write_to_path` spills bytes to a caller-named path, but that is
+    # caller-directed delivery -- an output channel, not a state change.
+    # No code path in either tool mutates vault state, so both stay in
+    # the CAS-ADR-034 read spine.
+    "get_document": (True, None, False),
+    "read_projection": (True, None, False),
+    # Reads the caller-local filesystem; side-effect free w.r.t. the vault.
+    "list_directory": (True, None, False),
+    "admin_list_vaults": (True, None, False),
+    "admin_get_vault_config": (True, None, False),
+    "admin_get_vault_stats": (True, None, False),
+    "admin_get_stack_config": (True, None, False),
+    "admin_verify_vault_drift": (True, None, False),
+    "admin_verify_vault_source_files": (True, None, False),
+    # -- Write, additive only ----------------------------------------
+    # Idempotent on the natural key; inserts only.
+    "create_edges": (False, False, False),
+    # Creates a new vault; disturbs nothing that already exists.
+    "admin_create_vault": (False, False, False),
+    # Installs partial UNIQUE indexes when the scan is clean. Idempotent,
+    # no data loss.
+    "admin_migrate_vault": (False, False, False),
+    # Backfills documents left in `abstraction_skipped`; fills gaps
+    # rather than overwriting existing abstracts.
+    "admin_recompute_deferred_vault_abstracts": (False, False, False),
+    # VACUUM (FULL, ANALYZE) rewrites the relation but preserves every
+    # row; the maintenance-log entry is an append.
+    "admin_optimize_vault_content_store": (False, False, False),
+    # -- Write, may be destructive -----------------------------------
+    # `force=true` overwrites a record keyed by content hash, and
+    # `predecessor_id` archives the predecessor.
+    "ingest_document": (False, True, False),
+    # `ingest_document` semantics per item, plus Tier-1 supersedes
+    # auto-archive.
+    "bulk_ingest_document": (False, True, False),
+    # In-place lifecycle transitions, e.g. active -> archived.
+    "update_lifecycles": (False, True, False),
+    # Set-or-omit semantics overwrite scalar fields in place.
+    "update_metadata": (False, True, False),
+    # Deletes a production edge.
+    "delete_edge": (False, True, False),
+    # The `dismiss` action deletes the staging edge.
+    "update_staging_edge": (False, True, False),
+    # Overwrites an existing semantic abstract in place.
+    "recompute_abstract": (False, True, False),
+    # Rewrites projection, chunks, and abstract in place.
+    "recompute_pipeline": (False, True, False),
+    # Drops the symlink trees with rmtree and rebuilds; non-atomic, with
+    # no rollback.
+    "admin_recompute_views": (False, True, False),
+    # Whole-section replace; `force=true` can orphan documents.
+    "admin_update_vault_config": (False, True, False),
+    # Tears down and replaces live service objects, disrupting any
+    # in-flight work against the vault.
+    "admin_reload_vault": (False, True, False),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _registered_tools(surface: str) -> dict[str, Any]:
+    """Registered tool objects on a freshly built partitioned server.
+
+    Returns the FastMCP ``Tool`` models rather than the raw callables
+    that ``_surface_registry`` yields, because ``annotations`` lives on
+    the ``Tool`` and not on the function it wraps.
+    """
+    from sage import mcp_server
+
+    server = mcp_server.build_partitioned_server(surface)
+    return {t.name: t for t in server._tool_manager.list_tools()}  # noqa: SLF001
+
+
+def _all_registered_tools() -> dict[str, Any]:
+    """Every tool across both partitioned surfaces, keyed by tool name."""
+    return {**_registered_tools("sage"), **_registered_tools("sage_admin")}
+
+
+def test_registered_tool_enumeration_is_nonempty():
+    """The annotation gates enumerate the whole live roster.
+
+    Anti-vacuity control. If ``_registered_tools`` returned an empty (or
+    merely partial) mapping, every assertion in the two annotation gates
+    below would pass over nothing at all and the gate would be silently
+    disarmed. Reconciling against ``SERVER_ASSIGNMENT`` -- the
+    independent steering-document transcription -- makes both the empty
+    and the partial case fail loudly.
+    """
+    from sage._tool_naming import SERVER_ASSIGNMENT
+
+    names = set(_all_registered_tools())
+    assert names == set(SERVER_ASSIGNMENT), (
+        "annotation gates do not enumerate the full tool roster: "
+        f"missing {sorted(set(SERVER_ASSIGNMENT) - names)}, "
+        f"extra {sorted(names - set(SERVER_ASSIGNMENT))}"
+    )
+
+
+def test_every_registered_tool_declares_annotations():
+    """No tool is advertised with a null ``annotations`` object."""
+    unannotated = sorted(
+        name for name, tool in _all_registered_tools().items() if tool.annotations is None
+    )
+    assert not unannotated, (
+        f"tool(s) registered without ToolAnnotations: {unannotated}. "
+        "Pass `annotations=` to the `@mcp.tool()` decorator, choosing the "
+        "constant from `sage._tool_annotations` that matches the tool's "
+        "read/write behaviour."
+    )
+
+
+def test_annotation_table_is_exhaustive_over_live_roster():
+    """``EXPECTED_ANNOTATIONS`` covers exactly the registered roster."""
+    registered = set(_all_registered_tools())
+    tabled = set(EXPECTED_ANNOTATIONS)
+
+    unclassified = registered - tabled
+    assert not unclassified, (
+        f"tool(s) registered but not classified in EXPECTED_ANNOTATIONS: "
+        f"{sorted(unclassified)}. Read each tool's implementation, then add "
+        "the expected (readOnlyHint, destructiveHint, openWorldHint) triple "
+        "with a comment justifying the classification."
+    )
+
+    stale = tabled - registered
+    assert not stale, (
+        f"EXPECTED_ANNOTATIONS classifies tool(s) that are no longer "
+        f"registered: {sorted(stale)}. Remove the stale entr(ies)."
+    )
+
+
+@pytest.mark.parametrize(
+    "tool_name", sorted(EXPECTED_ANNOTATIONS), ids=sorted(EXPECTED_ANNOTATIONS)
+)
+def test_declared_annotations_match_expected_split(tool_name):
+    """Each tool's declared hints equal the hand-maintained oracle.
+
+    ``destructiveHint`` is compared with ``is`` against the expected
+    value so that an unset hint (None) and an explicitly-declared False
+    stay distinguishable: ``==`` would let a read-only tool wrongly
+    carrying ``destructiveHint=False`` pass against an expected None.
+    """
+    tool = _all_registered_tools()[tool_name]
+    expected_read_only, expected_destructive, expected_open_world = EXPECTED_ANNOTATIONS[tool_name]
+    ann = tool.annotations
+
+    assert ann is not None, f"{tool_name!r} declares no ToolAnnotations"
+    assert ann.readOnlyHint is expected_read_only, (
+        f"{tool_name!r} declares readOnlyHint={ann.readOnlyHint!r}, expected "
+        f"{expected_read_only!r}. Either the declaration or the "
+        "EXPECTED_ANNOTATIONS entry is wrong -- resolve against the tool's "
+        "implementation, not its name."
+    )
+    assert ann.destructiveHint is expected_destructive, (
+        f"{tool_name!r} declares destructiveHint={ann.destructiveHint!r}, "
+        f"expected {expected_destructive!r}. Read-only tools must leave it "
+        "unset (None); writers must declare it explicitly, since the MCP "
+        "specification defaults an omitted destructiveHint to true."
+    )
+    assert ann.openWorldHint is expected_open_world, (
+        f"{tool_name!r} declares openWorldHint={ann.openWorldHint!r}, "
+        f"expected {expected_open_world!r}."
+    )
+    assert ann.idempotentHint is None, (
+        f"{tool_name!r} declares idempotentHint={ann.idempotentHint!r}; the "
+        "SAGE surface leaves it unset on every tool."
+    )

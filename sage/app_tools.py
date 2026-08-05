@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter
 
 import sage.mcp_init
+from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     AmbiguousIngestSourceError,
     MissingIngestSourceError,
@@ -44,7 +45,7 @@ def register_app_tools(
     # Application backend tools (MCP-015 through MCP-022)
     # -------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     async def list_directory(
         vault_id: str,
         directory: str,
@@ -127,7 +128,7 @@ def register_app_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def bulk_ingest_document(
         vault_id: str,
         files: list[dict],
