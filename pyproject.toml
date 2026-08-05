@@ -12,7 +12,14 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
-    "mcp>=1.0",
+    # Ceiling below the 2.x major: mcp 2.0 removes `mcp.server.fastmcp`, which
+    # the entire MCP server surface is built on (the FastMCP subclass tools are
+    # registered against, and the private ArgModelBase carrying strict
+    # unknown-kwarg rejection, CAS-ADR-037). Crossing it is a ModuleNotFoundError
+    # at import, so the bound turns a future unscoped resolve across 2.0 into a
+    # reviewable lock-time conflict instead of a broken build. Resolves to
+    # 1.28.1 today (no version move).
+    "mcp>=1.0,<2",
     "sentence-transformers>=5.5.1",
     # Transitive via sentence-transformers / mlx-lm, but pinned directly to hold a
     # forward-looking ceiling: transformers 5.12 removes get_extended_attention_mask,
