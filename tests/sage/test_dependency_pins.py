@@ -274,3 +274,42 @@ def test_transformers_upper_bound_pinned() -> None:
         f"transformers specifier {spec} must exclude 5.12.0 -- the release that "
         "removes get_extended_attention_mask."
     )
+
+
+def test_mcp_upper_bound_pinned(locked: dict[str, set[str]]) -> None:
+    """``mcp`` carries an upper bound excluding 2.0.0.
+
+    Forward-looking guard: mcp 2.x removes ``mcp.server.fastmcp``, the
+    subpackage the whole MCP surface is built on -- the ``FastMCP`` subclass
+    the server registers tools against, the ``ToolError`` translated into the
+    error envelope, and the private ``ArgModelBase`` carrying the strict
+    unknown-kwarg rejection (CAS-ADR-037). Crossing the major boundary is a
+    ``ModuleNotFoundError`` at import, i.e. a broken build at collection
+    time. The bound turns a future unscoped resolve across 2.0 into a
+    reviewable lock-time conflict instead.
+
+    The ceiling is asserted by what it admits and excludes rather than by a
+    literal string, so a reformat that preserves the bound still passes while
+    an edit that drops or loosens it past 2.0.0 fails here. What it must
+    admit is read from ``uv.lock`` rather than hardcoded: the bound is
+    protective, not a version move, so every version the lock resolves must
+    still satisfy it -- and an in-range bump needs no edit to this test.
+    """
+    spec = _direct_dependency_specifier("mcp")
+    assert spec is not None, (
+        "mcp must be a direct [project.dependencies] entry to carry the < 2 "
+        "upper bound (a transitive-only dep cannot pin it)."
+    )
+    assert "mcp" in locked, (
+        "mcp is not pinned in uv.lock; with no resolved version the "
+        "admits-what-is-locked check below would pass vacuously."
+    )
+    excluded = sorted(v for v in locked["mcp"] if not spec.contains(v))
+    assert not excluded, (
+        f"mcp specifier {spec} excludes locked version(s) {excluded}; the bound "
+        "is a protective ceiling, not a version move -- it must keep admitting "
+        "what uv.lock already resolves."
+    )
+    assert not spec.contains("2.0.0"), (
+        f"mcp specifier {spec} must exclude 2.0.0 -- the release that removes mcp.server.fastmcp."
+    )
