@@ -52,6 +52,13 @@ updates:
       # typescript-eslint publishes a peer range admitting TS 7.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+    # Group ordering is load-bearing. A dependency joins only the FIRST group
+    # whose rules it matches, in the order the groups appear here, so the
+    # narrow `react` group must stay above the broad `dev-dependencies` group:
+    # `@types/react` and `@types/react-dom` are devDependencies, and reversing
+    # the order would pull them out of the react lockstep pair and into the
+    # tooling group, reintroducing exactly the split-version breakage the
+    # react group exists to prevent.
     groups:
       # react and react-dom are a lockstep pair: React's startup guard aborts
       # the app when the two packages resolve to different versions. Dependabot
@@ -65,3 +72,25 @@ updates:
           - "react-dom"
           - "@types/react"
           - "@types/react-dom"
+      # Remaining devDependencies move as one PR. These are build, lint, and
+      # test tooling (vite, vitest, eslint, typescript-eslint, jsdom, globals,
+      # the testing-library packages): none of it ships in the bundle, and the
+      # blast radius of a routine minor/patch release is a CI signal rather
+      # than application behavior.
+      #
+      # Ungrouped, one week's tooling refresh opens a separate PR per package
+      # against a single shared app/package-lock.json. Because `main` requires
+      # branches to be up to date, landing them serially costs a rebase and a
+      # full CI cycle each, so the work scales with the number of packages
+      # rather than with the amount of change. Grouped, it is one PR and one
+      # CI run.
+      #
+      # Majors are deliberately excluded: a breaking tooling change should land
+      # in its own PR that can be reviewed and reverted on its own. Production
+      # dependencies are excluded as well — they ship to users, so they stay
+      # individually reviewable rather than being folded into a tooling batch.
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"

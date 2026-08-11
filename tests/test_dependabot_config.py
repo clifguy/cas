@@ -1,7 +1,7 @@
 """Dependabot version-update coverage guards.
 
 ``.github/dependabot.yml`` is the source of truth for which package
-ecosystems get automated version-update PRs. Two posture invariants matter
+ecosystems get automated version-update PRs. Three posture invariants matter
 enough to guard against silent regression:
 
   1. The npm ecosystem (the frontend dependency tree under ``app/``) has
@@ -15,6 +15,15 @@ enough to guard against silent regression:
      version-update PRs are deliberately off; uv currency is a manual
      ``uv lock --upgrade`` (see ``CLAUDE.md``). That defect is uv-specific
      and does not apply to npm, which is why npm coverage is safe to enable.
+
+  3. Within the npm block, the narrow ``react`` group is declared *before*
+     the broad ``dev-dependencies`` group. Dependabot assigns a dependency
+     to the first group whose rules it matches, in declaration order.
+     ``@types/react`` and ``@types/react-dom`` are devDependencies, so a
+     reordering would silently capture them into the tooling group and
+     break the react lockstep pair -- a config-only regression that
+     produces no error and is invisible until a react bump splits the two
+     packages' versions apart.
 
 These guards mirror ``tests/sage/test_dependency_pins.py``, which reads
 ``.github/workflows/ci.yml`` to assert a CI-install posture.
@@ -99,4 +108,60 @@ def test_uv_ecosystem_stays_disabled() -> None:
     assert limit == 0, (
         f"uv version-update PRs must stay disabled (limit 0); got {limit!r}. "
         "uv currency is a manual `uv lock --upgrade` (see CLAUDE.md)."
+    )
+
+
+def test_react_group_declared_before_dev_dependencies_group() -> None:
+    """The narrow ``react`` group outranks the broad ``dev-dependencies`` group.
+
+    Ordering guard: Dependabot assigns each dependency to the first group
+    whose rules it matches, in declaration order. ``@types/react`` and
+    ``@types/react-dom`` live in ``devDependencies``, so they match the
+    ``dev-dependencies`` group too; only the earlier declaration keeps them
+    in the react lockstep pair. Reordering the two groups is a silent
+    regression -- the config still parses and Dependabot still runs, but
+    react and its type packages stop moving together.
+    """
+    groups = _blocks_for("npm")[0].get("groups")
+    assert isinstance(groups, dict), "npm block must declare a `groups` mapping."
+
+    order = list(groups)
+    for name in ("react", "dev-dependencies"):
+        assert name in order, f"npm `groups` must declare a {name!r} group; got {order}."
+
+    assert order.index("react") < order.index("dev-dependencies"), (
+        "the `react` group must be declared before the `dev-dependencies` group: "
+        "Dependabot assigns a dependency to the first matching group, and "
+        "@types/react / @types/react-dom are devDependencies that would "
+        f"otherwise be captured by the tooling group. Current order: {order}."
+    )
+
+
+def test_dev_dependencies_group_excludes_majors() -> None:
+    """The tooling group batches only minor and patch releases.
+
+    Scope fence: grouping exists to collapse routine tooling churn into one
+    PR. Folding majors in would bundle a breaking change with unrelated
+    no-op bumps, so the batch could not be reverted without also reverting
+    the safe updates riding along with it.
+    """
+    group = _blocks_for("npm")[0]["groups"]["dev-dependencies"]
+
+    assert group.get("dependency-type") == "development", (
+        "the dev-dependencies group must be scoped to `dependency-type: development` "
+        "so production dependencies stay individually reviewable; got "
+        f"{group.get('dependency-type')!r}."
+    )
+
+    update_types = group.get("update-types")
+    assert isinstance(update_types, list), (
+        "the dev-dependencies group must pin `update-types` rather than "
+        "defaulting to all update types (which would include majors)."
+    )
+    assert "major" not in update_types, (
+        f"major tooling updates must stay ungrouped for individual review; got {update_types!r}."
+    )
+    assert set(update_types) == {"minor", "patch"}, (
+        f"expected the dev-dependencies group to batch exactly minor and patch "
+        f"releases; got {update_types!r}."
     )
