@@ -3137,7 +3137,7 @@ def _slide_heading(result, n: int):
 
 @requires_pptx
 class TestPptxAdapter:
-    """AD-098 through AD-123: PPTX source adapter tests."""
+    """AD-098 through AD-128: PPTX source adapter tests."""
 
     # ── Section 11.1 — Registration and projection shape ──────────
 
@@ -3203,8 +3203,17 @@ class TestPptxAdapter:
         # slide projects an empty body rather than repeating its own title.
         assert [h.content for h in top_level] == ["", "", ""]
 
-    async def test_ad_101_untitled_slide_gets_stable_placeholder(self, tmp_path):
-        """AD-101: A slide with no title placeholder gets a bare 'Slide N' heading."""
+    async def test_ad_101_untitled_slide_does_not_disturb_numbering(self, tmp_path):
+        """AD-101: A slide with no title placeholder does not shift its neighbours' numbers.
+
+        Originally this asserted a bare ``Slide 2`` heading for the untitled
+        slide. Title inference (AD-124) intentionally changed that: an untitled
+        slide carrying title-shaped body text now takes its heading from that
+        text. The bare-placeholder path is still asserted, on the inputs where
+        inference correctly declines -- AD-102 (no text at all), AD-125 (line
+        too long), AD-126 (a table). What this case still owns is the numbering
+        invariant, which no other test covers with a titled/untitled mix.
+        """
         from sage.source_adapters.pptx_adapter import PptxAdapter
 
         path = _make_pptx(
@@ -3216,8 +3225,11 @@ class TestPptxAdapter:
         result = await PptxAdapter().project(path)
         top_level = [h for h in result.headings if h.level == 1]
 
-        assert [h.text for h in top_level] == ["Slide 1: Alpha", "Slide 2", "Slide 3: Gamma"]
-        assert "ORPHAN_BODY" in _slide_heading(result, 2).content
+        assert [h.text for h in top_level] == [
+            "Slide 1: Alpha",
+            "Slide 2: ORPHAN_BODY",
+            "Slide 3: Gamma",
+        ]
 
     async def test_ad_102_empty_slide_still_projects_its_heading(self, tmp_path):
         """AD-102: A slide with no shapes keeps its heading so numbering stays contiguous."""
@@ -3619,3 +3631,90 @@ class TestPptxAdapter:
         registry = build_source_adapter_registry()
 
         assert isinstance(registry[SourceType.PPTX], PptxAdapter)
+
+    # ── Section 11.10 — Title inference for placeholder-free decks ──
+
+    async def test_ad_124_untitled_slide_infers_title_from_first_body_line(self, tmp_path):
+        """AD-124: A slide with no title placeholder takes its heading from the topmost text."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"body": ["The problem: knowledge is scattered", "Supporting detail."]}],
+            filename="inferred.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        heading = _slide_heading(result, 1)
+
+        assert heading.text == "Slide 1: The problem: knowledge is scattered"
+        assert heading.path == heading.text
+        # Promoted to the heading, so it must not also remain in the body.
+        assert heading.content == "Supporting detail."
+
+    async def test_ad_125_overlong_first_line_is_not_promoted(self, tmp_path):
+        """AD-125: A first line too long to be a title leaves the heading as the placeholder."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        paragraph = (
+            "This is a full sentence of body prose that runs on well past any "
+            "reasonable title length and therefore must not be promoted into the "
+            "slide heading where it would be unusable as an address."
+        )
+        assert len(paragraph) > 120
+        path = _make_pptx(tmp_path, [{"body": [paragraph]}], filename="longline.pptx")
+
+        result = await PptxAdapter().project(path)
+        heading = _slide_heading(result, 1)
+
+        assert heading.text == "Slide 1"
+        # Not promoted, so it stays in the body rather than being lost.
+        assert paragraph in heading.content
+
+    async def test_ad_126_table_row_is_not_promoted_as_a_title(self, tmp_path):
+        """AD-126: A slide whose topmost content is a table keeps the placeholder heading."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"table": [["Mode", "Returns"], ["semantic", "ranked hits"]]}],
+            filename="tabletop.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        heading = _slide_heading(result, 1)
+
+        assert heading.text == "Slide 1"
+        assert "| Mode | Returns |" in heading.content
+
+    async def test_ad_127_title_placeholder_wins_over_inference(self, tmp_path):
+        """AD-127: A real title placeholder takes precedence; no body line is consumed."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "Authored Title", "body": ["FIRST_BODY_LINE", "SECOND_BODY_LINE"]}],
+            filename="authored.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        heading = _slide_heading(result, 1)
+
+        assert heading.text == "Slide 1: Authored Title"
+        # Inference must not fire, so the first body line survives in the body.
+        assert heading.content == "FIRST_BODY_LINE\nSECOND_BODY_LINE"
+
+    async def test_ad_128_document_title_still_falls_back_to_the_filename_stem(self, tmp_path):
+        """AD-128: Heading inference does not change the document-title chain."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path, [{"body": ["Inferred Heading Text"]}], filename="stem-name.pptx"
+        )
+
+        result = await PptxAdapter().project(path)
+
+        # The heading infers...
+        assert _slide_heading(result, 1).text == "Slide 1: Inferred Heading Text"
+        # ...but the document title stays on the placeholder-or-stem chain.
+        assert result.title == "stem-name"

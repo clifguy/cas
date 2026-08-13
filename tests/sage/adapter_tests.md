@@ -2479,3 +2479,66 @@ regardless of what any vault's `source_adapters` config declares.
 
 **Expected:** `build_source_adapter_registry()[SourceType.PPTX]` is a
 `PptxAdapter`.
+
+### TEST-SAGE-AD-124: A slide with no title placeholder infers its heading from the topmost text
+
+**Artifact:** `sage/source_adapters/pptx_adapter.py` (`_infer_title_from_body`)
+**Category:** heading synthesis
+**Decision:** Many decks carry no title placeholders at all — programmatically
+generated ones, and exports from other presentation tools, lay every slide out
+as plain shapes, so the visual title is an ordinary text box. Under
+placeholder-only resolution every such slide falls back to a bare `Slide N`
+heading, which is a valid address but an uncitable one: the whole point of
+per-slide headings is that a caller can ask for the slide *about* something.
+Because body lines are already in visual reading order, the leading line is the
+topmost text on the slide, which is where a title sits.
+
+**Precondition:** A single slide built from the blank layout with two body text
+boxes.
+
+**Expected:** Heading reads `Slide 1: <first line>`; `path == text`; the
+promoted line is **removed** from the body so it is not emitted twice in the
+slide's chunk.
+
+### TEST-SAGE-AD-125: A first line too long to be a title is not promoted
+
+**Artifact:** `_infer_title_from_body`
+**Category:** heading synthesis, guard
+**Decision:** A heading is an address callers pass to `read_section`, so a
+run-on line of body prose is unusable as one. Past `_MAX_INFERRED_TITLE_CHARS`
+the slide keeps its bare heading.
+
+**Expected:** Heading is `Slide 1`; the long line remains in the body rather
+than being consumed and lost.
+
+### TEST-SAGE-AD-126: A table row is not promoted as a title
+
+**Artifact:** `_infer_title_from_body`
+**Category:** heading synthesis, guard
+**Decision:** A slide whose topmost content is a table would otherwise take
+`| Mode | Returns |` as its heading. Rendered table rows are text but never
+titles.
+
+**Expected:** Heading is `Slide 1`; the rendered table stays in the body.
+
+### TEST-SAGE-AD-127: A real title placeholder takes precedence over inference
+
+**Artifact:** PptxAdapter.project
+**Category:** heading synthesis, precedence
+**Decision:** Inference is a fallback, not a competitor. When the slide has an
+authored title placeholder it wins, and no body line is consumed.
+
+**Expected:** Heading reads `Slide 1: Authored Title`; both body lines survive
+in the body.
+
+### TEST-SAGE-AD-128: Heading inference does not change the document-title chain
+
+**Artifact:** PptxAdapter.project
+**Category:** title resolution, blast radius
+**Decision:** The document title stays on the placeholder-or-filename chain. A
+heading inferred for slide 1 is a per-slide address, not evidence of what the
+deck as a whole is called; letting it set the document title would silently
+rename decks whose opening slide leads with a fragment.
+
+**Expected:** Slide 1's heading infers, while `result.title` is the filename
+stem.
