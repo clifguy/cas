@@ -71,6 +71,12 @@ _ROW_TOLERANCE_EMU = 228600
 
 _DEFAULT_MAX_SLIDES = 500
 
+# Upper bound on a body line promoted to a slide heading when the slide carries
+# no title placeholder. A heading is an address callers pass to read_section, so
+# a run-on line of body prose is unusable as one; past this length the slide
+# keeps its bare "Slide N" heading and the line stays in the body.
+_MAX_INFERRED_TITLE_CHARS = 120
+
 _ADAPTER_TAG_PREFIXES = ["pptx:"]
 
 
@@ -185,6 +191,29 @@ def _slide_title(slide) -> str:
     return shape.text_frame.text.strip()
 
 
+def _infer_title_from_body(body_lines: list[str]) -> str | None:
+    """Return a heading-worthy title from a slide's leading body line, or None.
+
+    Only consulted when the slide has no title placeholder. Many decks carry
+    no placeholders at all -- programmatically generated ones, and exports from
+    other presentation tools, lay every slide out as plain shapes -- so the
+    visual title is an ordinary text box. Because body lines are already in
+    visual reading order, the leading line is the topmost text on the slide,
+    which is where a title sits.
+
+    Rejects two shapes that are text but not titles: a rendered table row, and
+    a line too long to work as a ``read_section`` address.
+    """
+    if not body_lines:
+        return None
+    candidate = body_lines[0].strip()
+    if not candidate or candidate.startswith("|"):
+        return None
+    if len(candidate) > _MAX_INFERRED_TITLE_CHARS:
+        return None
+    return candidate
+
+
 def _slide_notes(slide) -> str:
     """Return the slide's speaker-notes text, or an empty string."""
     if not slide.has_notes_slide:
@@ -239,7 +268,9 @@ def _open_presentation(source_path: Path) -> Presentation:
 
 
 class PptxAdapter(SourceAdapter):
-    VERSION = "0.1.0"
+    # 0.2.0: slides with no title placeholder infer their heading from the
+    # topmost body line, so decks laid out without placeholders stay citable.
+    VERSION = "0.2.0"
     EXTENSIONS = [".pptx", ".potx"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -277,8 +308,10 @@ class PptxAdapter(SourceAdapter):
         for index, slide in enumerate(slides_to_project, start=1):
             title = _slide_title(slide)
             if index == 1:
+                # The document title stays on the placeholder-or-filename chain;
+                # a heading inferred below is a per-slide address, not evidence
+                # of what the deck as a whole is called.
                 first_slide_title = title
-            heading_text = f"Slide {index}: {title}" if title else f"Slide {index}"
 
             # Compared by underlying element, not by proxy identity: python-pptx
             # builds a fresh wrapper object on every shape access, so the title
@@ -290,6 +323,16 @@ class PptxAdapter(SourceAdapter):
                 if title_element is not None and shape._element is title_element:
                     continue
                 body_lines.extend(_render_shape(shape))
+
+            if not title:
+                inferred = _infer_title_from_body(body_lines)
+                if inferred is not None:
+                    # Consumed by the heading, so drop it from the body rather
+                    # than emitting it twice in the slide's chunk.
+                    title = inferred
+                    body_lines = body_lines[1:]
+
+            heading_text = f"Slide {index}: {title}" if title else f"Slide {index}"
             body = "\n".join(body_lines)
 
             if not body:
