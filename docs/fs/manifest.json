@@ -55,7 +55,7 @@
       "path": "sage/source_adapters.schema.json",
       "title": "SAGE Source Adapter Configuration",
       "status": "draft",
-      "version": "0.1",
+      "version": "0.2",
       "role": "Defines which source adapters are enabled for a vault and their per-adapter configuration.",
       "instantiation_checklist_items": [
         4

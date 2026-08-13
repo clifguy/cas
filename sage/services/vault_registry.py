@@ -106,6 +106,7 @@ class VaultRegistryService:
                     {"source_type": "markdown", "enabled": True},
                     {"source_type": "docx", "enabled": True},
                     {"source_type": "xlsx", "enabled": True},
+                    {"source_type": "pptx", "enabled": True},
                     {"source_type": "pdf", "enabled": True},
                 ],
             },

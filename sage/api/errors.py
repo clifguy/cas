@@ -1051,7 +1051,7 @@ class BinaryContentRefusedError(SAGEError):
     """400: include_content was requested against a binary-container source.
 
     A document whose source adapter is a binary container (``.docx``,
-    ``.pdf``, ``.xlsx``) holds raw container bytes, not scannable text. The
+    ``.pptx``, ``.pdf``, ``.xlsx``) holds raw container bytes, not scannable text. The
     read path declines to inline those bytes so a caller cannot scan a
     binary container as though it were text and read a confident false
     negative. The readable content lives in the extracted-text projection;

@@ -23,6 +23,7 @@ class SourceType(StrEnum):
     ONENOTE = "onenote"
     TEAMS_CHAT = "teams_chat"
     XLSX = "xlsx"
+    PPTX = "pptx"
 
 
 # Source types whose authoritative file is a binary container (a zipped OPC
@@ -38,6 +39,7 @@ BINARY_CONTAINER_SOURCE_TYPES: frozenset[SourceType] = frozenset(
         SourceType.DOCX,
         SourceType.PDF,
         SourceType.XLSX,
+        SourceType.PPTX,
     }
 )
 

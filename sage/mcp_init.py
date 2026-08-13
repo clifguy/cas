@@ -41,9 +41,11 @@ from sage.services.staging_edges import StagingEdgesService
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
+from sage.source_adapters.base import SourceAdapter
 from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
+from sage.source_adapters.pptx_adapter import PptxAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.storage.locks import DocumentLockManager
 from sage.storage_binding import (
@@ -63,6 +65,22 @@ _TIMING_LOGGER_NAMES = (
     "sage.content.timing",
     "sage.retrieval.timing",
 )
+
+
+def build_source_adapter_registry() -> dict[SourceType, SourceAdapter]:
+    """Build the process-wide source-adapter registry.
+
+    Adapter selection during ingestion resolves against this mapping, so a
+    source type absent here raises ``adapter_not_found`` regardless of what
+    any vault's ``source_adapters`` config declares.
+    """
+    return {
+        SourceType.MARKDOWN: MarkdownAdapter(),
+        SourceType.DOCX: DocxAdapter(),
+        SourceType.XLSX: XlsxAdapter(),
+        SourceType.PDF: PdfAdapter(),
+        SourceType.PPTX: PptxAdapter(),
+    }
 
 
 @dataclass
@@ -938,12 +956,7 @@ async def initialize_services(
                 )
 
         # Source adapters
-        source_adapters = {
-            SourceType.MARKDOWN: MarkdownAdapter(),
-            SourceType.DOCX: DocxAdapter(),
-            SourceType.XLSX: XlsxAdapter(),
-            SourceType.PDF: PdfAdapter(),
-        }
+        source_adapters = build_source_adapter_registry()
 
         # Services
         user_service = UserService(graph_store, config)

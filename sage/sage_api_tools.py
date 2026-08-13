@@ -247,8 +247,8 @@ def register_sage_tools(
                 ingesting: deliver the file to the recipe's URL with its
                 one-time token, then repeat this call with
                 ``transfer_token`` to complete the ingest.
-            source_type: Source artifact format (markdown, docx, pdf, email,
-                onenote, teams_chat). Selects the source adapter.
+            source_type: Source artifact format (markdown, docx, xlsx, pptx,
+                pdf, email, onenote, teams_chat). Selects the source adapter.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``source_adapters.adapters[].config``
                 in ``admin_get_vault_config`` for the per-adapter shape.
@@ -408,8 +408,8 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             filename: Filename to parse; the basename is used (directory
                 components are stripped).
-            source_type: Source artifact format (markdown, docx, pdf, email,
-                onenote, teams_chat). Must be enabled on the vault.
+            source_type: Source artifact format (markdown, docx, xlsx, pptx,
+                pdf, email, onenote, teams_chat). Must be enabled on the vault.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
