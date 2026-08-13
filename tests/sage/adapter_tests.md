@@ -2172,3 +2172,310 @@ embedded LanceDB content store, retired along with the embedded storage
 backend (CAS-ADR-042). The same contract is covered against the
 Postgres content store by `test_has_chunks` in
 `tests/sage/test_content_store_postgres.py`.
+
+---
+
+## 11. PPTX Source Adapter
+
+Covers `sage/source_adapters/pptx_adapter.py`. A deck carries no intrinsic
+heading hierarchy, so the adapter synthesizes one: a top-level heading per
+slide carrying the slide number and title, with speaker notes nested one
+level below. Implemented by `TestPptxAdapter` in
+`tests/sage/test_adapters.py`; fixtures are synthesized with `python-pptx`
+into `tmp_path` rather than committed as binaries, matching every other
+adapter section.
+
+### TEST-SAGE-AD-098: Adapter declares its extensions and a semver VERSION
+
+**Artifact:** `sage/source_adapters/pptx_adapter.py` (PptxAdapter)
+**Category:** registration
+**Decision:** `EXTENSIONS` is `[".pptx", ".potx"]` and `VERSION` matches
+`^\d+\.\d+\.\d+$`. Templates are accepted by the same adapter rather than
+rejected, mirroring the docx adapter's `.dotx` handling (AD-068).
+
+**Expected:** Both class attributes present and well-formed.
+
+### TEST-SAGE-AD-099: Basic projection returns a valid ProjectionResult
+
+**Artifact:** PptxAdapter.project
+**Category:** happy path
+**Precondition:** A three-slide deck, each slide with a title and one body
+text box.
+
+**Expected:** Non-empty `text`; three level-1 headings; 64-character hex
+`content_hash`; `adapter_version == PptxAdapter.VERSION`; metadata carries
+`slide_count == 3` and `slides_projected == 3`.
+
+### TEST-SAGE-AD-100: One level-1 heading per slide, numbered, in deck order
+
+**Artifact:** PptxAdapter.project
+**Category:** heading synthesis
+**Decision:** Heading text is `Slide {n}: {title}`. The slide number is
+load-bearing: `HeadingNode.path` is the address `read_section` accepts, and
+slide titles repeat freely within a deck ("Agenda", "Questions"), so a
+title-only path would collide. Level-1 paths carry no `" > "` separator.
+The title placeholder is consumed by the heading and excluded from the body
+stream, so a title-only slide projects an empty body rather than repeating
+its own title.
+
+**Expected:** Headings read `Slide 1: Alpha`, `Slide 2: Beta`,
+`Slide 3: Gamma`; each `path == text`; each `content == ""`.
+
+### TEST-SAGE-AD-101: A slide with no title placeholder gets a stable placeholder heading
+
+**Artifact:** PptxAdapter.project
+**Category:** heading synthesis, edge case
+**Precondition:** Slide 2 uses the blank layout, which has no title
+placeholder at all.
+
+**Expected:** Slide 2's heading is exactly `Slide 2`; slides 1 and 3 keep
+their titled form; slide 2's body text is still recovered.
+
+### TEST-SAGE-AD-102: A slide with no shapes still projects its heading
+
+**Artifact:** PptxAdapter.project
+**Category:** heading synthesis, contiguity
+**Decision:** Slide numbering must stay contiguous so a caller can address
+slide N by its position in the deck. A slide that recovers nothing emits its
+heading with empty content rather than being skipped.
+
+**Expected:** Three level-1 headings; slide 2's `content == ""`; slide 3
+still numbered 3.
+
+### TEST-SAGE-AD-103: Speaker notes project under a per-slide subheading
+
+**Artifact:** PptxAdapter.project
+**Category:** notes
+**Decision:** Notes become a level-2 `HeadingNode` with text `Notes` and
+path `{slide heading} > Notes`, so they are retrievable on their own via
+`read_section`. Because the chunker emits one chunk per heading, notes land
+in their own chunk rather than diluting the slide body.
+
+**Expected:** Exactly one `Notes` heading, level 2, path
+`Slide 2: Beta > Notes`, content equal to the notes text; the slide body
+stays on the slide heading and does not leak into the notes heading;
+`metadata["notes_count"] == 1`.
+
+### TEST-SAGE-AD-104: A deck with no notes emits no Notes heading
+
+**Artifact:** PptxAdapter.project
+**Category:** notes, negative
+**Expected:** No heading with text `Notes`; `metadata["notes_count"] == 0`.
+
+### TEST-SAGE-AD-105: `pptx:has_notes` tracks notes presence
+
+**Artifact:** PptxAdapter.project
+**Category:** tags
+**Expected:** The tag is present iff at least one slide carries notes.
+
+### TEST-SAGE-AD-106: Tables project as Markdown tables
+
+**Artifact:** PptxAdapter.project
+**Category:** content recovery
+**Precondition:** A slide carrying a 2x2 table with a header row.
+
+**Expected:** The slide's content contains the header row, a `| --- | --- |`
+separator, and each data row. Pipe characters inside cell text are escaped
+so a stray `|` cannot corrupt the rendered table.
+
+### TEST-SAGE-AD-107: Text inside a grouped shape is recovered
+
+**Artifact:** PptxAdapter.project
+**Category:** content recovery
+**Decision:** Grouping is recursive in the OOXML shape tree; a naive
+`slide.shapes` walk silently drops every grouped shape's text.
+
+**Expected:** The grouped text box's text appears in the slide's content.
+
+### TEST-SAGE-AD-108: Text inside a nested group is recovered
+
+**Artifact:** PptxAdapter.project
+**Category:** content recovery, edge case
+**Precondition:** A group containing a group containing a text box.
+
+**Expected:** The innermost text appears in the slide's content.
+
+### TEST-SAGE-AD-109: Authored alt text contributes; a filename descr does not
+
+**Artifact:** PptxAdapter.project (`_alt_text`)
+**Category:** content recovery, non-text shapes
+**Decision:** PowerPoint populates a picture's `descr` with the source
+image's filename when the author never wrote alt text. That is a storage
+artifact, not a description; projecting it would inject noise into every
+deck and mask genuinely text-free slides from the `pptx:no_text` signal.
+Values matching a bare image filename are therefore rejected.
+
+**Precondition:** One picture with `descr` set to authored prose, another
+with `descr` set to `diagram_v2.png`.
+
+**Expected:** The authored alt text appears in the slide's content; the
+filename does not.
+
+### TEST-SAGE-AD-110: Shapes project in visual reading order
+
+**Artifact:** PptxAdapter.project (`_ordered_shapes`)
+**Category:** reading order
+**Decision:** A slide's shape tree reflects z-order and authoring history,
+not visual order. Shapes are sorted top-to-bottom then left-to-right, with a
+0.25in tolerance band so shapes on one visual row read left-to-right rather
+than by sub-millimetre drift.
+
+**Precondition:** Four text boxes authored bottom-first, and right-before-left
+within the shared row, so shape-tree order is the exact reverse of reading
+order. A fixture in natural authoring order would pass under either
+algorithm and prove nothing.
+
+**Expected:** Content reads top, row-left, row-right, bottom.
+
+### TEST-SAGE-AD-111: Shapes with no resolvable position sort last in tree order
+
+**Artifact:** PptxAdapter.project (`_reading_order_key`)
+**Category:** reading order, edge case
+**Decision:** A shape carrying no explicit geometry and no inheritable
+layout source reports a null position. Those sort into a trailing group;
+because the sort is stable they retain shape-tree order, so the algorithm
+degrades to shape-tree order exactly where position is unknowable instead of
+scrambling.
+
+**Precondition:** Two text boxes with their geometry stripped, plus one
+positioned text box sitting lower on the slide than either.
+
+**Expected:** The positioned shape precedes both unpositioned ones despite
+sitting lowest; the unpositioned pair keeps its authoring order.
+
+### TEST-SAGE-AD-112: `content_hash` is the SHA-256 of the raw source bytes
+
+**Artifact:** PptxAdapter.project
+**Category:** provenance
+**Expected:** Equal to an independently computed
+`hashlib.sha256(path.read_bytes()).hexdigest()` — hashing the projected text
+instead would break re-ingest change detection.
+
+### TEST-SAGE-AD-113: `source_modified_at` derives from the file mtime
+
+**Artifact:** PptxAdapter.project
+**Category:** provenance
+**Expected:** Parses to a timezone-aware datetime equal to the file's
+`st_mtime` in UTC.
+
+### TEST-SAGE-AD-114: Title prefers the first slide's title, else the filename stem
+
+**Artifact:** PptxAdapter.project
+**Category:** title resolution
+**Expected:** A deck whose first slide is titled projects that title; a deck
+whose first slide has none falls back to the source filename stem.
+
+### TEST-SAGE-AD-115: `adapter_tag_prefixes` is declared unconditionally
+
+**Artifact:** PptxAdapter.project
+**Category:** tags, re-ingest
+**Decision:** Diverges deliberately from the docx and pdf adapters, which
+declare the prefix only when tags were emitted (AD-089). Under that shape
+the re-ingest strip never runs on a tag-free run, so a stale tag survives
+exactly the re-ingest that should have cleared it. A run that emits nothing
+is the run that most needs the namespace declared.
+
+**Precondition:** A deck with body text and no notes, which emits no tags.
+
+**Expected:** `adapter_tags == []` and `adapter_tag_prefixes == ["pptx:"]`.
+
+### TEST-SAGE-AD-116: `max_slides` truncates projection and emits `pptx:truncated`
+
+**Artifact:** PptxAdapter.project
+**Category:** tags, configuration
+**Precondition:** A five-slide deck projected with `max_slides` of 2 and 5.
+
+**Expected:** The truncated run emits two level-1 headings, reports
+`slide_count == 5` with `slides_projected == 2`, carries `pptx:truncated`,
+and omits slides past the limit. The full run carries no truncation tag.
+
+### TEST-SAGE-AD-117: `pptx:no_text` flags a slide that recovers nothing
+
+**Artifact:** PptxAdapter.project
+**Category:** tags
+**Decision:** Emitted when at least one projected slide yields no
+recoverable text, so a deck carrying image-only slides is discoverable for
+triage without the caller reading it.
+
+**Precondition:** A two-slide deck whose second slide holds only a picture
+with a filename-valued `descr`.
+
+**Expected:** The tag is present and the text-free slide still projects its
+heading with empty content.
+
+### TEST-SAGE-AD-118: A deck with no slides projects empty rather than raising
+
+**Artifact:** PptxAdapter.project
+**Category:** degenerate input
+**Decision:** An empty projection is a legitimate outcome, not an error; the
+ingestion pipeline routes empty text to terminal `abstraction_skipped`. This
+mirrors the zero-page PDF case (AD-093) and is the ordinary outcome for a
+content-free template.
+
+**Expected:** `text == ""`, `headings == []`, `slide_count == 0`, title from
+the filename stem, no exception.
+
+### TEST-SAGE-AD-119: A `.potx` template is accepted
+
+**Artifact:** PptxAdapter.project (`_open_presentation`)
+**Category:** template support
+**Decision:** python-pptx rejects a template at load because the main part's
+OPC content type is the template flavor. The adapter copies the package to a
+temporary file with that one entry rewritten; every other part is untouched.
+Detection reads the declared content type rather than the file extension, so
+a template arrives correctly however it is named.
+
+**Expected:** The template's slides project normally.
+
+### TEST-SAGE-AD-120: A corrupt or empty deck raises ValueError
+
+**Artifact:** PptxAdapter.project
+**Category:** error path
+**Decision:** Partial extraction is not permitted. Projection runs before
+the first store write, so a raise leaves no document record behind. Every
+library failure is re-raised as `ValueError` because the tool boundary
+catches only `SAGEError` and `ValueError` — any other exception type escapes
+as an unhandled crash rather than an error envelope.
+
+**Precondition:** A file carrying ZIP magic bytes followed by garbage, and a
+zero-byte file.
+
+**Expected:** Both raise `ValueError`.
+
+### TEST-SAGE-AD-121: A password-protected deck raises ValueError naming the reason
+
+**Artifact:** PptxAdapter.project
+**Category:** error path, diagnostics
+**Decision:** A password-protected OOXML file is an OLE2 compound document
+wrapping the encrypted package, identifiable by magic bytes before any parse
+is attempted, so it earns a diagnostic distinct from generic corruption.
+**The assertion strips the source path from the message before matching.**
+Every adapter interpolates the path into its diagnostics and pytest names
+`tmp_path` after the test function, so a test whose own name contains the
+token being matched passes on the directory name regardless of what the
+adapter says.
+
+**Expected:** `ValueError` whose message, path removed, names encryption or
+a password.
+
+### TEST-SAGE-AD-122: pptx is classified as a binary-container source type
+
+**Artifact:** `sage/models/enums.py` (BINARY_CONTAINER_SOURCE_TYPES)
+**Category:** wiring
+**Decision:** A `.pptx` is a zipped OPC package, so the read path must
+decline to inline its raw bytes and direct callers to the extracted-text
+projection (CAS-ADR-039). Nothing else in the suite enumerates this
+frozenset, so an omission would otherwise pass silently.
+
+**Expected:** `SourceType.PPTX in BINARY_CONTAINER_SOURCE_TYPES`.
+
+### TEST-SAGE-AD-123: The adapter is wired into the runtime adapter registry
+
+**Artifact:** `sage/mcp_init.py` (build_source_adapter_registry)
+**Category:** wiring
+**Decision:** Adapter selection during ingestion resolves against this
+registry, so a source type absent from it raises `adapter_not_found`
+regardless of what any vault's `source_adapters` config declares.
+
+**Expected:** `build_source_adapter_registry()[SourceType.PPTX]` is a
+`PptxAdapter`.

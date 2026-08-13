@@ -18,7 +18,7 @@
         "properties": {
           "source_type": {
             "type": "string",
-            "enum": ["markdown", "docx", "pdf", "email", "onenote", "teams_chat", "obsidian"],
+            "enum": ["markdown", "docx", "xlsx", "pptx", "pdf", "email", "onenote", "teams_chat", "obsidian"],
             "description": "The source format this adapter handles. Must match a valid source_type value in the SAGE Document object model."
           },
           "enabled": {

@@ -1,4 +1,4 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-099).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-199).
 
 Production adapter tests for nomic-embed-text EmbeddingProvider, Qwen3
 AbstractionProvider (with lazy loading), and Markdown source adapter
@@ -2986,3 +2986,636 @@ class TestPdfAdapter:
         assert above_actual.metadata["page_count"] == 10
         assert above_actual.metadata["pages_extracted"] == 10
         assert "pdf:truncated" not in above_actual.metadata.get("adapter_tags", [])
+
+
+# ── PPTX Adapter ──────────────────────────────────────────────────
+
+try:
+    import pptx as _pptx  # noqa: F401
+
+    _HAS_PPTX = True
+except ImportError:
+    _HAS_PPTX = False
+
+
+requires_pptx = pytest.mark.skipif(not _HAS_PPTX, reason="python-pptx not available")
+requires_pptx_with_image = pytest.mark.skipif(
+    not (_HAS_PPTX and _HAS_PIL), reason="python-pptx or Pillow not available"
+)
+
+# Layout indices in python-pptx's default template.
+_LAYOUT_TITLE_ONLY = 5
+_LAYOUT_BLANK = 6
+
+# OPC main-part content types for the presentation and template flavors.
+_PPTX_MAIN_TYPE = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
+)
+_POTX_MAIN_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"
+
+
+def _new_presentation():
+    from pptx import Presentation
+
+    return Presentation()
+
+
+def _add_slide(prs, title: str | None):
+    """Add a slide, using the blank layout when no title is wanted."""
+    layout = prs.slide_layouts[_LAYOUT_TITLE_ONLY if title is not None else _LAYOUT_BLANK]
+    slide = prs.slides.add_slide(layout)
+    if title is not None:
+        slide.shapes.title.text = title
+    return slide
+
+
+def _add_textbox(slide, text: str, top_in: float = 2.0, left_in: float = 1.0):
+    from pptx.util import Inches
+
+    box = slide.shapes.add_textbox(Inches(left_in), Inches(top_in), Inches(3), Inches(1))
+    box.text_frame.text = text
+    return box
+
+
+def _make_pptx(tmp_path, slides: list[dict], filename: str = "test.pptx") -> Path:
+    """Build a .pptx from a compact slide spec.
+
+    Each entry of ``slides`` is a dict with optional keys:
+
+    - ``title``: title-placeholder text; omit or pass None for a blank
+      layout with no title placeholder at all.
+    - ``body``: list of strings, each rendered as its own text box,
+      stacked top-down so authoring order matches visual order.
+    - ``notes``: speaker-notes text.
+    - ``table``: list of rows (each a list of cell strings).
+    """
+    prs = _new_presentation()
+    for spec in slides:
+        slide = _add_slide(prs, spec.get("title"))
+        top = 2.0
+        for line in spec.get("body", []):
+            _add_textbox(slide, line, top_in=top)
+            top += 1.0
+        if "table" in spec:
+            _add_pptx_table(slide, spec["table"], top_in=top)
+        if spec.get("notes"):
+            slide.notes_slide.notes_text_frame.text = spec["notes"]
+    path = tmp_path / filename
+    prs.save(str(path))
+    return path
+
+
+def _add_pptx_table(slide, rows: list[list[str]], top_in: float = 4.0):
+    from pptx.util import Inches
+
+    frame = slide.shapes.add_table(
+        len(rows), len(rows[0]), Inches(1), Inches(top_in), Inches(5), Inches(1)
+    )
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            frame.table.cell(r, c).text = cell
+    return frame
+
+
+def _make_empty_pptx(tmp_path, filename: str = "empty.pptx") -> Path:
+    """A presentation carrying zero slides."""
+    prs = _new_presentation()
+    path = tmp_path / filename
+    prs.save(str(path))
+    return path
+
+
+def _make_potx(tmp_path, slides: list[dict], filename: str = "template.potx") -> Path:
+    """Build a .pptx then rewrite its main content type to the template flavor."""
+    import zipfile as _zipfile
+
+    source = _make_pptx(tmp_path, slides, filename="__potx_source.pptx")
+    path = tmp_path / filename
+    with _zipfile.ZipFile(source, "r") as z_in:
+        with _zipfile.ZipFile(path, "w", _zipfile.ZIP_DEFLATED) as z_out:
+            for item in z_in.namelist():
+                data = z_in.read(item)
+                if item == "[Content_Types].xml":
+                    data = data.replace(
+                        _PPTX_MAIN_TYPE.encode("utf-8"), _POTX_MAIN_TYPE.encode("utf-8")
+                    )
+                z_out.writestr(item, data)
+    source.unlink()
+    return path
+
+
+def _make_corrupt_pptx(path: Path) -> Path:
+    """ZIP magic bytes followed by garbage: valid header, unreadable package."""
+    path.write_bytes(b"PK\x03\x04this is not a valid OPC package at all\n")
+    return path
+
+
+def _make_encrypted_pptx(path: Path) -> Path:
+    """OLE2 compound-file magic, which is how password-protected OOXML is stored."""
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    return path
+
+
+def _strip_position(shape) -> None:
+    """Remove a shape's explicit geometry so ``top``/``left`` report None."""
+    ns = "{http://schemas.openxmlformats.org/drawingml/2006/main}xfrm"
+    xfrm = shape._element.spPr.find(ns)
+    shape._element.spPr.remove(xfrm)
+
+
+def _set_alt_text(shape, text: str) -> None:
+    shape._element._nvXxPr.cNvPr.set("descr", text)
+
+
+def _slide_heading(result, n: int):
+    """Return the level-1 heading whose text starts with ``Slide {n}``."""
+    for heading in result.headings:
+        if heading.level == 1 and heading.text.startswith(f"Slide {n}"):
+            return heading
+    raise AssertionError(f"no level-1 heading for slide {n} in {[h.text for h in result.headings]}")
+
+
+@requires_pptx
+class TestPptxAdapter:
+    """AD-098 through AD-123: PPTX source adapter tests."""
+
+    # ── Section 11.1 — Registration and projection shape ──────────
+
+    async def test_ad_098_extensions_and_version(self):
+        """AD-098: Adapter declares its extensions and a semver VERSION."""
+        import re
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        assert PptxAdapter.EXTENSIONS == [".pptx", ".potx"]
+        assert isinstance(PptxAdapter.VERSION, str)
+        assert re.match(r"^\d+\.\d+\.\d+$", PptxAdapter.VERSION)
+
+    async def test_ad_099_basic_projection(self, tmp_path):
+        """AD-099: Basic projection returns a valid ProjectionResult."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [
+                {"title": "Alpha", "body": ["BODY_ONE"]},
+                {"title": "Beta", "body": ["BODY_TWO"]},
+                {"title": "Gamma", "body": ["BODY_THREE"]},
+            ],
+            filename="basic.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+
+        assert isinstance(result.text, str)
+        assert len(result.text) > 0
+        assert len([h for h in result.headings if h.level == 1]) == 3
+        assert isinstance(result.content_hash, str)
+        assert len(result.content_hash) == 64  # SHA-256 hex
+        assert result.adapter_version == PptxAdapter.VERSION
+        assert result.metadata["slide_count"] == 3
+        assert result.metadata["slides_projected"] == 3
+
+    # ── Section 11.2 — Heading synthesis ──────────────────────────
+
+    async def test_ad_100_one_heading_per_slide_in_deck_order(self, tmp_path):
+        """AD-100: One level-1 heading per slide, numbered, in deck order."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "Alpha"}, {"title": "Beta"}, {"title": "Gamma"}],
+            filename="ordered.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        top_level = [h for h in result.headings if h.level == 1]
+
+        assert [h.text for h in top_level] == [
+            "Slide 1: Alpha",
+            "Slide 2: Beta",
+            "Slide 3: Gamma",
+        ]
+        for heading in top_level:
+            assert heading.path == heading.text
+            assert " > " not in heading.path
+        # The title placeholder is consumed by the heading, so a title-only
+        # slide projects an empty body rather than repeating its own title.
+        assert [h.content for h in top_level] == ["", "", ""]
+
+    async def test_ad_101_untitled_slide_gets_stable_placeholder(self, tmp_path):
+        """AD-101: A slide with no title placeholder gets a bare 'Slide N' heading."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "Alpha"}, {"body": ["ORPHAN_BODY"]}, {"title": "Gamma"}],
+            filename="untitled.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        top_level = [h for h in result.headings if h.level == 1]
+
+        assert [h.text for h in top_level] == ["Slide 1: Alpha", "Slide 2", "Slide 3: Gamma"]
+        assert "ORPHAN_BODY" in _slide_heading(result, 2).content
+
+    async def test_ad_102_empty_slide_still_projects_its_heading(self, tmp_path):
+        """AD-102: A slide with no shapes keeps its heading so numbering stays contiguous."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "Alpha", "body": ["BODY_ONE"]}, {}, {"title": "Gamma"}],
+            filename="gap.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        top_level = [h for h in result.headings if h.level == 1]
+
+        assert len(top_level) == 3
+        assert top_level[1].text == "Slide 2"
+        assert top_level[1].content == ""
+        # Numbering after the gap must not shift.
+        assert top_level[2].text == "Slide 3: Gamma"
+
+    # ── Section 11.3 — Speaker notes ──────────────────────────────
+
+    async def test_ad_103_notes_project_under_a_subheading(self, tmp_path):
+        """AD-103: Speaker notes project as a level-2 heading addressable via its path."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [
+                {"title": "Alpha"},
+                {"title": "Beta", "body": ["BODY_TWO"], "notes": "NOTES_FOR_BETA"},
+            ],
+            filename="notes.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+        notes = [h for h in result.headings if h.text == "Notes"]
+
+        assert len(notes) == 1
+        assert notes[0].level == 2
+        assert notes[0].path == "Slide 2: Beta > Notes"
+        assert notes[0].content == "NOTES_FOR_BETA"
+        # The slide body stays on the slide heading, not the notes heading.
+        assert "BODY_TWO" in _slide_heading(result, 2).content
+        assert "BODY_TWO" not in notes[0].content
+        assert result.metadata["notes_count"] == 1
+
+    async def test_ad_104_no_notes_emits_no_subheading(self, tmp_path):
+        """AD-104: A deck with no speaker notes emits no Notes heading."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "Alpha", "body": ["BODY_ONE"]}, {"title": "Beta"}],
+            filename="nonotes.pptx",
+        )
+
+        result = await PptxAdapter().project(path)
+
+        assert [h for h in result.headings if h.text == "Notes"] == []
+        assert result.metadata["notes_count"] == 0
+
+    async def test_ad_105_has_notes_tag_tracks_notes_presence(self, tmp_path):
+        """AD-105: pptx:has_notes is emitted iff at least one slide carries notes."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        adapter = PptxAdapter()
+        with_notes = _make_pptx(
+            tmp_path, [{"title": "Alpha", "notes": "SOME_NOTES"}], filename="withnotes.pptx"
+        )
+        without_notes = _make_pptx(tmp_path, [{"title": "Alpha"}], filename="withoutnotes.pptx")
+
+        assert "pptx:has_notes" in (await adapter.project(with_notes)).metadata["adapter_tags"]
+        assert (
+            "pptx:has_notes" not in (await adapter.project(without_notes)).metadata["adapter_tags"]
+        )
+
+    # ── Section 11.4 — Content recovery ───────────────────────────
+
+    async def test_ad_106_table_projects_as_markdown(self, tmp_path):
+        """AD-106: Tables project as Markdown tables."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "Alpha", "table": [["Name", "Role"], ["Ada", "Engineer"]]}],
+            filename="table.pptx",
+        )
+
+        content = _slide_heading(await PptxAdapter().project(path), 1).content
+
+        assert "| Name | Role |" in content
+        assert "| --- | --- |" in content
+        assert "| Ada | Engineer |" in content
+
+    async def test_ad_107_group_shape_text_is_recovered(self, tmp_path):
+        """AD-107: Text inside a grouped shape is recovered, not dropped."""
+        from pptx.util import Inches
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        prs = _new_presentation()
+        slide = _add_slide(prs, "Alpha")
+        group = slide.shapes.add_group_shape()
+        member = group.shapes.add_textbox(Inches(1), Inches(3), Inches(2), Inches(1))
+        member.text_frame.text = "GROUPED_TEXT"
+        path = tmp_path / "group.pptx"
+        prs.save(str(path))
+
+        content = _slide_heading(await PptxAdapter().project(path), 1).content
+
+        assert "GROUPED_TEXT" in content
+
+    async def test_ad_108_nested_group_text_is_recovered(self, tmp_path):
+        """AD-108: Text inside a group nested within a group is recovered."""
+        from pptx.util import Inches
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        prs = _new_presentation()
+        slide = _add_slide(prs, "Alpha")
+        outer = slide.shapes.add_group_shape()
+        inner = outer.shapes.add_group_shape()
+        member = inner.shapes.add_textbox(Inches(1), Inches(3), Inches(2), Inches(1))
+        member.text_frame.text = "DEEPLY_NESTED_TEXT"
+        path = tmp_path / "nested.pptx"
+        prs.save(str(path))
+
+        content = _slide_heading(await PptxAdapter().project(path), 1).content
+
+        assert "DEEPLY_NESTED_TEXT" in content
+
+    @requires_pptx_with_image
+    async def test_ad_109_alt_text_contributes_but_filenames_do_not(self, tmp_path):
+        """AD-109: Authored alt text contributes; a default filename descr does not."""
+        import io
+
+        from PIL import Image
+        from pptx.util import Inches
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        prs = _new_presentation()
+        slide = _add_slide(prs, "Alpha")
+        buf = io.BytesIO()
+        Image.new("RGB", (20, 20), "white").save(buf, format="PNG")
+
+        buf.seek(0)
+        described = slide.shapes.add_picture(buf, Inches(1), Inches(2), Inches(1), Inches(1))
+        _set_alt_text(described, "AUTHORED_ALT_TEXT")
+
+        buf.seek(0)
+        undescribed = slide.shapes.add_picture(buf, Inches(1), Inches(4), Inches(1), Inches(1))
+        _set_alt_text(undescribed, "diagram_v2.png")
+
+        path = tmp_path / "altext.pptx"
+        prs.save(str(path))
+
+        content = _slide_heading(await PptxAdapter().project(path), 1).content
+
+        assert "AUTHORED_ALT_TEXT" in content
+        # PowerPoint defaults descr to the image filename; that is not alt text.
+        assert "diagram_v2.png" not in content
+
+    # ── Section 11.5 — Reading order ──────────────────────────────
+
+    async def test_ad_110_shapes_read_top_down_then_left_right(self, tmp_path):
+        """AD-110: Shapes project in visual reading order, not shape-tree order."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        prs = _new_presentation()
+        slide = _add_slide(prs, "Alpha")
+        # Authored bottom-first, and right-before-left within the shared row,
+        # so shape-tree order is the exact reverse of reading order.
+        _add_textbox(slide, "ZULU_BOTTOM", top_in=5.0, left_in=1.0)
+        _add_textbox(slide, "MIKE_ROW_RIGHT", top_in=3.0, left_in=6.0)
+        _add_textbox(slide, "MIKE_ROW_LEFT", top_in=3.05, left_in=1.0)
+        _add_textbox(slide, "ALFA_TOP", top_in=1.5, left_in=1.0)
+        path = tmp_path / "order.pptx"
+        prs.save(str(path))
+
+        content = _slide_heading(await PptxAdapter().project(path), 1).content
+        positions = [
+            content.index(marker)
+            for marker in ("ALFA_TOP", "MIKE_ROW_LEFT", "MIKE_ROW_RIGHT", "ZULU_BOTTOM")
+        ]
+
+        assert positions == sorted(positions), content
+
+    async def test_ad_111_unresolved_position_sorts_last_in_tree_order(self, tmp_path):
+        """AD-111: Shapes with no resolvable position sort last, keeping tree order."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        prs = _new_presentation()
+        slide = _add_slide(prs, "Alpha")
+        floating_first = _add_textbox(slide, "FLOATING_ONE", top_in=1.0)
+        floating_second = _add_textbox(slide, "FLOATING_TWO", top_in=1.5)
+        _add_textbox(slide, "POSITIONED_BODY", top_in=5.0)
+        _strip_position(floating_first)
+        _strip_position(floating_second)
+        path = tmp_path / "unpositioned.pptx"
+        prs.save(str(path))
+
+        content = _slide_heading(await PptxAdapter().project(path), 1).content
+
+        # Positioned shape wins despite sitting lowest on the slide...
+        assert content.index("POSITIONED_BODY") < content.index("FLOATING_ONE")
+        # ...and the unpositioned pair keeps its shape-tree order.
+        assert content.index("FLOATING_ONE") < content.index("FLOATING_TWO")
+
+    # ── Section 11.6 — Provenance and title ───────────────────────
+
+    async def test_ad_112_content_hash_is_sha256_of_source_bytes(self, tmp_path):
+        """AD-112: content_hash is the SHA-256 of the raw source bytes."""
+        import hashlib
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(tmp_path, [{"title": "Alpha", "body": ["BODY"]}], filename="hash.pptx")
+
+        result = await PptxAdapter().project(path)
+
+        assert result.content_hash == hashlib.sha256(path.read_bytes()).hexdigest()
+
+    async def test_ad_113_source_modified_at_from_mtime(self, tmp_path):
+        """AD-113: source_modified_at is the file mtime as a timezone-aware ISO string."""
+        from datetime import datetime, timezone
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(tmp_path, [{"title": "Alpha"}], filename="mtime.pptx")
+        expected = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+        result = await PptxAdapter().project(path)
+        parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
+
+        assert parsed == expected
+        assert parsed.tzinfo is not None
+
+    async def test_ad_114_title_prefers_first_slide_title(self, tmp_path):
+        """AD-114: Title comes from the first slide's title, else the filename stem."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        adapter = PptxAdapter()
+        titled = _make_pptx(
+            tmp_path, [{"title": "Deck Headline"}, {"title": "Second"}], filename="titled.pptx"
+        )
+        untitled = _make_pptx(tmp_path, [{"body": ["BODY"]}], filename="fallback-name.pptx")
+
+        assert (await adapter.project(titled)).title == "Deck Headline"
+        assert (await adapter.project(untitled)).title == "fallback-name"
+
+    # ── Section 11.7 — Adapter tags ───────────────────────────────
+
+    async def test_ad_115_tag_prefix_declared_unconditionally(self, tmp_path):
+        """AD-115: adapter_tag_prefixes is declared even when no tags are emitted."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path, [{"title": "Alpha", "body": ["BODY_ONE"]}], filename="notags.pptx"
+        )
+
+        result = await PptxAdapter().project(path)
+
+        # A deck with text and no notes emits no tags at all...
+        assert result.metadata["adapter_tags"] == []
+        # ...but the namespace must still be declared, or a stale pptx: tag
+        # from a prior ingest survives the re-ingest strip.
+        assert result.metadata["adapter_tag_prefixes"] == ["pptx:"]
+
+    async def test_ad_116_truncation_emits_tag_and_stops_projecting(self, tmp_path):
+        """AD-116: max_slides truncates projection and emits pptx:truncated."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": f"Slide{i}", "body": [f"BODY_{i}"]} for i in range(1, 6)],
+            filename="long.pptx",
+        )
+        adapter = PptxAdapter()
+
+        truncated = await adapter.project(path, config={"max_slides": 2})
+        full = await adapter.project(path, config={"max_slides": 5})
+
+        assert len([h for h in truncated.headings if h.level == 1]) == 2
+        assert truncated.metadata["slide_count"] == 5
+        assert truncated.metadata["slides_projected"] == 2
+        assert "pptx:truncated" in truncated.metadata["adapter_tags"]
+        assert "BODY_2" in truncated.text
+        assert "BODY_3" not in truncated.text
+
+        assert "pptx:truncated" not in full.metadata["adapter_tags"]
+        assert "BODY_5" in full.text
+
+    @requires_pptx_with_image
+    async def test_ad_117_no_text_tag_when_a_slide_yields_nothing(self, tmp_path):
+        """AD-117: A slide with no recoverable text emits pptx:no_text and keeps its heading."""
+        import io
+
+        from PIL import Image
+        from pptx.util import Inches
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        prs = _new_presentation()
+        _add_slide(prs, "Alpha")
+        bare = prs.slides.add_slide(prs.slide_layouts[_LAYOUT_BLANK])
+        buf = io.BytesIO()
+        Image.new("RGB", (20, 20), "white").save(buf, format="PNG")
+        buf.seek(0)
+        picture = bare.shapes.add_picture(buf, Inches(1), Inches(2), Inches(1), Inches(1))
+        _set_alt_text(picture, "screenshot.png")
+        path = tmp_path / "imageonly.pptx"
+        prs.save(str(path))
+
+        result = await PptxAdapter().project(path)
+
+        assert "pptx:no_text" in result.metadata["adapter_tags"]
+        assert _slide_heading(result, 2).content == ""
+        assert len([h for h in result.headings if h.level == 1]) == 2
+
+    # ── Section 11.8 — Degenerate and error paths ─────────────────
+
+    async def test_ad_118_zero_slide_deck_projects_empty(self, tmp_path):
+        """AD-118: A deck with no slides projects empty rather than raising."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_empty_pptx(tmp_path, filename="no-slides.pptx")
+
+        result = await PptxAdapter().project(path)
+
+        assert result.text == ""
+        assert result.headings == []
+        assert result.title == "no-slides"
+        assert result.metadata["slide_count"] == 0
+
+    async def test_ad_119_potx_template_is_accepted(self, tmp_path):
+        """AD-119: A .potx template opens via the content-type rewrite and projects."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_potx(
+            tmp_path, [{"title": "Template Deck", "body": ["TEMPLATE_BODY"]}], filename="deck.potx"
+        )
+
+        result = await PptxAdapter().project(path)
+
+        assert _slide_heading(result, 1).text == "Slide 1: Template Deck"
+        assert "TEMPLATE_BODY" in result.text
+
+    async def test_ad_120_corrupt_source_raises(self, tmp_path):
+        """AD-120: A corrupt or empty deck raises ValueError with no partial output."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        garbage = _make_corrupt_pptx(tmp_path / "garbage.pptx")
+        empty = tmp_path / "empty-bytes.pptx"
+        empty.write_bytes(b"")
+        adapter = PptxAdapter()
+
+        with pytest.raises(ValueError):
+            await adapter.project(garbage)
+        with pytest.raises(ValueError):
+            await adapter.project(empty)
+
+    async def test_ad_121_locked_source_raises_naming_the_reason(self, tmp_path):
+        """AD-121: A password-protected deck raises ValueError naming the reason.
+
+        The source path is stripped from the message before matching. Every
+        adapter interpolates the path into its diagnostics, and pytest names
+        ``tmp_path`` after the test function, so a test whose own name
+        contains the token being matched would pass on the directory name no
+        matter what the adapter said.
+        """
+        import re
+
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_encrypted_pptx(tmp_path / "locked.pptx")
+
+        with pytest.raises(ValueError) as excinfo:
+            await PptxAdapter().project(path)
+
+        diagnostic = str(excinfo.value).replace(str(path), "")
+        assert re.search(r"password|encrypt", diagnostic, re.IGNORECASE), diagnostic
+
+    # ── Section 11.9 — Wiring ─────────────────────────────────────
+
+    async def test_ad_122_pptx_is_a_binary_container_source(self):
+        """AD-122: pptx is classified as a binary-container source type."""
+        from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES, SourceType
+
+        assert SourceType.PPTX in BINARY_CONTAINER_SOURCE_TYPES
+
+    async def test_ad_123_adapter_is_registered_for_the_pptx_source_type(self):
+        """AD-123: The pptx adapter is wired into the runtime adapter registry."""
+        from sage.mcp_init import build_source_adapter_registry
+        from sage.models.enums import SourceType
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        registry = build_source_adapter_registry()
+
+        assert isinstance(registry[SourceType.PPTX], PptxAdapter)

@@ -33,6 +33,7 @@ describe('sourceTypeForFilename', () => {
     expect(sourceTypeForFilename('notes.markdown')).toBe('markdown');
     expect(sourceTypeForFilename('Brief.DOCX')).toBe('docx');
     expect(sourceTypeForFilename('sheet.xlsx')).toBe('xlsx');
+    expect(sourceTypeForFilename('Deck.PPTX')).toBe('pptx');
     expect(sourceTypeForFilename('scan.PDF')).toBe('pdf');
   });
 

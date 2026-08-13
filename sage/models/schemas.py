@@ -1101,7 +1101,8 @@ class DocumentWithContent(Document):
         description=(
             "Form of the document's source body (CAS-ADR-039): `text` for a "
             "source whose bytes are scannable text, `binary` for a "
-            "binary-container source (`.docx`, `.pdf`, `.xlsx`) whose bytes "
+            "binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`) whose "
+            "bytes "
             "are a zipped or streamed package. Stamped on every `get_document` "
             "response so a caller never has to infer the form from the bytes; "
             "`include_content=true` against a binary-container source is "
@@ -3930,7 +3931,7 @@ class BatchIngestFileMetadata(BaseModel):
     source_type: str = Field(
         description=(
             "Source artifact format for this file (closed SourceType "
-            "vocabulary: markdown, docx, xlsx, pdf). Must be an adapter "
+            "vocabulary: markdown, docx, xlsx, pptx, pdf). Must be an adapter "
             "enabled on the target vault."
         )
     )

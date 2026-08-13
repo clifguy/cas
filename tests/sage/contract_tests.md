@@ -536,7 +536,7 @@ adapters: []
 
 **Artifact:** `docs/fs/sage/source_adapters.schema.json`
 **Category:** invalid
-**Constraint:** `source_type` must be one of [markdown, docx, pdf, email, onenote, teams_chat, obsidian]
+**Constraint:** `source_type` must be one of [markdown, docx, xlsx, pptx, pdf, email, onenote, teams_chat, obsidian]
 
 **Input:**
 ```yaml
