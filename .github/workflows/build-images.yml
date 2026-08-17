@@ -79,7 +79,7 @@ jobs:
         # repo already runs near half the 10 GB Actions cache ceiling, and an
         # unpruned uv cache at every call site would crowd out the entries other
         # jobs depend on. Drop the pin if the cache budget stops binding.
-        uses: astral-sh/setup-uv@v9.0.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           prune-cache: true
