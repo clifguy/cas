@@ -8,9 +8,23 @@ document store. This document covers the **REST API**. SAGE also exposes an MCP
 server at `/mcp`, which is a separate surface — an MCP client never calls the
 paths below, and a REST client never calls `/mcp`.
 
-- **Base URL:** `https://sage.cor.org`
+- **Base URL:** `https://sage.<base-domain>` — supplied by the deployment's
+  operator. The first deployment is `https://sage.cor.org`, used as the worked
+  example throughout.
 - **Spec version:** SAGE Core API 2.1 (OpenAPI 3.1.0)
 - **Operations:** 42 across 39 paths
+
+## Write portable clients
+
+SAGE is deployed more than once. Each deployment has **its own domain, its own
+Entra tenant, and its own audience**, and the OAuth scope string is derived
+from the deployment's domain — `https://sage.cor.org/Sage.Access` on the first
+one, something else on the next.
+
+Take the base URL as configuration and resolve everything else at runtime from
+the deployment's own discovery documents (§1.2). A client that hardcodes the
+scope, tenant id, or token endpoint works against exactly one deployment and
+fails against the second with an opaque `invalid_token`.
 
 ---
 
@@ -24,7 +38,9 @@ Authorization: Bearer <token>
 ```
 
 A request is authorized if the token carries **either** the delegated scope
-`https://sage.cor.org/Sage.Access` **or** the app role `Sage.Reader`.
+`<resource>/Sage.Access` **or** the app role `Sage.Reader`. `<resource>` is the
+deployment's own resource URL, advertised by discovery — on the first
+deployment it is `https://sage.cor.org`. Read it; do not assemble it.
 
 ### 1.1 Read this before you build
 
@@ -48,10 +64,15 @@ deterministic software:
 | A tool a developer runs, signing in once interactively | Yes |
 | A daemon, cron job, CI step, or backend service | **No** |
 
-Unblocking the second row is a tenant change, not a code change: add
+This is not specific to one deployment. Every SAGE deployment is bootstrapped
+from the same Entra registration script, so each one inherits the same
+`User`-only app role.
+
+Unblocking the second row is a configuration change, not a code change: add
 `"Application"` to `allowedMemberTypes` on the `Sage.Reader` app role, then
-grant that role to each calling service principal. Until then, do not design
-around client credentials.
+grant that role to each calling service principal. Making the change in the
+bootstrap script rather than by hand fixes every future deployment too. Until
+then, do not design around client credentials.
 
 ### 1.2 Interactive flow
 
@@ -59,12 +80,16 @@ Discovery is public and unauthenticated — fetch it rather than hardcoding
 endpoints:
 
 ```
-GET https://sage.cor.org/.well-known/oauth-protected-resource
-GET https://sage.cor.org/.well-known/oauth-authorization-server
+GET https://sage.<base-domain>/.well-known/oauth-protected-resource
+GET https://sage.<base-domain>/.well-known/oauth-authorization-server
 ```
 
-The authorization server is Entra; the resource advertises
-`scopes_supported: ["https://sage.cor.org/Sage.Access", "offline_access"]`.
+The authorization server is Entra. The resource advertises its own
+`scopes_supported` — on the first deployment,
+`["https://sage.cor.org/Sage.Access", "offline_access"]`. Use the advertised
+value verbatim; the resource-qualified form is required, and a bare
+`Sage.Access` leaves Entra unable to bind the scope.
+
 Use authorization code + PKCE (S256). Public clients are supported
 (`token_endpoint_auth_methods_supported: ["none"]`), and dynamic client
 registration is open at `POST /register`, so you can self-register.
@@ -72,7 +97,10 @@ registration is open at `POST /register`, so you can self-register.
 ### 1.3 Registration succeeds and access still fails
 
 The SAGE application sets `appRoleAssignmentRequired: true`, and access is
-provisioned by membership in a single group (`cas-sage-users` by default).
+provisioned by membership in a single group per deployment (`cas-sage-users` by
+default). Because each deployment lives in its own Entra tenant, **access to
+one deployment grants nothing on another** — you need a separate assignment for
+each.
 
 Registration and sign-in will therefore appear to work for a principal that has
 no access — you get a client, you see a login page — and authorization fails
@@ -81,7 +109,7 @@ assignment, not a code fix.** Ask the SAGE operator.
 
 ### 1.4 What a token grants
 
-Access is deliberately uniform: **a valid token reaches every vault on the
+Access is deliberately uniform: **a valid token reaches every vault on that
 deployment.** There is no per-vault grant to request and no per-vault scope to
 add to your token — if `GET /sage_vaults` lists it, you can read and write it,
 subject to the same operations everywhere.
@@ -118,7 +146,7 @@ They differ by origin. Handle both.
 ```
 
 ```
-WWW-Authenticate: Bearer resource_metadata="https://sage.cor.org/.well-known/oauth-protected-resource"
+WWW-Authenticate: Bearer resource_metadata="https://sage.<base-domain>/.well-known/oauth-protected-resource"
 ```
 
 **Application errors** (400/404/409/413/422, from the API) carry:
