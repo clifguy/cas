@@ -79,6 +79,17 @@ no access — you get a client, you see a login page — and authorization fails
 afterward. **If you get a token but every call returns 403, you need a group
 assignment, not a code fix.** Ask the SAGE operator.
 
+### 1.4 What a token grants
+
+Access is deliberately uniform: **a valid token reaches every vault on the
+deployment.** There is no per-vault grant to request and no per-vault scope to
+add to your token — if `GET /sage_vaults` lists it, you can read and write it,
+subject to the same operations everywhere.
+
+Provisioning is therefore binary: you either have access to SAGE or you do not.
+Plan integrations on that basis rather than expecting to be scoped down to a
+subset of vaults.
+
 ---
 
 ## 2. Conventions
