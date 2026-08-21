@@ -26,12 +26,24 @@ the deployment's own discovery documents (§1.2). A client that hardcodes the
 scope, tenant id, or token endpoint works against exactly one deployment and
 fails against the second with an opaque `invalid_token`.
 
+You do not need this repository to start. Every deployment publishes its own
+machine-readable schema document, unauthenticated, at:
+
+```
+GET https://sage.<base-domain>/openapi.json
+```
+
+That document is generated from the routes the deployment is actually running,
+so it is accurate for that deployment specifically, and it declares the bearer
+scheme it accepts. Point a code generator at it, or read this guide for the
+narrative. The rendered explorers (`/docs`, `/redoc`) do require a token.
+
 ---
 
 ## 1. Authentication
 
 Every path below requires an Entra ID (Azure AD) bearer token. Exceptions:
-`/health`, `/upload`, and `/download/{transfer_id}`.
+`/health`, `/openapi.json`, `/upload`, and `/download/{transfer_id}`.
 
 ```
 Authorization: Bearer <token>

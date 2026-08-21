@@ -51,9 +51,10 @@
             token carries the bare GUID as its aud, so the JWT policy must admit
             it alongside the URI; a token for any other resource is still rejected.
 
-            The unauthenticated surfaces — the OAuth discovery doc and /health —
-            are served by their own dedicated GET operations whose operation-scoped
-            policies omit <base />, so they never reach this validate-jwt. Routing
+            The unauthenticated surfaces — the OAuth discovery doc, /health, and
+            the OpenAPI schema document — are served by their own dedicated GET
+            operations whose operation-scoped policies omit <base />, so they never
+            reach this validate-jwt. Routing
             by operation (a literal urlTemplate) keeps this policy free of any
             inline path-string literal: there is no <when> condition here for the
             loadTextContent -> ARM -> APIM round-trip to double-encode.

@@ -505,6 +505,50 @@ check_edge_advertises_grant_types() {
   return 1
 }
 
+check_edge_serves_openapi_spec() {
+  # The OpenAPI schema document must be fetchable WITHOUT a token, so a
+  # developer outside the repository can generate a working client against a
+  # deployment they only know the domain of. Gating it is self-defeating: the
+  # document naming the token endpoint sat behind that same token, leaving a
+  # first-time caller no entry point at all. Two independent legs have to be
+  # open (SAGE's own auth exemption and a dedicated APIM operation whose policy
+  # omits the base include), and either one regressing lands here as a 401.
+  #
+  # A 200 alone is not enough, so two further conditions run. The body must be
+  # SAGE's own document declaring the bearer scheme: an image predating the
+  # declaration serves a well-formed document that never mentions
+  # authentication, which leaves the caller as stuck as a 401 would, so the
+  # grep misses and this FAILs. And a still-gated surface must still answer
+  # 401: publishing one document must not have widened into an open edge, which
+  # would make the document's own 200 mean nothing. The discovery-200 control
+  # guards the blanket-edge trap.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); a schema document 200 is the blanket trap, not a real exemption"
+    return 1
+  fi
+  http_get "$SAGE_BASE_URL/openapi.json"
+  local spec_code="$HTTP_CODE" spec_body="$HTTP_BODY"
+  if [ "$spec_code" != 200 ]; then
+    DETAIL_MSG="/openapi.json returned $spec_code unauthenticated; a caller still needs a token to read the document that says how to obtain one (check the SAGE auth exemption and the APIM operation policy)"
+    return 1
+  fi
+  if ! printf '%s' "$spec_body" | grep -qE '"title"[[:space:]]*:[[:space:]]*"SAGE Core API"'; then
+    DETAIL_MSG="/openapi.json 200 but the body is not the SAGE Core API document (some other surface answered at that path)"
+    return 1
+  fi
+  if ! printf '%s' "$spec_body" | grep -qE '"entraBearer"'; then
+    DETAIL_MSG="/openapi.json 200 but declares no entraBearer security scheme; the document never states how to authenticate (image predates the declaration)"
+    return 1
+  fi
+  http_get "$SAGE_BASE_URL/mcp"
+  if [ "$HTTP_CODE" != 401 ]; then
+    DETAIL_MSG="control failed: /mcp answered $HTTP_CODE unauthenticated, expected 401; the edge gate has collapsed, so the schema document's 200 is not a deliberate exemption"
+    return 1
+  fi
+  DETAIL_MSG="/openapi.json 200 unauth, is the SAGE document, declares entraBearer; /mcp still 401 (the exemption is one path, not an open edge)"
+  return 0
+}
+
 check_edge_mount_discovery() {
   # Each MCP mount must steer a denied client to its RFC 9728 PATH-INSERTED
   # metadata document, and that document must advertise the PATH-CARRYING mount
@@ -923,6 +967,9 @@ register edge_advertises_offline_access check_edge_advertises_offline_access \
 register edge_advertises_grant_types check_edge_advertises_grant_types \
   "the authorization-server metadata advertises both authorization_code and client_credentials (a conformant client can reach the machine-to-machine leg, not just the interactive one)" \
   "either grant dropped from a genuinely-live edge is the regression trap (the document keeps 200ing and every other edge check stays green); credited only with the discovery-200 control held"
+register edge_serves_openapi_spec check_edge_serves_openapi_spec \
+  "GET /openapi.json returns 200 unauthenticated carrying SAGE's own document with its entraBearer scheme (an outside developer can generate a working client from the deployment alone)" \
+  "a 200 that is some other document, or one declaring no security scheme, is the coincidental-pass trap; /mcp must still 401 so an open edge cannot credit it; discovery-200 credits the fetch"
 register edge_mount_discovery check_edge_mount_discovery \
   "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \
   "a bare-host resource is the coincidental-pass trap (200s fine, but serializes to a trailing-slash form Entra can neither match nor register -- AADSTS9010010); credited only with the discovery-200 control held"

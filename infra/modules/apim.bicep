@@ -426,6 +426,25 @@ resource sageHealthOperation 'Microsoft.ApiManagement/service/apis/operations@20
   }
 }
 
+// The schema document (CAS-ADR-042): a dedicated operation in the same shape as
+// /health, and unauthenticated for the same kind of reason. A caller that must
+// already hold a token to read the document naming the token endpoint has no
+// entry point, so each deployment publishes its own document and describes
+// itself. A backend passthrough rather than a canned edge copy: the document
+// served is the running process's own, so it cannot drift from the deployed
+// routes. Only the machine-readable document is opened; /docs and /redoc render
+// it for a human and stay on the authenticated catch-all.
+resource sageOpenApiOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'openapi-document'
+  properties: {
+    displayName: 'OpenAPI schema document'
+    method: 'GET'
+    urlTemplate: '/openapi.json'
+    templateParameters: []
+  }
+}
+
 // The caller-local transfer channel's byte legs (CAS-ADR-042): two more
 // dedicated operations in the same round-trip-safe shape as /health. An
 // authenticated MCP call mints a short-lived one-time token and returns a
@@ -532,6 +551,18 @@ resource sageHealthOperationPolicy 'Microsoft.ApiManagement/service/apis/operati
   properties: {
     format: 'rawxml'
     value: loadTextContent('../policies/sage-health-operation-policy.xml')
+  }
+  dependsOn: [
+    sageBackend
+  ]
+}
+
+resource sageOpenApiOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageOpenApiOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-openapi-operation-policy.xml')
   }
   dependsOn: [
     sageBackend
