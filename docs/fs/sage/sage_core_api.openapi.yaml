@@ -42,8 +42,23 @@ info:
     name: Proprietary
 
 servers:
+  - url: https://sage.{baseDomain}
+    description: >-
+      A deployed SAGE edge. Each deployment owns its own domain, Entra tenant,
+      and audience, so `baseDomain` selects the target deployment.
+    variables:
+      baseDomain:
+        default: cor.org
+        description: Owned base domain of the target deployment.
   - url: http://localhost:8000
-    description: Phase 1 local development (FastAPI)
+    description: Local profile. Authentication is disabled by default.
+
+# Every operation requires a bearer token except the health probe and the two
+# transfer byte-legs (PUT /upload, GET /download/{transfer_id}), whose
+# authority travels in a single-use transfer_id rather than the Authorization
+# header. Those three are declared with an empty `security: []` override.
+security:
+  - entraBearer: []
 
 # =============================================================================
 # Paths
@@ -2304,6 +2319,10 @@ paths:
   /upload:
     put:
       operationId: transfer_upload
+      # Exempt from the global bearer requirement: authority travels in the
+      # single-use transfer_id minted by the originating call, not in an
+      # Authorization header.
+      security: []
       summary: Deliver a pending transfer's bytes against a one-time upload token.
       description: >-
         The byte-delivery leg of a caller-local ingest against a deployment
@@ -2374,6 +2393,10 @@ paths:
   /download/{transfer_id}:
     get:
       operationId: transfer_download
+      # Exempt from the global bearer requirement: authority travels in the
+      # single-use transfer_id minted by the originating call, not in an
+      # Authorization header.
+      security: []
       summary: Fetch a pending transfer's bytes against a one-time download token.
       description: >-
         The byte-fetch leg of a caller-local export against a deployment that
@@ -2430,6 +2453,42 @@ paths:
 # =============================================================================
 
 components:
+
+  # ---------------------------------------------------------------------------
+  # Security
+  # ---------------------------------------------------------------------------
+
+  securitySchemes:
+    entraBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Microsoft Entra ID access token, presented as `Authorization: Bearer
+        <token>`.
+
+
+        The token is accepted when it carries either the delegated scope
+        `<resource>/Sage.Access` or the application role `Sage.Reader`.
+
+
+        Deployment-portable clients must not hardcode the scope, tenant, or
+        token endpoint: all three vary by deployment, and the scope string is
+        derived from the deployment's own domain (for example
+        `https://sage.cor.org/Sage.Access`). Resolve them at runtime from the
+        unauthenticated discovery documents published by the target edge:
+
+
+        - `GET /.well-known/oauth-protected-resource` advertises `resource`
+          and `scopes_supported`.
+
+        - `GET /.well-known/oauth-authorization-server` advertises the
+          `authorization_endpoint`, `token_endpoint`, and `jwks_uri`.
+
+
+        This scheme is declared as a plain bearer credential rather than an
+        `oauth2` flow precisely because the flow URLs are per deployment;
+        pinning them here would produce generated clients bound to one tenant.
 
   # ---------------------------------------------------------------------------
   # Reusable Parameters

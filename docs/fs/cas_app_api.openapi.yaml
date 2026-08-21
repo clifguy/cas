@@ -47,8 +47,24 @@ info:
     name: Proprietary
 
 servers:
+  - url: https://cas.{baseDomain}
+    description: >-
+      A deployed CAS Application edge. Each deployment owns its own domain and
+      Entra tenant, so `baseDomain` selects the target deployment.
+    variables:
+      baseDomain:
+        default: cor.org
+        description: Owned base domain of the target deployment.
   - url: http://localhost:8000
-    description: Phase 1 local development (FastAPI)
+    description: Local profile (FastAPI).
+
+# No `securitySchemes` block, and no operation-level `security`: the `/app/*`
+# routes below are not gated at the application layer. Identity is enforced
+# ahead of the app, and the `cas_session` cookie opened by the OIDC callback
+# governs on-behalf-of access to the SAGE Core API through the proxy routes --
+# which are the SAGE Core API's own surface and are specified there, not here.
+# The asymmetry with the SAGE Core API spec (which does declare a bearer
+# scheme on every operation) is therefore accurate rather than an omission.
 
 # =============================================================================
 # Paths
