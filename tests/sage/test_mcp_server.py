@@ -56,6 +56,7 @@ from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
 from sage.models.enums import EdgeType as _EdgeType
+from sage.models.enums import PipelineStatus
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
@@ -217,6 +218,49 @@ def _parse(result: str | dict) -> dict:
     if isinstance(result, dict):
         return result
     return json.loads(result)
+
+
+# States from which no further abstraction begins. Every other state can still
+# be followed by an abstraction start, so a caller that proceeds from one races
+# the abstraction queue's per-document claim.
+_TERMINAL_PIPELINE_STATES = frozenset(
+    {
+        PipelineStatus.ABSTRACTION_COMPLETE.value,
+        PipelineStatus.ABSTRACTION_SKIPPED.value,
+        PipelineStatus.FAILED.value,
+    }
+)
+
+
+async def _await_document_idle(services, vault_id, doc_id, *, attempts=400, delay=0.01):
+    """Poll until a document is safe for a caller to act on, and return it.
+
+    Safe means two things at once: ``pipeline_status`` is terminal, and the
+    abstraction queue holds no in-flight claim on the document. Both are
+    required. The claim is what the re-abstraction and pipeline-recompute
+    entry points reject on, and it is released *after* the terminal status
+    write -- the worker refreshes the document's synthetic header chunk in
+    between -- so a terminal status alone still leaves a window in which the
+    next call is rejected with a 409.
+
+    Raises AssertionError on timeout, naming the document and the last state
+    observed, so a genuine stall is distinguishable from the assertion the
+    caller was about to make.
+    """
+    inflight = services.ingestion_service._inflight
+    status = None
+    for _ in range(attempts):
+        doc = _parse(await get_document(vault_id, doc_id))
+        status = doc.get("pipeline_status")
+        if status in _TERMINAL_PIPELINE_STATES and doc_id not in inflight:
+            return doc
+        await asyncio.sleep(delay)
+
+    claim = "claim still held" if doc_id in inflight else "no claim held"
+    raise AssertionError(
+        f"document {doc_id} did not become idle within {attempts} attempts; "
+        f"last observed pipeline_status={status!r} ({claim})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2307,6 +2351,84 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
 
 
 # ---------------------------------------------------------------------------
+# Idle-poll helper
+# ---------------------------------------------------------------------------
+
+
+async def test_await_document_idle_returns_on_terminal_state(vault_services):
+    """The helper returns the document once the pipeline has settled, and the
+    document carries no claim at the moment it returns.
+    """
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    doc = await _await_document_idle(vault_services, "test_vault", doc_id)
+
+    assert doc["pipeline_status"] in _TERMINAL_PIPELINE_STATES
+    assert doc_id not in vault_services.ingestion_service._inflight
+
+
+async def test_await_document_idle_fails_loudly_on_timeout(vault_services):
+    """A document parked non-terminal produces an AssertionError naming both
+    the document and the last status seen -- not a fall-through to whatever
+    assertion the caller was about to make.
+    """
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+    await _await_document_idle(vault_services, "test_vault", doc_id)
+
+    await vault_services.graph_store.update_document(
+        doc_id, {"pipeline_status": PipelineStatus.INDEXING_COMPLETE.value}
+    )
+
+    with pytest.raises(AssertionError, match=doc_id):
+        await _await_document_idle(vault_services, "test_vault", doc_id, attempts=2, delay=0)
+
+    with pytest.raises(AssertionError, match="indexing_complete"):
+        await _await_document_idle(vault_services, "test_vault", doc_id, attempts=2, delay=0)
+
+
+async def test_await_document_idle_blocks_while_claim_held(vault_services):
+    """A terminal status is not sufficient: while the claim is held the helper
+    keeps waiting, because that is the condition the 409 guard rejects on.
+
+    The status is forced terminal underneath a held claim, reproducing the
+    window the worker leaves open between its terminal status write and the
+    claim release. A helper that keyed on status alone would return here.
+    """
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+    await _await_document_idle(vault_services, "test_vault", doc_id)
+
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def gated_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        entered.set()
+        await gate.wait()
+        return "gated abstract"
+
+    vault_services.ingestion_service._abstraction.generate_abstract = gated_abstract
+
+    assert _parse(await recompute_abstract("test_vault", doc_id))["status"] == "reabstract_started"
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+    try:
+        await vault_services.graph_store.update_document(
+            doc_id, {"pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value}
+        )
+        assert doc_id in vault_services.ingestion_service._inflight
+
+        with pytest.raises(AssertionError, match="claim still held"):
+            await _await_document_idle(vault_services, "test_vault", doc_id, attempts=3, delay=0)
+    finally:
+        gate.set()
+
+    doc = await _await_document_idle(vault_services, "test_vault", doc_id)
+    assert doc["pipeline_status"] in _TERMINAL_PIPELINE_STATES
+
+
+# ---------------------------------------------------------------------------
 # Reabstract
 # ---------------------------------------------------------------------------
 
@@ -2319,18 +2441,10 @@ async def test_reabstract_returns_started_status(vault_services):
     doc_id = ingest_result["id"]
 
     # ingest_document dispatches Stages 2-3 in the background (BH-130).
-    # Wait for indexing to commit chunks so reabstract has a projection
-    # to work with.
-    for _ in range(200):
-        doc = _parse(await get_document("test_vault", doc_id))
-        if doc.get("pipeline_status") in {
-            "indexing_complete",
-            "abstraction_in_progress",
-            "abstraction_complete",
-            "abstraction_skipped",
-        }:
-            break
-        await asyncio.sleep(0.05)
+    # Wait for the ingest's own abstraction to finish and release its claim,
+    # so reabstract has a projection to work with and is not rejected as a
+    # concurrent job.
+    await _await_document_idle(vault_services, "test_vault", doc_id)
 
     result = _parse(await recompute_abstract("test_vault", doc_id))
     assert "error" not in result
@@ -2360,16 +2474,10 @@ async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_ser
     ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    for _ in range(200):
-        doc = _parse(await get_document("test_vault", doc_id))
-        if doc.get("pipeline_status") in {
-            "indexing_complete",
-            "abstraction_in_progress",
-            "abstraction_complete",
-            "abstraction_skipped",
-        }:
-            break
-        await asyncio.sleep(0.05)
+    # The claim is shared across job kinds, so the ingest's own abstraction
+    # would reject the *first* call below and the gated provider would never
+    # engage. Wait for the document to go idle before contending for it.
+    await _await_document_idle(vault_services, "test_vault", doc_id)
 
     entered = asyncio.Event()
     gate = asyncio.Event()
@@ -2409,19 +2517,11 @@ async def test_recompute_pipeline_tool_returns_started_status(vault_services):
     ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    # Wait for the initial ingest to commit chunks so recompute_pipeline has
-    # the steady-state "re-run from terminal" path; the stuck-recovery path
-    # is exercised at the service layer (test_ingestion.py B1).
-    for _ in range(200):
-        doc = _parse(await get_document("test_vault", doc_id))
-        if doc.get("pipeline_status") in {
-            "indexing_complete",
-            "abstraction_in_progress",
-            "abstraction_complete",
-            "abstraction_skipped",
-        }:
-            break
-        await asyncio.sleep(0.05)
+    # Wait for the initial ingest to commit chunks and release its claim so
+    # recompute_pipeline has the steady-state "re-run from terminal" path; the
+    # stuck-recovery path is exercised at the service layer
+    # (test_ingestion.py B1).
+    await _await_document_idle(vault_services, "test_vault", doc_id)
 
     result = _parse(await recompute_pipeline("test_vault", doc_id))
     assert "error" not in result
@@ -2469,16 +2569,10 @@ async def test_recompute_pipeline_tool_concurrent_returns_409(vault_services):
     ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    for _ in range(200):
-        doc = _parse(await get_document("test_vault", doc_id))
-        if doc.get("pipeline_status") in {
-            "indexing_complete",
-            "abstraction_in_progress",
-            "abstraction_complete",
-            "abstraction_skipped",
-        }:
-            break
-        await asyncio.sleep(0.05)
+    # The claim is shared across job kinds, so the ingest's own abstraction
+    # would reject the *first* call below and the gated embed would never
+    # engage. Wait for the document to go idle before contending for it.
+    await _await_document_idle(vault_services, "test_vault", doc_id)
 
     # Gate embed so the first recompute_pipeline call holds its
     # reservation while the second attempts entry.
