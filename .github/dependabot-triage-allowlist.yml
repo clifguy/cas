@@ -12,20 +12,4 @@
 # accepted:
 #   - ghsa_id: GHSA-xxxx-xxxx-xxxx
 #     reason: fixable but the bump is deferred pending an upstream regression fix
-accepted:
-  - ghsa_id: GHSA-rrmf-rvhw-rf47
-    reason: >-
-      torch 2.13.0 fixes a low-severity issue in torch.jit.script, which has no
-      call site in this repository. torch drives the embedding stack via
-      sentence-transformers and carries pytorch-cpu index routing on Linux, so
-      the bump belongs in a deliberate `uv lock --upgrade` cycle where the
-      resolved CPU build can be verified, not in a security-driven bundle.
-  - ghsa_id: GHSA-h35f-9h28-mq5c
-    reason: >-
-      setuptools 83.0.0 is unreachable while torch is held at 2.12.0, which
-      requires setuptools<82; the ceiling lifts only in torch 2.13.0
-      (setuptools>=77.0.3). This advisory is therefore deferred as a rider on
-      the torch bump above, not on its own merits. Exposure is narrow
-      regardless: the flaw is an sdist MANIFEST.in exclusion bypass specific to
-      macOS APFS Unicode normalization, and this project ships container images
-      and wheels rather than building sdists.
+accepted: []

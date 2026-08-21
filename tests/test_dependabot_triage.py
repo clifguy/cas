@@ -225,65 +225,83 @@ def test_allowlist_file_parses_with_accepted_list() -> None:
 
 GHSA_ID_PATTERN: Final[str] = r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}"
 
-# Advisories with a published fix whose bump is deliberately deferred, so the
-# actionable filter would otherwise keep them in the standing tracking issue
-# indefinitely -- precisely the accepted-risk case this allowlist exists to
-# record. The two are coupled: the setuptools fix is unreachable while torch
-# is held back, because torch pins a setuptools ceiling.
-DEFERRED_ADVISORIES: Final[tuple[str, ...]] = (
-    "GHSA-rrmf-rvhw-rf47",  # torch
-    "GHSA-h35f-9h28-mq5c",  # setuptools, gated by the torch ceiling
-)
-
 
 def _accepted_entries() -> list[Any]:
     data = yaml.safe_load(ALLOWLIST.read_text(encoding="utf-8")) or {}
     return data.get("accepted") or []
 
 
-@pytest.mark.parametrize("advisory", DEFERRED_ADVISORIES)
-def test_deferred_advisory_is_allowlisted(advisory: str) -> None:
-    """W5: each deliberately deferred advisory is accepted, with a reason.
+def _entry_violations(entry: Any) -> list[str]:
+    """Return every reason ``entry`` is not a well-formed accepted-risk record.
 
-    ``actionable_alerts`` drops an alert only when it has no published fix or
-    its id is allowlisted. These advisories have fixes, so without an entry
-    here the tracking issue never reaches zero actionable alerts and the close
-    path is unreachable.
+    An empty list means the entry is well formed. Two failure modes matter,
+    and both fail *open* rather than loudly:
 
-    The reason assertion is the load-bearing half: ``load_allowlist`` keys only
-    on ``ghsa_id`` and never reads ``reason``, so a bare ``- ghsa_id: ...``
-    entry would suppress the alert with no justification on record. This test
-    is what forces the *why* to be written down.
+    - A malformed or misspelled ``ghsa_id`` is carried into the accepted set
+      by ``load_allowlist``, where it silently matches nothing -- the real
+      alert stays flagged with no signal that the entry is inert.
+    - ``load_allowlist`` keys only on ``ghsa_id`` and never reads ``reason``,
+      so a bare ``- ghsa_id: ...`` entry would suppress an alert with no
+      justification on record. Requiring the reason is what forces the *why*
+      to be written down.
     """
-    entries = _accepted_entries()
-    matches = [e for e in entries if isinstance(e, dict) and e.get("ghsa_id") == advisory]
-    assert len(matches) == 1, (
-        f"expected exactly one accepted entry for {advisory}, found {len(matches)} "
-        f"among {[e.get('ghsa_id') for e in entries if isinstance(e, dict)]}."
-    )
-    reason = matches[0].get("reason")
-    assert isinstance(reason, str) and reason.strip(), (
-        f"the accepted entry for {advisory} must carry a non-empty `reason` -- "
-        "an id-only entry is silent accepted risk."
-    )
+    if not isinstance(entry, dict):
+        return [f"accepted entry is not a mapping: {entry!r}"]
+
+    violations: list[str] = []
+    ghsa_id = entry.get("ghsa_id")
+    if not (isinstance(ghsa_id, str) and re.fullmatch(GHSA_ID_PATTERN, ghsa_id)):
+        violations.append(
+            f"accepted entry `ghsa_id` must match {GHSA_ID_PATTERN!r}, got {ghsa_id!r}."
+        )
+    reason = entry.get("reason")
+    if not (isinstance(reason, str) and reason.strip()):
+        violations.append(f"accepted entry {ghsa_id!r} must carry a non-empty `reason`.")
+    return violations
 
 
 def test_allowlist_entries_are_well_formed() -> None:
-    """W6: every accepted entry is a well-formed id plus a non-empty reason.
+    """W5: every committed accepted entry is an id plus a non-empty reason.
 
-    Generalizes the discipline W5 asserts for one advisory so the next
-    deferral inherits it. A malformed or misspelled ``ghsa_id`` fails open:
-    ``load_allowlist`` carries it into the accepted set where it silently
-    matches nothing, leaving the real alert flagged with no signal that the
-    entry is inert.
+    Holds whatever the allowlist currently contains, including nothing. An
+    empty ``accepted:`` list is the healthy steady state, reached whenever
+    every deferred advisory has been remediated -- and it is the state that
+    makes this check vacuous, which is why ``W6`` below proves the validator
+    still has teeth for the next deferral.
     """
     for entry in _accepted_entries():
-        assert isinstance(entry, dict), f"accepted entry is not a mapping: {entry!r}"
-        ghsa_id = entry.get("ghsa_id")
-        assert isinstance(ghsa_id, str) and re.fullmatch(GHSA_ID_PATTERN, ghsa_id), (
-            f"accepted entry `ghsa_id` must match {GHSA_ID_PATTERN!r}, got {ghsa_id!r}."
-        )
-        reason = entry.get("reason")
-        assert isinstance(reason, str) and reason.strip(), (
-            f"accepted entry {ghsa_id} must carry a non-empty `reason`."
-        )
+        violations = _entry_violations(entry)
+        assert not violations, violations
+
+
+@pytest.mark.parametrize(
+    ("entry", "expect_valid"),
+    [
+        ({"ghsa_id": "GHSA-rrmf-rvhw-rf47", "reason": "deferred pending upstream fix"}, True),
+        ({"ghsa_id": "GHSA-rrmf-rvhw-rf47"}, False),
+        ({"ghsa_id": "GHSA-rrmf-rvhw-rf47", "reason": "   "}, False),
+        ({"ghsa_id": "GHSA-nope", "reason": "malformed id"}, False),
+        ({"reason": "no id at all"}, False),
+        ("GHSA-rrmf-rvhw-rf47", False),
+    ],
+    ids=["well-formed", "no-reason", "blank-reason", "malformed-id", "no-id", "not-a-mapping"],
+)
+def test_allowlist_entry_validator_rejects_malformed(entry: Any, expect_valid: bool) -> None:
+    """W6: the validator accepts the good entry shape and rejects each bad one.
+
+    Anti-vacuity guard for W5. With the allowlist empty, W5 iterates nothing
+    and passes regardless of what the validator does, so a regression that
+    neutered the check would ride along undetected until the next deferral was
+    added and silently accepted. Exercising the validator against synthetic
+    inputs keeps it honest independent of what the committed file happens to
+    contain, mirroring the detector tests in
+    ``tests/test_collection_integrity.py``.
+
+    Asserted in both directions: the well-formed entry must produce *no*
+    violations, so a validator that simply rejected everything fails here
+    rather than passing as maximally strict.
+    """
+    violations = _entry_violations(entry)
+    assert bool(violations) is not expect_valid, (
+        f"entry {entry!r}: expected valid={expect_valid}, got violations={violations}."
+    )
