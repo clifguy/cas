@@ -1,0 +1,56 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET /openapi.json (CAS-ADR-042). The
+            schema document is exempt from auth at the app layer so a caller can
+            learn how to authenticate before it holds a credential; the edge
+            mirrors that exemption. Gating the document that names the token
+            endpoint behind that same token leaves an external caller with no
+            entry point at all.
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so the document is reachable
+            without a token. Routing is by operation (a literal urlTemplate), so
+            no policy expression evaluates an inline path-string literal, the
+            encoding the loadTextContent to ARM to APIM round-trip corrupts.
+
+            This is a real backend passthrough, not a canned return-response:
+            what a caller receives is the running process's own generated
+            document, so it cannot drift from the routes the deployment actually
+            serves and the edge keeps no second copy in step. The document
+            declares no absolute server host, so operations resolve against the
+            origin it was fetched from and one image describes every deployment.
+        -->
+        <!--
+            CORS (CAS-ADR-042): this anonymous operation omits <base />, so it
+            never runs the API-level <cors>. It carries its own so the actual
+            response a browser reads cross-origin returns Access-Control-Allow-*,
+            which a browser-based API explorer or codegen UI needs in order to
+            load the document by URL. The cross-origin OPTIONS preflight is
+            answered by the catch-all operation, whose API-level <cors> precedes
+            validate-jwt.
+        -->
+        <cors allow-credentials="false">
+            <allowed-origins>
+                <origin>*</origin>
+            </allowed-origins>
+            <allowed-methods>
+                <method>GET</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Content-Type</header>
+            </allowed-headers>
+        </cors>
+        <set-backend-service backend-id="sage-backend" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

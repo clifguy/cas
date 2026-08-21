@@ -65,6 +65,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_resource_identity",
         "edge_advertises_offline_access",
         "edge_advertises_grant_types",
+        "edge_serves_openapi_spec",
         "edge_mount_discovery",
         "mcp_admin",
         "mcp_roundtrip",
@@ -422,9 +423,16 @@ _LOGIN_BODY = (
     "?client_id=abc&redirect_uri=https%3A%2F%2Fcas.test.invalid%2Fapp%2Fauth%2Fcallback"
     '&response_type=code&scope=openid","state":"xyz"}'
 )
+#: The schema document a healthy edge publishes without a token: SAGE's own,
+#: declaring the bearer scheme a caller needs in order to authenticate.
+_OPENAPI_BODY = (
+    '{"openapi":"3.1.0","info":{"title":"SAGE Core API","version":"2.0.0"},'
+    '"paths":{"/sage_vaults":{"get":{}}},'
+    '"components":{"securitySchemes":{"entraBearer":{"type":"http","scheme":"bearer"}}}}'
+)
 _HTTP_CHECKS = (
     "edge_discovery,edge_mcp_unauth,edge_authn_backend,liveness,"
-    "ocr_capability,vault_load,retrieval_pg"
+    "ocr_capability,vault_load,retrieval_pg,edge_serves_openapi_spec"
 )
 
 
@@ -437,6 +445,8 @@ def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str
         return 401, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
     if p == "/health":
         return 200, _HEALTH_BODY, {}
+    if p == "/openapi.json":
+        return 200, _OPENAPI_BODY, {}
     if p == "/sage_vaults":
         return 200, _VAULTS_BODY, {}
     if p.endswith("/discover"):
@@ -1107,6 +1117,128 @@ def test_advertises_grant_types_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_grant_types"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_advertises_grant_types") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _openapi_spec_stub(
+    spec_status: int = 200,
+    title: str = "SAGE Core API",
+    declares_scheme: bool = True,
+    gated_status: int = 401,
+    discovery_status: int = 200,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the schema-document check.
+
+    When healthy the document is served unauthenticated, is SAGE's own, and
+    declares the bearer scheme; the gated MCP surface still answers 401. Each
+    knob turns off exactly one of those, so a test can isolate the regression
+    it targets.
+    """
+
+    def responder(method: str, path: str, body: bytes) -> "tuple[int, str, dict[str, str]]":
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            return discovery_status, _DISCOVERY_BODY, {}
+        if p == "/openapi.json":
+            if spec_status != 200:
+                return spec_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
+            components = (
+                '"securitySchemes":{"entraBearer":{"type":"http","scheme":"bearer"}}'
+                if declares_scheme
+                else '"schemas":{}'
+            )
+            return (
+                200,
+                f'{{"openapi":"3.1.0","info":{{"title":"{title}","version":"2.0.0"}},'
+                f'"paths":{{"/sage_vaults":{{"get":{{}}}}}},"components":{{{components}}}}}',
+                {},
+            )
+        if p in ("/mcp", "/mcp_admin"):
+            return gated_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
+        return 404, '{"error":"not_found"}', {}
+
+    return responder
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_passes() -> None:
+    """Document 200 unauthenticated, SAGE's own, declaring the bearer scheme,
+    with the gate still holding elsewhere -> edge_serves_openapi_spec PASS.
+    An external caller can now generate a client without the repository.
+    """
+    with serve(_openapi_spec_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_still_gated_fails() -> None:
+    """The document still behind the bearer gate -> FAIL. This is the state the
+    change exists to end: a caller needs a token to read the document that says
+    how to obtain one. Either leg regressing (the app exemption or the APIM
+    operation) lands here.
+    """
+    with serve(_openapi_spec_stub(spec_status=401)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_without_security_scheme_fails() -> None:
+    """A valid 200 document that declares no bearer scheme -> FAIL.
+
+    An image predating the declaration serves a perfectly well-formed document
+    that never mentions authentication, which leaves the caller exactly as
+    stuck as a 401 would. The scheme grep misses and the check fails: the
+    anti-coincidental control on a blanket 200.
+    """
+    with serve(_openapi_spec_stub(declares_scheme=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
+    assert "entrabearer" in _detail(proc.stdout, "edge_serves_openapi_spec").lower()
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_foreign_document_fails() -> None:
+    """A 200 carrying some other service's document -> FAIL. Proves the check
+    reads what was served rather than crediting any 200 at that path.
+    """
+    with serve(_openapi_spec_stub(title="Some Other API")) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_collapsed_gate_fails() -> None:
+    """The document 200s but so does the gated MCP surface -> FAIL.
+
+    Publishing one document must not widen into an open edge. If validate-jwt
+    were lost altogether, every path would 200 and the document's own 200 would
+    mean nothing; the gated-surface control rejects that reading.
+    """
+    with serve(_openapi_spec_stub(gated_status=200)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_dead_edge_fails() -> None:
+    """Discovery doc broken (404) while the document itself is fully healthy:
+    the publication must NOT be credited -- the discovery-200 control rejects
+    it (the blanket-edge coincidental-pass trap).
+    """
+    with serve(_openapi_spec_stub(discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

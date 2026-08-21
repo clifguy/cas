@@ -64,28 +64,47 @@ def _client(app) -> AsyncClient:
 
 
 async def test_c1_disabled_is_pass_through() -> None:
-    """Auth absent: an unauthenticated request behaves as it does today."""
+    """Auth absent: an unauthenticated request behaves as it does today.
+
+    The subject is /docs rather than the schema document: /openapi.json is
+    exempt from the gate outright (CAS-ADR-042), so it would answer 200 here
+    whether or not the middleware were installed. /docs is gated when auth is
+    enabled and needs no application state, so a 200 is attributable to the
+    pass-through validator.
+    """
     app = create_app(stack_config=_DISABLED)
     async with _client(app) as c:
-        resp = await c.get("/openapi.json")
+        resp = await c.get("/docs")
     assert resp.status_code == 200
     assert "www-authenticate" not in resp.headers
 
 
 async def test_c2_rest_enforced(monkeypatch) -> None:
+    """A no-token REST request is rejected before it reaches the route.
+
+    The subject is a real, gated REST path. It must not be /openapi.json,
+    which the middleware exempts so each deployment publishes its own schema
+    document: asserting a 401 there would assert nothing about enforcement.
+    """
     _install_stub(monkeypatch)
     app = create_app(stack_config=_ENABLED)
     async with _client(app) as c:
-        resp = await c.get("/openapi.json")
+        resp = await c.get("/sage_vaults")
     assert resp.status_code == 401
     assert resp.headers["www-authenticate"].startswith("Bearer")
 
 
 async def test_c3_rest_valid_token_passes(monkeypatch) -> None:
+    """A valid token clears the gate on a path the gate actually covers.
+
+    /docs is the subject for the same reason as C1, plus one more: it resolves
+    without application state, so a 200 isolates the middleware's verdict from
+    lifespan-dependent route behavior.
+    """
     _install_stub(monkeypatch)
     app = create_app(stack_config=_ENABLED)
     async with _client(app) as c:
-        resp = await c.get("/openapi.json", headers={"Authorization": f"Bearer {_VALID}"})
+        resp = await c.get("/docs", headers={"Authorization": f"Bearer {_VALID}"})
     assert resp.status_code == 200
 
 
@@ -97,6 +116,47 @@ async def test_c4_health_is_exempt(monkeypatch) -> None:
         resp = await c.get("/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+async def test_openapi_json_is_exempt(monkeypatch) -> None:
+    """The schema document answers a bearer-less request even with auth on.
+
+    A deployment that gates its own schema document tells a caller nothing
+    about how to authenticate against it, so the document is exempt and every
+    edge describes itself (CAS-ADR-042).
+
+    The sibling 401 is the positive control: if the fixture's auth were not
+    actually enforcing, that assertion fails, so the exemption cannot pass
+    vacuously.
+    """
+    _install_stub(monkeypatch)
+    app = create_app(stack_config=_ENABLED)
+    async with _client(app) as c:
+        sibling = await c.get("/sage_vaults")
+        assert sibling.status_code == 401  # positive control: auth is on
+
+        resp = await c.get("/openapi.json")
+
+    assert resp.status_code == 200
+    assert "www-authenticate" not in resp.headers
+    assert resp.json()["info"]["title"] == "SAGE Core API"
+
+
+async def test_interactive_docs_remain_gated(monkeypatch) -> None:
+    """Exempting the schema document does not open the human-facing doc UIs.
+
+    The exemption is one exact path, not the FastAPI infrastructure surface:
+    the machine-readable document is what a caller needs in order to build a
+    client, while the rendered explorers stay behind the gate. Pins the
+    boundary so a later widening to a prefix is caught here.
+    """
+    _install_stub(monkeypatch)
+    app = create_app(stack_config=_ENABLED)
+    async with _client(app) as c:
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            resp = await c.get(path)
+            assert resp.status_code == 401, f"{path} must stay gated, got {resp.status_code}"
+            assert resp.headers["www-authenticate"].startswith("Bearer")
 
 
 async def test_c5_mcp_mount_enforced(monkeypatch) -> None:

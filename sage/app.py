@@ -38,7 +38,7 @@ from sage.api.routers import (
 from sage.auth import AuthMiddleware
 from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
 from sage.capabilities import ocr_capability
-from sage.config import SageCoreConfig, VaultConfig
+from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
 from sage.mcp_init import (
     initialize_services,
     load_stack_config_or_default,
@@ -277,6 +277,73 @@ async def _teardown_bff_auth(app: FastAPI) -> None:
     await close_postgres_credential()
 
 
+# Name of the security scheme the served schema document declares. Matches the
+# scheme name in docs/fs/sage/sage_core_api.openapi.yaml so a client generated
+# from either document refers to the credential the same way.
+_BEARER_SCHEME_NAME = "entraBearer"
+
+
+def _bearer_scheme_description(auth: StackAuthConfig) -> str:
+    """Describe the credential this deployment accepts.
+
+    The scope and role are read off the live configuration rather than fixed
+    here: a deployment that accepts different ones publishes that fact. The
+    tenant, token endpoint, and scope prefix are deliberately absent -- they
+    vary per deployment, and pinning them would bind every generated client to
+    one tenant, so the description names the discovery documents that resolve
+    them instead.
+    """
+    scopes = ", ".join(f"`{scope}`" for scope in auth.required_scopes) or "(none)"
+    roles = ", ".join(f"`{role}`" for role in auth.required_roles) or "(none)"
+    return (
+        "Access token from the deployment's identity provider, presented as "
+        "`Authorization: Bearer <token>`.\n\n"
+        f"The token is accepted when it carries one of the delegated scopes {scopes}, "
+        f"or one of the application roles {roles}.\n\n"
+        "Resolve the tenant, endpoints, and fully-qualified scope string at runtime "
+        "from this deployment's unauthenticated discovery documents rather than "
+        "hardcoding them:\n\n"
+        "- `GET /.well-known/oauth-protected-resource` advertises `resource` and "
+        "`scopes_supported`.\n"
+        "- `GET /.well-known/oauth-authorization-server` advertises the "
+        "`authorization_endpoint`, `token_endpoint`, and `jwks_uri`.\n\n"
+        "Declared as a plain bearer credential rather than an `oauth2` flow "
+        "precisely because those endpoints are per deployment."
+    )
+
+
+def build_openapi_document(base: dict, auth: StackAuthConfig | None) -> dict:
+    """Return ``base`` with this deployment's auth posture declared (CAS-ADR-042).
+
+    Bearer validation runs in an ASGI middleware ahead of the router, so it is
+    invisible to the schema generator: the generated document describes every
+    operation as unauthenticated. Since the document is published without a
+    token so each deployment describes itself, that silence would leave a
+    caller no way to learn how to authenticate.
+
+    A deployment that authenticates no one gets no declaration -- the document
+    then describes an open surface because the surface is open.
+
+    ``base`` is not mutated; the caller keeps a clean generated document.
+    """
+    if auth is None or not auth.enabled:
+        return base
+
+    document = dict(base)
+    components = dict(document.get("components", {}))
+    schemes = dict(components.get("securitySchemes", {}))
+    schemes[_BEARER_SCHEME_NAME] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": _bearer_scheme_description(auth),
+    }
+    components["securitySchemes"] = schemes
+    document["components"] = components
+    document["security"] = [{_BEARER_SCHEME_NAME: []}]
+    return document
+
+
 def create_app(
     vault_root: Path | None = None,
     config: VaultConfig | None = None,
@@ -479,6 +546,26 @@ def create_app(
         lifespan=lifespan,
     )
 
+    # Declare the deployment's auth posture on the schema document it serves.
+    # The document is reachable without a token (see the exemption below), so
+    # it is the one place a caller can learn how to authenticate before it
+    # holds a credential; the middleware that enforces auth runs ahead of the
+    # router and is invisible to the generator, so the declaration is added
+    # here (CAS-ADR-042).
+    generate_openapi = app.openapi
+
+    def _openapi() -> dict:
+        # Delegate generation, then add the declaration to whatever came back.
+        # Re-implementing the generator call here would silently drop every
+        # top-level field this app does not set today (servers, webhooks, tag
+        # metadata, license); since this document is what external callers
+        # consume, a field added later must reach them without a second edit.
+        if app.openapi_schema is None:
+            app.openapi_schema = build_openapi_document(generate_openapi(), stack_cfg.auth)
+        return app.openapi_schema
+
+    app.openapi = _openapi
+
     register_exception_handlers(app)
 
     # Cross-vault endpoints (no vault_id prefix). The transfer routes are
@@ -538,12 +625,20 @@ def create_app(
     # default (no auth); an Entra JWT validator under a profile that
     # authenticates callers. One pure-ASGI middleware on the parent app guards
     # the REST routes and the mounted MCP sub-apps identically, so
-    # authorization is uniform regardless of surface; the liveness probe is
-    # exempt so an orchestrator can poll it without a token.
+    # authorization is uniform regardless of surface.
+    #
+    # Two surfaces are exempt because gating them is self-defeating: the
+    # liveness probe, so an orchestrator can poll it without a token, and the
+    # schema document, so a caller can discover how to authenticate before it
+    # holds a credential -- gating the document that names the token endpoint
+    # behind that same token leaves an external caller no entry point. The
+    # exemption is the machine-readable document alone; /docs and /redoc render
+    # it for a human and stay gated. The edge mirrors this set as dedicated
+    # APIM operations whose policies omit <base />.
     app.add_middleware(
         AuthMiddleware,
         validator=resolve_stack_auth_validator(stack_cfg),
-        exempt_paths=frozenset({"/health", "/upload"}),
+        exempt_paths=frozenset({"/health", "/upload", "/openapi.json"}),
         exempt_prefixes=frozenset({"/download/"}),
     )
 

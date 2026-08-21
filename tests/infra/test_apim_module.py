@@ -94,6 +94,13 @@ _CATCH_ALL_URL_TEMPLATE: Final[str] = "/{*path}"
 _DISCOVERY_PATH: Final[str] = "/.well-known/oauth-protected-resource"
 _HEALTH_PATH: Final[str] = "/health"
 
+# The schema document, served unauthenticated so each deployment describes
+# itself: a caller that must already hold a token to read the document naming
+# the token endpoint has no entry point. Like /health it is a backend
+# passthrough, so what reaches a caller is the running process's own document
+# rather than a canned copy the edge would have to keep in step.
+_OPENAPI_PATH: Final[str] = "/openapi.json"
+
 # The DCR-compatibility facade (CAS-ADR-042): two more dedicated,
 # unauthenticated operations. The authorization-server metadata doc advertises
 # Entra's real authorize/token endpoints plus a registration_endpoint pointing
@@ -127,6 +134,7 @@ DISCOVERY_MCP_ADMIN_OP_POLICY: Final[Path] = (
     POLICIES_DIR / "sage-discovery-mcp-admin-operation-policy.xml"
 )
 HEALTH_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-health-operation-policy.xml"
+OPENAPI_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-openapi-operation-policy.xml"
 UPLOAD_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-upload-operation-policy.xml"
 DOWNLOAD_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-download-operation-policy.xml"
 AS_METADATA_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-authorization-server-operation-policy.xml"
@@ -757,6 +765,19 @@ def test_apim_declares_health_operation() -> None:
     )
 
 
+def test_apim_declares_openapi_operation() -> None:
+    """``/openapi.json`` is served by its own explicit GET operation.
+
+    The schema document is published unauthenticated so each deployment
+    describes itself; without a dedicated literal-path operation the request
+    falls to the ``/{*path}`` catch-all and its API-level validate-jwt, so the
+    app-layer exemption alone would still 401 at the edge.
+    """
+    assert _declares_literal_get_operation(APIM.read_text(encoding="utf-8"), _OPENAPI_PATH), (
+        f"apim.bicep must declare a dedicated GET operation with urlTemplate '{_OPENAPI_PATH}'"
+    )
+
+
 def test_apim_declares_authorization_server_operation() -> None:
     """The DCR facade's authorization-server metadata is served by its own
     dedicated GET operation (``/.well-known/oauth-authorization-server``), the
@@ -1255,6 +1276,29 @@ def test_apim_health_operation_policy_routes_to_backend_unauthenticated() -> Non
     )
 
 
+def test_apim_openapi_operation_policy_routes_to_backend_unauthenticated() -> None:
+    """The /openapi.json operation routes to the SAGE backend unauthenticated.
+
+    A real backend passthrough, not a canned return-response: the document a
+    caller receives is the running process's own, so it cannot drift from the
+    deployed routes and the edge has no second copy to maintain.
+    """
+    xml = OPENAPI_OP_POLICY.read_text(encoding="utf-8")
+    inbound = _inbound_section(xml)
+    assert re.search(r"set-backend-service\s+backend-id=\"sage-backend\"", inbound), (
+        "the /openapi.json operation inbound must route to the sage-backend"
+    )
+    assert "validate-jwt" not in inbound, "the /openapi.json operation must not validate the JWT"
+    assert "<base" not in inbound, (
+        "the /openapi.json operation inbound must not call <base/> — that would inherit the "
+        "API-level validate-jwt and 401 the schema document"
+    )
+    assert "return-response" not in inbound, (
+        "/openapi.json must be a real backend passthrough, not a canned edge document — "
+        "a canned copy would drift from the routes the deployment actually serves"
+    )
+
+
 def test_apim_api_policy_inbound_has_no_path_string_condition() -> None:
     """The API-level inbound policy no longer routes on a path-string ``<when>``
     condition — the inline quoted literal the loadTextContent -> ARM -> APIM
@@ -1380,6 +1424,7 @@ def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
         DISCOVERY_MCP_OP_POLICY,
         DISCOVERY_MCP_ADMIN_OP_POLICY,
         HEALTH_OP_POLICY,
+        OPENAPI_OP_POLICY,
         AS_METADATA_OP_POLICY,
         REGISTER_OP_POLICY,
         UPLOAD_OP_POLICY,
@@ -1787,6 +1832,10 @@ _ANONYMOUS_OP_POLICIES: Final[tuple[Path, ...]] = (
     REGISTER_OP_POLICY,
     DISCOVERY_OP_POLICY,
     AS_METADATA_OP_POLICY,
+    # The schema document is fetched cross-origin by browser-based API
+    # explorers and codegen UIs pointed at a deployment's URL, so it needs the
+    # Allow-Origin header on its own response the way /health does not.
+    OPENAPI_OP_POLICY,
 )
 
 
