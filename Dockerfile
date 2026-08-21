@@ -108,10 +108,19 @@ COPY --from=builder /opt/hf /opt/hf
 COPY --from=builder /opt/sage/sage /opt/sage/sage
 COPY --from=builder /opt/sage/app /opt/sage/app
 COPY deploy/sage.config.container.yaml /opt/sage/deploy/sage.config.container.yaml
+# The docs/fs files the runtime reads, expected under <repo-root>/docs/fs
+# (parents[1] of the reading module, i.e. /opt/sage here).
+#
 # The stack-config JSON Schema that sage/config.py validates the loaded config
-# against at startup -- the sole docs/fs file the runtime reads, expected at
-# <repo-root>/docs/fs/sage/ (parents[1] of sage/config.py, i.e. /opt/sage here).
+# against at startup:
 COPY docs/fs/sage/sage_core_config.schema.json /opt/sage/docs/fs/sage/sage_core_config.schema.json
+# The API specifications sage/app.py reads at startup for the authored prose it
+# publishes in the served schema document. That document is fetched without a
+# token and is all an outside developer has, so an image built without these
+# would publish every path with every explanation missing; the app refuses to
+# start instead.
+COPY docs/fs/sage/sage_core_api.openapi.yaml /opt/sage/docs/fs/sage/sage_core_api.openapi.yaml
+COPY docs/fs/cas_app_api.openapi.yaml /opt/sage/docs/fs/cas_app_api.openapi.yaml
 
 RUN mkdir -p /var/lib/sage/vaults && chown -R sage:sage /var/lib/sage /opt/hf
 USER sage

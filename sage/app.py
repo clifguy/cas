@@ -11,8 +11,10 @@ import os
 import sys
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import cache
 from pathlib import Path
 
+import yaml
 from fastapi import FastAPI
 
 from app.backend.auth.router import router as auth_router
@@ -282,6 +284,110 @@ async def _teardown_bff_auth(app: FastAPI) -> None:
 # from either document refers to the credential the same way.
 _BEARER_SCHEME_NAME = "entraBearer"
 
+# The committed API specifications (CAS-ADR-008), which are the authored source
+# for operation prose. Resolved relative to the package so the layout holds both
+# in a source checkout and in the container image, where the repository root is
+# the install prefix. This application serves both surfaces from one process, so
+# the document it publishes spans both specs.
+_DOCS_FS_ROOT = Path(__file__).resolve().parents[1] / "docs" / "fs"
+_SAGE_CORE_SPEC_PATH = _DOCS_FS_ROOT / "sage" / "sage_core_api.openapi.yaml"
+_CAS_APP_SPEC_PATH = _DOCS_FS_ROOT / "cas_app_api.openapi.yaml"
+
+# Operation fields the overlay is allowed to write. Everything else in the
+# published document -- parameters, request bodies, responses, component
+# schemas -- stays as the generator produced it, so the document keeps
+# describing the routes this deployment is actually running. Response
+# descriptions in particular are excluded deliberately: the conformance suite
+# compares the published document's error envelopes against the specification,
+# and overwriting them here would leave that comparison checking the
+# specification against itself.
+_OVERLAID_OPERATION_FIELDS = ("summary", "description", "operationId", "tags")
+
+_HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
+
+
+@cache
+def _load_published_prose() -> dict:
+    """Read the authored prose the published schema document carries.
+
+    Returns the per-operation prose keyed by ``(path, method)``, the
+    document-level description, and the tag declarations.
+
+    A generated document describes the shape of every operation but can say
+    only what the handler's own name and docstring say. The prose that
+    explains the surface is authored in the specifications, so a caller
+    reading the published document -- which is served without a token, and is
+    therefore all an outside developer has -- would otherwise never see it.
+
+    Deliberately unguarded: a missing or malformed specification raises rather
+    than falling back to the generated text. The fallback document would look
+    complete, carrying every path with every explanation silently absent.
+    """
+    core_spec = yaml.safe_load(_SAGE_CORE_SPEC_PATH.read_text()) or {}
+    app_spec = yaml.safe_load(_CAS_APP_SPEC_PATH.read_text()) or {}
+
+    operations: dict[tuple[str, str], dict] = {}
+    tags: dict[str, str] = {}
+
+    for spec in (core_spec, app_spec):
+        for path, path_item in (spec.get("paths") or {}).items():
+            for method, operation in (path_item or {}).items():
+                if method.lower() not in _HTTP_METHODS:
+                    continue
+                prose = {
+                    field: operation[field]
+                    for field in _OVERLAID_OPERATION_FIELDS
+                    if operation.get(field) is not None
+                }
+                if prose:
+                    operations[(path, method.lower())] = prose
+        for tag in spec.get("tags") or []:
+            tags[tag["name"]] = tag.get("description", "")
+
+    # The document-level description covers the whole published surface and is
+    # authored in the Core API specification; the application-backend
+    # specification keeps its own for the document it describes on its own.
+    info_description = (core_spec.get("info") or {}).get("description", "")
+
+    return {
+        "operations": operations,
+        "info_description": info_description,
+        "tags": [{"name": name, "description": text} for name, text in tags.items()],
+    }
+
+
+def _overlay_prose(document: dict, prose: dict) -> dict:
+    """Return ``document`` with the authored prose applied.
+
+    Only operations the document already declares are touched. A
+    specification may document an operation ahead of the code that serves it;
+    injecting one here would tell a caller the deployment answers a path it
+    does not route.
+
+    ``document`` is not mutated.
+    """
+    enriched = dict(document)
+
+    if prose["info_description"]:
+        info = dict(enriched.get("info", {}))
+        info["description"] = prose["info_description"]
+        enriched["info"] = info
+
+    if prose["tags"]:
+        enriched["tags"] = prose["tags"]
+
+    paths: dict = {}
+    for path, path_item in (enriched.get("paths") or {}).items():
+        new_item = dict(path_item or {})
+        for method, operation in (path_item or {}).items():
+            authored = prose["operations"].get((path, method.lower()))
+            if authored and isinstance(operation, dict):
+                new_item[method] = {**operation, **authored}
+        paths[path] = new_item
+    enriched["paths"] = paths
+
+    return enriched
+
 
 def _bearer_scheme_description(auth: StackAuthConfig) -> str:
     """Describe the credential this deployment accepts.
@@ -313,23 +419,32 @@ def _bearer_scheme_description(auth: StackAuthConfig) -> str:
 
 
 def build_openapi_document(base: dict, auth: StackAuthConfig | None) -> dict:
-    """Return ``base`` with this deployment's auth posture declared (CAS-ADR-042).
+    """Return ``base`` with authored prose and this deployment's auth posture.
 
-    Bearer validation runs in an ASGI middleware ahead of the router, so it is
-    invisible to the schema generator: the generated document describes every
-    operation as unauthenticated. Since the document is published without a
-    token so each deployment describes itself, that silence would leave a
-    caller no way to learn how to authenticate.
+    Two things the schema generator cannot supply are added here.
 
-    A deployment that authenticates no one gets no declaration -- the document
-    then describes an open surface because the surface is open.
+    The prose (CAS-ADR-008). The generator names each operation after its
+    handler and describes it with the handler's docstring, while the authored
+    summaries, descriptions, and operation ids live in the committed
+    specifications. Only prose is taken from them; the paths, parameters, and
+    schemas remain the generator's, so the document still describes the routes
+    this deployment is running.
+
+    The auth posture (CAS-ADR-042). Bearer validation runs in an ASGI
+    middleware ahead of the router, so it is invisible to the schema generator:
+    the generated document describes every operation as unauthenticated. Since
+    the document is published without a token so each deployment describes
+    itself, that silence would leave a caller no way to learn how to
+    authenticate. A deployment that authenticates no one gets no declaration --
+    the document then describes an open surface because the surface is open.
 
     ``base`` is not mutated; the caller keeps a clean generated document.
     """
-    if auth is None or not auth.enabled:
-        return base
+    document = _overlay_prose(base, _load_published_prose())
 
-    document = dict(base)
+    if auth is None or not auth.enabled:
+        return document
+
     components = dict(document.get("components", {}))
     schemes = dict(components.get("securitySchemes", {}))
     schemes[_BEARER_SCHEME_NAME] = {
@@ -546,12 +661,18 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Declare the deployment's auth posture on the schema document it serves.
-    # The document is reachable without a token (see the exemption below), so
-    # it is the one place a caller can learn how to authenticate before it
-    # holds a credential; the middleware that enforces auth runs ahead of the
-    # router and is invisible to the generator, so the declaration is added
-    # here (CAS-ADR-042).
+    # Read the authored prose now rather than on the first request for the
+    # schema document. A deployment missing the specifications is broken in a
+    # way that should stop it starting, not surface later as a document served
+    # with every explanation missing.
+    _load_published_prose()
+
+    # Enrich the schema document this app serves with the authored prose and
+    # the deployment's auth posture. The document is reachable without a token
+    # (see the exemption below), so it is the one place a caller can learn what
+    # the surface does and how to authenticate before it holds a credential;
+    # the middleware that enforces auth runs ahead of the router and is
+    # invisible to the generator (CAS-ADR-008, CAS-ADR-042).
     generate_openapi = app.openapi
 
     def _openapi() -> dict:

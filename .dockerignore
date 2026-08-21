@@ -29,8 +29,10 @@ app/*.html
 app/playwright-report
 app/test-results
 
-# Test, docs, and process scaffolding -- not needed at runtime, EXCEPT the
-# one JSON Schema sage/config.py validates the stack config against at startup.
+# Test, docs, and process scaffolding -- not needed at runtime, EXCEPT the few
+# docs/fs files the runtime reads at startup: the JSON Schema sage/config.py
+# validates the stack config against, and the two API specifications sage/app.py
+# takes the published schema document's prose from.
 # The level-by-level re-include keeps the rest of docs/ out of the context
 # (and works on both the legacy builder and BuildKit, which differ on whether
 # a file can be re-included under an excluded parent).
@@ -38,9 +40,11 @@ tests
 docs
 !docs/fs
 docs/fs/*
+!docs/fs/cas_app_api.openapi.yaml
 !docs/fs/sage
 docs/fs/sage/*
 !docs/fs/sage/sage_core_config.schema.json
+!docs/fs/sage/sage_core_api.openapi.yaml
 *.md
 plan
 context-*.md

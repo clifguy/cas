@@ -34,7 +34,14 @@ def _base_document() -> dict:
     return {
         "openapi": "3.1.0",
         "info": {"title": "SAGE Core API", "version": "9.9.9"},
-        "paths": {"/sage_vaults": {"get": {"operationId": "list_vaults"}}},
+        "paths": {
+            "/sage_vaults": {
+                "get": {
+                    "operationId": "list_vaults",
+                    "responses": {"200": {"description": "generated response text"}},
+                }
+            }
+        },
         "components": {"schemas": {"VaultSummary": {"type": "object"}}},
     }
 
@@ -112,10 +119,17 @@ def test_bearer_description_points_at_the_discovery_documents() -> None:
 
 
 def test_enrichment_preserves_the_generated_document() -> None:
-    """The declaration is added to the generated document, not substituted for it."""
+    """The declaration is added to the generated document, not substituted for it.
+
+    Witnessed on the fields the enrichment does not own. The operation id is
+    not among them: it is authored in the specification and overlaid onto the
+    generated document, so `list_vaults` here is deliberately replaced by the
+    specification's `admin_list_vaults`.
+    """
     document = build_openapi_document(_base_document(), _enabled())
 
-    assert document["paths"]["/sage_vaults"]["get"]["operationId"] == "list_vaults"
+    operation = document["paths"]["/sage_vaults"]["get"]
+    assert operation["responses"] == {"200": {"description": "generated response text"}}
     assert document["components"]["schemas"]["VaultSummary"] == {"type": "object"}
     assert document["info"]["title"] == "SAGE Core API"
 

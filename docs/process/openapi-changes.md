@@ -14,9 +14,13 @@ worse, stale prose that no gate catches. Work through the full blast radius.
    property description must be **byte-for-byte identical** between the Pydantic
    `Field(description=...)` and the YAML, or the verbatim-description conformance
    test (`test_pydantic_descriptions_match_yaml_verbatim`) fails.
-3. **OpenAPI operation prose** — the endpoint `description:` text that names the
-   field. This is *not* covered by the schema-description gate, so a stale
-   mention ships silently unless you grep for it.
+3. **OpenAPI operation prose** — the endpoint `summary:`/`description:` text
+   that names the field. The schema-description gate does not cover it, so a
+   stale mention still ships silently unless you grep for it. What *is* covered:
+   this prose is served verbatim at `/openapi.json`, and
+   `test_published_operation_prose_matches_committed_specs` pins the served
+   document to the YAML — so an edit here reaches external callers, and an
+   attempt to fix the served text anywhere else fails that test.
 4. **Producer code** — wherever the value is assembled (e.g. the service that
    builds the response kwargs).
 5. **Frontend TypeScript interface** — `app/src/api/types.ts` is hand-mirrored

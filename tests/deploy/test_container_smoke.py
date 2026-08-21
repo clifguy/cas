@@ -44,6 +44,18 @@ _OCRMYPDF_PROBE = "import importlib.util as u,sys; sys.exit(0 if u.find_spec('oc
 _EMBED_PROBE = (
     "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()"
 )
+#: Builds the schema document the image would publish and asserts it carries the
+#: authored prose. Raises if the API specifications are absent from the image
+#: (create_app reads them at startup) or arrive without their prose.
+_PUBLISHED_PROSE_PROBE = (
+    "from sage.app import create_app; d = create_app().openapi(); "
+    "assert 'Documents are never deleted' in d['info']['description'], 'info prose missing'; "
+    "ops = [o for p in d['paths'].values() for m, o in p.items() "
+    "if m in ('get', 'post', 'put', 'patch', 'delete')]; "
+    "missing = [o.get('operationId') for o in ops if not o.get('description')]; "
+    "assert not missing, f'operations without description: {missing}'; "
+    "assert d.get('tags'), 'no tag block'"
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SAGE_TEST_DOCKER") != "1" or shutil.which("docker") is None,
@@ -153,6 +165,30 @@ def test_smk_006_ocr_toolchain_on_path(image: str) -> None:
             image,
             "-c",
             _OCRMYPDF_PROBE,
+        ],
+        check=True,
+    )
+
+
+def test_smk_007_published_document_carries_authored_prose(image: str) -> None:
+    # The schema document is served without a token, so it is all an outside
+    # developer has; its prose is read out of the committed API specifications at
+    # startup. This is the runtime proof the structural Dockerfile gate cannot
+    # give: that gate only checks that the COPY lines and the .dockerignore
+    # re-includes agree with each other in the source, which stays green if both
+    # sides are wrong together. Here the specifications actually resolve inside
+    # the built image and the document actually carries their prose.
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_platform_args(),
+            "--entrypoint",
+            "python",
+            image,
+            "-c",
+            _PUBLISHED_PROSE_PROBE,
         ],
         check=True,
     )

@@ -111,3 +111,42 @@ def test_runtime_nonroot_user() -> None:
 
 def test_entrypoint_is_sage() -> None:
     assert '"sage"' in _dockerfile_text(), "entrypoint is not python -m sage"
+
+
+# The docs/fs files the running process reads. Each must be COPYed into the
+# runtime stage AND re-included in the build context: .dockerignore excludes
+# docs/ wholesale. The two halves fail differently -- a missing re-include
+# breaks the build, a missing COPY breaks startup -- so both are asserted.
+_RUNTIME_DOCS_FS_FILES = (
+    "docs/fs/sage/sage_core_config.schema.json",
+    "docs/fs/sage/sage_core_api.openapi.yaml",
+    "docs/fs/cas_app_api.openapi.yaml",
+)
+
+
+def test_runtime_docs_fs_files_are_copied() -> None:
+    """Every docs/fs file the process reads is COPYed to the path it reads
+    from: <repo-root>/docs/fs/..., which is /opt/sage in the image.
+    """
+    runtime = _runtime_stage_text()
+    for relative in _RUNTIME_DOCS_FS_FILES:
+        assert f"COPY {relative} /opt/sage/{relative}" in runtime, (
+            f"{relative} is not COPYed into the runtime stage; the process reads it at startup"
+        )
+
+
+def test_runtime_docs_fs_files_survive_the_dockerignore() -> None:
+    """Each COPYed docs/fs file has a matching re-include in .dockerignore.
+
+    A drift guard, not a correctness proof: this asserts the two source files
+    agree, so a pattern that is wrong in both stays green. Whether the build
+    context actually admits the file is decided by Docker's own ignore matcher
+    at build time -- the gate of record is the image build (a COPY of an
+    excluded path fails it outright), with SMK-007 proving the file resolves
+    inside the built image.
+    """
+    ignore_lines = [ln.strip() for ln in (_REPO_ROOT / ".dockerignore").read_text().splitlines()]
+    for relative in _RUNTIME_DOCS_FS_FILES:
+        assert f"!{relative}" in ignore_lines, (
+            f"{relative} is COPYed but not re-included in .dockerignore; the build would fail"
+        )

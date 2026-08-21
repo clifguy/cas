@@ -36,6 +36,104 @@ info:
     Protocol-neutral Core API for SAGE (Salience-Aware Graph Engine). Exposes
     discovery, ingestion, lifecycle management, graph operations, and access
     control for a vault-scoped knowledge infrastructure system.
+
+
+    This document is served by the deployment it describes and is reachable
+    without a token, so it is self-contained: everything below is what a client
+    needs beyond the operations themselves.
+
+
+    ## Surfaces
+
+
+    The paths under `/sage_vaults` are the Core API. The paths under `/app` are
+    the web client's backend-for-frontend: the same server hosts them, they are
+    usable directly, and they authenticate by browser session rather than by
+    bearer token. SAGE also serves a Model Context Protocol endpoint at `/mcp`,
+    which is a separate surface — an MCP client never calls the paths here, and
+    a REST client never calls `/mcp`.
+
+
+    ## Vault scoping
+
+
+    Every Core API operation is scoped to a single vault and takes its id as the
+    first path segment, `/sage_vaults/{vault_id}/...`. Three operations are not:
+    `GET|POST /sage_vaults`, which list and create vaults, and the two transfer
+    byte legs, whose vault binding travels inside the transfer token. No
+    operation spans vaults.
+
+
+    A vault id is supplied by the deployment's operator. `GET /sage_vaults`
+    lists every vault on the deployment; the listing is not filtered per caller,
+    and a valid token reaches every vault it names. There is no per-vault grant
+    to request and no per-vault scope to add to a token, so provisioning is
+    binary: a caller either has access to a deployment or does not.
+
+
+    ## Two error envelopes
+
+
+    They differ by origin, and a client has to handle both.
+
+
+    Authentication failures (401 and 403) come from middleware ahead of the
+    router, follow RFC 6750, and carry a `WWW-Authenticate` header naming the
+    protected-resource metadata document:
+    `{"error": "invalid_token", "error_description": "..."}`.
+
+
+    Application errors (400, 404, 409, 413, 422) come from the API itself and
+    carry `{"code": ..., "message": ..., "detail": {...}}`. Branch on `code`,
+    never on `message`. `detail` is omitted when empty and its keys vary by
+    `code`. The per-operation response descriptions below name the `code` values
+    each operation can return.
+
+
+    ## Invariants
+
+
+    Documents are never deleted. There is no document DELETE, by design:
+    supersession and archival are the lifecycle mechanisms, and a replacement is
+    ingested as a successor carrying `predecessor_id`. Edges may be deleted, via
+    `DELETE /sage_vaults/{vault_id}/edges/{edge_id}` — the no-delete rule covers
+    documents only.
+
+
+    ## File transfer is two-phase
+
+
+    The server cannot see a caller's filesystem, so moving bytes in either
+    direction is a mint-then-move handshake rather than a single call.
+
+
+    To ingest a local file, `POST /sage_vaults/{vault_id}/documents` naming the
+    source path returns a status of `upload_required` and a recipe carrying a
+    `transfer_id` and a `PUT /upload` target. Move the bytes to that target,
+    then repeat the ingest call citing the `transfer_id`.
+
+
+    To retrieve document bytes,
+    `GET /sage_vaults/{vault_id}/documents/{document_id}/download-url` mints a
+    `GET /download/{transfer_id}` URL; fetch the bytes there. The sibling
+    `.../content` operation returns bytes inline instead and fails with
+    `content_too_large` above the inline ceiling, so prefer the transfer path
+    for anything large.
+
+
+    Both transfer legs are exempt from the bearer requirement because authority
+    travels in the `transfer_id`, which is single-use and expiring. Treat it as
+    a credential.
+
+
+    ## Unauthenticated paths
+
+
+    Every operation below requires a bearer token except the two transfer legs.
+    Outside the documented surface, the liveness probe `/health`, this document
+    at `/openapi.json`, and the OAuth discovery documents under `/.well-known/`
+    are also reachable without one. The rendered explorers at `/docs` and
+    `/redoc` are not.
   contact:
     name: CAS Project
   license:
@@ -6917,5 +7015,10 @@ tags:
     description: Tier 2 inferred edges awaiting review (list, confirm, dismiss).
   - name: Pending Metadata
     description: Documents with unconfirmed extracted metadata.
+  - name: Maintenance
+    description: >-
+      Vault upkeep run out of band: drift detection, source-file verification,
+      schema migration, deferred abstraction, content-store optimization, and
+      view recomputation.
   - name: Transfer
     description: Token-gated byte legs of the caller-local transfer channel.
