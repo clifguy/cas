@@ -1558,7 +1558,20 @@ class IngestionService:
         the vault has no filename_extraction.pattern configured. When a
         pattern is configured, fields the parser could not extract are
         null and the codes field is an empty list rather than null.
+
+        The endpoint previews what an ingest of the same filename would
+        derive, so the adapter resolves against the same process-wide
+        registry ``ingest`` resolves against -- not the vault's
+        ``source_adapters[].enabled`` list, which adapter resolution does
+        not consult. Rejecting a source type SAGE has no adapter for keeps
+        the preview from handing back suggestions for a source that could
+        never be ingested (CAS-ADR-021).
+
+        Raises:
+            AdapterNotFoundError: No adapter is registered for ``adapter``.
         """
+        if self._adapters.get(adapter) is None:
+            raise AdapterNotFoundError(adapter)
         if self._filename_parser is None:
             return ParseFilenameResponse()
         adapter_value = adapter.value if isinstance(adapter, SourceType) else str(adapter)

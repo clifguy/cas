@@ -110,6 +110,26 @@ async def test_ingest_duplicate_409(client):
     assert body["code"] == "duplicate_content"
 
 
+async def test_ingest_unregistered_source_type_400(client):
+    """A SourceType member with no adapter implementation is rejected with
+    the documented 400 `adapter_not_found`.
+
+    Adapter resolution runs against the process-wide registry built by
+    build_source_adapter_registry, so the reachable failure is "SAGE has
+    no adapter for this source type" -- not "the vault did not enable it".
+    The vault's source_adapters[].enabled list is not consulted here.
+    """
+    resp = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "email"},
+    )
+    assert resp.status_code == 400, (
+        "source_type with no registered adapter must raise the documented "
+        f"400, got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["code"] == "adapter_not_found"
+
+
 # ---------------------------------------------------------------------------
 # Get document
 # ---------------------------------------------------------------------------

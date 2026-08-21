@@ -172,9 +172,8 @@ def register_sage_tools(
         the ``cas`` vault, ``ticket.ticket_id`` is the live example.
 
         Error modes:
-        - ``adapter_not_found`` (400): ``source_type`` is not an enabled
-          adapter (see ``source_adapters.adapters`` in
-          ``admin_get_vault_config``).
+        - ``adapter_not_found`` (400): no source adapter is registered for
+          ``source_type``.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
@@ -248,7 +247,7 @@ def register_sage_tools(
                 one-time token, then repeat this call with
                 ``transfer_token`` to complete the ingest.
             source_type: Source artifact format (markdown, docx, xlsx, pptx,
-                pdf, email, onenote, teams_chat). Selects the source adapter.
+                pdf). Selects the source adapter.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``source_adapters.adapters[].config``
                 in ``admin_get_vault_config`` for the per-adapter shape.
@@ -401,15 +400,18 @@ def register_sage_tools(
         ``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.
 
         Error modes:
-        - ``adapter_not_found`` (400): ``source_type`` is not an enabled
-          adapter on this vault.
+        - ``adapter_not_found`` (400): no source adapter is registered for
+          ``source_type``.
 
         Args:
             vault_id: Target vault identifier.
             filename: Filename to parse; the basename is used (directory
                 components are stripped).
             source_type: Source artifact format (markdown, docx, xlsx, pptx,
-                pdf, email, onenote, teams_chat). Must be enabled on the vault.
+                pdf, email, onenote, teams_chat). Must be one SAGE has a
+                registered adapter for -- the same set ``ingest_document``
+                accepts, so a filename that parses here is one that can go
+                on to be ingested.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1666,8 +1668,9 @@ def register_sage_tools(
         - The valid ``doc_type`` values for ``update_metadata``
           or for filtering ``search`` (under
           ``document_types.doc_types``).
-        - The enabled source adapters for ``ingest_document`` / ``get_filename_metadata``
-          (under ``source_adapters.adapters``).
+        - The source adapters declared for this vault (under
+          ``source_adapters.adapters``). The ``enabled`` flag gates scan
+          results, not ingest adapter resolution.
         - The filename-parsing pattern and segment fields used by
           ``get_filename_metadata`` (under
           ``metadata_extraction.filename_extraction``).

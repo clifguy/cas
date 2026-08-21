@@ -164,3 +164,57 @@ async def test_ad021_012_parse_no_pattern_returns_nulls(no_pattern_client):
     assert body["document_date"] is None
     assert body["doc_type"] is None
     assert body["codes"] is None
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-013: parse-filename rejects a source_type that has no
+# registered adapter with the documented 400 `adapter_not_found`.
+#
+# The endpoint is a preview of what ingest would do, so it resolves the
+# adapter through the same process-wide registry ingest resolves against
+# (build_source_adapter_registry). A SourceType member with no adapter
+# implementation cannot be ingested, so previewing a parse under it would
+# hand the caller suggestions for a source SAGE cannot process.
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_013_parse_unregistered_source_type_returns_400(pim_client):
+    resp = await pim_client.post(
+        "/sage_vaults/test_metadata_vault/parse-filename",
+        json={
+            "filename": "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
+            "source_type": "email",
+        },
+    )
+    assert resp.status_code == 400, (
+        "source_type with no registered adapter must raise the documented "
+        f"400, got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["code"] == "adapter_not_found"
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-014: parse-filename resolves the adapter against the
+# process-wide registry, NOT the vault's source_adapters[].enabled list.
+#
+# Pins the preview/ingest parity decided for the 400 above: `pdf` has a
+# registered adapter but is absent from this vault's enabled list, and
+# ingest_document accepts it (the enabled flag is not consulted during
+# adapter resolution). A preview that rejected it would be stricter than
+# the ingest it previews.
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_014_parse_registered_but_not_vault_enabled_succeeds(pim_client):
+    resp = await pim_client.post(
+        "/sage_vaults/test_metadata_vault/parse-filename",
+        json={
+            "filename": "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.pdf",
+            "source_type": "pdf",
+        },
+    )
+    assert resp.status_code == 200, (
+        "a source_type with a registered adapter must parse even when the "
+        f"vault does not list it as enabled, got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["title"] == "Claim-Set"

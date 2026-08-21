@@ -769,8 +769,8 @@ class IngestRequest(BaseModel):
     source_type: SourceType = Field(
         description=(
             "Source artifact format. Determines which source adapter "
-            "processes the artifact. Must be an enabled adapter in the "
-            "vault's source_adapters configuration."
+            "processes the artifact. Must be a source type with a "
+            "registered adapter."
         )
     )
     config: dict | None = Field(
@@ -922,8 +922,8 @@ class ParseFilenameRequest(BaseModel):
     source_type: SourceType = Field(
         description=(
             "Source artifact format whose filename_extraction "
-            "configuration governs the parse. Must be an enabled "
-            "source adapter for the vault."
+            "configuration governs the parse. Must be a source type "
+            "with a registered adapter."
         )
     )
 
@@ -3931,8 +3931,8 @@ class BatchIngestFileMetadata(BaseModel):
     source_type: str = Field(
         description=(
             "Source artifact format for this file (closed SourceType "
-            "vocabulary: markdown, docx, xlsx, pptx, pdf). Must be an adapter "
-            "enabled on the target vault."
+            "vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source "
+            "type with a registered adapter."
         )
     )
     parsed_metadata: dict[str, Any] | None = Field(

@@ -373,9 +373,8 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
           description: >-
-            `adapter_not_found`: `source_type` is not an enabled
-            adapter on this vault. See `source_adapters.adapters` in
-            the vault config.
+            `adapter_not_found`: no source adapter is registered
+            for `source_type`.
 
 
             `expected_head_version_requires_predecessor`:
@@ -1289,9 +1288,9 @@ paths:
           `PATCH /documents/{id}/metadata` or for filtering
           `POST /discover` (under `document_types.doc_types`).
 
-        - The enabled source adapters for `POST /documents` (ingest)
-          and `POST /parse-filename` (under
-          `source_adapters.adapters`).
+        - The source adapters declared for this vault (under
+          `source_adapters.adapters`). The `enabled` flag gates scan
+          results, not ingest adapter resolution.
 
         - The filename-parsing pattern and segment fields used by
           `POST /parse-filename` (under
@@ -1665,8 +1664,8 @@ paths:
                 $ref: "#/components/schemas/ParseFilenameResponse"
         "400":
           description: >-
-            `adapter_not_found`: `source_type` is not an enabled
-            adapter on this vault.
+            `adapter_not_found`: no source adapter is registered for
+            `source_type`.
           content:
             application/json:
               schema:
@@ -3491,8 +3490,8 @@ components:
           $ref: "#/components/schemas/SourceType"
           description: >-
             Source artifact format. Determines which source adapter
-            processes the artifact. Must be an enabled adapter in the
-            vault's source_adapters configuration.
+            processes the artifact. Must be a source type with a
+            registered adapter.
         config:
           type: object
           additionalProperties: true
@@ -3634,8 +3633,8 @@ components:
           $ref: "#/components/schemas/SourceType"
           description: >-
             Source artifact format whose filename_extraction
-            configuration governs the parse. Must be an enabled
-            source adapter for the vault.
+            configuration governs the parse. Must be a source type
+            with a registered adapter.
 
     ParseFilenameResponse:
       type: object
@@ -6524,8 +6523,8 @@ components:
           type: string
           description: >-
             Source artifact format for this file (closed SourceType
-            vocabulary: markdown, docx, xlsx, pptx, pdf). Must be an adapter enabled
-            on the target vault.
+            vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source
+            type with a registered adapter.
         parsed_metadata:
           type: object
           additionalProperties: true
