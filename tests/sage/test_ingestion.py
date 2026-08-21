@@ -66,6 +66,61 @@ def _create_test_file(
     return full_path
 
 
+# States from which no further abstraction begins. Every other state can still
+# be followed by an abstraction start, so a caller that proceeds from one races
+# the abstraction queue's per-document claim.
+_TERMINAL_PIPELINE_STATES = {
+    PipelineStatus.ABSTRACTION_COMPLETE,
+    PipelineStatus.ABSTRACTION_SKIPPED,
+    PipelineStatus.FAILED,
+}
+
+
+async def _await_pipeline_terminal(
+    graph_store,
+    doc_id,
+    *,
+    service=None,
+    attempts: int = 400,
+    delay: float = 0.01,
+):
+    """Poll the document until it has settled, and return it.
+
+    A terminal ``pipeline_status`` is what a caller needs when it only means to
+    observe the document. A caller that goes on to re-abstract or recompute the
+    same document needs more: those entry points reject a document whose
+    abstraction claim is still held, and the worker releases that claim *after*
+    the terminal status write -- on the completion path it refreshes the
+    document's synthetic header chunk in between, so the window spans a
+    content-store write rather than a scheduling hairline. Pass ``service`` to
+    additionally require the claim clear; omit it to wait on the status alone.
+
+    Raises AssertionError on timeout, naming the document, the last status
+    observed and the claim state, so a genuine stall stays distinguishable from
+    the assertion the caller was about to make.
+    """
+    import asyncio
+
+    status = None
+    for _ in range(attempts):
+        doc = await graph_store.get_document(doc_id)
+        status = doc.pipeline_status if doc is not None else None
+        if status in _TERMINAL_PIPELINE_STATES and (
+            service is None or doc_id not in service._inflight
+        ):
+            return doc
+        await asyncio.sleep(delay)
+
+    if service is None:
+        claim = "claim not checked"
+    else:
+        claim = "claim still held" if doc_id in service._inflight else "no claim held"
+    raise AssertionError(
+        f"document {doc_id} did not become idle within {attempts} attempts; "
+        f"last observed pipeline_status={status!r} ({claim})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # BH-018: Duplicate content detection returns 409
 # ---------------------------------------------------------------------------
@@ -1503,6 +1558,132 @@ async def test_reabstract_parallel_calls_different_documents_both_succeed(
     assert doc_b_state.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 
+# ---------------------------------------------------------------------------
+# _await_pipeline_terminal -- the shared poll helper the contending tests above
+# gate on. Its claim arm is what those tests rely on, so it carries its own
+# coverage rather than being proved only by their stability.
+# ---------------------------------------------------------------------------
+
+
+async def test_await_pipeline_terminal_returns_idle_document(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """The helper returns the document once it has settled, and no claim is
+    held at the moment it returns.
+    """
+
+    _create_test_file(tmp_vault_dir, "samples/idle1.md", "# Idle1\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/idle1.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+
+    doc = await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
+
+    assert doc.pipeline_status in _TERMINAL_PIPELINE_STATES
+    assert doc_id not in ingestion_service._inflight
+
+
+async def test_await_pipeline_terminal_blocks_while_claim_held(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """A terminal status is not sufficient: while the claim is held the helper
+    keeps waiting, because that is the condition the 409 guard rejects on.
+
+    The status is forced terminal underneath a held claim, reproducing the
+    window the worker leaves open between its terminal status write and the
+    claim release. The terminal-only form returns there -- that contrast is
+    what shows the claim arm, not the status arm, is doing the work.
+    """
+    import asyncio
+
+    _create_test_file(tmp_vault_dir, "samples/claim1.md", "# Claim1\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/claim1.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def gated_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        entered.set()
+        await gate.wait()
+        return "gated abstract"
+
+    ingestion_service._abstraction.generate_abstract = gated_abstract
+
+    assert (await ingestion_service.reabstract(doc_id))["status"] == "reabstract_started"
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+    try:
+        await graph_store.update_document(
+            doc_id, {"pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value}
+        )
+        assert doc_id in ingestion_service._inflight
+
+        with pytest.raises(AssertionError, match="claim still held"):
+            await _await_pipeline_terminal(
+                graph_store, doc_id, service=ingestion_service, attempts=3, delay=0
+            )
+
+        # Same document, same instant, no service: the terminal-only form has
+        # nothing left to wait for and returns.
+        observed = await _await_pipeline_terminal(graph_store, doc_id, attempts=3, delay=0)
+        assert observed.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    finally:
+        gate.set()
+
+    doc = await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
+    assert doc.pipeline_status in _TERMINAL_PIPELINE_STATES
+
+
+async def test_await_pipeline_terminal_timeout_names_status_and_claim(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """A document parked non-terminal produces an AssertionError naming the
+    document, the last status seen and the claim state -- not a fall-through to
+    whatever assertion the caller was about to make.
+    """
+
+    _create_test_file(tmp_vault_dir, "samples/stall1.md", "# Stall1\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/stall1.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+    await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
+
+    await graph_store.update_document(
+        doc_id, {"pipeline_status": PipelineStatus.INDEXING_COMPLETE.value}
+    )
+
+    with pytest.raises(AssertionError, match=doc_id):
+        await _await_pipeline_terminal(
+            graph_store, doc_id, service=ingestion_service, attempts=2, delay=0
+        )
+
+    with pytest.raises(AssertionError, match="indexing_complete"):
+        await _await_pipeline_terminal(
+            graph_store, doc_id, service=ingestion_service, attempts=2, delay=0
+        )
+
+    with pytest.raises(AssertionError, match="no claim held"):
+        await _await_pipeline_terminal(
+            graph_store, doc_id, service=ingestion_service, attempts=2, delay=0
+        )
+
+    # Without a service the helper cannot speak to the claim, and says so
+    # rather than implying it checked.
+    with pytest.raises(AssertionError, match="claim not checked"):
+        await _await_pipeline_terminal(graph_store, doc_id, attempts=2, delay=0)
+
+
 async def test_reabstract_succeeds_again_after_prior_reabstract_completes(
     tmp_vault_dir,
     ingestion_service,
@@ -1512,8 +1693,6 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_completes(
     must be released so a subsequent reabstract against the same document
     can proceed.
     """
-    import asyncio
-
     _create_test_file(tmp_vault_dir, "samples/sf3.md", "# SF3\n\nContent.")
     result = await ingestion_service.ingest(
         IngestRequest(source="samples/sf3.md", source_type=SourceType.MARKDOWN)
@@ -1528,19 +1707,16 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_completes(
     first = await ingestion_service.reabstract(doc_id)
     assert first["status"] == "reabstract_started"
 
-    # Poll for the background task's terminal stamp before re-issuing.
-    for _ in range(40):
-        doc = await graph_store.get_document(doc_id)
-        if doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE:
-            break
-        await asyncio.sleep(0.05)
-    else:
-        pytest.fail("First reabstract did not reach ABSTRACTION_COMPLETE")
+    # Wait for the claim, not only for the terminal stamp: the second call is
+    # exactly what a still-held claim rejects.
+    doc = await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
     second = await ingestion_service.reabstract(doc_id)
     assert second["status"] == "reabstract_started"
 
-    await asyncio.sleep(0.5)
+    # Drain the second background job so teardown does not race it.
+    await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
 
 
 async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
@@ -1552,8 +1728,6 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
     reservation must still be released so a subsequent reabstract can
     proceed.
     """
-    import asyncio
-
     from sage.adapters.stubs import StubAbstractionProvider
 
     _create_test_file(tmp_vault_dir, "samples/sf4.md", "# SF4\n\nContent.")
@@ -1571,13 +1745,8 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
     first = await ingestion_service_failing_llm.reabstract(doc_id)
     assert first["status"] == "reabstract_started"
 
-    for _ in range(40):
-        doc = await graph_store.get_document(doc_id)
-        if doc.pipeline_status == PipelineStatus.FAILED:
-            break
-        await asyncio.sleep(0.05)
-    else:
-        pytest.fail("First reabstract did not reach FAILED")
+    doc = await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service_failing_llm)
+    assert doc.pipeline_status == PipelineStatus.FAILED
 
     # Swap back to a working provider so the second call has a chance
     # to dispatch without immediately re-failing; the assertion is only
@@ -1587,7 +1756,8 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
     second = await ingestion_service_failing_llm.reabstract(doc_id)
     assert second["status"] == "reabstract_started"
 
-    await asyncio.sleep(0.5)
+    # Drain the second background job so teardown does not race it.
+    await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service_failing_llm)
 
 
 # ---------------------------------------------------------------------------
@@ -1597,25 +1767,6 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
 # synchronous prefix surfaces unknown_document / unknown_vault /
 # source_file_not_found / 409 in-flight errors.
 # ---------------------------------------------------------------------------
-
-
-_TERMINAL_PIPELINE_STATES = {
-    PipelineStatus.ABSTRACTION_COMPLETE,
-    PipelineStatus.ABSTRACTION_SKIPPED,
-    PipelineStatus.FAILED,
-}
-
-
-async def _await_pipeline_terminal(graph_store, doc_id, *, attempts: int = 400):
-    """Poll the document until it reaches a terminal pipeline_status."""
-    import asyncio
-
-    for _ in range(attempts):
-        doc = await graph_store.get_document(doc_id)
-        if doc is not None and doc.pipeline_status in _TERMINAL_PIPELINE_STATES:
-            return doc
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"document {doc_id} did not reach terminal status in time")
 
 
 async def test_recompute_pipeline_recovers_stuck_projection_complete(
