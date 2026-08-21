@@ -113,9 +113,6 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
-        },
         "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [

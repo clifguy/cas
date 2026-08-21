@@ -98,9 +98,6 @@ paths:
         - **unchanged**: source_path and content hash both match an
           existing document.
 
-        - **adapter_disabled**: the file's extension matches a vault
-          adapter that has been disabled in the vault config.
-
         - **no_adapter**: no registered adapter handles this extension.
 
 
@@ -377,7 +374,7 @@ components:
           $ref: "#/components/schemas/ParsedMetadata"
         sage_status:
           type: string
-          enum: [new, modified, unchanged, adapter_disabled, no_adapter]
+          enum: [new, modified, unchanged, no_adapter]
           description: Vault-relative status for this file. See operation description.
 
     ParsedMetadata:

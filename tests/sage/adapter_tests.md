@@ -2474,8 +2474,10 @@ frozenset, so an omission would otherwise pass silently.
 **Artifact:** `sage/mcp_init.py` (build_source_adapter_registry)
 **Category:** wiring
 **Decision:** Adapter selection during ingestion resolves against this
-registry, so a source type absent from it raises `adapter_not_found`
-regardless of what any vault's `source_adapters` config declares.
+registry, so a source type absent from it raises `adapter_not_found`.
+Vault configuration declares no adapters at all (CAS-ADR-046);
+availability is process-wide capability fixed by the installed
+implementations.
 
 **Expected:** `build_source_adapter_registry()[SourceType.PPTX]` is a
 `PptxAdapter`.

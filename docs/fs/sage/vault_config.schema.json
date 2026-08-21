@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cas.local/fs/sage/vault_config.schema.json",
   "title": "SAGE Vault Configuration",
-  "description": "Top-level vault configuration schema. A domain instantiation produces a single YAML file that validates against this schema. Sub-schemas are referenced for document types, lifecycle, source adapters, metadata extraction, and edge inference. See SAGE Architecture Reference Sections 4.7, 7.2, and 8.3.",
+  "description": "Top-level vault configuration schema. A domain instantiation produces a single YAML file that validates against this schema. Sub-schemas are referenced for document types, lifecycle, metadata extraction, and edge inference. See SAGE Architecture Reference Sections 4.7, 7.2, and 8.3.",
   "type": "object",
-  "required": ["vault", "document_types", "lifecycle", "source_adapters", "metadata_extraction", "edge_inference"],
+  "required": ["vault", "document_types", "lifecycle", "metadata_extraction", "edge_inference"],
   "additionalProperties": false,
   "properties": {
     "vault": {
@@ -78,10 +78,6 @@
       "$ref": "lifecycle.schema.json",
       "description": "Lifecycle state machine configuration for this vault."
     },
-    "source_adapters": {
-      "$ref": "source_adapters.schema.json",
-      "description": "Source adapter registry and configuration."
-    },
     "metadata_extraction": {
       "$ref": "metadata_extraction.schema.json",
       "description": "Metadata extraction pipeline configuration."
@@ -89,6 +85,49 @@
     "edge_inference": {
       "$ref": "edge_inference.schema.json",
       "description": "Edge inference tier assignments and rules."
+    },
+    "adapter_defaults": {
+      "type": "object",
+      "description": "Per-adapter projection parameters, keyed by source type. Each entry is the vault-level base for that adapter; a per-request `config` deep-merges over it, request keys winning on collision. Adapter availability is not declared here: it is a process-wide capability fixed by the installed adapter implementations (CAS-ADR-046).",
+      "propertyNames": {
+        "enum": ["markdown", "docx", "xlsx", "pptx", "pdf", "email", "onenote", "teams_chat"]
+      },
+      "additionalProperties": {
+        "type": "object",
+        "description": "Projection parameters for one adapter. Structure varies by source type; unknown keys are rejected by the adapter that receives them.",
+        "additionalProperties": true,
+        "properties": {
+          "heading_style_map": {
+            "type": "object",
+            "description": "For the docx adapter: maps Word paragraph style names to heading levels in the projection. Merged over the adapter's standard Heading 1 through Heading 9 defaults.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9
+            }
+          },
+          "preview_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For the xlsx adapter: how many data rows per sheet the projection previews."
+          },
+          "max_sheets": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "For the xlsx adapter: cap on sheets projected from one workbook. Null projects every sheet."
+          },
+          "max_slides": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For the pptx adapter: cap on slides projected from one deck."
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For the pdf adapter: cap on pages projected from one document."
+          }
+        }
+      }
     },
     "access_control_defaults": {
       "type": "object",

@@ -131,9 +131,6 @@ def _make_full_config_dict(vaults_root: Path, vault_id: str, name: str, owner: s
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
-        },
         "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [
@@ -257,7 +254,6 @@ class TestSageGetVaultConfig:
             "vault",
             "document_types",
             "lifecycle",
-            "source_adapters",
             "metadata_extraction",
             "edge_inference",
         ):
@@ -393,8 +389,39 @@ class TestSageUpdateVaultConfig:
         dt_values = [dt["value"] for dt in updated["document_types"]["doc_types"]]
         assert "extra" in dt_values
         # Other sections byte-equal
-        for section in ("lifecycle", "source_adapters", "metadata_extraction", "edge_inference"):
+        for section in ("lifecycle", "metadata_extraction", "edge_inference"):
             assert updated[section] == original[section]
+
+    async def test_update_rewrite_drops_an_ignored_legacy_section(
+        self, registered_vault, vaults_root
+    ):
+        """A stale ``source_adapters`` section disappears on the first write.
+
+        ``update_config`` rebuilds the persisted YAML from the validated
+        model, so the section a pre-CAS-ADR-046 config still carries is
+        dropped by any update rather than needing a hand edit of a file
+        inside the vault tree. That is what makes the operational
+        migration a single tool call per vault.
+        """
+        config_path = Path(vaults_root) / "test_vault" / "vault_config.yaml"
+        raw = yaml.safe_load(config_path.read_text())
+        raw["source_adapters"] = {
+            "adapters": [{"source_type": "markdown", "enabled": False}],
+        }
+        config_path.write_text(yaml.dump(raw, sort_keys=False))
+        assert "source_adapters" in yaml.safe_load(config_path.read_text())
+
+        result = _parse(
+            await update_vault_config(
+                "test_vault",
+                adapter_defaults={"docx": {"heading_style_map": {"Custom Section": 1}}},
+            )
+        )
+        assert result["status"] == "updated"
+
+        written = yaml.safe_load(config_path.read_text())
+        assert "source_adapters" not in written
+        assert written["adapter_defaults"] == {"docx": {"heading_style_map": {"Custom Section": 1}}}
 
     # TEST-APP-MCP-037
     async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):

@@ -26,8 +26,8 @@ Design decisions encoded here:
   follow up with `update_vault_config` to adjust specific sections.
 - **Named-section update.** `update_vault_config`
   takes one optional kwarg per top-level section
-  (`vault`, `document_types`, `lifecycle`, `source_adapters`,
-  `metadata_extraction`, `edge_inference`, `abstraction`,
+  (`vault`, `document_types`, `lifecycle`, `metadata_extraction`,
+  `edge_inference`, `adapter_defaults`, `abstraction`,
   `access_control_defaults`, `retrieval_health`) instead of the earlier
   `sections: dict` wrapper. Each non-null kwarg replaces the
   corresponding section wholesale; omitted kwargs are preserved
@@ -173,8 +173,8 @@ add to the config.
 
 **Expected:**
 - First call returns a dict containing all required sections
-  (`vault`, `document_types`, `lifecycle`, `source_adapters`,
-  `metadata_extraction`, `edge_inference`).
+  (`vault`, `document_types`, `lifecycle`, `metadata_extraction`,
+  `edge_inference`).
 - `result["vault"]["id"] == "test_vault"`.
 - Second call returns an error dict with `error == "unknown_vault"`.
 
@@ -204,8 +204,8 @@ in the registry.
 - Return value is `{"status": "updated", "vault_id": "test_vault", "warnings": []}`.
 - Subsequent `get_vault_config("test_vault")` shows the new
   doc_types list.
-- The `lifecycle`, `source_adapters`, `metadata_extraction`,
-  `edge_inference` sections are byte-equal to their pre-update values.
+- The `lifecycle`, `metadata_extraction`, `edge_inference` sections are
+  byte-equal to their pre-update values.
 
 **Rationale:** Verifies the wholesale-section-replace semantic and the
 preservation of untouched sections.

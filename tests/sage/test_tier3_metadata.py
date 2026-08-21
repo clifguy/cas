@@ -126,7 +126,6 @@ def _config_dict_with_tier3(tmp_vault_dir: Path) -> dict:
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "source_adapters": {"adapters": [{"source_type": "markdown", "enabled": True}]},
         "metadata_extraction": {},
         "edge_inference": {},
     }

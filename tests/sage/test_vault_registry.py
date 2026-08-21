@@ -94,10 +94,11 @@ def _vault_config_with_every_summary_field() -> VaultConfig:
     - ``document_types.doc_types`` contains exactly one ``DocTypeEntry``
       with a non-default ``label`` so ``VaultDocTypeEntry.label`` is
       observably populated.
-    - ``source_adapters`` is a non-empty dict (the field is ``dict``
+    - ``adapter_defaults`` is a non-empty dict (the field is ``dict``
       typed on ``VaultConfig``); the factory does not iterate it, but
-      the sentinel matches the shape produced by
-      ``VaultRegistryService.get_default_config``.
+      the sentinel proves the section is settable. Adapter *availability*
+      is process-wide (CAS-ADR-046), so nothing in the summary's adapter
+      list derives from vault config.
     """
     return VaultConfig(
         vault=VaultIdentity(
@@ -136,7 +137,7 @@ def _vault_config_with_every_summary_field() -> VaultConfig:
             ],
             base_states_required=False,
         ),
-        source_adapters={"adapters": [{"source_type": "markdown", "enabled": True}]},
+        adapter_defaults={"docx": {"heading_style_map": {"Sentinel Style": 1}}},
         metadata_extraction={"filename_extraction": {"separator": "_"}},
         edge_inference={"tier_assignments": []},
     )

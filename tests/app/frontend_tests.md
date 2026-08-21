@@ -169,19 +169,21 @@ avoids unnecessary navigation.
 **Category:** dashboard
 
 **Decision:** Adapter name, supported file extensions, and adapter version are
-displayed for each configured adapter.
+displayed for each adapter the SAGE process can project.
 
-**Precondition:** Vault with markdown, docx, and pdf adapters configured.
+**Precondition:** Any vault. The adapter list is process-wide capability, not
+vault configuration (CAS-ADR-046), so it does not vary by vault.
 
 **Input:** Render Dashboard.
 
 **Expected:**
-- Three adapter rows displayed
+- One row per adapter in the process-wide registry
 - Each row shows adapter name, extensions (e.g., ".docx"), and version
-- Only enabled adapters are shown
+- No row presents an adapter as enabled or disabled for this vault
 
 **Rationale:** Users need to confirm which file types can be ingested before
-initiating a directory scan.
+initiating a directory scan. Presenting the list as per-vault would invite a
+caller to look for a vault-config switch that does not exist.
 
 ### TEST-APP-UI-009: Dashboard is read-only
 

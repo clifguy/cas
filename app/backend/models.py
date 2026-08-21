@@ -116,7 +116,7 @@ class ScanResultResponse(BaseModel):
     parsed_metadata: ParsedMetadata = Field(
         description="Filename-derived metadata extracted for this file.",
     )
-    sage_status: Literal["new", "modified", "unchanged", "adapter_disabled", "no_adapter"] = Field(
+    sage_status: Literal["new", "modified", "unchanged", "no_adapter"] = Field(
         description="Vault-relative status for this file. See operation description."
     )
 

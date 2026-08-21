@@ -22,13 +22,12 @@ SEED_CONFIG_PATH = (
 
 # Top-level sections VaultConfig declares without a default (sage/config.py).
 # Each must be present for a config to validate; the optional sections
-# (abstraction, access_control_defaults, retrieval_health, timing) carry
-# defaults and are intentionally excluded.
+# (adapter_defaults, abstraction, access_control_defaults, retrieval_health,
+# timing) carry defaults and are intentionally excluded.
 REQUIRED_SECTIONS = (
     "vault",
     "document_types",
     "lifecycle",
-    "source_adapters",
     "metadata_extraction",
     "edge_inference",
 )

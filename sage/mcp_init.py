@@ -71,8 +71,9 @@ def build_source_adapter_registry() -> dict[SourceType, SourceAdapter]:
     """Build the process-wide source-adapter registry.
 
     Adapter selection during ingestion resolves against this mapping, so a
-    source type absent here raises ``adapter_not_found`` regardless of what
-    any vault's ``source_adapters`` config declares.
+    source type absent here raises ``adapter_not_found``. Vault
+    configuration declares no adapters at all (CAS-ADR-046); availability
+    is process-wide capability fixed by the installed implementations.
     """
     return {
         SourceType.MARKDOWN: MarkdownAdapter(),

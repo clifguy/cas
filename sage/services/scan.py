@@ -47,7 +47,7 @@ class ScanResult:
     source_modified_at: str
     source_type: str | None
     parsed_metadata: ParsedMetadata
-    sage_status: str  # "new", "modified", "unchanged", "no_adapter", "adapter_disabled"
+    sage_status: str  # "new", "modified", "unchanged", "no_adapter"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -130,26 +130,22 @@ async def scan_directory(
     ] or None
     parser = FilenameParser(vault_config.metadata_extraction, doc_types=doc_types_raw)
 
-    # Build set of enabled source types from vault config
-    enabled_source_types: set[str] = set()
-    for adapter_entry in vault_config.source_adapters.get("adapters", []):
-        if adapter_entry.get("enabled", True):
-            enabled_source_types.add(adapter_entry["source_type"])
-
     # Walk directory
     file_paths, warnings = _walk_directory(directory, max_depth)
 
-    # Compute hashes and detect adapters
-    file_infos: list[tuple[Path, str, str | None, bool, str]] = []
+    # Compute hashes and detect adapters. Every extension the process-wide
+    # registry maps is ingestable: adapter availability is code-determined,
+    # not per-vault (CAS-ADR-046), so scan reports exactly what an ingest of
+    # the same file would accept.
+    file_infos: list[tuple[Path, str, str | None, str]] = []
     hashes_to_check: list[str] = []
 
     for path in file_paths:
         adapter = _detect_adapter(path, extension_map)
-        enabled = adapter is not None and adapter in enabled_source_types
         file_hash = _compute_file_hash(path)
         mtime = _get_mtime_iso(path)
-        file_infos.append((path, file_hash, adapter, enabled, mtime))
-        if enabled:
+        file_infos.append((path, file_hash, adapter, mtime))
+        if adapter is not None:
             hashes_to_check.append(file_hash)
 
     # Bulk hash check against vault
@@ -157,7 +153,7 @@ async def scan_directory(
 
     # Also check by source path for "modified" detection
     # A file is "modified" if its path matches an existing doc but hash differs
-    all_source_paths = [str(p) for p, _h, a, en, _m in file_infos if en]
+    all_source_paths = [str(p) for p, _h, a, _m in file_infos if a is not None]
     path_to_existing: dict[str, str] = {}
     for sp in all_source_paths:
         docs = await graph_store.find_by_source_path(sp)
@@ -166,13 +162,11 @@ async def scan_directory(
 
     # Build results
     results: list[ScanResult] = []
-    for path, file_hash, adapter, enabled, mtime in file_infos:
+    for path, file_hash, adapter, mtime in file_infos:
         parsed = parser.parse(path.stem, adapter=adapter)
 
         if adapter is None:
             status = "no_adapter"
-        elif not enabled:
-            status = "adapter_disabled"
         elif file_hash in hash_matches:
             status = "unchanged"
         elif str(path) in path_to_existing:

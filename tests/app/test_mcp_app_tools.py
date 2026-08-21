@@ -7,6 +7,7 @@ MCP test pattern in tests/sage/test_mcp_server.py.
 
 import asyncio
 import hashlib
+import inspect
 import json
 import re
 import uuid
@@ -130,9 +131,6 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
-        },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
         },
         "metadata_extraction": {
             "filename_extraction": {
@@ -689,6 +687,48 @@ class TestAppScanDirectory:
         pm = md[0]["parsed_metadata"]
         assert pm["title"] == "Claim-Set"
         assert "PV06" in pm["codes"]
+
+    async def test_every_registry_extension_is_reported_ingestable(self, single_vault, tmp_path):
+        """Scan offers every file the process-wide registry can handle.
+
+        Vault configuration declares no adapter availability (CAS-ADR-046),
+        so a scan row is an offer to ingest exactly what an ingest of the
+        same file would accept. The unmapped extension is the discriminating
+        half: without it, a status computation that had collapsed to always
+        reporting `new` would satisfy the first assertion too.
+        """
+        scan_dir = tmp_path / "mixed_inbox"
+        scan_dir.mkdir()
+        (scan_dir / "handled.md").write_text("# Handled")
+        (scan_dir / "unhandled.zzz").write_text("not a known format")
+
+        result = _parse(await list_directory("test_vault", str(scan_dir)))
+        by_suffix = {Path(f["file_path"]).suffix: f for f in result["files"]}
+
+        assert by_suffix[".md"]["source_type"] == "markdown"
+        assert by_suffix[".md"]["sage_status"] == "new"
+        assert by_suffix[".zzz"]["source_type"] is None
+        assert by_suffix[".zzz"]["sage_status"] == "no_adapter"
+
+    async def test_adapter_disabled_status_is_retired(self):
+        """No scan surface still declares the retired status.
+
+        The status existed only to label a file whose extension mapped to
+        an adapter the vault had switched off. With enablement gone there is
+        nothing it could describe, and leaving it declared would invite a
+        consumer to branch on a value the scan can never emit.
+        """
+        import typing
+
+        from app.backend.models import ScanResultResponse
+        from sage.services.scan import ScanResult
+
+        declared = typing.get_args(ScanResultResponse.model_fields["sage_status"].annotation)
+        assert "adapter_disabled" not in declared
+        assert set(declared) == {"new", "modified", "unchanged", "no_adapter"}
+
+        source = inspect.getsource(ScanResult)
+        assert "adapter_disabled" not in source
 
     async def test_mcp_016_invalid_directory_error(self, single_vault):
         """list_directory with invalid directory returns error."""

@@ -30,6 +30,7 @@ from sage.mcp_server import (
     update_metadata,
 )
 from sage.models.enums import EdgeType, RationaleKind, RetrievalMode
+from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
 # CAS-ADR-029 v4 plural-noun collapse: the pre-CAS-ADR-029 singleton tools
 # (create_edge, update_lifecycle, bulk_update_lifecycle, bulk_update_metadata)
@@ -161,8 +162,8 @@ def test_adapter_docstrings_do_not_claim_vault_config_enablement():
     """No tool docstring conditions adapter availability on vault config.
 
     Adapter resolution is a lookup in the process-wide registry built by
-    ``build_source_adapter_registry``; no vault's ``source_adapters`` block is
-    consulted for availability. A docstring that says a source type must be
+    ``build_source_adapter_registry``; vault configuration declares no
+    adapters at all. A docstring that says a source type must be
     *enabled* sends a caller diagnosing ``adapter_not_found`` to a config file
     that cannot affect it.
 
@@ -172,7 +173,7 @@ def test_adapter_docstrings_do_not_claim_vault_config_enablement():
     """
     for tool in (ingest_document, get_filename_metadata, get_vault_config):
         doc = _docstring(tool)
-        for marker in ("enabled adapter", "enabled source adapter"):
+        for marker in ENABLEMENT_CLAIM_MARKERS:
             assert marker not in doc, (
                 f"{tool.__name__} docstring conditions adapter availability on "
                 f"vault configuration ({marker!r}), which adapter resolution "

@@ -119,7 +119,6 @@ def _config_dict_with_ticket_schema(tmp_vault_dir: Path) -> dict:
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
             ],
         },
-        "source_adapters": {"adapters": [{"source_type": "markdown", "enabled": True}]},
         "metadata_extraction": {},
         "edge_inference": {},
     }

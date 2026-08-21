@@ -195,17 +195,17 @@ async def test_ad021_013_parse_unregistered_source_type_returns_400(pim_client):
 
 # ---------------------------------------------------------------------------
 # TEST-AD021-014: parse-filename resolves the adapter against the
-# process-wide registry, NOT the vault's source_adapters[].enabled list.
+# process-wide registry. Vault configuration declares no adapters at all
+# (CAS-ADR-046), so there is nothing per-vault for it to consult.
 #
 # Pins the preview/ingest parity decided for the 400 above: `pdf` has a
-# registered adapter but is absent from this vault's enabled list, and
-# ingest_document accepts it (the enabled flag is not consulted during
-# adapter resolution). A preview that rejected it would be stricter than
-# the ingest it previews.
+# registered adapter and this vault says nothing about adapters, yet
+# ingest_document accepts it. A preview that rejected it would be stricter
+# than the ingest it previews.
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_014_parse_registered_but_not_vault_enabled_succeeds(pim_client):
+async def test_ad021_014_parse_registered_adapter_succeeds(pim_client):
     resp = await pim_client.post(
         "/sage_vaults/test_metadata_vault/parse-filename",
         json={
@@ -214,7 +214,7 @@ async def test_ad021_014_parse_registered_but_not_vault_enabled_succeeds(pim_cli
         },
     )
     assert resp.status_code == 200, (
-        "a source_type with a registered adapter must parse even when the "
-        f"vault does not list it as enabled, got {resp.status_code}: {resp.text}"
+        "a source_type with a registered adapter must parse regardless of "
+        f"what the vault config says, got {resp.status_code}: {resp.text}"
     )
     assert resp.json()["title"] == "Claim-Set"

@@ -401,26 +401,24 @@ class IngestionService:
     ) -> dict | None:
         """Return adapter config with vault-level base merged with per-request override.
 
-        Looks up the vault's ``source_adapters.adapters[]`` entry whose
-        ``source_type`` matches ``source_type``. If found, its ``config``
-        dict is the base; ``request_config`` overrides on collision via
-        recursive merge (request keys override vault keys; nested dicts
-        merge key-by-key, e.g. ``heading_style_map`` accumulates entries
-        from both sources). Returns ``None`` when both are absent so
-        adapters that branch on ``config is None`` keep their legacy
-        fast path.
+        Looks up the vault's ``adapter_defaults`` entry for ``source_type``.
+        If present, it is the base; ``request_config`` overrides on
+        collision via recursive merge (request keys override vault keys;
+        nested dicts merge key-by-key, e.g. ``heading_style_map``
+        accumulates entries from both sources). Returns ``None`` when both
+        are absent so adapters that branch on ``config is None`` keep their
+        legacy fast path.
+
+        Vault defaults are the only source of adapter parameters on the
+        re-projection paths (``recompute_pipeline`` and reindex), which
+        carry no per-request config to fall back on.
         """
-        adapters_block = (
-            self._config.source_adapters.get("adapters")
-            if isinstance(self._config.source_adapters, dict)
-            else None
-        )
+        defaults = self._config.adapter_defaults
         vault_config: dict | None = None
-        if adapters_block:
-            for entry in adapters_block:
-                if entry.get("source_type") == source_type.value:
-                    vault_config = entry.get("config")
-                    break
+        if isinstance(defaults, dict):
+            entry = defaults.get(source_type.value)
+            if isinstance(entry, dict):
+                vault_config = entry
         if vault_config is None and request_config is None:
             return None
         if vault_config is None:
@@ -480,7 +478,7 @@ class IngestionService:
         Each ``SourceType`` adapter declares its own required-config
         schema; ``request.config`` is adapter-specific and validated
         against that schema during projection. Per-adapter required
-        keys live in vault config under ``source_adapters.adapters``.
+        keys live in vault config under ``adapter_defaults``.
 
         ``pipeline_status`` terminal-state outcomes (CAS-ADR-021):
         The terminal status observed by a poll of ``get_document``
@@ -598,7 +596,7 @@ class IngestionService:
 
         # Stage 1: Projection (synchronous). Merge vault-level adapter config
         # with the per-request config; per-request keys override vault keys
-        # on collision. The vault's source_adapters[].config is the authority
+        # on collision. The vault's adapter_defaults entry is the authority
         # for adapter behavior across all ingests; the request override is a
         # per-call escape hatch.
         merged_config = self._merge_adapter_config(request.source_type, request.config)
@@ -1561,11 +1559,11 @@ class IngestionService:
 
         The endpoint previews what an ingest of the same filename would
         derive, so the adapter resolves against the same process-wide
-        registry ``ingest`` resolves against -- not the vault's
-        ``source_adapters[].enabled`` list, which adapter resolution does
-        not consult. Rejecting a source type SAGE has no adapter for keeps
-        the preview from handing back suggestions for a source that could
-        never be ingested (CAS-ADR-021).
+        registry ``ingest`` resolves against. Vault configuration declares
+        no adapter availability at all (CAS-ADR-046), so there is nothing
+        per-vault for either path to consult. Rejecting a source type SAGE
+        has no adapter for keeps the preview from handing back suggestions
+        for a source that could never be ingested (CAS-ADR-021).
 
         Raises:
             AdapterNotFoundError: No adapter is registered for ``adapter``.

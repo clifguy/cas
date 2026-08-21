@@ -2382,11 +2382,12 @@ async def test_bh_134_non_empty_text_still_runs_abstraction(
 
 
 # ---------------------------------------------------------------------------
-# Vault-level adapter config propagation
+# Vault-level adapter parameter propagation
 #
-# The vault config's source_adapters.adapters[].config is authoritative for
+# The vault config's adapter_defaults[source_type] entry is authoritative for
 # adapter behavior. Per-request IngestRequest.config is a per-call override
-# that takes precedence on key collisions.
+# that takes precedence on key collisions. The retired source_adapters
+# section is inert (CAS-ADR-046) and must not feed the adapter.
 # ---------------------------------------------------------------------------
 
 import copy as _copy  # noqa: E402 -- grouped with the vault-adapter-config test section below
@@ -2417,17 +2418,15 @@ def _write_styled_docx(path: Path, paragraphs: list[tuple[str, str]]) -> None:
 
 
 def _build_vault_config_with_docx(base_dict: dict, vault_docx_config: dict | None) -> VaultConfig:
-    """Return a VaultConfig that adds a docx adapter entry to base_dict.
+    """Return a VaultConfig carrying docx adapter defaults from base_dict.
 
-    If vault_docx_config is None, the docx adapter is registered with no
-    config (falls through to defaults). Otherwise, vault_docx_config is
-    placed under source_adapters.adapters[docx].config.
+    If vault_docx_config is None, no docx entry is declared and the adapter
+    falls through to its own defaults. Otherwise vault_docx_config is
+    placed under adapter_defaults["docx"].
     """
-    config_dict = _copy.deepcopy(base_dict)
-    docx_entry: dict[str, Any] = {"source_type": "docx", "enabled": True}
+    config_dict: dict[str, Any] = _copy.deepcopy(base_dict)
     if vault_docx_config is not None:
-        docx_entry["config"] = vault_docx_config
-    config_dict["source_adapters"]["adapters"].append(docx_entry)
+        config_dict.setdefault("adapter_defaults", {})["docx"] = vault_docx_config
     return VaultConfig.model_validate(config_dict)
 
 
@@ -2501,6 +2500,145 @@ async def test_vault_adapter_config_reaches_adapter_at_ingest(
     # (Heading 1-9 only), so no chunk gets heading_path "CLAIMS".
     heading_paths = await stub_content_store.get_heading_paths(result.document.id)
     assert "CLAIMS" in heading_paths, f"Expected 'CLAIMS' as a heading_path; got: {heading_paths}"
+
+
+class _RecordingDocxAdapter:
+    """Real DocxAdapter behavior, plus a record of every config it received.
+
+    Wraps rather than subclasses so the delegate stays the production class:
+    a test double that reimplemented projection could agree with an
+    assertion about heading levels while proving nothing about what the
+    real adapter was handed.
+    """
+
+    def __init__(self) -> None:
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        self._delegate = DocxAdapter()
+        self.configs: list[dict | None] = []
+
+    EXTENSIONS = (".docx",)
+
+    async def project(self, source_path: Path, config: dict | None = None):
+        self.configs.append(config)
+        return await self._delegate.project(source_path, config)
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+
+@requires_docx
+async def test_recompute_pipeline_applies_vault_adapter_defaults(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """Re-projection reads adapter parameters from the vault config.
+
+    ``recompute_pipeline`` carries no per-request config, so vault defaults
+    are its only source of adapter parameters. A relocation that wired the
+    new section into ingest alone would leave this path reading nothing and
+    silently flatten the heading tree of every re-projected document.
+    """
+    from sage.services.ingestion import IngestionService
+    from sage.services.lifecycle import LifecycleService
+
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config={"heading_style_map": {"Title": 1}},
+    )
+    recording_adapter = _RecordingDocxAdapter()
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={
+            SourceType.MARKDOWN: MarkdownAdapter(),
+            SourceType.DOCX: recording_adapter,
+        },
+        lifecycle_service=LifecycleService(graph_store, lock_manager, config),
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "recompute_styles.docx"
+    _write_styled_docx(
+        docx_path,
+        [("RECOMPUTED", "Title"), ("Body under the custom style.", "Normal")],
+    )
+    result = await service.ingest(
+        IngestRequest(source="recompute_styles.docx", source_type=SourceType.DOCX)
+    )
+
+    recording_adapter.configs.clear()
+    await service.recompute_pipeline(result.document.id)
+
+    assert recording_adapter.configs, "recompute_pipeline did not re-project"
+    reprojection_config = recording_adapter.configs[-1]
+    assert reprojection_config is not None, (
+        "re-projection received no adapter config; vault defaults did not "
+        "reach the path that has no per-request fallback"
+    )
+    assert reprojection_config["heading_style_map"]["Title"] == 1
+
+
+@requires_docx
+async def test_retired_source_adapters_section_does_not_feed_the_adapter(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """Parameters left in the retired section are inert (CAS-ADR-046).
+
+    Without this, every other test in the block would still pass if the
+    merge read both shapes -- and the migration would be cosmetic, leaving
+    the stale section quietly load-bearing.
+    """
+    config_dict = _copy.deepcopy(minimal_vault_config_dict)
+    config_dict["source_adapters"] = {
+        "adapters": [
+            {
+                "source_type": "docx",
+                "enabled": True,
+                "config": {"heading_style_map": {"Title": 1}},
+            }
+        ]
+    }
+    config = VaultConfig.model_validate(config_dict)
+    assert config.adapter_defaults == {}
+
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "legacy_section.docx"
+    _write_styled_docx(
+        docx_path,
+        [("STALE", "Title"), ("Body content under STALE.", "Normal")],
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="legacy_section.docx", source_type=SourceType.DOCX)
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    assert "STALE" not in heading_paths, (
+        f"the retired section still reached the adapter; heading_paths={heading_paths}"
+    )
 
 
 @requires_docx
