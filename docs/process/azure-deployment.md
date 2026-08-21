@@ -273,9 +273,11 @@ is applied, [`deploy/cloud-preflight.sh`](../../deploy/cloud-preflight.sh) probe
 the live tenant and checks **every layer independently** — edge routing
 (unauthenticated OAuth discovery `200`, unauthenticated `/mcp` `401`, an
 authenticated request reaching the backend), SAGE liveness and vault-load count,
-Postgres-backed retrieval, Key Vault secret resolution, provider-agnostic DNS
-resolution, and SharePoint vault-source reachability — emitting a single
-pass/fail matrix that names every failing layer. Each check carries an
+Postgres-backed retrieval, a read-only sweep across the Core API router groups
+(vault-scoped reads, document reads, and the pure-computation filename parser),
+Key Vault secret resolution, provider-agnostic DNS resolution, and SharePoint
+vault-source reachability — emitting a single pass/fail matrix that names every
+failing layer. Each check carries an
 anti-coincidental control (a `401`, for instance, is credited only when the
 discovery-`200` control proves the edge is genuinely live, not a blanket edge
 failure that makes everything look "as predicted"). It **reports; it never
