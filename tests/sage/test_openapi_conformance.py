@@ -97,8 +97,6 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     # as BaseModel classes.
     "CatalogSortBy",
     "EdgeType",
-    "LifecycleAction",
-    "LifecycleStatus",
     "PipelineStatus",
     "RationaleKind",
     "ReabstractOutcome",
@@ -112,13 +110,12 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "StalenessBasis",
     "TraversalDirection",
     "UserType",
-    # oneOf composition -- variants handled on the Python side by
-    # discriminated unions or runtime branching, so field-level parity
-    # against a single same-named BaseModel is not meaningful. Same-named
-    # BaseModels exist in sage.models.schemas but their internal shape
-    # diverges from the YAML envelope.
-    "IngestRequest",
-    "TraverseRequest",
+    # Extensible vocabularies. Vaults add domain-specific members to the
+    # base sets, so both surfaces are typed as `str` and validated against
+    # vault config at the API boundary rather than by the Python type
+    # system -- deliberately not StrEnum members, per sage/models/enums.py.
+    "LifecycleAction",
+    "LifecycleStatus",
 }
 
 
@@ -923,6 +920,42 @@ def _norm_description(text: object) -> str:
 DESCRIPTION_DIVERGENCE_ALLOWLIST: set[tuple[str, str]] = set()
 
 
+def _basemodels_in(*modules: object) -> dict[str, type]:
+    """Public Pydantic BaseModel subclasses exported by the given modules,
+    keyed by class name. Later modules win on a name collision.
+    """
+    from pydantic import BaseModel
+
+    out: dict[str, type] = {}
+    for module in modules:
+        for name in dir(module):
+            if name.startswith("_"):
+                continue
+            obj = getattr(module, name)
+            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+                out[name] = obj
+    return out
+
+
+def _sage_pydantic_classes() -> dict[str, type]:
+    """BaseModels backing the SAGE Core API spec."""
+    from sage.models import schemas as sage_schemas_module
+
+    return _basemodels_in(sage_schemas_module)
+
+
+def _cas_app_pydantic_classes() -> dict[str, type]:
+    """BaseModels backing the CAS Application API spec.
+
+    The app declares request and response bodies across two modules; both
+    are read so a class defined beside its route is found.
+    """
+    from app.backend import models as app_models_module
+    from app.backend import router as app_router_module
+
+    return _basemodels_in(app_models_module, app_router_module)
+
+
 def _yaml_field_descriptions(spec: dict | None) -> dict[str, dict[str, str]]:
     """Build {schema_name: {field_name: yaml_description}} from a spec.
 
@@ -956,19 +989,23 @@ def _yaml_field_descriptions(spec: dict | None) -> dict[str, dict[str, str]]:
 def _check_pydantic_yaml_description_parity(
     yaml_descriptions: dict[str, dict[str, str]],
     pydantic_classes: dict[str, type],
-    yaml_only_forward_declarations: set[str],
     spec_label: str,
 ) -> list[str]:
     """Compare YAML property descriptions to Pydantic Field descriptions
     for every same-named (schema, field) pair. Returns a list of
     human-readable divergence messages; empty list means full parity.
+
+    Deliberately takes no skip list. A YAML-only forward declaration has no
+    entry in `pydantic_classes`, so the membership check below already passes
+    over it; excluding such a schema by name would change nothing. The only
+    schemas a skip list can actually suppress are those that *do* have a
+    Pydantic counterpart -- exactly the ones this check exists to compare --
+    so accepting one could only ever open a hole.
     """
     from pydantic import BaseModel
 
     issues: list[str] = []
     for schema_name, field_map in yaml_descriptions.items():
-        if schema_name in yaml_only_forward_declarations:
-            continue
         if schema_name not in pydantic_classes:
             # Coverage gap is reported by test_every_yaml_schema_has_pydantic_class.
             continue
@@ -1015,32 +1052,8 @@ def test_pydantic_descriptions_match_yaml_verbatim(
     Intentional divergences live in DESCRIPTION_DIVERGENCE_ALLOWLIST with
     a justification comment.
     """
-    from pydantic import BaseModel
-
     assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
     assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
-
-    from sage.models import schemas as sage_schemas_module
-
-    sage_classes: dict[str, type[BaseModel]] = {}
-    for name in dir(sage_schemas_module):
-        if name.startswith("_"):
-            continue
-        obj = getattr(sage_schemas_module, name)
-        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
-            sage_classes[name] = obj
-
-    from app.backend import models as app_models_module
-    from app.backend import router as app_router_module
-
-    cas_app_classes: dict[str, type[BaseModel]] = {}
-    for module in (app_models_module, app_router_module):
-        for name in dir(module):
-            if name.startswith("_"):
-                continue
-            obj = getattr(module, name)
-            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
-                cas_app_classes[name] = obj
 
     sage_yaml_descs = _yaml_field_descriptions(sage_core_spec)
     cas_yaml_descs = _yaml_field_descriptions(cas_app_spec)
@@ -1049,16 +1062,14 @@ def test_pydantic_descriptions_match_yaml_verbatim(
     issues.extend(
         _check_pydantic_yaml_description_parity(
             sage_yaml_descs,
-            sage_classes,
-            YAML_ONLY_FORWARD_DECLARATIONS,
+            _sage_pydantic_classes(),
             spec_label="sage_core_api",
         )
     )
     issues.extend(
         _check_pydantic_yaml_description_parity(
             cas_yaml_descs,
-            cas_app_classes,
-            CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS,
+            _cas_app_pydantic_classes(),
             spec_label="cas_app_api",
         )
     )
@@ -1068,6 +1079,183 @@ def test_pydantic_descriptions_match_yaml_verbatim(
         "(formal substrate is authoritative per CAS-ADR-008; sync verbatim "
         "or add an entry to DESCRIPTION_DIVERGENCE_ALLOWLIST with justification):\n"
         + "\n".join(issues)
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_name", "field_name"),
+    [
+        ("IngestRequest", "source_type"),
+        ("TraverseRequest", "edge_type"),
+    ],
+)
+def test_request_schema_descriptions_are_gated(
+    sage_core_spec: dict | None,
+    schema_name: str,
+    field_name: str,
+):
+    """Injecting a divergence into a request schema's field description is
+    caught by the parity check.
+
+    Test 5b asserts that the two sides currently agree; it cannot tell
+    agreement apart from a schema that is never compared. This test closes
+    that gap for the two request schemas that were silently skipped: it
+    plants a divergence and requires the check to report it.
+
+    Stated against the observable behaviour of the parity check rather than
+    against the mechanism that skipped these schemas, so it still fires if
+    coverage is lost some other way -- a reintroduced skip parameter, a
+    renamed class, or a property shape the description extractor drops.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+
+    yaml_descriptions = _yaml_field_descriptions(sage_core_spec)
+    assert field_name in yaml_descriptions.get(schema_name, {}), (
+        f"{schema_name}.{field_name} carries no YAML description to diverge from; "
+        "the schema or property was renamed, or its shape is one "
+        "_yaml_field_descriptions drops"
+    )
+
+    yaml_descriptions[schema_name][field_name] = "injected divergence sentinel"
+
+    issues = _check_pydantic_yaml_description_parity(
+        yaml_descriptions,
+        _sage_pydantic_classes(),
+        spec_label="sage_core_api",
+    )
+
+    assert any(f"{schema_name}.{field_name}" in issue for issue in issues), (
+        f"A planted divergence in {schema_name}.{field_name} was not reported. "
+        "The schema is being skipped, so its Pydantic and YAML descriptions can "
+        "drift with no gate catching it."
+    )
+
+
+def _pydantic_backed(names: set[str], classes: dict[str, type]) -> list[str]:
+    """Names that resolve to a Pydantic class in `classes`.
+
+    Non-empty output means a forward-declaration list is carrying a schema
+    that is not a forward declaration.
+    """
+    return sorted(name for name in names if name in classes)
+
+
+def test_yaml_only_forward_declarations_have_no_pydantic_counterpart():
+    """Every entry in a YAML-only forward-declaration list genuinely has no
+    same-named Pydantic class.
+
+    The lists exist for YAML schemas with no Python counterpart -- enums, and
+    schemas documented ahead of implementation. A schema that does have a
+    BaseModel is a real model being skipped, not a forward declaration, and
+    parking one here suppresses the field-superset check in Test 6 for a model
+    that check was written to cover.
+
+    Enum entries are unaffected: they have no BaseModel, which is exactly what
+    this test requires.
+    """
+    sage_offenders = _pydantic_backed(YAML_ONLY_FORWARD_DECLARATIONS, _sage_pydantic_classes())
+    cas_app_offenders = _pydantic_backed(
+        CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS, _cas_app_pydantic_classes()
+    )
+
+    assert not sage_offenders and not cas_app_offenders, (
+        "Forward-declaration lists carry schemas that have a Pydantic class "
+        "(remove them so the parity and field-superset checks cover them):\n"
+        f"  YAML_ONLY_FORWARD_DECLARATIONS: {sage_offenders}\n"
+        f"  CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: {cas_app_offenders}"
+    )
+
+
+def test_pydantic_backed_detects_a_real_model():
+    """`_pydantic_backed` reports a name that does have a Pydantic class.
+
+    Guards the test above from passing vacuously: both lists could be empty
+    of offenders because the audit holds, or because the helper never reports
+    anything. `Document` is a long-standing BaseModel in sage.models.schemas,
+    so a helper that discriminates must flag it.
+    """
+    classes = _sage_pydantic_classes()
+    assert "Document" in classes, "sage.models.schemas.Document was renamed; pick another probe"
+    assert _pydantic_backed({"Document"}, classes) == ["Document"]
+    assert _pydantic_backed({"EdgeType"}, classes) == []
+
+
+# Description surfaces that tell a caller when a `source_type` is rejected.
+# Adapter resolution runs against the process-wide registry built by
+# `build_source_adapter_registry`; vault configuration is never consulted for
+# adapter availability, so no surface here may condition it on vault config.
+_ADAPTER_AVAILABILITY_CLAIM_SURFACES: tuple[tuple[str, str], ...] = (
+    ("IngestRequest", "source_type"),
+    ("ParseFilenameRequest", "source_type"),
+)
+
+_ADAPTER_NOT_FOUND_OPERATIONS: tuple[tuple[str, str, str], ...] = (
+    ("/sage_vaults/{vault_id}/documents", "post", "400"),
+    ("/sage_vaults/{vault_id}/parse-filename", "post", "400"),
+)
+
+# The vault-config read is where a caller goes to look up why a source_type
+# was rejected, so its operation description carries the same obligation as
+# the error responses: it must not present vault config as the authority.
+_ADAPTER_CLAIM_OPERATIONS: tuple[tuple[str, str], ...] = (
+    ("/sage_vaults/{vault_id}/config", "get"),
+)
+
+# Wording that conditions adapter availability on vault configuration. The
+# registry is fixed at process start, so any of these misdirects a caller
+# diagnosing `adapter_not_found` toward a config file that cannot affect it.
+_ENABLEMENT_CLAIM_MARKERS: tuple[str, ...] = (
+    "enabled adapter",
+    "enabled source adapter",
+)
+
+
+def test_source_type_descriptions_do_not_claim_vault_config_enablement(
+    sage_core_spec: dict | None,
+):
+    """No `source_type` description or `adapter_not_found` response says a
+    source type must be *enabled* in vault configuration.
+
+    Adapter resolution is a lookup in the process-wide registry
+    (`build_source_adapter_registry`), which is built from a fixed mapping and
+    never reads `source_adapters` from any vault's config. A claim to the
+    contrary is not a divergence -- both sides carried the same false text, so
+    Test 5b stays green either way -- which is why it needs its own gate.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+
+    yaml_descriptions = _yaml_field_descriptions(sage_core_spec)
+    classes = _sage_pydantic_classes()
+
+    surfaces: list[tuple[str, str]] = []
+    for schema_name, field_name in _ADAPTER_AVAILABILITY_CLAIM_SURFACES:
+        surfaces.append(
+            (
+                f"YAML {schema_name}.{field_name}",
+                yaml_descriptions.get(schema_name, {}).get(field_name, ""),
+            )
+        )
+        field_info = classes[schema_name].model_fields[field_name]
+        surfaces.append((f"Pydantic {schema_name}.{field_name}", field_info.description or ""))
+
+    for path, method, status in _ADAPTER_NOT_FOUND_OPERATIONS:
+        response = sage_core_spec["paths"][path][method]["responses"][status]
+        surfaces.append((f"YAML {method.upper()} {path} {status}", response.get("description", "")))
+
+    for path, method in _ADAPTER_CLAIM_OPERATIONS:
+        operation = sage_core_spec["paths"][path][method]
+        surfaces.append((f"YAML {method.upper()} {path}", operation.get("description", "")))
+
+    offenders = [
+        f"{label}: {marker!r}"
+        for label, text in surfaces
+        for marker in _ENABLEMENT_CLAIM_MARKERS
+        if marker in text
+    ]
+
+    assert not offenders, (
+        "Caller-facing text conditions adapter availability on vault "
+        "configuration, which adapter resolution never consults:\n  " + "\n  ".join(offenders)
     )
 
 

@@ -823,7 +823,7 @@ class IngestRequest(BaseModel):
             "needs_review=true) > chain inherit (predecessor's doc_type, "
             "project, authority_scope when predecessor_id is set "
             "and the caller omitted the field) > vault default (doc_type "
-            "only, falls through to 'misc'). Fields with null values are "
+            "only, falls through to `misc`). Fields with null values are "
             "ignored. Unknown field names are stored but have no "
             "schema-enforced semantics. Values are strings except tags, "
             "which may be supplied as a list of strings or as a "
@@ -856,10 +856,10 @@ class IngestRequest(BaseModel):
             "in detail. When omitted (the default), the supersede proceeds "
             "without a version check (back-compat for callers that have not "
             "adopted the contract). The version source is the predecessor's "
-            "`updated_at` value as observed on a prior `get_document` read, "
-            "in its canonical wire form (ISO 8601 with `Z` suffix). Requires "
-            "`predecessor_id`; supplying this token on a fresh-chain ingest "
-            "(no predecessor) returns 400 "
+            "`updated_at` value as observed on a prior `GET /documents/{id}` "
+            "read, in its canonical wire form (ISO 8601 with `Z` suffix). "
+            "Requires `predecessor_id`; supplying this token on a "
+            "fresh-chain ingest returns 400 "
             "`expected_head_version_requires_predecessor`."
         ),
     )

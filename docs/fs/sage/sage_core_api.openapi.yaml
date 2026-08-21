@@ -3545,7 +3545,7 @@ components:
             when needs_review=true) > chain inherit (predecessor's
             doc_type, project, authority_scope when predecessor_id
             is set and the caller omitted the field) > vault default
-            (doc_type only, falls through to "misc"). Fields with null
+            (doc_type only, falls through to `misc`). Fields with null
             values are ignored. Unknown field names are stored but have
             no schema-enforced semantics. Values are strings except
             tags, which may be supplied as a list of strings or as a
@@ -3801,22 +3801,17 @@ components:
           type: string
           description: Document ID to start traversal from.
         edge_type:
-          oneOf:
-            - $ref: "#/components/schemas/EdgeType"
-            - type: array
-              items:
-                $ref: "#/components/schemas/EdgeType"
+          $ref: "#/components/schemas/EdgeType"
           description: >-
-            Edge type(s) to follow. If omitted, all edge types are
-            traversed. Accepts a single type or an array.
+            Edge type to follow. If omitted, all edge types are traversed.
         direction:
           $ref: "#/components/schemas/TraversalDirection"
           default: outbound
-          description: Traversal direction relative to the start document.
+          description: Traversal direction relative to the starting document.
         depth:
           type: integer
           minimum: 1
-          maximum: 50
+          maximum: 1000
           default: 3
           description: Maximum traversal depth.
         debug:

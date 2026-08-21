@@ -21,6 +21,9 @@ from typing import Any, get_args, get_origin
 
 from sage.mcp_server import (
     create_edges,
+    get_filename_metadata,
+    get_vault_config,
+    ingest_document,
     list_directory,
     search,
     update_lifecycles,
@@ -152,6 +155,44 @@ def test_set_lifecycle_action_docstring_points_at_vault_config():
         "update_lifecycles docstring must point callers at "
         "``admin_get_vault_config`` for the authoritative action list."
     )
+
+
+def test_adapter_docstrings_do_not_claim_vault_config_enablement():
+    """No tool docstring conditions adapter availability on vault config.
+
+    Adapter resolution is a lookup in the process-wide registry built by
+    ``build_source_adapter_registry``; no vault's ``source_adapters`` block is
+    consulted for availability. A docstring that says a source type must be
+    *enabled* sends a caller diagnosing ``adapter_not_found`` to a config file
+    that cannot affect it.
+
+    Covers the two tools that raise the error and ``admin_get_vault_config``,
+    which is where a caller goes to look the answer up -- the pointer surface
+    misdirects just as effectively as the error surface.
+    """
+    for tool in (ingest_document, get_filename_metadata, get_vault_config):
+        doc = _docstring(tool)
+        for marker in ("enabled adapter", "enabled source adapter"):
+            assert marker not in doc, (
+                f"{tool.__name__} docstring conditions adapter availability on "
+                f"vault configuration ({marker!r}), which adapter resolution "
+                "never consults."
+            )
+
+
+def test_adapter_error_tools_still_document_adapter_not_found():
+    """The two tools that can raise ``adapter_not_found`` still name it.
+
+    Anti-coincidental-pass partner to the test above: absence of the
+    misleading wording is necessary but not sufficient, since deleting the
+    error-mode entry outright would also remove the marker. Keeping the
+    presence assertion separate means a deletion fails here rather than
+    passing there.
+    """
+    for tool in (ingest_document, get_filename_metadata):
+        assert "adapter_not_found" in _docstring(tool), (
+            f"{tool.__name__} docstring must document ``adapter_not_found`` as an error mode."
+        )
 
 
 def test_set_lifecycle_signature_exposes_dry_run():
