@@ -13,6 +13,7 @@ import yaml
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from sage.instrumentation.timing import TimingConfig
+from sage.models.enums import SourceType
 from sage.models.schemas import VaultIdStr
 
 logger = logging.getLogger(__name__)
@@ -807,7 +808,17 @@ class VaultConfig(BaseModel):
     lifecycle: LifecycleConfig = Field(
         description="Lifecycle state machine configuration for this vault."
     )
-    source_adapters: dict = Field(description="Source adapter registry and configuration.")
+    adapter_defaults: dict = Field(
+        default_factory=dict,
+        description=(
+            "Per-adapter projection parameters, keyed by source type. Each "
+            "entry is the vault-level base for that adapter; a per-request "
+            "`config` deep-merges over it, request keys winning on "
+            "collision. Adapter availability is not declared here: it is a "
+            "process-wide capability fixed by the installed adapter "
+            "implementations (CAS-ADR-046)."
+        ),
+    )
     metadata_extraction: dict = Field(description="Metadata extraction pipeline configuration.")
     edge_inference: dict = Field(description="Edge inference tier assignments and rules.")
     access_control_defaults: dict | None = Field(
@@ -840,6 +851,34 @@ class VaultConfig(BaseModel):
     )
 
     _tier3_validators: dict[str, jsonschema.protocols.Validator] = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_adapter_defaults(self) -> "VaultConfig":
+        """Reject adapter_defaults keys that name no source type.
+
+        The section is consulted by source-type lookup, so a key that does
+        not name one is never read: a typo would otherwise configure
+        nothing, silently and permanently. Rejecting at construction puts
+        the error in front of whoever just wrote the value, rather than
+        leaving a vault projecting at adapter defaults for reasons nobody
+        can see (CAS-ADR-046).
+        """
+        valid = {source_type.value for source_type in SourceType}
+        errors: list[str] = []
+        for key, value in self.adapter_defaults.items():
+            if key not in valid:
+                errors.append(
+                    f"adapter_defaults.{key}: not a source type "
+                    f"(expected one of {', '.join(sorted(valid))})"
+                )
+            elif not isinstance(value, dict):
+                errors.append(
+                    f"adapter_defaults.{key}: expected a parameter mapping, "
+                    f"got {type(value).__name__}"
+                )
+        if errors:
+            raise ValueError("; ".join(errors))
+        return self
 
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         """Build the tier3 validator cache on every construction.
@@ -924,6 +963,46 @@ class TransitionTable:
         return action in self._all_actions
 
 
+#: Sections a vault configuration may still carry from before the model
+#: dropped them. Pydantic ignores unknown keys, so a stale section is inert
+#: rather than fatal -- deliberately, since vault configurations live outside
+#: the repository and are cleaned operationally after the code change deploys,
+#: and a loader that rejected one would make the vault silently unavailable in
+#: the meantime (CAS-ADR-046). The warning is what keeps "inert" from meaning
+#: "invisible": it names the vault whose config still needs migrating.
+_RETIRED_SECTIONS: dict[str, str] = {
+    "source_adapters": (
+        "adapter availability is process-wide capability, not vault "
+        "configuration; move any per-adapter projection parameters to "
+        "`adapter_defaults` keyed by source type"
+    ),
+}
+
+
+def warn_on_retired_sections(raw: object) -> None:
+    """Log one WARNING per retired section a raw vault config still carries.
+
+    Operates on the raw mapping rather than the parsed model because
+    ``VaultConfig`` ignores unknown keys, so by the time a model exists the
+    stale section is already gone. Silent on a config that carries none.
+    """
+    if not isinstance(raw, dict):
+        return
+    vault_id = (
+        raw.get("vault", {}).get("id", "<unknown>")
+        if isinstance(raw.get("vault"), dict)
+        else "<unknown>"
+    )
+    for section, remedy in _RETIRED_SECTIONS.items():
+        if section in raw:
+            logger.warning(
+                "vault '%s': config section '%s' is retired and ignored; %s",
+                vault_id,
+                section,
+                remedy,
+            )
+
+
 def load_vault_config(config_path: Path) -> VaultConfig:
     """Load and validate vault config from a YAML file.
 
@@ -939,6 +1018,7 @@ def load_vault_config(config_path: Path) -> VaultConfig:
     """
     with open(config_path) as f:
         raw = yaml.safe_load(f)
+    warn_on_retired_sections(raw)
     return VaultConfig.model_validate(raw)
 
 

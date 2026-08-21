@@ -50,7 +50,6 @@ async def test_get_config_200(client):
         "vault",
         "document_types",
         "lifecycle",
-        "source_adapters",
         "metadata_extraction",
         "edge_inference",
     ):
@@ -279,8 +278,8 @@ async def test_update_config_preserves_other_sections(client):
     updated = (await client.get("/sage_vaults/test_vault/config")).json()
     # Lifecycle should be unchanged
     assert updated["lifecycle"] == original["lifecycle"]
-    # source_adapters should be unchanged
-    assert updated["source_adapters"] == original["source_adapters"]
+    # edge_inference should be unchanged
+    assert updated["edge_inference"] == original["edge_inference"]
 
 
 async def test_update_config_failed_reload_keeps_old_services_in_registry(

@@ -19,7 +19,7 @@ const TABS = [
   { key: 'identity', label: 'Identity' },
   { key: 'document_types', label: 'Document Types' },
   { key: 'lifecycle', label: 'Lifecycle' },
-  { key: 'source_adapters', label: 'Source Adapters' },
+  { key: 'adapter_defaults', label: 'Adapter Defaults' },
   { key: 'metadata_extraction', label: 'Metadata Extraction' },
   { key: 'edge_inference', label: 'Edge Inference' },
   { key: 'abstraction', label: 'Abstraction' },
@@ -166,14 +166,14 @@ export default function Settings() {
           saving={saving}
         />
       )}
-      {activeTab === 'source_adapters' && (
+      {activeTab === 'adapter_defaults' && (
         <JsonEditor
-          label="Source Adapters"
-          data={config.source_adapters}
-          editing={editingSection === 'source_adapters'}
-          onEdit={() => startEditing('source_adapters')}
+          label="Adapter Defaults"
+          data={config.adapter_defaults ?? {}}
+          editing={editingSection === 'adapter_defaults'}
+          onEdit={() => startEditing('adapter_defaults')}
           onCancel={cancelEditing}
-          onSave={(data) => handleSave('source_adapters', data)}
+          onSave={(data) => handleSave('adapter_defaults', data)}
           saving={saving}
         />
       )}

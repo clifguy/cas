@@ -13,10 +13,6 @@ lifecycle:
     - from_state: "(new)"
       action: ingest
       to_state: active
-source_adapters:
-  adapters:
-    - source_type: markdown
-      enabled: true
 metadata_extraction: {}
 edge_inference:
   tier_assignments: []

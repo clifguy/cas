@@ -63,9 +63,6 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
             ],
         },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
-        },
         "metadata_extraction": {
             "filename_extraction": {
                 "separator": "_",

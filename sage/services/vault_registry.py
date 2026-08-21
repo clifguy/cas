@@ -101,15 +101,6 @@ class VaultRegistryService:
                     {"from_state": "archived", "action": "reactivate", "to_state": "active"},
                 ],
             },
-            "source_adapters": {
-                "adapters": [
-                    {"source_type": "markdown", "enabled": True},
-                    {"source_type": "docx", "enabled": True},
-                    {"source_type": "xlsx", "enabled": True},
-                    {"source_type": "pptx", "enabled": True},
-                    {"source_type": "pdf", "enabled": True},
-                ],
-            },
             "metadata_extraction": {
                 "filename_extraction": {
                     "separator": "_",
@@ -347,7 +338,6 @@ class VaultRegistryService:
         adapters = [
             VaultAdapterInfo(
                 source_type=source_type.value,
-                enabled=True,
                 extensions=adapter.EXTENSIONS,
             )
             for source_type, adapter in services.ingestion_service.registered_adapters.items()

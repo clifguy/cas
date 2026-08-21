@@ -23,7 +23,6 @@ function makeVaultConfig(actions: string[]): VaultConfig {
       states: [],
       transitions: actions.map((a) => ({ from_state: 'active', action: a, to_state: 'archived' })),
     },
-    source_adapters: {},
     metadata_extraction: {},
     edge_inference: {},
     abstraction: { enabled: false },

@@ -15,17 +15,21 @@ from pydantic import ValidationError
 
 from sage.adapters.interfaces import GraphStore
 from sage.api.errors import VaultConfigValidationError
-from sage.config import VaultConfig
+from sage.config import VaultConfig, warn_on_retired_sections
 
 _REQUIRED_SECTIONS = (
     "vault",
     "document_types",
     "lifecycle",
-    "source_adapters",
     "metadata_extraction",
     "edge_inference",
 )
-_OPTIONAL_SECTIONS = ("abstraction", "access_control_defaults", "retrieval_health")
+_OPTIONAL_SECTIONS = (
+    "adapter_defaults",
+    "abstraction",
+    "access_control_defaults",
+    "retrieval_health",
+)
 _ALL_SECTIONS = _REQUIRED_SECTIONS + _OPTIONAL_SECTIONS
 
 _VAULTS_ROOT = Path("~/sage_vaults").expanduser()
@@ -53,6 +57,7 @@ def _validate_config(config_dict: dict) -> VaultConfig:
     surfaces here at vault-create / update_config time rather than at the
     first ingest call.
     """
+    warn_on_retired_sections(config_dict)
     try:
         return VaultConfig.model_validate(config_dict)
     except ValidationError as exc:

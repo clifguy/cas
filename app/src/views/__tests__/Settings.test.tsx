@@ -43,7 +43,6 @@ function makeVaultConfig(overrides: Partial<VaultIdentityConfig> = {}): VaultCon
     },
     document_types: { doc_types: [] },
     lifecycle: { base_states_required: true, states: [], transitions: [] },
-    source_adapters: {},
     metadata_extraction: {},
     edge_inference: {},
     abstraction: { enabled: false },
@@ -175,7 +174,7 @@ describe('Settings editors — draft resync when a fresh prop arrives', () => {
       const [editing, setEditing] = useState(false);
       return (
         <JsonEditor
-          label="Source Adapters"
+          label="Adapter Defaults"
           data={data}
           editing={editing}
           onEdit={() => setEditing(true)}

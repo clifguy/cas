@@ -117,7 +117,7 @@ async def test_ingest_unregistered_source_type_400(client):
     Adapter resolution runs against the process-wide registry built by
     build_source_adapter_registry, so the reachable failure is "SAGE has
     no adapter for this source type" -- not "the vault did not enable it".
-    The vault's source_adapters[].enabled list is not consulted here.
+    Vault configuration declares no adapters at all (CAS-ADR-046).
     """
     resp = await client.post(
         "/sage_vaults/test_vault/documents",

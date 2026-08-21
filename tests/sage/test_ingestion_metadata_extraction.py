@@ -128,12 +128,6 @@ def _pim_vault_config_dict(tmp_vault_dir: Path) -> dict:
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "source_adapters": {
-            "adapters": [
-                {"source_type": "markdown", "enabled": True},
-                {"source_type": "docx", "enabled": True},
-            ],
-        },
         "metadata_extraction": _pim_metadata_extraction(),
         "edge_inference": {
             "tier_assignments": [

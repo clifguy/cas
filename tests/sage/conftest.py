@@ -147,9 +147,6 @@ def minimal_vault_config_dict(tmp_vault_dir):
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
-        },
         # Zero the abstraction-queue retry backoff so tests that exercise a
         # failing provider exhaust their attempts instantly instead of sleeping
         # through the production exponential backoff. Other abstraction defaults

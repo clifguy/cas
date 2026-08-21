@@ -157,9 +157,6 @@ def _vault_config_dict(
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
-        },
         "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [

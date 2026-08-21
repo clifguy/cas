@@ -11,7 +11,7 @@ Each test validates a structural constraint; behavioral semantics are covered in
 
 **Artifact:** `docs/fs/sage/vault_config.schema.json`
 **Category:** valid
-**Constraint:** All six required top-level keys present with minimal valid sub-schemas
+**Constraint:** All five required top-level keys present with minimal valid sub-schemas
 
 **Input:**
 ```yaml
@@ -35,10 +35,6 @@ lifecycle:
       action: ingest
       to_state: active
   base_states_required: true
-source_adapters:
-  adapters:
-    - source_type: markdown
-      enabled: true
 metadata_extraction:
   review_required: false
 edge_inference:
@@ -86,12 +82,10 @@ lifecycle:
       action: ingest
       to_state: active
   base_states_required: true
-source_adapters:
-  adapters:
-    - source_type: docx
-      enabled: true
-      config:
-        file_extensions: [".docx"]
+adapter_defaults:
+  docx:
+    heading_style_map:
+      "Custom Section": 1
 metadata_extraction:
   review_required: true
 edge_inference:
@@ -126,12 +120,12 @@ abstraction:
 
 **Artifact:** `docs/fs/sage/vault_config.schema.json`
 **Category:** invalid
-**Constraint:** All six top-level keys are required
+**Constraint:** All five top-level keys are required
 
 **Input:** Valid vault config with `document_types` key removed.
 
 **Expected:** FAIL -- `'document_types' is a required property`
-**Rationale:** Each of the six required keys must be enforced. Test one representative; fixture files cover the rest.
+**Rationale:** Each of the five required keys must be enforced. Test one representative; fixture files cover the rest.
 
 ### TEST-SAGE-VC-005: vault.id pattern violation -- uppercase
 
@@ -472,115 +466,6 @@ base_states_required: true
 
 **Expected:** FAIL -- additional property not allowed
 **Rationale:** Display properties belong elsewhere; schema is structural.
-
----
-
-## source_adapters.schema.json
-
-### TEST-SAGE-SA-001: Valid single adapter minimal
-
-**Artifact:** `docs/fs/sage/source_adapters.schema.json`
-**Category:** valid
-**Constraint:** One adapter with required fields only
-
-**Input:**
-```yaml
-adapters:
-  - source_type: markdown
-    enabled: true
-```
-
-**Expected:** PASS
-**Rationale:** Minimal adapter registration.
-
-### TEST-SAGE-SA-002: Valid adapter with full config
-
-**Artifact:** `docs/fs/sage/source_adapters.schema.json`
-**Category:** valid
-**Constraint:** Adapter with all config options
-
-**Input:**
-```yaml
-adapters:
-  - source_type: docx
-    enabled: true
-    config:
-      file_extensions: [".docx"]
-      heading_style_map:
-        "Heading 1": 1
-        "Heading 2": 2
-  - source_type: pdf
-    enabled: false
-    config:
-      ocr_enabled: false
-```
-
-**Expected:** PASS
-**Rationale:** Validates docx-specific and pdf-specific config properties.
-
-### TEST-SAGE-SA-003: Empty adapters array
-
-**Artifact:** `docs/fs/sage/source_adapters.schema.json`
-**Category:** invalid
-**Constraint:** `adapters` has `minItems: 1`
-
-**Input:**
-```yaml
-adapters: []
-```
-
-**Expected:** FAIL -- minItems violation
-**Rationale:** A vault with no adapters cannot ingest anything.
-
-### TEST-SAGE-SA-004: Invalid source_type enum
-
-**Artifact:** `docs/fs/sage/source_adapters.schema.json`
-**Category:** invalid
-**Constraint:** `source_type` must be one of [markdown, docx, xlsx, pptx, pdf, email, onenote, teams_chat, obsidian]
-
-**Input:**
-```yaml
-adapters:
-  - source_type: "csv"
-    enabled: true
-```
-
-**Expected:** FAIL -- enum violation
-**Rationale:** Only known adapter types are accepted.
-
-### TEST-SAGE-SA-005: heading_style_map value out of range
-
-**Artifact:** `docs/fs/sage/source_adapters.schema.json`
-**Category:** invalid
-**Constraint:** heading_style_map values have minimum 1, maximum 9
-
-**Input:**
-```yaml
-adapters:
-  - source_type: docx
-    enabled: true
-    config:
-      heading_style_map:
-        "Title": 0
-```
-
-**Expected:** FAIL -- minimum violation (0 < 1)
-**Rationale:** Heading levels are 1-9 per Word's outline numbering.
-
-### TEST-SAGE-SA-006: Missing required source_type
-
-**Artifact:** `docs/fs/sage/source_adapters.schema.json`
-**Category:** invalid
-**Constraint:** `source_type` and `enabled` are required
-
-**Input:**
-```yaml
-adapters:
-  - enabled: true
-```
-
-**Expected:** FAIL -- `'source_type' is a required property`
-**Rationale:** Adapter must declare what format it handles.
 
 ---
 

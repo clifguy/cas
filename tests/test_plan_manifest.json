@@ -18,14 +18,13 @@
         "docs/fs/sage/vault_config.schema.json",
         "docs/fs/sage/document_types.schema.json",
         "docs/fs/sage/lifecycle.schema.json",
-        "docs/fs/sage/source_adapters.schema.json",
         "docs/fs/sage/metadata_extraction.schema.json",
         "docs/fs/sage/edge_inference.schema.json",
         "docs/fs/sage/edge_type_registry.schema.json",
         "docs/fs/sage/decision_log.schema.json",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 65
+      "test_count": 59
     },
     {
       "path": "tests/root_harness/contract_tests.md",

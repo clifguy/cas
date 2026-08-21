@@ -64,10 +64,6 @@ lifecycle:
     - from_state: archived
       action: reactivate
       to_state: active
-source_adapters:
-  adapters:
-    - source_type: markdown
-      enabled: true
 metadata_extraction:
   filename_extraction:
     separator: _

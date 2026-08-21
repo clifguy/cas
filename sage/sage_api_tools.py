@@ -249,9 +249,9 @@ def register_sage_tools(
             source_type: Source artifact format (markdown, docx, xlsx, pptx,
                 pdf). Selects the source adapter.
             config: Adapter-specific configuration (optional). Not a
-                SAGE-wide shape; inspect ``source_adapters.adapters[].config``
-                in ``admin_get_vault_config`` for the per-adapter shape.
-                Deep-merged over the vault's adapter-config defaults; unknown
+                SAGE-wide shape; inspect ``adapter_defaults`` in
+                ``admin_get_vault_config`` for the per-adapter shape.
+                Deep-merged over the vault's adapter defaults; unknown
                 keys are rejected by the adapter.
             created_by: Creator name. Defaults to vault owner.
             force: Allow re-ingestion of duplicate content. The record to
@@ -1601,10 +1601,10 @@ def register_sage_tools(
 
         Config dict structure: the ``config`` parameter is opaque at the MCP
         boundary (typed ``dict``); its shape lives in
-        ``docs/fs/sage/vault_config.schema.json``. Six top-level sections are
-        required (``vault``, ``document_types``, ``lifecycle``,
-        ``source_adapters``, ``metadata_extraction``, ``edge_inference``) and
-        three optional (``abstraction``, ``access_control_defaults``,
+        ``docs/fs/sage/vault_config.schema.json``. Five top-level sections
+        are required (``vault``, ``document_types``, ``lifecycle``,
+        ``metadata_extraction``, ``edge_inference``) and four optional
+        (``adapter_defaults``, ``abstraction``, ``access_control_defaults``,
         ``retrieval_health``). A minimal default is available from
         ``VaultRegistryService.get_default_config(vault_id, name, owner)``.
 
@@ -1668,9 +1668,10 @@ def register_sage_tools(
         - The valid ``doc_type`` values for ``update_metadata``
           or for filtering ``search`` (under
           ``document_types.doc_types``).
-        - The source adapters declared for this vault (under
-          ``source_adapters.adapters``). The ``enabled`` flag gates scan
-          results, not ingest adapter resolution.
+        - The per-adapter projection parameters this vault sets (under
+          ``adapter_defaults``, keyed by source type). Which adapters
+          exist is not vault configuration; read ``adapters`` on the
+          vault summary for the process-wide set.
         - The filename-parsing pattern and segment fields used by
           ``get_filename_metadata`` (under
           ``metadata_extraction.filename_extraction``).
@@ -1698,7 +1699,7 @@ def register_sage_tools(
         vault: dict | None = None,
         document_types: dict | None = None,
         lifecycle: dict | None = None,
-        source_adapters: dict | None = None,
+        adapter_defaults: dict | None = None,
         metadata_extraction: dict | None = None,
         edge_inference: dict | None = None,
         abstraction: dict | None = None,
@@ -1749,7 +1750,7 @@ def register_sage_tools(
             vault: Replacement for the vault identity section.
             document_types: Replacement for the document_types section.
             lifecycle: Replacement for the lifecycle section.
-            source_adapters: Replacement for the source_adapters section.
+            adapter_defaults: Replacement for the adapter_defaults section.
             metadata_extraction: Replacement for the metadata_extraction section.
             edge_inference: Replacement for the edge_inference section.
             abstraction: Replacement for the abstraction section.
@@ -1768,7 +1769,7 @@ def register_sage_tools(
                 vault=vault,
                 document_types=document_types,
                 lifecycle=lifecycle,
-                source_adapters=source_adapters,
+                adapter_defaults=adapter_defaults,
                 metadata_extraction=metadata_extraction,
                 edge_inference=edge_inference,
                 abstraction=abstraction,

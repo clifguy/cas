@@ -464,7 +464,7 @@ export interface VaultConfig {
   vault: VaultIdentityConfig;
   document_types: { doc_types: DocTypeConfig[] };
   lifecycle: LifecycleConfig;
-  source_adapters: Record<string, unknown>;
+  adapter_defaults?: Record<string, unknown>;
   metadata_extraction: Record<string, unknown>;
   edge_inference: Record<string, unknown>;
   abstraction: VaultAbstractionConfig;

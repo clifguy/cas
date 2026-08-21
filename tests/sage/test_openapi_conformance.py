@@ -30,6 +30,7 @@ from fastapi.routing import APIRoute
 
 from sage import build_info
 from sage.app import create_app
+from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
@@ -1187,6 +1188,9 @@ def test_pydantic_backed_detects_a_real_model():
 _ADAPTER_AVAILABILITY_CLAIM_SURFACES: tuple[tuple[str, str], ...] = (
     ("IngestRequest", "source_type"),
     ("ParseFilenameRequest", "source_type"),
+    ("IngestRequest", "config"),
+    ("VaultSummary", "adapters"),
+    ("VaultAdapterInfo", "extensions"),
 )
 
 _ADAPTER_NOT_FOUND_OPERATIONS: tuple[tuple[str, str, str], ...] = (
@@ -1199,15 +1203,21 @@ _ADAPTER_NOT_FOUND_OPERATIONS: tuple[tuple[str, str, str], ...] = (
 # the error responses: it must not present vault config as the authority.
 _ADAPTER_CLAIM_OPERATIONS: tuple[tuple[str, str], ...] = (
     ("/sage_vaults/{vault_id}/config", "get"),
+    ("/sage_vaults/{vault_id}/config", "put"),
 )
 
-# Wording that conditions adapter availability on vault configuration. The
-# registry is fixed at process start, so any of these misdirects a caller
-# diagnosing `adapter_not_found` toward a config file that cannot affect it.
-_ENABLEMENT_CLAIM_MARKERS: tuple[str, ...] = (
-    "enabled adapter",
-    "enabled source adapter",
+#: Component schemas whose whole description block is swept, not just one
+#: named field. The adapter-display models describe a set the caller cannot
+#: influence, so any per-vault framing anywhere in them misleads.
+_ADAPTER_CLAIM_SCHEMAS: tuple[str, ...] = (
+    "VaultAdapterInfo",
+    "UpdateVaultConfigRequest",
 )
+
+# The marker vocabulary is shared with the MCP-docstring sweep in
+# tests/sage/test_mcp_self_documentation.py so the two arms cannot drift
+# apart; see tests/helpers/adapter_claims.py for the rationale.
+_ENABLEMENT_CLAIM_MARKERS: tuple[str, ...] = ENABLEMENT_CLAIM_MARKERS
 
 
 def test_source_type_descriptions_do_not_claim_vault_config_enablement(
@@ -1246,6 +1256,19 @@ def test_source_type_descriptions_do_not_claim_vault_config_enablement(
         operation = sage_core_spec["paths"][path][method]
         surfaces.append((f"YAML {method.upper()} {path}", operation.get("description", "")))
 
+    for schema_name in _ADAPTER_CLAIM_SCHEMAS:
+        schema = sage_core_spec["components"]["schemas"][schema_name]
+        surfaces.append((f"YAML {schema_name}", schema.get("description", "")))
+        for field_name, field_schema in (schema.get("properties") or {}).items():
+            surfaces.append(
+                (
+                    f"YAML {schema_name}.{field_name}",
+                    (field_schema or {}).get("description", ""),
+                )
+            )
+        for field_name, field_info in classes[schema_name].model_fields.items():
+            surfaces.append((f"Pydantic {schema_name}.{field_name}", field_info.description or ""))
+
     offenders = [
         f"{label}: {marker!r}"
         for label, text in surfaces
@@ -1259,6 +1282,29 @@ def test_source_type_descriptions_do_not_claim_vault_config_enablement(
     )
 
 
+def test_enablement_claim_markers_have_teeth():
+    """The marker set flags text that makes the claim it exists to catch.
+
+    Without this, the sweep above reports zero offenders whether the live
+    text is clean or the marker tuple is empty, misspelled, or shadowed --
+    the same vacuous-green failure mode the sweep was written to close.
+    """
+    clean = "Selects the source adapter. Availability is process-wide."
+    offending = [
+        "Only an enabled adapter can be used.",
+        "The source type must be enabled in the vault config.",
+        'Files whose adapter is off report status "adapter_disabled".',
+        "Replacement for the source_adapters section.",
+    ]
+
+    def _flagged(text: str) -> list[str]:
+        return [m for m in _ENABLEMENT_CLAIM_MARKERS if m in text]
+
+    assert _flagged(clean) == []
+    for text in offending:
+        assert _flagged(text), f"marker set missed a live claim: {text!r}"
+
+
 # ---------------------------------------------------------------------------
 # Test 5c: sage.config Pydantic fields carry descriptions sourced verbatim
 # from the JSON Schemas under docs/fs/sage/
@@ -1268,10 +1314,12 @@ def test_source_type_descriptions_do_not_claim_vault_config_enablement(
 # Maps each Pydantic class in sage.config to the JSON Schema file (relative
 # to docs/fs/) and the JSON pointer that addresses its `properties` mapping.
 # Drives both the presence test (which fields exist) and the verbatim test
-# (which descriptions must match). VaultConfig.source_adapters /
-# metadata_extraction / edge_inference resolve at the parent-property level
-# in vault_config.schema.json; their full sub-schemas live in their own
-# files but are not Pydantic-modeled in sage.config (passed through as dict).
+# (which descriptions must match). VaultConfig.metadata_extraction /
+# edge_inference resolve at the parent-property level in
+# vault_config.schema.json; their full sub-schemas live in their own files
+# but are not Pydantic-modeled in sage.config (passed through as dict).
+# adapter_defaults is declared inline in vault_config.schema.json and is
+# likewise a passed-through dict.
 SAGE_CONFIG_CLASS_TO_SCHEMA: list[tuple[str, str, str]] = [
     ("VaultIdentity", "sage/vault_config.schema.json", "#/properties/vault"),
     ("LifecycleState", "sage/lifecycle.schema.json", "#/properties/states/items"),

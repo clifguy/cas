@@ -4110,13 +4110,6 @@ class VaultLifecycleState(BaseModel):
 
 class VaultAdapterInfo(BaseModel):
     source_type: str = Field(description="Source artifact format the adapter handles.")
-    enabled: bool = Field(
-        description=(
-            "Whether the adapter is enabled in the vault config. "
-            "Disabled adapters surface in scan results as status "
-            '"adapter_disabled".'
-        )
-    )
     extensions: list[str] = Field(
         description='File extensions handled by this adapter (e.g. [".md", ".markdown"]).'
     )
@@ -4141,8 +4134,9 @@ class VaultSummary(BaseModel):
     adapters: list[VaultAdapterInfo] = Field(
         default_factory=list,
         description=(
-            "Source adapters configured for this vault, with per-adapter "
-            "enablement and handled extensions."
+            "Source adapters this SAGE process can project, with the file "
+            "extensions each handles. Process-wide capability, identical "
+            "for every vault (CAS-ADR-046)."
         ),
     )
     projects: list[str] = Field(
@@ -4279,19 +4273,19 @@ class UpdateVaultConfigRequest(BaseModel):
             "lifecycle.schema.json. Omit to leave unchanged."
         ),
     )
-    source_adapters: dict | None = Field(
-        default=None,
-        description=(
-            "Replacement for the source_adapters section; structure per "
-            "source_adapters.schema.json. Omit to leave unchanged."
-        ),
-    )
     metadata_extraction: dict | None = Field(
         default=None,
         description=(
             "Replacement for the metadata_extraction section; structure "
             "per metadata_extraction.schema.json. Omit to leave "
             "unchanged."
+        ),
+    )
+    adapter_defaults: dict | None = Field(
+        default=None,
+        description=(
+            "Replacement for the adapter_defaults section; structure per "
+            "vault_config.schema.json. Omit to leave unchanged."
         ),
     )
     edge_inference: dict | None = Field(
@@ -4364,7 +4358,7 @@ class VaultConfigPreview(BaseModel):
     changed_sections: list[str] = Field(
         description=(
             "Names of the top-level config sections (e.g., "
-            "`document_types`, `lifecycle`, `source_adapters`) whose "
+            "`document_types`, `lifecycle`, `adapter_defaults`) whose "
             "merged value differs from the currently-persisted value. "
             "Empty list when the request is a no-op (every supplied "
             "section is byte-identical to the current state)."

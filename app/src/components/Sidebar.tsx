@@ -81,13 +81,6 @@ export default function Sidebar({ activeVault, onVaultChange, onVaultCreated, va
             { from_state: 'archived', action: 'reactivate', to_state: 'active' },
           ],
         },
-        source_adapters: {
-          adapters: [
-            { source_type: 'markdown', enabled: true },
-            { source_type: 'docx', enabled: true },
-            { source_type: 'xlsx', enabled: true },
-          ],
-        },
         metadata_extraction: {
           filename_extraction: { separator: '_' },
         },

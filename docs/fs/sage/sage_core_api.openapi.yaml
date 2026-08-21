@@ -1271,7 +1271,7 @@ paths:
         Returns the configuration as a JSON object conforming to
         `docs/fs/sage/vault_config.schema.json`. Section structure
         follows the schema: `vault`, `document_types`, `lifecycle`,
-        `source_adapters`, `metadata_extraction`, `edge_inference`,
+        `metadata_extraction`, `edge_inference`, `adapter_defaults`,
         `abstraction`, `access_control_defaults`, `retrieval_health`.
 
 
@@ -1288,9 +1288,10 @@ paths:
           `PATCH /documents/{id}/metadata` or for filtering
           `POST /discover` (under `document_types.doc_types`).
 
-        - The source adapters declared for this vault (under
-          `source_adapters.adapters`). The `enabled` flag gates scan
-          results, not ingest adapter resolution.
+        - The per-adapter projection parameters this vault sets (under
+          `adapter_defaults`, keyed by source type). Which adapters
+          exist is not vault configuration; read `adapters` on the vault
+          summary for the process-wide set.
 
         - The filename-parsing pattern and segment fields used by
           `POST /parse-filename` (under
@@ -5241,16 +5242,11 @@ components:
 
     VaultAdapterInfo:
       type: object
-      required: [source_type, enabled, extensions]
-      description: One entry in a vault summary's adapters list; reports a source-adapter's enablement and handled file extensions.
+      required: [source_type, extensions]
+      description: One entry in a vault summary's adapters list; reports a source-adapter's handled file extensions.
       properties:
         source_type:
           $ref: "#/components/schemas/SourceType"
-        enabled:
-          type: boolean
-          description: >-
-            Whether the adapter is enabled in the vault config. Disabled
-            adapters surface in scan results as status "adapter_disabled".
         extensions:
           type: array
           items:
@@ -5289,7 +5285,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VaultAdapterInfo"
-          description: Source adapters configured for this vault, with per-adapter enablement and handled extensions.
+          description: Source adapters this SAGE process can project, with the file extensions each handles. Process-wide capability, identical for every vault (CAS-ADR-046).
         projects:
           type: array
           items:
@@ -5464,16 +5460,16 @@ components:
           nullable: true
           additionalProperties: true
           description: Replacement for the lifecycle section; structure per lifecycle.schema.json. Omit to leave unchanged.
-        source_adapters:
-          type: object
-          nullable: true
-          additionalProperties: true
-          description: Replacement for the source_adapters section; structure per source_adapters.schema.json. Omit to leave unchanged.
         metadata_extraction:
           type: object
           nullable: true
           additionalProperties: true
           description: Replacement for the metadata_extraction section; structure per metadata_extraction.schema.json. Omit to leave unchanged.
+        adapter_defaults:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Replacement for the adapter_defaults section; structure per vault_config.schema.json. Omit to leave unchanged.
         edge_inference:
           type: object
           nullable: true
@@ -5572,7 +5568,7 @@ components:
             type: string
           description: >-
             Names of the top-level config sections (e.g.,
-            `document_types`, `lifecycle`, `source_adapters`) whose
+            `document_types`, `lifecycle`, `adapter_defaults`) whose
             merged value differs from the currently-persisted value.
             Empty list when the request is a no-op (every supplied
             section is byte-identical to the current state).

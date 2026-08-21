@@ -474,11 +474,10 @@ _STATS_BODY = (
     '"content_store_small_fragment_count":0,"health":"ok"}'
 )
 #: GET /config returns VaultConfig.model_dump(), so the schema's required
-#: top-level sections are always present; source_adapters is the one asserted.
+#: top-level sections are always present; edge_inference is the one asserted.
 _CONFIG_BODY = (
     '{"vault":{"id":"cas"},"document_types":[],"lifecycle":{},'
-    '"source_adapters":{"markdown":{"enabled":true}},'
-    '"metadata_extraction":{},"edge_inference":{}}'
+    '"metadata_extraction":{},"edge_inference":{"tier_assignments":[]}}'
 )
 _DOCUMENT_BODY = '{"id":"' + _PROBE_DOC_ID + '","title":"Probe","lifecycle_status":"active"}'
 _HEADINGS_BODY = '{"document_id":"' + _PROBE_DOC_ID + '","title":"Probe","headings":[]}'

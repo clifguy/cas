@@ -894,7 +894,7 @@ check_core_api_vault_reads() {
   local base="$SAGE_BASE_URL/sage_vaults/$PROBE_VAULT_ID"
   SWEEP_FAILURES=""
   sweep_get "$base/stats" "/stats" '"total_documents"' "total_documents (not a VaultStatsResponse)"
-  sweep_get "$base/config" "/config" '"source_adapters"' "source_adapters (not a vault config)"
+  sweep_get "$base/config" "/config" '"edge_inference"' "edge_inference (not a vault config)"
   sweep_get "$base/pending-metadata" "/pending-metadata" '^[[:space:]]*\[' "a JSON array"
   sweep_get "$base/staging-edges" "/staging-edges" '^[[:space:]]*\[' "a JSON array"
   if [ -n "$SWEEP_FAILURES" ]; then
