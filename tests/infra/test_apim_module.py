@@ -1091,6 +1091,88 @@ def test_apim_edge_documents_advertise_offline_access() -> None:
     )
 
 
+def test_apim_as_metadata_advertises_both_grants() -> None:
+    """The authorization-server metadata advertises exactly the two grants the
+    edge honors: ``authorization_code`` for the interactive browser flow and
+    ``client_credentials`` for machine callers bearing the ``Sage.Reader`` app
+    role (CAS-ADR-042).
+
+    A conformant OAuth client reads discovery before it acts and will not
+    attempt a grant the resource does not advertise, so an unadvertised
+    ``client_credentials`` is indistinguishable from an unsupported one.
+
+    The assertion is exact-set equality, not containment: a containment check
+    (``"authorization_code" in grants``) is satisfied both before and after the
+    grant is added and would gate nothing. An *extra* grant is its own failure
+    -- advertising one the edge cannot honor leads a client to attempt the flow
+    and fail at the issuer rather than fall back.
+    """
+    body = _set_body_json(AS_METADATA_OP_POLICY)
+    grants = body.get("grant_types_supported")
+    assert isinstance(grants, list), (
+        f"{AS_METADATA_OP_POLICY.name}: grant_types_supported must be a list, got {grants!r}"
+    )
+    assert set(grants) == {"authorization_code", "client_credentials"}, (
+        f"{AS_METADATA_OP_POLICY.name}: grant_types_supported must advertise exactly "
+        "authorization_code (the interactive browser flow) and client_credentials "
+        f"(machine callers bearing the Sage.Reader app role), got {grants!r}"
+    )
+    assert len(grants) == 2, (
+        f"{AS_METADATA_OP_POLICY.name}: grant_types_supported must carry no duplicate "
+        f"or extra grant beyond the two the edge honors, got {grants!r}"
+    )
+    # _set_body_json neutralises {{sage-resource-url}} to NV. The advertised scope
+    # set is untouched by the grant change: the machine leg authorizes on the
+    # Sage.Reader *role*, not on a new scope, so a scopes_supported edit here
+    # would be an unintended widening.
+    assert body.get("scopes_supported") == ["NV/Sage.Access", "offline_access"], (
+        f"{AS_METADATA_OP_POLICY.name}: scopes_supported must remain the host-qualified "
+        "{{sage-resource-url}}/Sage.Access plus the bare OIDC offline_access -- the "
+        "client-credentials leg authorizes on the Sage.Reader role, not a new scope, "
+        f"got {body.get('scopes_supported')!r}"
+    )
+
+
+def test_apim_as_metadata_auth_methods_cover_the_advertised_grants() -> None:
+    """Every advertised grant has a client-authentication method that can carry it.
+
+    RFC 8414 reads ``token_endpoint_auth_methods_supported`` as the set of client
+    authentication methods the token endpoint accepts, and RFC 6749 4.4 requires a
+    client_credentials request to authenticate the client. Advertising that grant
+    beside a sole ``none`` therefore contradicts itself: a strict client finds the
+    grant offered and no admissible way to authenticate for it.
+
+    ``none`` must survive -- the DCR facade registers a public PKCE client, whose
+    token request carries no client authentication at all (CAS-ADR-042). The set
+    is narrowed to what CAS provisions rather than mirroring the issuer, the same
+    discipline this document already applies to response_types_supported and
+    code_challenge_methods_supported: the issuer's token endpoint also accepts
+    private_key_jwt and self_signed_tls_client_auth, and CAS provisions neither.
+    """
+    body = _set_body_json(AS_METADATA_OP_POLICY)
+    methods = body.get("token_endpoint_auth_methods_supported")
+    assert isinstance(methods, list), (
+        f"{AS_METADATA_OP_POLICY.name}: token_endpoint_auth_methods_supported must be "
+        f"a list, got {methods!r}"
+    )
+    assert set(methods) == {"none", "client_secret_post", "client_secret_basic"}, (
+        f"{AS_METADATA_OP_POLICY.name}: token_endpoint_auth_methods_supported must "
+        "advertise none (the public PKCE client) plus the secret-bearing methods a "
+        "confidential machine caller uses, and no method CAS does not provision; "
+        f"got {methods!r}"
+    )
+    # The coherence invariant itself, asserted against the grant set rather than
+    # restated as a literal: a future grant edit that reintroduces the mismatch
+    # fails here even if the method list above were relaxed.
+    grants = body.get("grant_types_supported")
+    if isinstance(grants, list) and "client_credentials" in grants:
+        assert set(methods) - {"none"}, (
+            f"{AS_METADATA_OP_POLICY.name}: client_credentials is advertised but the "
+            "only client-authentication method is 'none' -- RFC 6749 4.4 requires the "
+            "client to authenticate, so a strict client can form no valid request"
+        )
+
+
 def test_apim_challenge_is_path_aware() -> None:
     """The catch-all 401 challenge steers each MCP mount's clients to that
     mount's path-inserted metadata document, with the root document as the

@@ -20,6 +20,30 @@
             access token still carries the bare app-id GUID as its aud, which
             validate-jwt already admits. Full rationale in the discovery policy.
 
+            grant_types_supported advertises client_credentials alongside
+            authorization_code. A conformant OAuth client reads discovery before
+            it acts and will not attempt a grant the resource does not
+            advertise, so the machine-to-machine leg is unreachable while
+            unadvertised even though the edge honors it: APIM's validate-jwt
+            checks issuer and audience with no required-claims block, and the
+            backend authorizes on the delegated scope OR the Sage.Reader app
+            role, which the resource registration admits for application
+            principals. Both grants terminate at the issuer's real
+            token_endpoint above; neither traverses this facade.
+
+            token_endpoint_auth_methods_supported carries the secret-bearing
+            methods alongside "none" for the same reason: RFC 6749 4.4 requires
+            a client_credentials request to authenticate the client, so
+            advertising that grant beside a sole "none" offers a grant no strict
+            client could form a valid request for. "none" stays because the
+            facade's own DCR-registered client is a public PKCE client that
+            authenticates not at all. The set is narrowed to what this
+            deployment provisions rather than mirroring the issuer — the same
+            discipline response_types_supported and code_challenge_methods_supported
+            already follow; the issuer's token endpoint also accepts
+            private_key_jwt and self_signed_tls_client_auth, neither of which is
+            provisioned here.
+
             There is deliberately no <base /> here: omitting it skips the
             API-level inbound policy (validate-jwt), so the document is reachable
             without a token, matching the discovery operation.
@@ -55,9 +79,9 @@
   "jwks_uri": "https://login.microsoftonline.com/{{entra-tenant-id}}/discovery/v2.0/keys",
   "registration_endpoint": "{{sage-resource-url}}/register",
   "response_types_supported": ["code"],
-  "grant_types_supported": ["authorization_code"],
+  "grant_types_supported": ["authorization_code", "client_credentials"],
   "code_challenge_methods_supported": ["S256"],
-  "token_endpoint_auth_methods_supported": ["none"],
+  "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
   "scopes_supported": ["{{sage-resource-url}}/Sage.Access", "offline_access"]
 }</set-body>
         </return-response>

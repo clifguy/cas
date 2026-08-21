@@ -44,35 +44,45 @@ deployment it is `https://sage.cor.org`. Read it; do not assemble it.
 
 ### 1.1 Read this before you build
 
-**Headless service-to-service authentication is not available today.**
+**Headless service-to-service authentication is supported, but it is a
+per-deployment capability — check the deployment you are targeting.**
 
-`Sage.Reader` is declared with `allowedMemberTypes: ["User"]`, and no
-application-type app role exists. An Entra app role restricted to `User` cannot
-be assigned to a service principal, so the OAuth **client-credentials grant
-cannot produce an accepted token**. The tenant's authorization-server metadata
-confirms this from the other direction:
+`Sage.Reader` is declared with `allowedMemberTypes: ["User", "Application"]`, so
+the role can be assigned to a service principal and the OAuth
+**client-credentials grant can produce an accepted token**. Ask the deployment's
+own authorization-server metadata rather than assuming:
 
 ```
-grant_types_supported: ["authorization_code"]
+GET https://sage.<base-domain>/.well-known/oauth-authorization-server
 ```
 
-Every supported path requires a human at a browser. Consequences for
-deterministic software:
+A deployment that offers the machine path advertises it:
 
-| You are building | Works today |
+```
+grant_types_supported: ["authorization_code", "client_credentials"]
+```
+
+| You are building | Supported |
 |---|---|
 | A tool a developer runs, signing in once interactively | Yes |
-| A daemon, cron job, CI step, or backend service | **No** |
+| A daemon, cron job, CI step, or backend service | Yes, once granted (below) |
 
-This is not specific to one deployment. Every SAGE deployment is bootstrapped
-from the same Entra registration script, so each one inherits the same
-`User`-only app role.
+Two things gate the second row, and neither is a code change on your side:
 
-Unblocking the second row is a configuration change, not a code change: add
-`"Application"` to `allowedMemberTypes` on the `Sage.Reader` app role, then
-grant that role to each calling service principal. Making the change in the
-bootstrap script rather than by hand fixes every future deployment too. Until
-then, do not design around client credentials.
+1. **The deployment must be bootstrapped at a version whose registration script
+   declares the `Application` member type.** Every deployment is provisioned
+   from the same script, but an older deployment keeps whatever its last
+   bootstrap wrote until it is re-run. If `grant_types_supported` omits
+   `client_credentials`, this deployment is not there yet — ask its operator.
+2. **Your service principal must be granted the `Sage.Reader` app role.**
+   Admitting application principals to the role does not assign it to anyone.
+   This is a per-principal, per-deployment grant, exactly like the group
+   membership an interactive user needs (§1.3).
+
+Design against the advertised metadata, not against this paragraph: a client
+that reads `grant_types_supported` and falls back to the interactive flow when
+the machine grant is absent works against every deployment, at any bootstrap
+version.
 
 ### 1.2 Interactive flow
 
@@ -90,9 +100,12 @@ The authorization server is Entra. The resource advertises its own
 value verbatim; the resource-qualified form is required, and a bare
 `Sage.Access` leaves Entra unable to bind the scope.
 
-Use authorization code + PKCE (S256). Public clients are supported
-(`token_endpoint_auth_methods_supported: ["none"]`), and dynamic client
-registration is open at `POST /register`, so you can self-register.
+For the interactive path, use authorization code + PKCE (S256). Public clients
+are supported (`token_endpoint_auth_methods_supported` includes `"none"`), and
+dynamic client registration is open at `POST /register`, so you can
+self-register. A confidential client using the machine path authenticates with
+`client_secret_post` or `client_secret_basic`; read the advertised list rather
+than assuming either.
 
 ### 1.3 Registration succeeds and access still fails
 
