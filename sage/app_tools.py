@@ -238,9 +238,8 @@ def register_app_tools(
                 recipe's byte leg delivered that file to the upload
                 endpoint). Each entry also carries
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
-                ``markdown``, ``docx``, ``xlsx``, ``pptx``, ``pdf``; the vault's
-                actually-enabled subset is whatever appears under
-                ``source_adapters.adapters`` in ``admin_get_vault_config``),
+                ``markdown``, ``docx``, ``xlsx``, ``pptx``, ``pdf`` — the source
+                types with a registered adapter),
                 and optional ``parsed_metadata`` (dict with ``title``,
                 ``date``, ``project``, ``codes``, ``version``, ``doc_type``).
                 When ``parsed_metadata`` is omitted, the stem of the source

@@ -31,9 +31,8 @@ router = APIRouter(tags=["Ingestion"])
         400: {
             "model": ErrorResponse,
             "description": (
-                "`adapter_not_found`: `source_type` is not an enabled "
-                "adapter on this vault. See `source_adapters.adapters` in "
-                "the vault config.\n\n"
+                "`adapter_not_found`: no source adapter is registered for "
+                "`source_type`.\n\n"
                 "`expected_head_version_requires_predecessor`: "
                 "`expected_head_version` was supplied without "
                 "`predecessor_id`. The token is bound to the chain head "

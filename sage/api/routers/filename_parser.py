@@ -29,7 +29,7 @@ router = APIRouter(tags=["Utilities"])
         400: {
             "model": ErrorResponse,
             "description": (
-                "`adapter_not_found`: `source_type` is not an enabled adapter on this vault."
+                "`adapter_not_found`: no source adapter is registered for `source_type`."
             ),
         },
         404: {
