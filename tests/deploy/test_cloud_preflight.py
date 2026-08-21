@@ -76,6 +76,9 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "transfer_download_gate",
         "vault_load",
         "retrieval_pg",
+        "core_api_vault_reads",
+        "core_api_document_reads",
+        "core_api_parse_filename",
         "kv_wildcard_tls",
         "kv_anthropic",
         "bff_liveness",
@@ -94,6 +97,19 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
 # --------------------------------------------------------------------------- #
 def _script_text() -> str:
     return _SCRIPT.read_text(encoding="utf-8")
+
+
+def _ingest_post_lines(text: str) -> list[str]:
+    """Lines that POST to the documents collection -- i.e. ingest a document.
+
+    ``/documents`` is both a write route (POST = ingest) and a read route
+    (GET ``.../documents/{id}`` and ``/headings``, which the read-only Core API
+    sweep exercises). A bare substring ban on the path would forbid the reads
+    along with the writes, so the write invariant is stated by verb instead.
+    """
+    return [
+        line.strip() for line in text.splitlines() if "http_post" in line and "/documents" in line
+    ]
 
 
 def _git_owner() -> str | None:
@@ -289,6 +305,22 @@ _NEEDS_RUNTIME = pytest.mark.skipif(
 # --------------------------------------------------------------------------- #
 # A. Detector control-tests (prove the gates themselves can fail)             #
 # --------------------------------------------------------------------------- #
+def test_ingest_post_detector_fires() -> None:
+    """The write-endpoint ban is stated by verb rather than by path substring, so
+    it is only meaningful if it still catches an ingest. Prove both directions:
+    a POST to the documents collection is caught, and the read forms the Core API
+    sweep depends on are not.
+    """
+    ingest = '  http_post "$base/documents" \'{"source_path":"x"}\' "$AUTH_TOKEN"'
+    assert _ingest_post_lines(ingest), "the ban no longer catches an ingest POST"
+    reads = (
+        '  http_get "$base/documents/$DOC_FIRST_ID" "$AUTH_TOKEN"\n'
+        '  http_get "$base/documents/$DOC_FIRST_ID/headings" "$AUTH_TOKEN"\n'
+        '  http_post "$base/traverse" "{}" "$AUTH_TOKEN"'
+    )
+    assert not _ingest_post_lines(reads), "the ban must not forbid document reads"
+
+
 def test_guid_detector_fires() -> None:
     """The no-hardcoded-identity scan is only meaningful if its detector fires."""
     assert _GUID_RE.search("00000000-1111-2222-3333-444444444444")
@@ -349,7 +381,8 @@ def test_reports_not_fixes() -> None:
     assert not re.search(r"-X\s*(?:PUT|DELETE|PATCH)\b", outside), (
         "a mutating HTTP verb leaked in outside the invalid-token transfer probe"
     )
-    assert ":batch" not in text and "/documents" not in text, "a SAGE write endpoint leaked in"
+    assert ":batch" not in text, "a SAGE batch-ingest endpoint leaked in"
+    assert not _ingest_post_lines(text), f"an ingest POST leaked in: {_ingest_post_lines(text)}"
 
 
 def test_independence_aggregation_pattern() -> None:
@@ -417,7 +450,43 @@ _VAULTS_BODY = '[{"id":"cas","name":"CAS"},{"id":"test","name":"Test"}]'
 _HEALTH_BODY = (
     '{"status":"ok","version":"2.0.0","ocr":{"ocrmypdf":true,"tesseract":true,"ghostscript":true}}'
 )
-_DISCOVER_OK = '{"mode":"catalog","results":[{"document":{"id":"d1"}}],"total_available":5}'
+#: The document the sweep's catalog probe resolves. The id carries the real
+#: document-id shape (8 hex + "_" + slug) because the sweep greps for that shape
+#: rather than for a positional "id" -- a vault id or edge id must not be
+#: mistakable for a document id.
+_PROBE_DOC_ID = "a1b2c3d4_preflight_probe_document"
+#: A well-formed but absent vault id / document id. Both clear their shape
+#: validators (``^[a-z0-9][a-z0-9_-]{0,63}$`` and ``^[0-9a-f]{8}_[a-z0-9_]+$``)
+#: and so reach the registry/store lookup that answers 404 -- which is what makes
+#: them usable as the sweep's anti-coincidental controls.
+_ABSENT_VAULT = "preflight-probe-absent"
+_ABSENT_DOC = "00000000_preflight_probe_absent"
+_DISCOVER_OK = (
+    '{"mode":"catalog","results":[{"document":{"id":"' + _PROBE_DOC_ID + '"}}],"total_available":5}'
+)
+#: Read-only Core API bodies. Each carries the shape field its check asserts, so
+#: a canned 200 that merely returns *something* fails.
+_STATS_BODY = (
+    '{"total_documents":42,"by_lifecycle_status":{"active":42},"by_doc_type":{"adr":42},'
+    '"by_source_type":{"markdown":42},"total_edges":7,"by_edge_type":{"references":7},'
+    '"staging_edge_count":0,"graph_store_size_bytes":1024,"content_store_size_bytes":2048,'
+    '"content_store_chunk_count":10,"content_store_version_count":1,'
+    '"content_store_small_fragment_count":0,"health":"ok"}'
+)
+#: GET /config returns VaultConfig.model_dump(), so the schema's required
+#: top-level sections are always present; source_adapters is the one asserted.
+_CONFIG_BODY = (
+    '{"vault":{"id":"cas"},"document_types":[],"lifecycle":{},'
+    '"source_adapters":{"markdown":{"enabled":true}},'
+    '"metadata_extraction":{},"edge_inference":{}}'
+)
+_DOCUMENT_BODY = '{"id":"' + _PROBE_DOC_ID + '","title":"Probe","lifecycle_status":"active"}'
+_HEADINGS_BODY = '{"document_id":"' + _PROBE_DOC_ID + '","title":"Probe","headings":[]}'
+_TRAVERSE_BODY = '{"start_id":"' + _PROBE_DOC_ID + '","nodes":[]}'
+_PARSE_BODY = (
+    '{"title":"Probe","project":null,"version_label":null,'
+    '"document_date":null,"doc_type":null,"codes":[]}'
+)
 _LOGIN_BODY = (
     '{"authorization_url":"https://login.microsoftonline.com/t/oauth2/v2.0/authorize'
     "?client_id=abc&redirect_uri=https%3A%2F%2Fcas.test.invalid%2Fapp%2Fauth%2Fcallback"
@@ -432,8 +501,53 @@ _OPENAPI_BODY = (
 )
 _HTTP_CHECKS = (
     "edge_discovery,edge_mcp_unauth,edge_authn_backend,liveness,"
-    "ocr_capability,vault_load,retrieval_pg,edge_serves_openapi_spec"
+    "ocr_capability,vault_load,retrieval_pg,edge_serves_openapi_spec,"
+    "core_api_vault_reads,core_api_document_reads,core_api_parse_filename"
 )
+
+
+def _core_api_green(p: str, body: bytes) -> tuple[int, str, dict[str, str]] | None:
+    """The read-only Core API surface a healthy tenant serves, or ``None`` when
+    ``p`` is not one of its paths (so ``_green`` falls through to its 404).
+
+    The absent-vault and absent-document sentinels answer 404 here exactly as the
+    real app does -- that 404 is what the sweep's controls demand, so a stub that
+    blanket-200s cannot credit the checks.
+    """
+    m = re.match(r"^/sage_vaults/([^/]+)(/.*)?$", p)
+    if not m:
+        return None
+    vault, rest = m.group(1), m.group(2) or ""
+    if vault == _ABSENT_VAULT:
+        return 404, '{"code":"vault_not_found"}', {}
+    if rest == "/stats":
+        return 200, _STATS_BODY, {}
+    if rest == "/config":
+        return 200, _CONFIG_BODY, {}
+    if rest == "/pending-metadata":
+        return 200, "[]", {}
+    if rest == "/staging-edges":
+        return 200, "[]", {}
+    if rest == "/parse-filename":
+        # An unknown source_type is rejected at the request boundary (the field is
+        # a SourceType enum), which is the check's request-validation control.
+        if b'"source_type"' in body and b'"markdown"' not in body:
+            return 422, '{"detail":[{"type":"enum","loc":["body","source_type"]}]}', {}
+        return 200, _PARSE_BODY, {}
+    if rest == "/traverse":
+        if _ABSENT_DOC.encode() in body:
+            return 404, '{"code":"document_not_found"}', {}
+        return 200, _TRAVERSE_BODY, {}
+    dm = re.match(r"^/documents/([^/]+)(/.*)?$", rest)
+    if dm:
+        document, leaf = dm.group(1), dm.group(2) or ""
+        if document == _ABSENT_DOC:
+            return 404, '{"code":"document_not_found"}', {}
+        if leaf == "":
+            return 200, _DOCUMENT_BODY, {}
+        if leaf == "/headings":
+            return 200, _HEADINGS_BODY, {}
+    return None
 
 
 def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
@@ -457,6 +571,9 @@ def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str
         return 200, _LOGIN_BODY, {}
     if p == "/app/auth/me":
         return 200, '{"authenticated":false,"user":null}', {}
+    core = _core_api_green(p, body)
+    if core is not None:
+        return core
     return 404, '{"error":"not_found"}', {}
 
 
@@ -2164,3 +2281,387 @@ def test_mcp_roundtrip_fails_when_discovery_broken(tmp_path: Path) -> None:
         f"round-trip success must not be credited on a dead edge: {proc.stdout}"
     )
     assert proc.returncode != 0
+
+
+# --------------------------------------------------------------------------- #
+# H. Read-only Core API sweep (deployed REST coverage beyond /sage_vaults)     #
+#                                                                             #
+# The REST adapter is barely exercised against a live tenant: the web client   #
+# covers it only when a human uses it, and the MCP tools call the service      #
+# layer in process rather than over HTTP. These checks measure that surface    #
+# instead of assuming it. Every probe is a read or a pure computation, and     #
+# that property is itself asserted below -- at the wire and in the script text #
+# -- rather than left to a source comment.                                     #
+# --------------------------------------------------------------------------- #
+_SWEEP_CHECKS = "core_api_vault_reads,core_api_document_reads,core_api_parse_filename"
+
+#: Every (method, path-shape) the sweep is permitted to issue. Anything outside
+#: this set mutates vault state and must never appear on the wire.
+_READ_ONLY_ALLOWLIST: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        ("GET", "/sage_vaults"),
+        ("GET", "/stats"),
+        ("GET", "/config"),
+        ("GET", "/pending-metadata"),
+        ("GET", "/staging-edges"),
+        ("GET", "/document"),
+        ("GET", "/headings"),
+        ("POST", "/discover"),
+        ("POST", "/traverse"),
+        ("POST", "/parse-filename"),
+    }
+)
+
+#: Route fragments that mutate. None may appear inside a sweep check's body.
+_MUTATING_FRAGMENTS: Final[tuple[str, ...]] = (
+    "/edges",
+    "/lifecycles",
+    "/metadata",
+    ":batch",
+    "/confirm",
+    "/dismiss",
+    "/reabstract",
+    "/open",
+    "/export",
+    "/hash-check",
+    "/eval-retrieval",
+    "/users",
+    "/editors",
+    "/refresh-views",
+    "/admin/",
+)
+
+
+def _classify(method: str, path: str) -> tuple[str, str]:
+    """Reduce a recorded request to the (method, path-shape) the allowlist keys on."""
+    p = path.split("?", 1)[0]
+    if p == "/sage_vaults":
+        return method, "/sage_vaults"
+    for leaf in ("/stats", "/config", "/pending-metadata", "/staging-edges", "/headings"):
+        if p.endswith(leaf):
+            return method, leaf
+    for leaf in ("/discover", "/traverse", "/parse-filename"):
+        if p.endswith(leaf):
+            return method, leaf
+    if "/documents/" in p:
+        return method, "/document"
+    return method, p
+
+
+def _sweep_function_bodies() -> dict[str, str]:
+    """The shipped text of each sweep check function, keyed by function name.
+
+    Spans run from the function's ``name() {`` line to the closing ``}`` at
+    column 0 -- the script's own formatting, so no parser is needed.
+    """
+    text = _script_text()
+    bodies: dict[str, str] = {}
+    for name in (
+        "check_core_api_vault_reads",
+        "check_core_api_document_reads",
+        "check_core_api_parse_filename",
+        "resolve_probe_document",
+    ):
+        m = re.search(rf"^{name}\(\) \{{.*?$(.*?)^\}}$", text, re.S | re.M)
+        assert m, f"{name} is not defined in the harness"
+        bodies[name] = m.group(1)
+    return bodies
+
+
+# --- Side-effect freedom (the acceptance criterion, made testable) ---------- #
+def _post_targets(body: str) -> list[str]:
+    """Every URL an ``http_post`` in ``body`` actually targets.
+
+    Shell variables assigned inside the function are substituted first, so the
+    assertion is about the endpoint the call reaches rather than about whether
+    the author happened to inline the URL at the call site. A gate that only
+    matched the literal call line would pass or fail on formatting.
+    """
+    assignments = dict(re.findall(r"(?:local\s+)?(\w+)=\"([^\"]*)\"", body))
+    # One expansion pass resolves the nesting these helpers actually use
+    # (a url built from a base, which is built from an env var).
+    for _ in range(3):
+        for key, value in list(assignments.items()):
+            assignments[key] = re.sub(
+                r"\$\{?(\w+)\}?", lambda m: assignments.get(m.group(1), m.group(0)), value
+            )
+    targets: list[str] = []
+    # A call may wrap onto a continuation line; join them before matching.
+    joined = re.sub(r"\\\n\s*", " ", body)
+    for line in joined.splitlines():
+        m = re.search(r'http_post\s+"([^"]*)"', line)
+        if m:
+            targets.append(
+                re.sub(
+                    r"\$\{?(\w+)\}?", lambda g: assignments.get(g.group(1), g.group(0)), m.group(1)
+                )
+            )
+    return targets
+
+
+def test_core_api_sweep_text_carries_no_mutating_route() -> None:
+    """Structural leg: no sweep check names a mutating route, and its only POSTs
+    go to the three side-effect-free endpoints. Always on -- needs no network.
+    """
+    for name, body in _sweep_function_bodies().items():
+        for fragment in _MUTATING_FRAGMENTS:
+            assert fragment not in body, f"{name} names the mutating route {fragment}"
+        for target in _post_targets(body):
+            assert any(
+                endpoint in target for endpoint in ("/discover", "/traverse", "/parse-filename")
+            ), f"{name} POSTs to something other than the read-only endpoints: {target}"
+        assert "http_put" not in body, f"{name} issues a PUT"
+        assert "-X DELETE" not in body, f"{name} issues a DELETE"
+
+
+def test_core_api_sweep_never_reports_a_response_body() -> None:
+    """No sweep check may put a response body on the matrix line.
+
+    The sweep reads GET .../config, which returns the vault's full configuration.
+    Preflight output lands in a deploy log, so a detail message that interpolated
+    a body would publish that configuration. Every check must report the endpoint
+    and the observed status instead -- the same discipline the token diagnostic
+    keeps when it prints decoded claims but never the token.
+    """
+    for name, body in _sweep_function_bodies().items():
+        for line in body.splitlines():
+            if "DETAIL_MSG=" not in line:
+                continue
+            for leak in ("$HTTP_BODY", "${HTTP_BODY}", "$body", "${body}"):
+                assert leak not in line, (
+                    f"{name} reports a response body on the matrix line: {line.strip()}"
+                )
+
+
+@_NEEDS_RUNTIME
+def test_core_api_sweep_issues_no_mutating_request() -> None:
+    """Behavioral leg: record every request a full sweep puts on the wire and
+    assert each one is in the read-only allowlist. This is the assertion the
+    structural scan cannot make -- it observes what the script actually did,
+    not what its source says.
+    """
+    seen: list[tuple[str, str]] = []
+
+    def recording(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        seen.append(_classify(method, path))
+        return _green(method, path, body)
+
+    with serve(recording) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=_SWEEP_CHECKS))
+    assert proc.returncode == 0, f"the sweep must pass against a healthy tenant:\n{proc.stdout}"
+    assert seen, "the sweep issued no requests at all"
+    outside = set(seen) - _READ_ONLY_ALLOWLIST
+    assert not outside, f"the sweep issued non-read requests: {sorted(outside)}"
+
+
+# --- core_api_vault_reads --------------------------------------------------- #
+@_NEEDS_RUNTIME
+def test_core_api_vault_reads_passes() -> None:
+    """All four vault-scoped reads 200 with their shape fields -> PASS."""
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "PASS", proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("endpoint", ["/stats", "/config", "/pending-metadata", "/staging-edges"])
+def test_core_api_vault_reads_fails_on_endpoint_404(endpoint: str) -> None:
+    """One endpoint 404s while the rest stay healthy -> FAIL, and the detail
+    names that endpoint AND the observed code. A message that only said "a read
+    failed" would leave an operator to bisect the sweep by hand.
+    """
+
+    def broken(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith(endpoint):
+            return 404, '{"error":"not_found"}', {}
+        return _green(method, path, body)
+
+    with serve(broken) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    detail = _detail(proc.stdout, "core_api_vault_reads")
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "FAIL", proc.stdout
+    assert endpoint in detail, f"detail does not name the endpoint: {detail}"
+    assert "404" in detail, f"detail does not name the observed code: {detail}"
+
+
+@_NEEDS_RUNTIME
+def test_core_api_vault_reads_fails_when_absent_vault_returns_200() -> None:
+    """THE anti-coincidental test for the sweep: every real read is healthy, but
+    the edge also 200s a vault that does not exist. Four green reads must not be
+    credited when the endpoint cannot tell a real vault from an absent one.
+    """
+
+    def absent_vault_200(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].startswith(f"/sage_vaults/{_ABSENT_VAULT}"):
+            return 200, _STATS_BODY, {}
+        return _green(method, path, body)
+
+    with serve(absent_vault_200) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "FAIL", proc.stdout
+    assert "control" in _detail(proc.stdout, "core_api_vault_reads").lower()
+
+
+@_NEEDS_RUNTIME
+def test_core_api_vault_reads_fails_on_wrong_shape() -> None:
+    """/stats answers 200 with a body that is not a VaultStatsResponse -> FAIL.
+    Proves the check reads the payload, not merely the status line.
+    """
+
+    def canned(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/stats"):
+            return 200, '{"ok":true}', {}
+        return _green(method, path, body)
+
+    with serve(canned) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "FAIL", proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_core_api_vault_reads_skips_when_no_vault_available() -> None:
+    """An empty vault registry is vault_load's failure to report, not this
+    check's -- it SKIPs so one root cause does not over-paint the matrix.
+    """
+
+    def empty_vaults(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/sage_vaults":
+            return 200, "[]", {}
+        return _green(method, path, body)
+
+    with serve(empty_vaults) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "SKIP", proc.stdout
+
+
+# --- core_api_document_reads ------------------------------------------------ #
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_passes() -> None:
+    """A document resolves from the catalog probe and all three document-scoped
+    reads answer 200 with their shape fields -> PASS.
+    """
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "PASS", proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_skips_on_empty_vault() -> None:
+    """A deployment whose vault holds no documents must not fail the sweep: the
+    catalog probe answers 200 with nothing to read, so the check SKIPs and the
+    run still exits 0.
+    """
+
+    def no_documents(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/discover") and b"deterministic" not in body:
+            return 200, '{"mode":"catalog","results":[],"total_available":0}', {}
+        return _green(method, path, body)
+
+    with serve(no_documents) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "SKIP", proc.stdout
+    assert proc.returncode == 0, "an empty vault must not fail the preflight run"
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_fails_when_discover_broken() -> None:
+    """The control that keeps the empty-vault SKIP honest: a NON-200 catalog
+    probe is a broken endpoint, not an empty vault, and must FAIL. Without this
+    split, a 500 would hide behind the same SKIP as a legitimately empty vault.
+    """
+
+    def discover_500(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/discover"):
+            return 500, '{"error":"storage_unavailable"}', {}
+        return _green(method, path, body)
+
+    with serve(discover_500) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    detail = _detail(proc.stdout, "core_api_document_reads")
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
+    assert "500" in detail, detail
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_fails_when_absent_document_returns_200() -> None:
+    """Every real read is healthy, but the edge also 200s a document id that does
+    not exist -- the reads prove nothing and must not be credited.
+    """
+
+    def absent_doc_200(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if _ABSENT_DOC in p or (p.endswith("/traverse") and _ABSENT_DOC.encode() in body):
+            return 200, _DOCUMENT_BODY, {}
+        return _green(method, path, body)
+
+    with serve(absent_doc_200) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
+    assert "control" in _detail(proc.stdout, "core_api_document_reads").lower()
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_fails_on_traverse_error() -> None:
+    """The graph leg is exercised independently of the content legs: traverse 500
+    while the document reads stay green -> FAIL naming traverse and the code.
+    """
+
+    def traverse_500(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/traverse"):
+            return 500, '{"error":"storage_unavailable"}', {}
+        return _green(method, path, body)
+
+    with serve(traverse_500) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    detail = _detail(proc.stdout, "core_api_document_reads")
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
+    assert "traverse" in detail, detail
+    assert "500" in detail, detail
+
+
+# --- core_api_parse_filename ------------------------------------------------ #
+@_NEEDS_RUNTIME
+def test_core_api_parse_filename_passes() -> None:
+    """The pure-computation endpoint answers 200 with a parse result -> PASS.
+
+    The assertion is on object shape only, never on a non-null title: the service
+    returns an all-null response when the vault configures no
+    filename_extraction pattern, which is a legitimate tenant configuration.
+    """
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_parse_filename"))
+    assert _verdicts(proc.stdout).get("core_api_parse_filename") == "PASS", proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_core_api_parse_filename_fails_when_malformed_body_accepted() -> None:
+    """The request-validation control: a body whose source_type is not a
+    SourceType member must be rejected. An edge that 200s it is not processing
+    request bodies, so the healthy-looking parse above proves nothing.
+    """
+
+    def accepts_anything(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/parse-filename"):
+            return 200, _PARSE_BODY, {}
+        return _green(method, path, body)
+
+    with serve(accepts_anything) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_parse_filename"))
+    assert _verdicts(proc.stdout).get("core_api_parse_filename") == "FAIL", proc.stdout
+    assert "control" in _detail(proc.stdout, "core_api_parse_filename").lower()
+
+
+@_NEEDS_RUNTIME
+def test_core_api_parse_filename_fails_on_non_200() -> None:
+    """A 500 from the parser endpoint -> FAIL naming the observed code."""
+
+    def parse_500(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/parse-filename"):
+            return 500, '{"error":"internal"}', {}
+        return _green(method, path, body)
+
+    with serve(parse_500) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_parse_filename"))
+    detail = _detail(proc.stdout, "core_api_parse_filename")
+    assert _verdicts(proc.stdout).get("core_api_parse_filename") == "FAIL", proc.stdout
+    assert "500" in detail, detail

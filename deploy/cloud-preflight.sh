@@ -805,6 +805,193 @@ check_retrieval_pg() {
   return 0
 }
 
+# --------------------------------------------------------------------------- #
+# Read-only Core API sweep                                                     #
+#                                                                             #
+# The REST adapter is the deployment's least-exercised surface: the web client #
+# covers it only when a human is using it, and SAGE's own tools call the       #
+# service layer in process rather than over HTTP, so routine traffic never     #
+# reaches it. These checks measure that surface instead of assuming it, one    #
+# check per router-group cluster so a failure names the group that broke.      #
+#                                                                             #
+# Every probe is a read or a pure computation. Nothing here ingests, transits  #
+# a lifecycle, writes metadata, or creates an edge -- and because the backend  #
+# authorizes on a single global scope/role gate rather than per route, that    #
+# restraint is the harness author's to keep, not the server's to enforce.      #
+# See CAS-ADR-042.                                                             #
+# --------------------------------------------------------------------------- #
+
+# A well-formed vault id and document id that cannot exist. Both clear their
+# shape validators, so each reaches the registry/store lookup that answers 404.
+# That 404 is the sweep's anti-coincidental control: an edge answering 200 for a
+# resource that does not exist cannot tell a real read from a canned one, so its
+# healthy-looking reads prove nothing and must not be credited.
+ABSENT_VAULT_ID="preflight-probe-absent"
+ABSENT_DOCUMENT_ID="00000000_preflight_probe_absent"
+
+PROBE_VAULT_ID=""
+DOC_FIRST_ID=""
+SWEEP_FAILURES=""
+
+# Resolve the vault the sweep probes: reuse the id vault_load captured, and
+# re-fetch when a sweep check is selected on its own. Leaves PROBE_VAULT_ID empty
+# when no vault is available, which the callers report as SKIP -- an empty
+# registry is vault_load's failure to name, not theirs.
+resolve_probe_vault() {
+  PROBE_VAULT_ID="$VAULT_FIRST_ID"
+  [ -n "$PROBE_VAULT_ID" ] && return 0
+  http_get "$SAGE_BASE_URL/sage_vaults" "$AUTH_TOKEN"
+  [ "$HTTP_CODE" = 200 ] || return 0
+  PROBE_VAULT_ID="$(printf '%s' "$HTTP_BODY" \
+    | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+    | sed -E 's/.*"([^"]*)"$/\1/')"
+  return 0
+}
+
+# Resolve a document to read via a catalog discover, setting DOC_FIRST_ID.
+# Returns 0 when one was found, 1 when the probe itself failed (non-200), and 2
+# when the endpoint answered but the vault holds no documents. That three-way
+# split is the point: a deployment whose vaults are empty is a legitimate state
+# the sweep must tolerate, while a broken retrieval endpoint must NOT hide behind
+# the same verdict.
+#
+# The id is matched on the document-id shape (8 hex + "_" + slug) rather than on
+# the first "id" key in the envelope, so a vault id or an edge id cannot be
+# mistaken for a document id.
+resolve_probe_document() { # vault-id
+  DOC_FIRST_ID=""
+  http_post "$SAGE_BASE_URL/sage_vaults/$1/discover" \
+    '{"mode":"catalog","limit":1}' "$AUTH_TOKEN"
+  [ "$HTTP_CODE" = 200 ] || return 1
+  DOC_FIRST_ID="$(printf '%s' "$HTTP_BODY" \
+    | grep -oE '"[0-9a-f]{8}_[a-z0-9_]+"' | head -1 | tr -d '"')"
+  [ -n "$DOC_FIRST_ID" ] || return 2
+  return 0
+}
+
+# GET one read-only endpoint and require a 200 whose body carries `marker`.
+# Records a miss in SWEEP_FAILURES naming the endpoint and the observed code
+# rather than returning, so one run reports EVERY failing endpoint instead of
+# stopping at the first -- the same independence the check matrix gives layers.
+sweep_get() { # url label marker what
+  http_get "$1" "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 200 ]; then
+    SWEEP_FAILURES="$SWEEP_FAILURES $2 $HTTP_CODE (expected 200);"
+    return 0
+  fi
+  if ! printf '%s' "$HTTP_BODY" | grep -q "$3"; then
+    SWEEP_FAILURES="$SWEEP_FAILURES $2 200 but no $4;"
+  fi
+  return 0
+}
+
+check_core_api_vault_reads() {
+  resolve_probe_vault
+  if [ -z "$PROBE_VAULT_ID" ]; then
+    DETAIL_MSG="skipped: no vault id available to probe (vault_load produced none)"
+    return 2
+  fi
+  local base="$SAGE_BASE_URL/sage_vaults/$PROBE_VAULT_ID"
+  SWEEP_FAILURES=""
+  sweep_get "$base/stats" "/stats" '"total_documents"' "total_documents (not a VaultStatsResponse)"
+  sweep_get "$base/config" "/config" '"source_adapters"' "source_adapters (not a vault config)"
+  sweep_get "$base/pending-metadata" "/pending-metadata" '^[[:space:]]*\[' "a JSON array"
+  sweep_get "$base/staging-edges" "/staging-edges" '^[[:space:]]*\[' "a JSON array"
+  if [ -n "$SWEEP_FAILURES" ]; then
+    DETAIL_MSG="vault-scoped read(s) failed:$SWEEP_FAILURES"
+    return 1
+  fi
+  http_get "$SAGE_BASE_URL/sage_vaults/$ABSENT_VAULT_ID/stats" "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 404 ]; then
+    DETAIL_MSG="control failed: an absent vault answered $HTTP_CODE, expected 404 -- the four green reads cannot be credited when the endpoint does not discriminate"
+    return 1
+  fi
+  DETAIL_MSG="4 vault-scoped reads 200 with expected shapes (stats/config/pending-metadata/staging-edges); absent-vault negative control 404"
+  return 0
+}
+
+check_core_api_document_reads() {
+  resolve_probe_vault
+  if [ -z "$PROBE_VAULT_ID" ]; then
+    DETAIL_MSG="skipped: no vault id available to probe (vault_load produced none)"
+    return 2
+  fi
+  local base="$SAGE_BASE_URL/sage_vaults/$PROBE_VAULT_ID" rc
+  resolve_probe_document "$PROBE_VAULT_ID"
+  rc=$?
+  if [ "$rc" = 1 ]; then
+    DETAIL_MSG="catalog probe for a document returned $HTTP_CODE (expected 200): the retrieval endpoint is unhealthy, which is not the same as an empty vault"
+    return 1
+  fi
+  if [ "$rc" = 2 ]; then
+    DETAIL_MSG="skipped: catalog probe 200 but the vault holds no documents (endpoint healthy, nothing to read)"
+    return 2
+  fi
+  SWEEP_FAILURES=""
+  sweep_get "$base/documents/$DOC_FIRST_ID" "/documents/{id}" \
+    "\"$DOC_FIRST_ID\"" "the requested document id echoed back"
+  sweep_get "$base/documents/$DOC_FIRST_ID/headings" "/documents/{id}/headings" \
+    '"headings"' "a headings list"
+  http_post "$base/traverse" "{\"start_id\":\"$DOC_FIRST_ID\",\"depth\":1}" "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 200 ]; then
+    SWEEP_FAILURES="$SWEEP_FAILURES /traverse $HTTP_CODE (expected 200);"
+  elif ! printf '%s' "$HTTP_BODY" | grep -q "\"$DOC_FIRST_ID\""; then
+    SWEEP_FAILURES="$SWEEP_FAILURES /traverse 200 but the response does not echo start_id;"
+  fi
+  if [ -n "$SWEEP_FAILURES" ]; then
+    DETAIL_MSG="document-scoped read(s) failed:$SWEEP_FAILURES"
+    return 1
+  fi
+  http_get "$base/documents/$ABSENT_DOCUMENT_ID" "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 404 ]; then
+    DETAIL_MSG="control failed: an absent document answered $HTTP_CODE from /documents/{id}, expected 404"
+    return 1
+  fi
+  http_post "$base/traverse" "{\"start_id\":\"$ABSENT_DOCUMENT_ID\"}" "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 404 ]; then
+    DETAIL_MSG="control failed: an absent start_id answered $HTTP_CODE from /traverse, expected 404"
+    return 1
+  fi
+  DETAIL_MSG="3 document-scoped reads 200 on '$DOC_FIRST_ID' (document/headings/traverse, each echoing the requested id); absent-document negative controls 404"
+  return 0
+}
+
+check_core_api_parse_filename() {
+  resolve_probe_vault
+  if [ -z "$PROBE_VAULT_ID" ]; then
+    DETAIL_MSG="skipped: no vault id available to probe (vault_load produced none)"
+    return 2
+  fi
+  local url="$SAGE_BASE_URL/sage_vaults/$PROBE_VAULT_ID/parse-filename" body
+  http_post "$url" '{"filename":"preflight-probe.md","source_type":"markdown"}' "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 200 ]; then
+    DETAIL_MSG="/parse-filename $HTTP_CODE (expected 200)"
+    return 1
+  fi
+  body="$(printf '%s' "$HTTP_BODY" | sed -e 's/^[[:space:]]*//')"
+  case "$body" in
+    \{*) : ;;
+    *)
+      DETAIL_MSG="/parse-filename 200 but the body is not a JSON object"
+      return 1
+      ;;
+  esac
+  # An unknown source_type is not a member of the request model's enum, so a
+  # processing app rejects it at the request boundary. A 2xx here means bodies
+  # are not being validated, which would make the parse above meaningless.
+  http_post "$url" \
+    '{"filename":"preflight-probe.md","source_type":"preflight-probe-invalid"}' "$AUTH_TOKEN"
+  case "$HTTP_CODE" in
+    4[0-9][0-9]) : ;;
+    *)
+      DETAIL_MSG="control failed: an unknown source_type returned $HTTP_CODE, expected 4xx (request bodies may not be validated at all)"
+      return 1
+      ;;
+  esac
+  DETAIL_MSG="/parse-filename 200 with a parse result (pure computation; no vault state touched); unknown source_type rejected $HTTP_CODE"
+  return 0
+}
+
 check_kv_wildcard_tls() {
   local out esc
   out="$($PREFLIGHT_TLS_PROBE_CMD "$SAGE_FQDN" 2>/dev/null || true)"
@@ -1000,6 +1187,15 @@ register vault_load check_vault_load \
 register retrieval_pg check_retrieval_pg \
   "catalog discover 200 with total_available (a real SQL query ran)" \
   "a deterministic probe must be rejected 4xx, proving requests are processed not blanket-statused"
+register core_api_vault_reads check_core_api_vault_reads \
+  "the vault-scoped read endpoints (stats, config, pending-metadata, staging-edges) each answer 200 with their own response shape" \
+  "an absent-but-well-formed vault id must answer 404; an edge that 200s a vault that does not exist cannot credit any of the four reads"
+register core_api_document_reads check_core_api_document_reads \
+  "a document resolved from the catalog answers 200 on the document, headings, and traverse routes, each echoing the requested id" \
+  "an absent-but-well-formed document id must 404 on both routes; a vault with no documents SKIPs, but a non-200 catalog probe FAILs so a broken endpoint cannot hide behind the empty-vault verdict"
+register core_api_parse_filename check_core_api_parse_filename \
+  "the pure-computation filename parser answers 200 with a parse result, touching no vault state" \
+  "an unknown source_type must be rejected 4xx at the request boundary, proving bodies are validated rather than blanket-statused"
 register kv_wildcard_tls check_kv_wildcard_tls \
   "leaf cert SAN covers the wildcard base domain" \
   "a wrong/parked cert subject fails even though the handshake succeeds"
