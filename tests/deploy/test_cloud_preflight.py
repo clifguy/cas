@@ -64,6 +64,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_dcr_registration",
         "edge_resource_identity",
         "edge_advertises_offline_access",
+        "edge_advertises_grant_types",
         "edge_mount_discovery",
         "mcp_admin",
         "mcp_roundtrip",
@@ -1003,6 +1004,109 @@ def test_advertises_offline_access_dead_edge_fails() -> None:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_offline_access"))
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_advertises_offline_access") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+def _grant_types_stub(
+    advertises_authorization_code: bool = True,
+    advertises_client_credentials: bool = True,
+    discovery_status: int = 200,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the advertised-grant-set check. When healthy, the
+    authorization-server metadata's ``grant_types_supported`` carries BOTH the
+    interactive ``authorization_code`` grant and the machine ``client_credentials``
+    grant; the protected-resource discovery doc answers ``discovery_status``
+    (200 = edge live). Toggling either grant off drops it while the other stays
+    healthy -- the dropped-grant regression the check must catch, one grant at a
+    time so a check matching the array as one blob cannot survive.
+    """
+    grants = []
+    if advertises_authorization_code:
+        grants.append('"authorization_code"')
+    if advertises_client_credentials:
+        grants.append('"client_credentials"')
+    grant_array = "[" + ", ".join(grants) + "]"
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            body = (
+                "{"
+                '"resource": "{{BASE_URL}}", '
+                '"authorization_servers": ["{{BASE_URL}}"], '
+                '"scopes_supported": ["{{BASE_URL}}/Sage.Access", "offline_access"], '
+                '"bearer_methods_supported": ["header"]'
+                "}"
+            )
+            return discovery_status, (body if discovery_status == 200 else "{}"), {}
+        if p == "/.well-known/oauth-authorization-server":
+            body = (
+                "{"
+                '"issuer": "{{BASE_URL}}", '
+                '"registration_endpoint": "{{BASE_URL}}/register", '
+                '"response_types_supported": ["code"], '
+                f'"grant_types_supported": {grant_array}, '
+                '"code_challenge_methods_supported": ["S256"], '
+                '"scopes_supported": ["{{BASE_URL}}/Sage.Access", "offline_access"]'
+                "}"
+            )
+            return 200, body, {}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_advertises_grant_types_passes() -> None:
+    """Both grants advertised, edge live -> edge_advertises_grant_types PASS: a
+    conformant client reading discovery finds the machine-to-machine
+    client_credentials leg alongside the interactive one.
+    """
+    with serve(_grant_types_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_grant_types"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_grant_types") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_advertises_grant_types_missing_client_credentials_fails() -> None:
+    """THE dropped-grant regression this check exists for: the metadata still
+    advertises authorization_code (so every other edge check stays green) but
+    client_credentials is gone. The check must FAIL, proving it asserts the
+    machine grant specifically rather than a healthy-looking 200.
+    """
+    with serve(_grant_types_stub(advertises_client_credentials=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_grant_types"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_grant_types") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_advertises_grant_types_missing_authorization_code_fails() -> None:
+    """The mirror regression: client_credentials survives but the interactive
+    authorization_code grant is dropped. The check must FAIL, proving the two
+    grants are asserted independently -- a single match over the whole array
+    would credit this and let the browser flow silently stop being advertised.
+    """
+    with serve(_grant_types_stub(advertises_authorization_code=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_grant_types"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_grant_types") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_advertises_grant_types_dead_edge_fails() -> None:
+    """Discovery doc broken (404) while the authorization-server metadata is
+    fully healthy: the advertised grant set must NOT be credited -- the
+    discovery-200 control rejects it (the blanket-edge coincidental-pass trap).
+    """
+    with serve(_grant_types_stub(discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_advertises_grant_types"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_advertises_grant_types") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

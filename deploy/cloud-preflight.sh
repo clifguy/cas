@@ -475,6 +475,36 @@ check_edge_advertises_offline_access() {
   return 1
 }
 
+check_edge_advertises_grant_types() {
+  # A conformant OAuth client reads the authorization-server metadata before it
+  # acts and never attempts a grant the resource does not advertise, so an
+  # unadvertised grant is indistinguishable from an unsupported one. The edge
+  # honors two: authorization_code for the interactive browser flow, and
+  # client_credentials for machine callers bearing the Sage.Reader app role
+  # (CAS-ADR-042). Each is asserted on its own rather than as one match over the
+  # whole array, so dropping either -- while the document keeps 200ing and every
+  # other edge check stays green -- is caught here instead of sliding through.
+  # The discovery-200 control guards the blanket-edge trap.
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); an advertised grant set is the blanket trap, not a real grant advertisement"
+    return 1
+  fi
+  http_get "$SAGE_BASE_URL/.well-known/oauth-authorization-server"
+  local as_code="$HTTP_CODE" grants ac_ok=no cc_ok=no
+  # Scope the match to the grant_types_supported array so a grant name appearing
+  # in another field, or in a neighbouring array, cannot credit this check.
+  grants="$(printf '%s' "$HTTP_BODY" \
+    | sed -n 's/.*"grant_types_supported"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')"
+  printf '%s' "$grants" | grep -qE '"authorization_code"' && ac_ok=yes
+  printf '%s' "$grants" | grep -qE '"client_credentials"' && cc_ok=yes
+  if [ "$as_code" = 200 ] && [ "$ac_ok" = yes ] && [ "$cc_ok" = yes ]; then
+    DETAIL_MSG="grant_types_supported advertises authorization_code and client_credentials (a conformant client can reach the machine-to-machine leg, not just the interactive one)"
+    return 0
+  fi
+  DETAIL_MSG="advertised grant set incomplete: as_metadata=$as_code authorization_code=$ac_ok client_credentials=$cc_ok -- a conformant client will not attempt an unadvertised grant, so the missing leg is unreachable even though the edge honors it"
+  return 1
+}
+
 check_edge_mount_discovery() {
   # Each MCP mount must steer a denied client to its RFC 9728 PATH-INSERTED
   # metadata document, and that document must advertise the PATH-CARRYING mount
@@ -890,6 +920,9 @@ register edge_resource_identity check_edge_resource_identity \
 register edge_advertises_offline_access check_edge_advertises_offline_access \
   "scopes_supported and the /register scope both advertise offline_access (the public MCP client requests a refresh token so its session survives past the access-token lifetime)" \
   "offline_access dropped from either leg on a genuinely-live edge is the regression trap (Sage.Access stays intact so every other edge check is green); credited only with the discovery-200 control held"
+register edge_advertises_grant_types check_edge_advertises_grant_types \
+  "the authorization-server metadata advertises both authorization_code and client_credentials (a conformant client can reach the machine-to-machine leg, not just the interactive one)" \
+  "either grant dropped from a genuinely-live edge is the regression trap (the document keeps 200ing and every other edge check stays green); credited only with the discovery-200 control held"
 register edge_mount_discovery check_edge_mount_discovery \
   "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \
   "a bare-host resource is the coincidental-pass trap (200s fine, but serializes to a trailing-slash form Entra can neither match nor register -- AADSTS9010010); credited only with the discovery-200 control held"

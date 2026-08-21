@@ -27,6 +27,7 @@ from typing import Final
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 RUNBOOK: Final[Path] = REPO_ROOT / "docs" / "process" / "entra-app-registrations.md"
+BOOTSTRAP: Final[Path] = REPO_ROOT / "deploy" / "bootstrap" / "entra-app-registrations.sh"
 
 # A subscription / tenant / client / application id is a GUID. None of these
 # identity coordinates may be hardcoded into the runbook — they arrive resolved
@@ -268,3 +269,47 @@ def test_registration_urls_are_templated() -> None:
             assert "<" in host or "${" in host, (
                 f"redirect URI host must be templated, not literal: {match.group(0)!r}"
             )
+
+
+def _sage_reader_member_types(text: str) -> set[str]:
+    """The ``allowedMemberTypes`` tokens declared on the ``Sage.Reader`` app role.
+
+    Both the runbook and the script embed the Graph PATCH body as escaped JSON
+    inside a shell string, so backslash-escaped quotes are normalised before
+    matching. The span is anchored between ``appRoles`` and ``Sage.Reader`` --
+    ``allowedMemberTypes`` precedes ``value`` in the role object -- so an
+    ``allowedMemberTypes`` belonging to some other role could never satisfy it.
+    """
+    plain = text.replace('\\"', '"')
+    role = re.search(r"appRoles(.*?)Sage\.Reader", plain, re.S)
+    if role is None:
+        return set()
+    array = re.search(r'"allowedMemberTypes"\s*:\s*\[([^\]]*)\]', role.group(1))
+    if array is None:
+        return set()
+    return set(re.findall(r'"([A-Za-z]+)"', array.group(1)))
+
+
+def test_sage_reader_role_accepts_application_principals() -> None:
+    """The ``Sage.Reader`` app role accepts both user and application principals.
+
+    ``Application`` is what makes the role assignable to a service principal, and
+    so what makes a client-credentials token carrying the role obtainable at all.
+    The edge advertises ``client_credentials`` in its authorization-server
+    metadata (CAS-ADR-042); a tenant whose role admitted users only would leave a
+    conformant client attempting a flow the issuer then refuses -- strictly worse
+    than never advertising it.
+
+    Asserted against the runbook and the codified script *independently*, never
+    as one ``or``-joined claim: the bootstrap is idempotent and re-run whenever
+    tenant objects change, so a revert in either file alone would silently
+    restore user-only membership while the edge kept advertising the grant.
+    """
+    for path in (BOOTSTRAP, RUNBOOK):
+        member_types = _sage_reader_member_types(path.read_text(encoding="utf-8"))
+        assert member_types == {"User", "Application"}, (
+            f"{path.name}: the Sage.Reader app role must declare allowedMemberTypes "
+            '["User", "Application"] -- "Application" is what makes the role '
+            "assignable to a service principal, and so what makes the advertised "
+            f"client_credentials grant honorable; got {sorted(member_types)!r}"
+        )

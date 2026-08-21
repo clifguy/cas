@@ -143,7 +143,7 @@ az rest --method PATCH \
     },
     \"appRoles\": [{
       \"id\": \"${SAGE_READER_ROLE_ID}\",
-      \"allowedMemberTypes\": [\"User\"],
+      \"allowedMemberTypes\": [\"User\", \"Application\"],
       \"value\": \"Sage.Reader\",
       \"displayName\": \"Sage.Reader\",
       \"description\": \"Read across the SAGE REST and MCP surfaces.\",
