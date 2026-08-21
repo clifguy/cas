@@ -14,6 +14,7 @@ CAS has three loosely-coupled pieces:
 
 ```
 docs/
+  api/             Client-integration notes for the deployed REST surface
   fs/              JSON Schema + OpenAPI specs (the Formal Substrate)
   process/         Process and governance documentation
 domains/           Use-case-specific orchestrator configs (empty by default)

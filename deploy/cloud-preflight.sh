@@ -540,12 +540,22 @@ check_edge_serves_openapi_spec() {
     DETAIL_MSG="/openapi.json 200 but declares no entraBearer security scheme; the document never states how to authenticate (image predates the declaration)"
     return 1
   fi
+  # The document must also carry the authored prose, not just the generated
+  # skeleton. The invariants, the transfer handshake, and the error-envelope
+  # contract are read out of the committed specifications at startup; an image
+  # built without them serves a document that looks complete -- every path
+  # present, every explanation gone -- which a status code cannot distinguish
+  # from a healthy one. The no-delete invariant stands in for the whole block.
+  if ! printf '%s' "$spec_body" | grep -qF 'Documents are never deleted'; then
+    DETAIL_MSG="/openapi.json 200 but carries none of the authored prose; the served document is the generated skeleton (check that the API specifications are in the image)"
+    return 1
+  fi
   http_get "$SAGE_BASE_URL/mcp"
   if [ "$HTTP_CODE" != 401 ]; then
     DETAIL_MSG="control failed: /mcp answered $HTTP_CODE unauthenticated, expected 401; the edge gate has collapsed, so the schema document's 200 is not a deliberate exemption"
     return 1
   fi
-  DETAIL_MSG="/openapi.json 200 unauth, is the SAGE document, declares entraBearer; /mcp still 401 (the exemption is one path, not an open edge)"
+  DETAIL_MSG="/openapi.json 200 unauth, is the SAGE document, declares entraBearer, carries the authored prose; /mcp still 401 (the exemption is one path, not an open edge)"
   return 0
 }
 

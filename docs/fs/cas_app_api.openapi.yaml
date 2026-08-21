@@ -66,6 +66,23 @@ servers:
 # The asymmetry with the SAGE Core API spec (which does declare a bearer
 # scheme on every operation) is therefore accurate rather than an omission.
 
+# Tag declarations for the groups the operations below reference. The server
+# that hosts these routes also hosts the SAGE Core API and publishes both as one
+# schema document, so a tag used here but declared nowhere would reach a caller
+# as a bare group label.
+tags:
+  - name: Scan
+    description: >-
+      Filesystem directory listing with per-file ingest status and parsed
+      filename metadata.
+  - name: Ingest
+    description: >-
+      Batch file ingestion with two-phase edge inference and streamed progress.
+  - name: Auth
+    description: >-
+      Browser sign-in against the deployment's identity provider, and the
+      cookie-backed session it opens.
+
 # =============================================================================
 # Paths
 # =============================================================================

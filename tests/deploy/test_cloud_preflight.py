@@ -492,9 +492,11 @@ _LOGIN_BODY = (
     '&response_type=code&scope=openid","state":"xyz"}'
 )
 #: The schema document a healthy edge publishes without a token: SAGE's own,
-#: declaring the bearer scheme a caller needs in order to authenticate.
+#: declaring the bearer scheme a caller needs in order to authenticate, and
+#: carrying the authored prose read out of the committed specifications.
 _OPENAPI_BODY = (
-    '{"openapi":"3.1.0","info":{"title":"SAGE Core API","version":"2.0.0"},'
+    '{"openapi":"3.1.0","info":{"title":"SAGE Core API","version":"2.0.0",'
+    '"description":"Vault-scoped knowledge infrastructure. Documents are never deleted."},'
     '"paths":{"/sage_vaults":{"get":{}}},'
     '"components":{"securitySchemes":{"entraBearer":{"type":"http","scheme":"bearer"}}}}'
 )
@@ -1240,15 +1242,16 @@ def _openapi_spec_stub(
     spec_status: int = 200,
     title: str = "SAGE Core API",
     declares_scheme: bool = True,
+    carries_prose: bool = True,
     gated_status: int = 401,
     discovery_status: int = 200,
 ) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
     """A stub for the schema-document check.
 
-    When healthy the document is served unauthenticated, is SAGE's own, and
-    declares the bearer scheme; the gated MCP surface still answers 401. Each
-    knob turns off exactly one of those, so a test can isolate the regression
-    it targets.
+    When healthy the document is served unauthenticated, is SAGE's own,
+    declares the bearer scheme, and carries the authored prose; the gated MCP
+    surface still answers 401. Each knob turns off exactly one of those, so a
+    test can isolate the regression it targets.
     """
 
     def responder(method: str, path: str, body: bytes) -> "tuple[int, str, dict[str, str]]":
@@ -1263,9 +1266,17 @@ def _openapi_spec_stub(
                 if declares_scheme
                 else '"schemas":{}'
             )
+            # The generated skeleton's one-line description, versus the authored
+            # block an image carrying the specifications publishes.
+            description = (
+                "Vault-scoped knowledge infrastructure. Documents are never deleted."
+                if carries_prose
+                else "Salience-Aware Graph Engine - Core API"
+            )
             return (
                 200,
-                f'{{"openapi":"3.1.0","info":{{"title":"{title}","version":"2.0.0"}},'
+                f'{{"openapi":"3.1.0","info":{{"title":"{title}","version":"2.0.0",'
+                f'"description":"{description}"}},'
                 f'"paths":{{"/sage_vaults":{{"get":{{}}}}}},"components":{{{components}}}}}',
                 {},
             )
@@ -1317,6 +1328,23 @@ def test_serves_openapi_spec_without_security_scheme_fails() -> None:
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
     assert "entrabearer" in _detail(proc.stdout, "edge_serves_openapi_spec").lower()
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_without_authored_prose_fails() -> None:
+    """A 200 document carrying only the generated skeleton -> FAIL.
+
+    The prose is read out of the committed specifications at startup, so an
+    image built without them publishes every path with every explanation
+    missing. Nothing about the status code, the title, or the security scheme
+    distinguishes that document from a healthy one, which is why the check
+    greps the body for prose that only the authored block contains.
+    """
+    with serve(_openapi_spec_stub(carries_prose=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
+    assert "prose" in _detail(proc.stdout, "edge_serves_openapi_spec").lower()
 
 
 @_NEEDS_RUNTIME
