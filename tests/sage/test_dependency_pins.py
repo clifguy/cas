@@ -57,7 +57,15 @@ SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
     "aiohttp": ("3.14.3", "GHSA-cq5v-8q36-5273"),
     "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
     "mcp": ("1.28.1", "GHSA-vj7q-gjh5-988w"),
+    "setuptools": ("83.0.0", "GHSA-h35f-9h28-mq5c"),
+    "torch": ("2.13.0", "GHSA-rrmf-rvhw-rf47"),
 }
+
+# The last two floors above are one remediation, not two. torch 2.12.0 declares
+# ``setuptools<82``, so the setuptools fix was unreachable until torch moved;
+# torch 2.13.0 relaxes that to ``setuptools>=77.0.3``. setuptools is reached
+# only as a torch dependency, so a revert of the torch floor silently walks
+# setuptools back below its own -- keep the pair together.
 
 
 def _pyproject() -> dict:
@@ -86,6 +94,18 @@ def _locked_versions() -> dict[str, set[str]]:
             continue
         versions.setdefault(pkg["name"].lower(), set()).add(pkg_version)
     return versions
+
+
+def _locked_packages(name: str) -> list[dict]:
+    """Return every raw ``[[package]]`` block in ``uv.lock`` for ``name``.
+
+    Complements :func:`_locked_versions`, which reduces the lock to versions
+    alone. The routing guard below needs the surrounding fields -- the
+    resolution markers and the resolved registry -- so it reads the blocks
+    themselves.
+    """
+    data = tomllib.loads(UV_LOCK_PATH.read_text(encoding="utf-8"))
+    return [pkg for pkg in data["package"] if pkg["name"].lower() == name]
 
 
 def _project_dependency_names() -> set[str]:
@@ -230,6 +250,59 @@ def test_pytorch_cpu_index_wired() -> None:
     torch_sources = uv_cfg.get("sources", {}).get("torch", [])
     assert any(src.get("index") == "pytorch-cpu" for src in torch_sources), (
         "expected [tool.uv.sources].torch to route to the 'pytorch-cpu' index."
+    )
+
+
+def test_torch_lock_entries_split_by_platform() -> None:
+    """The *resolved* lock routes Linux torch through the CPU wheel index.
+
+    Outcome guard, distinct from ``test_pytorch_cpu_index_wired`` above: that
+    test asserts the ``[tool.uv.sources]`` routing is *declared* in
+    ``pyproject.toml``; this one asserts the resolve actually *used* it. The
+    two are separable -- a resolve can collapse torch to a single PyPI
+    ``[[package]]`` block while the declaration sits untouched, at which point
+    Linux installs pull the large CUDA wheel. Nothing else in this module
+    notices: the security floor iterates whatever versions the lock happens to
+    carry, so one entry at or above the floor passes just as cleanly as two.
+
+    Asserted by structure rather than by literal version, so an in-range bump
+    needs no edit here.
+    """
+    entries = _locked_packages("torch")
+    assert len(entries) == 2, (
+        f"expected two torch [[package]] blocks (PyPI wheel off-Linux, +cpu "
+        f"index wheel on Linux), found {len(entries)}: "
+        f"{[(e.get('version'), e.get('resolution-markers')) for e in entries]}. "
+        "A single block means the platform split collapsed and Linux is no "
+        "longer pinned to the CPU build."
+    )
+
+    by_registry = {entry.get("source", {}).get("registry", ""): entry for entry in entries}
+    cpu_registry = next((reg for reg in by_registry if "download.pytorch.org" in reg), None)
+    assert cpu_registry is not None, (
+        f"no torch entry resolves from the pytorch CPU index; registries seen: "
+        f"{sorted(by_registry)}."
+    )
+    pypi_registry = next((reg for reg in by_registry if "pypi.org" in reg), None)
+    assert pypi_registry is not None, (
+        f"no torch entry resolves from PyPI; registries seen: {sorted(by_registry)}."
+    )
+
+    cpu_entry = by_registry[cpu_registry]
+    assert "+cpu" in cpu_entry.get("version", ""), (
+        f"the index-routed torch entry must carry the +cpu local version, got "
+        f"{cpu_entry.get('version')!r}."
+    )
+    cpu_markers = " ".join(cpu_entry.get("resolution-markers", []))
+    assert "sys_platform == 'linux'" in cpu_markers, (
+        f"the +cpu torch entry must be selected on Linux, got markers "
+        f"{cpu_entry.get('resolution-markers')!r}."
+    )
+
+    pypi_markers = " ".join(by_registry[pypi_registry].get("resolution-markers", []))
+    assert "sys_platform != 'linux'" in pypi_markers, (
+        f"the PyPI torch entry must be selected off Linux, got markers "
+        f"{by_registry[pypi_registry].get('resolution-markers')!r}."
     )
 
 
