@@ -30,6 +30,21 @@ intentional -- a shared terminal-only poll helper is the sanctioned way to
 write one of these, and it is that helper, not each call site, that carries the
 correctness argument.
 
+A terminal status is necessary but not sufficient, so this module carries a
+second detector for the other half of the same defect. The worker releases the
+in-flight claim in its ``finally``, which runs *after* the terminal status
+write -- on the completion path it refreshes the document's synthetic header
+chunk in between, so the window spans a content-store write rather than a
+scheduling hairline. A poll that observes the terminal status inside that
+window proceeds to a call the guard still rejects. The claim-arm walk
+therefore reports any function that polls ``pipeline_status`` in an inline
+loop and then reaches an entry point that rejects a held claim -- by calling
+the service method or the tool that wraps it, or by posting to the route that
+wraps it, since a test contending over HTTP names the route rather than the
+function. Its blind spot is the same one by the same design: a wait expressed
+through a shared claim-aware helper is invisible, because that helper is where
+the argument belongs.
+
 Allowlist convention follows ``ORPHANED_TEST_ALLOWLIST`` in
 ``tests/test_collection_integrity.py`` and the allowlists in
 ``tests/test_public_posture.py``: empty by default, every entry carrying a
@@ -70,6 +85,25 @@ NON_TERMINAL_STATES: Final[frozenset[str]] = (
     frozenset(status.value for status in PipelineStatus) - TERMINAL_STATES
 )
 
+# Entry points that reject a document whose abstraction claim is held: the
+# service methods and the tool names that wrap them. A poll placed to gate one
+# of these has to wait for the claim to clear, not merely for a terminal
+# status. Matched on the bare attribute / name, so ``service.reabstract(...)``
+# and a directly-imported ``recompute_abstract(...)`` are both recognized.
+CONTENDING_CALLS: Final[frozenset[str]] = frozenset(
+    {
+        "reabstract",
+        "recompute_pipeline",
+        "recompute_abstract",
+    }
+)
+
+# The same guarded work reached over HTTP. A test that contends through the API
+# surface names the route, not the function, so the name walk alone cannot see
+# it. Only routes that actually exist are listed; a new contending route has to
+# be added here, and the walk stays blind to it until it is.
+CONTENDING_ROUTE_SEGMENTS: Final[tuple[str, ...]] = ("/reabstract",)
+
 # Enum member name -> wire value, so ``PipelineStatus.INDEXING_COMPLETE`` in an
 # accept-set is recognized as readily as the ``"indexing_complete"`` literal.
 _MEMBER_TO_VALUE: Final[dict[str, str]] = {status.name: status.value for status in PipelineStatus}
@@ -88,6 +122,19 @@ _MAX_REPORTED: Final[int] = 30
 # ---------------------------------------------------------------------------
 
 NONTERMINAL_POLL_ALLOWLIST: Final[dict[str, list[int]]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Claim-arm allowlist
+#
+# path (relative to repo root) → line numbers of the *first* inline
+# pipeline_status poll in a function that later contends for the claim, where
+# that shape is nonetheless correct. Empty by default; the sanctioned way to
+# write one of these is a shared poll helper that waits on the claim as well as
+# the status. Every entry added later requires a 1-line rationale alongside it.
+# ---------------------------------------------------------------------------
+
+CLAIM_ARM_POLL_ALLOWLIST: Final[dict[str, list[int]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +264,95 @@ def _format_violations(violations: list[tuple[str, int, str]]) -> str:
     )
 
 
+def _called_name(func: ast.expr) -> str | None:
+    """The bare name a call resolves to.
+
+    ``service.reabstract(...)`` and ``reabstract(...)`` both yield
+    ``"reabstract"``; anything more elaborate yields None rather than a guess.
+    """
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _contended_target(call: ast.Call) -> str | None:
+    """What a call contends for, or None if it contends for nothing.
+
+    Two spellings reach the same guarded work: calling the service method or
+    the tool that wraps it, and posting to the route that wraps it. The second
+    carries the route as a string -- plain or f-string -- inside the call, so
+    the literal is what identifies it.
+    """
+    name = _called_name(call.func)
+    if name in CONTENDING_CALLS:
+        return name
+    for node in ast.walk(call):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        for segment in CONTENDING_ROUTE_SEGMENTS:
+            if node.value.endswith(segment):
+                return segment
+    return None
+
+
+def _poll_then_contend(tree: ast.AST) -> list[tuple[int, str, int]]:
+    """Return ``(poll lineno, contending call name, call lineno)`` for every
+    function that polls ``pipeline_status`` in an inline loop and then calls an
+    entry point that rejects a held claim.
+
+    Order is the whole rule. A contending call placed *before* the poll is
+    correct and common -- the call dispatches background work and the poll
+    drains it, contending with nothing. Only a poll positioned to gate a later
+    call is making the promise this walk checks, and a terminal status alone
+    does not keep it.
+
+    The poll is anchored at the first inline loop in the function, which is the
+    line an allowlist entry names and the line a reader has to edit.
+    """
+    findings: list[tuple[int, str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        loops = [
+            inner
+            for inner in ast.walk(node)
+            if isinstance(inner, (ast.For, ast.AsyncFor, ast.While))
+            and "pipeline_status" in ast.unparse(inner)
+        ]
+        if not loops:
+            continue
+        anchor = min(loop.lineno for loop in loops)
+        last_poll_line = max(loop.end_lineno or loop.lineno for loop in loops)
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call) or inner.lineno <= last_poll_line:
+                continue
+            contended = _contended_target(inner)
+            if contended is not None:
+                findings.append((anchor, contended, inner.lineno))
+    return findings
+
+
+def _format_claim_arm_violations(violations: list[tuple[str, int, str, int]]) -> str:
+    """Render a claim-arm violation list as a pytest.fail-friendly message."""
+    head = violations[:_MAX_REPORTED]
+    body = "\n".join(
+        f"  {path}:{poll_line} → gates {call} at line {call_line}"
+        for path, poll_line, call, call_line in head
+    )
+    overflow = len(violations) - len(head)
+    tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
+    return (
+        f"Inline pipeline_status polls gating a claim-contending call "
+        f"({len(violations)} found):\n{body}{tail}\n"
+        "The abstraction queue releases a document's in-flight claim after the "
+        "terminal status write, not with it, so a poll that waits only for the "
+        "status can return while the claim is still held and the call it gates "
+        "is rejected. Wait on both through a shared claim-aware poll helper."
+    )
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -243,6 +379,29 @@ def test_no_nonterminal_pipeline_status_accept_sets() -> None:
 
     if violations:
         pytest.fail(_format_violations(violations))
+
+
+def test_no_poll_then_contend_without_claim_arm() -> None:
+    """No tracked test module may gate a claim-contending call on an inline
+    ``pipeline_status`` poll.
+    """
+    violations: list[tuple[str, int, str, int]] = []
+    for path in _tracked_test_modules():
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            # A syntactically broken test module fails its own collection
+            # loudly; not this gate's concern.
+            continue
+        allowed = set(CLAIM_ARM_POLL_ALLOWLIST.get(rel, []))
+        for poll_line, call, call_line in _poll_then_contend(tree):
+            if poll_line in allowed:
+                continue
+            violations.append((rel, poll_line, call, call_line))
+
+    if violations:
+        pytest.fail(_format_claim_arm_violations(violations))
 
 
 # ---------------------------------------------------------------------------
@@ -373,3 +532,129 @@ def test_detector_ignores_one_shot_assertions_outside_a_loop() -> None:
     assertions as poll defects.
     """
     assert _nonterminal_accept_sets(ast.parse(_SYNTHETIC_ASSERTION_SOURCE)) == []
+
+
+# ---------------------------------------------------------------------------
+# Claim-arm detector self-tests
+#
+# Held as source strings for the same reason as the status-arm synthetics: the
+# live walk over this file must not mistake a fixture for a real finding.
+# ---------------------------------------------------------------------------
+
+# The defect: a poll that waits only for the terminal status, then issues the
+# call the still-held claim rejects.
+_SYNTHETIC_POLL_THEN_CONTEND_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_second_reabstract_is_accepted():
+        for _ in range(40):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE:
+                break
+            await asyncio.sleep(0.05)
+        second = await ingestion_service.reabstract(doc_id)
+        assert second["status"] == "reabstract_started"
+    """
+)
+
+# The inverse arrangement: the call dispatches background work and the poll
+# drains it. Nothing is gated and no claim is contended.
+_SYNTHETIC_CONTEND_BEFORE_POLL_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_background_job_drains():
+        response = await ingestion_service.recompute_pipeline(doc_id)
+        assert response["status"] == "recompute_pipeline_started"
+        for _ in range(40):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE:
+                break
+            await asyncio.sleep(0.05)
+    """
+)
+
+# A poll that observes the pipeline and asserts on the result. Terminal-only
+# and contending with nothing.
+_SYNTHETIC_POLL_WITHOUT_CONTEND_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_pipeline_reaches_terminal():
+        for _ in range(40):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE:
+                break
+            await asyncio.sleep(0.05)
+        assert doc.semantic_abstract
+    """
+)
+
+# The sanctioned form: the wait is delegated to a helper that takes the service
+# and so can require the claim clear as well as the status.
+_SYNTHETIC_HELPER_MEDIATED_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_second_reabstract_is_accepted_via_helper():
+        await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
+        second = await ingestion_service.reabstract(doc_id)
+        assert second["status"] == "reabstract_started"
+    """
+)
+
+
+# The API spelling of the same defect: the contending call is a route, so the
+# name walk alone would miss it.
+_SYNTHETIC_POLL_THEN_ROUTE_CONTEND_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_second_reabstract_over_http_is_accepted():
+        for _ in range(40):
+            doc = await services.graph_store.get_document(doc_id)
+            if doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE:
+                break
+            await asyncio.sleep(0.05)
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents/{doc_id}/reabstract"
+        )
+        assert resp.status_code == 200
+    """
+)
+
+
+def test_claim_arm_detector_flags_poll_then_contend() -> None:
+    """An inline poll followed by a contending call is reported, naming the
+    poll's own line and the call it gates.
+    """
+    found = _poll_then_contend(ast.parse(_SYNTHETIC_POLL_THEN_CONTEND_SOURCE))
+    assert [(call, call_line) for _, call, call_line in found] == [("reabstract", 8)]
+
+
+def test_claim_arm_detector_ignores_contend_before_poll() -> None:
+    """A contending call that precedes the poll is correct and must be left
+    alone.
+
+    This is the negative control for the ordering rule: a detector that merely
+    looked for both shapes in one function would report this, and every test
+    that drains a job it dispatched would go red.
+    """
+    assert _poll_then_contend(ast.parse(_SYNTHETIC_CONTEND_BEFORE_POLL_SOURCE)) == []
+
+
+def test_claim_arm_detector_ignores_poll_with_no_contend() -> None:
+    """A poll that gates nothing contends with nothing."""
+    assert _poll_then_contend(ast.parse(_SYNTHETIC_POLL_WITHOUT_CONTEND_SOURCE)) == []
+
+
+def test_claim_arm_detector_ignores_helper_mediated_wait() -> None:
+    """A wait expressed through a shared claim-aware helper is invisible.
+
+    This pins the documented blind spot rather than leaving it to omission:
+    the helper is the sanctioned indirection, and it carries the correctness
+    argument each call site no longer has to restate.
+    """
+    assert _poll_then_contend(ast.parse(_SYNTHETIC_HELPER_MEDIATED_SOURCE)) == []
+
+
+def test_claim_arm_detector_flags_poll_then_route_contend() -> None:
+    """Contention issued over HTTP is caught as readily as a direct call.
+
+    The route is the only thing naming the guarded work at such a site, so a
+    walk that matched function names alone would let the whole API-mediated
+    half of the suite reintroduce the defect.
+    """
+    found = _poll_then_contend(ast.parse(_SYNTHETIC_POLL_THEN_ROUTE_CONTEND_SOURCE))
+    assert [target for _, target, _ in found] == ["/reabstract"]
