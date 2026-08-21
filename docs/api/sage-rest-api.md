@@ -132,7 +132,7 @@ Every operation except `GET|POST /sage_vaults`, `PUT /upload`, and
 ```
 
 `vault_id` is supplied to you by the SAGE operator. `GET /sage_vaults` lists
-the vaults your principal can reach.
+every vault on the deployment — the listing is not filtered per caller.
 
 ### 2.2 Two error envelopes
 
