@@ -22,7 +22,10 @@ restart. Three layers prove it:
   in the driver is load-bearing, not decorative.
 
 The trap and structural layers are standard-library only and always run; the
-faithful layer is skipped only where ``sage`` / ``uvicorn`` cannot be imported.
+faithful layer is skipped where ``sage`` / ``uvicorn`` cannot be imported or
+``SAGE_TEST_PG_DSN`` is unset (the real app's lifespan opens Postgres-backed
+vault storage, so without a configured test server startup can only fail
+against the sentinel host the root conftest pins).
 """
 
 from __future__ import annotations
@@ -60,8 +63,13 @@ try:  # the faithful layer needs the app; the structural and trap layers do not
 except Exception:  # noqa: BLE001 -- absence just skips the faithful layer
     _REAL_SERVER = False
 
+# Presence at import is the right signal: the isolation provisioner rewrites an
+# existing DSN to a per-process throwaway but never sets one from nothing.
+_PG_DSN = os.environ.get("SAGE_TEST_PG_DSN")
+
 _NEEDS_REAL = pytest.mark.skipif(
-    not _REAL_SERVER, reason="real-server layer needs sage + uvicorn importable"
+    not (_REAL_SERVER and _PG_DSN),
+    reason="real-server layer needs sage + uvicorn importable and SAGE_TEST_PG_DSN set",
 )
 
 
