@@ -15,7 +15,9 @@ structural mirror of tests/sage/test_graph_store_seam.py.
 
 from __future__ import annotations
 
+import copy
 import inspect
+import logging
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,7 @@ from sage.vault_source_binding import (
     SupportsSourceDownloadUrl,
     VaultSourceStore,
 )
+from tests.helpers.fake_graph_client import FakeGraphClient
 
 # Methods whose concrete return type legitimately narrows the port's, sanctioned
 # by CAS-ADR-043 ("richer-binding capabilities live inside the binding"): the
@@ -145,3 +148,89 @@ def test_vss_t5_binding_signature_matches_port(binding, method_name):
         assert binding_sig == port_sig, (
             f"{binding.__name__}.{method_name}: {binding_sig} != port {port_sig}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Behavioral contract (B1-)
+#
+# Obligations every binding must honor identically, asserted once against the
+# port surface and parameterized over the concrete bindings, so a future
+# binding inherits them for free. The structural tests above cannot see a
+# method that exists on both bindings but behaves differently; this section
+# exists to catch exactly that divergence.
+# --------------------------------------------------------------------------- #
+
+# A retired config section in the shape the migration warning targets
+# (CAS-ADR-046). Its content is irrelevant to the warning -- presence of the
+# key is the trigger -- but a realistic shape keeps the staged config honest.
+_RETIRED_LEGACY_SECTION = {
+    "adapters": [
+        {
+            "source_type": "docx",
+            "enabled": True,
+            "config": {"file_extensions": [".docx"]},
+        },
+    ],
+}
+
+
+@pytest.fixture(params=["filesystem", "document_store"])
+def source_store(request, tmp_path):
+    """One constructed binding per param, driven through the port surface only.
+
+    Filesystem binds to a tmp vault root; document-store binds to the shared
+    in-memory fake Graph client. Tests stage state via ``write_config`` and
+    read it back via ``discover`` / ``load_config`` so the same test body
+    exercises both bindings without binding-specific branches.
+    """
+    if request.param == "filesystem":
+        return FilesystemVaultSourceStore(tmp_path)
+    return DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=FakeGraphClient())
+
+
+def _discovered_by_id(store: VaultSourceStore, vault_id: str):
+    matches = [d for d in store.discover() if d.vault_id == vault_id]
+    assert len(matches) == 1, f"expected exactly one discovered vault {vault_id!r}"
+    return matches[0]
+
+
+def test_vss_b1_load_config_warns_on_retired_section(
+    source_store, minimal_vault_config_dict, caplog
+):
+    """B1: ``load_config`` on a stored declaration still carrying a retired
+    section emits the migration WARNING naming the vault; a clean declaration
+    loads silently. Both bindings, one obligation (CAS-ADR-046: the warning is
+    what keeps 'inert' from meaning 'invisible' to the operator).
+
+    Trap: the clean-config control kills an unconditional warn-on-every-load;
+    the exactly-one assertion kills a double-emit (helper plus a nested
+    ``load_vault_config``); the vault-id-in-message assertion kills a
+    hardcoded log line. A binding that validates the raw mapping without
+    routing it past ``warn_on_retired_sections`` fails the stale half while
+    the other binding passes -- the exact divergence this section exists to
+    surface."""
+    clean = copy.deepcopy(minimal_vault_config_dict)
+    clean["vault"]["id"] = "clean_vault"
+    source_store.write_config("clean_vault", clean)
+
+    stale = copy.deepcopy(minimal_vault_config_dict)
+    stale["vault"]["id"] = "stale_vault"
+    stale["source_adapters"] = _RETIRED_LEGACY_SECTION
+    source_store.write_config("stale_vault", stale)
+
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        source_store.load_config(_discovered_by_id(source_store, "clean_vault"))
+    assert [r for r in caplog.records if "source_adapters" in r.getMessage()] == []
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = source_store.load_config(_discovered_by_id(source_store, "stale_vault"))
+
+    matching = [r for r in caplog.records if "source_adapters" in r.getMessage()]
+    assert len(matching) == 1
+    message = matching[0].getMessage()
+    assert "is retired and ignored" in message
+    assert "stale_vault" in message
+    # The parsed model drops the section either way; the warning is the only
+    # surviving trace of it.
+    assert getattr(config, "source_adapters", None) is None

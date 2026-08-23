@@ -44,7 +44,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
+from sage.config import (
+    SageCoreConfig,
+    StackDocumentStoreConfig,
+    VaultConfig,
+    warn_on_retired_sections,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -660,7 +665,13 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
             )
         import yaml
 
-        return VaultConfig.model_validate(yaml.safe_load(data))
+        raw = yaml.safe_load(data)
+        # Warn on retired sections before validation, matching the filesystem
+        # binding's load path: VaultConfig drops unknown keys, so the raw
+        # mapping is the only place the stale section is still visible
+        # (CAS-ADR-046).
+        warn_on_retired_sections(raw)
+        return VaultConfig.model_validate(raw)
 
     def config_locator(self, vault_id: str) -> Path | None:
         return None
