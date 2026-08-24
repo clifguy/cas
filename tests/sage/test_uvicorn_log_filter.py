@@ -51,15 +51,24 @@ def test_filter_drops_mount_path_with_query():
     assert f.filter(rec) is False
 
 
-def test_filter_drops_admin_mount_path():
+def test_filter_drops_maintenance_mount_paths():
     f = _DropMcpAccessLogs()
-    rec = _access_record(("127.0.0.1:54722", "POST", "/mcp_admin", "1.1", 200))
-    assert f.filter(rec) is False
+    for path in ("/mcp_maint", "/mcp_admin"):
+        rec = _access_record(("127.0.0.1:54722", "POST", path, "1.1", 200))
+        assert f.filter(rec) is False, f"should drop {path}"
 
 
 def test_filter_keeps_other_paths():
     f = _DropMcpAccessLogs()
-    for path in ("/docs", "/mcpfoo", "/mcp/anything", "/mcp_admin/x", "/api/something", "/"):
+    for path in (
+        "/docs",
+        "/mcpfoo",
+        "/mcp/anything",
+        "/mcp_maint/x",
+        "/mcp_admin/x",
+        "/api/something",
+        "/",
+    ):
         rec = _access_record(("127.0.0.1:49260", "GET", path, "1.1", 200))
         assert f.filter(rec) is True, f"should keep path {path!r}"
 

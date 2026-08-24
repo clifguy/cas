@@ -4,10 +4,10 @@ Permanently retires one SAGE vault: drops the vault's Postgres schema (storage
 tenancy is one schema per vault in the shared database, CAS-ADR-042), removes its
 retained-source tree and its ``vault_config.yaml`` through the vault-source port,
 removes the filesystem ``brain_root``, and evicts it from a live server's in-memory
-registry. It is the asymmetric opposite of ``admin_create_vault``: create is a
-reachable, idempotent admin operation; delete is the most irreversible operation in
-SAGE, so it is an out-of-band entrypoint, **not** an MCP tool or REST route
-(CAS-ADR-034's uniform-auth admin surface carries no destructive API). This module
+registry. It is the asymmetric opposite of ``maint_create_vault``: create is a
+reachable, idempotent maintenance operation; delete is the most irreversible operation
+in SAGE, so it is an out-of-band entrypoint, **not** an MCP tool or REST route
+(CAS-ADR-034's uniform-auth maintenance surface carries no destructive API). This module
 is unreachable from the SAGE Core API and MCP server by architectural invariant
 (the import-topology test).
 

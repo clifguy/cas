@@ -1221,7 +1221,7 @@ paths:
 
   /sage_vaults/{vault_id}/refresh-views:
     post:
-      operationId: admin_recompute_views
+      operationId: maint_recompute_views
       summary: Regenerate symlink-based browsable folder views.
       description: >-
         Drops and recreates the symlink trees under the vault's
@@ -1257,7 +1257,7 @@ paths:
 
   /sage_vaults:
     get:
-      operationId: admin_list_vaults
+      operationId: maint_list_vaults
       summary: List all vaults registered with the running SAGE instance.
       description: >-
         Returns a VaultSummary for every vault in the in-memory registry.
@@ -1282,7 +1282,7 @@ paths:
                   $ref: "#/components/schemas/VaultSummary"
 
     post:
-      operationId: admin_create_vault
+      operationId: maint_create_vault
       summary: Create a new vault from a full configuration object.
       description: >-
         Validates the supplied configuration against the vault config
@@ -1325,7 +1325,7 @@ paths:
 
   /sage_vaults/{vault_id}/stats:
     get:
-      operationId: admin_get_vault_stats
+      operationId: maint_get_vault_stats
       summary: Return Dashboard statistics and health indicators for a vault.
       description: >-
         Aggregates document, edge, storage, and pipeline-status counts
@@ -1363,7 +1363,7 @@ paths:
 
   /sage_vaults/{vault_id}/config:
     get:
-      operationId: admin_get_vault_config
+      operationId: maint_get_vault_config
       summary: Return the full vault configuration.
       description: >-
         Returns the configuration as a JSON object conforming to
@@ -1425,7 +1425,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
     put:
-      operationId: admin_update_vault_config
+      operationId: maint_update_vault_config
       summary: Update vault configuration at the section level.
       description: >-
         Each top-level section provided in the request body replaces
@@ -2168,7 +2168,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/detect-drift:
     post:
-      operationId: admin_verify_vault_drift
+      operationId: maint_verify_vault_drift
       summary: Audit active sync_target / derived_from edges for drift (T-0111).
       description: >-
         Walks every active provenance-bearing edge in the vault and
@@ -2210,7 +2210,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/verify-source-files:
     post:
-      operationId: admin_verify_vault_source_files
+      operationId: maint_verify_vault_source_files
       summary: Audit that every document's backing source file is present.
       description: >-
         Walks every document in the vault and verifies that its
@@ -2225,7 +2225,7 @@ paths:
 
         Audits the vault-local source files (the ``imports/`` copies that
         ``get_document`` delivers), distinct from the content store
-        reclaimed by ``admin_optimize_vault_content_store``.
+        reclaimed by ``maint_optimize_vault_content_store``.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2251,7 +2251,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/migrate:
     post:
-      operationId: admin_migrate_vault
+      operationId: maint_migrate_vault
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
@@ -2291,7 +2291,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/reabstract-deferred:
     post:
-      operationId: admin_recompute_deferred_vault_abstracts
+      operationId: maint_recompute_deferred_vault_abstracts
       summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
@@ -2360,7 +2360,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/optimize-content-store:
     post:
-      operationId: admin_optimize_vault_content_store
+      operationId: maint_optimize_vault_content_store
       summary: Reclaim bloat in the per-vault content store.
       description: >-
         Per-vault content-store reclamation operation for the SAGE Core

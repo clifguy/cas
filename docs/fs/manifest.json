@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-08-21",
+  "manifest_date": "2026-08-23",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.9",
+      "version": "0.10",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.45",
+  "substrate_version": "1.46",
   "revision_history": [
+    {
+      "version": "1.46",
+      "date": "2026-08-23",
+      "summary": "Maintenance MCP surface renamed sage_admin -> sage_maint (T-0430, CAS-ADR-034). sage_core_api.openapi.yaml bumped v0.9->v0.10: the eleven admin_* operationIds are renamed maint_* (maint_recompute_views, maint_list_vaults, maint_create_vault, maint_get_vault_stats, maint_get_vault_config, maint_update_vault_config, maint_verify_vault_drift, maint_verify_vault_source_files, maint_migrate_vault, maint_recompute_deferred_vault_abstracts, maint_optimize_vault_content_store), matching the MCP tool rename admin_* -> maint_* enforced by the test_mcp_tool_conformance operationId-equality gate; REST URL paths (/sage_vaults/{vault_id}/admin/...) are unchanged for wire compatibility. The rename retires the privilege-boundary connotation the admin prefix carried (the surface split is cognitive-load partitioning; authorization is uniform per CAS-ADR-034). Server side (not in this spec): the maintenance mount's canonical path is /mcp_maint with /mcp_admin as a standing alias path, and every admin_* MCP tool name remains callable via a dispatch-level alias mapping (sage/_tool_naming.py MAINT_ALIAS_MAPPING) with no scheduled removal."
+    },
     {
       "version": "1.45",
       "date": "2026-08-21",

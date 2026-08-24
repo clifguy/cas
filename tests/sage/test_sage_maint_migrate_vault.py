@@ -15,7 +15,7 @@ from sage.services.vault_registry import VaultRegistryService
 from tests.sage.conftest import initialize_services_for_test
 
 
-async def test_sage_admin_migrate_vault_returns_report_dict(minimal_vault_config_dict):
+async def test_sage_maint_migrate_vault_returns_report_dict(minimal_vault_config_dict):
     """Happy path: returns a dict that round-trips through MigrationReport
     as the Postgres no-op report, with both tier3 keys present.
 
@@ -51,7 +51,7 @@ async def test_sage_admin_migrate_vault_returns_report_dict(minimal_vault_config
             mcp_server._vaults.pop(vault_id, None)
 
 
-async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_envelope():
+async def test_sage_maint_migrate_vault_invalid_vault_id_shape_returns_error_envelope():
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
     and surfaces as the structured invalid_vault_id (400) envelope carrying
     the offending value, not a raised exception."""
@@ -65,7 +65,7 @@ async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_env
     assert result["detail"]["vault_id"] == "not a vault id!"
 
 
-async def test_sage_admin_migrate_vault_unknown_vault_returns_error_envelope():
+async def test_sage_maint_migrate_vault_unknown_vault_returns_error_envelope():
     """An unregistered vault_id returns the unknown_vault envelope."""
     result = await mcp_server.migrate_vault(vault_id="ghost")
 

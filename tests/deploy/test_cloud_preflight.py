@@ -67,6 +67,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_advertises_grant_types",
         "edge_serves_openapi_spec",
         "edge_mount_discovery",
+        "mcp_maint",
         "mcp_admin",
         "mcp_roundtrip",
         "edge_authn_backend",
@@ -556,7 +557,7 @@ def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str
     p = path.split("?", 1)[0]
     if p == "/.well-known/oauth-protected-resource":
         return 200, _DISCOVERY_BODY, {}
-    if p == "/mcp" or p == "/mcp_admin":
+    if p in ("/mcp", "/mcp_maint", "/mcp_admin"):
         return 401, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
     if p == "/health":
         return 200, _HEALTH_BODY, {}
@@ -1280,7 +1281,7 @@ def _openapi_spec_stub(
                 f'"paths":{{"/sage_vaults":{{"get":{{}}}}}},"components":{{{components}}}}}',
                 {},
             )
-        if p in ("/mcp", "/mcp_admin"):
+        if p in ("/mcp", "/mcp_maint", "/mcp_admin"):
             return gated_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
         return 404, '{"error":"not_found"}', {}
 
@@ -1403,7 +1404,8 @@ def _mount_discovery_stub(
         p = path.split("?", 1)[0]
         if p == "/.well-known/oauth-protected-resource":
             return discovery_status, (_DISCOVERY_BODY if discovery_status == 200 else "{}"), {}
-        for mount in ("/mcp_admin", "/mcp"):  # admin first: /mcp is its prefix
+        # Path-specific mounts first: /mcp is a string prefix of both.
+        for mount in ("/mcp_maint", "/mcp_admin", "/mcp"):
             if p == f"/.well-known/oauth-protected-resource{mount}":
                 resource = "{{BASE_URL}}" + (mount if pathful_resource else "")
                 body = (
@@ -2191,11 +2193,13 @@ def test_warmup_engage_breadcrumb_to_stderr(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# E. MCP-surface checks (mcp_admin auth enforcement + mcp_roundtrip)           #
+# E. MCP-surface checks (maintenance-mount auth enforcement + mcp_roundtrip)   #
 #                                                                              #
 # The bash check owns the anti-coincidental CONTROL logic (discovery-200 edge- #
 # live + the unauth-401 gate); the round-trip PROTOCOL is stubbed here via the #
 # PREFLIGHT_MCP_PROBE_CMD seam and proven for real in test_mcp_preflight_probe. #
+# Both maintenance mount paths run the same check body: /mcp_maint (canonical) #
+# and /mcp_admin (the pre-rename alias path).                                  #
 # --------------------------------------------------------------------------- #
 def _discovery_broken(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
     """``_green`` but the OAuth discovery doc 404s -- the dead-edge control trap."""
@@ -2204,65 +2208,80 @@ def _discovery_broken(method: str, path: str, body: bytes) -> tuple[int, str, di
     return _green(method, path, body)
 
 
+_MAINTENANCE_CHECKS = [("mcp_maint", "/mcp_maint"), ("mcp_admin", "/mcp_admin")]
+
+
 @_NEEDS_RUNTIME
-def test_mcp_admin_passes_when_401_unauth_and_authed_probe_ok(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("check", "mount"), _MAINTENANCE_CHECKS)
+def test_maintenance_mount_passes_when_401_unauth_and_authed_probe_ok(
+    tmp_path: Path, check: str, mount: str
+) -> None:
     """Healthy maintenance mount: 401 unauth + an authenticated handshake that
     succeeds, with the discovery-200 control held -> PASS.
     """
-    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=ok", 0)
+    probe = _write_probe_stub(tmp_path, f"mode=handshake mount={mount} initialize=ok", 0)
     with serve(_green) as url:
-        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=check, PREFLIGHT_MCP_PROBE_CMD=probe))
     verdicts = _verdicts(proc.stdout)
-    assert verdicts.get("mcp_admin") == "PASS", proc.stdout
+    assert verdicts.get(check) == "PASS", proc.stdout
     assert proc.returncode == 0
 
 
 @_NEEDS_RUNTIME
-def test_mcp_admin_fails_when_discovery_broken_but_mcp_admin_401(tmp_path: Path) -> None:
-    """THE blanket-edge trap for the maintenance mount: /mcp_admin answers 401 and
+@pytest.mark.parametrize(("check", "mount"), _MAINTENANCE_CHECKS)
+def test_maintenance_mount_fails_when_discovery_broken_but_mount_401(
+    tmp_path: Path, check: str, mount: str
+) -> None:
+    """THE blanket-edge trap for the maintenance mount: the mount answers 401 and
     the authed probe succeeds, but the discovery-200 control failed (404) -- the
     401 must NOT be credited on a dead edge.
     """
-    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=ok", 0)
+    probe = _write_probe_stub(tmp_path, f"mode=handshake mount={mount} initialize=ok", 0)
     with serve(_discovery_broken) as url:
-        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=check, PREFLIGHT_MCP_PROBE_CMD=probe))
     verdicts = _verdicts(proc.stdout)
-    assert verdicts.get("mcp_admin") == "FAIL", (
+    assert verdicts.get(check) == "FAIL", (
         f"a 401 must not be credited when the discovery-200 control failed: {proc.stdout}"
     )
     assert proc.returncode != 0
 
 
 @_NEEDS_RUNTIME
-def test_mcp_admin_fails_when_unauth_returns_200(tmp_path: Path) -> None:
-    """Auth not enforced on the maintenance mount: /mcp_admin answers 200 unauth.
+@pytest.mark.parametrize(("check", "mount"), _MAINTENANCE_CHECKS)
+def test_maintenance_mount_fails_when_unauth_returns_200(
+    tmp_path: Path, check: str, mount: str
+) -> None:
+    """Auth not enforced on the maintenance mount: the mount answers 200 unauth.
     Even with a passing authed probe, the missing 401 must FAIL the check.
     """
-    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=ok", 0)
+    probe = _write_probe_stub(tmp_path, f"mode=handshake mount={mount} initialize=ok", 0)
 
-    def admin_open(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
-        if path.split("?", 1)[0] == "/mcp_admin":
+    def mount_open(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == mount:
             return 200, '{"oops":"unauthenticated reached maintenance"}', {}
         return _green(method, path, body)
 
-    with serve(admin_open) as url:
-        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+    with serve(mount_open) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=check, PREFLIGHT_MCP_PROBE_CMD=probe))
     verdicts = _verdicts(proc.stdout)
-    assert verdicts.get("mcp_admin") == "FAIL", "an open /mcp_admin must fail auth-enforcement"
+    assert verdicts.get(check) == "FAIL", f"an open {mount} must fail auth-enforcement"
     assert proc.returncode != 0
 
 
 @_NEEDS_RUNTIME
-def test_mcp_admin_fails_when_authed_probe_fails(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("check", "mount"), _MAINTENANCE_CHECKS)
+def test_maintenance_mount_fails_when_authed_probe_fails(
+    tmp_path: Path, check: str, mount: str
+) -> None:
     """401 unauth + discovery-200 both hold, but the authenticated maintenance
     handshake fails (probe exit 1) -> FAIL. A check that asserted only the unauth
     401 would coincidentally pass here.
     """
-    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=fail", 1)
+    probe = _write_probe_stub(tmp_path, f"mode=handshake mount={mount} initialize=fail", 1)
     with serve(_green) as url:
-        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=check, PREFLIGHT_MCP_PROBE_CMD=probe))
     verdicts = _verdicts(proc.stdout)
-    assert verdicts.get("mcp_admin") == "FAIL", proc.stdout
+    assert verdicts.get(check) == "FAIL", proc.stdout
     assert proc.returncode != 0
 
 

@@ -49,6 +49,7 @@ from pydantic import ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
+from sage._tool_naming import MAINT_ALIAS_MAPPING
 from sage.api.errors import _TYPED_ALIAS_CODES, SAGEError, translate_validation_error
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
@@ -308,6 +309,14 @@ class _LoggingFastMCP(FastMCP):
     ``[TextContent(text=<json>)]`` wire shape) and falls through to the
     existing ``_envelope_error_kind`` warning path; the ToolError is
     NOT re-raised. Substrate decision: CAS-ADR-037.
+
+    Pre-dispatch alias resolution (standing, no scheduled removal):
+    before dispatch, the requested ``name`` is checked against
+    ``MAINT_ALIAS_MAPPING`` (the maintenance surface's pre-rename tool
+    names per CAS-ADR-034). An old name is rewritten to its canonical
+    target and a per-call WARNING names both, so callers can migrate at
+    their own pace. Canonical names and every name outside the mapping
+    dispatch verbatim.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -322,6 +331,19 @@ class _LoggingFastMCP(FastMCP):
         self, name: str, arguments: dict[str, Any]
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         logger = _logging.getLogger(__name__)
+        # Pre-dispatch alias resolution for the maintenance-surface rename
+        # (CAS-ADR-034): a pre-rename ``admin_*`` name rewrites to its
+        # canonical ``maint_*`` target so existing callers keep working.
+        # No removal is scheduled; the log line steers callers to the
+        # canonical name without promising one.
+        if name in MAINT_ALIAS_MAPPING:
+            target = MAINT_ALIAS_MAPPING[name]
+            logger.warning(
+                "mcp tool alias: %r dispatched as its canonical name %r",
+                name,
+                target,
+            )
+            name = target
         logger.info("mcp tool: %s", name)
         try:
             result = await super().call_tool(name, arguments)
@@ -378,23 +400,23 @@ search = _sage_tools["search"]
 read_projection = _sage_tools["read_projection"]
 read_section = _sage_tools["read_section"]
 list_headings = _sage_tools["list_headings"]
-recompute_views = _sage_tools["admin_recompute_views"]
-list_vaults = _sage_tools["admin_list_vaults"]
-create_vault = _sage_tools["admin_create_vault"]
-get_vault_config = _sage_tools["admin_get_vault_config"]
-update_vault_config = _sage_tools["admin_update_vault_config"]
-get_vault_stats = _sage_tools["admin_get_vault_stats"]
+recompute_views = _sage_tools["maint_recompute_views"]
+list_vaults = _sage_tools["maint_list_vaults"]
+create_vault = _sage_tools["maint_create_vault"]
+get_vault_config = _sage_tools["maint_get_vault_config"]
+update_vault_config = _sage_tools["maint_update_vault_config"]
+get_vault_stats = _sage_tools["maint_get_vault_stats"]
 verify_hash = _sage_tools["verify_hashes"]
 list_staging_edges = _sage_tools["list_staging_edges"]
 update_staging_edge = _sage_tools["update_staging_edge"]
 list_pending_metadata = _sage_tools["list_pending_metadata"]
-migrate_vault = _sage_tools["admin_migrate_vault"]
-verify_vault_drift = _sage_tools["admin_verify_vault_drift"]
-verify_vault_source_files = _sage_tools["admin_verify_vault_source_files"]
-recompute_deferred_vault_abstracts = _sage_tools["admin_recompute_deferred_vault_abstracts"]
-optimize_vault_content_store = _sage_tools["admin_optimize_vault_content_store"]
-reload_vault = _sage_tools["admin_reload_vault"]
-get_stack_config = _sage_tools["admin_get_stack_config"]
+migrate_vault = _sage_tools["maint_migrate_vault"]
+verify_vault_drift = _sage_tools["maint_verify_vault_drift"]
+verify_vault_source_files = _sage_tools["maint_verify_vault_source_files"]
+recompute_deferred_vault_abstracts = _sage_tools["maint_recompute_deferred_vault_abstracts"]
+optimize_vault_content_store = _sage_tools["maint_optimize_vault_content_store"]
+reload_vault = _sage_tools["maint_reload_vault"]
+get_stack_config = _sage_tools["maint_get_stack_config"]
 
 list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]
@@ -404,9 +426,10 @@ bulk_ingest_document = _app_tools["bulk_ingest_document"]
 # ---------------------------------------------------------------------------
 #
 # The SAGE MCP surface is split into two: ``sage`` (the ordinary surface)
-# and ``sage_admin`` (the maintenance surface, opt-in additive). Per
-# CAS-ADR-034 the partition is realized as two Streamable HTTP mounts on
-# the SAGE app (``/mcp`` = ordinary, ``/mcp_admin`` = maintenance; see
+# and ``sage_maint`` (the maintenance surface, opt-in additive). Per
+# CAS-ADR-034 the partition is realized as Streamable HTTP mounts on
+# the SAGE app (``/mcp`` = ordinary, ``/mcp_maint`` = maintenance, with
+# ``/mcp_admin`` as the maintenance surface's pre-rename alias path; see
 # ``sage/app.py``). Mount selection *is* the role declaration. Surface
 # assignment is derived purely from each tool name's first segment per
 # CAS-ADR-029's prefix-encodes-surface rule — there is no per-tool
@@ -420,10 +443,10 @@ def _surface_of(tool_name: str) -> str:
     """Return the MCP server a tool registers on, derived from its name.
 
     Per CAS-ADR-029's prefix-encodes-surface rule: a tool whose name's first
-    segment is ``admin_`` belongs to the maintenance server (``sage_admin``);
+    segment is ``maint_`` belongs to the maintenance server (``sage_maint``);
     every other tool belongs to the ordinary server (``sage``).
     """
-    return "sage_admin" if tool_name.startswith("admin_") else "sage"
+    return "sage_maint" if tool_name.startswith("maint_") else "sage"
 
 
 def build_partitioned_server(surface: str) -> _LoggingFastMCP:
@@ -435,7 +458,7 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
     does not match ``surface``, so registration is purely prefix-derived
     (CAS-ADR-029) with no per-tool override table. The maintenance server
     therefore does not duplicate the shared read spine, which carries no
-    ``admin_`` prefix and so resolves to ``sage``.
+    ``maint_`` prefix and so resolves to ``sage``.
 
     The server carries the Streamable HTTP transport settings its HTTP
     mounting requires. ``stateless_http=True``

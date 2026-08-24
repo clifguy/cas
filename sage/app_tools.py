@@ -161,7 +161,7 @@ def register_app_tools(
         filename when the caller omits them from ``parsed_metadata`` (the
         exact fields are vault-config-defined under
         ``metadata_extraction.filename_extraction.segment_fields``; see
-        ``admin_get_vault_config``). The batch flow is a confirmation-queue
+        ``maint_get_vault_config``). The batch flow is a confirmation-queue
         feeder by design: callers curate metadata up-front, then a human or
         follow-up agent confirms each record via ``update_metadata``. Call
         ``get_filename_metadata`` first to preview the parser's output.
@@ -203,7 +203,7 @@ def register_app_tools(
 
         Error modes:
         - ``unknown_vault`` (400): ``vault_id`` is not a registered vault
-          (call ``admin_list_vaults`` for the set). A batch-boundary check
+          (call ``maint_list_vaults`` for the set). A batch-boundary check
           raised before any per-file work; per-file failures accumulate in
           ``summary.errors[]`` instead.
         - ``empty_file_list`` (string in response): ``files`` was empty.

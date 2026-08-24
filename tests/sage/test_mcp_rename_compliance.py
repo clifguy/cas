@@ -124,7 +124,7 @@ def _parse_result(result) -> dict | list:
 # tools (create_edges, update_lifecycles, update_metadata).
 _INVOCATION_PROBES: tuple[tuple[str, dict], ...] = (
     # Read spine
-    ("admin_list_vaults", {}),
+    ("maint_list_vaults", {}),
     ("get_document", {"vault_id": "test_vault", "document_id": "does-not-exist"}),
     (
         "search",
@@ -264,13 +264,14 @@ def test_extract_verb_synthetic_inputs(tool_name: str, expected_verb: str) -> No
 
 
 async def test_settings_local_permissions_match_live_catalog() -> None:
-    """Every ``mcp__sage__<name>`` entry in the project settings names a registered tool.
+    """Every SAGE MCP permission entry in the project settings names a registered tool.
 
     Reads ``.claude/settings.local.json`` (project root) and asserts
-    every ``mcp__sage__<X>`` permission entry has ``X`` registered in
-    the live MCP catalog. Catches drift in either direction:
-    permission entries for renamed-away tools, or unauthorized new
-    tools.
+    every ``mcp__sage__<X>`` and ``mcp__sage_maint__<X>`` permission
+    entry has ``X`` registered in the live MCP catalog. Catches drift
+    in either direction: permission entries for renamed-away tools, or
+    unauthorized new tools. Alias names are deliberately not admitted:
+    a permission entry should name the canonical tool.
 
     Anti-coincidental check: the assertion compares against the live
     catalog rather than a static expected list; if the catalog drifts
@@ -286,10 +287,13 @@ async def test_settings_local_permissions_match_live_catalog() -> None:
 
     data = _json.loads(settings_path.read_text())
     allow = data.get("permissions", {}).get("allow", [])
-    sage_entries = [e for e in allow if e.startswith("mcp__sage__")]
 
     live_names = await _live_tool_names()
-    stale = sorted(e for e in sage_entries if e[len("mcp__sage__") :] not in live_names)
+    stale: list[str] = []
+    for prefix in ("mcp__sage__", "mcp__sage_maint__"):
+        entries = [e for e in allow if e.startswith(prefix)]
+        stale.extend(e for e in entries if e[len(prefix) :] not in live_names)
+    stale.sort()
     assert not stale, (
         f"Stale settings.local.json permission entries (no live MCP tool): "
         f"{stale}. Either rename the entries to the current tool name "
@@ -314,7 +318,7 @@ _EXPECTED_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
 
 async def test_live_catalog_matches_expected_set() -> None:
     """The live MCP catalog equals the target set defined in
-    SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + admin-prefix pass.
+    SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + surface-prefix pass.
 
     Anti-coincidental check: the expected set is sourced from the
     SERVER_ASSIGNMENT table in ``sage/_tool_naming.py`` rather than from

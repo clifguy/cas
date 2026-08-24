@@ -453,7 +453,7 @@ def test_bld_011_api_version_is_major_minor_of_release() -> None:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("surface", ["sage", "sage_admin"])
+@pytest.mark.parametrize("surface", ["sage", "sage_maint"])
 def test_bld_008_identity_reaches_initialize_handshake(surface: str) -> None:
     """Both served surfaces carry the build identity in the real initialize options."""
     from sage import mcp_server

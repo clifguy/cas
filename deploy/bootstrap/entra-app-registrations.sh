@@ -38,12 +38,14 @@ if [ -z "${SAGE_APP_ID}" ]; then
   SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
-# Four identifier URIs, declared together (the flag is a declarative full-set
+# Five identifier URIs, declared together (the flag is a declarative full-set
 # replace, so a re-run keeps exactly these -- and re-running after a set
 # change IS the live-tenant trim): the api://<app-id> audience URI the BFF OBO
 # exchange and the deploy preflight token target, the https custom-domain
-# identity the MCP edge advertises as its scope prefix, and the two MCP-mount
-# forms of that identity. The https forms exist because an MCP client sends an
+# identity the MCP edge advertises as its scope prefix, and the MCP-mount
+# forms of that identity (/mcp, /mcp_maint, and /mcp_admin -- the last is the
+# maintenance mount's pre-rename alias path, kept registered for as long as
+# the edge serves it). The https forms exist because an MCP client sends an
 # RFC 8707 resource parameter with /authorize and Entra rejects the request
 # (AADSTS9010010, invalid_target) unless that parameter IS a registered
 # identifier URI of the scope's app -- same-origin is not enough, matched
@@ -60,7 +62,8 @@ fi
 # loudly here if it is not.
 az ad app update --id "${SAGE_APP_ID}" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint" \
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
 az ad sp create --id "${SAGE_APP_ID}" 2>/dev/null || true
 
 # Expose the single delegated scope and app role that authorize both the REST

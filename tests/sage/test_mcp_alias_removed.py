@@ -1,19 +1,23 @@
-"""Regression: the SAGE MCP tool-name alias layer is gone.
+"""Regression: the verb-rename MCP tool-name alias layer stays gone.
 
 The verb-convention rename (CAS-ADR-033) and the two-server prefix
 simplification (CAS-ADR-034) were rolled out behind a transitional
 ``_LoggingFastMCP.call_tool`` alias middleware that rewrote pre-rename
 tool names onto their current targets and short-circuited dropped names
-with a ``tool_removed`` envelope. That deprecation window has closed and
-the middleware is removed; ``call_tool`` now dispatches every name
-verbatim.
+with a ``tool_removed`` envelope. That deprecation window closed and
+the middleware was removed; those names dispatch verbatim.
 
-These tests pin the *absence* of the rewrite, the *absence* of the
-removed-name short-circuit, and the *absence* of the per-call deprecation
-warning. This file is the one sanctioned place a pre-rename tool name
-appears in the tree: the literals exist only to prove such a name is no
-longer special-cased, and the repo grep gate excludes this file for that
-reason.
+A *separate, standing* alias layer now exists for the maintenance
+surface's prefix rename (``MAINT_ALIAS_MAPPING``; covered by
+``test_mcp_maint_alias.py``). Its domain is exactly the mapped
+maintenance names, so these tests double as the boundary proof: the
+verb-rename-era names below must never re-enter any alias table.
+
+These tests pin the *absence* of the verb-rename rewrite, the *absence*
+of the removed-name short-circuit, and the *absence* of a per-call
+warning for those names. This file is the one sanctioned place a
+verb-rename-era tool name appears in the tree: the literals exist only
+to prove such a name is no longer special-cased.
 """
 
 from __future__ import annotations

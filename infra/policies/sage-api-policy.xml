@@ -117,13 +117,21 @@
                             Entra can neither match nor register as an identifier
                             URI, so a client steered to the root document dead-ends
                             at /authorize with AADSTS9010010 (invalid_target).
-                            Verified live on cor-prod. /mcp_admin is tested before
-                            /mcp because /mcp is its string prefix. The path-string
+                            Verified live on cor-prod. /mcp_maint and /mcp_admin
+                            (the maintenance mount's pre-rename alias path) are
+                            tested before /mcp because /mcp is their string
+                            prefix; the two are not prefixes of each other, so
+                            their relative order is free. The path-string
                             literals use the round-trip-safe &quot;-escaped
                             double-quoted attribute encoding (see the Accept test
                             above).
                         -->
                         <choose>
+                            <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_maint&quot;))">
+                                <set-header name="WWW-Authenticate" exists-action="override">
+                                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_maint"</value>
+                                </set-header>
+                            </when>
                             <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_admin&quot;))">
                                 <set-header name="WWW-Authenticate" exists-action="override">
                                     <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_admin"</value>

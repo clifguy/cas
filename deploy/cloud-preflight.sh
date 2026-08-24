@@ -580,7 +580,7 @@ check_edge_mount_discovery() {
   esc_base="$(printf '%s' "$SAGE_BASE_URL" | sed 's/[.]/\\./g')"
   local detail="" ok=yes
   local mount
-  for mount in /mcp /mcp_admin; do
+  for mount in /mcp /mcp_maint /mcp_admin; do
     http_get "$SAGE_BASE_URL$mount"
     local challenge_ok=no
     # The closing quote anchors exactness: the /mcp challenge must point at
@@ -602,29 +602,40 @@ check_edge_mount_discovery() {
   return 1
 }
 
-check_mcp_admin() {
-  http_get "$SAGE_BASE_URL/mcp_admin"
+check_maintenance_mount() {
+  # Shared body for the two maintenance mount paths: /mcp_maint (canonical)
+  # and /mcp_admin (pre-rename alias, kept serving with no scheduled removal).
+  local mount="$1"
+  http_get "$SAGE_BASE_URL$mount"
   local unauth="$HTTP_CODE"
   if ! edge_is_live; then
-    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); /mcp_admin $unauth is the blanket-failure trap, not auth-gating"
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); $mount $unauth is the blanket-failure trap, not auth-gating"
     return 1
   fi
   # The unauth-401 gate is itself the control that credits the authed handshake:
   # a blanket-200 surface would fail here (200 != 401), so a passing handshake
   # below is genuinely auth-gated, not a canned 200. Per CAS-ADR-034 the
-  # maintenance mount is auth-gated, not authz-role-gated -- no admin role is
-  # asserted; the same machine token works on both mounts.
+  # maintenance mount is auth-gated, not authz-role-gated -- no maintainer role
+  # is asserted; the same machine token works on every mount.
   if [ "$unauth" != 401 ]; then
-    DETAIL_MSG="expected 401 from /mcp_admin unauth, got $unauth (maintenance mount auth not enforced?)"
+    DETAIL_MSG="expected 401 from $mount unauth, got $unauth (maintenance mount auth not enforced?)"
     return 1
   fi
-  mcp_probe /mcp_admin handshake
+  mcp_probe "$mount" handshake
   if [ "$MCP_PROBE_RC" != 0 ]; then
-    DETAIL_MSG="/mcp_admin 401 unauth held but the authenticated maintenance handshake failed [${MCP_PROBE_OUT:-no verdict}]"
+    DETAIL_MSG="$mount 401 unauth held but the authenticated maintenance handshake failed [${MCP_PROBE_OUT:-no verdict}]"
     return 1
   fi
-  DETAIL_MSG="/mcp_admin 401 unauth + authenticated handshake ok [$MCP_PROBE_OUT]; discovery-200 control held"
+  DETAIL_MSG="$mount 401 unauth + authenticated handshake ok [$MCP_PROBE_OUT]; discovery-200 control held"
   return 0
+}
+
+check_mcp_maint() {
+  check_maintenance_mount /mcp_maint
+}
+
+check_mcp_admin() {
+  check_maintenance_mount /mcp_admin
 }
 
 check_mcp_roundtrip() {
@@ -1170,8 +1181,11 @@ register edge_serves_openapi_spec check_edge_serves_openapi_spec \
 register edge_mount_discovery check_edge_mount_discovery \
   "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \
   "a bare-host resource is the coincidental-pass trap (200s fine, but serializes to a trailing-slash form Entra can neither match nor register -- AADSTS9010010); credited only with the discovery-200 control held"
+register mcp_maint check_mcp_maint \
+  "/mcp_maint 401 unauthenticated and an authenticated maintenance handshake succeeds" \
+  "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"
 register mcp_admin check_mcp_admin \
-  "/mcp_admin 401 unauthenticated and an authenticated maintenance handshake succeeds" \
+  "/mcp_admin (the maintenance surface's pre-rename alias path) 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"
 register mcp_roundtrip check_mcp_roundtrip \
   "/mcp completes a JSON-RPC initialize + tools/list returning a well-formed result" \

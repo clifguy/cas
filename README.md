@@ -38,9 +38,11 @@ uv sync --extra test --extra mlx --extra dev
 
 `uv sync` creates `.venv/` and installs the project editable from the lockfile. The `dev` extra provides `ruff` and `pre-commit` (the repo uses pre-commit hooks). `pyproject.toml` carries the abstract compatibility ranges; `uv.lock` carries the exact resolved versions.
 
-The SAGE MCP surface is served over the MCP Streamable HTTP transport by the `python -m sage` uvicorn process (default bind `127.0.0.1:8000`) and is split across two mounts. The **ordinary** mount (`/mcp`) carries the read spine plus the everyday mutation spine. The **maintenance** mount (`/mcp_admin`) is opt-in and additive — it serves the vault- and stack-level administrative tools (the `admin_*` tools) and does not duplicate the read spine; a maintenance session connects to both mounts and reads through the ordinary one. Both mounts run in the one process, sharing a single vault registry and abstraction model; mount selection in the client's MCP settings is the only role declaration.
+The SAGE MCP surface is served over the MCP Streamable HTTP transport by the `python -m sage` uvicorn process (default bind `127.0.0.1:8000`) and is split across two surfaces. The **ordinary** mount (`/mcp`) carries the read spine plus the everyday mutation spine. The **maintenance** mount (`/mcp_maint`) is opt-in and additive — it serves the vault- and stack-level maintenance tools (the `maint_*` tools) and does not duplicate the read spine; a maintenance session connects to both mounts and reads through the ordinary one. The split exists to keep the everyday catalog small; it carries no privilege distinction — authorization is uniform across both surfaces. All mounts run in the one process, sharing a single vault registry and abstraction model; mount selection in the client's MCP settings is the only role declaration.
 
-Configure the mounts in your MCP client (e.g. Claude Code `settings.json`). The default case needs only `sage`; add `sage_admin` when you need maintenance tools:
+The maintenance surface's pre-rename names remain working aliases with no scheduled removal: the path `/mcp_admin` serves the identical roster, and each `admin_*` tool name dispatches as its `maint_*` counterpart. New configurations should use the `maint` names.
+
+Configure the mounts in your MCP client (e.g. Claude Code `settings.json`). The default case needs only `sage`; add `sage_maint` when you need maintenance tools:
 
 ```json
 {
@@ -49,9 +51,9 @@ Configure the mounts in your MCP client (e.g. Claude Code `settings.json`). The 
       "type": "http",
       "url": "http://127.0.0.1:8000/mcp"
     },
-    "sage_admin": {
+    "sage_maint": {
       "type": "http",
-      "url": "http://127.0.0.1:8000/mcp_admin"
+      "url": "http://127.0.0.1:8000/mcp_maint"
     }
   }
 }

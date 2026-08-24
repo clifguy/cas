@@ -174,7 +174,7 @@ Deploy with the resolved coordinates (`sharepointSiteId = ${SITE_ID}`,
 finds `vaults/test/`, and loads its `vault_config.yaml` — the seeded vault is
 discovered with no local vault root involved. Confirm:
 
-- `admin_list_vaults` includes `test`, and `admin_get_vault_config` returns its
+- `maint_list_vaults` includes `test`, and `maint_get_vault_config` returns its
   configuration.
 - Restart (or roll a new revision of) the SAGE container app and confirm `test`
   is rediscovered — the live proof that the vault survives the stateless
@@ -219,7 +219,7 @@ export SP_VALIDATE_VAULT_ID=test                      # the seeded validation va
 export SP_VALIDATE_STATE_FILE="$(mktemp -t spvalidate)"
 ```
 
-The `test` vault must already be present (`admin_list_vaults` includes `test`,
+The `test` vault must already be present (`maint_list_vaults` includes `test`,
 from step 5).
 
 ### 6.2 Pre-restart — ingest, readback, audit
@@ -292,7 +292,7 @@ export UNGRANTED_SITE_ID=...           # resolved at run time; never committed
 Seed a disposable `vault_config.yaml` whose `document_store.site_id` is
 `$UNGRANTED_SITE_ID` (under any throwaway vault id), roll a revision, and confirm:
 
-- The throwaway vault is **absent** from `admin_list_vaults` / `GET /sage_vaults`.
+- The throwaway vault is **absent** from `maint_list_vaults` / `GET /sage_vaults`.
 - The SAGE container log shows a Microsoft Graph `403 Forbidden` for that site at
   discovery.
 
