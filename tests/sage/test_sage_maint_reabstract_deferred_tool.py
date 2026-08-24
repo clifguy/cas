@@ -79,7 +79,7 @@ async def _seed_one_skipped(services: SAGEServices, *, doc_id_label: str) -> str
     return doc.id
 
 
-async def test_sage_admin_reabstract_deferred_vault_happy_path(minimal_vault_config_dict):
+async def test_sage_maint_reabstract_deferred_vault_happy_path(minimal_vault_config_dict):
     """Returns a dict that round-trips through ReabstractReport with the
     seeded document's outcome recorded."""
     async with _publish_vault(minimal_vault_config_dict) as (vault_id, services):
@@ -98,7 +98,7 @@ async def test_sage_admin_reabstract_deferred_vault_happy_path(minimal_vault_con
             await asyncio.sleep(0.1)
 
 
-async def test_sage_admin_reabstract_deferred_vault_returns_structured_409(
+async def test_sage_maint_reabstract_deferred_vault_returns_structured_409(
     minimal_vault_config_dict,
 ):
     """Concurrent invocation returns the reabstract_already_in_flight
@@ -138,7 +138,7 @@ async def test_sage_admin_reabstract_deferred_vault_returns_structured_409(
             await asyncio.sleep(0.1)
 
 
-async def test_sage_admin_reabstract_deferred_vault_unknown_vault_returns_error_envelope():
+async def test_sage_maint_reabstract_deferred_vault_unknown_vault_returns_error_envelope():
     """An unregistered vault id returns the unknown_vault envelope rather
     than raising; matches the existing migrate_vault contract."""
     result = await mcp_server.recompute_deferred_vault_abstracts(vault_id="ghost")
@@ -149,7 +149,7 @@ async def test_sage_admin_reabstract_deferred_vault_unknown_vault_returns_error_
     )
 
 
-async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
+async def test_sage_maint_reabstract_deferred_vault_aggregates_streaming_events(
     minimal_vault_config_dict,
 ):
     """regression guard for the MCP-layer contract.

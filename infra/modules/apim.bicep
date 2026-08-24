@@ -404,11 +404,24 @@ resource sageDiscoveryMcpOperation 'Microsoft.ApiManagement/service/apis/operati
   }
 }
 
+resource sageDiscoveryMcpMaintOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'oauth-protected-resource-mcp-maint'
+  properties: {
+    displayName: 'OAuth protected-resource metadata (mcp_maint mount)'
+    method: 'GET'
+    urlTemplate: '/.well-known/oauth-protected-resource/mcp_maint'
+    templateParameters: []
+  }
+}
+
+// The maintenance mount's pre-rename alias path keeps its own metadata
+// document for as long as the alias is served.
 resource sageDiscoveryMcpAdminOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
   parent: sageApi
   name: 'oauth-protected-resource-mcp-admin'
   properties: {
-    displayName: 'OAuth protected-resource metadata (mcp_admin mount)'
+    displayName: 'OAuth protected-resource metadata (mcp_admin alias mount)'
     method: 'GET'
     urlTemplate: '/.well-known/oauth-protected-resource/mcp_admin'
     templateParameters: []
@@ -533,6 +546,15 @@ resource sageDiscoveryMcpOperationPolicy 'Microsoft.ApiManagement/service/apis/o
   properties: {
     format: 'rawxml'
     value: loadTextContent('../policies/sage-discovery-mcp-operation-policy.xml')
+  }
+}
+
+resource sageDiscoveryMcpMaintOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageDiscoveryMcpMaintOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-discovery-mcp-maint-operation-policy.xml')
   }
 }
 

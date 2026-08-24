@@ -1,17 +1,18 @@
 """Partition conformance for the two-surface SAGE MCP tool roster.
 
 Gates the CAS-ADR-034 / CAS-ADR-029 split of the SAGE MCP tool surface
-across the pair of Streamable HTTP mounts on the SAGE app — ``/mcp``
-(ordinary) and ``/mcp_admin`` (maintenance), both built by the same
+across the Streamable HTTP mounts on the SAGE app — ``/mcp`` (ordinary)
+and ``/mcp_maint`` (maintenance, with ``/mcp_admin`` as its pre-rename
+alias path serving the identical roster), all built by the same
 partition factory in the one uvicorn process:
 
 - ``sage`` — ordinary surface (read spine + everyday mutation spine +
   multi-record operations).
-- ``sage_admin`` — maintenance surface (every ``admin_*`` tool); opt-in,
+- ``sage_maint`` — maintenance surface (every ``maint_*`` tool); opt-in,
   additive, and does **not** duplicate the read spine.
 
 Surface assignment is derived purely from each tool name's first segment
-(``admin_`` -> ``sage_admin``; everything else -> ``sage``). These tests
+(``maint_`` -> ``sage_maint``; everything else -> ``sage``). These tests
 cross-check the built partitions against ``SERVER_ASSIGNMENT`` in
 ``sage/_tool_naming.py`` — the in-code transcription of the
 *SAGE MCP Tool Surface* steering-document registration map. That oracle is
@@ -40,10 +41,10 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 
 EXPECTED_SAGE = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage"}
-EXPECTED_ADMIN = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage_admin"}
+EXPECTED_MAINT = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage_maint"}
 
 # The shared read spine (CAS-ADR-034): these live on the ``sage`` server
-# only and must never be duplicated on the ``sage_admin`` server.
+# only and must never be duplicated on the ``sage_maint`` server.
 READ_SPINE = {
     "search",
     "get_document",
@@ -72,41 +73,41 @@ def test_sage_server_registers_exactly_ordinary_tools():
     assert _registered_names("sage") == EXPECTED_SAGE
 
 
-def test_sage_admin_server_registers_exactly_maintenance_tools():
-    """The ``sage_admin`` server registers exactly the maintenance roster."""
-    assert _registered_names("sage_admin") == EXPECTED_ADMIN
+def test_sage_maint_server_registers_exactly_maintenance_tools():
+    """The ``sage_maint`` server registers exactly the maintenance roster."""
+    assert _registered_names("sage_maint") == EXPECTED_MAINT
 
 
-def test_sage_admin_contains_only_admin_prefixed_tools():
-    """Partition invariant: every ``sage_admin`` tool name is ``admin_*``."""
-    names = _registered_names("sage_admin")
-    offenders = {n for n in names if not n.startswith("admin_")}
-    assert not offenders, f"non-admin_ tool(s) on sage_admin: {sorted(offenders)}"
+def test_sage_maint_contains_only_maint_prefixed_tools():
+    """Partition invariant: every ``sage_maint`` tool name is ``maint_*``."""
+    names = _registered_names("sage_maint")
+    offenders = {n for n in names if not n.startswith("maint_")}
+    assert not offenders, f"non-maint_ tool(s) on sage_maint: {sorted(offenders)}"
 
 
-def test_no_admin_prefixed_tool_on_sage_server():
-    """Partition invariant: no ``admin_*`` tool is registered on ``sage``."""
+def test_no_maint_prefixed_tool_on_sage_server():
+    """Partition invariant: no ``maint_*`` tool is registered on ``sage``."""
     names = _registered_names("sage")
-    leaked = {n for n in names if n.startswith("admin_")}
-    assert not leaked, f"admin_ tool(s) leaked onto sage: {sorted(leaked)}"
+    leaked = {n for n in names if n.startswith("maint_")}
+    assert not leaked, f"maint_ tool(s) leaked onto sage: {sorted(leaked)}"
 
 
-def test_read_spine_not_duplicated_on_sage_admin():
+def test_read_spine_not_duplicated_on_sage_maint():
     """The shared read spine is not duplicated on the maintenance server."""
-    names = _registered_names("sage_admin")
+    names = _registered_names("sage_maint")
     dup = names & READ_SPINE
-    assert not dup, f"read-spine tool(s) duplicated on sage_admin: {sorted(dup)}"
+    assert not dup, f"read-spine tool(s) duplicated on sage_maint: {sorted(dup)}"
 
 
 def test_partition_is_disjoint_and_exhaustive():
     """The two partitions are disjoint and together cover the full roster."""
-    sage = _registered_names("sage")
-    admin = _registered_names("sage_admin")
-    assert sage.isdisjoint(admin), f"tool(s) on both servers: {sorted(sage & admin)}"
-    assert sage | admin == set(SERVER_ASSIGNMENT), (
+    sage_names = _registered_names("sage")
+    maint = _registered_names("sage_maint")
+    assert sage_names.isdisjoint(maint), f"tool(s) on both servers: {sorted(sage_names & maint)}"
+    assert sage_names | maint == set(SERVER_ASSIGNMENT), (
         "partition union does not equal the full roster: "
-        f"missing {sorted(set(SERVER_ASSIGNMENT) - (sage | admin))}, "
-        f"extra {sorted((sage | admin) - set(SERVER_ASSIGNMENT))}"
+        f"missing {sorted(set(SERVER_ASSIGNMENT) - (sage_names | maint))}, "
+        f"extra {sorted((sage_names | maint) - set(SERVER_ASSIGNMENT))}"
     )
 
 
@@ -115,30 +116,35 @@ def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
 
     Revises the prior full-surface assertion: per CAS-ADR-034 the HTTP
     transport is partitioned, so ``/mcp`` carries the ``sage`` surface only
-    and no ``admin_*`` tool appears there.
+    and no ``maint_*`` tool appears there.
     """
     app = create_app(config=minimal_config)
     names = _mounted_names(app, "/mcp")
     assert names == EXPECTED_SAGE
     assert names, "ordinary mount roster must be non-empty"
-    leaked = {n for n in names if n.startswith("admin_")}
-    assert not leaked, f"admin_ tool(s) advertised on /mcp: {sorted(leaked)}"
+    leaked = {n for n in names if n.startswith("maint_")}
+    assert not leaked, f"maint_ tool(s) advertised on /mcp: {sorted(leaked)}"
 
 
-def test_mcp_admin_mount_advertises_maintenance_surface_only(minimal_config):
-    """The ``/mcp_admin`` HTTP mount advertises exactly the maintenance roster."""
+@pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
+def test_maintenance_mounts_advertise_maintenance_surface_only(minimal_config, mount):
+    """Both maintenance mount paths advertise exactly the maintenance roster.
+
+    ``/mcp_maint`` is canonical; ``/mcp_admin`` is its pre-rename alias
+    path and must stay roster-identical for as long as it is served.
+    """
     app = create_app(config=minimal_config)
-    names = _mounted_names(app, "/mcp_admin")
-    assert names == EXPECTED_ADMIN
-    offenders = {n for n in names if not n.startswith("admin_")}
-    assert not offenders, f"non-admin_ tool(s) on /mcp_admin: {sorted(offenders)}"
+    names = _mounted_names(app, mount)
+    assert names == EXPECTED_MAINT
+    offenders = {n for n in names if not n.startswith("maint_")}
+    assert not offenders, f"non-maint_ tool(s) on {mount}: {sorted(offenders)}"
     dup = names & READ_SPINE
-    assert not dup, f"read-spine tool(s) duplicated on /mcp_admin: {sorted(dup)}"
+    assert not dup, f"read-spine tool(s) duplicated on {mount}: {sorted(dup)}"
 
 
-def test_both_mcp_mounts_are_exact_path_routes(minimal_config):
-    """One uvicorn process/app serves both partitioned mounts as exact-path
-    raw Starlette routes (CAS-ADR-034 v7).
+def test_all_mcp_mounts_are_exact_path_routes(minimal_config):
+    """One uvicorn process/app serves every partitioned mount as an exact-path
+    raw Starlette route (CAS-ADR-034 v7).
 
     A ``Mount`` at these paths is the structural form of the trailing-slash
     307 regression: its path regex requires ``/mcp/...``, so an exact
@@ -147,7 +153,7 @@ def test_both_mcp_mounts_are_exact_path_routes(minimal_config):
     exact-path ``Route`` (raw ASGI, not an ``APIRoute``) instead.
     """
     app = create_app(config=minimal_config)
-    for mount, _surface in (("/mcp", "sage"), ("/mcp_admin", "sage_admin")):
+    for mount in ("/mcp", "/mcp_maint", "/mcp_admin"):
         matches = [
             route
             for route in app.routes
@@ -160,10 +166,13 @@ def test_both_mcp_mounts_are_exact_path_routes(minimal_config):
             route for route in app.routes if isinstance(route, Mount) and route.path == mount
         ]
         assert not mounted, f"a Mount at {mount} reintroduces the trailing-slash redirect"
-    assert set(app.state.mcp_mounts) == {"/mcp", "/mcp_admin"}
+    assert set(app.state.mcp_mounts) == {"/mcp", "/mcp_maint", "/mcp_admin"}
 
 
-@pytest.mark.parametrize(("mount", "surface"), [("/mcp", "sage"), ("/mcp_admin", "sage_admin")])
+@pytest.mark.parametrize(
+    ("mount", "surface"),
+    [("/mcp", "sage"), ("/mcp_maint", "sage_maint"), ("/mcp_admin", "sage_maint")],
+)
 def test_mount_transport_settings_pinned(minimal_config, mount, surface):
     """The HTTP-mounted servers run the stateless, JSON-response transport.
 
@@ -180,11 +189,11 @@ def test_mount_transport_settings_pinned(minimal_config, mount, surface):
     assert server.settings.streamable_http_path == mount
 
 
-async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
+async def test_maintenance_mount_reads_shared_vault_registry(minimal_config):
     """The maintenance mount's tools read the app-shared ``_vaults`` registry.
 
     A vault initialized through the app populates ``mcp_server._vaults``;
-    calling ``admin_list_vaults`` through the ``/mcp_admin`` mount must then
+    calling ``maint_list_vaults`` through the ``/mcp_maint`` mount must then
     see that vault, proving the mount shares the one registry rather than
     building its own (no duplicate vault initialization).
     """
@@ -197,8 +206,8 @@ async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
         abstraction_provider=StubAbstractionProvider(),
     )
     try:
-        admin_server = app.state.mcp_mounts["/mcp_admin"]
-        result = await admin_server.call_tool("admin_list_vaults", {})
+        maint_server = app.state.mcp_mounts["/mcp_maint"]
+        result = await maint_server.call_tool("maint_list_vaults", {})
         assert minimal_config.vault.id in str(result)
     finally:
         for services in app.state.vault_registry.values():
@@ -224,7 +233,7 @@ def test_stdio_entry_points_absent():
     assert not (sage_pkg_dir / "mcp_server_admin.py").exists()
 
 
-@pytest.mark.parametrize("surface", ["sage", "sage_admin"])
+@pytest.mark.parametrize("surface", ["sage", "sage_maint"])
 def test_partitioned_server_disables_dns_rebinding_host_validation(surface):
     """Both HTTP-mounted MCP surfaces ship with the SDK's DNS-rebinding Host
     allow-list disabled.

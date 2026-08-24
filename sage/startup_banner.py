@@ -67,7 +67,7 @@ def render_startup_banner(
         loaded_vault_ids: Ids of vaults that initialized successfully.
         skipped_vaults: ``(config_path, reason)`` pairs for vaults that failed
             to load and were skipped.
-        mcp_mounts: Mounted MCP surface paths (e.g. ``"/mcp"``, ``"/mcp_admin"``).
+        mcp_mounts: Mounted MCP surface paths (e.g. ``"/mcp"``, ``"/mcp_maint"``).
 
     Returns:
         A multi-line banner string suitable for a single log record.

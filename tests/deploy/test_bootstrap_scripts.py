@@ -376,11 +376,15 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
             "the /mcp mount identity (the path-inserted PRM resource and the "
             "canonical server URI a spec-following client sends)"
         ),
+        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint"': (
+            "the /mcp_maint mount identity (the maintenance surface's canonical server URI)"
+        ),
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"': (
-            "the /mcp_admin mount identity (the maintenance surface's canonical server URI)"
+            "the /mcp_admin mount identity (the maintenance surface's pre-rename "
+            "alias path, registered for as long as the edge serves it)"
         ),
     }
-    forbidden = ("/mcp/sse", "/mcp_admin/sse")
+    forbidden = ("/mcp/sse", "/mcp_maint/sse", "/mcp_admin/sse")
     for flat in uri_invocations:
         for needle, why in required.items():
             assert needle in flat, (

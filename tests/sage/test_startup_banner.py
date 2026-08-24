@@ -35,7 +35,7 @@ _BASE_KW = {
     "vault_root": Path("/home/u/sage_vaults"),
     "loaded_vault_ids": ["cas", "test"],
     "skipped_vaults": [],
-    "mcp_mounts": ["/mcp", "/mcp_admin"],
+    "mcp_mounts": ["/mcp", "/mcp_maint", "/mcp_admin"],
 }
 
 
@@ -101,8 +101,9 @@ def test_banner_008_no_skips_renders_cleanly() -> None:
 
 def test_banner_009_mcp_mounts_listed() -> None:
     """Every mounted MCP surface path appears."""
-    text = _render(mcp_mounts=["/mcp", "/mcp_admin"])
+    text = _render(mcp_mounts=["/mcp", "/mcp_maint", "/mcp_admin"])
     assert "/mcp" in text
+    assert "/mcp_maint" in text
     assert "/mcp_admin" in text
 
 

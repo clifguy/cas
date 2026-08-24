@@ -137,14 +137,14 @@ def test_discover_mode_signature_is_enum():
 def test_set_lifecycle_action_docstring_points_at_vault_config():
     """T1.3 — ``update_lifecycles`` docstring must reference the
     vault-config-defined action vocabulary and direct callers at
-    ``admin_get_vault_config`` for the authoritative list.
+    ``maint_get_vault_config`` for the authoritative list.
 
     Post-CAS-ADR-029: the tool is ``update_lifecycles`` (collapsed plural-
-    noun); the underlying authority pointer is ``admin_get_vault_config``
-    (admin-prefixed per CAS-ADR-029 v4 amendment).
+    noun); the underlying authority pointer is ``maint_get_vault_config``
+    (maint-prefixed per CAS-ADR-029 v4 amendment).
 
     Anti-coincidental-pass: the docstring must mention BOTH ``vault
-    config`` (closure source) and ``admin_get_vault_config`` (the
+    config`` (closure source) and ``maint_get_vault_config`` (the
     discovery tool). Mentioning one without the other fails.
     """
     doc = _docstring(update_lifecycles)
@@ -152,9 +152,9 @@ def test_set_lifecycle_action_docstring_points_at_vault_config():
         "update_lifecycles docstring must reference 'vault config' as "
         "the authoritative source of the action vocabulary."
     )
-    assert "admin_get_vault_config" in doc, (
+    assert "maint_get_vault_config" in doc, (
         "update_lifecycles docstring must point callers at "
-        "``admin_get_vault_config`` for the authoritative action list."
+        "``maint_get_vault_config`` for the authoritative action list."
     )
 
 
@@ -167,7 +167,7 @@ def test_adapter_docstrings_do_not_claim_vault_config_enablement():
     *enabled* sends a caller diagnosing ``adapter_not_found`` to a config file
     that cannot affect it.
 
-    Covers the two tools that raise the error and ``admin_get_vault_config``,
+    Covers the two tools that raise the error and ``maint_get_vault_config``,
     which is where a caller goes to look the answer up -- the pointer surface
     misdirects just as effectively as the error surface.
     """

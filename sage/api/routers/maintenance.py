@@ -1,9 +1,11 @@
-"""Maintenance/admin router (CAS-ADR-029).
+"""Maintenance router (CAS-ADR-029).
 
 Pilot operation: POST /sage_vaults/{vault_id}/admin/migrate. The first
 operation on the SAGE Core API maintenance surface; subsequent
-operations on the maintenance/admin surface are added here with the
+operations on the maintenance surface are added here with the
 same three-layer shape (router -> service -> MCP tool registration).
+The ``/admin/`` URL segment predates the surface's ``maint`` naming and
+is kept for wire compatibility.
 """
 
 from collections.abc import AsyncGenerator
@@ -61,7 +63,7 @@ async def _format_reabstract_stream(
         },
     },
 )
-async def admin_migrate_vault(
+async def maint_migrate_vault(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> MigrationReport:
@@ -78,7 +80,7 @@ async def admin_migrate_vault(
         },
     },
 )
-async def admin_detect_drift(
+async def maint_detect_drift(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> DriftReport:
@@ -110,7 +112,7 @@ async def admin_detect_drift(
         },
     },
 )
-async def admin_reabstract_deferred(
+async def maint_reabstract_deferred(
     body: ReabstractRequest = Body(default_factory=ReabstractRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
@@ -141,7 +143,7 @@ async def admin_reabstract_deferred(
         },
     },
 )
-async def admin_optimize_content_store(
+async def maint_optimize_content_store(
     body: OptimizeContentStoreRequest = Body(default_factory=OptimizeContentStoreRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
@@ -161,7 +163,7 @@ async def admin_optimize_content_store(
         },
     },
 )
-async def admin_verify_vault_source_files(
+async def maint_verify_vault_source_files(
     body: SourceFileIntegrityRequest = Body(default_factory=SourceFileIntegrityRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),

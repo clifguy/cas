@@ -15,6 +15,7 @@ the transport route runs, so these never reach the MCP session layer.
 
 from __future__ import annotations
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sage.app import create_app
@@ -168,11 +169,13 @@ async def test_c5_mcp_mount_enforced(monkeypatch) -> None:
     assert resp.headers["www-authenticate"].startswith("Bearer")
 
 
-async def test_c6_mcp_admin_mount_enforced(monkeypatch) -> None:
+@pytest.mark.parametrize("path", ["/mcp_maint", "/mcp_admin"])
+async def test_c6_maintenance_mounts_enforced(monkeypatch, path) -> None:
+    """Both maintenance mount paths (canonical and pre-rename alias) are gated."""
     _install_stub(monkeypatch)
     app = create_app(stack_config=_ENABLED)
     async with _client(app) as c:
-        resp = await c.get("/mcp_admin")
+        resp = await c.get(path)
     assert resp.status_code == 401
 
 
@@ -180,14 +183,14 @@ async def test_c8_authorization_uniform_across_surfaces(monkeypatch) -> None:
     """The same no-token request yields an identical challenge on each surface.
 
     Directly encodes AC1: authorization is uniform regardless of surface. If
-    /mcp_admin were exempted or ran a different policy, the responses would
-    diverge.
+    /mcp_maint (or its pre-rename alias path) were exempted or ran a
+    different policy, the responses would diverge.
     """
     _install_stub(monkeypatch)
     app = create_app(stack_config=_ENABLED)
     seen = set()
     async with _client(app) as c:
-        for path in ("/sage_vaults/test_vault/users", "/mcp", "/mcp_admin"):
+        for path in ("/sage_vaults/test_vault/users", "/mcp", "/mcp_maint", "/mcp_admin"):
             r = await c.get(path)
             seen.add((r.status_code, r.headers.get("www-authenticate")))
     assert len(seen) == 1, seen

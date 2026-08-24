@@ -7,12 +7,9 @@ content store is a scripted snapshot stub — the tool-level contract is
 report shaping around the ContentStore port; real reclamation is covered
 by the content-store test modules.
 
-Test-file naming matches the existing test_sage_admin_*_tool.py
-sibling pattern (test_sage_admin_migrate_vault.py,
-test_sage_admin_detect_drift.py, test_sage_admin_reabstract_deferred_tool.py).
-The test-file prefix is stale relative to the retired sage_admin_*
-naming convention but renaming the four files is a separate hygiene
-pass; the new test file matches the family for consistency.
+Test-file naming matches the test_sage_maint_*_tool.py sibling pattern
+(test_sage_maint_migrate_vault.py, test_sage_maint_detect_drift.py,
+test_sage_maint_reabstract_deferred_tool.py).
 """
 
 from __future__ import annotations

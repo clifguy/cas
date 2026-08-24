@@ -161,7 +161,13 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
 #: Single source of truth for both the mounter below and the
 #: ``uvicorn.access`` suppression filter in ``sage.__main__``:
 #: a mount added here is covered by both without a second edit.
-MCP_HTTP_MOUNTS: tuple[tuple[str, str], ...] = (("/mcp", "sage"), ("/mcp_admin", "sage_admin"))
+MCP_HTTP_MOUNTS: tuple[tuple[str, str], ...] = (
+    ("/mcp", "sage"),
+    ("/mcp_maint", "sage_maint"),
+    # Pre-rename alias path for the maintenance surface (CAS-ADR-034):
+    # identical roster, kept working with no scheduled removal.
+    ("/mcp_admin", "sage_maint"),
+)
 
 
 def _mount_partitioned_mcp(app: FastAPI) -> None:
@@ -169,13 +175,15 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
 
     Realizes the CAS-ADR-034 ordinary/maintenance partition over the
     Streamable HTTP transport: ``/mcp`` carries the ``sage`` (ordinary)
-    roster and ``/mcp_admin`` the ``sage_admin`` (``admin_*``) roster. Both
-    are built by ``build_partitioned_server`` and run in this one uvicorn
-    process, sharing the app-populated ``_vaults`` registry and the single
+    roster and ``/mcp_maint`` the ``sage_maint`` (``maint_*``) roster,
+    with ``/mcp_admin`` serving the maintenance roster as the surface's
+    pre-rename alias path. Every mount is built by
+    ``build_partitioned_server`` and runs in this one uvicorn process,
+    sharing the app-populated ``_vaults`` registry and the single
     stack abstraction provider (CAS-ADR-030) — partitioning the transport
     adds no per-mount vault re-initialization and no second
     abstraction-model load. The full surface is reached by connecting to
-    both mounts.
+    one mount of each surface.
 
     A standards MCP client POSTs its JSON-RPC directly to the mount URL —
     the byte-exact, slash-less path the edge's protected-resource metadata
@@ -737,8 +745,9 @@ def create_app(
     app.add_api_route("/health", _health, methods=["GET"], include_in_schema=False)
 
     # Serve the partitioned MCP surfaces (Streamable HTTP transport) for
-    # external clients. Per CAS-ADR-034: /mcp = ordinary, /mcp_admin =
-    # maintenance. Full surface = connect to both.
+    # external clients. Per CAS-ADR-034: /mcp = ordinary, /mcp_maint =
+    # maintenance (also at its pre-rename alias path). Full surface =
+    # connect to one mount of each surface.
     _mount_partitioned_mcp(app)
 
     # CAS-ADR-042: enforce the deployment profile's bearer-token validator

@@ -90,7 +90,8 @@ fi
 
 az ad app update --id "$SAGE_APP_ID" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint" \
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
 
@@ -129,7 +130,8 @@ forms require their host under a tenant-verified domain; `az` fails loudly if
 it is not. Tokens are unaffected either way — a v2 access token carries the
 bare app-id GUID as its `aud` no matter which identifier form the scope used.
 
-> The mount paths (`/mcp`, `/mcp_admin`) are protocol constants of the SAGE
+> The mount paths (`/mcp`, `/mcp_maint`, and the maintenance surface's
+> pre-rename alias path `/mcp_admin`) are protocol constants of the SAGE
 > MCP Streamable HTTP surface, mirrored from the uvicorn mounts. Adding a new
 > MCP mount means adding its identifier URI here and its path-inserted
 > metadata operation at the APIM edge in the same change.

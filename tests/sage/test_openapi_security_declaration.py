@@ -124,7 +124,7 @@ def test_enrichment_preserves_the_generated_document() -> None:
     Witnessed on the fields the enrichment does not own. The operation id is
     not among them: it is authored in the specification and overlaid onto the
     generated document, so `list_vaults` here is deliberately replaced by the
-    specification's `admin_list_vaults`.
+    specification's `maint_list_vaults`.
     """
     document = build_openapi_document(_base_document(), _enabled())
 

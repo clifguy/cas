@@ -252,7 +252,7 @@ def probe(base_url: str, mount: str, mode: str, timeout: float) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True, help="scheme+host of the SAGE edge")
-    parser.add_argument("--mount", required=True, help="MCP mount path, e.g. /mcp or /mcp_admin")
+    parser.add_argument("--mount", required=True, help="MCP mount path, e.g. /mcp or /mcp_maint")
     parser.add_argument(
         "--mode",
         choices=("handshake", "roundtrip"),

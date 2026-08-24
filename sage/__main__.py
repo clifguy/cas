@@ -64,7 +64,7 @@ class _DropMcpAccessLogs(_logging.Filter):
     """Drop uvicorn.access records for any MCP mount's JSON-RPC endpoint.
 
     Over the Streamable HTTP transport every JSON-RPC message is a ``POST``
-    to the mount path itself (e.g. ``/mcp``, ``/mcp_admin``), so each
+    to the mount path itself (e.g. ``/mcp``, ``/mcp_maint``), so each
     logical tool call produces access lines whose URL carries no signal —
     the tool name lives in the request body, and
     ``_LoggingFastMCP.call_tool`` already surfaces it. The suppressed paths

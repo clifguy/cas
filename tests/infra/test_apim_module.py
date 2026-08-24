@@ -76,6 +76,9 @@ _APIM_NONEXISTENT_API_VERSION: Final[str] = "2023-05-01"
 
 # The maintenance mount. It routes through the facade under the same JWT
 # validation as the ordinary surface — the policy must not single it out.
+_MAINT_MOUNT: Final[str] = "/mcp_maint"
+# The maintenance mount's pre-rename alias path, kept serving with no
+# scheduled removal.
 _ADMIN_MOUNT: Final[str] = "/mcp_admin"
 
 # The catch-all forwarding contract. APIM does not honor a literal ``*`` HTTP
@@ -130,6 +133,9 @@ _WWW_AUTH_CHALLENGE: Final[str] = (
 API_POLICY: Final[Path] = POLICIES_DIR / "sage-api-policy.xml"
 DISCOVERY_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-discovery-operation-policy.xml"
 DISCOVERY_MCP_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-discovery-mcp-operation-policy.xml"
+DISCOVERY_MCP_MAINT_OP_POLICY: Final[Path] = (
+    POLICIES_DIR / "sage-discovery-mcp-maint-operation-policy.xml"
+)
 DISCOVERY_MCP_ADMIN_OP_POLICY: Final[Path] = (
     POLICIES_DIR / "sage-discovery-mcp-admin-operation-policy.xml"
 )
@@ -1023,6 +1029,7 @@ def test_apim_declares_path_inserted_discovery_operations() -> None:
     text = APIM.read_text(encoding="utf-8")
     for path in (
         "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-protected-resource/mcp_maint",
         "/.well-known/oauth-protected-resource/mcp_admin",
     ):
         assert _declares_literal_get_operation(text, path), (
@@ -1046,6 +1053,7 @@ def test_apim_mount_discovery_docs_advertise_path_carrying_resource() -> None:
     """
     for policy, mount in (
         (DISCOVERY_MCP_OP_POLICY, "/mcp"),
+        (DISCOVERY_MCP_MAINT_OP_POLICY, "/mcp_maint"),
         (DISCOVERY_MCP_ADMIN_OP_POLICY, "/mcp_admin"),
     ):
         body = _set_body_json(policy)
@@ -1087,7 +1095,7 @@ def test_apim_edge_documents_advertise_offline_access() -> None:
     ``/authorize`` round trip. ``offline_access`` is a bare OIDC scope, never
     resource-qualified (CAS-ADR-042).
 
-    The scope is advertised uniformly across all five documents so that whichever
+    The scope is advertised uniformly across all six documents so that whichever
     one the client composes its scope from — a mount protected-resource metadata
     document, the root document, the authorization-server metadata, or the DCR
     ``/register`` registration — offline_access is present.
@@ -1095,6 +1103,7 @@ def test_apim_edge_documents_advertise_offline_access() -> None:
     for policy in (
         DISCOVERY_OP_POLICY,
         DISCOVERY_MCP_OP_POLICY,
+        DISCOVERY_MCP_MAINT_OP_POLICY,
         DISCOVERY_MCP_ADMIN_OP_POLICY,
         AS_METADATA_OP_POLICY,
     ):
@@ -1199,36 +1208,43 @@ def test_apim_challenge_is_path_aware() -> None:
     mount's path-inserted metadata document, with the root document as the
     fallback for every other path.
 
-    The /mcp_admin branch must be tested BEFORE /mcp — /mcp is its string
-    prefix, so in the reverse order every admin-mount request would be steered
-    to the ordinary mount's document. The path conditions must use the
-    round-trip-safe &quot;-escaped double-quoted attribute encoding (the
-    loadTextContent -> ARM -> APIM pipeline corrupts the single-quote-inner-
-    double form).
+    The /mcp_maint and /mcp_admin branches must be tested BEFORE /mcp — /mcp
+    is their string prefix, so in the reverse order every maintenance-mount
+    request would be steered to the ordinary mount's document. (The two
+    maintenance paths are not prefixes of each other, so their relative order
+    is free.) The path conditions must use the round-trip-safe &quot;-escaped
+    double-quoted attribute encoding (the loadTextContent -> ARM -> APIM
+    pipeline corrupts the single-quote-inner-double form).
     """
     on_error = _on_error_section(API_POLICY.read_text(encoding="utf-8"))
     root = 'resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"'
     mcp = 'resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp"'
+    maint = (
+        'resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_maint"'
+    )
     admin = (
         'resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_admin"'
     )
     for challenge, label in (
         (root, "root fallback"),
         (mcp, "/mcp mount"),
-        (admin, "/mcp_admin mount"),
+        (maint, "/mcp_maint mount"),
+        (admin, "/mcp_admin alias mount"),
     ):
         assert challenge in on_error, (
             f"the on-error challenge must carry the {label} resource_metadata pointer"
         )
+    maint_cond = "StartsWith(&quot;/mcp_maint&quot;)"
     admin_cond = "StartsWith(&quot;/mcp_admin&quot;)"
     mcp_cond = "StartsWith(&quot;/mcp&quot;)"
-    assert admin_cond in on_error and mcp_cond in on_error, (
+    assert maint_cond in on_error and admin_cond in on_error and mcp_cond in on_error, (
         "the path conditions must use the round-trip-safe &quot;-escaped encoding"
     )
-    assert on_error.index(admin_cond) < on_error.index(mcp_cond), (
-        "the /mcp_admin branch must be tested before /mcp — /mcp is its string "
-        "prefix, so the reverse order steers admin clients to the wrong document"
-    )
+    for cond, label in ((maint_cond, "/mcp_maint"), (admin_cond, "/mcp_admin")):
+        assert on_error.index(cond) < on_error.index(mcp_cond), (
+            f"the {label} branch must be tested before /mcp — /mcp is its string "
+            "prefix, so the reverse order steers maintenance clients to the wrong document"
+        )
 
 
 def test_apim_declares_mcp_client_id_named_value() -> None:
@@ -1422,6 +1438,7 @@ def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
     op_policies = (
         DISCOVERY_OP_POLICY,
         DISCOVERY_MCP_OP_POLICY,
+        DISCOVERY_MCP_MAINT_OP_POLICY,
         DISCOVERY_MCP_ADMIN_OP_POLICY,
         HEALTH_OP_POLICY,
         OPENAPI_OP_POLICY,
@@ -1439,40 +1456,44 @@ def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
         )
 
 
-def test_apim_policy_routes_admin_mount_through_jwt() -> None:
-    """The maintenance mount /mcp_admin routes through the facade under the same
-    JWT validation as the ordinary surface — it is no longer denied at the edge.
+def test_apim_policy_routes_maintenance_mounts_through_jwt() -> None:
+    """Both maintenance mount paths route through the facade under the same
+    JWT validation as the ordinary surface — neither is denied at the edge.
 
-    Authorization is uniform across surfaces: the policy must not intercept the
-    admin mount with its own branch; it flows down the ``<otherwise>`` branch
-    that validates the JWT and routes to the backend, like every other path.
+    Authorization is uniform across surfaces: the policy must not intercept a
+    maintenance mount with its own branch; each flows down the ``<otherwise>``
+    branch that validates the JWT and routes to the backend, like every other
+    path.
     """
     # Uniform AUTHORIZATION is an inbound property: no <when> branch in any
-    # loaded policy's <inbound> may single out the admin mount (the shape of the
-    # removed maintenance-mount deny). The <on-error> block legitimately
+    # loaded policy's <inbound> may single out a maintenance mount (the shape
+    # of the removed maintenance-mount deny). The <on-error> block legitimately
     # branches on the path — the 401 challenge points each mount's clients at
     # its own RFC 9728 path-inserted metadata document — and that varies only
     # WHICH discovery URL a denied client reads, never whether a request is
     # validated or routed.
     policy = _policy_text()
-    for match in re.finditer(r"<inbound>.*?</inbound>", policy, re.DOTALL):
-        assert not _policy_special_cases_path(match.group(0), _ADMIN_MOUNT), (
-            f"no <inbound> may single out {_ADMIN_MOUNT} in a <when> branch; it "
-            "routes uniformly through the JWT-validating <otherwise> branch"
-        )
+    for mount in (_MAINT_MOUNT, _ADMIN_MOUNT):
+        for match in re.finditer(r"<inbound>.*?</inbound>", policy, re.DOTALL):
+            assert not _policy_special_cases_path(match.group(0), mount), (
+                f"no <inbound> may single out {mount} in a <when> branch; it "
+                "routes uniformly through the JWT-validating <otherwise> branch"
+            )
     assert re.search(r"set-backend-service\s+backend-id=\"sage-backend\"", policy), (
         "the <otherwise> branch must route forwarded requests to the sage-backend "
-        f"(the path {_ADMIN_MOUNT} now flows down)"
+        f"(the paths {_MAINT_MOUNT} and {_ADMIN_MOUNT} flow down)"
     )
     # Routing stays via the existing catch-all operation + policy: the module
-    # must not declare an operation whose urlTemplate is the admin MOUNT itself.
-    # (The path-inserted discovery operation /.well-known/.../mcp_admin serves a
-    # metadata document about the mount; it does not route mount traffic.)
+    # must not declare an operation whose urlTemplate is a maintenance MOUNT
+    # itself. (The path-inserted discovery operations /.well-known/.../mcp_maint
+    # and .../mcp_admin serve metadata documents about the mounts; they do not
+    # route mount traffic.)
     module_text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
-    assert not re.search(r"urlTemplate:\s*'/mcp_admin'", module_text), (
-        f"apim.bicep must not declare a per-path operation routing {_ADMIN_MOUNT}; "
-        "it routes via the catch-all operation and the inbound policy"
-    )
+    for mount in (_MAINT_MOUNT, _ADMIN_MOUNT):
+        assert not re.search(rf"urlTemplate:\s*'{mount}'", module_text), (
+            f"apim.bicep must not declare a per-path operation routing {mount}; "
+            "it routes via the catch-all operation and the inbound policy"
+        )
 
 
 def test_apim_no_hardcoded_identity_or_env_url_in_bicep() -> None:
