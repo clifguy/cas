@@ -41,7 +41,7 @@ from sage.adapters.interfaces import (
     AbstractionProvider,
 )
 from sage.config import VaultAbstractionConfig as AbstractionConfig
-from sage.utils.unified_memory import free_unified_memory_bytes
+from sage.utils.unified_memory import free_unified_memory_bytes, total_unified_memory_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,11 @@ MemoryProbe = Callable[[], int]
 #: Importing the helper is safe on every platform -- it reaches macOS
 #: ``vm_stat`` only when called.
 DEFAULT_MEM_PROBE: MemoryProbe = free_unified_memory_bytes
+
+#: Machine-capacity probe used when a caller supplies none. Named at module
+#: scope for the same reason as the probe above: the default-resolution path
+#: stays substitutable without patching call internals.
+DEFAULT_TOTAL_MEMORY_PROBE: MemoryProbe = total_unified_memory_bytes
 
 # The local provider publishes its per-phase breakdown as a structured log
 # record rather than as a return value, because the providers share no
@@ -566,9 +571,7 @@ async def run_benchmark(
     if rss_probe is None:
         rss_probe = _self_rss_bytes
     if total_memory_probe is None:
-        from sage.utils.unified_memory import total_unified_memory_bytes
-
-        total_memory_probe = total_unified_memory_bytes
+        total_memory_probe = DEFAULT_TOTAL_MEMORY_PROBE
 
     # Sampled once per document and kept as a running maximum. Resident size
     # falls back after a large allocation is released, so the last reading
@@ -738,9 +741,7 @@ async def probe_context_window(
     worked and says nothing about the window.
     """
     if mem_probe is None:
-        from sage.utils.unified_memory import free_unified_memory_bytes
-
-        mem_probe = free_unified_memory_bytes
+        mem_probe = DEFAULT_MEM_PROBE
     if rss_probe is None:
         rss_probe = _self_rss_bytes
     if accelerator_probe is None:

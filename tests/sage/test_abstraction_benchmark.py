@@ -1200,7 +1200,11 @@ async def test_run_benchmark_survives_an_unavailable_memory_probe(monkeypatch):
         raise OSError("no such tool on this platform")
 
     monkeypatch.setattr(benchmark_module, "_self_rss_bytes", unavailable)
-    monkeypatch.setattr("sage.utils.unified_memory.total_unified_memory_bytes", unavailable)
+    # Substituted at the module-scope default rather than at the helper it
+    # points to: the default is bound at import, so patching the source
+    # function would leave the bound reference untouched and the test would
+    # exercise the real probe while appearing to exercise a failing one.
+    monkeypatch.setattr(benchmark_module, "DEFAULT_TOTAL_MEMORY_PROBE", unavailable)
 
     result = await run_benchmark(
         services=_single_chunk_services(2),
