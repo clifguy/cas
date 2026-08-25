@@ -294,7 +294,7 @@ def _fail_on_leaked_timing_resources():
 
     Any test that builds real services with timing enabled (the default) and
     tears down without releasing them leaves the ``timing.log`` handler attached
-    to the three process-global timing loggers and the ``VaultTimingThread``
+    to the process-global timing loggers and the ``VaultTimingThread``
     running. Neither surfaces as an "unclosed file" ``ResourceWarning`` — the
     loggers keep the handler reachable, so CPython never garbage-collects it and
     ``logging.shutdown()`` closes it cleanly only at interpreter exit — so this
