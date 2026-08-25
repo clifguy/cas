@@ -37,8 +37,15 @@ from sage.adapters.interfaces import (
     AbstractionProvider,
 )
 from sage.config import VaultAbstractionConfig as AbstractionConfig
+from sage.utils.unified_memory import free_unified_memory_bytes
 
 MemoryProbe = Callable[[], int]
+
+#: Probe used when a caller supplies none. Named at module scope so the
+#: default-resolution path is substitutable without patching call internals.
+#: Importing the helper is safe on every platform -- it reaches macOS
+#: ``vm_stat`` only when called.
+DEFAULT_MEM_PROBE: MemoryProbe = free_unified_memory_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +193,13 @@ class MemorySampler:
     an after reading on exit. ``peak_used_bytes_during_call`` is
     ``baseline - min(during)``; ``memory_delta_bytes`` is
     ``baseline - after``.
+
+    Exit is prompt. The poll loop waits on a stop event with the poll
+    interval as a timeout rather than sleeping the interval out, so
+    ``__aexit__`` returns as soon as it is entered instead of blocking
+    for the remainder of a pending sleep. A sampler that drained by
+    waiting out that sleep would add up to ``poll_interval_s`` of dead
+    wall time to every call it wrapped.
     """
 
     def __init__(self, probe: MemoryProbe, poll_interval_s: float = 0.5) -> None:
@@ -194,18 +208,19 @@ class MemorySampler:
         self._baseline: int = 0
         self._min_during: int = 0
         self._after: int = 0
-        self._stop = False
+        self._stop: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
 
     async def __aenter__(self) -> "MemorySampler":
         self._baseline = self._probe()
         self._min_during = self._baseline
-        self._stop = False
-        self._task = asyncio.create_task(self._poll_loop())
+        self._stop = asyncio.Event()
+        self._task = asyncio.create_task(self._poll_loop(self._stop))
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        self._stop = True
+        if self._stop is not None:
+            self._stop.set()
         if self._task is not None:
             try:
                 await self._task
@@ -213,11 +228,14 @@ class MemorySampler:
                 pass
         self._after = self._probe()
 
-    async def _poll_loop(self) -> None:
-        while not self._stop:
-            await asyncio.sleep(self._poll_interval_s)
-            if self._stop:
-                break
+    async def _poll_loop(self, stop: asyncio.Event) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self._poll_interval_s)
+            except TimeoutError:
+                pass  # Interval elapsed with no stop requested: take a sample.
+            else:
+                return  # Stop requested: exit without a further reading.
             val = self._probe()
             if val < self._min_during:
                 self._min_during = val
@@ -256,10 +274,15 @@ async def measure_one(
     max_tokens = compute_max_tokens(word_count, abstraction_config)
 
     sampler = MemorySampler(mem_probe, poll_interval_s=poll_interval_s)
-    t0 = time.perf_counter()
     async with sampler:
+        # Time the provider call alone. The sampler's baseline and final
+        # probe readings are measurement overhead, not provider latency,
+        # and a probe can be arbitrarily slow -- the default one shells
+        # out to a subprocess. Timing across the enclosing ``async with``
+        # would fold that overhead into the reported latency.
+        t0 = time.perf_counter()
         raw_output = await provider.generate_abstract(projection_text, max_tokens, doc_type)
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     trimmed = trim_to_sentence_boundary(raw_output)
     tokens_generated = len(trimmed.split())
@@ -352,9 +375,7 @@ async def run_benchmark(
     Abstraction Provider Evaluation Framework §3.2.
     """
     if mem_probe is None:
-        from sage.utils.unified_memory import free_unified_memory_bytes
-
-        mem_probe = free_unified_memory_bytes
+        mem_probe = DEFAULT_MEM_PROBE
 
     started_at = _now_iso()
     measurements: list[MeasurementRecord] = []

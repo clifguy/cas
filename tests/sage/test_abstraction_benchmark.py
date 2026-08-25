@@ -10,6 +10,7 @@ any vault graph.
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ import pytest
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, AbstractionProvider, Chunk
 from sage.config import VaultAbstractionConfig as AbstractionConfig
+from sage.utils import abstraction_benchmark, unified_memory
 from sage.utils.abstraction_benchmark import (
     BenchmarkResult,
     CatalogEntry,
@@ -90,6 +92,25 @@ class CountingProbe:
         i = min(self.calls, len(self.sequence) - 1)
         self.calls += 1
         return self.sequence[i]
+
+
+class SlowProbe:
+    """Memory probe with a fixed per-call cost.
+
+    Models the real probe, which shells out to a subprocess on every
+    reading. Used to prove that probe cost does not land in the
+    measured provider latency.
+    """
+
+    def __init__(self, value: int = 10_000, cost_s: float = 0.05) -> None:
+        self.value = value
+        self.cost_s = cost_s
+        self.calls = 0
+
+    def __call__(self) -> int:
+        self.calls += 1
+        time.sleep(self.cost_s)
+        return self.value
 
 
 def _make_entry(doc_id: str, doc_type: str, length: int) -> CatalogEntry:
@@ -274,6 +295,125 @@ async def test_memory_sampler_reports_minimum_free_during_call():
 
     assert record.peak_used_bytes_during_call == 3_000
     assert probe.calls >= 4  # baseline + at least 3 mid-call samples
+
+
+# ---------------------------------------------------------------------------
+# 7b. Default memory probe and sampler exit cost
+# ---------------------------------------------------------------------------
+
+
+def test_default_mem_probe_is_the_unified_memory_helper():
+    """The named default resolves to the real unified-memory helper.
+
+    Asserted by identity rather than by calling it, so the wiring is
+    guarded on every platform: free_unified_memory_bytes shells out to
+    macOS vm_stat and cannot run on a Linux CI box. A rename or move of
+    the helper reds this test everywhere. The helper's own behaviour is
+    covered in test_unified_memory.py.
+    """
+    assert abstraction_benchmark.DEFAULT_MEM_PROBE is unified_memory.free_unified_memory_bytes
+
+
+async def test_run_benchmark_defaults_to_the_module_probe(monkeypatch):
+    """Omitting mem_probe resolves DEFAULT_MEM_PROBE and actually uses it.
+
+    The production caller never passes a probe, so the defaulting branch
+    is the only one that runs in anger. Patching the module-level default
+    substitutes it without reaching into the sampler's per-call internals.
+    """
+    chunks_by_doc = {
+        "doc-0": [
+            Chunk(
+                document_id="doc-0",
+                heading_path="Body",
+                content="body of doc 0.",
+                chunk_index=0,
+            ),
+        ]
+    }
+    services = MagicMock()
+    services.content_store.get_all_chunks = AsyncMock(
+        side_effect=lambda doc_id: chunks_by_doc[doc_id]
+    )
+
+    probe = CountingProbe([10_000, 9_000])
+    monkeypatch.setattr(abstraction_benchmark, "DEFAULT_MEM_PROBE", probe)
+
+    result = await run_benchmark(
+        services=services,
+        corpus=[_make_entry("doc-0", "adr", 100)],
+        provider=RecordingProvider(output="abstract."),
+        abstraction_config=_default_config(),
+        repeats=1,
+        poll_interval_s=0.005,
+        warmup_calls=0,
+    )
+
+    # The defaulted probe reached the sampler: baseline on enter plus a
+    # final reading on exit. A run that left mem_probe unresolved would
+    # raise TypeError on the first probe call; one that resolved some
+    # other probe would leave this counter at zero.
+    assert probe.calls >= 2
+    assert len(result.measurements) == 1
+
+
+async def test_sampler_exit_does_not_block_the_caller():
+    """Shutdown does not wait out the pending poll interval.
+
+    The poll interval here is 20x the provider's work, so a sampler that
+    drained by sleeping the interval out would hold ``measure_one`` for
+    ~200 ms rather than ~10 ms. This asserts on the wall time of the
+    call itself, not on the record: with the timing window narrowed to
+    the provider call, a slow drain no longer shows up in
+    ``wall_clock_ms`` at all, so the record cannot witness this defect.
+    """
+    provider = RecordingProvider(output="abstract.", sleep_s=0.01)
+    probe = CountingProbe([10_000, 10_000])
+
+    t0 = time.perf_counter()
+    record = await measure_one(
+        provider=provider,
+        projection_text="ignored",
+        doc_type=None,
+        abstraction_config=_default_config(),
+        mem_probe=probe,
+        poll_interval_s=0.2,
+    )
+    total_ms = (time.perf_counter() - t0) * 1000.0
+
+    assert total_ms < 100
+    assert record.wall_clock_ms >= 10  # the provider's own work still counts
+
+
+async def test_probe_cost_stays_out_of_the_measured_latency():
+    """Wall-clock covers the provider call, not the sampler's readings.
+
+    The probe costs 50 ms per reading and is called twice per
+    measurement -- baseline on enter, final on exit -- against a
+    provider doing 10 ms of work. Timing across the enclosing
+    ``async with`` would report ~110 ms instead of ~10 ms, an 11x
+    overstatement. This matters because the default probe really is
+    this expensive: it spawns a subprocess. The upper bound is the
+    complement of the lower bound asserted in
+    test_measure_one_records_wall_clock_tokens_memory_and_output.
+    """
+    provider = RecordingProvider(output="abstract.", sleep_s=0.01)
+    probe = SlowProbe(value=10_000, cost_s=0.05)
+
+    record = await measure_one(
+        provider=provider,
+        projection_text="ignored",
+        doc_type=None,
+        abstraction_config=_default_config(),
+        mem_probe=probe,
+        # Longer than the provider call, so the only probe readings are
+        # the enter/exit pair and the cost is exactly 2 x cost_s.
+        poll_interval_s=0.2,
+    )
+
+    assert probe.calls == 2
+    assert record.wall_clock_ms >= 10  # the provider's own work is counted
+    assert record.wall_clock_ms < 60  # ... and neither probe reading is
 
 
 # ---------------------------------------------------------------------------
