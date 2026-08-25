@@ -67,7 +67,13 @@ def free_unified_memory_bytes() -> int:
         RuntimeError: if vm_stat output cannot be parsed (e.g. running
             on a non-macOS system).
     """
-    output = subprocess.check_output(["/usr/bin/vm_stat"], text=True)
+    try:
+        output = subprocess.check_output(["/usr/bin/vm_stat"], text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # The tool is macOS-only, so a foreign host fails here rather than at
+        # the parse below. Both arrive as the same documented RuntimeError,
+        # which is what the caller's contract has always promised.
+        raise RuntimeError(f"Could not read vm_stat: {exc}") from exc
 
     page_match = _PAGE_SIZE_RE.search(output)
     if not page_match:
@@ -98,7 +104,14 @@ def total_unified_memory_bytes() -> int:
         RuntimeError: if the sysctl reading cannot be parsed (e.g. running
             on a non-macOS system).
     """
-    output = subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True)
+    try:
+        output = subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # The key is macOS-specific, and the tool itself exists on other
+        # platforms -- so a foreign host fails by returning non-zero rather
+        # than by the binary being absent. Both arrive here as the same
+        # documented RuntimeError.
+        raise RuntimeError(f"Could not read hw.memsize from sysctl: {exc}") from exc
 
     try:
         return int(output.strip())

@@ -43,6 +43,8 @@ from sage.adapters.interfaces import (
 from sage.config import VaultAbstractionConfig as AbstractionConfig
 from sage.utils.unified_memory import free_unified_memory_bytes
 
+logger = logging.getLogger(__name__)
+
 MemoryProbe = Callable[[], int]
 
 #: Probe used when a caller supplies none. Named at module scope so the
@@ -72,6 +74,23 @@ _PHASE_FIELDS = (
     "retained_tokens",
     "prompt_tokens",
 )
+
+
+def _probe_or_zero(probe: MemoryProbe) -> int:
+    """Call a diagnostic memory probe, reporting zero when it cannot answer.
+
+    The memory figures are metadata about a run, not results of it: latency,
+    determinism, and output text do not depend on them. The probes read
+    platform-specific interfaces, so a host that does not offer them should
+    cost the run its memory columns and nothing else. Zero is the
+    "unrecorded" signal the scorecard already renders as such, which keeps an
+    unavailable figure distinguishable from a measured one.
+    """
+    try:
+        return probe()
+    except Exception as exc:  # noqa: BLE001 -- diagnostic metadata is never fatal
+        logger.debug("memory probe unavailable: %s", exc)
+        return 0
 
 
 def _self_rss_bytes() -> int:
@@ -529,7 +548,7 @@ async def run_benchmark(
     # Sampled once per document and kept as a running maximum. Resident size
     # falls back after a large allocation is released, so the last reading
     # would understate the footprint the machine actually had to hold.
-    peak_rss = rss_probe()
+    peak_rss = _probe_or_zero(rss_probe)
 
     started_at = _now_iso()
     measurements: list[MeasurementRecord] = []
@@ -565,7 +584,7 @@ async def run_benchmark(
         measurements.append(record)
         determinism[entry.doc_id] = verdict
         alt_outputs[entry.doc_id] = outputs
-        peak_rss = max(peak_rss, rss_probe())
+        peak_rss = max(peak_rss, _probe_or_zero(rss_probe))
 
     finished_at = _now_iso()
     latency_stats = aggregate_latency([m.wall_clock_ms for m in measurements])
@@ -583,7 +602,7 @@ async def run_benchmark(
         started_at=started_at,
         finished_at=finished_at,
         peak_rss_bytes=peak_rss,
-        machine_total_bytes=total_memory_probe(),
+        machine_total_bytes=_probe_or_zero(total_memory_probe),
     )
 
 

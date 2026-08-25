@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import sage.utils.abstraction_benchmark as benchmark_module
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, AbstractionProvider, Chunk
 from sage.config import VaultAbstractionConfig as AbstractionConfig
@@ -1181,3 +1182,89 @@ def test_scorecard_renders_unmeasured_phase_fields_as_absent_not_zero():
     prefill_section = md[md.index("## Prefill vs decode") : md.index("## Resident memory")]
     assert "not measured" in prefill_section.lower()
     assert "0.0" not in prefill_section
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_survives_an_unavailable_memory_probe(monkeypatch):
+    """A platform that cannot report memory still completes the run.
+
+    The memory figures are diagnostic metadata, not results: the latency and
+    determinism measurements the run exists for do not depend on them. The
+    default probes shell out to platform-specific tools, so on any host that
+    lacks them the honest outcome is an unrecorded figure -- which the
+    scorecard already renders as unrecorded -- rather than a benchmark that
+    cannot run at all.
+    """
+
+    def unavailable() -> int:
+        raise OSError("no such tool on this platform")
+
+    monkeypatch.setattr(benchmark_module, "_self_rss_bytes", unavailable)
+    monkeypatch.setattr("sage.utils.unified_memory.total_unified_memory_bytes", unavailable)
+
+    result = await run_benchmark(
+        services=_single_chunk_services(2),
+        corpus=[_make_entry(f"doc-{i}", "adr", 100 + i) for i in range(2)],
+        provider=RecordingProvider(output="abstract."),
+        abstraction_config=_default_config(),
+        repeats=1,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        warmup_calls=0,
+    )
+
+    assert len(result.measurements) == 2
+    assert result.peak_rss_bytes == 0
+    assert result.machine_total_bytes == 0
+
+
+def test_scorecard_reports_an_unrecorded_footprint_rather_than_zero_gib():
+    """An unavailable figure renders as unrecorded, not as 0.0 GiB.
+
+    A 0.0 GiB resident footprint would read as a measurement -- and a
+    startling one -- where the truth is that the platform could not report.
+    """
+    result = _sample_result_with_phases()
+    result.peak_rss_bytes = 0
+    result.machine_total_bytes = 0
+
+    md = render_scorecard(result)
+    resident = md[md.index("## Resident memory") : md.index("## Long-context prefill probe")]
+
+    assert "not recorded" in resident.lower()
+    assert "0.0 GiB" not in resident
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_completes_on_a_host_without_the_memory_tool(monkeypatch):
+    """The default probe path survives a host whose memory tool refuses.
+
+    Reproduces the shape a non-macOS host produces: the tool is present, so
+    the call fails by returning non-zero rather than by the binary being
+    missing. Patching at the subprocess layer rather than at the probe keeps
+    this test anchored to the real failure instead of to the guard written
+    for it, and the run uses the default probes because that is the path a
+    caller who never heard of these parameters takes.
+    """
+    import subprocess
+
+    def refusing_check_output(argv, text=False):
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr("sage.utils.unified_memory.subprocess.check_output", refusing_check_output)
+
+    result = await run_benchmark(
+        services=_single_chunk_services(2),
+        corpus=[_make_entry(f"doc-{i}", "adr", 100 + i) for i in range(2)],
+        provider=RecordingProvider(output="abstract."),
+        abstraction_config=_default_config(),
+        repeats=1,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        warmup_calls=0,
+    )
+
+    assert len(result.measurements) == 2
+    assert result.machine_total_bytes == 0
+    # RSS comes from a portable interface, so it still reports.
+    assert result.peak_rss_bytes > 0

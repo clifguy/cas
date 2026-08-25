@@ -89,3 +89,49 @@ def test_total_unified_memory_bytes_raises_on_unparseable_output(monkeypatch):
     monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
     with pytest.raises(RuntimeError, match="hw.memsize"):
         unified_memory.total_unified_memory_bytes()
+
+
+def test_total_unified_memory_bytes_raises_runtime_error_on_a_foreign_host(monkeypatch):
+    """A host without the macOS key fails as the documented RuntimeError.
+
+    The tool itself exists on other platforms, so a foreign host fails by
+    returning non-zero rather than by the binary being absent. Raising the
+    subprocess error verbatim would make the documented contract false for
+    the one case it most needs to describe.
+    """
+    import subprocess
+
+    def fake_check_output(argv, text=False):
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="hw.memsize"):
+        unified_memory.total_unified_memory_bytes()
+
+
+def test_free_unified_memory_bytes_raises_runtime_error_when_the_tool_is_absent(monkeypatch):
+    """A host with no ``vm_stat`` fails as the documented RuntimeError.
+
+    The docstring has always promised RuntimeError "e.g. running on a
+    non-macOS system", but an absent binary surfaced as FileNotFoundError --
+    so the contract was false for exactly the case it names.
+    """
+
+    def fake_check_output(argv, text=False):
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="vm_stat"):
+        unified_memory.free_unified_memory_bytes()
+
+
+def test_free_unified_memory_bytes_raises_runtime_error_when_the_tool_refuses(monkeypatch):
+    """A tool that runs but exits non-zero fails the same documented way."""
+    import subprocess
+
+    def fake_check_output(argv, text=False):
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="vm_stat"):
+        unified_memory.free_unified_memory_bytes()
