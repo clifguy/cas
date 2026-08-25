@@ -430,9 +430,16 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         already performed, so the record cannot influence what was produced.
 
         The record pairs with the provider-neutral record the ingestion
-        service emits for the same call -- both carry ``input_chars`` -- and
-        with the truncation notice above, whose two token counts are this
+        service emits for the same call -- both carry ``document_chars`` --
+        and with the truncation notice above, whose two token counts are this
         record's ``input_tokens`` and ``retained_tokens``.
+
+        ``document_chars`` measures the text handed to this provider, not
+        whatever reached the model after fitting to the context window.
+        ``prompt_tokens`` is the model's own prompt length, so the constant
+        template overhead is its difference from ``retained_tokens`` -- a
+        figure the record yields on every generation, not only on one that
+        happened to truncate.
         """
         if final is None:
             return
@@ -450,22 +457,30 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         if input_tokens is None:
             input_tokens = retained_tokens
 
+        # Each rate is the model's own reported figure rather than a ratio
+        # recomputed from the count and duration beside it. The two agree
+        # arithmetically on an ordinary generation -- the durations are
+        # derived from these very rates -- but only the reported figure
+        # survives a phase whose duration is unmeasurable.
+        prompt_tps = getattr(final, "prompt_tps", None)
+        generation_tokens = getattr(final, "generation_tokens", None)
+        generation_tps = getattr(final, "generation_tps", None)
+
         payload: dict[str, object] = {
             "layer": "abstraction",
             "label": "abstract.mlx",
             "model": self._model_id,
-            "input_chars": len(text),
+            "document_chars": len(text),
             "input_tokens": input_tokens,
             "retained_tokens": retained_tokens,
-            "generated_tokens": getattr(final, "generation_tokens", None),
-            "prefill_ms": _phase_duration_ms(
-                getattr(final, "prompt_tokens", None), getattr(final, "prompt_tps", None)
-            ),
-            "decode_ms": _phase_duration_ms(
-                getattr(final, "generation_tokens", None),
-                getattr(final, "generation_tps", None),
-            ),
-            "tokens_per_second": getattr(final, "generation_tps", None),
+            # The same value retained_tokens was derived from, so the two
+            # cannot disagree about the template overhead between them.
+            "prompt_tokens": prompt_tokens,
+            "generated_tokens": generation_tokens,
+            "prefill_ms": _phase_duration_ms(prompt_tokens, prompt_tps),
+            "prefill_tps": prompt_tps,
+            "decode_ms": _phase_duration_ms(generation_tokens, generation_tps),
+            "decode_tps": generation_tps,
         }
         timing_logger.info(json.dumps(payload))
 

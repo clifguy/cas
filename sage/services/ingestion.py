@@ -1197,14 +1197,20 @@ class IngestionService:
         # say emits its own record; this one stays comparable across all of
         # them. Success only -- a failed call produced no abstract, and
         # reporting a duration for it would misread as work delivered.
+        #
+        # Both figures name the document deliberately. A provider may
+        # reduce an over-length input before submitting it, and reports that
+        # reduction itself, in tokens; these measure what the provider was
+        # given, in characters and words. Naming them for the input would
+        # invite reading the two as the same quantity.
         abstraction_timing_logger.info(
             json.dumps(
                 {
                     "layer": "abstraction",
                     "label": "abstract",
                     "provider": type(self._abstraction).__name__,
-                    "input_chars": len(text),
-                    "input_words": word_count,
+                    "document_chars": len(text),
+                    "document_words": word_count,
                     "max_tokens": max_tokens,
                     "abstract_chars": len(abstract),
                     "duration_ms": duration_ms,
