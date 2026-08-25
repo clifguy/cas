@@ -15,6 +15,7 @@ read from the provider's model registry rather than held here as a per-model
 table, so it tracks the model roster instead of ageing with it.
 """
 
+import asyncio
 import logging
 import re
 
@@ -87,6 +88,29 @@ def _reports_input_too_long(exc: BaseException) -> bool:
     return _INPUT_TOO_LONG_PATTERN.search(str(exc)) is not None
 
 
+def _discovery_failure_is_permanent(exc: BaseException) -> bool:
+    """Whether a failed ceiling lookup is settled rather than worth retrying.
+
+    Narrow by construction, and biased toward retrying. A client-error status
+    the request itself provoked -- an unknown model id, a rejected key, a
+    principal without access -- reports something no later attempt resolves
+    while the configuration stands, so the answer is kept. Everything else is
+    treated as transient: connection failures, timeouts, throttling, server
+    errors, and any exception type this classifier does not recognize. The
+    unrecognized case falls to the retrying side deliberately -- a needless
+    retry costs one round trip, while wrongly settling on a failure costs the
+    input check for the life of the process.
+    """
+    from anthropic import APIStatusError
+
+    if not isinstance(exc, APIStatusError):
+        return False
+    status = exc.status_code
+    # 408 and 409 sit in the client-error range but describe a moment rather
+    # than the request; 429 says to come back later in as many words.
+    return 400 <= status < 500 and status not in (408, 409, 429)
+
+
 class AnthropicAbstractionProvider(AbstractionProvider):
     """Abstraction provider backed by a hosted Claude model.
 
@@ -106,11 +130,26 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         # Deferred: created on first use by _ensure_client(). Holds one
         # AsyncAnthropic instance reused across calls.
         self._client = None
-        # Discovered once by _resolve_input_limit(). The resolved flag is what
-        # distinguishes "no usable ceiling was reported" from "discovery has
-        # not run yet", so a model without one is not re-queried per call.
+        # Discovered by _resolve_input_limit(). The resolved flag records a
+        # settled answer -- a ceiling, a model that reports none, or a lookup
+        # failure nothing but a configuration change would clear -- which is
+        # what distinguishes "no usable ceiling exists" from "the question is
+        # still open". A settled answer is not re-queried per call; an open
+        # one is asked again on the next abstract.
         self._input_limit: int | None = None
         self._input_limit_resolved = False
+        # Separate from the flag above so the condition is reported once per
+        # provider -- which is once per process, the provider being built at
+        # startup and shared by every vault -- however many abstracts are
+        # generated while it persists. Tied to the resolved flag instead, log
+        # economy would hold discovery hostage to it and settle a question
+        # that is still open.
+        self._input_limit_warned = False
+        # Single-flight discovery: concurrent first abstracts spend one lookup
+        # between them, and all of them see its result. Scoped to discovery --
+        # generation is not serialized, here or behind the local provider's
+        # unified-memory lock.
+        self._input_limit_lock = asyncio.Lock()
 
     def _ensure_client(self):
         """Lazily construct and cache the async SDK client.
@@ -131,13 +170,22 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         return self._client
 
     async def _resolve_input_limit(self) -> int | None:
-        """Discover the configured model's maximum input size, once per process.
+        """Discover the configured model's maximum input size.
 
         Read from the model registry rather than carried here as a table, so
-        the ceiling follows the model roster. Either failure mode -- an
-        unreachable registry, or a model that reports no ceiling -- degrades to
-        an unchecked call rather than failing the abstract (CAS-ADR-011); the
-        API's own rejection remains the backstop and is classified as terminal.
+        the ceiling follows the model roster. Every outcome that leaves no
+        usable ceiling -- a lookup that failed, a model that reports none --
+        degrades to an unchecked call rather than failing the abstract
+        (CAS-ADR-011); the API's own rejection remains the backstop and is
+        classified as terminal.
+
+        The lookup is settled once and reused, but only a settled answer
+        counts: a successful retrieve, or a failure a later attempt would
+        reproduce. A transient failure leaves the question open, so the next
+        abstract asks again rather than spending the rest of the process
+        submitting unchecked -- which is the whole of the check's value on a
+        long-lived server, where the first abstract a replica happens to serve
+        would otherwise decide the matter for every abstract after it.
 
         Returns:
             The model's maximum input size in tokens, or None when no usable
@@ -146,33 +194,46 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         if self._input_limit_resolved:
             return self._input_limit
 
-        # Set before the call so a failure is remembered and the warning below
-        # is emitted once rather than on every subsequent abstract.
-        self._input_limit_resolved = True
-        client = self._ensure_client()
-        try:
-            info = await client.models.retrieve(self._model_id)
-            limit = info.max_input_tokens
-        except Exception as exc:
-            logger.warning(
-                "Could not determine the input limit for model %s (%s: %s); "
-                "abstraction input will not be checked before the call",
-                self._model_id,
-                type(exc).__name__,
-                exc,
-            )
-            return None
+        async with self._input_limit_lock:
+            # Re-checked under the lock: a caller that queued here while
+            # another was mid-lookup wants that lookup's answer, not one of
+            # its own.
+            if self._input_limit_resolved:
+                return self._input_limit
 
-        if limit is None:
-            logger.warning(
-                "Model %s reports no maximum input size; abstraction input "
-                "will not be checked before the call",
-                self._model_id,
-            )
-            return None
+            client = self._ensure_client()
+            try:
+                info = await client.models.retrieve(self._model_id)
+                limit = info.max_input_tokens
+            except Exception as exc:
+                self._warn_input_limit_unavailable(
+                    "Could not determine the input limit for model %s (%s: %s); "
+                    "abstraction input will not be checked before the call",
+                    self._model_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                self._input_limit_resolved = _discovery_failure_is_permanent(exc)
+                return None
 
-        self._input_limit = limit
-        return limit
+            self._input_limit_resolved = True
+            if limit is None:
+                self._warn_input_limit_unavailable(
+                    "Model %s reports no maximum input size; abstraction input "
+                    "will not be checked before the call",
+                    self._model_id,
+                )
+                return None
+
+            self._input_limit = limit
+            return limit
+
+    def _warn_input_limit_unavailable(self, message: str, *args: object) -> None:
+        """Report an absent input ceiling, at most once per provider."""
+        if self._input_limit_warned:
+            return
+        self._input_limit_warned = True
+        logger.warning(message, *args)
 
     async def _count_input_tokens(self, text: str, system_prompt: str) -> int:
         """Exact token count for the request this text would produce."""
