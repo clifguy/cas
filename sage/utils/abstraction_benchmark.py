@@ -273,6 +273,10 @@ class BenchmarkResult:
     # Run-level memory figures. The footprint is a peak across the run; the
     # total is the machine capacity it is read against.
     peak_rss_bytes: int = 0
+    # Accelerator-held peak across the measured loop. Reported beside the
+    # resident figure because process RSS does not observe these allocations,
+    # so RSS alone understates what the model held.
+    accelerator_peak_bytes: int = 0
     machine_total_bytes: int = 0
 
     # Window the run was conducted at. All three are reported because they
@@ -551,6 +555,8 @@ async def run_benchmark(
     warmup_calls: int = 1,
     rss_probe: MemoryProbe | None = None,
     total_memory_probe: MemoryProbe | None = None,
+    accelerator_probe: MemoryProbe | None = None,
+    accelerator_reset: Callable[[], None] | None = None,
 ) -> BenchmarkResult:
     """Run the candidate provider over the corpus.
 
@@ -572,11 +578,23 @@ async def run_benchmark(
         rss_probe = _self_rss_bytes
     if total_memory_probe is None:
         total_memory_probe = DEFAULT_TOTAL_MEMORY_PROBE
+    if accelerator_probe is None:
+        accelerator_probe = _accelerator_peak_bytes
+    if accelerator_reset is None:
+        accelerator_reset = _reset_accelerator_peak
+
+    # The accelerator's high-water mark is process-wide and monotonic, so a
+    # second run in the same process would otherwise inherit the first's peak.
+    try:
+        accelerator_reset()
+    except Exception as exc:  # noqa: BLE001 -- diagnostic metadata is never fatal
+        logger.debug("accelerator reset unavailable: %s", exc)
 
     # Sampled once per document and kept as a running maximum. Resident size
     # falls back after a large allocation is released, so the last reading
     # would understate the footprint the machine actually had to hold.
     peak_rss = _probe_or_zero(rss_probe)
+    peak_accelerator = _probe_or_zero(accelerator_probe)
 
     started_at = _now_iso()
     measurements: list[MeasurementRecord] = []
@@ -613,6 +631,7 @@ async def run_benchmark(
         determinism[entry.doc_id] = verdict
         alt_outputs[entry.doc_id] = outputs
         peak_rss = max(peak_rss, _probe_or_zero(rss_probe))
+        peak_accelerator = max(peak_accelerator, _probe_or_zero(accelerator_probe))
 
     finished_at = _now_iso()
     latency_stats = aggregate_latency([m.wall_clock_ms for m in measurements])
@@ -630,6 +649,7 @@ async def run_benchmark(
         started_at=started_at,
         finished_at=finished_at,
         peak_rss_bytes=peak_rss,
+        accelerator_peak_bytes=peak_accelerator,
         machine_total_bytes=_probe_or_zero(total_memory_probe),
     )
 
@@ -920,9 +940,23 @@ def _render_resident_memory(result: BenchmarkResult) -> list[str]:
         lines.extend(["_Not recorded for this run._", ""])
         return lines
 
-    headroom = result.machine_total_bytes - result.peak_rss_bytes
-    share = result.peak_rss_bytes / result.machine_total_bytes * 100
-    lines.append(f"- Peak resident: **{_gib(result.peak_rss_bytes)}**")
+    # The budget is read against the accelerator figure where one was
+    # measured. Process RSS is reported too, but it cannot stand in: it does
+    # not observe accelerator allocations, so on this workload it omits the
+    # allocation that dominates and would overstate the headroom.
+    budget_bytes = result.accelerator_peak_bytes or result.peak_rss_bytes
+    headroom = result.machine_total_bytes - budget_bytes
+    share = budget_bytes / result.machine_total_bytes * 100
+
+    if result.accelerator_peak_bytes:
+        lines.append(f"- Peak accelerator memory: **{_gib(result.accelerator_peak_bytes)}**")
+        lines.append(
+            f"- Process resident: {_gib(result.peak_rss_bytes)} "
+            f"(does not observe accelerator allocations)"
+        )
+    else:
+        lines.append(f"- Peak resident: **{_gib(result.peak_rss_bytes)}**")
+        lines.append("- Peak accelerator memory: _not measured on this host._")
     lines.append(f"- Machine total: {_gib(result.machine_total_bytes)}")
     lines.append(f"- Share of total: {share:.1f}%")
     lines.append(f"- Headroom at peak: {_gib(headroom)}")

@@ -160,6 +160,7 @@ def _serialize_result(result, baselines: dict[str, str]) -> dict:
         "alt_outputs": result.alt_outputs,
         "measurements": [asdict(m) for m in result.measurements],
         "peak_rss_bytes": result.peak_rss_bytes,
+        "accelerator_peak_bytes": result.accelerator_peak_bytes,
         "machine_total_bytes": result.machine_total_bytes,
         "configured_context_window": result.configured_context_window,
         "native_context_window": result.native_context_window,
@@ -193,8 +194,13 @@ def _print_summary(result) -> None:
 
     if result.peak_rss_bytes and result.machine_total_bytes:
         print()
+        if result.accelerator_peak_bytes:
+            print(
+                f"Peak accelerator: {result.accelerator_peak_bytes / 1024**3:.1f} GiB "
+                f"of {result.machine_total_bytes / 1024**3:.1f} GiB"
+            )
         print(
-            f"Peak resident: {result.peak_rss_bytes / 1024**3:.1f} GiB "
+            f"Peak resident:    {result.peak_rss_bytes / 1024**3:.1f} GiB "
             f"of {result.machine_total_bytes / 1024**3:.1f} GiB"
         )
 

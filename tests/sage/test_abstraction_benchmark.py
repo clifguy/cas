@@ -1485,3 +1485,115 @@ def test_reveal_does_not_attribute_the_baseline_to_a_named_model():
     assert "stored" in card_a_line.lower()
     # The candidate, which the harness *did* run, is still named.
     assert "Qwen3.5-9B-4bit" in reveal
+
+
+# ---------------------------------------------------------------------------
+# Accelerator memory across the measured loop
+# ---------------------------------------------------------------------------
+
+
+async def _run_with_accelerator(accelerator_probe, accelerator_reset=None, doc_count=3):
+    return await run_benchmark(
+        services=_single_chunk_services(doc_count),
+        corpus=[_make_entry(f"doc-{i}", "adr", 100 + i) for i in range(doc_count)],
+        provider=RecordingProvider(output="abstract."),
+        abstraction_config=_default_config(),
+        repeats=1,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        warmup_calls=0,
+        rss_probe=CountingProbe([6_000]),
+        total_memory_probe=lambda: 68_719_476_736,
+        accelerator_probe=accelerator_probe,
+        accelerator_reset=accelerator_reset or (lambda: None),
+    )
+
+
+@pytest.mark.asyncio
+async def test_benchmark_result_records_the_accelerator_peak():
+    """The measured loop reports accelerator memory, not only process RSS.
+
+    Process RSS does not observe accelerator allocations, so a run that
+    reported RSS alone would understate what the model actually held -- and
+    would do so silently, since the figure it prints is a real measurement of
+    something else.
+    """
+    result = await _run_with_accelerator(CountingProbe([5_000, 9_000, 9_500]))
+
+    assert result.accelerator_peak_bytes == 9_500
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_tracks_the_accelerator_maximum():
+    """The reported figure is the run's maximum, not its final reading.
+
+    The probe rises and then falls, so keeping the last sample reports 4000
+    and only a running maximum reports the peak the machine actually had to
+    hold.
+    """
+    result = await _run_with_accelerator(CountingProbe([3_000, 11_000, 4_000]), doc_count=3)
+
+    assert result.accelerator_peak_bytes == 11_000
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_resets_the_accelerator_peak_before_the_loop():
+    """The peak belongs to this run, not to whatever preceded it in-process.
+
+    The accelerator keeps a process-wide high-water mark, so a second run in
+    the same process would otherwise inherit the first run's peak and report
+    it as its own.
+    """
+    resets: list[str] = []
+    await _run_with_accelerator(
+        CountingProbe([5_000]), accelerator_reset=lambda: resets.append("r")
+    )
+
+    assert resets == ["r"]
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_survives_an_absent_accelerator():
+    """A host with no accelerator runtime still completes the run."""
+
+    def unavailable() -> int:
+        raise ImportError("no accelerator runtime")
+
+    result = await _run_with_accelerator(unavailable, accelerator_reset=unavailable)
+
+    assert len(result.measurements) == 3
+    assert result.accelerator_peak_bytes == 0
+
+
+def test_resident_section_reports_accelerator_peak_beside_process_rss():
+    """Both figures appear, and the RSS one says what it does not observe.
+
+    A resident section carrying RSS alone reads as the model's footprint. It
+    is not: for this workload it omits the allocation that dominates, so the
+    unlabelled figure understates the budget and overstates the headroom.
+    """
+    result = _sample_result_with_phases()
+    result.peak_rss_bytes = 6_120_000_000
+    result.accelerator_peak_bytes = 10_007_060_480  # 9.32 GiB
+    result.machine_total_bytes = 68_719_476_736
+
+    md = render_scorecard(result)
+    resident = md[md.index("## Resident memory") : md.index("## Long-context prefill probe")]
+
+    assert "9.3 GiB" in resident
+    assert "does not observe accelerator allocations" in resident
+    # Headroom is read against the accelerator figure, the larger of the two.
+    assert "5.7 GiB" in resident or "58.7 GiB" in resident
+
+
+def test_resident_section_falls_back_to_rss_when_accelerator_is_unmeasured():
+    """A host without accelerator accounting still gets an honest section."""
+    result = _sample_result_with_phases()
+    result.peak_rss_bytes = 6_120_000_000
+    result.accelerator_peak_bytes = 0
+    result.machine_total_bytes = 68_719_476_736
+
+    resident = render_scorecard(result)
+    resident = resident[resident.index("## Resident memory") : resident.index("## Long-context")]
+
+    assert "not measured" in resident.lower() or "5.7 GiB" in resident
