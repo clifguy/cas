@@ -346,3 +346,73 @@ def test_stk_012_context_window_against_stub_rejected(monkeypatch):
         provider="local-mlx", model="mlx-community/test-qwen3", context_window=65536
     )
     assert isinstance(build_stack_abstraction_provider(overridden), StubAbstractionProvider)
+
+
+def _committed_stack_config() -> SageCoreConfig:
+    """Load the committed `sage/config.yaml`, bypassing the suite's pin.
+
+    The autouse `_pin_test_stack_config` fixture points SAGE_CONFIG_PATH at a
+    synthetic config carrying no `abstraction` block, so a bare
+    `load_stack_config_or_default()` here would read that file instead of the
+    shipped one. Passing the default path explicitly is what makes the two
+    tests below assertions about what this repository actually ships.
+    """
+    from sage.mcp_init import _DEFAULT_STACK_CONFIG_PATH, load_stack_config_or_default
+
+    return load_stack_config_or_default(path=_DEFAULT_STACK_CONFIG_PATH)
+
+
+def test_stk_013_committed_config_pins_an_explicit_context_window():
+    """The shipped stack config sets `context_window` rather than leaving it
+    unset, so the effective window is the configured model's full capacity
+    instead of the provider's conservative built-in floor.
+
+    Anti-coincidental-pass: asserting only `is not None` would pass for any
+    positive integer, including one *below* `DEFAULT_CONTEXT_WINDOW` -- a
+    silent regression in the opposite direction to the one this pin exists to
+    close. Comparing against the constant pins the direction of the decision
+    without freezing the literal value, so a later model can raise the pin
+    without editing this test.
+    """
+    from sage.adapters.abstraction_qwen3 import DEFAULT_CONTEXT_WINDOW
+
+    cfg = _committed_stack_config()
+
+    assert cfg.abstraction.context_window is not None, (
+        "the committed sage/config.yaml leaves context_window unset; the local "
+        "provider would fall back to its built-in default window"
+    )
+    assert cfg.abstraction.context_window >= DEFAULT_CONTEXT_WINDOW
+
+
+def test_stk_014_committed_context_window_reaches_the_local_factory(monkeypatch):
+    """The window the committed config carries survives the dispatch to
+    `get_qwen3_abstraction_provider`.
+
+    Anti-coincidental-pass: STK-009 proves an arbitrary configured value is
+    forwarded and STK-010 proves an absent one is forwarded as None, but both
+    build their config in-test. Neither notices the shipped file reverting to
+    unset. Asserting equality against the loaded value -- rather than merely
+    that the keyword was passed, which holds for None too -- is what binds the
+    committed file to the live dispatch path.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    sentinel = StubAbstractionProvider()
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return sentinel
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    cfg = _committed_stack_config()
+    build_stack_abstraction_provider(cfg)
+
+    assert len(calls) == 1
+    assert calls[0]["context_window"] is not None
+    assert calls[0]["context_window"] == cfg.abstraction.context_window

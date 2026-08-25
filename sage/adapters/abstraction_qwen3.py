@@ -43,6 +43,26 @@ timing_logger = logging.getLogger("sage.abstraction.timing")
 _generation_lock = asyncio.Lock()
 
 
+# Prompt window an *unconfigured* stack runs on. Deliberately a bounded floor
+# rather than a reading of the loaded model: the two are not the same choice,
+# and the difference matters most for the models where it is least visible.
+#
+# Deferring to the model's native window would make an unconfigured stack
+# inherit whatever the weights advertise, which for a long-context family runs
+# an order of magnitude above this number. The window sets a truncation
+# threshold, so nothing changes for a document that already fits -- but a
+# document that does not now prefills the whole way, and at those lengths a
+# single abstract costs minutes of prefill and a unified-memory spike large
+# enough to matter on a workstation. A stack nobody configured is exactly the
+# one that should not opt into that silently.
+#
+# So the native window stays reachable, but only by writing it down: set
+# `abstraction.context_window` in the stack config (CAS-ADR-030), where the
+# value is visible, reviewable, and clamped to the native window at model load
+# if it overshoots. Raising this constant to track a particular model would
+# move that decision back out of sight, which is how the gap between this
+# number and the configured model's capacity went unnoticed for as long as it
+# did.
 DEFAULT_CONTEXT_WINDOW = 32768
 
 
