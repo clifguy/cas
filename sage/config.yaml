@@ -59,17 +59,28 @@ abstraction:
 
   # Maximum prompt length in tokens, consumed only by the local MLX provider:
   # it truncates a document that would overflow this window, preserving the
-  # leading content. Left unset (null) the provider keeps its own built-in
-  # window, which is what every deployment has run on to date -- set it only
-  # to evaluate a model with a different one.
+  # leading content. The value below is the native window of the model
+  # configured above, pinned deliberately: left unset the provider falls back
+  # to its own built-in default, which is a conservative floor sized for an
+  # unconfigured stack rather than a reading of the loaded model (see the
+  # rationale at DEFAULT_CONTEXT_WINDOW in
+  # sage/adapters/abstraction_qwen3.py). Every deployment ran on that floor
+  # until this pin, spending 32768 of the 40960 tokens the model supports and
+  # truncating documents that would otherwise have fit whole.
+  #
+  # Raising the window costs nothing for documents that already fit: it sets a
+  # truncation threshold, not a prefill length. Only a document that would
+  # otherwise be cut short prefills longer, which is the trade being made.
+  #
+  # Re-derive this value whenever `model` changes -- it is a fact about one
+  # model, not a stack-wide constant.
   #
   # A hosted provider derives its input limit from its own configured model
   # and does not read this field, so setting it while `provider` is anything
   # other than `local-mlx` fails at startup rather than being ignored. A value
   # larger than the loaded model's native window is reported at model load and
   # clamped to that native window.
-  #
-  # context_window: 32768
+  context_window: 40960
 
 # Postgres storage-engine connection parameters (CAS-ADR-042). Both deployment
 # targets externalize durable graph + content state to Postgres -- a local unix
