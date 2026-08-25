@@ -64,6 +64,7 @@ _TIMING_LOGGER_NAMES = (
     "sage.storage.timing",
     "sage.content.timing",
     "sage.retrieval.timing",
+    "sage.abstraction.timing",
 )
 
 
@@ -88,7 +89,7 @@ def build_source_adapter_registry() -> dict[SourceType, SourceAdapter]:
 class _TimingHandlerRef:
     """Reference-count entry for a process-global timing-log handler.
 
-    The three timing loggers are process-global, but the
+    The timing loggers are process-global, but the
     ``RotatingFileHandler`` behind them is per-vault — keyed by the resolved
     ``timing.log`` path. Several ``SAGEServices`` can map to one path (a vault
     reload reuses its ``brain_root``), so the handler outlives any single
@@ -109,6 +110,12 @@ _timing_handler_lock = threading.Lock()
 # registry is that coordination point. Entries are created on first install
 # and removed when the last reference is released.
 _timing_handlers: dict[str, _TimingHandlerRef] = {}
+# Resting ``propagate`` state of the timing loggers, captured when the first
+# handler in the process attaches and restored when the last one detaches.
+# Installing disables propagation, so without this the loggers would stay
+# non-propagating for the life of the process even after every handler is
+# gone. Keyed by logger name; empty whenever ``_timing_handlers`` is empty.
+_saved_propagate: dict[str, bool] = {}
 
 
 def _install_timing_handler(
@@ -117,16 +124,27 @@ def _install_timing_handler(
     """Attach (or reuse) the per-vault timing handler under a reference count.
 
     The first caller for ``log_path`` opens a ``RotatingFileHandler`` on the
-    file and attaches it to the three timing loggers; later callers reuse that
+    file and attaches it to the timing loggers; later callers reuse that
     handler and bump its reference count. ``propagate`` is disabled on the
     timing loggers so records don't bubble up to the root logger (which would
-    mix them into the normal app stream). The open file handle is released only
-    by the matching ``_release_timing_handler`` call that drops the count to
-    zero, so a vault reload (which reuses the path) keeps logging across the
-    swap and a failed reload leaves the surviving vault's handler intact.
+    mix them into the normal app stream); the state it displaces is saved on
+    the process's first install and restored by its last release. That
+    snapshot is process-global rather than per-path because the loggers are
+    shared: restoring when one vault detaches would re-enable propagation
+    while another vault's handler is still attached.
+
+    The open file handle is released only by the matching
+    ``_release_timing_handler`` call that drops the count to zero, so a vault
+    reload (which reuses the path) keeps logging across the swap and a failed
+    reload leaves the surviving vault's handler intact.
     """
     key = str(log_path)
     with _timing_handler_lock:
+        if not _timing_handlers:
+            _saved_propagate.clear()
+            _saved_propagate.update(
+                {name: logging.getLogger(name).propagate for name in _TIMING_LOGGER_NAMES}
+            )
         ref = _timing_handlers.get(key)
         if ref is None:
             handler = logging.handlers.RotatingFileHandler(
@@ -152,10 +170,14 @@ def _release_timing_handler(handler: logging.Handler | None) -> None:
 
     Inverse of ``_install_timing_handler``. Decrements the reference count for
     the entry holding ``handler``; on reaching zero it detaches the handler
-    from the three timing loggers and closes it, releasing the ``timing.log``
-    file handle. A ``None`` handler (timing disabled) or one already fully
-    released is a no-op, so this is safe on any teardown path and safe to call
-    more than once.
+    from the timing loggers and closes it, releasing the ``timing.log`` file
+    handle. Detaching the process's last handler also restores the propagation
+    state the first install displaced, so a logger does not stay
+    non-propagating once nothing is writing it to a file any more.
+
+    A ``None`` handler (timing disabled) or one already fully released is a
+    no-op, so this is safe on any teardown path and safe to call more than
+    once.
     """
     if handler is None:
         return
@@ -174,6 +196,10 @@ def _release_timing_handler(handler: logging.Handler | None) -> None:
         for name in _TIMING_LOGGER_NAMES:
             logging.getLogger(name).removeHandler(handler)
         handler.close()
+        if not _timing_handlers:
+            for name, propagate in _saved_propagate.items():
+                logging.getLogger(name).propagate = propagate
+            _saved_propagate.clear()
 
 
 def _build_vault_timers(
@@ -253,7 +279,7 @@ class SAGEServices:
     # None when timing is disabled or when the content store was injected
     # without going through _build_vault_timers (test paths).
     timing_thread: VaultTimingThread | None = None
-    # Per-vault rotating file handler behind the three timing loggers. Held so
+    # Per-vault rotating file handler behind the timing loggers. Held so
     # close_timing() can release the per-path reference and let the last holder
     # close the timing.log file handle on teardown. Shares the timing_thread's
     # lifecycle (both built by _build_vault_timers); None when timing is

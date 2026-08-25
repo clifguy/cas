@@ -11,6 +11,10 @@ Each test holds the line on one acceptance criterion from the plan:
 7. test_write_path_emits_storage_record — timer threading through writes.
 8. test_vault_config_back_compat_no_timing_block — Pydantic default round-trip.
 9. test_mcp_init_attaches_per_vault_file_handler — wiring confirmation.
+10. test_abstraction_records_land_in_timing_log — records reach the file.
+11. test_every_production_timing_logger_is_registered — bug-class gate.
+12. test_release_restores_prior_propagate — install/release symmetry.
+13. test_propagate_restored_only_after_last_path_releases — multi-vault.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from sage.instrumentation import (
     TimingConfig,
     VaultTimingThread,
 )
+from sage.mcp_init import _TIMING_LOGGER_NAMES
 from sage.models.enums import (
     PipelineStatus,
     RetrievalMode,
@@ -46,15 +51,18 @@ from sage.storage.postgres.graph_store import PostgresGraphStore
 
 @pytest.fixture(autouse=True)
 def _isolate_timing_loggers():
-    """Reset the three timing loggers before AND after each test.
+    """Reset every registered timing logger before AND after each test.
 
     Other suite-wide tests (notably the MCP lifespan tests) call
     initialize_services, which attaches a per-vault FileHandler and sets
     propagate=False on these loggers. Without isolation, caplog can't
     capture records on subsequent tests because the propagation path is
     broken. We also tear down to be polite to whatever runs next.
+
+    Derived from the canonical name tuple so a newly registered timing
+    logger is isolated here without a second edit.
     """
-    names = ("sage.storage.timing", "sage.content.timing", "sage.retrieval.timing")
+    names = _TIMING_LOGGER_NAMES
     for name in names:
         logger = logging.getLogger(name)
         for handler in list(logger.handlers):
@@ -337,13 +345,13 @@ def test_vault_config_back_compat_no_timing_block(minimal_vault_config_dict):
 
 
 async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dict, monkeypatch):
-    """initialize_services attaches a per-vault FileHandler to the three timing loggers."""
+    """initialize_services attaches a per-vault FileHandler to every timing logger."""
     from tests.sage.conftest import initialize_services_for_test
 
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
 
     # Drop any leftover handlers from prior tests so the assertion is precise.
-    for name in ("sage.storage.timing", "sage.content.timing", "sage.retrieval.timing"):
+    for name in _TIMING_LOGGER_NAMES:
         logger = logging.getLogger(name)
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
@@ -354,14 +362,11 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
     # on the real wiring, not on injected stubs.
     async with initialize_services_for_test(config) as services:
         try:
-            # All three loggers got a handler pointing at brain_root/timing.log
+            # Every registered logger got a handler pointing at
+            # brain_root/timing.log
             brain_root = Path(config.vault.brain_root)
             timing_log = brain_root / "timing.log"
-            for name in (
-                "sage.storage.timing",
-                "sage.content.timing",
-                "sage.retrieval.timing",
-            ):
+            for name in _TIMING_LOGGER_NAMES:
                 logger = logging.getLogger(name)
                 file_handlers = [
                     h
@@ -386,11 +391,7 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
         finally:
             # Handler cleanup runs before the helper exits. The helper
             # then stops the timing thread and closes the graph store.
-            for name in (
-                "sage.storage.timing",
-                "sage.content.timing",
-                "sage.retrieval.timing",
-            ):
+            for name in _TIMING_LOGGER_NAMES:
                 logger = logging.getLogger(name)
                 for handler in list(logger.handlers):
                     logger.removeHandler(handler)
@@ -506,3 +507,150 @@ def test_vault_timing_thread_flushes_periodically(caplog):
 
     assert len(summaries) >= 1, "expected at least one summary record from the flusher"
     assert summaries[0]["suppressed"]["get_document"] == 2
+
+
+# ── abstraction-layer records reach the per-vault log ─────────────────
+
+
+def test_abstraction_records_land_in_timing_log(tmp_path):
+    """Both abstraction emitters write into the per-vault ``timing.log`` file.
+
+    Trap (anti-coincidental): the pre-existing tests for these records assert
+    via ``caplog``, which captures through propagation and therefore passes
+    whether or not the file handler is attached — the reason a logger absent
+    from ``_TIMING_LOGGER_NAMES`` went unnoticed. This reads the file back off
+    disk instead, so dropping the abstraction logger from the registered names
+    fails it.
+
+    The emitters are imported as objects rather than re-fetched by name, so a
+    rename on either production side breaks this test rather than silently
+    testing a logger nobody emits on.
+    """
+    from sage.adapters.abstraction_qwen3 import timing_logger as adapter_logger
+    from sage.mcp_init import _install_timing_handler, _release_timing_handler
+    from sage.services.ingestion import abstraction_timing_logger as service_logger
+
+    log_path = tmp_path / "timing.log"
+    handler = _install_timing_handler(log_path)
+    try:
+        service_logger.info(json.dumps({"layer": "abstraction", "label": "abstract"}))
+        adapter_logger.info(json.dumps({"layer": "abstraction", "label": "generate_sync"}))
+        handler.flush()
+        written = log_path.read_text()
+    finally:
+        _release_timing_handler(handler)
+
+    payloads = [json.loads(line.split(" ", 3)[3]) for line in written.splitlines() if line.strip()]
+    labels = {p["label"] for p in payloads if p.get("layer") == "abstraction"}
+    assert labels == {"abstract", "generate_sync"}, (
+        f"both abstraction records should reach {log_path}; got {written!r}"
+    )
+
+
+def test_every_production_timing_logger_is_registered():
+    """Every ``*.timing`` logger name in production code is a registered name.
+
+    Gates the defect *class* rather than the instance: a new timing emitter
+    whose logger is never added to ``_TIMING_LOGGER_NAMES`` gets no file
+    handler, so its records reach only the process's console.
+
+    Trap (anti-coincidental): a scan that globbed nothing would satisfy the
+    membership assertion vacuously forever, so the collected set is asserted
+    non-empty first.
+    """
+    import ast
+
+    from sage.mcp_init import _TIMING_LOGGER_NAMES
+
+    sage_root = Path(__file__).resolve().parents[2] / "sage"
+    found: set[str] = set()
+    for module_path in sage_root.rglob("*.py"):
+        tree = ast.parse(module_path.read_text(), filename=str(module_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value.startswith("sage.") and node.value.endswith(".timing"):
+                    found.add(node.value)
+
+    assert found, f"scan of {sage_root} collected no timing logger names — detector is broken"
+    unregistered = found - set(_TIMING_LOGGER_NAMES)
+    assert not unregistered, (
+        f"timing loggers emitted on by production code but absent from "
+        f"_TIMING_LOGGER_NAMES (their records never reach timing.log): {sorted(unregistered)}"
+    )
+
+
+def test_release_restores_prior_propagate(tmp_path):
+    """Releasing the last handler restores each logger's pre-install ``propagate``.
+
+    ``_install_timing_handler`` disables propagation so timing records don't
+    bleed into the app stream. Without the inverse on release, a logger stays
+    non-propagating for the life of the process — which silently breaks every
+    later ``caplog`` assertion on that logger.
+
+    Trap (anti-coincidental): one logger is seeded ``propagate=False`` before
+    the install, so an implementation that unconditionally restores ``True``
+    fails here rather than passing on the default.
+    """
+    from sage.mcp_init import (
+        _TIMING_LOGGER_NAMES,
+        _install_timing_handler,
+        _release_timing_handler,
+    )
+
+    seeded = _TIMING_LOGGER_NAMES[0]
+    logging.getLogger(seeded).propagate = False
+    before = {name: logging.getLogger(name).propagate for name in _TIMING_LOGGER_NAMES}
+
+    handler = _install_timing_handler(tmp_path / "timing.log")
+    for name in _TIMING_LOGGER_NAMES:
+        assert logging.getLogger(name).propagate is False, (
+            f"{name} should not propagate while a timing handler is attached"
+        )
+
+    _release_timing_handler(handler)
+
+    after = {name: logging.getLogger(name).propagate for name in _TIMING_LOGGER_NAMES}
+    assert after == before, (
+        f"release should restore the pre-install propagate state; {before} -> {after}"
+    )
+
+
+def test_propagate_restored_only_after_last_path_releases(tmp_path):
+    """Propagation stays disabled while any other vault's handler is attached.
+
+    Two vaults resolve to two ``timing.log`` paths and so to two registry
+    entries, but they share the process-global timing loggers. Restoring
+    ``propagate`` when the first entry releases would duplicate the surviving
+    vault's records into the app stream.
+
+    Trap (anti-coincidental): a per-entry snapshot/restore (rather than one
+    keyed on the registry emptying) passes the single-path test above and
+    fails here.
+    """
+    from sage.mcp_init import (
+        _TIMING_LOGGER_NAMES,
+        _install_timing_handler,
+        _release_timing_handler,
+    )
+
+    paths = []
+    for vault in ("vault_a", "vault_b"):
+        brain_root = tmp_path / vault
+        brain_root.mkdir()
+        paths.append(brain_root / "timing.log")
+
+    first = _install_timing_handler(paths[0])
+    second = _install_timing_handler(paths[1])
+    assert first is not second, "distinct log paths must get distinct handlers"
+
+    _release_timing_handler(first)
+    for name in _TIMING_LOGGER_NAMES:
+        assert logging.getLogger(name).propagate is False, (
+            f"{name} must stay non-propagating while vault_b's handler is attached"
+        )
+
+    _release_timing_handler(second)
+    for name in _TIMING_LOGGER_NAMES:
+        assert logging.getLogger(name).propagate is True, (
+            f"{name} should propagate again once the last handler is released"
+        )

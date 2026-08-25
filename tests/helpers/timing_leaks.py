@@ -1,6 +1,6 @@
 """Shared per-vault timing-resource leak detection for the test suite.
 
-The three SAGE timing loggers (``sage.{storage,content,retrieval}.timing``) are
+The SAGE timing loggers (the ``sage.*.timing`` family) are
 process-global, but the ``RotatingFileHandler`` behind them and the
 ``VaultTimingThread`` that flushes summaries are per-vault. A test that builds
 real services with timing enabled (the default) and tears down without
@@ -21,13 +21,12 @@ The remedy at a leaking site is to build services through
 
 from __future__ import annotations
 
-import logging
 import threading
 
 import pytest
 
 from sage.instrumentation.timing import VaultTimingThread
-from sage.mcp_init import _TIMING_LOGGER_NAMES, _timing_handlers
+from sage.mcp_init import _release_timing_handler, _timing_handlers
 
 #: Default name of the inner daemon thread a ``VaultTimingThread`` wraps.
 TIMING_FLUSH_THREAD_NAME_PREFIX = "sage-timing-flush"
@@ -48,13 +47,19 @@ def leaked_timing_handlers(handlers_before: set[str]) -> set[str]:
 
 
 def force_release_timing_handler(key: str) -> None:
-    """Detach a leaked per-path timing handler from the loggers and close it."""
-    ref = _timing_handlers.pop(key, None)
+    """Detach a leaked per-path timing handler from the loggers and close it.
+
+    Drops the entry's reference count to one and hands off to the production
+    releaser rather than detaching by hand, so the reaper cannot diverge from
+    it. Detaching in this module would skip the propagation restore the
+    releaser performs on the process's last handler, silently leaving the
+    timing loggers non-propagating for every test that follows.
+    """
+    ref = _timing_handlers.get(key)
     if ref is None:
         return
-    for name in _TIMING_LOGGER_NAMES:
-        logging.getLogger(name).removeHandler(ref.handler)
-    ref.handler.close()
+    ref.refcount = 1
+    _release_timing_handler(ref.handler)
 
 
 def stop_leaked_timing_threads() -> None:
