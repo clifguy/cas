@@ -286,6 +286,42 @@ class NaturalKeyConflict(Exception):
         self.edge_type = edge_type
 
 
+class NonRetryableAbstractionError(Exception):
+    """Abstraction failure that is deterministic in its input.
+
+    Provider-neutral by design: the retry budget above the port is spent only
+    on failures a later attempt could resolve, so an abstraction provider
+    raises this type when repeating the call would reproduce the same outcome
+    identically. Callers classify on this base class and never on a specific
+    provider's SDK exception types, which keeps the layer above the port free
+    of any knowledge of which provider is serving abstraction.
+    """
+
+
+class AbstractionInputTooLargeError(NonRetryableAbstractionError):
+    """Document text exceeds the input budget of the configured model.
+
+    Carries the measured input size and the budget it overran so the recorded
+    failure is actionable without re-deriving either. ``input_tokens`` is None
+    when the overrun was reported by the provider's API rather than counted
+    before the call, in which case only the model is known with certainty.
+    """
+
+    def __init__(self, model_id: str, input_tokens: int | None, budget_tokens: int | None) -> None:
+        measured = f"{input_tokens} tokens" if input_tokens is not None else "input"
+        against = (
+            f"the {budget_tokens}-token input budget"
+            if budget_tokens is not None
+            else "the input budget"
+        )
+        super().__init__(
+            f"abstraction input too large: {measured} exceeds {against} for model {model_id!r}"
+        )
+        self.model_id = model_id
+        self.input_tokens = input_tokens
+        self.budget_tokens = budget_tokens
+
+
 class GraphStore(ABC):
     """Interface for the document/edge/user graph store (Postgres in production).
 

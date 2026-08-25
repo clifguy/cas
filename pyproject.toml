@@ -7,7 +7,14 @@ dependencies = [
     # Hosted abstraction provider (Claude). Cross-platform pure-Python SDK with
     # no Apple-Silicon constraint, so it stays in the base dependency set and the
     # SAGE core can run a hosted-abstraction deployment on any target (CAS-ADR-042).
-    "anthropic>=0.40",
+    # Floor at 0.86: the hosted input-length guard reads the configured model's
+    # maximum input size from the Models API, a ModelInfo field that first appears
+    # in that release (0.85 carries the resource without the field; 0.40 carries
+    # no Models resource at all). Below the floor the lookup degrades to an
+    # unchecked call and the guard is silently inert -- which is the failure mode
+    # it exists to remove, so the floor is a capability bound rather than a
+    # security one. Resolves to 0.107.1 today (no version move).
+    "anthropic>=0.86",
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.13.4",
