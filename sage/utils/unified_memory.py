@@ -8,6 +8,11 @@ and ``speculative`` are reclaimable on demand and counting them
 matches the operator-intuition ``Activity Monitor`` reports as
 "available".
 
+``total_unified_memory_bytes`` reads installed capacity from
+``sysctl hw.memsize``. It is the denominator a resident-footprint
+figure is read against, and unlike the free reading it does not move
+with load.
+
 ``min_free_bytes`` resolves the threshold at call time so the
 ``SAGE_MIN_FREE_UNIFIED_MEMORY_GIB`` env var can be tuned without a
 process restart in tests.
@@ -79,6 +84,28 @@ def free_unified_memory_bytes() -> int:
         raise RuntimeError("vm_stat reported zero reclaimable pages")
 
     return total_pages * page_size
+
+
+def total_unified_memory_bytes() -> int:
+    """Return the machine's installed physical memory in bytes.
+
+    Capacity, not availability: the figure is fixed for the machine, where
+    ``free_unified_memory_bytes`` moves with load. A resident footprint is
+    only interpretable against this denominator, so the two are reported
+    together rather than one standing in for the other.
+
+    Raises:
+        RuntimeError: if the sysctl reading cannot be parsed (e.g. running
+            on a non-macOS system).
+    """
+    output = subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True)
+
+    try:
+        return int(output.strip())
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Could not parse hw.memsize from sysctl output: {output.strip()!r}"
+        ) from exc
 
 
 def min_free_bytes() -> int:

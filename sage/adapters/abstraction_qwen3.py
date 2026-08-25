@@ -72,6 +72,12 @@ def _phase_duration_ms(tokens: int | None, tokens_per_second: float | None) -> f
     return tokens / tokens_per_second * 1000.0
 
 
+def _advertised_context_window(args: object) -> int | None:
+    """Read a positive ``max_position_embeddings`` off a model-args object."""
+    native = getattr(args, "max_position_embeddings", None)
+    return native if isinstance(native, int) and native > 0 else None
+
+
 def _resolve_native_context_window(model: object) -> int | None:
     """Read the loaded model's native prompt length, or None if unadvertised.
 
@@ -79,10 +85,22 @@ def _resolve_native_context_window(model: object) -> int | None:
     families this provider loads but is not part of any contract, so a model
     that omits it yields None -- an unknown native window leaves the
     configured value standing rather than becoming a load failure.
+
+    Hybrid-attention families wrap a nested text model, leaving the outer
+    args carrying only the model type and a nested text config while the
+    prompt length sits on the inner model. Those are read second, so a model
+    that advertises at the top level keeps that value: the nested read is a
+    fallback for a shape that would otherwise resolve to None, not a
+    competing source. Resolving None for a model that does advertise a window
+    is the damaging outcome, since it lets an oversized configured window
+    stand unclamped and degrade the output with no signal anywhere.
     """
-    args = getattr(model, "args", None)
-    native = getattr(args, "max_position_embeddings", None)
-    return native if isinstance(native, int) and native > 0 else None
+    native = _advertised_context_window(getattr(model, "args", None))
+    if native is not None:
+        return native
+
+    inner = getattr(model, "language_model", None)
+    return _advertised_context_window(getattr(inner, "args", None))
 
 
 class Qwen3AbstractionProvider(AbstractionProvider):

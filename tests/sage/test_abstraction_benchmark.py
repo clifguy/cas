@@ -10,6 +10,8 @@ any vault graph.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,10 +24,13 @@ from sage.utils import abstraction_benchmark, unified_memory
 from sage.utils.abstraction_benchmark import (
     BenchmarkResult,
     CatalogEntry,
+    ContextProbeOutcome,
+    LatencyRecordCapture,
     MeasurementRecord,
     aggregate_latency,
     measure_one,
     measure_with_determinism_check,
+    probe_context_window,
     render_outputs_for_blind_review,
     render_scorecard,
     run_benchmark,
@@ -672,3 +677,507 @@ async def test_determinism_check_detects_drift_and_identity():
     assert verdict_b == "identical"
     assert len(alts_b) == 2
     assert alts_b[0] == alts_b[1]
+
+
+# ---------------------------------------------------------------------------
+# Latency-record capture
+# ---------------------------------------------------------------------------
+
+
+TIMING_LOGGER_NAME = "sage.abstraction.timing"
+
+
+class TimingEmittingProvider(AbstractionProvider):
+    """Emits a structured latency record the way the local MLX provider does.
+
+    One JSON payload per call on the timing logger, published synchronously
+    before the call returns. ``payloads`` supplies a distinct record per call
+    so a test can tell which call a captured value came from.
+    """
+
+    def __init__(self, *payloads: dict, output: str = "stub abstract.") -> None:
+        self.payloads = list(payloads)
+        self.output = output
+        self.call_count = 0
+        self.calls: list[dict] = []
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        self.calls.append({"text": text, "max_tokens": max_tokens, "doc_type": doc_type})
+        i = min(self.call_count, len(self.payloads) - 1)
+        self.call_count += 1
+        logging.getLogger(TIMING_LOGGER_NAME).info(json.dumps(self.payloads[i]))
+        return self.output
+
+
+def _timing_payload(**overrides) -> dict:
+    payload = {
+        "layer": "abstraction",
+        "label": "abstract.mlx",
+        "model": "stub-model",
+        "document_chars": 91234,
+        "input_tokens": 40000,
+        "retained_tokens": 31000,
+        "prompt_tokens": 31120,
+        "generated_tokens": 200,
+        "prefill_ms": 1234.5,
+        "prefill_tps": 500.0,
+        "decode_ms": 6789.0,
+        "decode_tps": 25.0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _measure(provider, text: str = "word " * 400, doc_type: str | None = "adr"):
+    return await measure_one(
+        provider=provider,
+        projection_text=text,
+        doc_type=doc_type,
+        abstraction_config=_default_config(),
+        mem_probe=CountingProbe([1000, 1000]),
+        poll_interval_s=0.01,
+        doc_id="doc-1",
+    )
+
+
+def test_capture_restores_logger_state_on_exit():
+    """Handlers, level, and propagation are left exactly as they were found.
+
+    The capture attaches to a logger the rest of the process shares, so a
+    handler or a level left behind would silently alter logging for every
+    later call in the same run.
+    """
+    logger = logging.getLogger(TIMING_LOGGER_NAME)
+    before = (list(logger.handlers), logger.level, logger.propagate)
+
+    with LatencyRecordCapture():
+        pass
+
+    assert (list(logger.handlers), logger.level, logger.propagate) == before
+
+
+def test_capture_restores_logger_state_on_exception():
+    """The restore survives an exception raised inside the block."""
+    logger = logging.getLogger(TIMING_LOGGER_NAME)
+    before = (list(logger.handlers), logger.level, logger.propagate)
+
+    with pytest.raises(ValueError):
+        with LatencyRecordCapture():
+            raise ValueError("boom")
+
+    assert (list(logger.handlers), logger.level, logger.propagate) == before
+
+
+def test_capture_reads_records_the_emitter_logs_at_info():
+    """The record is captured even when nothing has configured the logger.
+
+    The provider publishes at INFO and the harness runs with no logging setup,
+    so a capture that only attached a handler would see nothing: the default
+    effective level discards the record before any handler runs.
+    """
+    logging.getLogger(TIMING_LOGGER_NAME).setLevel(logging.NOTSET)
+
+    with LatencyRecordCapture() as capture:
+        logging.getLogger(TIMING_LOGGER_NAME).info(json.dumps(_timing_payload()))
+        assert capture.record is not None
+        assert capture.record["prefill_ms"] == 1234.5
+
+
+@pytest.mark.asyncio
+async def test_measure_one_captures_prefill_and_decode_from_timing_record():
+    """Phase figures on the record are the ones the provider published.
+
+    Every value is distinctive, so a measurement that filled these in from
+    defaults, from zeros, or from the wall-clock it already had cannot
+    reproduce them.
+    """
+    provider = TimingEmittingProvider(_timing_payload())
+
+    record = await _measure(provider)
+
+    assert record.prefill_ms == 1234.5
+    assert record.prefill_tps == 500.0
+    assert record.decode_ms == 6789.0
+    assert record.decode_tps == 25.0
+    assert record.input_tokens == 40000
+    assert record.retained_tokens == 31000
+    assert record.prompt_tokens == 31120
+    assert record.reported_generated_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_measure_one_reads_post_rename_field_names():
+    """The capture is pinned to the current record contract, not its ancestor.
+
+    A payload carrying only the superseded ``tokens_per_second`` name leaves
+    the decode rate unmeasured rather than silently populated, so a reader
+    that has fallen behind a rename shows up as an absent column instead of a
+    plausible-looking number.
+    """
+    payload = _timing_payload()
+    payload["tokens_per_second"] = payload.pop("decode_tps")
+    payload["input_chars"] = payload.pop("document_chars")
+    provider = TimingEmittingProvider(payload)
+
+    record = await _measure(provider)
+
+    assert record.decode_tps is None
+    assert record.prefill_tps == 500.0
+
+
+@pytest.mark.asyncio
+async def test_measure_one_leaves_phase_fields_none_when_no_record_emitted():
+    """A provider that publishes no record measures as unmeasured, not zero.
+
+    Hosted providers share no vocabulary below wall-clock time, so absence is
+    the honest reading -- and it has to stay distinguishable from a real zero.
+    """
+    record = await _measure(RecordingProvider(output="stub abstract."))
+
+    assert record.prefill_ms is None
+    assert record.decode_tps is None
+    assert record.retained_tokens is None
+    assert record.wall_clock_ms > 0
+    assert record.output_text == "stub abstract."
+
+
+@pytest.mark.asyncio
+async def test_capture_attributes_one_record_per_call():
+    """Each measured call carries its own call's figures.
+
+    A capture that accumulated across calls would pass a single-call test and
+    then attribute the previous document's prefill to every later one, which
+    no aggregate over the run would reveal.
+    """
+    provider = TimingEmittingProvider(
+        _timing_payload(prefill_ms=100.0, retained_tokens=1000),
+        _timing_payload(prefill_ms=200.0, retained_tokens=2000),
+    )
+
+    first = await _measure(provider)
+    second = await _measure(provider)
+
+    assert (first.prefill_ms, first.retained_tokens) == (100.0, 1000)
+    assert (second.prefill_ms, second.retained_tokens) == (200.0, 2000)
+
+
+# ---------------------------------------------------------------------------
+# Resident memory
+# ---------------------------------------------------------------------------
+
+
+def _single_chunk_services(doc_count: int):
+    chunks_by_doc = {
+        f"doc-{i}": [
+            Chunk(
+                document_id=f"doc-{i}",
+                heading_path="Body",
+                content=f"body of doc {i}.",
+                chunk_index=0,
+            ),
+        ]
+        for i in range(doc_count)
+    }
+    services = MagicMock()
+    services.content_store.get_all_chunks = AsyncMock(
+        side_effect=lambda doc_id: chunks_by_doc[doc_id]
+    )
+    return services
+
+
+@pytest.mark.asyncio
+async def test_benchmark_result_records_peak_rss_and_machine_total():
+    """The run reports a resident footprint and the capacity to read it against.
+
+    A footprint without its denominator cannot answer the budget question the
+    scorecard exists to settle, so both travel together on the result.
+    """
+    result = await run_benchmark(
+        services=_single_chunk_services(2),
+        corpus=[_make_entry(f"doc-{i}", "adr", 100 + i) for i in range(2)],
+        provider=RecordingProvider(output="abstract."),
+        abstraction_config=_default_config(),
+        repeats=1,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        warmup_calls=0,
+        rss_probe=CountingProbe([5_000, 7_000]),
+        total_memory_probe=lambda: 68_719_476_736,
+    )
+
+    assert result.peak_rss_bytes > 0
+    assert result.machine_total_bytes == 68_719_476_736
+
+
+@pytest.mark.asyncio
+async def test_peak_rss_is_monotonic_across_the_run():
+    """The reported figure is the run's maximum, not its final reading.
+
+    The probe rises and then falls, so an implementation that keeps the last
+    sample reports 6_000 and an implementation that keeps the first reports
+    1_000; only a running maximum yields the peak. Resident memory does fall
+    back after a large allocation is released, which is exactly why the last
+    reading is the wrong one to publish.
+    """
+    result = await run_benchmark(
+        services=_single_chunk_services(4),
+        corpus=[_make_entry(f"doc-{i}", "adr", 100 + i) for i in range(4)],
+        provider=RecordingProvider(output="abstract."),
+        abstraction_config=_default_config(),
+        repeats=1,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        warmup_calls=0,
+        rss_probe=CountingProbe([1_000, 4_000, 9_000, 6_000]),
+        total_memory_probe=lambda: 68_719_476_736,
+    )
+
+    assert result.peak_rss_bytes == 9_000
+
+
+# ---------------------------------------------------------------------------
+# Long-context prefill probe
+# ---------------------------------------------------------------------------
+
+
+class RaisingProvider(AbstractionProvider):
+    """Raises the way a Metal allocation failure surfaces during prefill."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        raise self.exc
+
+
+def _bulk_services(doc_count: int, chunk_chars: int):
+    chunks_by_doc = {
+        f"doc-{i}": [
+            Chunk(
+                document_id=f"doc-{i}",
+                heading_path="Body",
+                content="word " * (chunk_chars // 5),
+                chunk_index=0,
+            ),
+        ]
+        for i in range(doc_count)
+    }
+    services = MagicMock()
+    services.content_store.get_all_chunks = AsyncMock(
+        side_effect=lambda doc_id: chunks_by_doc[doc_id]
+    )
+    return services
+
+
+async def _probe(provider, target_tokens: int = 131072, doc_count: int = 4):
+    return await probe_context_window(
+        services=_bulk_services(doc_count, chunk_chars=200_000),
+        corpus=[_make_entry(f"doc-{i}", "adr", 200_000) for i in range(doc_count)],
+        provider=provider,
+        abstraction_config=_default_config(),
+        target_tokens=target_tokens,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_probe_reports_ok_when_target_tokens_are_actually_retained():
+    """A prefill that genuinely reached the window is the only 'ok'.
+
+    The retained count sits just under the target because the window also has
+    to hold the generation budget and the chat template; that shortfall is a
+    rounding difference, not a clamp.
+    """
+    provider = TimingEmittingProvider(
+        _timing_payload(retained_tokens=129_472, prefill_ms=48_000.0, prefill_tps=2_697.0)
+    )
+
+    outcome = await _probe(provider, target_tokens=131_072)
+
+    assert outcome.verdict == "ok"
+    assert outcome.retained_tokens == 129_472
+    assert outcome.prefill_ms == 48_000.0
+    assert outcome.prefill_tps == 2_697.0
+
+
+@pytest.mark.asyncio
+async def test_context_probe_reports_short_when_input_was_silently_truncated():
+    """Truncation to a smaller window is a finding, not a success.
+
+    The provider truncates to fit by design and then generates perfectly well,
+    so nothing raises and the output looks ordinary. Reading the verdict off
+    the absence of an exception would report a 128K prefill that never ran --
+    the exact claim the scorecard would then carry into an adopt decision.
+    """
+    provider = TimingEmittingProvider(_timing_payload(retained_tokens=31_000))
+
+    outcome = await _probe(provider, target_tokens=131_072)
+
+    assert outcome.verdict == "short"
+    assert outcome.retained_tokens == 31_000
+    assert outcome.target_tokens == 131_072
+
+
+@pytest.mark.asyncio
+async def test_context_probe_reports_failed_and_preserves_the_exception():
+    """A Metal allocation failure is captured with enough detail to act on.
+
+    A bare verdict cannot distinguish an out-of-memory prefill from a model
+    that failed to load, and those lead to opposite recommendations.
+    """
+    provider = RaisingProvider(RuntimeError("[metal::malloc] Insufficient Memory"))
+
+    outcome = await _probe(provider, target_tokens=131_072)
+
+    assert outcome.verdict == "failed"
+    assert outcome.error_type == "RuntimeError"
+    assert "Insufficient Memory" in outcome.error_message
+
+
+@pytest.mark.asyncio
+async def test_context_probe_reports_unknown_when_no_record_was_published():
+    """No published record means the window was not measured either way.
+
+    Reporting 'short' here would assert a truncation nothing observed.
+    """
+    outcome = await _probe(RecordingProvider(output="abstract."), target_tokens=131_072)
+
+    assert outcome.verdict == "unknown"
+    assert outcome.retained_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_context_probe_assembles_input_to_the_target_window():
+    """The probe supplies enough text that the window is what limits the prompt.
+
+    If the assembled input were the shorter side, a 'short' verdict would
+    describe the corpus rather than the model, and the probe would measure
+    nothing about the context window at all.
+    """
+    provider = TimingEmittingProvider(_timing_payload(retained_tokens=129_472))
+
+    await _probe(provider, target_tokens=131_072)
+
+    assert len(provider.calls) == 1
+    # One token never spans more than a handful of characters, so text this
+    # long cannot fail to reach the target on token count.
+    assert len(provider.calls[0]["text"]) >= 131_072 * 4
+
+
+# ---------------------------------------------------------------------------
+# Scorecard sections for the long-context evaluation
+# ---------------------------------------------------------------------------
+
+
+def _sample_result_with_phases(model_id: str = "qwen3.5-9b") -> BenchmarkResult:
+    measurements = [
+        MeasurementRecord(
+            doc_id=f"doc-{i}",
+            doc_type="adr",
+            word_count=200,
+            max_tokens=154,
+            wall_clock_ms=12_000 + 100 * i,
+            tokens_generated=80,
+            output_text=f"Abstract for doc {i}.",
+            memory_delta_bytes=1_000_000,
+            peak_used_bytes_during_call=2_500_000,
+            prefill_ms=800.0 + 10 * i,
+            prefill_tps=2_500.0,
+            decode_ms=11_000.0,
+            decode_tps=24.0,
+            input_tokens=5_000,
+            retained_tokens=5_000,
+            prompt_tokens=5_120,
+            reported_generated_tokens=80,
+        )
+        for i in range(5)
+    ]
+    return BenchmarkResult(
+        candidate_model_id=model_id,
+        corpus_size=5,
+        repeats=2,
+        measurements=measurements,
+        determinism_verdicts={m.doc_id: "identical" for m in measurements},
+        alt_outputs={m.doc_id: [m.output_text] for m in measurements},
+        latency_stats=aggregate_latency([m.wall_clock_ms for m in measurements]),
+        memory_stats=aggregate_latency([m.peak_used_bytes_during_call for m in measurements]),
+        started_at="2026-08-25T00:00:00Z",
+        finished_at="2026-08-25T00:10:00Z",
+        peak_rss_bytes=14_000_000_000,
+        machine_total_bytes=68_719_476_736,
+        configured_context_window=131_072,
+        native_context_window=262_144,
+        effective_context_window=131_072,
+        context_probe=ContextProbeOutcome(
+            verdict="ok",
+            target_tokens=131_072,
+            retained_tokens=129_472,
+            prefill_ms=48_000.0,
+            prefill_tps=2_697.0,
+            input_chars=1_048_576,
+        ),
+    )
+
+
+def test_scorecard_includes_context_window_prefill_decode_and_resident_sections():
+    """Every criterion the evaluation has to answer gets its own section."""
+    md = render_scorecard(_sample_result_with_phases())
+
+    for heading in (
+        "## Context window",
+        "## Prefill vs decode",
+        "## Resident memory",
+        "## Long-context prefill probe",
+        "## Runtime pin",
+    ):
+        assert heading in md, f"missing heading: {heading}"
+
+
+def test_scorecard_reports_prefill_throughput_alongside_duration():
+    """Throughput is what makes two different window sizes comparable.
+
+    Prefill duration at 128K is an order of magnitude above 32K by definition;
+    only the rate says whether the model degraded or simply had more to read.
+    """
+    md = render_scorecard(_sample_result_with_phases())
+
+    prefill_section = md[md.index("## Prefill vs decode") : md.index("## Resident memory")]
+    assert "tokens/s" in prefill_section
+    assert "2500" in prefill_section.replace(",", "").replace(".0", "")
+
+
+def test_scorecard_reports_resident_footprint_against_machine_total():
+    """The footprint is rendered with its denominator, not on its own."""
+    md = render_scorecard(_sample_result_with_phases())
+
+    resident = md[md.index("## Resident memory") : md.index("## Long-context prefill probe")]
+    assert "14.0 GiB" in resident or "13.0 GiB" in resident
+    assert "64.0 GiB" in resident
+
+
+def test_scorecard_records_the_probe_verdict_and_the_tokens_behind_it():
+    """The verdict travels with the retained count that produced it.
+
+    A bare 'ok' is unauditable; the reader has to be able to see that the
+    prompt actually reached the window.
+    """
+    md = render_scorecard(_sample_result_with_phases())
+
+    probe = md[md.index("## Long-context prefill probe") : md.index("## Runtime pin")]
+    assert "ok" in probe
+    assert "129,472" in probe or "129472" in probe
+    assert "131,072" in probe or "131072" in probe
+
+
+def test_scorecard_renders_unmeasured_phase_fields_as_absent_not_zero():
+    """A provider that published no phases renders as unmeasured, never as zero.
+
+    A 0.0 ms prefill row would read as an instantaneous prefill -- a specific
+    and very wrong claim -- where the truth is that nothing was measured.
+    """
+    md = render_scorecard(_sample_result())
+
+    prefill_section = md[md.index("## Prefill vs decode") : md.index("## Resident memory")]
+    assert "not measured" in prefill_section.lower()
+    assert "0.0" not in prefill_section

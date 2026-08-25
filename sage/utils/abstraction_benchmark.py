@@ -25,8 +25,12 @@ Module structure:
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import random
+import resource
 import statistics
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -46,6 +50,112 @@ MemoryProbe = Callable[[], int]
 #: Importing the helper is safe on every platform -- it reaches macOS
 #: ``vm_stat`` only when called.
 DEFAULT_MEM_PROBE: MemoryProbe = free_unified_memory_bytes
+
+# The local provider publishes its per-phase breakdown as a structured log
+# record rather than as a return value, because the providers share no
+# vocabulary below wall-clock time. Reading it back through the logging
+# system is what keeps the harness a measurement: the provider is invoked
+# exactly as production invokes it, and nothing about the generation changes
+# because a benchmark happened to be watching.
+TIMING_LOGGER_NAME = "sage.abstraction.timing"
+
+# Fields lifted onto each measurement. Names track the emitted record
+# exactly -- a rename upstream must surface as an absent column here rather
+# than as a plausible number read from a field that no longer means what it
+# did.
+_PHASE_FIELDS = (
+    "prefill_ms",
+    "prefill_tps",
+    "decode_ms",
+    "decode_tps",
+    "input_tokens",
+    "retained_tokens",
+    "prompt_tokens",
+)
+
+
+def _self_rss_bytes() -> int:
+    """Return this process's peak resident set size in bytes.
+
+    ``ru_maxrss`` is reported in bytes on Darwin and in kibibytes on Linux,
+    so the unit is normalized here rather than at each call site. It is a
+    high-water mark the kernel maintains, which is the figure a memory budget
+    is decided against -- an instantaneous reading would miss the allocation
+    peak entirely.
+    """
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return raw if sys.platform == "darwin" else raw * 1024
+
+
+class _RecordCollector(logging.Handler):
+    """Parses each timing record and holds the most recent one."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.record: dict | None = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            payload = json.loads(record.getMessage())
+        except (ValueError, TypeError):
+            return
+        if isinstance(payload, dict):
+            self.record = payload
+
+
+class LatencyRecordCapture:
+    """Capture the abstraction provider's structured latency record.
+
+    Scoped to a single generation: ``reset`` clears the slot before a call so
+    the record read afterwards belongs to that call and cannot be inherited
+    from an earlier one.
+
+    The capture raises the logger to INFO for its lifetime. Without that the
+    record is discarded before any handler runs, since a process that has not
+    configured logging leaves the effective level at the root default -- so a
+    capture that only attached a handler would report every phase as
+    unmeasured and look exactly like a provider that publishes nothing.
+    Handlers, level, and propagation are all restored on exit.
+    """
+
+    def __init__(self, logger_name: str = TIMING_LOGGER_NAME) -> None:
+        self._logger = logging.getLogger(logger_name)
+        self._handler = _RecordCollector()
+        self._prev_level: int | None = None
+        self._prev_propagate: bool | None = None
+
+    def __enter__(self) -> "LatencyRecordCapture":
+        self._prev_level = self._logger.level
+        self._prev_propagate = self._logger.propagate
+        self._logger.setLevel(logging.INFO)
+        # Records are consumed here, so re-emitting them through the root
+        # handlers would put one JSON line per generation on the operator's
+        # console for no benefit.
+        self._logger.propagate = False
+        self._logger.addHandler(self._handler)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._logger.removeHandler(self._handler)
+        if self._prev_level is not None:
+            self._logger.setLevel(self._prev_level)
+        if self._prev_propagate is not None:
+            self._logger.propagate = self._prev_propagate
+
+    def reset(self) -> None:
+        """Drop any held record so the next read reflects the next call."""
+        self._handler.record = None
+
+    @property
+    def record(self) -> dict | None:
+        return self._handler.record
+
+    def phase_fields(self) -> dict[str, object | None]:
+        """Return the phase figures, every one None when nothing was captured."""
+        payload = self.record or {}
+        fields: dict[str, object | None] = {name: payload.get(name) for name in _PHASE_FIELDS}
+        fields["reported_generated_tokens"] = payload.get("generated_tokens")
+        return fields
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +192,18 @@ class MeasurementRecord:
     memory_delta_bytes: int
     peak_used_bytes_during_call: int
 
+    # Phase breakdown lifted from the provider's own latency record. None
+    # throughout for a provider that publishes none, which is a different
+    # reading from a measured zero and has to render as one.
+    prefill_ms: float | None = None
+    prefill_tps: float | None = None
+    decode_ms: float | None = None
+    decode_tps: float | None = None
+    input_tokens: int | None = None
+    retained_tokens: int | None = None
+    prompt_tokens: int | None = None
+    reported_generated_tokens: int | None = None
+
 
 @dataclass
 class BenchmarkResult:
@@ -98,6 +220,21 @@ class BenchmarkResult:
     started_at: str
     finished_at: str
     notes: list[str] = field(default_factory=list)
+
+    # Run-level memory figures. The footprint is a peak across the run; the
+    # total is the machine capacity it is read against.
+    peak_rss_bytes: int = 0
+    machine_total_bytes: int = 0
+
+    # Window the run was conducted at. All three are reported because they
+    # can disagree: a configured value above what the weights support is
+    # clamped, and the effective figure is the only one the prompt was
+    # actually fitted to.
+    configured_context_window: int | None = None
+    native_context_window: int | None = None
+    effective_context_window: int | None = None
+
+    context_probe: "ContextProbeOutcome | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -274,15 +411,18 @@ async def measure_one(
     max_tokens = compute_max_tokens(word_count, abstraction_config)
 
     sampler = MemorySampler(mem_probe, poll_interval_s=poll_interval_s)
-    async with sampler:
-        # Time the provider call alone. The sampler's baseline and final
-        # probe readings are measurement overhead, not provider latency,
-        # and a probe can be arbitrarily slow -- the default one shells
-        # out to a subprocess. Timing across the enclosing ``async with``
-        # would fold that overhead into the reported latency.
-        t0 = time.perf_counter()
-        raw_output = await provider.generate_abstract(projection_text, max_tokens, doc_type)
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    with LatencyRecordCapture() as capture:
+        capture.reset()
+        async with sampler:
+            # Time the provider call alone. The sampler's baseline and final
+            # probe readings are measurement overhead, not provider latency,
+            # and a probe can be arbitrarily slow -- the default one shells
+            # out to a subprocess. Timing across the enclosing ``async with``
+            # would fold that overhead into the reported latency.
+            t0 = time.perf_counter()
+            raw_output = await provider.generate_abstract(projection_text, max_tokens, doc_type)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        phase = capture.phase_fields()
 
     trimmed = trim_to_sentence_boundary(raw_output)
     tokens_generated = len(trimmed.split())
@@ -297,6 +437,7 @@ async def measure_one(
         output_text=trimmed,
         memory_delta_bytes=sampler.memory_delta_bytes,
         peak_used_bytes_during_call=sampler.peak_used_bytes_during_call,
+        **phase,
     )
 
 
@@ -359,6 +500,8 @@ async def run_benchmark(
     poll_interval_s: float = 0.5,
     candidate_model_id: str | None = None,
     warmup_calls: int = 1,
+    rss_probe: MemoryProbe | None = None,
+    total_memory_probe: MemoryProbe | None = None,
 ) -> BenchmarkResult:
     """Run the candidate provider over the corpus.
 
@@ -376,6 +519,17 @@ async def run_benchmark(
     """
     if mem_probe is None:
         mem_probe = DEFAULT_MEM_PROBE
+    if rss_probe is None:
+        rss_probe = _self_rss_bytes
+    if total_memory_probe is None:
+        from sage.utils.unified_memory import total_unified_memory_bytes
+
+        total_memory_probe = total_unified_memory_bytes
+
+    # Sampled once per document and kept as a running maximum. Resident size
+    # falls back after a large allocation is released, so the last reading
+    # would understate the footprint the machine actually had to hold.
+    peak_rss = rss_probe()
 
     started_at = _now_iso()
     measurements: list[MeasurementRecord] = []
@@ -411,6 +565,7 @@ async def run_benchmark(
         measurements.append(record)
         determinism[entry.doc_id] = verdict
         alt_outputs[entry.doc_id] = outputs
+        peak_rss = max(peak_rss, rss_probe())
 
     finished_at = _now_iso()
     latency_stats = aggregate_latency([m.wall_clock_ms for m in measurements])
@@ -427,6 +582,150 @@ async def run_benchmark(
         memory_stats=memory_stats,
         started_at=started_at,
         finished_at=finished_at,
+        peak_rss_bytes=peak_rss,
+        machine_total_bytes=total_memory_probe(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Long-context prefill probe
+# ---------------------------------------------------------------------------
+
+
+# Characters of assembled text per token of target window. Real text runs
+# closer to four characters per token; the margin is deliberate, because the
+# probe is only meaningful when the window is the binding constraint. Supply
+# too little text and a short verdict describes the corpus rather than the
+# model.
+_PROBE_CHARS_PER_TOKEN = 8
+
+# Fraction of the target the retained count must reach to read as "ok". It is
+# below one because the window also has to hold the generation budget and the
+# chat template, so a prompt that filled the window still lands a few thousand
+# tokens under it. The gap this must separate is not that rounding difference
+# but a clamp to a smaller native window, which shows up as a multiple-fold
+# shortfall rather than a percentage.
+_PROBE_RETAINED_TOLERANCE = 0.95
+
+
+@dataclass
+class ContextProbeOutcome:
+    """Result of exercising a provider at a target context length.
+
+    ``verdict`` is one of:
+
+    - ``ok``      -- the model's own prompt length reached the target.
+    - ``short``   -- the call succeeded, but on far less input than asked
+      for. The provider truncates to fit by design, so this is the ordinary
+      way a long-context claim turns out to be false: nothing raises and the
+      output looks entirely normal.
+    - ``failed``  -- the call raised. The exception is preserved, since an
+      allocation failure and a load failure lead to opposite recommendations.
+    - ``unknown`` -- no latency record was published, so the prompt length was
+      never observed. Distinct from ``short``, which asserts a truncation
+      something actually measured.
+    """
+
+    verdict: str
+    target_tokens: int
+    retained_tokens: int | None = None
+    prompt_tokens: int | None = None
+    prefill_ms: float | None = None
+    prefill_tps: float | None = None
+    input_chars: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+async def _assemble_probe_text(services, corpus: list[CatalogEntry], target_chars: int) -> str:
+    """Concatenate corpus projections until *target_chars* is reached.
+
+    Cycles back through the corpus when it is exhausted, so a vault whose
+    documents are all short can still fill a long window.
+    """
+    if not corpus:
+        return ""
+
+    parts: list[str] = []
+    total = 0
+    index = 0
+    while total < target_chars:
+        entry = corpus[index % len(corpus)]
+        chunks = await services.content_store.get_all_chunks(entry.doc_id)
+        body = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        text = "\n\n".join(c.content for c in body)
+        index += 1
+        if not text:
+            # A corpus of entirely empty documents would otherwise spin here.
+            if index >= len(corpus) and not parts:
+                return ""
+            continue
+        parts.append(text)
+        total += len(text)
+    return "\n\n".join(parts)
+
+
+async def probe_context_window(
+    services,
+    corpus: list[CatalogEntry],
+    provider: AbstractionProvider,
+    abstraction_config: AbstractionConfig,
+    target_tokens: int,
+    mem_probe: MemoryProbe | None = None,
+    poll_interval_s: float = 0.5,
+    doc_type: str | None = None,
+) -> ContextProbeOutcome:
+    """Exercise the provider at *target_tokens* and report what actually ran.
+
+    The verdict is read from the prompt length the model reports, never from
+    the call having returned without raising. Those come apart precisely where
+    it matters: a provider that quietly truncates a long input generates a
+    perfectly good abstract on a fraction of it, so success proves the call
+    worked and says nothing about the window.
+    """
+    if mem_probe is None:
+        from sage.utils.unified_memory import free_unified_memory_bytes
+
+        mem_probe = free_unified_memory_bytes
+
+    text = await _assemble_probe_text(
+        services, corpus, target_chars=target_tokens * _PROBE_CHARS_PER_TOKEN
+    )
+    try:
+        record = await measure_one(
+            provider=provider,
+            projection_text=text,
+            doc_type=doc_type,
+            abstraction_config=abstraction_config,
+            mem_probe=mem_probe,
+            poll_interval_s=poll_interval_s,
+            doc_id="__context_probe__",
+        )
+    except Exception as exc:  # noqa: BLE001 -- the failure is the measurement
+        return ContextProbeOutcome(
+            verdict="failed",
+            target_tokens=target_tokens,
+            input_chars=len(text),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+
+    retained = record.retained_tokens
+    if retained is None:
+        verdict = "unknown"
+    elif retained >= target_tokens * _PROBE_RETAINED_TOLERANCE:
+        verdict = "ok"
+    else:
+        verdict = "short"
+
+    return ContextProbeOutcome(
+        verdict=verdict,
+        target_tokens=target_tokens,
+        retained_tokens=retained,
+        prompt_tokens=record.prompt_tokens,
+        prefill_ms=record.prefill_ms,
+        prefill_tps=record.prefill_tps,
+        input_chars=len(text),
     )
 
 
@@ -465,6 +764,141 @@ def aggregate_latency(values: list[float]) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
+
+_UNMEASURED = "_Not measured -- this provider publishes no phase breakdown._"
+
+
+def _gib(value: int) -> str:
+    return f"{value / 1024**3:.1f} GiB"
+
+
+def _thousands(value: int | None) -> str:
+    return "—" if value is None else f"{value:,}"
+
+
+def _render_context_window(result: BenchmarkResult) -> list[str]:
+    """Configured, native, and effective windows, which need not agree."""
+    lines = ["## Context window", ""]
+    if result.effective_context_window is None:
+        lines.extend(["_Not recorded for this run._", ""])
+        return lines
+    lines.append("| Window | Tokens |")
+    lines.append("|---|---|")
+    lines.append(f"| configured | {_thousands(result.configured_context_window)} |")
+    lines.append(
+        f"| native (advertised by the weights) | {_thousands(result.native_context_window)} |"
+    )
+    lines.append(
+        f"| effective (what prompts were fitted to) "
+        f"| {_thousands(result.effective_context_window)} |"
+    )
+    lines.append("")
+    return lines
+
+
+def _render_phase_breakdown(result: BenchmarkResult) -> list[str]:
+    """Prefill and decode, reported as durations and as rates.
+
+    The rates carry the comparison across window sizes: prefill duration
+    scales with how much there was to read, so only throughput distinguishes
+    a model that slowed down from one that simply had more input.
+    """
+    lines = ["## Prefill vs decode", ""]
+
+    prefill_ms = [m.prefill_ms for m in result.measurements if m.prefill_ms is not None]
+    decode_ms = [m.decode_ms for m in result.measurements if m.decode_ms is not None]
+    if not prefill_ms and not decode_ms:
+        lines.extend([_UNMEASURED, ""])
+        return lines
+
+    prefill_tps = [m.prefill_tps for m in result.measurements if m.prefill_tps is not None]
+    decode_tps = [m.decode_tps for m in result.measurements if m.decode_tps is not None]
+
+    lines.append("| Phase | mean (ms) | median (ms) | p95 (ms) | mean rate (tokens/s) |")
+    lines.append("|---|---|---|---|---|")
+    for name, durations, rates in (
+        ("prefill", prefill_ms, prefill_tps),
+        ("decode", decode_ms, decode_tps),
+    ):
+        if not durations:
+            lines.append(f"| {name} | — | — | — | — |")
+            continue
+        stats = aggregate_latency(durations)
+        rate = f"{statistics.mean(rates):.1f}" if rates else "—"
+        lines.append(
+            f"| {name} | {stats['mean']:.1f} | {stats['median']:.1f} "
+            f"| {stats['p95']:.1f} | {rate} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _render_resident_memory(result: BenchmarkResult) -> list[str]:
+    """Resident footprint against machine capacity.
+
+    The per-call figure above measures transient pressure; this one measures
+    what the machine had to hold for the whole run, which is the number the
+    budget question turns on.
+    """
+    lines = ["## Resident memory", ""]
+    if not result.peak_rss_bytes or not result.machine_total_bytes:
+        lines.extend(["_Not recorded for this run._", ""])
+        return lines
+
+    headroom = result.machine_total_bytes - result.peak_rss_bytes
+    share = result.peak_rss_bytes / result.machine_total_bytes * 100
+    lines.append(f"- Peak resident: **{_gib(result.peak_rss_bytes)}**")
+    lines.append(f"- Machine total: {_gib(result.machine_total_bytes)}")
+    lines.append(f"- Share of total: {share:.1f}%")
+    lines.append(f"- Headroom at peak: {_gib(headroom)}")
+    lines.append("")
+    return lines
+
+
+def _render_context_probe(result: BenchmarkResult) -> list[str]:
+    """The measured long-context result, verdict beside its evidence."""
+    lines = ["## Long-context prefill probe", ""]
+    probe = result.context_probe
+    if probe is None:
+        lines.extend(["_Not run._", ""])
+        return lines
+
+    lines.append(f"- Verdict: **{probe.verdict}**")
+    lines.append(f"- Target window: {_thousands(probe.target_tokens)} tokens")
+    lines.append(f"- Prompt actually retained: {_thousands(probe.retained_tokens)} tokens")
+    lines.append(f"- Model prompt length: {_thousands(probe.prompt_tokens)} tokens")
+    lines.append(f"- Assembled input: {_thousands(probe.input_chars)} chars")
+    if probe.prefill_ms is not None:
+        lines.append(f"- Prefill: {probe.prefill_ms:.1f} ms")
+    if probe.prefill_tps is not None:
+        lines.append(f"- Prefill rate: {probe.prefill_tps:.1f} tokens/s")
+    if probe.error_type:
+        lines.append(f"- Error: `{probe.error_type}` -- {probe.error_message}")
+    lines.append("")
+    lines.append(
+        "A `short` verdict means the call succeeded on far less input than "
+        "asked for: the provider fits the prompt to the window by design, so "
+        "a truncated long-context run raises nothing and reads as ordinary."
+    )
+    lines.append("")
+    return lines
+
+
+def _render_runtime_pin() -> list[str]:
+    """Author-filled: whether the runtime moved to support the candidate."""
+    return [
+        "## Runtime pin",
+        "",
+        "_To be filled from the load evidence:_",
+        "",
+        "- Runtime version exercised: ",
+        "- Bump required: yes / no",
+        "- Verification reach: the runtime is declared for Apple Silicon only, "
+        "so CI never installs or exercises it. Any movement of this pin is "
+        "verified by a local run alone.",
+        "",
+    ]
 
 
 def render_scorecard(result: BenchmarkResult) -> str:
@@ -513,6 +947,12 @@ def render_scorecard(result: BenchmarkResult) -> str:
     for k in ("mean", "median", "p95", "p99", "min", "max"):
         lines.append(f"| {k} | {result.memory_stats.get(k, 0):.0f} |")
     lines.append("")
+
+    lines.extend(_render_context_window(result))
+    lines.extend(_render_phase_breakdown(result))
+    lines.extend(_render_resident_memory(result))
+    lines.extend(_render_context_probe(result))
+    lines.extend(_render_runtime_pin())
 
     lines.append("## Determinism")
     lines.append("")

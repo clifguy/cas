@@ -30,6 +30,11 @@ Usage::
     .venv/bin/python -m scripts.benchmark_abstraction cas \\
         --model stub --corpus-size 3 --repeats 1
 
+    # Long-context evaluation: run at a configured window, then probe
+    # whether a prompt of that size is actually reachable.
+    .venv/bin/python -m scripts.benchmark_abstraction cas \\
+        --model <candidate> --context-window 131072 --context-probe
+
 Operational note: the candidate provider loads ~5 GB (Qwen3-8B) or
 larger (other candidates) into unified memory. Do not run while the
 SAGE MCP server's abstraction provider is resident; both processes
@@ -53,6 +58,7 @@ from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
 from sage.utils.abstraction_benchmark import (
     CatalogEntry,
+    probe_context_window,
     render_outputs_for_blind_review,
     render_scorecard,
     run_benchmark,
@@ -62,6 +68,14 @@ from sage.vault_management import config_path_for_vault
 
 DEFAULT_MODEL = "mlx-community/Qwen3-8B-Instruct-2507-4bit"
 DEFAULT_OUTPUT_DIR = Path.home() / "sage_vaults" / "test_vault" / "imports"
+
+
+def _positive_int(raw: str) -> int:
+    """argparse type for a token count that must be at least one."""
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive number of tokens, got {value}")
+    return value
 
 
 def _slug(model_id: str) -> str:
@@ -101,13 +115,36 @@ async def _collect_baseline_outputs(services, corpus: list[CatalogEntry]) -> dic
     return baselines
 
 
-def _build_provider(model: str):
-    """Instantiate the candidate provider. ``stub`` swaps in the stub."""
+def _build_provider(model: str, context_window: int | None = None):
+    """Instantiate the candidate provider. ``stub`` swaps in the stub.
+
+    ``context_window`` is forwarded verbatim, None included: None is the
+    provider's unconfigured sentinel, so omitting the flag reproduces the
+    built-in window exactly and keeps a run comparable with earlier ones.
+    The stub carries no window and ignores it.
+    """
     if model == "stub":
         return StubAbstractionProvider()
-    from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
+    from sage.adapters import abstraction_qwen3
 
-    return get_qwen3_abstraction_provider(model_id=model)
+    return abstraction_qwen3.get_qwen3_abstraction_provider(
+        model_id=model, context_window=context_window
+    )
+
+
+def _record_context_window(result, provider, configured: int | None) -> None:
+    """Copy the provider's resolved window onto the result.
+
+    Read after the run so the model has loaded: the native window is only
+    knowable from loaded weights, and the effective window is the smaller of
+    it and the configured value. The stub carries none of this, in which case
+    the fields stay unset and the scorecard reports the section as unrecorded.
+    """
+    result.configured_context_window = configured
+    result.native_context_window = getattr(provider, "_native_context_window", None)
+    resolver = getattr(provider, "_effective_context_window", None)
+    if callable(resolver):
+        result.effective_context_window = resolver()
 
 
 def _serialize_result(result, baselines: dict[str, str]) -> dict:
@@ -122,6 +159,12 @@ def _serialize_result(result, baselines: dict[str, str]) -> dict:
         "determinism_verdicts": result.determinism_verdicts,
         "alt_outputs": result.alt_outputs,
         "measurements": [asdict(m) for m in result.measurements],
+        "peak_rss_bytes": result.peak_rss_bytes,
+        "machine_total_bytes": result.machine_total_bytes,
+        "configured_context_window": result.configured_context_window,
+        "native_context_window": result.native_context_window,
+        "effective_context_window": result.effective_context_window,
+        "context_probe": asdict(result.context_probe) if result.context_probe else None,
         "baselines": baselines,
         "notes": result.notes,
     }
@@ -139,6 +182,40 @@ def _print_summary(result) -> None:
     print("Peak unified-memory used during call (bytes):")
     for k in ("mean", "median", "p95", "p99", "min", "max"):
         print(f"  {k:>7}: {result.memory_stats.get(k, 0):.0f}")
+    prefill = [m.prefill_ms for m in result.measurements if m.prefill_ms is not None]
+    if prefill:
+        rates = [m.prefill_tps for m in result.measurements if m.prefill_tps is not None]
+        print()
+        print("Prefill:")
+        print(f"     mean: {sum(prefill) / len(prefill):.1f} ms")
+        if rates:
+            print(f"     rate: {sum(rates) / len(rates):.1f} tokens/s")
+
+    if result.peak_rss_bytes and result.machine_total_bytes:
+        print()
+        print(
+            f"Peak resident: {result.peak_rss_bytes / 1024**3:.1f} GiB "
+            f"of {result.machine_total_bytes / 1024**3:.1f} GiB"
+        )
+
+    if result.effective_context_window is not None:
+        print()
+        print(
+            f"Context window: configured={result.configured_context_window} "
+            f"native={result.native_context_window} "
+            f"effective={result.effective_context_window}"
+        )
+
+    if result.context_probe is not None:
+        probe = result.context_probe
+        print()
+        print(
+            f"Context probe: {probe.verdict} "
+            f"(retained {probe.retained_tokens} of {probe.target_tokens} tokens)"
+        )
+        if probe.error_type:
+            print(f"  error: {probe.error_type}: {probe.error_message}")
+
     drift = sum(1 for v in result.determinism_verdicts.values() if v == "drift")
     print()
     print(f"Determinism: {drift} drift / {len(result.determinism_verdicts)} documents")
@@ -184,7 +261,7 @@ async def run(args: argparse.Namespace) -> int:
             print(f"  found {len(baselines)} of {len(corpus)} baselines")
 
         print(f"Instantiating provider: {args.model}", flush=True)
-        provider = _build_provider(args.model)
+        provider = _build_provider(args.model, args.context_window)
 
         print(
             f"Running benchmark: {len(corpus)} docs × {args.repeats} repeats "
@@ -200,6 +277,25 @@ async def run(args: argparse.Namespace) -> int:
             candidate_model_id=args.model,
             warmup_calls=args.warmup_calls,
         )
+        _record_context_window(result, provider, args.context_window)
+
+        if args.context_probe:
+            target = result.effective_context_window or args.context_window
+            if target is None:
+                print(
+                    "warning: --context-probe needs a window to aim at; "
+                    "pass --context-window or use a provider that reports one",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"Probing the context window at {target} tokens...", flush=True)
+                result.context_probe = await probe_context_window(
+                    services=services,
+                    corpus=corpus,
+                    provider=provider,
+                    abstraction_config=config.abstraction,
+                    target_tokens=target,
+                )
 
         date = _now_date()
         slug = _slug(args.model)
@@ -227,7 +323,8 @@ async def run(args: argparse.Namespace) -> int:
         await services.graph_store.close()
 
 
-def main() -> None:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Build the parser and resolve *argv* (defaults to ``sys.argv[1:]``)."""
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark a candidate AbstractionProvider against a stratified "
@@ -294,6 +391,29 @@ def main() -> None:
         help="Disable baseline collection.",
     )
     parser.add_argument(
+        "--context-window",
+        type=_positive_int,
+        default=None,
+        help=(
+            "Prompt window in tokens for the candidate provider. Omit to "
+            "leave the provider on its built-in window, which reproduces a "
+            "run recorded before this flag existed. A value above what the "
+            "weights support is clamped at load and reported."
+        ),
+    )
+    parser.add_argument(
+        "--context-probe",
+        action="store_true",
+        help=(
+            "After the measured loop, exercise the provider once on input "
+            "assembled to fill the configured window, and report the prompt "
+            "length the model actually received. The provider fits prompts "
+            "to the window by design, so a window that cannot be reached "
+            "produces an ordinary-looking successful call; the probe reads "
+            "its verdict from the retained token count instead."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -302,9 +422,11 @@ def main() -> None:
             f"Default: {DEFAULT_OUTPUT_DIR} (disposable scratch space)."
         ),
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    rc = asyncio.run(run(args))
+
+def main() -> None:
+    rc = asyncio.run(run(_parse_args()))
     raise SystemExit(rc)
 
 
