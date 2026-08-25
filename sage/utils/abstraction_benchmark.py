@@ -76,6 +76,31 @@ _PHASE_FIELDS = (
 )
 
 
+def _accelerator_peak_bytes() -> int:
+    """Peak bytes the accelerator runtime has held for this process.
+
+    Distinct from process RSS, which does not observe accelerator
+    allocations at all: measured against a long-context generation, RSS stays
+    flat while this figure climbs with the prompt. The cache a long prompt
+    builds lives here, so this is the number a memory budget for a given
+    context length has to be read against.
+    """
+    import mlx.core as mx
+
+    return mx.get_peak_memory()
+
+
+def _reset_accelerator_peak() -> None:
+    """Clear the accelerator's high-water mark before a measured generation.
+
+    The mark is per-process and monotonic, so without a reset a measurement
+    inherits whatever earlier work already reached and reports it as its own.
+    """
+    import mlx.core as mx
+
+    mx.reset_peak_memory()
+
+
 def _probe_or_zero(probe: MemoryProbe) -> int:
     """Call a diagnostic memory probe, reporting zero when it cannot answer.
 
@@ -652,6 +677,13 @@ class ContextProbeOutcome:
     prefill_ms: float | None = None
     prefill_tps: float | None = None
     input_chars: int = 0
+    # Footprint reached by this probe's own generation. The run-level peak is
+    # sampled across the measured loop, which runs on ordinary documents and
+    # so never sees the allocation a full-window prompt requires.
+    peak_rss_bytes: int = 0
+    # Accelerator-held peak. The figure the memory criterion is read against,
+    # because process RSS does not observe these allocations.
+    accelerator_peak_bytes: int = 0
     error_type: str | None = None
     error_message: str | None = None
 
@@ -693,6 +725,9 @@ async def probe_context_window(
     mem_probe: MemoryProbe | None = None,
     poll_interval_s: float = 0.5,
     doc_type: str | None = None,
+    rss_probe: MemoryProbe | None = None,
+    accelerator_probe: MemoryProbe | None = None,
+    accelerator_reset: Callable[[], None] | None = None,
 ) -> ContextProbeOutcome:
     """Exercise the provider at *target_tokens* and report what actually ran.
 
@@ -706,10 +741,22 @@ async def probe_context_window(
         from sage.utils.unified_memory import free_unified_memory_bytes
 
         mem_probe = free_unified_memory_bytes
+    if rss_probe is None:
+        rss_probe = _self_rss_bytes
+    if accelerator_probe is None:
+        accelerator_probe = _accelerator_peak_bytes
+    if accelerator_reset is None:
+        accelerator_reset = _reset_accelerator_peak
 
     text = await _assemble_probe_text(
         services, corpus, target_chars=target_tokens * _PROBE_CHARS_PER_TOKEN
     )
+    # Attribute the peak to this generation rather than to the run before it.
+    try:
+        accelerator_reset()
+    except Exception as exc:  # noqa: BLE001 -- diagnostic metadata is never fatal
+        logger.debug("accelerator reset unavailable: %s", exc)
+
     try:
         record = await measure_one(
             provider=provider,
@@ -725,6 +772,10 @@ async def probe_context_window(
             verdict="failed",
             target_tokens=target_tokens,
             input_chars=len(text),
+            # Sampled even on the failure path: how far the footprint climbed
+            # before the allocation gave out is the finding, not a detail.
+            peak_rss_bytes=_probe_or_zero(rss_probe),
+            accelerator_peak_bytes=_probe_or_zero(accelerator_probe),
             error_type=type(exc).__name__,
             error_message=str(exc),
         )
@@ -745,6 +796,9 @@ async def probe_context_window(
         prefill_ms=record.prefill_ms,
         prefill_tps=record.prefill_tps,
         input_chars=len(text),
+        # After the generation, where the allocation has actually happened.
+        peak_rss_bytes=_probe_or_zero(rss_probe),
+        accelerator_peak_bytes=_probe_or_zero(accelerator_probe),
     )
 
 
@@ -888,6 +942,15 @@ def _render_context_probe(result: BenchmarkResult) -> list[str]:
     lines.append(f"- Prompt actually retained: {_thousands(probe.retained_tokens)} tokens")
     lines.append(f"- Model prompt length: {_thousands(probe.prompt_tokens)} tokens")
     lines.append(f"- Assembled input: {_thousands(probe.input_chars)} chars")
+    if probe.accelerator_peak_bytes:
+        lines.append(
+            f"- Peak accelerator memory at this window: **{_gib(probe.accelerator_peak_bytes)}**"
+        )
+    if probe.peak_rss_bytes:
+        lines.append(
+            f"- Process resident at this window: {_gib(probe.peak_rss_bytes)} "
+            f"(does not observe accelerator allocations)"
+        )
     if probe.prefill_ms is not None:
         lines.append(f"- Prefill: {probe.prefill_ms:.1f} ms")
     if probe.prefill_tps is not None:
@@ -1076,7 +1139,16 @@ def render_outputs_for_blind_review(
     lines.append("<details>")
     lines.append("<summary>Click to reveal the provider behind each card.</summary>")
     lines.append("")
-    lines.append("- **Card A** — baseline (stored Qwen3-30B abstract from the cas vault).")
+    # Described by provenance rather than by model name: the stored abstract
+    # was produced by whichever model was configured when the document was
+    # last abstracted, which this harness never observed and which moves as
+    # the stack's configured model moves. Naming one here would assert
+    # something unmeasured in the one section whose purpose is attribution.
+    lines.append(
+        "- **Card A** — baseline: the abstract currently stored in the vault, "
+        "produced by whichever model was configured when that document was "
+        "last abstracted."
+    )
     lines.append(f"- **Card B** — candidate (`{result.candidate_model_id}`).")
     lines.append("")
     lines.append("</details>")

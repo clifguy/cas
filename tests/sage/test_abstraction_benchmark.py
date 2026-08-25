@@ -1268,3 +1268,216 @@ async def test_run_benchmark_completes_on_a_host_without_the_memory_tool(monkeyp
     assert result.machine_total_bytes == 0
     # RSS comes from a portable interface, so it still reports.
     assert result.peak_rss_bytes > 0
+
+
+class AllocatingProvider(AbstractionProvider):
+    """Emits a timing record and marks that its generation has run.
+
+    Paired with ``rss_after_generation`` below, this makes the resident
+    reading depend on whether the call has happened -- the only way a single
+    sample can distinguish a pre-call sample from a post-call one.
+    """
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.generated = False
+        self.call_count = 0
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        self.call_count += 1
+        self.generated = True
+        logging.getLogger(TIMING_LOGGER_NAME).info(json.dumps(self.payload))
+        return "abstract."
+
+
+def rss_after_generation(provider, before: int, after: int):
+    """Probe reporting *after* only once *provider* has generated."""
+
+    def _probe() -> int:
+        return after if provider.generated else before
+
+    return _probe
+
+
+async def _probe_with_rss(provider, rss_probe, target_tokens: int = 131_072):
+    return await probe_context_window(
+        services=_bulk_services(4, chunk_chars=200_000),
+        corpus=[_make_entry(f"doc-{i}", "adr", 200_000) for i in range(4)],
+        provider=provider,
+        abstraction_config=_default_config(),
+        target_tokens=target_tokens,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        rss_probe=rss_probe,
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_probe_records_resident_memory_at_the_probed_window():
+    """The probe reports the footprint its own generation reached.
+
+    The measured loop runs on ordinary documents and the probe runs on a
+    prompt orders of magnitude larger, so a peak sampled only during the loop
+    answers a different question than "what does this cost at the intended
+    window" -- while looking exactly like an answer to it.
+    """
+    provider = AllocatingProvider(_timing_payload(retained_tokens=129_243))
+
+    outcome = await _probe_with_rss(
+        provider, rss_after_generation(provider, before=6_000, after=10_000)
+    )
+
+    assert outcome.peak_rss_bytes == 10_000
+
+
+@pytest.mark.asyncio
+async def test_context_probe_samples_resident_memory_after_the_generation():
+    """The sample is taken after the call, where the allocation has happened.
+
+    The reading changes *because* the generation ran, so a probe sampled
+    before the call can only report 6000. A counter-driven sequence could not
+    make this distinction: with one sample taken either way, both orderings
+    return the sequence's first value.
+    """
+    provider = AllocatingProvider(_timing_payload(retained_tokens=129_243))
+    probe = rss_after_generation(provider, before=6_000, after=10_000)
+
+    assert probe() == 6_000  # pre-call reading, for contrast
+    outcome = await _probe_with_rss(provider, probe)
+
+    assert outcome.peak_rss_bytes == 10_000
+    assert provider.call_count == 1
+
+
+def test_scorecard_reports_probe_resident_memory_beside_the_loop_peak():
+    """Both footprints appear, so neither is mistaken for the other."""
+    result = _sample_result_with_phases()
+    result.context_probe.peak_rss_bytes = 10_273_735_577
+
+    md = render_scorecard(result)
+    probe = md[md.index("## Long-context prefill probe") : md.index("## Runtime pin")]
+
+    assert "9.6 GiB" in probe
+
+
+# ---------------------------------------------------------------------------
+# Accelerator memory accounting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_context_probe_records_accelerator_peak_at_the_probed_window():
+    """The probe reports the accelerator's own peak, not just process RSS.
+
+    Process RSS does not observe Metal allocations: measured against this
+    model, RSS stays flat while the accelerator's peak climbs with context
+    length. A footprint read from RSS alone would report a long-context run
+    costing exactly what a short one costs, which is the wrong instrument
+    rather than an imprecise one.
+    """
+    provider = AllocatingProvider(_timing_payload(retained_tokens=129_243))
+
+    outcome = await probe_context_window(
+        services=_bulk_services(4, chunk_chars=200_000),
+        corpus=[_make_entry(f"doc-{i}", "adr", 200_000) for i in range(4)],
+        provider=provider,
+        abstraction_config=_default_config(),
+        target_tokens=131_072,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        rss_probe=rss_after_generation(provider, before=6_000, after=6_000),
+        accelerator_probe=rss_after_generation(provider, before=5_000, after=18_000),
+    )
+
+    assert outcome.accelerator_peak_bytes == 18_000
+    # The two are reported side by side; neither stands in for the other.
+    assert outcome.peak_rss_bytes == 6_000
+
+
+@pytest.mark.asyncio
+async def test_context_probe_resets_the_accelerator_peak_before_measuring():
+    """The reported peak belongs to this generation, not the run before it.
+
+    The accelerator tracks a high-water mark for the process, so without a
+    reset the probe would inherit whatever the measured loop had already
+    reached and report it as the cost of the probed window.
+    """
+    provider = AllocatingProvider(_timing_payload(retained_tokens=129_243))
+    resets: list[str] = []
+
+    await probe_context_window(
+        services=_bulk_services(4, chunk_chars=200_000),
+        corpus=[_make_entry(f"doc-{i}", "adr", 200_000) for i in range(4)],
+        provider=provider,
+        abstraction_config=_default_config(),
+        target_tokens=131_072,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        accelerator_probe=lambda: 18_000,
+        accelerator_reset=lambda: resets.append("reset"),
+    )
+
+    assert resets == ["reset"]
+
+
+@pytest.mark.asyncio
+async def test_context_probe_survives_an_absent_accelerator():
+    """A host with no accelerator runtime still produces a verdict.
+
+    The accelerator figure is diagnostic metadata like the others, so its
+    absence costs the run one column rather than the measurement.
+    """
+
+    def unavailable() -> int:
+        raise ImportError("no accelerator runtime on this platform")
+
+    provider = AllocatingProvider(_timing_payload(retained_tokens=129_243))
+
+    outcome = await probe_context_window(
+        services=_bulk_services(4, chunk_chars=200_000),
+        corpus=[_make_entry(f"doc-{i}", "adr", 200_000) for i in range(4)],
+        provider=provider,
+        abstraction_config=_default_config(),
+        target_tokens=131_072,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        accelerator_probe=unavailable,
+        accelerator_reset=unavailable,
+    )
+
+    assert outcome.verdict == "ok"
+    assert outcome.accelerator_peak_bytes == 0
+
+
+def test_scorecard_reports_accelerator_peak_at_the_probed_window():
+    """The accelerator figure is what the memory criterion is read against."""
+    result = _sample_result_with_phases()
+    result.context_probe.accelerator_peak_bytes = 18_038_819_942
+
+    md = render_scorecard(result)
+    probe = md[md.index("## Long-context prefill probe") : md.index("## Runtime pin")]
+
+    assert "16.8 GiB" in probe
+
+
+def test_reveal_does_not_attribute_the_baseline_to_a_named_model():
+    """Card A is described by provenance, not by a guessed model name.
+
+    The stored abstract was produced by whichever model was configured when
+    each document was last abstracted, which the renderer cannot know and
+    which changes as the stack's configured model changes. Naming a specific
+    model here states something the harness never measured, in the one place
+    whose whole purpose is accurate attribution.
+    """
+    result = _sample_result(model_id="mlx-community/Qwen3.5-9B-4bit")
+    baseline_outputs = {f"doc-{i}": f"Baseline abstract {i}." for i in range(5)}
+
+    md = render_outputs_for_blind_review(result, baseline_outputs=baseline_outputs)
+    reveal = md.split("## Reveal", 1)[1]
+
+    card_a_line = next(line for line in reveal.splitlines() if "Card A" in line)
+    assert "30B" not in card_a_line
+    assert "Qwen" not in card_a_line
+    assert "stored" in card_a_line.lower()
+    # The candidate, which the harness *did* run, is still named.
+    assert "Qwen3.5-9B-4bit" in reveal

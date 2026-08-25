@@ -296,6 +296,12 @@ async def run(args: argparse.Namespace) -> int:
                     abstraction_config=config.abstraction,
                     target_tokens=target,
                 )
+                # The probe allocates far more than the measured loop, so the
+                # run's headline footprint has to account for it or it reports
+                # the smaller of two very different numbers.
+                result.peak_rss_bytes = max(
+                    result.peak_rss_bytes, result.context_probe.peak_rss_bytes
+                )
 
         date = _now_date()
         slug = _slug(args.model)
