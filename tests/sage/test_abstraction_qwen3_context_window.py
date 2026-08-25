@@ -212,3 +212,111 @@ def test_configured_window_survives_construction(configured):
     """An explicit window is stored verbatim, not silently normalized."""
     provider = Qwen3AbstractionProvider(model_id="stub-model", context_window=configured)
     assert provider._context_window == configured
+
+
+def _install_fake_wrapper_mlx(monkeypatch, wrapper_window: int | None, flat_window: int | None):
+    """Inject a fake ``mlx_lm`` whose model wraps a nested text model.
+
+    Mirrors the shape mlx-lm uses for hybrid-attention families, where the
+    top-level ``args`` carries only the model type and a nested text config
+    while the prompt length lives on the inner text model's own ``args``.
+    ``flat_window`` puts a value on the outer ``args`` too, so a test can pin
+    which of the two an implementation reads.
+    """
+
+    class _FakeWrapperModel:
+        pass
+
+    model = _FakeWrapperModel()
+    model.args = types.SimpleNamespace(model_type="wrapped", text_config={})
+    if flat_window is not None:
+        model.args.max_position_embeddings = flat_window
+
+    inner = types.SimpleNamespace()
+    inner.args = types.SimpleNamespace()
+    if wrapper_window is not None:
+        inner.args.max_position_embeddings = wrapper_window
+    model.language_model = inner
+
+    def fake_load(model_id):
+        return model, _FakeTokenizer()
+
+    def fake_stream_generate(model, tokenizer, prompt, **kwargs):
+        yield _FakeResponse("STUB ABSTRACT")
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    mlx_lm.load = fake_load
+    mlx_lm.stream_generate = fake_stream_generate
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda temp=0.0: object()
+    mlx_lm.sample_utils = sample_utils
+
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    return model
+
+
+def test_native_window_resolved_through_language_model_wrapper(monkeypatch):
+    """A wrapped model publishes the prompt length its inner text model carries.
+
+    Without the fallback the outer ``args`` yields nothing, the native window
+    resolves to None, and an oversized configured window then stands unclamped
+    -- the silent case the clamp exists to prevent.
+    """
+    _install_fake_wrapper_mlx(monkeypatch, wrapper_window=262144, flat_window=None)
+
+    provider = Qwen3AbstractionProvider(model_id="stub-model", context_window=131072)
+    provider._ensure_loaded()
+
+    assert provider._native_context_window == 262144
+
+
+def test_flat_model_args_win_over_wrapper(monkeypatch):
+    """The outer ``args`` is authoritative when it advertises a window.
+
+    Two distinct values are advertised so the assertion pins which one is
+    read; an implementation that reaches for the nested value unconditionally
+    resolves 262144 here and fails.
+    """
+    _install_fake_wrapper_mlx(monkeypatch, wrapper_window=262144, flat_window=40960)
+
+    provider = Qwen3AbstractionProvider(model_id="stub-model", context_window=16384)
+    provider._ensure_loaded()
+
+    assert provider._native_context_window == 40960
+
+
+def test_wrapper_without_native_window_still_yields_none(monkeypatch):
+    """Neither level advertising leaves the resolution unknown, not zero.
+
+    Preserves the existing contract: an unresolvable native window lets the
+    configured value stand rather than becoming a load failure.
+    """
+    _install_fake_wrapper_mlx(monkeypatch, wrapper_window=None, flat_window=None)
+
+    provider = Qwen3AbstractionProvider(model_id="stub-model", context_window=131072)
+    provider._ensure_loaded()
+
+    assert provider._native_context_window is None
+    assert provider._effective_context_window() == 131072
+
+
+def test_wrapper_native_window_drives_clamping(monkeypatch, caplog):
+    """A window resolved through the wrapper clamps exactly as a flat one does.
+
+    The configured value is set deliberately *above* the advertised window, so
+    only real clamping produces the expected number -- a configuration under
+    the native window would pass whether or not the clamp ran.
+    """
+    _install_fake_wrapper_mlx(monkeypatch, wrapper_window=65536, flat_window=None)
+
+    provider = Qwen3AbstractionProvider(model_id="stub-model", context_window=131072)
+    with caplog.at_level(logging.WARNING, logger="sage.adapters.abstraction_qwen3"):
+        provider._ensure_loaded()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "131072" in message
+    assert "65536" in message
+    assert provider._effective_context_window() == 65536

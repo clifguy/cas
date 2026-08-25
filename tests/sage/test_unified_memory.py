@@ -43,3 +43,95 @@ def test_t0029_min_free_bytes_env_var_override(monkeypatch):
     """
     monkeypatch.setenv("SAGE_MIN_FREE_UNIFIED_MEMORY_GIB", "8")
     assert unified_memory.min_free_bytes() == 8 * 1024**3
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="sysctl hw.memsize is macOS-only")
+def test_total_unified_memory_bytes_reports_machine_total():
+    """Helper reports installed physical memory, which bounds the free reading.
+
+    The benchmark scorecard reports a resident footprint against the machine
+    total, so the total must be a real capacity figure rather than anything
+    derived from current availability.
+    """
+    total = unified_memory.total_unified_memory_bytes()
+    assert isinstance(total, int)
+    assert total > 0
+    assert total > unified_memory.free_unified_memory_bytes()
+
+
+def test_total_unified_memory_bytes_parses_sysctl_output(monkeypatch):
+    """The byte count is read from sysctl rather than inferred.
+
+    A stubbed reading that matches no real machine pins the parse: an
+    implementation returning a constant, or one reading a different sysctl
+    key, cannot produce this number.
+    """
+
+    def fake_check_output(argv, text=False):
+        assert argv == ["/usr/sbin/sysctl", "-n", "hw.memsize"]
+        return "17179869184\n"
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    assert unified_memory.total_unified_memory_bytes() == 17179869184
+
+
+def test_total_unified_memory_bytes_raises_on_unparseable_output(monkeypatch):
+    """Unparseable output fails loudly rather than yielding a bogus capacity.
+
+    A silent zero would render the scorecard's headroom figure as a division
+    by zero or an infinite ratio, neither of which reads as a measurement
+    failure to whoever consumes the card.
+    """
+
+    def fake_check_output(argv, text=False):
+        return "not-a-number\n"
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="hw.memsize"):
+        unified_memory.total_unified_memory_bytes()
+
+
+def test_total_unified_memory_bytes_raises_runtime_error_on_a_foreign_host(monkeypatch):
+    """A host without the macOS key fails as the documented RuntimeError.
+
+    The tool itself exists on other platforms, so a foreign host fails by
+    returning non-zero rather than by the binary being absent. Raising the
+    subprocess error verbatim would make the documented contract false for
+    the one case it most needs to describe.
+    """
+    import subprocess
+
+    def fake_check_output(argv, text=False):
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="hw.memsize"):
+        unified_memory.total_unified_memory_bytes()
+
+
+def test_free_unified_memory_bytes_raises_runtime_error_when_the_tool_is_absent(monkeypatch):
+    """A host with no ``vm_stat`` fails as the documented RuntimeError.
+
+    The docstring has always promised RuntimeError "e.g. running on a
+    non-macOS system", but an absent binary surfaced as FileNotFoundError --
+    so the contract was false for exactly the case it names.
+    """
+
+    def fake_check_output(argv, text=False):
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="vm_stat"):
+        unified_memory.free_unified_memory_bytes()
+
+
+def test_free_unified_memory_bytes_raises_runtime_error_when_the_tool_refuses(monkeypatch):
+    """A tool that runs but exits non-zero fails the same documented way."""
+    import subprocess
+
+    def fake_check_output(argv, text=False):
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(unified_memory.subprocess, "check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="vm_stat"):
+        unified_memory.free_unified_memory_bytes()
