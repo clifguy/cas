@@ -11,9 +11,11 @@ document at a time (BH-026, BH-068).
 
 import asyncio
 import contextlib
+import json
 import logging
 import shutil
 import tempfile
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -64,6 +66,11 @@ from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
 logger = logging.getLogger(__name__)
+
+# Provider-neutral abstraction latency records. Shares the logger name with
+# the local provider's implementation-specific breakdown so one pipeline
+# reads both; the two are joined on the input size they both carry.
+abstraction_timing_logger = logging.getLogger("sage.abstraction.timing")
 
 
 @dataclass
@@ -1152,8 +1159,35 @@ class IngestionService:
         """
         word_count = len(text.split())
         max_tokens = compute_max_tokens(word_count, self._config.abstraction)
+
+        started_ns = time.perf_counter_ns()
         raw_abstract = await self._abstraction.generate_abstract(text, max_tokens, doc_type)
-        return trim_to_sentence_boundary(raw_abstract)
+        duration_ms = (time.perf_counter_ns() - started_ns) / 1_000_000.0
+        abstract = trim_to_sentence_boundary(raw_abstract)
+
+        # Emitted here rather than inside a provider because this is the one
+        # place both entry paths pass through, and because the fields are the
+        # ones every provider can answer for: a hosted API call has no notion
+        # of prefill or decode, but wall-clock time and input size mean the
+        # same thing wherever the abstract came from. A provider with more to
+        # say emits its own record; this one stays comparable across all of
+        # them. Success only -- a failed call produced no abstract, and
+        # reporting a duration for it would misread as work delivered.
+        abstraction_timing_logger.info(
+            json.dumps(
+                {
+                    "layer": "abstraction",
+                    "label": "abstract",
+                    "provider": type(self._abstraction).__name__,
+                    "input_chars": len(text),
+                    "input_words": word_count,
+                    "max_tokens": max_tokens,
+                    "abstract_chars": len(abstract),
+                    "duration_ms": duration_ms,
+                }
+            )
+        )
+        return abstract
 
     async def _stage3_abstraction(
         self,

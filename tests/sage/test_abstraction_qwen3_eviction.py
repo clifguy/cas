@@ -20,6 +20,7 @@ import asyncio
 import pytest
 
 from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+from tests.sage.conftest import stub_stream_generate
 
 
 class _FakeTokenizer:
@@ -64,7 +65,7 @@ def provider(monkeypatch):
         p._model = object()
         p._tokenizer = _FakeTokenizer()
         p._greedy_sampler = object()
-        p._generate_fn = lambda *a, **k: "GENERATED ABSTRACT"
+        p._generate_fn = stub_stream_generate("GENERATED ABSTRACT")
 
     monkeypatch.setattr(p, "_ensure_loaded", fake_ensure_loaded)
     yield p
@@ -258,7 +259,7 @@ async def test_unload_then_generate_triggers_lazy_reload(provider, monkeypatch):
         provider._model = object()
         provider._tokenizer = _FakeTokenizer()
         provider._greedy_sampler = object()
-        provider._generate_fn = lambda *a, **k: "RELOADED"
+        provider._generate_fn = stub_stream_generate("RELOADED")
 
     monkeypatch.setattr(provider, "_ensure_loaded", tracking_ensure_loaded)
 

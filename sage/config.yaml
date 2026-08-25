@@ -8,7 +8,7 @@
 # startup. Per-vault knobs (enabled, token-budget tuning) remain in the
 # vault config's `abstraction:` block.
 #
-# Schema: docs/fs/sage/sage_core_config.schema.json (v0.9).
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.10).
 
 # Deployment-profile marker (CAS-ADR-042). The single stack-scope selection
 # that co-binds the adapter-port implementations for one deployment target.
@@ -56,6 +56,20 @@ abstraction:
   # process). Existing 30B-generated abstracts in those vaults remain
   # unchanged per the T-0103 ticket ("no reabstract").
   model: mlx-community/Qwen3-8B-4bit
+
+  # Maximum prompt length in tokens, consumed only by the local MLX provider:
+  # it truncates a document that would overflow this window, preserving the
+  # leading content. Left unset (null) the provider keeps its own built-in
+  # window, which is what every deployment has run on to date -- set it only
+  # to evaluate a model with a different one.
+  #
+  # A hosted provider derives its input limit from its own configured model
+  # and does not read this field, so setting it while `provider` is anything
+  # other than `local-mlx` fails at startup rather than being ignored. A value
+  # larger than the loaded model's native window is reported at model load and
+  # clamped to that native window.
+  #
+  # context_window: 32768
 
 # Postgres storage-engine connection parameters (CAS-ADR-042). Both deployment
 # targets externalize durable graph + content state to Postgres -- a local unix

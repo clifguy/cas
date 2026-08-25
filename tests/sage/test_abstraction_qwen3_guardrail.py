@@ -21,6 +21,7 @@ import pytest
 
 from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 from sage.utils.unified_memory import UnifiedMemoryExhaustedError
+from tests.sage.conftest import FakeGenerationResponse, stub_stream_generate
 
 
 class _FakeTokenizer:
@@ -78,6 +79,9 @@ async def test_t0029_preflight_below_threshold_raises_structured_error(provider,
     )
 
     def fail_if_called(*args, **kwargs):
+        # Deliberately not a generator: this must fail the moment the seam is
+        # called, not on first iteration, so a caller that invokes it and
+        # discards the result is still caught.
         pytest.fail("_generate_fn invoked despite preflight failure")
 
     provider._generate_fn = fail_if_called
@@ -114,7 +118,7 @@ async def test_t0029_preflight_above_threshold_proceeds(provider, monkeypatch):
 
     def fake_generate(*args, **kwargs):
         calls.append(kwargs)
-        return "GENERATED ABSTRACT"
+        yield FakeGenerationResponse(text="GENERATED ABSTRACT")
 
     provider._generate_fn = fake_generate
 
@@ -138,7 +142,7 @@ async def test_t0029_lock_serializes_concurrent_calls(provider, monkeypatch):
         lambda: 4 * 1024**3,
     )
 
-    provider._generate_fn = lambda *a, **k: "ok"
+    provider._generate_fn = stub_stream_generate("ok")
 
     from sage.adapters.abstraction_qwen3 import _generation_lock
 

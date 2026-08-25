@@ -221,3 +221,128 @@ def test_stk_008_anthropic_construction_imports_no_mlx(monkeypatch):
 
     assert isinstance(provider, AnthropicAbstractionProvider)
     assert after == before, f"abstraction construction imported MLX modules: {after - before}"
+
+
+def test_stk_009_context_window_passed_to_local_factory(monkeypatch):
+    """A configured `context_window` reaches `get_qwen3_abstraction_provider`
+    as a keyword argument on the local-mlx branch.
+
+    Anti-coincidental-pass: STK-010 is the paired absent-field case. Together
+    they prove the dispatch forwards whatever the config carries rather than
+    hardcoding either the value or the module default.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    sentinel = StubAbstractionProvider()
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return sentinel
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    cfg = _stack_config(
+        provider="local-mlx", model="mlx-community/test-qwen3", context_window=65536
+    )
+    provider = build_stack_abstraction_provider(cfg)
+
+    assert provider is sentinel
+    assert len(calls) == 1
+    assert calls[0]["context_window"] == 65536
+
+
+def test_stk_010_context_window_absent_passes_none_to_local_factory(monkeypatch):
+    """With `context_window` unset, the factory receives an explicit None --
+    not the module default, and not an omitted keyword.
+
+    None is the sentinel the provider resolves to its own
+    `DEFAULT_CONTEXT_WINDOW`. Substituting 32768 here would satisfy STK-009
+    while destroying the distinction that the non-local-provider rejection
+    (STK-011, STK-012) depends on: "unset" and "explicitly set to the
+    default" must not look the same to the dispatch.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    sentinel = StubAbstractionProvider()
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return sentinel
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    cfg = _stack_config(provider="local-mlx", model="mlx-community/test-qwen3")
+    build_stack_abstraction_provider(cfg)
+
+    assert len(calls) == 1
+    assert "context_window" in calls[0], "context_window was not forwarded at all"
+    assert calls[0]["context_window"] is None
+
+
+def test_stk_011_context_window_against_anthropic_rejected(monkeypatch):
+    """`context_window` set against the hosted provider fails loud at startup.
+
+    The field's meaning is local-provider-specific: a hosted provider derives
+    its input limit from its own configured model and would silently ignore
+    the value. Rejecting is the difference between a visible misconfiguration
+    and a knob that appears to work and does nothing.
+
+    Anti-coincidental-pass: the positive control constructs the same hosted
+    provider from the same config *without* the field, so a rejection that
+    fired for every anthropic config would fail here.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    from sage.adapters.abstraction_anthropic import AnthropicAbstractionProvider
+
+    cfg = _stack_config(provider="anthropic", model="claude-haiku-4-5", context_window=65536)
+    with pytest.raises(ValueError) as excinfo:
+        build_stack_abstraction_provider(cfg)
+    message = str(excinfo.value)
+    assert "context_window" in message
+    assert "anthropic" in message
+
+    # Positive control: the same provider/model without the field constructs.
+    ok = _stack_config(provider="anthropic", model="claude-haiku-4-5")
+    assert isinstance(build_stack_abstraction_provider(ok), AnthropicAbstractionProvider)
+
+
+def test_stk_012_context_window_against_stub_rejected(monkeypatch):
+    """`context_window` set against the explicit `stub` provider fails loud,
+    and the env override still short-circuits above the rejection.
+
+    Anti-coincidental-pass: the env-override half is the ordering guard. A
+    rejection placed above the `SAGE_TEST_STUB_PROVIDERS` short-circuit would
+    reject correctly here and break the test escape hatch that keeps the
+    suite from loading the local MLX model alongside a running server -- so
+    this asserts a local-mlx config carrying the field returns a stub without
+    raising when the env var is set.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    cfg = _stack_config(provider="stub", model=None, context_window=65536)
+    with pytest.raises(ValueError) as excinfo:
+        build_stack_abstraction_provider(cfg)
+    message = str(excinfo.value)
+    assert "context_window" in message
+    assert "stub" in message
+
+    # Positive control: the same provider without the field constructs.
+    ok = _stack_config(provider="stub", model=None)
+    assert isinstance(build_stack_abstraction_provider(ok), StubAbstractionProvider)
+
+    # Ordering guard: the env override wins over every config-driven branch,
+    # including the rejection.
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    overridden = _stack_config(
+        provider="local-mlx", model="mlx-community/test-qwen3", context_window=65536
+    )
+    assert isinstance(build_stack_abstraction_provider(overridden), StubAbstractionProvider)
