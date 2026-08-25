@@ -489,3 +489,43 @@ def vault_source_backend(request, monkeypatch):
         lambda *args, **kwargs: fake,
     )
     return VaultSourceBackendHandle(backend=backend, fake_client=fake)
+
+
+# ── Local abstraction-provider inference stubs ──────────────────────
+#
+# The local MLX provider drives inference through a streaming generator and
+# reads its latency figures off the final response, so a stub standing in for
+# that seam yields response objects rather than returning a string.
+
+
+@dataclasses.dataclass
+class FakeGenerationResponse:
+    """Stand-in for the local provider's per-segment generation response.
+
+    Carries the segment text plus the phase counts and rates the provider's
+    latency record is derived from. Defaults describe a plausible generation
+    so a test that cares only about the text can ignore them.
+    """
+
+    text: str
+    prompt_tokens: int = 1000
+    prompt_tps: float = 500.0
+    generation_tokens: int = 200
+    generation_tps: float = 25.0
+
+
+def stub_stream_generate(*segments: str, **stats):
+    """Build a stub for ``Qwen3AbstractionProvider._generate_fn``.
+
+    Yields one response per segment; the caller concatenates them exactly as
+    the real streaming entry point's one-shot wrapper does. Keyword arguments
+    override the phase statistics carried on every response.
+    """
+    if not segments:
+        segments = ("STUB ABSTRACT",)
+
+    def _stream(*args, **kwargs):
+        for segment in segments:
+            yield FakeGenerationResponse(text=segment, **stats)
+
+    return _stream

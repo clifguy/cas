@@ -39,6 +39,12 @@
           "type": ["string", "null"],
           "default": null,
           "description": "LLM model identifier for abstract generation, passed to the provider's factory. Required when provider is 'local-mlx' or 'anthropic' (startup fails loudly if null): a local model identifier for 'local-mlx', a Claude model identifier for 'anthropic'. Ignored when provider is 'stub'."
+        },
+        "context_window": {
+          "type": ["integer", "null"],
+          "default": null,
+          "minimum": 1,
+          "description": "Maximum prompt length in tokens for abstract generation, consumed only by the local MLX provider. Null (the default) leaves the provider on its own built-in window, so an unset field reproduces the provider's default behavior exactly. The field is local-provider-specific: a hosted provider derives its input limit from its own configured model, so setting this against a non-local provider fails loudly at startup rather than being silently ignored. A configured value larger than the loaded model's native window is reported at model load and clamped to the native window; the effective window is always the smaller of the two."
         }
       }
     },

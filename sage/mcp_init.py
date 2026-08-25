@@ -21,7 +21,7 @@ from sage.adapters.interfaces import (
 )
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.auth import TokenValidator, build_auth_validator
-from sage.config import SageCoreConfig, VaultConfig
+from sage.config import SageCoreConfig, StackAbstractionConfig, VaultConfig
 from sage.instrumentation.timing import (
     NULL_QUERY_TIMER,
     NullQueryTimer,
@@ -431,6 +431,27 @@ def load_stack_config_or_default(path: Path | None = None) -> SageCoreConfig:
     return load_sage_core_config(resolved)
 
 
+def _reject_context_window_for_non_local(abstraction: StackAbstractionConfig) -> None:
+    """Fail loud when ``context_window`` is set against a non-local provider.
+
+    The field is consumed only by the local MLX provider, which truncates its
+    prompt to fit a window it owns. A hosted provider derives its input limit
+    from its own configured model and has nothing to do with the field, so a
+    configuration that sets it against one is rejected rather than silently
+    ignored -- the difference between a visible misconfiguration and a knob
+    that appears to work and does nothing.
+    """
+    if abstraction.context_window is None or abstraction.provider == "local-mlx":
+        return
+    raise ValueError(
+        "sage_core_config.abstraction.context_window is consumed only by the "
+        "'local-mlx' provider, but abstraction.provider is "
+        f"{abstraction.provider!r} (CAS-ADR-030). A hosted provider derives its "
+        "input limit from its own configured model. Remove the context_window "
+        "field from the stack config, or set abstraction.provider to 'local-mlx'."
+    )
+
+
 def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> AbstractionProvider:
     """Construct the SAGE-stack-wide abstraction provider (CAS-ADR-030).
 
@@ -449,6 +470,8 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
          and stack.abstraction.model is None -> raise ValueError
       6. stack.abstraction.provider == "anthropic"
          and stack.abstraction.model is not None -> hosted Claude provider
+      7. stack.abstraction.context_window is not None
+         and provider is not "local-mlx" -> raise ValueError
 
     The env override remains the topmost short-circuit so that tests
     cannot load the local MLX model alongside the running MCP server (F-8).
@@ -463,6 +486,7 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
         return StubAbstractionProvider()
 
     abstraction = stack_config.abstraction
+    _reject_context_window_for_non_local(abstraction)
     if abstraction.provider == "stub":
         return StubAbstractionProvider()
     if abstraction.provider == "local-mlx":
@@ -476,7 +500,10 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
             )
         from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
 
-        return get_qwen3_abstraction_provider(model_id=abstraction.model)
+        return get_qwen3_abstraction_provider(
+            model_id=abstraction.model,
+            context_window=abstraction.context_window,
+        )
     if abstraction.provider == "anthropic":
         if abstraction.model is None:
             raise ValueError(
@@ -608,6 +635,7 @@ def _cloud_abstraction_binding(stack_config: SageCoreConfig) -> AbstractionProvi
     if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
         return StubAbstractionProvider()
     abstraction = stack_config.abstraction
+    _reject_context_window_for_non_local(abstraction)
     if abstraction.provider == "stub":
         return StubAbstractionProvider()
     if abstraction.provider == "anthropic":

@@ -308,6 +308,21 @@ class StackAbstractionConfig(BaseModel):
             "'anthropic'. Ignored when provider is 'stub'."
         ),
     )
+    context_window: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum prompt length in tokens for abstract generation, consumed only by the "
+            "local MLX provider. Null (the default) leaves the provider on its own built-in "
+            "window, so an unset field reproduces the provider's default behavior exactly. "
+            "The field is local-provider-specific: a hosted provider derives its input "
+            "limit from its own configured model, so setting this against a non-local "
+            "provider fails loudly at startup rather than being silently ignored. A "
+            "configured value larger than the loaded model's native window is reported at "
+            "model load and clamped to the native window; the effective window is always "
+            "the smaller of the two."
+        ),
+    )
 
 
 class StackPostgresConfig(BaseModel):

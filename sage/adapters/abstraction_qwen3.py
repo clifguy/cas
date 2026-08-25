@@ -5,9 +5,11 @@ and generate density-proportional semantic abstracts on Apple Silicon.
 """
 
 import asyncio
+import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple
 
 from sage.adapters.abstraction_prompt import (
     SYSTEM_PROMPT_TEMPLATE,  # noqa: F401 -- re-exported for callers importing from this module
@@ -22,6 +24,16 @@ from sage.utils.unified_memory import (
 
 logger = logging.getLogger(__name__)
 
+# Structured latency records land on a dedicated logger, mirroring the
+# sage.{storage,content,retrieval}.timing family: one JSON payload per record
+# as the log message, so a single grep/jq pipeline can join across emitters.
+# The abstraction path emits at two levels -- a provider-neutral record from
+# the ingestion service, and this provider's implementation-specific
+# breakdown -- because the providers share no vocabulary below wall-clock
+# time: prefill and decode are MLX concepts with no counterpart in a hosted
+# API call.
+timing_logger = logging.getLogger("sage.abstraction.timing")
+
 # Module-level lock serializing all MLX generate_abstract calls (
 # guardrail 2). Two concurrent ingest pipelines previously could both
 # drive Qwen3 toward the unified-memory ceiling at once; this lock
@@ -32,6 +44,45 @@ _generation_lock = asyncio.Lock()
 
 
 DEFAULT_CONTEXT_WINDOW = 32768
+
+
+class TruncationOutcome(NamedTuple):
+    """Result of fitting document text to the available prompt window.
+
+    ``input_tokens`` is the measured token length of the *original* text, and
+    is None when the cheap pre-check established the text could not overflow
+    the window and the encode was skipped. A caller that needs the count in
+    that case can derive it from the prompt length the model reports, since
+    nothing was dropped.
+    """
+
+    text: str
+    input_tokens: int | None
+
+
+def _phase_duration_ms(tokens: int | None, tokens_per_second: float | None) -> float | None:
+    """Convert a token count and a rate into a duration in milliseconds.
+
+    Returns None when either input is missing or the rate is zero, so a
+    degenerate measurement is reported as absent rather than as a duration
+    that happens to be zero or infinite.
+    """
+    if not tokens or not tokens_per_second:
+        return None
+    return tokens / tokens_per_second * 1000.0
+
+
+def _resolve_native_context_window(model: object) -> int | None:
+    """Read the loaded model's native prompt length, or None if unadvertised.
+
+    Best-effort by design. The attribute is conventional across the model
+    families this provider loads but is not part of any contract, so a model
+    that omits it yields None -- an unknown native window leaves the
+    configured value standing rather than becoming a load failure.
+    """
+    args = getattr(model, "args", None)
+    native = getattr(args, "max_position_embeddings", None)
+    return native if isinstance(native, int) and native > 0 else None
 
 
 class Qwen3AbstractionProvider(AbstractionProvider):
@@ -50,16 +101,33 @@ class Qwen3AbstractionProvider(AbstractionProvider):
     def __init__(
         self,
         model_id: str,
-        context_window: int = DEFAULT_CONTEXT_WINDOW,
+        context_window: int | None = None,
     ) -> None:
         self._model_id = model_id
-        self._context_window = context_window
+        # None is the "unconfigured" sentinel and resolves to the module
+        # default here, at the single point that owns it. Callers forward
+        # whatever their configuration carries without having to know the
+        # fallback, so an unset configuration reproduces the default
+        # behavior exactly.
+        self._context_window = DEFAULT_CONTEXT_WINDOW if context_window is None else context_window
+
+        # Native prompt length of the loaded weights, read once at load
+        # from the model's own arguments. None means the model family does
+        # not advertise one, in which case the configured window stands.
+        self._native_context_window: int | None = None
 
         # Deferred state: populated by _ensure_loaded() on first use
         self._model = None
         self._tokenizer = None
         self._generate_fn = None
         self._greedy_sampler = None
+
+        # Chat-template overhead in tokens, keyed by doc_type. The template
+        # is constant for a given doc_type, so measuring it once per type
+        # spares an encode on every subsequent call. Keyed rather than
+        # single-valued because the system prompt varies by doc_type, and
+        # cleared on unload because a reload may bring a different tokenizer.
+        self._overhead_tokens: dict[str | None, int] = {}
 
         # Dedicated single-thread executor for the blocking model load and
         # inference. Created lazily on first generate_abstract and released
@@ -85,14 +153,18 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             return
 
         try:
-            from mlx_lm import generate, load
+            from mlx_lm import load, stream_generate
             from mlx_lm.sample_utils import make_sampler
         except ImportError as exc:
             raise ImportError(
                 "mlx-lm is required for Qwen3AbstractionProvider. Install with: pip install mlx-lm"
             ) from exc
 
-        self._generate_fn = generate
+        # The streaming entry point rather than the one-shot wrapper: the
+        # wrapper is exactly this generator with its segments concatenated,
+        # so the generated text is identical, but only the stream surfaces
+        # the per-phase token counts and rates the latency record reports.
+        self._generate_fn = stream_generate
         self._greedy_sampler = make_sampler(temp=0.0)
 
         logger.info("Loading abstraction model: %s", self._model_id)
@@ -118,13 +190,15 @@ class Qwen3AbstractionProvider(AbstractionProvider):
                 add_generation_prompt=True,
                 enable_thinking=False,
             )
-            probe_result = generate(
-                model,
-                tokenizer,
-                prompt=probe_prompt,
-                max_tokens=20,
-                verbose=False,
-                sampler=self._greedy_sampler,
+            probe_result = "".join(
+                response.text
+                for response in stream_generate(
+                    model,
+                    tokenizer,
+                    prompt=probe_prompt,
+                    max_tokens=20,
+                    sampler=self._greedy_sampler,
+                )
             )
             if not probe_result or not probe_result.strip():
                 raise RuntimeError("Probe generation returned empty output")
@@ -142,7 +216,36 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         # Commit loaded state only after probe succeeds
         self._model = model
         self._tokenizer = tokenizer
+        self._native_context_window = _resolve_native_context_window(model)
+        if (
+            self._native_context_window is not None
+            and self._context_window > self._native_context_window
+        ):
+            # Report rather than fail: the configured window is reachable by
+            # clamping, and a stack whose only defect is an over-large number
+            # should still serve. What must not happen is the silent case --
+            # attending past what the weights support degrades the output
+            # with no signal anywhere.
+            logger.warning(
+                "Configured context_window %d exceeds the native window of "
+                "'%s' (%d); clamping to %d",
+                self._context_window,
+                self._model_id,
+                self._native_context_window,
+                self._native_context_window,
+            )
         logger.info("Abstraction model loaded: %s", self._model_id)
+
+    def _effective_context_window(self) -> int:
+        """Prompt window actually spent, in tokens.
+
+        The smaller of the configured window and the loaded model's native
+        window. Before the model loads -- and for a model family that does
+        not advertise a native window -- the configured value stands.
+        """
+        if self._native_context_window is None:
+            return self._context_window
+        return min(self._context_window, self._native_context_window)
 
     def _build_prompt(self, text: str, doc_type: str | None) -> str:
         """Build a chat-template prompt for abstract generation."""
@@ -157,35 +260,62 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             enable_thinking=False,
         )
 
-    def _truncate_for_context(self, text: str, max_tokens: int, doc_type: str | None) -> str:
-        """Truncate document text to fit within context window (AD-031).
+    def _template_overhead_tokens(self, doc_type: str | None) -> int:
+        """Token cost of the chat template and system prompt for *doc_type*.
+
+        Constant for a given doc_type and tokenizer, so it is measured once
+        and cached. The cache is cleared on unload, where a subsequent reload
+        may install a different tokenizer.
+        """
+        cached = self._overhead_tokens.get(doc_type)
+        if cached is not None:
+            return cached
+        overhead = len(self._tokenizer.encode(self._build_prompt("", doc_type)))
+        self._overhead_tokens[doc_type] = overhead
+        return overhead
+
+    def _truncate_for_context(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> TruncationOutcome:
+        """Truncate document text to fit within the context window (AD-031).
 
         Preserves leading content (title, abstract, introduction) by
-        truncating from the end. Returns the original text if it fits.
-        """
-        # Measure template overhead with empty user content
-        overhead_prompt = self._build_prompt("", doc_type)
-        overhead_tokens = len(self._tokenizer.encode(overhead_prompt))
+        truncating from the end. Text that already fits is returned unchanged.
 
-        available = self._context_window - max_tokens - overhead_tokens
+        Documents short enough that they cannot possibly overflow the window
+        skip the encode entirely: every token consumes at least one UTF-8
+        byte, so a text whose byte length is within the available budget is
+        within it in tokens too. The bound is one-directional -- it can only
+        prove a document safe, never oversized -- so anything it does not
+        clear falls through to the exact measurement below.
+        """
+        overhead_tokens = self._template_overhead_tokens(doc_type)
+
+        available = self._effective_context_window() - max_tokens - overhead_tokens
         if available <= 0:
             # Extreme case: just use a minimal slice
             available = 100
 
+        if len(text.encode("utf-8")) <= available:
+            return TruncationOutcome(text=text, input_tokens=None)
+
         text_tokens = self._tokenizer.encode(text)
         if len(text_tokens) <= available:
-            return text
+            return TruncationOutcome(text=text, input_tokens=len(text_tokens))
 
         logger.info(
             "Truncating input from %d to %d tokens (context_window=%d, max_tokens=%d, overhead=%d)",
             len(text_tokens),
             available,
-            self._context_window,
+            self._effective_context_window(),
             max_tokens,
             overhead_tokens,
         )
         truncated_tokens = text_tokens[:available]
-        return self._tokenizer.decode(truncated_tokens)
+        return TruncationOutcome(
+            text=self._tokenizer.decode(truncated_tokens),
+            input_tokens=len(text_tokens),
+        )
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         """Generate a semantic abstract from document text.
@@ -269,16 +399,75 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         ~16 GB load and the multi-second generation stay off the loop.
         """
         self._ensure_loaded()
-        truncated_text = self._truncate_for_context(text, max_tokens, doc_type)
-        prompt = self._build_prompt(truncated_text, doc_type)
-        return self._generate_fn(
+        outcome = self._truncate_for_context(text, max_tokens, doc_type)
+        prompt = self._build_prompt(outcome.text, doc_type)
+
+        result = ""
+        final = None
+        for response in self._generate_fn(
             self._model,
             self._tokenizer,
             prompt=prompt,
             max_tokens=max_tokens,
-            verbose=False,
             sampler=self._greedy_sampler,
-        )
+        ):
+            result += response.text
+            final = response
+
+        self._emit_latency_record(text, outcome, doc_type, final)
+        return result
+
+    def _emit_latency_record(
+        self,
+        text: str,
+        outcome: TruncationOutcome,
+        doc_type: str | None,
+        final: object | None,
+    ) -> None:
+        """Log one structured record describing the generation just completed.
+
+        Measurement only: every value is read off the generation the model
+        already performed, so the record cannot influence what was produced.
+
+        The record pairs with the provider-neutral record the ingestion
+        service emits for the same call -- both carry ``input_chars`` -- and
+        with the truncation notice above, whose two token counts are this
+        record's ``input_tokens`` and ``retained_tokens``.
+        """
+        if final is None:
+            return
+
+        prompt_tokens = getattr(final, "prompt_tokens", None)
+        overhead_tokens = self._overhead_tokens.get(doc_type)
+        retained_tokens = None
+        if prompt_tokens is not None and overhead_tokens is not None:
+            retained_tokens = max(prompt_tokens - overhead_tokens, 0)
+
+        # Nothing was dropped when the truncation helper skipped the encode,
+        # so the retained count is also the input count -- exact, not an
+        # estimate, and free where measuring the input would not have been.
+        input_tokens = outcome.input_tokens
+        if input_tokens is None:
+            input_tokens = retained_tokens
+
+        payload: dict[str, object] = {
+            "layer": "abstraction",
+            "label": "abstract.mlx",
+            "model": self._model_id,
+            "input_chars": len(text),
+            "input_tokens": input_tokens,
+            "retained_tokens": retained_tokens,
+            "generated_tokens": getattr(final, "generation_tokens", None),
+            "prefill_ms": _phase_duration_ms(
+                getattr(final, "prompt_tokens", None), getattr(final, "prompt_tps", None)
+            ),
+            "decode_ms": _phase_duration_ms(
+                getattr(final, "generation_tokens", None),
+                getattr(final, "generation_tps", None),
+            ),
+            "tokens_per_second": getattr(final, "generation_tps", None),
+        }
+        timing_logger.info(json.dumps(payload))
 
     # ── Idle-driven eviction primitive ───────────────────────
     #
@@ -328,6 +517,12 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             self._generate_fn = None
             self._greedy_sampler = None
             self._last_used_at = None
+
+            # Both are properties of the weights and tokenizer just released;
+            # a reload may bring different ones, and a stale overhead would
+            # silently mis-size every subsequent prompt.
+            self._native_context_window = None
+            self._overhead_tokens = {}
 
             # Release the dedicated inference thread alongside the model so
             # an evicted (or never-completed) provider holds no resident
@@ -392,7 +587,7 @@ _singleton: Qwen3AbstractionProvider | None = None
 
 def get_qwen3_abstraction_provider(
     model_id: str,
-    context_window: int = DEFAULT_CONTEXT_WINDOW,
+    context_window: int | None = None,
 ) -> Qwen3AbstractionProvider:
     """Return the process-wide Qwen3AbstractionProvider, constructing on first call.
 

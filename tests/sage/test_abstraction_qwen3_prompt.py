@@ -26,6 +26,7 @@ from sage.adapters.abstraction_qwen3 import (
     Qwen3AbstractionProvider,
     _format_system_prompt,
 )
+from tests.sage.conftest import FakeGenerationResponse, stub_stream_generate
 
 ACRONYM_DIRECTIVE = (
     "Do not expand acronyms or initialisms unless the expansion "
@@ -124,7 +125,7 @@ async def test_acronym_non_expansion_directive_present_in_prompt(provider):
 
     def capture_generate(*args, **kwargs):
         captured["prompt"] = kwargs.get("prompt")
-        return "GENERATED ABSTRACT"
+        yield FakeGenerationResponse(text="GENERATED ABSTRACT")
 
     provider._generate_fn = capture_generate
 
@@ -152,7 +153,7 @@ async def test_metadata_restraint_directive_present_in_prompt(provider):
 
     def capture_generate(*args, **kwargs):
         captured["prompt"] = kwargs.get("prompt")
-        return "GENERATED ABSTRACT"
+        yield FakeGenerationResponse(text="GENERATED ABSTRACT")
 
     provider._generate_fn = capture_generate
 
@@ -183,7 +184,7 @@ async def test_directives_compatible_with_enable_thinking_false(provider):
         prompt chain-of-thought emission even with thinking
         disabled.
     """
-    provider._generate_fn = lambda *a, **k: "ok"
+    provider._generate_fn = stub_stream_generate("ok")
 
     await provider.generate_abstract(
         text="Some document content.",

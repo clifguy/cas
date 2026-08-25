@@ -18,6 +18,7 @@ from collections.abc import Callable
 import pytest
 
 from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+from tests.sage.conftest import FakeGenerationResponse
 
 
 class _FakeTokenizer:
@@ -101,7 +102,7 @@ async def test_generate_abstract_runs_inference_off_event_loop(provider):
         started.set()
         release.wait(timeout=2.0)
         in_progress.clear()
-        return "ok"
+        yield FakeGenerationResponse(text="ok")
 
     provider._generate_fn = blocking_generate
 
@@ -138,7 +139,7 @@ async def test_generate_abstract_uses_dedicated_single_thread(provider):
 
     def recording_generate(*args, **kwargs):
         thread_names.append(threading.current_thread().name)
-        return "ok"
+        yield FakeGenerationResponse(text="ok")
 
     provider._generate_fn = recording_generate
 

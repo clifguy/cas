@@ -565,3 +565,96 @@ def test_sch_s_024_transfer_absent_passes_defaults_applied():
     cfg = SageCoreConfig.model_validate(instance)
     assert cfg.transfer.public_base_url is None
     assert cfg.transfer.token_ttl_seconds == 300
+
+
+def test_sch_s_025_stack_context_window_field_shape():
+    """The stack `abstraction.context_window` property is declared as a
+    nullable positive integer defaulting to null, and its description states
+    that only the local MLX provider consumes it.
+
+    Anti-coincidental-pass: the assertions read the schema's own type list,
+    default, and minimum rather than merely checking the key exists. A field
+    declared as bare `{"type": "integer"}` -- which would forbid the null
+    that signals "unset" -- fails here.
+    """
+    schema = _abstraction_schema()
+    prop = schema["properties"]["context_window"]
+
+    assert set(prop["type"]) == {"integer", "null"}
+    assert prop["default"] is None
+    assert prop["minimum"] == 1
+    assert "local" in prop["description"].lower()
+
+
+def test_sch_s_026_stack_context_window_absent_passes_default_applied():
+    """An abstraction block with `context_window` absent validates against the
+    schema, and `StackAbstractionConfig.model_validate` leaves the field None.
+
+    None is the "unset" sentinel: the provider resolves it to its own module
+    default, so an unset config reproduces the pre-configuration behavior
+    exactly. A Pydantic default of 32768 would validate identically here but
+    would make "unset" indistinguishable from "explicitly set to the default",
+    which the non-local-provider rejection depends on.
+    """
+    schema = _abstraction_schema()
+    instance = {
+        "provider": "local-mlx",
+        "model": "mlx-community/test",
+        # context_window deliberately absent
+    }
+    jsonschema.validate(instance, schema)
+
+    from sage.config import StackAbstractionConfig
+
+    cfg = StackAbstractionConfig.model_validate(instance)
+    assert cfg.context_window is None
+
+
+def test_sch_s_027_stack_context_window_round_trip():
+    """An explicit `context_window` validates against the schema and survives
+    the Pydantic model unchanged.
+
+    Both single-source-of-truth points are asserted independently (CAS
+    principle 1 / principle 8): a field added to only one of them passes the
+    other's half of this test and fails its own.
+    """
+    schema = _abstraction_schema()
+    instance = {
+        "provider": "local-mlx",
+        "model": "mlx-community/test",
+        "context_window": 65536,
+    }
+    jsonschema.validate(instance, schema)
+
+    from sage.config import StackAbstractionConfig
+
+    cfg = StackAbstractionConfig.model_validate(instance)
+    assert cfg.context_window == 65536
+
+
+def test_sch_s_028_stack_context_window_rejects_non_positive():
+    """Zero and negative context windows fail both the JSON Schema and the
+    Pydantic model.
+
+    Anti-coincidental-pass: SCH-S-027 is the positive control. Without the
+    `minimum`/`ge` bound a zero would validate and then flow into the
+    truncation helper's available-token arithmetic, where it silently lands
+    in the degenerate `available <= 0` fallback instead of failing loud at
+    config load.
+    """
+    schema = _abstraction_schema()
+
+    from pydantic import ValidationError
+
+    from sage.config import StackAbstractionConfig
+
+    for bad_value in (0, -1):
+        instance = {
+            "provider": "local-mlx",
+            "model": "mlx-community/test",
+            "context_window": bad_value,
+        }
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance, schema)
+        with pytest.raises(ValidationError):
+            StackAbstractionConfig.model_validate(instance)
