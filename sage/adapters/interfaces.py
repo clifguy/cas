@@ -322,6 +322,26 @@ class AbstractionInputTooLargeError(NonRetryableAbstractionError):
         self.budget_tokens = budget_tokens
 
 
+class AbstractionMemoryExhaustedError(NonRetryableAbstractionError):
+    """Accelerator memory was exhausted while generating an abstract.
+
+    Raised by a provider whose model runs in local accelerator memory when an
+    allocation fails mid-inference. The failure is deterministic in the input
+    at the configured window: the document, the model, and the memory budget
+    are the same on every attempt, so a retry re-pays the full prefill only to
+    hit the same allocation failure. Distinct from a preflight free-memory
+    check, which costs nothing to repeat and may clear as other load subsides.
+    """
+
+    def __init__(self, model_id: str, input_chars: int) -> None:
+        super().__init__(
+            f"abstraction generation exhausted accelerator memory for model "
+            f"{model_id!r} on {input_chars} chars of input"
+        )
+        self.model_id = model_id
+        self.input_chars = input_chars
+
+
 class GraphStore(ABC):
     """Interface for the document/edge/user graph store (Postgres in production).
 

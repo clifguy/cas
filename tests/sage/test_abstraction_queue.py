@@ -26,7 +26,11 @@ import asyncio
 
 import pytest
 
-from sage.adapters.interfaces import AbstractionInputTooLargeError, AbstractionProvider
+from sage.adapters.interfaces import (
+    AbstractionInputTooLargeError,
+    AbstractionMemoryExhaustedError,
+    AbstractionProvider,
+)
 from sage.adapters.stubs import StubContentStore, StubEmbeddingProvider
 from sage.api.errors import (
     ReabstractDocumentAlreadyInFlightError,
@@ -116,6 +120,18 @@ class _NonRetryableFailProvider(AbstractionProvider):
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         self.calls += 1
         raise AbstractionInputTooLargeError("test-model", 431_204, 199_000)
+
+
+class _MemoryExhaustedFailProvider(AbstractionProvider):
+    """Always raises the accelerator-memory exhaustion failure. Counts every
+    call so the absence of retries is observable."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        self.calls += 1
+        raise AbstractionMemoryExhaustedError("test-model", 512_000)
 
 
 class _ConcurrencyTrackingProvider(AbstractionProvider):
@@ -600,3 +616,42 @@ async def test_ordinary_failure_still_exhausts_the_retry_budget(
     assert len(delays) == 2  # one backoff between each pair of attempts
     doc = await graph_store.get_document(result.document.id)
     assert "3 attempts" in doc.pipeline_error
+
+
+async def test_memory_exhaustion_terminates_on_first_attempt(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """Accelerator-memory exhaustion during generation ends the job on its
+    first attempt: no second call, no backoff. Each avoided retry is a full
+    prefill the worker would otherwise re-pay before reaching the same
+    allocation failure.
+
+    Anti-coincidental-pass: the worker's classification arm is generic over
+    the non-retryable base class, so what this test pins is the subclass
+    relation itself. Were the memory-exhaustion type to stop subclassing it,
+    FAILED would still be reached after the full budget -- only the call
+    count and the empty backoff seam go red then.
+    """
+    _create_test_file(tmp_vault_dir, "samples/nr3.md", "# NR3\n\nContent.")
+    provider = _MemoryExhaustedFailProvider()
+    ingestion_service._abstraction = provider
+
+    delays: list[float] = []
+
+    async def _record(seconds):
+        delays.append(seconds)
+
+    ingestion_service._sleep_for_backoff = _record
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/nr3.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+    terminal = await _await_terminal(graph_store, result.document.id)
+
+    assert terminal == PipelineStatus.FAILED
+    assert provider.calls == 1  # max_attempts is 3; the budget is not spent
+    assert delays == []
+    doc = await graph_store.get_document(result.document.id)
+    assert "not retried" in doc.pipeline_error
+    assert "AbstractionMemoryExhaustedError" in doc.pipeline_error

@@ -29,7 +29,7 @@ SAGE vault configurations live outside the repository at `~/sage_vaults/{vault_i
 
 ## Local development
 
-Requires Python 3.14, [uv](https://docs.astral.sh/uv/), and an Apple-Silicon Mac for the MLX-accelerated abstraction model (Qwen3 via MLX). Dependencies are resolved from a committed `uv.lock`, so every environment installs identical builds. Setup is:
+Requires Python 3.14, [uv](https://docs.astral.sh/uv/), and an Apple-Silicon Mac for the MLX-accelerated abstraction model (a Qwen model family via MLX). Dependencies are resolved from a committed `uv.lock`, so every environment installs identical builds. Setup is:
 
 ```
 brew install uv

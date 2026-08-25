@@ -15,7 +15,7 @@ from sage.adapters.abstraction_prompt import (
     SYSTEM_PROMPT_TEMPLATE,  # noqa: F401 -- re-exported for callers importing from this module
     _format_system_prompt,
 )
-from sage.adapters.interfaces import AbstractionProvider
+from sage.adapters.interfaces import AbstractionMemoryExhaustedError, AbstractionProvider
 from sage.utils.unified_memory import (
     UnifiedMemoryExhaustedError,
     free_unified_memory_bytes,
@@ -121,6 +121,31 @@ def _resolve_native_context_window(model: object) -> int | None:
 
     inner = getattr(model, "language_model", None)
     return _advertised_context_window(getattr(inner, "args", None))
+
+
+# Wordings the Metal allocator uses when unified memory runs out mid-inference.
+# Matched together with a "metal" mention so that only allocator exhaustion is
+# reclassified; any other generation failure keeps its retry budget.
+_MEMORY_EXHAUSTION_MARKERS = (
+    "out of memory",
+    "insufficient memory",
+    "maximum allowed buffer size",
+)
+
+
+def _is_memory_exhaustion(exc: BaseException) -> bool:
+    """Whether a generation failure reports accelerator-memory exhaustion.
+
+    Narrow by construction: a plain ``MemoryError``, or an exception whose
+    message carries both a Metal mention and an exhaustion wording. Everything
+    else -- other bad states, other RuntimeErrors -- stays unclassified so the
+    retry budget above the port keeps covering failures a later attempt could
+    resolve.
+    """
+    if isinstance(exc, MemoryError):
+        return True
+    message = str(exc).lower()
+    return "metal" in message and any(marker in message for marker in _MEMORY_EXHAUSTION_MARKERS)
 
 
 class Qwen3AbstractionProvider(AbstractionProvider):
@@ -374,6 +399,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         Raises:
             RuntimeError: If text is empty, model fails to load, or
                 model produces empty output.
+            AbstractionMemoryExhaustedError: If accelerator memory is
+                exhausted mid-inference. Non-retryable: repeating the
+                attempt re-pays the full prefill for the same failure.
         """
         # Edge guard (AD-027, AD-030)
         if not text or not text.strip():
@@ -408,9 +436,22 @@ class Qwen3AbstractionProvider(AbstractionProvider):
                     max_workers=1, thread_name_prefix="sage-abstraction"
                 )
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                self._executor, self._generate_sync, text, max_tokens, doc_type
-            )
+            try:
+                result = await loop.run_in_executor(
+                    self._executor, self._generate_sync, text, max_tokens, doc_type
+                )
+            except Exception as exc:
+                if _is_memory_exhaustion(exc):
+                    # Deterministic at this window: the document, the model,
+                    # and the memory budget are identical on every attempt, so
+                    # a retry above the port re-pays the full prefill only to
+                    # hit the same allocation failure. Reclassified here so the
+                    # caller's retry budget is spent only on failures a later
+                    # attempt could resolve. The preflight check above is the
+                    # deliberate contrast: it costs one syscall to repeat and
+                    # may clear as other load subsides, so it stays retryable.
+                    raise AbstractionMemoryExhaustedError(self._model_id, len(text)) from exc
+                raise
 
         # Post-process (AD-027)
         abstract = result.strip() if result else ""
