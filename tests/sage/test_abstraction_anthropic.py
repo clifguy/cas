@@ -13,7 +13,12 @@ import logging
 
 import httpx
 import pytest
-from anthropic import BadRequestError, RateLimitError
+from anthropic import (
+    BadRequestError,
+    InternalServerError,
+    NotFoundError,
+    RateLimitError,
+)
 
 import sage.adapters.abstraction_qwen3 as _abstraction_qwen3
 from sage.adapters.abstraction_anthropic import (
@@ -101,6 +106,8 @@ def _install_fake_anthropic(
     *,
     max_input_tokens: int | None = _AMPLE_INPUT_TOKENS,
     retrieve_error: Exception | None = None,
+    retrieve_errors: list[Exception | None] | None = None,
+    retrieve_gate: asyncio.Event | None = None,
     create_error: Exception | None = None,
     token_counter=_even_counter,
 ) -> _Recorder:
@@ -114,6 +121,14 @@ def _install_fake_anthropic(
     provider actually submits (system prompt plus message content), so a test
     can assert what the provider sent without restating the provider's own
     arithmetic.
+
+    Registry behavior is selectable three ways. ``retrieve_error`` raises the
+    same error on every lookup (a condition that never clears).
+    ``retrieve_errors`` supplies one outcome per lookup by call index, with a
+    None entry -- or any call past the end of the list -- succeeding, which is
+    what a condition that clears between calls looks like. ``retrieve_gate``
+    holds each lookup inside the call until the test releases it, so two
+    callers can be held in discovery at once.
     """
     recorder = _Recorder(response_text, token_counter)
 
@@ -134,7 +149,14 @@ def _install_fake_anthropic(
     class _FakeModels:
         async def retrieve(self, model_id: str):
             recorder.retrieve_calls.append(model_id)
-            if retrieve_error is not None:
+            if retrieve_gate is not None:
+                await retrieve_gate.wait()
+            if retrieve_errors is not None:
+                index = len(recorder.retrieve_calls) - 1
+                error = retrieve_errors[index] if index < len(retrieve_errors) else None
+                if error is not None:
+                    raise error
+            elif retrieve_error is not None:
                 raise retrieve_error
             return _FakeModelInfo(max_input_tokens)
 
@@ -573,3 +595,159 @@ async def test_anth_018b_other_api_errors_keep_their_retry_budget(monkeypatch, e
         await provider.generate_abstract("Some text.", max_tokens=100, doc_type=None)
 
     assert not isinstance(excinfo.value, NonRetryableAbstractionError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(_sdk_error(InternalServerError, "upstream hiccup", 503), id="server-error"),
+        pytest.param(_sdk_error(RateLimitError, "rate limited", 429), id="rate-limit"),
+        pytest.param(RuntimeError("registry unreachable"), id="unrecognized"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_anth_019_transient_discovery_failure_is_retried(monkeypatch, error):
+    """A discovery failure that a later attempt could clear does not settle
+    the question: the next abstract re-attempts the lookup, and the guard
+    engages once it succeeds.
+
+    Anti-coincidental-pass: an implementation that records the attempt rather
+    than the answer degrades identically on the first document -- the abstract
+    still comes back -- and then skips the guard for every document after it.
+    Only the second call separates the two, which is why both the retry (a
+    second lookup) and its effect (a count the ample-ceiling default never
+    provokes) are asserted.
+
+    The unrecognized-error case pins the classification default: an exception
+    the classifier does not know is treated as transient, because a needless
+    retry costs one round trip while a wrong latch costs the guard for the
+    life of the process.
+    """
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000, retrieve_errors=[error])
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
+
+    first = await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+
+    assert first == "abstract"
+    assert recorder.count_calls == []
+
+    second = await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+
+    assert second == "abstract"
+    assert len(recorder.retrieve_calls) == 2
+    assert len(recorder.count_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_anth_020_persistent_transient_failure_retries_but_warns_once(monkeypatch, caplog):
+    """A condition that never clears is re-attempted per document, and still
+    reports itself once.
+
+    Anti-coincidental-pass: two traps, and only the intended design clears
+    both. Remembering the warning by way of the resolved flag stops the retry
+    (one lookup for three documents); retrying without a separate record of
+    having warned floods the log at one line per ingestion (three warnings).
+    """
+    recorder = _install_fake_anthropic(
+        monkeypatch, max_input_tokens=4000, retrieve_error=RuntimeError("registry unreachable")
+    )
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
+
+    with caplog.at_level(logging.WARNING, logger=PROVIDER_LOGGER):
+        results = [
+            await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+            for _ in range(3)
+        ]
+
+    assert results == ["abstract"] * 3
+    assert len(recorder.retrieve_calls) == 3
+    warnings = [r for r in caplog.records if r.name == PROVIDER_LOGGER]
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_anth_021_permanent_discovery_failure_is_not_retried(monkeypatch, caplog):
+    """A misconfiguration is settled by its first answer: an unknown model id
+    is looked up once and not again.
+
+    Anti-coincidental-pass: the over-correction. Retrying every failure fixes
+    the transient case above and passes it, while spending a registry round
+    trip -- and a warning -- on every document for the life of a process
+    pointed at a model that does not exist.
+    """
+    error = _sdk_error(NotFoundError, "model: unknown model 'claude-nope'", 404)
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000, retrieve_error=error)
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
+
+    with caplog.at_level(logging.WARNING, logger=PROVIDER_LOGGER):
+        first = await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+        second = await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+
+    assert first == "abstract"
+    assert second == "abstract"
+    assert len(recorder.retrieve_calls) == 1
+    assert recorder.count_calls == []
+    warnings = [r for r in caplog.records if r.name == PROVIDER_LOGGER]
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_anth_022_reported_absent_ceiling_is_not_re_queried(monkeypatch):
+    """A model that reports no maximum input size has answered the question;
+    the answer is kept rather than asked for again per document.
+
+    Anti-coincidental-pass: remembering only the failures re-queries this case
+    forever, because the successful lookup that returned it never looks like
+    something worth recording.
+    """
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=None)
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
+
+    await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+    await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+
+    assert len(recorder.retrieve_calls) == 1
+    assert recorder.count_calls == []
+
+
+@pytest.mark.asyncio
+async def test_anth_023_concurrent_first_abstracts_share_one_discovery(monkeypatch):
+    """Two documents abstracted at once on a cold provider spend one lookup
+    between them, and both are checked against what it returns.
+
+    Anti-coincidental-pass: the assertions only separate the three candidate
+    implementations together. Recording the attempt before making it also
+    spends one lookup -- and leaves the second caller reading a ceiling that
+    has not arrived yet, so it submits unchecked (one lookup, one count).
+    Resolving without single-flight checks both documents but pays a lookup
+    per concurrent caller (two lookups, two counts). One lookup and two counts
+    is reachable only by holding the second caller until the first has an
+    answer to share.
+    """
+    gate = asyncio.Event()
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000, retrieve_gate=gate)
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
+
+    first = asyncio.create_task(
+        provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+    )
+    second = asyncio.create_task(
+        provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+    )
+
+    # Run both tasks up to their first suspension point before releasing the
+    # gate: one inside the registry call, the other queued behind it. Without
+    # this the second task may not have reached discovery yet, and the race
+    # the test exists to describe would not have happened.
+    for _ in range(100):
+        if recorder.retrieve_calls:
+            break
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    gate.set()
+
+    results = await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0)
+
+    assert results == ["abstract", "abstract"]
+    assert len(recorder.retrieve_calls) == 1
+    assert len(recorder.count_calls) == 2
