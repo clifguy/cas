@@ -1,6 +1,6 @@
 """prompt-content tests for Qwen3AbstractionProvider.
 
-Asserts the two prompt-layer directives added in
+Asserts two prompt-layer directives:
 
   1. **Acronym non-expansion.** The system prompt instructs the model
      to leave unknown acronyms unexpanded — surfaced by the
@@ -18,6 +18,12 @@ is stubbed and ``_generate_fn`` is replaced by a capture function. A
 fake tokenizer surfaces the system-message content through
 ``apply_chat_template`` so the captured ``prompt`` kwarg carries the
 directive text.
+
+These assertions guard the directives against silent removal from the
+prompt; they say nothing about whether the model obeys them. Outcome
+enforcement for the acronym directive is the deterministic post-generation
+check in ``sage.adapters.abstraction_utils`` (CAS-ADR-020 clause (e)),
+which inspects the generated abstract itself.
 """
 
 import pytest

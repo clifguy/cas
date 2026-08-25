@@ -60,11 +60,15 @@ from sage.vault_source_binding import (
 
 _logger = logging.getLogger(__name__)
 
+# Loggers wired to the per-vault rotating file handler. Mostly latency
+# records; the abstraction faithfulness record rides the same sink so a
+# breach it reports survives past the process console.
 _TIMING_LOGGER_NAMES = (
     "sage.storage.timing",
     "sage.content.timing",
     "sage.retrieval.timing",
     "sage.abstraction.timing",
+    "sage.abstraction.faithfulness",
 )
 
 
