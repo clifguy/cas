@@ -20,6 +20,10 @@ import asyncio
 import pytest
 
 from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+from sage.adapters.interfaces import (
+    AbstractionMemoryExhaustedError,
+    NonRetryableAbstractionError,
+)
 from sage.utils.unified_memory import UnifiedMemoryExhaustedError
 from tests.sage.conftest import FakeGenerationResponse, stub_stream_generate
 
@@ -158,3 +162,102 @@ async def test_t0029_lock_serializes_concurrent_calls(provider, monkeypatch):
     # Lock released — the contender should now finish.
     result = await asyncio.wait_for(gen_task, timeout=1.0)
     assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Generation-time memory exhaustion is non-retryable
+# ---------------------------------------------------------------------------
+
+
+def _preflight_ok(monkeypatch):
+    """Put the unified-memory preflight comfortably above threshold."""
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.free_unified_memory_bytes",
+        lambda: 32 * 1024**3,
+    )
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.min_free_bytes",
+        lambda: 4 * 1024**3,
+    )
+
+
+async def test_metal_oom_during_generation_is_reclassified_non_retryable(provider, monkeypatch):
+    """A Metal allocation failure raised inside the model call surfaces as
+    ``AbstractionMemoryExhaustedError`` -- the non-retryable family the
+    worker terminates on -- with the original error preserved as the cause.
+
+    Without the reclassification the worker treats the failure as transient
+    and re-pays the full prefill on every retry attempt.
+    """
+    _preflight_ok(monkeypatch)
+
+    original = RuntimeError(
+        "[metal::malloc] Attempting to allocate 45097156608 bytes which is "
+        "greater than the maximum allowed buffer size of 42949672960 bytes."
+    )
+
+    def raise_oom(*args, **kwargs):
+        raise original
+
+    provider._generate_fn = raise_oom
+
+    with pytest.raises(AbstractionMemoryExhaustedError) as exc_info:
+        await provider.generate_abstract("doc text", max_tokens=200, doc_type="ticket")
+
+    err = exc_info.value
+    assert isinstance(err, NonRetryableAbstractionError)
+    assert err.__cause__ is original
+    assert err.model_id == "stub-model"
+    assert err.input_chars == len("doc text")
+
+
+async def test_memoryerror_during_generation_is_reclassified_non_retryable(provider, monkeypatch):
+    """A plain ``MemoryError`` from the model call is the second recognized
+    exhaustion shape and reclassifies identically to the Metal wording.
+    """
+    _preflight_ok(monkeypatch)
+
+    original = MemoryError()
+
+    def raise_oom(*args, **kwargs):
+        raise original
+
+    provider._generate_fn = raise_oom
+
+    with pytest.raises(AbstractionMemoryExhaustedError) as exc_info:
+        await provider.generate_abstract("doc text", max_tokens=200, doc_type="ticket")
+
+    assert exc_info.value.__cause__ is original
+
+
+async def test_unrelated_generation_error_keeps_its_retry_budget(provider, monkeypatch):
+    """A generation failure without the memory-exhaustion wording propagates
+    unwrapped, keeping its retry budget above the port.
+
+    Negative control for the matcher: an over-broad match would reclassify
+    every generation failure and this test would surface the wrong type.
+    The message is a real one raised by this adapter's load path.
+    """
+    _preflight_ok(monkeypatch)
+
+    def raise_other(*args, **kwargs):
+        raise RuntimeError("Probe generation returned empty output")
+
+    provider._generate_fn = raise_other
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.generate_abstract("doc text", max_tokens=200, doc_type="ticket")
+
+    assert not isinstance(exc_info.value, NonRetryableAbstractionError)
+
+
+async def test_empty_input_guard_unchanged_by_reclassification(provider):
+    """The empty-input guard still raises its plain ``RuntimeError`` (AD-030):
+    it fires before the model call, so the reclassification boundary around
+    generation must not touch it.
+    """
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.generate_abstract("   ", max_tokens=200, doc_type=None)
+
+    assert not isinstance(exc_info.value, NonRetryableAbstractionError)
+    assert "empty document text" in str(exc_info.value)

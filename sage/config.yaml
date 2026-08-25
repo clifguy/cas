@@ -49,13 +49,15 @@ abstraction:
   # LLM model identifier passed to the provider factory. The chosen
   # model is shared by every vault on this SAGE process.
   #
-  # Qwen3-8B-4bit (the cas vault was already pinned to this via T-0084;
-  # see also the operational note in T-0103). The 30B variant
-  # (example_vault and editorial used it previously) trips the RAM warning
-  # documented in CLAUDE.md (~38 GB resident with the rest of the SAGE
-  # process). Existing 30B-generated abstracts in those vaults remain
-  # unchanged per the T-0103 ticket ("no reabstract").
-  model: mlx-community/Qwen3-8B-4bit
+  # Qwen3.5-9B-4bit, adopted for its context window: a native 262144 tokens
+  # against the predecessor's 40960. The longest documents in the corpus
+  # place their essential content beyond the smaller window at any setting
+  # it accepts; the larger window recovers them whole. Quality and speed are
+  # comparable between the two; the capacity is the reason for the choice.
+  # Reverting to the predecessor (mlx-community/Qwen3-8B-4bit,
+  # context_window 40960) is an edit to this block with no data migration
+  # (CAS-ADR-030); abstracts already generated remain unchanged either way.
+  model: mlx-community/Qwen3.5-9B-4bit
 
   # Maximum prompt length in tokens, consumed only by the local MLX provider:
   # it truncates a document that would overflow this window, preserving the
@@ -64,23 +66,27 @@ abstraction:
   # to its own built-in default, which is a conservative floor sized for an
   # unconfigured stack rather than a reading of the loaded model (see the
   # rationale at DEFAULT_CONTEXT_WINDOW in
-  # sage/adapters/abstraction_qwen3.py). Every deployment ran on that floor
-  # until this pin, spending 32768 of the 40960 tokens the model supports and
-  # truncating documents that would otherwise have fit whole.
+  # sage/adapters/abstraction_qwen3.py). The native window is reachable only
+  # by writing it down here.
   #
-  # Raising the window costs nothing for documents that already fit: it sets a
-  # truncation threshold, not a prefill length. Only a document that would
-  # otherwise be cut short prefills longer, which is the trade being made.
+  # Measured at this window on the deployment hardware, not extrapolated: a
+  # full-window generation peaks at ~31 GiB of accelerator memory (of 64 GiB
+  # unified) and prefills at ~173 tokens/s -- about 25 minutes for a prompt
+  # that fills the window -- against ~387 tokens/s on ordinary short
+  # documents. Raising the window costs nothing for documents that already
+  # fit: it sets a truncation threshold, not a prefill length. Only a
+  # document that would otherwise be cut short prefills longer, which is the
+  # trade being made.
   #
-  # Re-derive this value whenever `model` changes -- it is a fact about one
-  # model, not a stack-wide constant.
+  # Re-derive this value (and remeasure the figures above) whenever `model`
+  # changes -- they are facts about one model, not stack-wide constants.
   #
   # A hosted provider derives its input limit from its own configured model
   # and does not read this field, so setting it while `provider` is anything
   # other than `local-mlx` fails at startup rather than being ignored. A value
   # larger than the loaded model's native window is reported at model load and
   # clamped to that native window.
-  context_window: 40960
+  context_window: 262144
 
 # Postgres storage-engine connection parameters (CAS-ADR-042). Both deployment
 # targets externalize durable graph + content state to Postgres -- a local unix
