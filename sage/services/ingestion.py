@@ -32,6 +32,7 @@ from sage.adapters.interfaces import (
     ContentStore,
     EmbeddingProvider,
     GraphStore,
+    NonRetryableAbstractionError,
 )
 from sage.api.errors import (
     AdapterNotFoundError,
@@ -302,6 +303,19 @@ class IngestionService:
                     return
                 except asyncio.CancelledError:
                     raise
+                except NonRetryableAbstractionError as exc:
+                    # Deterministic in the input: every remaining attempt would
+                    # reproduce it identically, so the budget is spent here
+                    # rather than on a delay that changes nothing.
+                    logger.warning(
+                        "abstraction attempt %d/%d failed for %s and will not be retried: %s",
+                        attempt,
+                        max_attempts,
+                        document_id,
+                        exc,
+                    )
+                    await self._stamp_abstraction_failed(document_id, attempt, exc, retried=False)
+                    return
                 except Exception as exc:
                     last_exc = exc
                     logger.warning(
@@ -344,11 +358,21 @@ class IngestionService:
         await asyncio.sleep(seconds)
 
     async def _stamp_abstraction_failed(
-        self, document_id: str, attempts: int, exc: Exception | None
+        self, document_id: str, attempts: int, exc: Exception | None, *, retried: bool = True
     ) -> None:
-        """Record a terminal, structured failure surfaced via get_document."""
+        """Record a terminal, structured failure surfaced via get_document.
+
+        ``retried=False`` marks a failure the worker declined to retry, so the
+        recorded message reports the single attempt it actually made rather
+        than implying a budget it never spent.
+        """
         detail = f"{type(exc).__name__}: {exc}" if exc is not None else "unknown error"
-        message = f"abstraction failed after {attempts} attempts; last error: {detail}"
+        if retried:
+            message = f"abstraction failed after {attempts} attempts; last error: {detail}"
+        else:
+            message = (
+                f"abstraction failed on attempt {attempts} and was not retried; error: {detail}"
+            )
         async with self._locks.lock(document_id):
             await self._store.update_document(
                 document_id,

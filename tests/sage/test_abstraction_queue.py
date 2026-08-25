@@ -26,7 +26,7 @@ import asyncio
 
 import pytest
 
-from sage.adapters.interfaces import AbstractionProvider
+from sage.adapters.interfaces import AbstractionInputTooLargeError, AbstractionProvider
 from sage.adapters.stubs import StubContentStore, StubEmbeddingProvider
 from sage.api.errors import (
     ReabstractDocumentAlreadyInFlightError,
@@ -104,6 +104,18 @@ class _AlwaysFailProvider(AbstractionProvider):
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         self.calls += 1
         raise RuntimeError("LLM unavailable (simulated failure)")
+
+
+class _NonRetryableFailProvider(AbstractionProvider):
+    """Always raises a failure that is deterministic in its input. Counts every
+    call so the absence of retries is observable."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        self.calls += 1
+        raise AbstractionInputTooLargeError("test-model", 431_204, 199_000)
 
 
 class _ConcurrencyTrackingProvider(AbstractionProvider):
@@ -512,3 +524,79 @@ async def test_wait_for_pipeline_true_runs_inline(tmp_vault_dir, minimal_config,
         assert provider.calls == 1  # fail-fast: no retry inline
     finally:
         await service.stop_worker()
+
+
+async def test_non_retryable_failure_terminates_on_first_attempt(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A failure deterministic in the document ends the job on its first
+    attempt: no second call, no backoff, and a pipeline_error that reports the
+    one attempt made rather than a budget it never spent.
+
+    Anti-coincidental-pass: the terminal status alone proves nothing here --
+    ``test_terminal_failed_after_max_attempts`` already reaches FAILED for an
+    ordinary failure, so a status assertion passes with the classification
+    removed entirely. The call count and the untouched backoff seam are the
+    only assertions that distinguish declining to retry from retrying and
+    failing.
+    """
+    _create_test_file(tmp_vault_dir, "samples/nr1.md", "# NR1\n\nContent.")
+    provider = _NonRetryableFailProvider()
+    ingestion_service._abstraction = provider
+
+    delays: list[float] = []
+
+    async def _record(seconds):
+        delays.append(seconds)
+
+    ingestion_service._sleep_for_backoff = _record
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/nr1.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+    terminal = await _await_terminal(graph_store, result.document.id)
+
+    assert terminal == PipelineStatus.FAILED
+    assert provider.calls == 1  # max_attempts is 3; the budget is not spent
+    assert delays == []
+    doc = await graph_store.get_document(result.document.id)
+    assert "not retried" in doc.pipeline_error
+    assert "AbstractionInputTooLargeError" in doc.pipeline_error
+    assert "attempts" not in doc.pipeline_error
+
+
+async def test_ordinary_failure_still_exhausts_the_retry_budget(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """An ordinary failure keeps the full retry budget and backs off between
+    attempts, unchanged by the non-retryable classification.
+
+    Anti-coincidental-pass: the regression guard for over-broad
+    classification. Treating every exception as deterministic passes the
+    non-retryable test above and silently strips retries from transient
+    failures -- throttling, a briefly unreachable model -- which only this
+    control catches.
+    """
+    _create_test_file(tmp_vault_dir, "samples/nr2.md", "# NR2\n\nContent.")
+    provider = _AlwaysFailProvider()
+    ingestion_service._abstraction = provider
+
+    delays: list[float] = []
+
+    async def _record(seconds):
+        delays.append(seconds)
+
+    ingestion_service._sleep_for_backoff = _record
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/nr2.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+    terminal = await _await_terminal(graph_store, result.document.id)
+
+    assert terminal == PipelineStatus.FAILED
+    assert provider.calls == 3  # max_attempts
+    assert len(delays) == 2  # one backoff between each pair of attempts
+    doc = await graph_store.get_document(result.document.id)
+    assert "3 attempts" in doc.pipeline_error
