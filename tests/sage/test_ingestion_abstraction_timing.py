@@ -1,10 +1,15 @@
-"""Provider-neutral abstraction latency record emitted by the ingestion service.
+"""Provider-neutral records emitted at the ingestion service's abstraction seam.
 
 The abstraction path has two entry points -- initial ingest and reabstract --
 and two provider families whose vocabularies overlap only at wall-clock time.
-The record under test lives at the one seam both entry points pass through and
-carries only fields every provider can answer for; a provider with more to say
-emits its own record alongside this one.
+The records under test live at the one seam both entry points pass through.
+
+Two records share the seam. The latency record carries only fields every
+provider can answer for; a provider with more to say emits its own record
+alongside it. The faithfulness record reports an unattested acronym gloss
+found in the generated abstract (CAS-ADR-020 clause (e)); it observes and
+never mutates, so the returned abstract stays byte-identical to the
+provider's trimmed output.
 """
 
 import json
@@ -18,6 +23,7 @@ from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 
 TIMING_LOGGER = "sage.abstraction.timing"
+FAITHFULNESS_LOGGER = "sage.abstraction.faithfulness"
 
 # Fields whose meaning is specific to the local MLX implementation. They
 # belong on that provider's own record, never on the neutral one. Phase
@@ -76,8 +82,23 @@ class _RaisingProvider(AbstractionProvider):
         raise RuntimeError("provider unavailable (simulated)")
 
 
+class _GlossingStubProvider(AbstractionProvider):
+    """A provider whose abstract glosses an acronym with a fixed expansion.
+
+    Whether the gloss is attested is decided entirely by the source text a
+    test pairs it with.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return "This document describes the QZE (Quantum Zeta Exchange) protocol."
+
+
 def _records(caplog):
     return [json.loads(r.getMessage()) for r in caplog.records if r.name == TIMING_LOGGER]
+
+
+def _faithfulness_records(caplog):
+    return [json.loads(r.getMessage()) for r in caplog.records if r.name == FAITHFULNESS_LOGGER]
 
 
 def _create_test_file(
@@ -210,6 +231,50 @@ async def test_abstract_text_unchanged_by_instrumentation(ingestion_service):
     result = await ingestion_service._generate_abstract_text("some document text", "adr")
 
     assert result == "A stub abstract sentence."
+
+
+# ── Faithfulness record ─────────────────────────────────────────────
+
+
+async def test_seam_emits_record_for_unattested_gloss(ingestion_service, caplog):
+    """An unattested gloss emits a faithfulness record; the abstract survives.
+
+    The byte-identity assertion on the return value is what proves the
+    check's non-mutating posture: a seam that repaired the gloss early
+    would hide the very signal its error rate is to be calibrated on.
+    """
+    text = "A document about the QZE protocol and its message framing."
+    ingestion_service._abstraction = _GlossingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-1")
+
+    records = _faithfulness_records(caplog)
+    assert len(records) == 1
+    record = records[0]
+    assert record["layer"] == "abstraction"
+    assert record["label"] == "unattested_gloss"
+    assert record["provider"] == "_GlossingStubProvider"
+    assert record["document_id"] == "doc-1"
+    assert record["acronym"] == "QZE"
+    assert record["expansion"] == "Quantum Zeta Exchange"
+    assert result == "This document describes the QZE (Quantum Zeta Exchange) protocol."
+
+
+async def test_seam_stays_silent_for_attested_gloss(ingestion_service, caplog):
+    """A gloss the source supplies emits nothing.
+
+    Anti-coincidental-pass: without this, the unattested-gloss test above
+    passes on a seam wired to log every gloss unconditionally -- a detector
+    with no attestation check at all.
+    """
+    text = "The Quantum Zeta Exchange (QZE) protocol frames messages between services."
+    ingestion_service._abstraction = _GlossingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-1")
+
+    assert _faithfulness_records(caplog) == []
 
 
 # ── Both entry paths ────────────────────────────────────────────────

@@ -35,7 +35,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
+from sage.adapters.abstraction_utils import (
+    compute_max_tokens,
+    find_unattested_acronym_glosses,
+    trim_to_sentence_boundary,
+)
 from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
@@ -252,6 +256,11 @@ class MeasurementRecord:
     retained_tokens: int | None = None
     prompt_tokens: int | None = None
     reported_generated_tokens: int | None = None
+
+    # Mechanical CAS-ADR-020 clause (e) count: unattested acronym glosses
+    # found in the trimmed output. None for a record measured before the
+    # counter existed, which reads differently from a measured zero.
+    unattested_gloss_count: int | None = None
 
 
 @dataclass
@@ -479,6 +488,7 @@ async def measure_one(
 
     trimmed = trim_to_sentence_boundary(raw_output)
     tokens_generated = len(trimmed.split())
+    unattested_gloss_count = len(find_unattested_acronym_glosses(trimmed, projection_text))
 
     return MeasurementRecord(
         doc_id=doc_id,
@@ -490,6 +500,7 @@ async def measure_one(
         output_text=trimmed,
         memory_delta_bytes=sampler.memory_delta_bytes,
         peak_used_bytes_during_call=sampler.peak_used_bytes_during_call,
+        unattested_gloss_count=unattested_gloss_count,
         **phase,
     )
 
@@ -1018,6 +1029,26 @@ def _render_runtime_pin() -> list[str]:
     ]
 
 
+def _mechanical_faithfulness_note(measurements: list[MeasurementRecord]) -> str:
+    """Blind-review note carrying the mechanical clause (e) tally.
+
+    Empty when no measurement carries a count -- a result recorded before
+    the counter existed is unmeasured, not clean -- so the reviewer's
+    faithfulness judgment stands alone exactly as it did then.
+    """
+    counted = [m for m in measurements if m.unattested_gloss_count is not None]
+    if not counted:
+        return ""
+    total = sum(m.unattested_gloss_count or 0 for m in counted)
+    flagged_docs = len({m.doc_id for m in counted if (m.unattested_gloss_count or 0) > 0})
+    all_docs = len({m.doc_id for m in counted})
+    plural = "" if total == 1 else "es"
+    return (
+        f"Mechanical clause (e) check: {total} unattested acronym gloss{plural} "
+        f"across {flagged_docs} of {all_docs} documents"
+    )
+
+
 def render_scorecard(result: BenchmarkResult) -> str:
     """Render the one-page scorecard per framework §5 step 4.
 
@@ -1111,7 +1142,7 @@ def render_scorecard(result: BenchmarkResult) -> str:
     lines.append("| Dimension | Score | Notes |")
     lines.append("|---|---|---|")
     lines.append("| Coverage |  |  |")
-    lines.append("| Faithfulness |  |  |")
+    lines.append(f"| Faithfulness |  | {_mechanical_faithfulness_note(result.measurements)} |")
     lines.append("| Describe-don't-imitate |  |  |")
     lines.append("| Length proportionality |  |  |")
     lines.append("| Doc-type voice |  |  |")

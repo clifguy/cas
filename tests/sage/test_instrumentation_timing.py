@@ -547,6 +547,36 @@ def test_abstraction_records_land_in_timing_log(tmp_path):
     )
 
 
+def test_faithfulness_record_lands_in_timing_log(tmp_path):
+    """The abstraction faithfulness record reaches the per-vault log file.
+
+    Trap (anti-coincidental): the seam tests for this record assert via
+    ``caplog``, which captures through propagation and passes whether or
+    not the logger has a file handler. This reads the file back off disk,
+    so a faithfulness logger missing from the registered names -- whose
+    breach records would reach only the console -- fails it.
+    """
+    from sage.mcp_init import _install_timing_handler, _release_timing_handler
+    from sage.services.ingestion import abstraction_faithfulness_logger
+
+    log_path = tmp_path / "timing.log"
+    handler = _install_timing_handler(log_path)
+    try:
+        abstraction_faithfulness_logger.info(
+            json.dumps({"layer": "abstraction", "label": "unattested_gloss"})
+        )
+        handler.flush()
+        written = log_path.read_text()
+    finally:
+        _release_timing_handler(handler)
+
+    payloads = [json.loads(line.split(" ", 3)[3]) for line in written.splitlines() if line.strip()]
+    labels = {p["label"] for p in payloads if p.get("layer") == "abstraction"}
+    assert labels == {"unattested_gloss"}, (
+        f"the faithfulness record should reach {log_path}; got {written!r}"
+    )
+
+
 def test_every_production_timing_logger_is_registered():
     """Every ``*.timing`` logger name in production code is a registered name.
 

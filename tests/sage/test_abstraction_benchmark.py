@@ -283,6 +283,37 @@ async def test_measure_one_applies_trim_to_sentence_boundary():
     assert record.output_text == expected
 
 
+async def test_measure_one_counts_unattested_glosses():
+    """The record carries the mechanical clause (e) count for its document.
+
+    Anti-coincidental-pass: the attested call is the control -- a counter
+    that tallies every parenthetical gloss, rather than only unattested
+    ones, reports 1 on both calls and fails the second assertion.
+    """
+    provider = RecordingProvider(output="Describes the QZE (Quantum Zeta Exchange) protocol.")
+    config = _default_config()
+
+    unattested = await measure_one(
+        provider=provider,
+        projection_text="A document about the QZE protocol and its message framing.",
+        doc_type="adr",
+        abstraction_config=config,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+    )
+    attested = await measure_one(
+        provider=provider,
+        projection_text="The Quantum Zeta Exchange (QZE) protocol frames messages.",
+        doc_type="adr",
+        abstraction_config=config,
+        mem_probe=CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+    )
+
+    assert unattested.unattested_gloss_count == 1
+    assert attested.unattested_gloss_count == 0
+
+
 async def test_memory_sampler_reports_minimum_free_during_call():
     # Probe values: baseline 10_000, then mid-call 9_000, 7_000, 8_000, 9_500.
     # Min free seen during call = 7_000, so peak_used = 10_000 - 7_000 = 3_000.
@@ -580,6 +611,27 @@ def _sample_result(model_id: str = "qwen3-8b") -> BenchmarkResult:
         started_at="2026-05-19T00:00:00Z",
         finished_at="2026-05-19T00:10:00Z",
     )
+
+
+def test_scorecard_reports_mechanical_faithfulness():
+    """A measured gloss count reaches the blind-review Faithfulness row.
+
+    Anti-coincidental-pass: a result whose counts are all None (a run
+    recorded before the counter existed) must render no mechanical note --
+    None is "unmeasured", which reads differently from a measured zero.
+    """
+    measured = _sample_result()
+    measured.measurements[0].unattested_gloss_count = 2
+    for measurement in measured.measurements[1:]:
+        measurement.unattested_gloss_count = 0
+
+    md = render_scorecard(measured)
+
+    assert "2 unattested acronym gloss" in md
+    assert "1 of 5 documents" in md
+
+    unmeasured = render_scorecard(_sample_result())
+    assert "unattested" not in unmeasured
 
 
 def test_scorecard_includes_all_seven_decision_criteria_sections():

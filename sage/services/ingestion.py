@@ -24,7 +24,11 @@ from zoneinfo import ZoneInfo
 
 import jsonschema
 
-from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
+from sage.adapters.abstraction_utils import (
+    compute_max_tokens,
+    find_unattested_acronym_glosses,
+    trim_to_sentence_boundary,
+)
 from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
@@ -72,6 +76,12 @@ logger = logging.getLogger(__name__)
 # the local provider's implementation-specific breakdown so one pipeline
 # reads both; the two are joined on the input size they both carry.
 abstraction_timing_logger = logging.getLogger("sage.abstraction.timing")
+
+# Faithfulness records for the deterministic post-generation check on
+# CAS-ADR-020 clause (e): an acronym gloss in a generated abstract whose
+# expansion the source text does not attest. Observing only -- the abstract
+# is stored unmodified while the check's error rate is being calibrated.
+abstraction_faithfulness_logger = logging.getLogger("sage.abstraction.faithfulness")
 
 
 @dataclass
@@ -1164,19 +1174,26 @@ class IngestionService:
         chunk.embedding = embedding
         await self._content_store.replace_synthetic_header_chunk(document_id, chunk)
 
-    async def _generate_abstract_text(self, text: str, doc_type: str | None) -> str:
+    async def _generate_abstract_text(
+        self, text: str, doc_type: str | None, document_id: str = ""
+    ) -> str:
         """Generate a semantic abstract from document text.
 
         Shared core for both initial ingestion (stage 3) and reabstract.
         Computes a density-proportional token budget, invokes the
-        abstraction provider, and trims the result to the last complete
-        sentence boundary.
+        abstraction provider, trims the result to the last complete
+        sentence boundary, and checks the trimmed abstract for unattested
+        acronym glosses (CAS-ADR-020 clause (e)). A finding is recorded
+        and the abstract is returned unmodified.
 
         Args:
             text: Full projection text of the document.
             doc_type: The document's type, threaded into the abstraction
                 prompt so the model can pick appropriate descriptive
                 verbs and skip metadata the agent already sees.
+            document_id: Identifies the document in a faithfulness
+                record so a recorded breach can be located and
+                adjudicated.
 
         Returns:
             Trimmed abstract string.
@@ -1217,6 +1234,28 @@ class IngestionService:
                 }
             )
         )
+
+        # Deterministic clause (e) check on the model's output, at the same
+        # shared seam as the latency record above. Recording only: under
+        # greedy decoding a retry reproduces the identical output and a halt
+        # would leave the document permanently un-ingestible, so a breach is
+        # observed, never acted on, until the check's error rate has been
+        # measured on real stored abstracts (CAS-ADR-020).
+        for gloss in find_unattested_acronym_glosses(abstract, text):
+            abstraction_faithfulness_logger.info(
+                json.dumps(
+                    {
+                        "layer": "abstraction",
+                        "label": "unattested_gloss",
+                        "provider": type(self._abstraction).__name__,
+                        "document_id": document_id,
+                        "acronym": gloss.acronym,
+                        "expansion": gloss.expansion,
+                        "document_chars": len(text),
+                        "abstract_chars": len(abstract),
+                    }
+                )
+            )
         return abstract
 
     async def _stage3_abstraction(
@@ -1235,7 +1274,9 @@ class IngestionService:
                 },
             )
 
-        abstract = await self._generate_abstract_text(projection.text, doc_type)
+        abstract = await self._generate_abstract_text(
+            projection.text, doc_type, document_id=document_id
+        )
 
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
@@ -1324,7 +1365,9 @@ class IngestionService:
         chunks = await self._content_store.get_all_chunks(document_id)
         body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
         projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
-        abstract = await self._generate_abstract_text(projection_text, doc_type)
+        abstract = await self._generate_abstract_text(
+            projection_text, doc_type, document_id=document_id
+        )
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
             await self._store.update_document(
