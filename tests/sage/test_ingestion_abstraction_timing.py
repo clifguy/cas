@@ -20,25 +20,55 @@ from sage.models.schemas import IngestRequest
 TIMING_LOGGER = "sage.abstraction.timing"
 
 # Fields whose meaning is specific to the local MLX implementation. They
-# belong on that provider's own record, never on the neutral one.
+# belong on that provider's own record, never on the neutral one. Phase
+# counts and rates are the clearest case: a hosted API reports no prefill.
+#
+# `document_chars` is deliberately absent -- both records carry it, and it
+# means the same thing on each.
 IMPLEMENTATION_SPECIFIC_FIELDS = (
+    "prompt_tokens",
     "prefill_ms",
+    "prefill_tps",
     "decode_ms",
+    "decode_tps",
     "retained_tokens",
     "input_tokens",
-    "tokens_per_second",
 )
 
 
 class _NamedStubProvider(AbstractionProvider):
-    """Abstraction provider whose class name identifies it in the record."""
+    """Abstraction provider whose class name identifies it in the record.
+
+    Records the size of what it submitted, so a test can compare the figure
+    the record reports against the one that actually reached a model.
+    """
+
+    def __init__(self) -> None:
+        self.sent_chars: int | None = None
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        self.sent_chars = len(text)
         return "A stub abstract sentence."
 
 
 class _OtherNamedStubProvider(_NamedStubProvider):
     """A second, differently-named provider for the naming test."""
+
+
+class _ReducingStubProvider(_NamedStubProvider):
+    """A provider that fits its input to a budget before submitting it.
+
+    Stands in for any provider that shrinks an over-length document to a
+    model's input ceiling: the service handed over the whole projection, but
+    only a prefix of it ever reached a model.
+    """
+
+    _BUDGET_CHARS = 64
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        submitted = text[: self._BUDGET_CHARS]
+        self.sent_chars = len(submitted)
+        return "A stub abstract sentence."
 
 
 class _RaisingProvider(AbstractionProvider):
@@ -73,11 +103,56 @@ async def test_neutral_record_emitted_with_all_fields(ingestion_service, caplog)
     assert len(records) == 1
     record = records[0]
     assert record["label"] == "abstract"
-    assert record["input_chars"] == len(text)
-    assert record["input_words"] == len(text.split())
+    assert record["document_chars"] == len(text)
+    assert "input_chars" not in record
+    assert record["document_words"] == len(text.split())
+    assert "input_words" not in record
     assert record["max_tokens"] > 0
     assert record["abstract_chars"] > 0
     assert record["duration_ms"] >= 0
+
+
+async def test_neutral_record_measures_the_document_not_the_request(ingestion_service, caplog):
+    """A provider that reduces its input does not change what the record says.
+
+    `document_chars` measures the projection text the service handed the
+    provider. What the provider forwarded, after fitting it to some model's
+    input ceiling, is the provider's own business and is reported by the
+    provider itself -- in tokens, where this figure is in characters. The two
+    are not convertible, so the record must not invite the reading that they
+    are the same number.
+    """
+    text = "A document about record linkage across clinical systems. " * 20
+    provider = _ReducingStubProvider()
+    ingestion_service._abstraction = provider
+
+    with caplog.at_level(logging.INFO, logger=TIMING_LOGGER):
+        await ingestion_service._generate_abstract_text(text, "adr")
+
+    assert provider.sent_chars < len(text)
+    assert _records(caplog)[0]["document_chars"] == len(text)
+
+
+async def test_neutral_record_matches_submitted_size_when_nothing_reduced(
+    ingestion_service, caplog
+):
+    """Control: with no reduction, document and request are the same size.
+
+    Anti-coincidental-pass: this is what makes the reduction case above mean
+    something. A figure pinned to the full text satisfies that test while
+    being wrong for every provider; a figure taken from whatever the provider
+    forwarded satisfies this one while being wrong for a reducing provider.
+    Only a figure that measures the document passes both.
+    """
+    text = "A short document about record linkage."
+    provider = _NamedStubProvider()
+    ingestion_service._abstraction = provider
+
+    with caplog.at_level(logging.INFO, logger=TIMING_LOGGER):
+        await ingestion_service._generate_abstract_text(text, "adr")
+
+    assert provider.sent_chars == len(text)
+    assert _records(caplog)[0]["document_chars"] == len(text)
 
 
 @pytest.mark.parametrize("provider_cls", [_NamedStubProvider, _OtherNamedStubProvider])

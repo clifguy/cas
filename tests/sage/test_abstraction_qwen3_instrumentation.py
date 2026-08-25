@@ -120,25 +120,36 @@ async def test_local_record_emitted_with_all_fields(provider, caplog):
     record = records[0]
     assert record["label"] == "abstract.mlx"
     for field in (
-        "input_chars",
+        "document_chars",
         "input_tokens",
         "retained_tokens",
+        "prompt_tokens",
         "prefill_ms",
+        "prefill_tps",
         "decode_ms",
         "generated_tokens",
-        "tokens_per_second",
+        "decode_tps",
     ):
         assert field in record, f"record is missing {field}"
         assert record[field] is not None, f"{field} was emitted as null"
 
+    # Both phases now publish a count and a rate; a reader seeing the old
+    # names would be reading a record this provider no longer emits.
+    for retired in ("input_chars", "tokens_per_second"):
+        assert retired not in record, f"record still carries the retired {retired}"
+
 
 async def test_local_record_metrics_derive_from_generation_response(provider, caplog):
-    """Durations and rates come from the model's own phase statistics.
+    """Durations, counts, and rates come from the model's own phase statistics.
 
     Anti-coincidental-pass: the stubbed rates imply a 2-second prefill and an
     8-second decode, which a wall clock measuring a sub-millisecond stub
-    cannot produce. No two derived values coincide, so a field wired to the
-    wrong source is visible rather than plausible.
+    cannot produce. All four stubbed figures are mutually distinct, so a field
+    wired to the wrong attribute is visible rather than plausible.
+
+    This test cannot tell a sourced prefill rate from one recomputed out of
+    the published count and duration -- that recomputation is algebraically
+    identical here. The degenerate case below is what separates them.
     """
     provider._generate_fn = stub_stream_generate(
         "GENERATED",
@@ -152,10 +163,44 @@ async def test_local_record_metrics_derive_from_generation_response(provider, ca
         await provider.generate_abstract("some document text", 200, "adr")
 
     record = _records(caplog)[0]
+    assert record["prompt_tokens"] == 1000
     assert record["prefill_ms"] == 2000.0
+    assert record["prefill_tps"] == 500.0
     assert record["decode_ms"] == 8000.0
     assert record["generated_tokens"] == 200
-    assert record["tokens_per_second"] == 25.0
+    assert record["decode_tps"] == 25.0
+    assert "tokens_per_second" not in record
+
+
+async def test_local_record_prefill_rate_is_read_not_recomputed(provider, caplog):
+    """A prefill rate survives a prompt count that yields no prefill duration.
+
+    Anti-coincidental-pass, and the load-bearing case for the whole prefill
+    pair. On any ordinary generation, reading the rate off the model and
+    recomputing it from the published count and duration give the same number,
+    because the duration was itself derived from those two values -- so no
+    assertion on a normal record can tell the two implementations apart.
+
+    A zero prompt count breaks the tie: the duration helper reports an absent
+    duration rather than a zero one, so a recomputing implementation has
+    nothing to divide and must emit null, while one reading the model's own
+    figure still reports the rate the model gave.
+    """
+    provider._generate_fn = stub_stream_generate(
+        "GENERATED",
+        prompt_tokens=0,
+        prompt_tps=500.0,
+        generation_tokens=200,
+        generation_tps=25.0,
+    )
+
+    with caplog.at_level(logging.INFO, logger=TIMING_LOGGER):
+        await provider.generate_abstract("some document text", 200, "adr")
+
+    record = _records(caplog)[0]
+    assert record["prompt_tokens"] == 0
+    assert record["prefill_ms"] is None
+    assert record["prefill_tps"] == 500.0
 
 
 async def test_local_record_correlates_with_truncation_notice(monkeypatch, caplog):
@@ -186,6 +231,11 @@ async def test_local_record_correlates_with_truncation_notice(monkeypatch, caplo
 
     record = _records(caplog)[0]
     assert f"from {record['input_tokens']} to {record['retained_tokens']} tokens" in (notices[0])
+
+    # The published prompt count is the retained document plus the constant
+    # template, so the template's cost falls out of a single record instead of
+    # requiring a run that happened to truncate.
+    assert record["prompt_tokens"] - record["retained_tokens"] == overhead
     provider._executor.shutdown(wait=False)
 
 
