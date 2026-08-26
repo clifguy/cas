@@ -57,10 +57,24 @@ class _ContentSurfacingTokenizer:
 
 @pytest.fixture
 def capturing_provider(monkeypatch):
-    """Provider whose constructed prompt is recorded rather than generated."""
+    """Provider whose constructed prompt is recorded rather than generated.
+
+    The preflight unified-memory check is monkeypatched to pass. It shells
+    out to a macOS-only binary, so a test reaching the real probe passes on
+    a developer machine and fails on a Linux runner -- which is not a
+    property of anything this module is testing.
+    """
     provider = Qwen3AbstractionProvider(model_id="test-model")
     tokenizer = _ContentSurfacingTokenizer()
     monkeypatch.setattr(provider, "_ensure_loaded", lambda: None)
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.free_unified_memory_bytes",
+        lambda: 32 * 1024**3,
+    )
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.min_free_bytes",
+        lambda: 4 * 1024**3,
+    )
     provider._tokenizer = tokenizer
     captured: dict[str, str] = {}
 
