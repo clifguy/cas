@@ -1,7 +1,7 @@
 ---
 name: cas-code-review
 description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5), the gate-integrity check (G1), and the public-posture gate (P1) catalogued in the skill's own section list. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
-version: 0.2.0
+version: 0.3.0
 ---
 
 # cas-code-review
@@ -43,13 +43,17 @@ The reviewer (Claude) reads the diff under review and walks every section. Diff 
 
 If no diff is in scope, the skill returns "no diff in scope" and stops.
 
-For each section that fires, emit:
+**Walk every section before emitting anything.** Produce a census first — for each section in this file, MET or NOT-MET, with one clause of justification. Visit every section: do not skip one because it looks irrelevant to the diff, and do not stop walking once you have enough findings to report. A section that is never reached fires on nothing, and in the emitted output an unvisited section is indistinguishable from one that was visited and found clean.
+
+The census is working material, not output. Do not emit it unless asked.
+
+Then, for each section that fired, emit:
 - The section tag (F1-F5, G1, P1).
 - The specific files or hunks that triggered the prompt.
 - A short note on whether the change pulls toward or away from the canonical pattern.
 - Any follow-up the reviewer should consider.
 
-Do not emit prompts that did not fire. Brevity > completeness.
+Do not emit sections that did not fire. **Brevity in the output, completeness in the walk.**
 
 ---
 
