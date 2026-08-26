@@ -93,6 +93,14 @@ class _GlossingStubProvider(AbstractionProvider):
         return "This document describes the QZE (Quantum Zeta Exchange) protocol."
 
 
+#: Named at module scope so the non-mutating assertion below compares against
+#: the exact bytes the provider returned rather than restating them, which is
+#: what makes that assertion a byte-identity check instead of a prefix check.
+#: It ends on a complete sentence, so the sentence-boundary trim is a no-op and
+#: any difference between output and result is the check having edited it.
+_OUTLINE_ABSTRACT = "# Part 2: Sections 7-11\n\n## 7. Integration\n\nThe center integrates."
+
+
 class _OutliningStubProvider(AbstractionProvider):
     """A provider that answers with document structure instead of prose.
 
@@ -101,7 +109,7 @@ class _OutliningStubProvider(AbstractionProvider):
     """
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
-        return "# Part 2: Sections 7-11\n\n## 7. Integration\n\nThe center integrates."
+        return _OUTLINE_ABSTRACT
 
 
 def _records(caplog):
@@ -299,7 +307,7 @@ async def test_seam_emits_record_for_structure_echo(ingestion_service, caplog):
 
     records = [r for r in _faithfulness_records(caplog) if r["label"] == "structure_echo"]
     assert [r["kind"] for r in records] == ["heading", "heading"]
-    assert records[0]["line"] == "# Part 2: Sections 7-11"
+    assert records[0]["line"] == _OUTLINE_ABSTRACT.splitlines()[0]
     assert records[0]["provider"] == "_OutliningStubProvider"
     assert records[0]["document_id"] == "doc-2"
 
@@ -307,10 +315,11 @@ async def test_seam_emits_record_for_structure_echo(ingestion_service, caplog):
 async def test_seam_leaves_a_structure_echo_abstract_unmodified(ingestion_service, caplog):
     """The check records; it does not repair.
 
-    The byte-identity assertion is what proves the non-mutating posture
-    CAS-ADR-020 requires until the check's error rate is measured. Note the
-    returned text is shorter than the provider's own output only where the
-    sentence-boundary trim applies -- the check itself changes nothing.
+    Byte identity against the provider's own output is what proves the
+    non-mutating posture CAS-ADR-020 requires until the check's error rate is
+    measured. A prefix assertion would not: a seam that kept the first line
+    and discarded the flagged remainder passes ``startswith`` while doing
+    exactly the repair this posture forbids.
     """
     ingestion_service._abstraction = _OutliningStubProvider()
 
@@ -319,7 +328,7 @@ async def test_seam_leaves_a_structure_echo_abstract_unmodified(ingestion_servic
             "A transcript ending in a task brief.", "chat_transcript", document_id="doc-2"
         )
 
-    assert result.startswith("# Part 2: Sections 7-11")
+    assert result == _OUTLINE_ABSTRACT
 
 
 async def test_seam_stays_silent_for_a_prose_abstract(ingestion_service, caplog):
