@@ -1,18 +1,18 @@
 ---
 name: cas-code-review
-description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5) catalogued in the AI-First SDLC Tooling Survey. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
-version: 0.1.2
+description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5), the gate-integrity check (G1), and the public-posture gate (P1) catalogued in the skill's own section list. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
+version: 0.2.0
 ---
 
 # cas-code-review
 
-A repo-resident review pass keyed to the five failure modes documented in the AI-First SDLC Tooling Survey §3 (vault: cas, doc_type=reference_document, title "AI-First SDLC Tooling Survey").
+A repo-resident review pass keyed to the five failure modes documented in the AI-First SDLC Tooling Survey §3 (vault: cas, doc_type=reference_document, title "AI-First SDLC Tooling Survey"), plus the gate-integrity and public-posture sections that later failure records earned.
 
 ## Portability notes (forward-looking, not architectural)
 
 This skill is currently single-tier: every section lives in this file. If a second repo someday needs its own code-review skill, the natural extraction split is:
 
-- **Likely portable to a future universal layer.** F2 (tests-as-chronicle) and F4 (remediation-pass scope gap) are discipline failures whose abstract form should generalize to any tech stack. The CAS-specific elaborations they carry today (test-directory enumeration, the `_id(name)` helper reference) are anchoring examples, not the substance.
+- **Likely portable to a future universal layer.** F2 (tests-as-chronicle), F4 (remediation-pass scope gap), and G1 (non-discriminating assertion) are discipline failures whose abstract form should generalize to any tech stack. The CAS-specific elaborations they carry today (test-directory enumeration, the `_id(name)` helper reference, the provider fake) are anchoring examples, not the substance. G1 is the most portable of the three — it names a property of assertions, and mentions no framework at all.
 - **CAS-specific in form.** F1 (service-as-load-bearer router pattern), F3 (typed-alias convention with `DocumentIdStr` and friends), and F5 (`Depends(get_vault_id)` pattern) embed stack details (FastAPI, Pydantic v2, the SAGE multi-vault architecture) that do not generalize as written.
 
 Generalization is a hypothesis until observed in a second repo. Do not extract universal sections from this file pre-emptively. When repo #2 needs its own skill, that's the trigger to author the universal layer with two data points and refactor this file to elaborate-on rather than restate.
@@ -26,9 +26,11 @@ Each section below is structured the same way:
 3. **Review prompts.** Questions to walk through against the diff under review.
 4. **What "correct" looks like.** A short reference snippet from the canonical pattern.
 
-Sections labeled `F` are code-correctness failure modes anchored to the *AI-First SDLC Tooling Survey*. Sections labeled `P` are publicness-readiness gates for the public-repo posture; they are not code-correctness failures but release-discipline ratchets.
+Sections labeled `F` are code-correctness failure modes anchored to the *AI-First SDLC Tooling Survey*; they ask whether the code under review is wrong. Sections labeled `G` are gate-integrity checks; they ask whether the *gate* under review can fail — that is, why a defect of this shape would survive review rather than how it would be written. Sections labeled `P` are publicness-readiness gates for the public-repo posture; they are not code-correctness failures but release-discipline ratchets.
 
-The skill adds value in two places: catching the residue that deterministic gates cannot reach (F2 tests-as-chronicle, F4 remediation-pass scope gap, P1 publicness drift), and giving early feedback before CI runs.
+Section numbering is the skill's own and is not the failure-log numbering. Several sections are anchored to failure records that carry a different number (F4's section cites records F4 and F6; G1's cites records F44 and F45). Where a section names a record, it says "recorded as" to mark the reference.
+
+The skill adds value in two places: catching the residue that deterministic gates cannot reach (F2 tests-as-chronicle, F4 remediation-pass scope gap, G1 non-discriminating assertion, P1 publicness drift), and giving early feedback before CI runs.
 
 ## How to invoke
 
@@ -42,7 +44,7 @@ The reviewer (Claude) reads the diff under review and walks every section. Diff 
 If no diff is in scope, the skill returns "no diff in scope" and stops.
 
 For each section that fires, emit:
-- The failure mode tag (F1-F5).
+- The section tag (F1-F5, G1, P1).
 - The specific files or hunks that triggered the prompt.
 - A short note on whether the change pulls toward or away from the canonical pattern.
 - Any follow-up the reviewer should consider.
@@ -181,6 +183,41 @@ Every vault-scoped endpoint takes `vault_id: str = Depends(get_vault_id)` as one
 
 ---
 
+## G1 — Non-discriminating assertion (gate integrity)
+
+**What this catches.** A test or gate that passes identically against the correct implementation and the defective one, so it cannot go red while the condition it exists to enforce is breached. Two documented cases, from opposite directions. In the first (recorded as F44), a test asserted that a directive string appeared in a constructed model prompt — true whether or not the model obeyed it, because model behaviour was never in the assertion's causal path; the constraint was breached for eleven weeks with the gate green throughout. In the second (recorded as F45), a test asserted that a failed capability lookup degrades to an unchecked call and warns once — true of both the correct implementation and the defective one, because the fake client's only affordance was an error that never cleared, so "a condition that clears between the first call and the second" could not be expressed at the fixture at all.
+
+**Already gated deterministically.** Nothing, and this is the section where that statement is strongest. A non-discriminating assertion is green from birth: it never breaks, so no runner, linter, or type checker distinguishes it from a discriminating one. Coverage is actively misleading here rather than merely silent — both cases above *executed* the production line they targeted, so line and branch coverage counted them as covered.
+
+**Review prompts.**
+
+- For each assertion ADDED or MODIFIED in the diff: name the defective implementation it is meant to exclude, and state whether it would go red against that implementation. If no such implementation can be named, the assertion is a coverage artefact rather than a gate, and the diff should say which it is.
+- **Where the test already names the rivals it excludes — in a docstring, a comment, or the commit message — treat that inventory as a claim to audit, not as evidence.** A confident, accurate list of excluded rivals reads as diligence, and is the most effective place for one more to hide.
+
+  This prompt is procedural, not advisory, because stating it is demonstrably not enough. For **every** such test in the diff, emit one line before writing any finding, in this shape:
+
+  > `<test name>` — named rivals: `<list>`; verified excluded: `<yes/no>`; **unnamed rival that would also pass: `<the rival, or "none found">`**
+
+  The third field is the one that does the work, and it must be filled in per test rather than answered once for the diff. When the answer is "none found", say so explicitly — an unvisited inventory and an audited one look identical in the output otherwise, which is this section's own failure mode applied to this section.
+
+  Calibrated against the F45 case. Five independent reviewers walked the introducing commit; the test at issue carried a note naming two rivals, and genuinely excluded both. Three passed it — one never reached it, two read the note and accepted it. The two that caught it were exactly the two required to emit the unnamed-rival field. The defect was a third rival the note did not name: one the fixture could not express. Wording this as advice rather than as a required emission was measured and did not work.
+- Does the assertion target an **input** as a stand-in for an **outcome** — that a directive, flag, config key, marker, or call argument is *present*, rather than that the behaviour it governs *occurred*? Flag it. Keeping such an assertion as a removal-guard is legitimate and often correct; reading it as evidence that the constraint holds is not. Where the real property is unverifiable in the suite (a model's behaviour, a live-resource fact), the diff must name where it *is* verified, or record the gap — deferring it to a close-out step outside the deliverables is how the eleven weeks happened.
+- For any test exercising a failure, retry, or degraded path: can the fixture express the **transition** the production code branches on — a condition that clears between calls, a second call returning something different from the first, two callers arriving concurrently? A fake whose behaviour is constant cannot separate "retried and recovered" from "never retried", and a fake whose parameter defaults match the value under assertion cannot separate "the caller passed it" from "the caller stopped passing it".
+- Where a count, a flag, or a single observable is asserted, would the defective implementation produce the same value? Some defects are invisible to any one observable and separate only under a pair. If the diff asserts one where the discriminating evidence is a pair, say so.
+
+**What "correct" looks like.** From the fix in commit `5d23e61`, on the concurrency case of the same provider the F45 record describes. The fake client first gained the two affordances it had lacked — a per-call error sequence, and a gate that holds a lookup open — which are precisely what made the defect inexpressible before. Only then could the assertion discriminate, and it does so by pairing two observables:
+
+```python
+assert len(recorder.retrieve_calls) == 1
+assert len(recorder.count_calls) == 2
+```
+
+The pairing is the whole of it. Recording the discovery attempt *before* making it also spends exactly one lookup, so the lookup count alone passes against the defect; resolving without single-flight checks both documents but pays a lookup per caller, so the count alone passes too. One lookup *and* two counts is reachable only by holding the second caller until the first has an answer to share. Either number alone is non-discriminating; the pair is the gate.
+
+That test also carries an explicit `Anti-coincidental-pass:` paragraph in its docstring, naming each rival implementation and what it would produce. Read such a paragraph as a starting point, never as a verdict. The F45 case had one too, and it was accurate: it named two rivals — propagating the failure, and re-warning per document — and the test did exclude both. It simply did not name the rival that mattered, the one the fixture could not express. What earns trust here is the *pairing* of observables above, which is checkable against the code; the paragraph is a claim about coverage, and coverage claims are the thing this section exists to distrust.
+
+---
+
 ## P1 — Public-repo posture drift (release-readiness gate)
 
 **What this catches.** Newly added or modified code, docstrings, or `#` comments that would (a) leak the internal SDLC scaffolding (specific ticket ids, checklists, work plans, dispatcher prompts, decision sheets, cohorts, batches, PR or issue numbers), (b) pin the repo to a particular non-generic use case (e.g., PIM, theology, patent prosecution), or (c) expose the author's personal identity (`/Users/clifguy/...`, GitHub usernames, internal URLs). The repo is intended to be encountered by readers who have no knowledge of the production process that produced CAS/SAGE; the durable code surface must read accordingly.
@@ -225,4 +262,4 @@ The rule is: durable surfaces (code, docstrings, comments) describe the pattern 
 - Test coverage measurement, performance regression, or dependency-policy review. These are Tier 1 surfaces from the SDLC survey and have their own tooling lanes.
 - Architectural-decision review. ADRs in the cas vault (`doc_type=adr`) are the substrate for that.
 
-The skill is tuned narrowly to the five documented CAS failure modes. New patterns earn their way into this skill only after they appear in the failure log (`doc_type=failure_record` in the cas vault) with a closed-form Resolution.
+The skill is tuned narrowly to the documented CAS failure modes. New patterns earn their way into this skill only after they appear in the failure log (`doc_type=failure_record` in the cas vault) with a closed-form Resolution. Meeting that bar makes a pattern eligible, not admitted: the skill's value comes from being walked in full on every commit, so each added section is paid for by every future review, and a pattern already reachable by an ordinary careful reader is not worth that price. Prefer the framing that describes why a defect *survived review* over the one that describes how it was *written* — the first is what a review gate can act on.
