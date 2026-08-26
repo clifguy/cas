@@ -26,6 +26,7 @@ import jsonschema
 
 from sage.adapters.abstraction_utils import (
     compute_max_tokens,
+    find_structure_echo,
     find_unattested_acronym_glosses,
     trim_to_sentence_boundary,
 )
@@ -1251,6 +1252,28 @@ class IngestionService:
                         "document_id": document_id,
                         "acronym": gloss.acronym,
                         "expansion": gloss.expansion,
+                        "document_chars": len(text),
+                        "abstract_chars": len(abstract),
+                    }
+                )
+            )
+
+        # Deterministic clause (k) check, in the same recording-only posture
+        # and for the same reason. This one reads the abstract alone: markup
+        # in an abstract is a breach on its face, whatever the source
+        # contains. It is a proxy for the constraint it enforces -- an
+        # abstract that carries out an instruction found in the source while
+        # writing in prose passes it (CAS-ADR-020).
+        for echo in find_structure_echo(abstract):
+            abstraction_faithfulness_logger.info(
+                json.dumps(
+                    {
+                        "layer": "abstraction",
+                        "label": "structure_echo",
+                        "provider": type(self._abstraction).__name__,
+                        "document_id": document_id,
+                        "kind": echo.kind,
+                        "line": echo.line,
                         "document_chars": len(text),
                         "abstract_chars": len(abstract),
                     }

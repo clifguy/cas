@@ -37,6 +37,7 @@ from typing import Callable
 
 from sage.adapters.abstraction_utils import (
     compute_max_tokens,
+    find_structure_echo,
     find_unattested_acronym_glosses,
     trim_to_sentence_boundary,
 )
@@ -261,6 +262,7 @@ class MeasurementRecord:
     # found in the trimmed output. None for a record measured before the
     # counter existed, which reads differently from a measured zero.
     unattested_gloss_count: int | None = None
+    structure_echo_count: int | None = None
 
 
 @dataclass
@@ -379,6 +381,42 @@ def select_corpus(catalog: list[CatalogEntry], target: int, seed: int = 42) -> l
     return selected
 
 
+def select_named_corpus(catalog: list[CatalogEntry], doc_ids: list[str]) -> list[CatalogEntry]:
+    """Select exactly the named documents, in the order given.
+
+    The stratified selector answers "a representative sample of this
+    vault"; this one answers "these documents specifically", which is what
+    a run investigating named documents needs. An id absent from the
+    catalog raises rather than shortening the corpus silently, because a
+    run that quietly measured fewer documents than it was asked for would
+    report a clean result for a document it never read.
+
+    Args:
+        catalog: Candidate entries, as enumerated from the vault.
+        doc_ids: Document ids to select, in the order the caller wants
+            them measured.
+
+    Returns:
+        One entry per requested id, in request order.
+
+    Raises:
+        KeyError: An id has no entry in the catalog.
+        ValueError: An id appears more than once in the request.
+    """
+    seen: set[str] = set()
+    for doc_id in doc_ids:
+        if doc_id in seen:
+            raise ValueError(f"document id requested more than once: {doc_id}")
+        seen.add(doc_id)
+
+    by_id = {entry.doc_id: entry for entry in catalog}
+    missing = [doc_id for doc_id in doc_ids if doc_id not in by_id]
+    if missing:
+        raise KeyError(f"document ids not found in catalog: {', '.join(missing)}")
+
+    return [by_id[doc_id] for doc_id in doc_ids]
+
+
 # ---------------------------------------------------------------------------
 # Memory sampler
 # ---------------------------------------------------------------------------
@@ -489,6 +527,7 @@ async def measure_one(
     trimmed = trim_to_sentence_boundary(raw_output)
     tokens_generated = len(trimmed.split())
     unattested_gloss_count = len(find_unattested_acronym_glosses(trimmed, projection_text))
+    structure_echo_count = len(find_structure_echo(trimmed))
 
     return MeasurementRecord(
         doc_id=doc_id,
@@ -501,6 +540,7 @@ async def measure_one(
         memory_delta_bytes=sampler.memory_delta_bytes,
         peak_used_bytes_during_call=sampler.peak_used_bytes_during_call,
         unattested_gloss_count=unattested_gloss_count,
+        structure_echo_count=structure_echo_count,
         **phase,
     )
 
@@ -1030,7 +1070,7 @@ def _render_runtime_pin() -> list[str]:
 
 
 def _mechanical_faithfulness_note(measurements: list[MeasurementRecord]) -> str:
-    """Blind-review note carrying the mechanical clause (e) tally.
+    """Blind-review note carrying the mechanical clause (e) and (k) tallies.
 
     Empty when no measurement carries a count -- a result recorded before
     the counter existed is unmeasured, not clean -- so the reviewer's
@@ -1043,10 +1083,21 @@ def _mechanical_faithfulness_note(measurements: list[MeasurementRecord]) -> str:
     flagged_docs = len({m.doc_id for m in counted if (m.unattested_gloss_count or 0) > 0})
     all_docs = len({m.doc_id for m in counted})
     plural = "" if total == 1 else "es"
-    return (
+    note = (
         f"Mechanical clause (e) check: {total} unattested acronym gloss{plural} "
         f"across {flagged_docs} of {all_docs} documents"
     )
+
+    structural = [m for m in measurements if m.structure_echo_count is not None]
+    if structural:
+        echo_total = sum(m.structure_echo_count or 0 for m in structural)
+        echo_docs = len({m.doc_id for m in structural if (m.structure_echo_count or 0) > 0})
+        echo_all = len({m.doc_id for m in structural})
+        note += (
+            f"; mechanical clause (k) check: {echo_total} structural feature"
+            f"{'' if echo_total == 1 else 's'} across {echo_docs} of {echo_all} documents"
+        )
+    return note
 
 
 def render_scorecard(result: BenchmarkResult) -> str:

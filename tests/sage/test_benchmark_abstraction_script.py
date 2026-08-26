@@ -150,3 +150,24 @@ def test_default_output_dir_is_outside_every_vault_tree():
 
     parsed = _parse_args(["cas", "--model", "stub"]).output_dir.expanduser().resolve()
     assert parsed == default
+
+
+def test_document_id_flag_accumulates():
+    """``--document-id`` is repeatable and preserves caller order."""
+    args = _parse_args(
+        [
+            "cas",
+            "--model",
+            "stub",
+            "--document-id",
+            "doc-a",
+            "--document-id",
+            "doc-b",
+        ]
+    )
+    assert args.document_id == ["doc-a", "doc-b"]
+
+
+def test_document_id_defaults_to_empty():
+    """Absent the flag the run stays on the stratified sampler."""
+    assert _parse_args(["cas", "--model", "stub"]).document_id == []

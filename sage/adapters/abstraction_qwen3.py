@@ -14,6 +14,7 @@ from typing import NamedTuple
 from sage.adapters.abstraction_prompt import (
     SYSTEM_PROMPT_TEMPLATE,  # noqa: F401 -- re-exported for callers importing from this module
     _format_system_prompt,
+    wrap_source_document,
 )
 from sage.adapters.interfaces import AbstractionMemoryExhaustedError, AbstractionProvider
 from sage.utils.unified_memory import (
@@ -314,7 +315,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         """Build a chat-template prompt for abstract generation."""
         messages = [
             {"role": "system", "content": _format_system_prompt(doc_type)},
-            {"role": "user", "content": text},
+            {"role": "user", "content": wrap_source_document(text)},
         ]
         return self._tokenizer.apply_chat_template(
             messages,

@@ -159,13 +159,63 @@ class TestTrimToSentenceBoundary:
         assert result == "One. Two. Three. Four."
 
     def test_period_in_abbreviation_not_false_boundary(self):
-        """Common abbreviations (e.g., Dr., Mr.) followed by more text
-        should not create false sentence boundaries. The function trims
-        to the last period-followed-by-space-then-uppercase, so an
-        abbreviation mid-sentence should survive."""
+        """An abbreviation mid-sentence survives the trim.
+
+        This case is satisfied by trimming to the last boundary of any
+        kind, because a real boundary follows the abbreviation. It is
+        therefore NOT evidence that abbreviations are handled -- see
+        ``test_trailing_abbreviation_is_not_a_boundary`` for the case
+        that is.
+        """
         text = "Dr. Smith analyzed the data. The results were inconcl"
         result = trim_to_sentence_boundary(text)
         assert result == "Dr. Smith analyzed the data."
+
+    def test_trailing_abbreviation_is_not_a_boundary(self):
+        """An abbreviation period at the cut point is not a sentence end.
+
+        The load-bearing partner of the test above: here the abbreviation
+        is the LAST period in the text, so an implementation that treats
+        every period as a boundary returns the fragment unchanged and
+        fails only this assertion. Mirrors a real truncated abstract that
+        ended "...distinguishing category errors vs."
+        """
+        text = "The distinction holds. It separates category errors vs."
+        result = trim_to_sentence_boundary(text)
+        assert result == "The distinction holds."
+
+    def test_trailing_list_number_is_not_a_boundary(self):
+        """A bare list-item number at line start is not a sentence end.
+
+        Mirrors a real truncated abstract whose final characters were a
+        dangling enumerator: "6. **Suffering and Ill-Health** ... 7."
+        """
+        text = "The note revises several sections.\n6. Suffering and Ill-Health was revised.\n7."
+        result = trim_to_sentence_boundary(text)
+        assert result == (
+            "The note revises several sections.\n6. Suffering and Ill-Health was revised."
+        )
+
+    def test_sentence_ending_in_a_number_still_terminates(self):
+        """A number ending an ordinary sentence remains a boundary.
+
+        Guards the list-number rule against over-trimming: the digits here
+        are mid-line, not a line-leading enumerator. An implementation that
+        rejects any period after digits fails this.
+        """
+        text = "The native window is 262144. The prefill rate is lower at that"
+        result = trim_to_sentence_boundary(text)
+        assert result == "The native window is 262144."
+
+    def test_etc_still_terminates(self):
+        """``etc.`` is deliberately outside the non-terminal set.
+
+        Unlike ``e.g.`` or ``vs.``, it routinely ends a sentence, so
+        treating it as non-terminal would discard a complete final
+        sentence in the common case.
+        """
+        text = "It covers ingestion, retrieval, etc."
+        assert trim_to_sentence_boundary(text) == text
 
     def test_sentence_ending_with_closing_paren(self):
         """Sentence ending with punctuation inside parens should be handled."""

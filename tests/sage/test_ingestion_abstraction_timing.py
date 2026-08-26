@@ -93,6 +93,25 @@ class _GlossingStubProvider(AbstractionProvider):
         return "This document describes the QZE (Quantum Zeta Exchange) protocol."
 
 
+#: Named at module scope so the non-mutating assertion below compares against
+#: the exact bytes the provider returned rather than restating them, which is
+#: what makes that assertion a byte-identity check instead of a prefix check.
+#: It ends on a complete sentence, so the sentence-boundary trim is a no-op and
+#: any difference between output and result is the check having edited it.
+_OUTLINE_ABSTRACT = "# Part 2: Sections 7-11\n\n## 7. Integration\n\nThe center integrates."
+
+
+class _OutliningStubProvider(AbstractionProvider):
+    """A provider that answers with document structure instead of prose.
+
+    Mirrors the measured breach: given a source ending in a directive, the
+    model produced the document that directive asked for, headings and all.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return _OUTLINE_ABSTRACT
+
+
 def _records(caplog):
     return [json.loads(r.getMessage()) for r in caplog.records if r.name == TIMING_LOGGER]
 
@@ -275,6 +294,57 @@ async def test_seam_stays_silent_for_attested_gloss(ingestion_service, caplog):
         await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-1")
 
     assert _faithfulness_records(caplog) == []
+
+
+async def test_seam_emits_record_for_structure_echo(ingestion_service, caplog):
+    """Structural markup in an abstract emits a record naming what tripped it."""
+    ingestion_service._abstraction = _OutliningStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(
+            "A transcript ending in a task brief.", "chat_transcript", document_id="doc-2"
+        )
+
+    records = [r for r in _faithfulness_records(caplog) if r["label"] == "structure_echo"]
+    assert [r["kind"] for r in records] == ["heading", "heading"]
+    assert records[0]["line"] == _OUTLINE_ABSTRACT.splitlines()[0]
+    assert records[0]["provider"] == "_OutliningStubProvider"
+    assert records[0]["document_id"] == "doc-2"
+
+
+async def test_seam_leaves_a_structure_echo_abstract_unmodified(ingestion_service, caplog):
+    """The check records; it does not repair.
+
+    Byte identity against the provider's own output is what proves the
+    non-mutating posture CAS-ADR-020 requires until the check's error rate is
+    measured. A prefix assertion would not: a seam that kept the first line
+    and discarded the flagged remainder passes ``startswith`` while doing
+    exactly the repair this posture forbids.
+    """
+    ingestion_service._abstraction = _OutliningStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            "A transcript ending in a task brief.", "chat_transcript", document_id="doc-2"
+        )
+
+    assert result == _OUTLINE_ABSTRACT
+
+
+async def test_seam_stays_silent_for_a_prose_abstract(ingestion_service, caplog):
+    """Prose emits nothing.
+
+    Anti-coincidental-pass: without this, the test above passes on a seam
+    wired to log unconditionally -- a detector that never inspects anything.
+    """
+    ingestion_service._abstraction = _NamedStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(
+            "An ordinary document.", "adr", document_id="doc-3"
+        )
+
+    assert [r for r in _faithfulness_records(caplog) if r["label"] == "structure_echo"] == []
 
 
 # ── Both entry paths ────────────────────────────────────────────────

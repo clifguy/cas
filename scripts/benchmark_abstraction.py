@@ -70,6 +70,7 @@ from sage.utils.abstraction_benchmark import (
     render_scorecard,
     run_benchmark,
     select_corpus,
+    select_named_corpus,
 )
 from sage.vault_management import config_path_for_vault
 
@@ -268,15 +269,23 @@ async def run(args: argparse.Namespace) -> int:
         print("Enumerating corpus...", flush=True)
         catalog = await _build_catalog(services)
         print(f"  {len(catalog)} candidate documents in vault {args.vault_id}")
-        if len(catalog) < args.corpus_size:
+        if not args.document_id and len(catalog) < args.corpus_size:
             print(
                 f"warning: catalog has only {len(catalog)} documents; "
                 f"reducing target from {args.corpus_size}",
                 file=sys.stderr,
             )
 
-        corpus = select_corpus(catalog, target=args.corpus_size, seed=args.corpus_seed)
-        print(f"  selected {len(corpus)} documents (seed={args.corpus_seed})")
+        if args.document_id:
+            try:
+                corpus = select_named_corpus(catalog, args.document_id)
+            except (KeyError, ValueError) as exc:
+                print(f"corpus selection failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"  selected {len(corpus)} named documents")
+        else:
+            corpus = select_corpus(catalog, target=args.corpus_size, seed=args.corpus_seed)
+            print(f"  selected {len(corpus)} documents (seed={args.corpus_seed})")
 
         baselines: dict[str, str] = {}
         if args.with_baseline_outputs:
@@ -390,6 +399,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=20,
         help="Target corpus size (default: 20).",
+    )
+    parser.add_argument(
+        "--document-id",
+        action="append",
+        default=[],
+        metavar="DOC_ID",
+        help=(
+            "Measure this document specifically instead of a stratified "
+            "sample. Repeatable; order is preserved. When given, "
+            "--corpus-size and --corpus-seed are unused, and an id absent "
+            "from the vault is an error rather than a shorter corpus."
+        ),
     )
     parser.add_argument(
         "--corpus-seed",

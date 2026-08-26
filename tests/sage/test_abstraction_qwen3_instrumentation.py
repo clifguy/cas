@@ -16,6 +16,7 @@ import logging
 
 import pytest
 
+from sage.adapters.abstraction_prompt import wrap_source_document
 from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 from tests.sage.conftest import FakeGenerationResponse, stub_stream_generate
 
@@ -373,7 +374,7 @@ async def test_template_overhead_encoded_once_per_doc_type(provider):
     await provider.generate_abstract("first document", 200, "adr")
     await provider.generate_abstract("second document", 200, "adr")
 
-    empty_user_templates = [c for c in tokenizer.template_calls if c == ""]
+    empty_user_templates = [c for c in tokenizer.template_calls if c == wrap_source_document("")]
     assert len(empty_user_templates) == 1
 
 
@@ -390,7 +391,7 @@ async def test_template_overhead_recomputed_for_new_doc_type(provider):
     await provider.generate_abstract("first document", 200, "adr")
     await provider.generate_abstract("second document", 200, "ticket")
 
-    empty_user_templates = [c for c in tokenizer.template_calls if c == ""]
+    empty_user_templates = [c for c in tokenizer.template_calls if c == wrap_source_document("")]
     assert len(empty_user_templates) == 2
 
 
@@ -413,5 +414,5 @@ async def test_overhead_cache_cleared_on_unload(provider):
     provider._generate_fn = stub_stream_generate("GENERATED")
     await provider.generate_abstract("second document", 200, "adr")
 
-    empty_user_templates = [c for c in tokenizer.template_calls if c == ""]
+    empty_user_templates = [c for c in tokenizer.template_calls if c == wrap_source_document("")]
     assert len(empty_user_templates) == 2
