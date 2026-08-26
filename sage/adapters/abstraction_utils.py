@@ -9,6 +9,10 @@ mid-sentence truncation when the LLM hits the token ceiling.
 find_unattested_acronym_glosses: deterministic post-generation check
 that acronym expansions claimed by an abstract are attested in the
 source text (CAS-ADR-020 clause (e)).
+
+find_structure_echo: deterministic post-generation check that an abstract
+is continuous prose rather than reproduced document structure (CAS-ADR-020
+clause (k)).
 """
 
 import re
@@ -43,6 +47,70 @@ _SENTENCE_END = re.compile(
     r"(?=\s|$)"  # followed by whitespace or end-of-string
 )
 
+# Abbreviations whose period is part of the token rather than a sentence
+# end. Membership is deliberately narrow: an entry here costs a real
+# sentence ending whenever the abbreviation legitimately closes one, so
+# the set holds only forms that essentially never do. "etc." is excluded
+# for exactly that reason -- it routinely ends a sentence, and rejecting
+# it would discard the final sentence of any text that closes with it.
+_NON_TERMINAL_ABBREVIATIONS = frozenset(
+    {
+        "e.g.",
+        "i.e.",
+        "cf.",
+        "vs.",
+        "al.",
+        "viz.",
+        "approx.",
+        "esp.",
+        "dr.",
+        "mr.",
+        "mrs.",
+        "ms.",
+        "st.",
+        "fig.",
+        "no.",
+    }
+)
+
+# The token immediately preceding a candidate boundary: the run of
+# non-whitespace characters ending at the punctuation.
+_TRAILING_TOKEN = re.compile(r"\S+$")
+
+# A line-leading enumerator ("6.", "7.") -- a list marker, not a sentence.
+_ENUMERATOR = re.compile(r"^\d{1,3}\.$")
+
+
+def _is_non_terminal(text: str, match: re.Match[str]) -> bool:
+    """Whether a candidate boundary is a token period rather than a stop.
+
+    Two shapes qualify, both observed truncating real abstracts at the
+    token ceiling: an abbreviation whose period belongs to the word, and
+    a bare enumerator opening a list item. Only a period can be
+    non-terminal -- "!" and "?" carry no such ambiguity.
+
+    The enumerator test requires line-leading position, so digits that
+    merely end a sentence ("the native window is 262144.") stay
+    terminal; a rule keyed to digits alone would truncate every sentence
+    ending in a number.
+    """
+    if text[match.start()] != ".":
+        return False
+
+    token_match = _TRAILING_TOKEN.search(text, 0, match.start() + 1)
+    if token_match is None:
+        return False
+    token = token_match.group()
+
+    if token.casefold() in _NON_TERMINAL_ABBREVIATIONS:
+        return True
+
+    if _ENUMERATOR.match(token):
+        line_start = text.rfind("\n", 0, token_match.start()) + 1
+        return not text[line_start : token_match.start()].strip()
+
+    return False
+
 
 def trim_to_sentence_boundary(text: str) -> str:
     """Trim text to the last complete sentence boundary.
@@ -50,6 +118,10 @@ def trim_to_sentence_boundary(text: str) -> str:
     Finds the last occurrence of sentence-ending punctuation (.!?)
     optionally followed by closing quotes/parens, then followed by
     whitespace or end-of-string. Truncates everything after that point.
+    Candidates whose period belongs to a token rather than to a sentence
+    -- an abbreviation, or a list item's enumerator -- are passed over,
+    so a text cut off mid-phrase at one of those is trimmed back to the
+    preceding real sentence instead of being accepted as complete.
 
     If no sentence boundary is found, returns the text stripped of
     leading/trailing whitespace. This prevents data loss when the LLM
@@ -67,7 +139,7 @@ def trim_to_sentence_boundary(text: str) -> str:
         return ""
 
     # Find all sentence boundaries
-    matches = list(_SENTENCE_END.finditer(stripped))
+    matches = [m for m in _SENTENCE_END.finditer(stripped) if not _is_non_terminal(stripped, m)]
     if not matches:
         return stripped
 
@@ -237,4 +309,107 @@ def find_unattested_acronym_glosses(abstract: str, source_text: str) -> list[Acr
         if candidate not in seen:
             seen.add(candidate)
             findings.append(candidate)
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Structural-markup detection (CAS-ADR-020 clause (k))
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StructureEcho:
+    """One line of an abstract carrying document structure rather than prose."""
+
+    kind: str
+    line: str
+
+
+# A markdown ATX heading. One is decisive: an abstract is prose, and prose has
+# no headings, so this needs no run threshold.
+_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+
+# A line-leading list item, bulleted or enumerated.
+_LIST_LINE = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+\S")
+
+# A line consisting only of a bolded span, optionally followed by a colon --
+# the shape a model produces when it reaches for subheads without using
+# heading syntax.
+_SUBHEAD_LINE = re.compile(r"^\s{0,3}\*\*[^*\n]+\*\*:?\s*$")
+
+# List and subhead lines are reported only in runs. A single line-leading
+# dash is an aside or a wrapped clause; a single bold span is emphasis. Two
+# consecutive are a structure the model is laying out. Headings are exempt
+# from the threshold for the reason given at _HEADING_LINE.
+_RUN_THRESHOLD = 2
+
+
+def find_structure_echo(abstract: str) -> list[StructureEcho]:
+    """Find lines in an abstract that reproduce document structure.
+
+    CAS-ADR-020 clause (j) requires the abstract to be continuous prose;
+    clause (k) makes this check the enforcement, in a non-mutating posture.
+
+    The check needs no source text. A claimed acronym expansion is a breach
+    only relative to what the source says, so its check must read both; markup
+    in an abstract is a breach on its face, because the abstract's required
+    form is prose whatever the source contains.
+
+    This is a proxy and clause (k) records it as one. It detects the shape the
+    measured breaches took -- a model producing the structured document a
+    source's trailing directive asked for -- and not the breach itself. An
+    abstract that carries out a source's instruction in flowing prose is a
+    breach of clause (i) and passes this check.
+
+    Args:
+        abstract: The generated semantic abstract to inspect.
+
+    Returns:
+        Findings in line order. Empty for prose.
+    """
+    findings: list[StructureEcho] = []
+    lines = abstract.splitlines()
+
+    pending: dict[str, list[str]] = {"list": [], "subhead": []}
+
+    def _flush(kind: str) -> None:
+        """Close an open run, reporting it as one finding if it qualifies.
+
+        A run is one structural feature, so it yields one record naming the
+        line it began at rather than one per line -- an eleven-item outline is
+        a single breach, and reporting it eleven times would weight it eleven
+        times in any rate measured over these records.
+        """
+        run = pending[kind]
+        if len(run) >= _RUN_THRESHOLD:
+            findings.append(StructureEcho(kind=kind, line=run[0]))
+        pending[kind] = []
+
+    for raw in lines:
+        line = raw.rstrip()
+        if _HEADING_LINE.match(line):
+            _flush("list")
+            _flush("subhead")
+            findings.append(StructureEcho(kind="heading", line=line))
+            continue
+
+        # A subhead is also a plausible list line under some markup, so it is
+        # classified first; the two runs are tracked separately so an
+        # alternating sequence does not silently reset both.
+        if _SUBHEAD_LINE.match(line):
+            _flush("list")
+            pending["subhead"].append(line)
+            continue
+
+        if _LIST_LINE.match(line):
+            _flush("subhead")
+            pending["list"].append(line)
+            continue
+
+        if line.strip():
+            _flush("list")
+            _flush("subhead")
+
+    _flush("list")
+    _flush("subhead")
     return findings

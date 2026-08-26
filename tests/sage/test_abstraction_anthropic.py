@@ -26,7 +26,12 @@ from sage.adapters.abstraction_anthropic import (
     AnthropicAbstractionProvider,
     _input_budget_tokens,
 )
-from sage.adapters.abstraction_prompt import _format_system_prompt
+from sage.adapters.abstraction_prompt import (
+    SOURCE_CLOSE,
+    SOURCE_OPEN,
+    _format_system_prompt,
+    wrap_source_document,
+)
 from sage.adapters.interfaces import (
     AbstractionInputTooLargeError,
     NonRetryableAbstractionError,
@@ -48,6 +53,37 @@ _MAX_COUNT_CALLS = _MAX_SHRINK_ROUNDS + 2
 def _even_counter(text: str) -> int:
     """Uniform ~4 bytes per token, the density of ordinary prose."""
     return max(1, len(text.encode("utf-8")) // 4)
+
+
+#: Bytes the source framing adds to every request (CAS-ADR-020). Fixtures that
+#: bracket the byte pre-check measure the framed payload, since that is what
+#: the provider now weighs against the budget.
+_FRAME_BYTES = len(wrap_source_document("").encode("utf-8"))
+
+
+def _one_count_text(limit: int, filler: str = "x", max_tokens: int = 100) -> str:
+    """Text that clears the byte pre-check but fits inside the token budget.
+
+    Sized from the live budget rather than a constant, so the fixture keeps
+    its meaning when the system prompt's length changes -- a constant tuned to
+    one prompt silently becomes an over-budget document under a longer one and
+    starts exercising the shrink loop instead of the single count it was
+    written to provoke.
+
+    The preconditions are asserted rather than assumed: at a tight enough
+    ceiling no size satisfies both, and a helper that returned one anyway
+    would hand every caller a document that quietly takes the wrong path.
+    """
+    system = _format_system_prompt(None)
+    budget = _input_budget_tokens(limit, max_tokens, system)
+    text = filler * (budget + 100)
+    framed = wrap_source_document(text)
+    assert len(framed.encode("utf-8")) > budget, "text would skip the byte pre-check"
+    assert _even_counter(system + framed) <= budget, (
+        f"no size provokes a single count at limit={limit}: the system prompt "
+        f"leaves a {budget}-token budget. Raise the ceiling."
+    )
+    return text
 
 
 def _uneven_counter(text: str) -> int:
@@ -95,9 +131,22 @@ class _Recorder:
         self.retrieve_calls: list[str] = []
         self.count_calls: list[dict] = []
 
-    def sent_text(self) -> str:
-        """The document text of the single generation request."""
+    def sent_message(self) -> str:
+        """The raw user-turn content of the single generation request."""
         return self.create_calls[0]["messages"][0]["content"]
+
+    def sent_text(self) -> str:
+        """The document text of the single generation request, unwrapped.
+
+        Asserts the provider delimited the source (CAS-ADR-020) and returns
+        what it framed, so tests about truncation and reduction assert on
+        content without restating the framing. A provider that stopped
+        delimiting fails here rather than silently comparing raw text.
+        """
+        content = self.sent_message()
+        assert content.startswith(f"{SOURCE_OPEN}\n"), content[:60]
+        assert content.endswith(f"\n{SOURCE_CLOSE}"), content[-60:]
+        return content[len(SOURCE_OPEN) + 1 : -(len(SOURCE_CLOSE) + 1)]
 
 
 def _install_fake_anthropic(
@@ -197,7 +246,9 @@ async def test_anth_001_generate_abstract_calls_messages_create_and_returns_text
     assert call["model"] == "claude-haiku-4-5"
     assert call["max_tokens"] == 200
     assert call["system"] == _format_system_prompt("adr")
-    assert call["messages"] == [{"role": "user", "content": "Some document text."}]
+    assert call["messages"] == [
+        {"role": "user", "content": wrap_source_document("Some document text.")}
+    ]
 
 
 @pytest.mark.asyncio
@@ -328,10 +379,10 @@ async def test_anth_009_input_limit_discovered_from_model_registry(monkeypatch):
     reported ceiling changed the outcome (a count was taken, which the ample
     default ceiling never provokes) kills the constant.
     """
-    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000)
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=8000)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
-    await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+    await provider.generate_abstract(_one_count_text(8000), max_tokens=100, doc_type=None)
 
     assert recorder.retrieve_calls == ["claude-haiku-4-5"]
     assert len(recorder.count_calls) == 1
@@ -346,11 +397,11 @@ async def test_anth_010_discovered_input_limit_cached_across_calls(monkeypatch):
     separates the two, and a lookup on every document would add a round trip to
     every ingestion.
     """
-    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000)
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=8000)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
-    await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
-    await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+    await provider.generate_abstract(_one_count_text(8000), max_tokens=100, doc_type=None)
+    await provider.generate_abstract(_one_count_text(8000, "y"), max_tokens=100, doc_type=None)
 
     assert len(recorder.retrieve_calls) == 1
 
@@ -388,12 +439,14 @@ async def test_anth_012_byte_pre_check_boundary_is_inclusive(monkeypatch):
 
     at_boundary = _install_fake_anthropic(monkeypatch, max_input_tokens=limit)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
-    await provider.generate_abstract("x" * budget, max_tokens=100, doc_type=None)
+    await provider.generate_abstract("x" * (budget - _FRAME_BYTES), max_tokens=100, doc_type=None)
     assert at_boundary.count_calls == []
 
     over_boundary = _install_fake_anthropic(monkeypatch, max_input_tokens=limit)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
-    await provider.generate_abstract("x" * (budget + 1), max_tokens=100, doc_type=None)
+    await provider.generate_abstract(
+        "x" * (budget - _FRAME_BYTES + 1), max_tokens=100, doc_type=None
+    )
     assert len(over_boundary.count_calls) == 1
 
 
@@ -422,7 +475,7 @@ async def test_anth_013_text_over_byte_check_but_under_token_budget_untruncated(
     counted = recorder.count_calls[0]
     assert counted["model"] == "claude-haiku-4-5"
     assert counted["system"] == _format_system_prompt(None)
-    assert counted["messages"] == [{"role": "user", "content": text}]
+    assert counted["messages"] == [{"role": "user", "content": wrap_source_document(text)}]
     assert recorder.sent_text() == text
 
 
@@ -467,7 +520,9 @@ async def test_anth_015_reduction_is_recorded_and_silent_when_absent(monkeypatch
     system = _format_system_prompt(None)
     budget = _input_budget_tokens(limit, 100, system)
     text = "x" * 40_000
-    original_tokens = _even_counter(system + text)
+    # Counted on the framed source, which is what the provider weighs and
+    # therefore what its record reports.
+    original_tokens = _even_counter(system + wrap_source_document(text))
 
     recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=limit)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
@@ -478,7 +533,7 @@ async def test_anth_015_reduction_is_recorded_and_silent_when_absent(monkeypatch
     records = [r for r in caplog.records if r.name == PROVIDER_LOGGER]
     assert len(records) == 1
     message = records[0].getMessage()
-    retained_tokens = _even_counter(system + recorder.sent_text())
+    retained_tokens = _even_counter(system + wrap_source_document(recorder.sent_text()))
     assert str(original_tokens) in message
     assert str(retained_tokens) in message
     assert str(budget) in message
@@ -541,13 +596,17 @@ async def test_anth_017_undiscoverable_limit_degrades_to_unchecked_call(
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
     with caplog.at_level(logging.WARNING, logger=PROVIDER_LOGGER):
-        first = await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
-        second = await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+        first = await provider.generate_abstract(
+            _one_count_text(8000), max_tokens=100, doc_type=None
+        )
+        second = await provider.generate_abstract(
+            _one_count_text(8000, "y"), max_tokens=100, doc_type=None
+        )
 
     assert first == "abstract"
     assert second == "abstract"
     assert recorder.count_calls == []
-    assert recorder.create_calls[0]["messages"][0]["content"] == "x" * 3000
+    assert recorder.sent_text() == _one_count_text(8000)
     warnings = [r for r in caplog.records if r.name == PROVIDER_LOGGER]
     assert len(warnings) == 1
 
@@ -623,15 +682,17 @@ async def test_anth_019_transient_discovery_failure_is_retried(monkeypatch, erro
     retry costs one round trip while a wrong latch costs the guard for the
     life of the process.
     """
-    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000, retrieve_errors=[error])
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=8000, retrieve_errors=[error])
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
-    first = await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+    first = await provider.generate_abstract(_one_count_text(8000), max_tokens=100, doc_type=None)
 
     assert first == "abstract"
     assert recorder.count_calls == []
 
-    second = await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+    second = await provider.generate_abstract(
+        _one_count_text(8000, "y"), max_tokens=100, doc_type=None
+    )
 
     assert second == "abstract"
     assert len(recorder.retrieve_calls) == 2
@@ -649,13 +710,13 @@ async def test_anth_020_persistent_transient_failure_retries_but_warns_once(monk
     having warned floods the log at one line per ingestion (three warnings).
     """
     recorder = _install_fake_anthropic(
-        monkeypatch, max_input_tokens=4000, retrieve_error=RuntimeError("registry unreachable")
+        monkeypatch, max_input_tokens=8000, retrieve_error=RuntimeError("registry unreachable")
     )
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
     with caplog.at_level(logging.WARNING, logger=PROVIDER_LOGGER):
         results = [
-            await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+            await provider.generate_abstract(_one_count_text(8000), max_tokens=100, doc_type=None)
             for _ in range(3)
         ]
 
@@ -676,12 +737,16 @@ async def test_anth_021_permanent_discovery_failure_is_not_retried(monkeypatch, 
     pointed at a model that does not exist.
     """
     error = _sdk_error(NotFoundError, "model: unknown model 'claude-nope'", 404)
-    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000, retrieve_error=error)
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=8000, retrieve_error=error)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
     with caplog.at_level(logging.WARNING, logger=PROVIDER_LOGGER):
-        first = await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
-        second = await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+        first = await provider.generate_abstract(
+            _one_count_text(8000), max_tokens=100, doc_type=None
+        )
+        second = await provider.generate_abstract(
+            _one_count_text(8000, "y"), max_tokens=100, doc_type=None
+        )
 
     assert first == "abstract"
     assert second == "abstract"
@@ -703,8 +768,8 @@ async def test_anth_022_reported_absent_ceiling_is_not_re_queried(monkeypatch):
     recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=None)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
-    await provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
-    await provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+    await provider.generate_abstract(_one_count_text(8000), max_tokens=100, doc_type=None)
+    await provider.generate_abstract(_one_count_text(8000, "y"), max_tokens=100, doc_type=None)
 
     assert len(recorder.retrieve_calls) == 1
     assert recorder.count_calls == []
@@ -725,14 +790,14 @@ async def test_anth_023_concurrent_first_abstracts_share_one_discovery(monkeypat
     answer to share.
     """
     gate = asyncio.Event()
-    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=4000, retrieve_gate=gate)
+    recorder = _install_fake_anthropic(monkeypatch, max_input_tokens=8000, retrieve_gate=gate)
     provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5")
 
     first = asyncio.create_task(
-        provider.generate_abstract("x" * 3000, max_tokens=100, doc_type=None)
+        provider.generate_abstract(_one_count_text(8000), max_tokens=100, doc_type=None)
     )
     second = asyncio.create_task(
-        provider.generate_abstract("y" * 3000, max_tokens=100, doc_type=None)
+        provider.generate_abstract(_one_count_text(8000, "y"), max_tokens=100, doc_type=None)
     )
 
     # Run both tasks up to their first suspension point before releasing the

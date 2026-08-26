@@ -36,6 +36,7 @@ from sage.utils.abstraction_benchmark import (
     render_scorecard,
     run_benchmark,
     select_corpus,
+    select_named_corpus,
 )
 
 # ---------------------------------------------------------------------------
@@ -209,6 +210,50 @@ def test_select_corpus_is_deterministic_for_a_given_seed():
 
 
 # ---------------------------------------------------------------------------
+# 3b. Named corpus selection
+# ---------------------------------------------------------------------------
+
+
+def test_select_named_corpus_returns_the_named_entries_in_caller_order():
+    """An explicitly named corpus is exact, not sampled.
+
+    Load-bearing against the stratified selector: a run that must speak to
+    three specific documents cannot rely on a seeded sample happening to
+    contain them.
+    """
+    catalog = _balanced_catalog(per_cell=4)
+    wanted = ["adr-5000-1", "adr-50-0"]
+
+    selected = select_named_corpus(catalog, wanted)
+
+    assert [e.doc_id for e in selected] == wanted
+
+
+def test_select_named_corpus_raises_on_an_unknown_id():
+    """A typo'd id is a caller error, not a silently shorter corpus.
+
+    Paired with the test above: an implementation that filters the catalog
+    and returns whatever matched passes that one and fails only here.
+    """
+    catalog = _balanced_catalog(per_cell=4)
+
+    with pytest.raises(KeyError, match="no-such-doc"):
+        select_named_corpus(catalog, ["adr-50-0", "no-such-doc"])
+
+
+def test_select_named_corpus_rejects_a_duplicate_id():
+    """The same document twice would double-count in every aggregate."""
+    catalog = _balanced_catalog(per_cell=4)
+
+    with pytest.raises(ValueError, match="adr-50-0"):
+        select_named_corpus(catalog, ["adr-50-0", "adr-50-0"])
+
+
+def test_select_named_corpus_of_nothing_is_empty():
+    assert select_named_corpus(_balanced_catalog(per_cell=4), []) == []
+
+
+# ---------------------------------------------------------------------------
 # 4-7. Measurement plumbing
 # ---------------------------------------------------------------------------
 
@@ -281,6 +326,51 @@ async def test_measure_one_applies_trim_to_sentence_boundary():
     )
 
     assert record.output_text == expected
+
+
+async def test_measure_one_counts_structure_echoes():
+    """Structural markup in the measured output is tallied per document.
+
+    Paired negative: prose scores zero, so a counter wired to report a
+    constant fails one half. The count is taken on the trimmed output, which
+    is what would be stored.
+    """
+    config = AbstractionConfig(max_abstract_tokens=500)
+
+    outline = await measure_one(
+        RecordingProvider("# Part 2\n\n## 7. Integration\n\nBody."),
+        "source text",
+        "chat_transcript",
+        config,
+        lambda: 0,
+        doc_id="outline",
+    )
+    prose = await measure_one(
+        RecordingProvider("This document describes an integration plan."),
+        "source text",
+        "chat_transcript",
+        config,
+        lambda: 0,
+        doc_id="prose",
+    )
+
+    # Counted on the trimmed output, which is what would be stored. The
+    # provider's raw text here carries a two-item list that the sentence-boundary
+    # trim removes, so a counter reading the raw output scores 1 and only a
+    # counter reading the trimmed output scores 0. Without this third case the
+    # docstring's claim about trimming would be untested.
+    trimmed_away = await measure_one(
+        RecordingProvider("This document describes the plan.\n- one\n- two"),
+        "source text",
+        "chat_transcript",
+        config,
+        lambda: 0,
+        doc_id="trimmed",
+    )
+
+    assert outline.structure_echo_count == 2
+    assert prose.structure_echo_count == 0
+    assert trimmed_away.structure_echo_count == 0
 
 
 async def test_measure_one_counts_unattested_glosses():

@@ -19,7 +19,7 @@ import asyncio
 import logging
 import re
 
-from sage.adapters.abstraction_prompt import _format_system_prompt
+from sage.adapters.abstraction_prompt import _format_system_prompt, wrap_source_document
 from sage.adapters.interfaces import AbstractionInputTooLargeError, AbstractionProvider
 
 logger = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         counted = await client.messages.count_tokens(
             model=self._model_id,
             system=system_prompt,
-            messages=[{"role": "user", "content": text}],
+            messages=[{"role": "user", "content": wrap_source_document(text)}],
         )
         return counted.input_tokens
 
@@ -254,8 +254,12 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         # A token never encodes to fewer than one byte, so text whose UTF-8
         # length is already within the budget cannot overrun it. That holds
         # without a round trip, which keeps counting off the path every
-        # ordinary document takes.
-        if len(text.encode("utf-8")) <= budget:
+        # ordinary document takes. The measurement is taken on the framed
+        # source rather than the bare text because the framing is part of
+        # what the request carries: measuring the bare text would let a
+        # document sitting just inside the budget skip the count and then
+        # exceed it by the width of the markers.
+        if len(wrap_source_document(text).encode("utf-8")) <= budget:
             return text
 
         counted = await self._count_input_tokens(text, system_prompt)
@@ -330,7 +334,7 @@ class AnthropicAbstractionProvider(AbstractionProvider):
                 model=self._model_id,
                 max_tokens=max_tokens,
                 system=system_prompt,
-                messages=[{"role": "user", "content": text}],
+                messages=[{"role": "user", "content": wrap_source_document(text)}],
             )
         except Exception as exc:
             if _reports_input_too_long(exc):
