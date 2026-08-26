@@ -402,6 +402,11 @@ async def test_measure_one_counts_unattested_glosses():
 
     assert unattested.unattested_gloss_count == 1
     assert attested.unattested_gloss_count == 0
+    # The harness measures what the model produced, not what the ingestion
+    # seam would store: routing measurement through the production repair
+    # would zero the count -- and the Faithfulness row's discrimination --
+    # for every candidate. The surviving gloss is the named property.
+    assert "(Quantum Zeta Exchange)" in unattested.output_text
 
 
 async def test_memory_sampler_reports_minimum_free_during_call():

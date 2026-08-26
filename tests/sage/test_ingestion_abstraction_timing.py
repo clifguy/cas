@@ -7,9 +7,12 @@ The records under test live at the one seam both entry points pass through.
 Two records share the seam. The latency record carries only fields every
 provider can answer for; a provider with more to say emits its own record
 alongside it. The faithfulness record reports an unattested acronym gloss
-found in the generated abstract (CAS-ADR-020 clause (e)); it observes and
-never mutates, so the returned abstract stays byte-identical to the
-provider's trimmed output.
+found in the generated abstract (CAS-ADR-020 clause (e)); the seam then
+collapses the reported gloss to its bare acronym -- the repair posture
+clause (h) admits once the check's error rate is measured -- so the
+returned abstract carries no unattested claim. Attested glosses, and the
+structure-echo check (clause (k), still observation-only), leave the
+abstract byte-identical to the provider's trimmed output.
 """
 
 import json
@@ -91,6 +94,18 @@ class _GlossingStubProvider(AbstractionProvider):
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         return "This document describes the QZE (Quantum Zeta Exchange) protocol."
+
+
+class _PluralGlossingStubProvider(AbstractionProvider):
+    """A provider whose gloss pluralizes the expansion's final word.
+
+    Paired with a source attesting the singular, its output is the
+    measured near-miss shape: attested to a human reader, a mismatch to
+    an exact substring test.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return "This document describes the QZE (Quantum Zeta Exchanges) protocol."
 
 
 #: Named at module scope so the non-mutating assertion below compares against
@@ -255,12 +270,15 @@ async def test_abstract_text_unchanged_by_instrumentation(ingestion_service):
 # ── Faithfulness record ─────────────────────────────────────────────
 
 
-async def test_seam_emits_record_for_unattested_gloss(ingestion_service, caplog):
-    """An unattested gloss emits a faithfulness record; the abstract survives.
+async def test_seam_records_and_collapses_an_unattested_gloss(ingestion_service, caplog):
+    """An unattested gloss is recorded and collapsed to its bare acronym.
 
-    The byte-identity assertion on the return value is what proves the
-    check's non-mutating posture: a seam that repaired the gloss early
-    would hide the very signal its error rate is to be calibrated on.
+    The full-string assertion on the return value proves the repair
+    happened and that nothing else changed: every byte outside the gloss
+    span is pinned. Named rivals: a record-only seam returns the gloss
+    intact and fails the result assertion; a repair that truncates or
+    regenerates fails the exact string; a repair without a record, or
+    whose record omits the disposition, fails the record assertions.
     """
     text = "A document about the QZE protocol and its message framing."
     ingestion_service._abstraction = _GlossingStubProvider()
@@ -277,23 +295,52 @@ async def test_seam_emits_record_for_unattested_gloss(ingestion_service, caplog)
     assert record["document_id"] == "doc-1"
     assert record["acronym"] == "QZE"
     assert record["expansion"] == "Quantum Zeta Exchange"
-    assert result == "This document describes the QZE (Quantum Zeta Exchange) protocol."
+    assert record["action"] == "collapsed"
+    # The record describes the inspected (pre-repair) abstract: a seam
+    # that logged after collapsing would report the repaired length.
+    assert record["abstract_chars"] == len(
+        "This document describes the QZE (Quantum Zeta Exchange) protocol."
+    )
+    assert result == "This document describes the QZE protocol."
 
 
 async def test_seam_stays_silent_for_attested_gloss(ingestion_service, caplog):
-    """A gloss the source supplies emits nothing.
+    """A gloss the source supplies emits nothing and survives byte-identical.
 
     Anti-coincidental-pass: without this, the unattested-gloss test above
-    passes on a seam wired to log every gloss unconditionally -- a detector
-    with no attestation check at all.
+    passes on a seam wired to log and collapse every gloss unconditionally
+    -- a detector with no attestation check at all. The byte-identity
+    assertion is the asymmetric-cost rule in executable form: repair
+    touches only the finding class whose measured false-positive rate is
+    zero, and an attested gloss is not a finding at all.
     """
     text = "The Quantum Zeta Exchange (QZE) protocol frames messages between services."
     ingestion_service._abstraction = _GlossingStubProvider()
 
     with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
-        await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-1")
+        result = await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-1")
 
     assert _faithfulness_records(caplog) == []
+    assert result == "This document describes the QZE (Quantum Zeta Exchange) protocol."
+
+
+async def test_seam_leaves_a_near_miss_gloss_unflagged_and_unmodified(ingestion_service, caplog):
+    """A last-word plural of an attested expansion is neither recorded nor repaired.
+
+    Kills a promotion wired to the strict pre-widening detector: that seam
+    would flag and collapse exactly the near-miss glosses a human reads as
+    attested -- the one finding class whose measured false-positive rate
+    was nonzero, which the widened attestation exists to empty before any
+    mutation is allowed.
+    """
+    text = "The Quantum Zeta Exchange (QZE) protocol frames messages between services."
+    ingestion_service._abstraction = _PluralGlossingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-1")
+
+    assert _faithfulness_records(caplog) == []
+    assert result == "This document describes the QZE (Quantum Zeta Exchanges) protocol."
 
 
 async def test_seam_emits_record_for_structure_echo(ingestion_service, caplog):

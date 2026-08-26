@@ -75,7 +75,7 @@ def audit_entries(entries: Iterable[AuditEntry]) -> list[AuditFinding]:
     return findings
 
 
-async def _build_entries(services) -> list[AuditEntry]:
+async def build_entries(services) -> list[AuditEntry]:
     """Catalog every document that has both an abstract and body content.
 
     The source text is reconstructed from stored body chunks exactly as the
@@ -136,7 +136,7 @@ async def run(args: argparse.Namespace) -> int:
 
     try:
         print("Enumerating documents with stored abstracts...", flush=True)
-        entries = await _build_entries(services)
+        entries = await build_entries(services)
         findings = audit_entries(entries)
         _print_report(findings, len(entries))
     finally:
