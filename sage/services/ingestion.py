@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 import jsonschema
 
 from sage.adapters.abstraction_utils import (
+    collapse_unattested_acronym_glosses,
     compute_max_tokens,
     find_structure_echo,
     find_unattested_acronym_glosses,
@@ -1185,7 +1186,8 @@ class IngestionService:
         abstraction provider, trims the result to the last complete
         sentence boundary, and checks the trimmed abstract for unattested
         acronym glosses (CAS-ADR-020 clause (e)). A finding is recorded
-        and the abstract is returned unmodified.
+        and then repaired: the unattested gloss collapses to its bare
+        acronym, so the returned abstract carries no unattested claim.
 
         Args:
             text: Full projection text of the document.
@@ -1237,12 +1239,19 @@ class IngestionService:
         )
 
         # Deterministic clause (e) check on the model's output, at the same
-        # shared seam as the latency record above. Recording only: under
-        # greedy decoding a retry reproduces the identical output and a halt
-        # would leave the document permanently un-ingestible, so a breach is
-        # observed, never acted on, until the check's error rate has been
-        # measured on real stored abstracts (CAS-ADR-020).
-        for gloss in find_unattested_acronym_glosses(abstract, text):
+        # shared seam as the latency record above. A retry is no remedy --
+        # under greedy decoding it reproduces the identical output, and a
+        # halt would leave the document permanently un-ingestible -- so a
+        # breach is recorded and then repaired in place: the unattested
+        # gloss collapses to the bare acronym before the abstract is
+        # stored. CAS-ADR-020 clause (h) admits this repair once the
+        # check's error rate is measured against real stored output; the
+        # measurement emptied the sole false-positive class by widening
+        # attestation, so every remaining finding is safe to collapse.
+        # The record's sizes describe the inspected abstract -- the text
+        # the finding is about -- not the repaired one.
+        findings = find_unattested_acronym_glosses(abstract, text)
+        for gloss in findings:
             abstraction_faithfulness_logger.info(
                 json.dumps(
                     {
@@ -1252,18 +1261,24 @@ class IngestionService:
                         "document_id": document_id,
                         "acronym": gloss.acronym,
                         "expansion": gloss.expansion,
+                        "action": "collapsed",
                         "document_chars": len(text),
                         "abstract_chars": len(abstract),
                     }
                 )
             )
+        if findings:
+            abstract = collapse_unattested_acronym_glosses(abstract, text)
 
-        # Deterministic clause (k) check, in the same recording-only posture
-        # and for the same reason. This one reads the abstract alone: markup
-        # in an abstract is a breach on its face, whatever the source
-        # contains. It is a proxy for the constraint it enforces -- an
-        # abstract that carries out an instruction found in the source while
-        # writing in prose passes it (CAS-ADR-020).
+        # Deterministic clause (k) check, still recording-only: its error
+        # rate has no adjudicated measurement, so the posture CAS-ADR-020
+        # requires before any repair holds here even though clause (e) has
+        # been promoted. It runs after the clause (e) repair so its record
+        # describes the abstract actually stored. This one reads the
+        # abstract alone: markup in an abstract is a breach on its face,
+        # whatever the source contains. It is a proxy for the constraint it
+        # enforces -- an abstract that carries out an instruction found in
+        # the source while writing in prose passes it (CAS-ADR-020).
         for echo in find_structure_echo(abstract):
             abstraction_faithfulness_logger.info(
                 json.dumps(
@@ -1375,6 +1390,37 @@ class IngestionService:
             "document_id": document_id,
             "dispatched_at": now.isoformat(),
         }
+
+    async def update_semantic_abstract(self, document_id: str, abstract: str) -> None:
+        """Replace a document's stored semantic abstract in place.
+
+        The repair path CAS-ADR-020 clause (h) admits for stored output:
+        no regeneration -- under greedy decoding a regeneration reproduces
+        the same breached abstract -- and no pipeline-status transition,
+        since the document already completed abstraction. The header chunk
+        is refreshed so retrieval indexes the replacement rather than the
+        text it replaced.
+
+        Args:
+            document_id: ID of the document whose abstract is replaced.
+            abstract: The replacement abstract text.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(document_id)
+
+        async with self._locks.lock(document_id):
+            await self._store.update_document(
+                document_id,
+                {
+                    "semantic_abstract": abstract,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        await self._refresh_header_chunk(document_id)
 
     async def _execute_abstract_from_chunks(self, document_id: str, doc_type: str | None) -> None:
         """Stage 3 from stored chunks, raising on failure.

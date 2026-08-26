@@ -10,6 +10,9 @@ find_unattested_acronym_glosses: deterministic post-generation check
 that acronym expansions claimed by an abstract are attested in the
 source text (CAS-ADR-020 clause (e)).
 
+collapse_unattested_acronym_glosses: the clause (e) repair -- replaces
+each unattested gloss with its bare acronym (CAS-ADR-020 clause (h)).
+
 find_structure_echo: deterministic post-generation check that an abstract
 is continuous prose rather than reproduced document structure (CAS-ADR-020
 clause (k)).
@@ -223,14 +226,72 @@ def _initials(expansion: str) -> str:
 def _normalize(text: str) -> str:
     """Normalize text for attestation comparison.
 
-    NFKC-normalizes, unifies apostrophes and dashes, casefolds, and
-    collapses whitespace runs to single spaces.
+    NFKC-normalizes, unifies apostrophes and dashes, treats hyphens as
+    spaces, casefolds, and collapses whitespace runs to single spaces.
+
+    The hyphen-to-space step lives here rather than in
+    ``_APOSTROPHE_DASH_MAP`` so the initials path, which shares that map,
+    is provably untouched. Because the same transform applies to both the
+    claimed expansion and the source, it is symmetric, and it can only
+    grow the attested set: every pre-existing match survives the
+    character map, so the set of flagged glosses can only shrink.
     """
-    folded = unicodedata.normalize("NFKC", text).translate(_APOSTROPHE_DASH_MAP).casefold()
+    folded = (
+        unicodedata.normalize("NFKC", text)
+        .translate(_APOSTROPHE_DASH_MAP)
+        .replace("-", " ")
+        .casefold()
+    )
     return " ".join(folded.split())
 
 
-def _trailing_expansion(preceding_words: list[str], acronym: str) -> str | None:
+def _attestation_variants(expansion: str) -> tuple[str, ...]:
+    """Normalized forms under which a claimed expansion counts as attested.
+
+    The base normalization is always present, plus plural/singular
+    toggles of the final word only. The measured false-positive class
+    for the clause (e) check was glosses separated from an attested
+    expansion by nothing but a final-word plural or a hyphen; tolerance
+    is confined to that class. Interior-word toggles are deliberately
+    excluded -- a plurality change mid-phrase names a different noun
+    phrase, not a typographic variant. The length guards keep degenerate
+    strips of short words from manufacturing matches.
+    """
+    base = _normalize(expansion)
+    words = base.split()
+    if not words:
+        return (base,)
+    last = words[-1]
+    alternates = [last + "s", last + "es"]
+    if last.endswith("es") and len(last) >= 5:
+        alternates.append(last[:-2])
+    if last.endswith("s") and not last.endswith("ss") and len(last) >= 4:
+        alternates.append(last[:-1])
+    variants = [base]
+    for alternate in alternates:
+        variant = " ".join([*words[:-1], alternate])
+        if variant not in variants:
+            variants.append(variant)
+    return tuple(variants)
+
+
+@dataclass(frozen=True)
+class _GlossSite:
+    """One occurrence of a claimed gloss, with its replaceable span.
+
+    ``start``/``end`` bound the region a repair replaces: the full
+    ``ACR (Expansion)`` match for the forward adjacency, or the expansion
+    window plus the parenthetical for the reversed one. ``gloss.acronym``
+    holds the acronym as it appeared in the text, so a repair that
+    substitutes it preserves internal periods.
+    """
+
+    gloss: AcronymGloss
+    start: int
+    end: int
+
+
+def _trailing_expansion(preceding: str, acronym: str) -> tuple[str, int] | None:
     """Find the shortest trailing word window whose initials fit the acronym.
 
     Grows the window backwards one word at a time so an attached leading
@@ -238,36 +299,74 @@ def _trailing_expansion(preceding_words: list[str], acronym: str) -> str | None:
     expansion.
 
     Returns:
-        The candidate expansion as it appeared, or None when no window
-        within the lookback bound is consistent with the acronym.
+        The candidate expansion with its words space-joined, and the
+        offset of the window's first word in ``preceding``; None when no
+        window within the lookback bound is consistent with the acronym.
     """
     target = _acronym_letters(acronym).casefold()
+    tokens = list(re.finditer(r"\S+", preceding))
     window: list[str] = []
-    for word in reversed(preceding_words[-_MAX_EXPANSION_WORDS:]):
-        window.insert(0, word)
+    for token in reversed(tokens[-_MAX_EXPANSION_WORDS:]):
+        window.insert(0, token.group())
         candidate = " ".join(window)
         if _initials(candidate) == target:
-            return candidate
+            return candidate, token.start()
     return None
 
 
-def _gloss_candidates(abstract: str) -> list[AcronymGloss]:
-    """Collect acronym-expansion pairs claimed by the abstract.
+def _gloss_candidates(abstract: str) -> list[_GlossSite]:
+    """Collect gloss sites claimed by the abstract.
 
     Covers both adjacency shapes: ``ACR (Expansion Words)`` and
-    ``Expansion Words (ACR)``. Candidates are not yet consistency- or
-    attestation-checked.
+    ``Expansion Words (ACR)``. Sites are not yet consistency- or
+    attestation-checked. Forward sites precede reversed sites, each in
+    text order.
     """
-    candidates: list[AcronymGloss] = []
+    sites: list[_GlossSite] = []
     for match in _FORWARD_GLOSS.finditer(abstract):
-        candidates.append(AcronymGloss(acronym=match.group(1), expansion=match.group(2).strip()))
+        sites.append(
+            _GlossSite(
+                gloss=AcronymGloss(acronym=match.group(1), expansion=match.group(2).strip()),
+                start=match.start(),
+                end=match.end(),
+            )
+        )
     for match in _REVERSED_GLOSS.finditer(abstract):
         acronym = match.group(1)
-        preceding_words = abstract[: match.start()].split()
-        expansion = _trailing_expansion(preceding_words, acronym)
-        if expansion is not None:
-            candidates.append(AcronymGloss(acronym=acronym, expansion=expansion))
-    return candidates
+        found = _trailing_expansion(abstract[: match.start()], acronym)
+        if found is not None:
+            expansion, window_start = found
+            sites.append(
+                _GlossSite(
+                    gloss=AcronymGloss(acronym=acronym, expansion=expansion),
+                    start=window_start,
+                    end=match.end(),
+                )
+            )
+    return sites
+
+
+def _unattested_sites(abstract: str, source_text: str) -> list[_GlossSite]:
+    """Gloss sites whose claimed expansion the source does not attest.
+
+    The shared core of detection and repair: both read the same sites
+    through the same filters, so what one reports the other collapses,
+    by construction rather than by parallel implementations.
+    """
+    normalized_source = _normalize(source_text)
+    sites: list[_GlossSite] = []
+    for site in _gloss_candidates(abstract):
+        letters = _acronym_letters(site.gloss.acronym)
+        if not 2 <= len(letters) <= 10:
+            continue
+        if _initials(site.gloss.expansion) != letters.casefold():
+            continue
+        if any(
+            variant in normalized_source for variant in _attestation_variants(site.gloss.expansion)
+        ):
+            continue
+        sites.append(site)
+    return sites
 
 
 def find_unattested_acronym_glosses(abstract: str, source_text: str) -> list[AcronymGloss]:
@@ -279,7 +378,8 @@ def find_unattested_acronym_glosses(abstract: str, source_text: str) -> list[Acr
     ordinary aside, not an expansion claim, and is never flagged. A
     consistent claim is attested when the expansion occurs in the source
     text under normalization (NFKC, casefold, apostrophe and dash
-    unification, whitespace collapse).
+    unification, hyphens read as spaces, whitespace collapse), with
+    plural/singular tolerance on the expansion's final word.
 
     This is the deterministic post-generation check CAS-ADR-020 clause (e)
     enforcement rests on: it inspects recorded model output rather than
@@ -295,21 +395,53 @@ def find_unattested_acronym_glosses(abstract: str, source_text: str) -> list[Acr
         Unattested glosses in order of first appearance, deduplicated.
         Empty when every claimed expansion is attested or no claim exists.
     """
-    normalized_source = _normalize(source_text)
     findings: list[AcronymGloss] = []
     seen: set[AcronymGloss] = set()
-    for candidate in _gloss_candidates(abstract):
-        letters = _acronym_letters(candidate.acronym)
-        if not 2 <= len(letters) <= 10:
-            continue
-        if _initials(candidate.expansion) != letters.casefold():
-            continue
-        if _normalize(candidate.expansion) in normalized_source:
-            continue
-        if candidate not in seen:
-            seen.add(candidate)
-            findings.append(candidate)
+    for site in _unattested_sites(abstract, source_text):
+        if site.gloss not in seen:
+            seen.add(site.gloss)
+            findings.append(site.gloss)
     return findings
+
+
+def collapse_unattested_acronym_glosses(abstract: str, source_text: str) -> str:
+    """Collapse each unattested acronym gloss to its bare acronym.
+
+    The repair posture CAS-ADR-020 clause (h) admits once the check's
+    error rate is measured: an unattested claim is removed, the acronym
+    the source actually uses stays. Every unattested site collapses,
+    including repeats of the same pair; attested glosses and ordinary
+    parenthetical asides are returned byte-identical. Idempotent, since
+    a bare acronym makes no claim.
+
+    No whitespace or punctuation cleanup is needed: every site starts
+    and ends on a non-space character and the replacement is a non-empty
+    token, so surrounding spacing and punctuation are untouched and no
+    double space can arise.
+
+    Args:
+        abstract: The generated semantic abstract to repair.
+        source_text: The full source text the abstract was generated from.
+
+    Returns:
+        The abstract with each unattested gloss replaced by its bare
+        acronym; the input unchanged when there is nothing to repair.
+    """
+    sites = sorted(
+        _unattested_sites(abstract, source_text), key=lambda site: (site.start, site.end)
+    )
+    pieces: list[str] = []
+    cursor = 0
+    for site in sites:
+        if site.start < cursor:
+            # Overlapping site: the earlier site already consumed this
+            # region, and first-wins keeps the rebuild well-defined.
+            continue
+        pieces.append(abstract[cursor : site.start])
+        pieces.append(site.gloss.acronym)
+        cursor = site.end
+    pieces.append(abstract[cursor:])
+    return "".join(pieces)
 
 
 # ---------------------------------------------------------------------------

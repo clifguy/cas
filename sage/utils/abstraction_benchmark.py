@@ -15,7 +15,9 @@ Module structure:
   during a provider call to capture the minimum free reading.
 - ``measure_one`` / ``measure_with_determinism_check``: per-document
   measurement, replicating the production
-  ``IngestionService._generate_abstract_text`` call shape.
+  ``IngestionService._generate_abstract_text`` call shape through
+  detection; the seam's clause (e) repair is excluded so the harness
+  measures raw model output.
 - ``run_benchmark``: top-level run over a corpus.
 - ``aggregate_latency``: distribution stats.
 - ``render_scorecard`` / ``render_outputs_for_blind_review``:
@@ -502,10 +504,14 @@ async def measure_one(
 ) -> MeasurementRecord:
     """Single-call measurement against a provider.
 
-    Replicates the call shape of ``IngestionService._generate_abstract_text``:
-    computes the same density-proportional ``max_tokens`` via the shared
-    ``compute_max_tokens`` helper and applies ``trim_to_sentence_boundary``
-    to the result.
+    Replicates the call shape of ``IngestionService._generate_abstract_text``
+    through detection: computes the same density-proportional ``max_tokens``
+    via the shared ``compute_max_tokens`` helper, applies
+    ``trim_to_sentence_boundary`` to the result, and counts unattested
+    glosses on the trimmed output. The production seam's clause (e) repair
+    is deliberately excluded -- the benchmark measures what the model
+    produced, not what the seam stores, and repairing before counting
+    would report zero for every candidate.
     """
     word_count = len(projection_text.split())
     max_tokens = compute_max_tokens(word_count, abstraction_config)
