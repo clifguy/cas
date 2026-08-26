@@ -27,6 +27,7 @@ import jsonschema
 from sage.adapters.abstraction_utils import (
     collapse_unattested_acronym_glosses,
     compute_max_tokens,
+    find_fabricated_cardinals,
     find_structure_echo,
     find_unattested_acronym_glosses,
     trim_to_sentence_boundary,
@@ -79,10 +80,13 @@ logger = logging.getLogger(__name__)
 # reads both; the two are joined on the input size they both carry.
 abstraction_timing_logger = logging.getLogger("sage.abstraction.timing")
 
-# Faithfulness records for the deterministic post-generation check on
-# CAS-ADR-020 clause (e): an acronym gloss in a generated abstract whose
-# expansion the source text does not attest. Observing only -- the abstract
-# is stored unmodified while the check's error rate is being calibrated.
+# Faithfulness records for the deterministic post-generation checks on the
+# abstraction seam (CAS-ADR-020). Three finding classes share the channel,
+# each in the posture its own measurement licenses: an unattested acronym
+# gloss (clause (e)) is recorded and repaired; a structure echo (clause
+# (k)) and a fabricated cardinal (clause (e), a separate finding class)
+# are recorded only, the abstract stored unmodified, while their error
+# rates await adjudicated measurement.
 abstraction_faithfulness_logger = logging.getLogger("sage.abstraction.faithfulness")
 
 
@@ -1184,10 +1188,12 @@ class IngestionService:
         Shared core for both initial ingestion (stage 3) and reabstract.
         Computes a density-proportional token budget, invokes the
         abstraction provider, trims the result to the last complete
-        sentence boundary, and checks the trimmed abstract for unattested
-        acronym glosses (CAS-ADR-020 clause (e)). A finding is recorded
-        and then repaired: the unattested gloss collapses to its bare
-        acronym, so the returned abstract carries no unattested claim.
+        sentence boundary, and runs the deterministic post-generation
+        checks (CAS-ADR-020). An unattested acronym gloss (clause (e)) is
+        recorded and then repaired -- the gloss collapses to its bare
+        acronym, so the returned abstract carries no unattested claim. A
+        structure echo (clause (k)) or a fabricated cardinal (clause (e),
+        a separate finding class) is recorded only.
 
         Args:
             text: Full projection text of the document.
@@ -1289,6 +1295,35 @@ class IngestionService:
                         "document_id": document_id,
                         "kind": echo.kind,
                         "line": echo.line,
+                        "document_chars": len(text),
+                        "abstract_chars": len(abstract),
+                    }
+                )
+            )
+
+        # Deterministic fabricated-cardinal check, recording-only: this
+        # finding class has no adjudicated error-rate measurement, so the
+        # posture CAS-ADR-020 requires before any repair holds regardless
+        # of the promotion the acronym-gloss class has crossed -- the two
+        # are gated independently. It reads the post-repair abstract
+        # because a gloss collapse cannot create or destroy a cardinal
+        # claim, so the record describes the abstract actually stored. The
+        # absence of an "action" field is the machine-readable trace of
+        # the posture. A finding is calibration data, not a verdict.
+        for cardinal in find_fabricated_cardinals(abstract, text):
+            abstraction_faithfulness_logger.info(
+                json.dumps(
+                    {
+                        "layer": "abstraction",
+                        "label": "fabricated_cardinal",
+                        "provider": type(self._abstraction).__name__,
+                        "document_id": document_id,
+                        "surface": cardinal.surface,
+                        "value": cardinal.value,
+                        "unit": cardinal.unit,
+                        "derived": cardinal.derived,
+                        "attested": cardinal.attested,
+                        "agrees_with_derived": cardinal.value == cardinal.derived,
                         "document_chars": len(text),
                         "abstract_chars": len(abstract),
                     }

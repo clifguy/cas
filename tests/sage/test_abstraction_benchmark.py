@@ -409,6 +409,67 @@ async def test_measure_one_counts_unattested_glosses():
     assert "(Quantum Zeta Exchange)" in unattested.output_text
 
 
+_TURN_SOURCE = (
+    "### Turn 1 — Reviewer\n\nOpening remarks.\n\n"
+    "### Turn 2 — Author\n\nA reply.\n\n"
+    "### Turn 3 — Reviewer\n\nClosing notes.\n"
+)
+
+
+async def test_measure_one_counts_fabricated_cardinals():
+    """The record carries the mechanical fabricated-cardinal count.
+
+    Anti-coincidental-pass: the accurate call is the control -- a counter
+    that tallies every cardinal claim, rather than only unlicensed ones,
+    reports 1 on both calls and fails the second assertion.
+    """
+    config = _default_config()
+
+    miscounting = await measure_one(
+        RecordingProvider("The exchange spans twenty-six turns of discussion."),
+        _TURN_SOURCE,
+        "chat_transcript",
+        config,
+        CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        doc_id="miscounting",
+    )
+    accurate = await measure_one(
+        RecordingProvider("The exchange spans three turns of discussion."),
+        _TURN_SOURCE,
+        "chat_transcript",
+        config,
+        CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        doc_id="accurate",
+    )
+
+    assert miscounting.fabricated_cardinal_count == 1
+    assert accurate.fabricated_cardinal_count == 0
+
+
+async def test_cardinal_count_is_taken_on_trimmed_output():
+    """The count reads the trimmed output, which is what would be stored.
+
+    The provider's raw text carries its fabricated claim in a trailing
+    fragment past the last sentence boundary, so a counter reading the raw
+    output scores 1 and only a counter reading the trimmed output scores 0.
+    """
+    record = await measure_one(
+        RecordingProvider(
+            "This document records a review exchange.\nIt also spans twenty-six turns"
+        ),
+        _TURN_SOURCE,
+        "chat_transcript",
+        _default_config(),
+        CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        doc_id="trimmed",
+    )
+
+    assert record.fabricated_cardinal_count == 0
+
+
 async def test_memory_sampler_reports_minimum_free_during_call():
     # Probe values: baseline 10_000, then mid-call 9_000, 7_000, 8_000, 9_500.
     # Min free seen during call = 7_000, so peak_used = 10_000 - 7_000 = 3_000.
@@ -727,6 +788,30 @@ def test_scorecard_reports_mechanical_faithfulness():
 
     unmeasured = render_scorecard(_sample_result())
     assert "unattested" not in unmeasured
+
+
+def test_scorecard_reports_fabricated_cardinal_tally():
+    """A measured cardinal count reaches the Faithfulness row.
+
+    Anti-coincidental-pass: a result whose counts are all None must render
+    no cardinal note -- None is "unmeasured", which reads differently from
+    a measured zero. An ``or 0`` conflation of the two fails the second
+    half.
+    """
+    measured = _sample_result()
+    for measurement in measured.measurements:
+        measurement.unattested_gloss_count = 0
+        measurement.structure_echo_count = 0
+        measurement.fabricated_cardinal_count = 0
+    measured.measurements[0].fabricated_cardinal_count = 1
+
+    md = render_scorecard(measured)
+
+    assert "1 fabricated cardinal" in md
+    assert "1 of 5 documents" in md
+
+    unmeasured = render_scorecard(_sample_result())
+    assert "fabricated" not in unmeasured
 
 
 def test_scorecard_includes_all_seven_decision_criteria_sections():

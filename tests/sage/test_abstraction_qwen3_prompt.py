@@ -41,6 +41,10 @@ ACRONYM_DIRECTIVE = (
 METADATA_RESTRAINT_DIRECTIVE = (
     "Do not open your description with a phrase that restates the document's type"
 )
+SPECIFICS_RESTRAINT_DIRECTIVE = (
+    "Do not introduce specifics (numbers, names, dates, quotes, examples) "
+    "that are not present in the source text."
+)
 REASONING_TRIGGERS = (
     "<think>",
     "</think>",
@@ -173,6 +177,37 @@ async def test_metadata_restraint_directive_present_in_prompt(provider):
     assert METADATA_RESTRAINT_DIRECTIVE in captured["prompt"], (
         "Metadata-restraint directive missing from the prompt sent to the model. "
         f"Expected substring: {METADATA_RESTRAINT_DIRECTIVE!r}"
+    )
+
+
+async def test_specifics_restraint_directive_present_in_prompt(provider):
+    """The prompt sent to ``_generate_fn`` carries the CAS-ADR-020 clause (e)
+    anti-fabrication directive against introducing specifics the source does
+    not state. A removal guard only: the directive's presence in the prompt
+    is not evidence the model obeys it -- clause (e) enforcement rests on
+    the deterministic post-generation checks, and the ADR records that a
+    prompt-construction assertion cannot observe a breach. Independent from
+    the other directive tests so a revert of this sentence alone produces a
+    precise failure signal.
+    """
+    captured = {}
+
+    def capture_generate(*args, **kwargs):
+        captured["prompt"] = kwargs.get("prompt")
+        yield FakeGenerationResponse(text="GENERATED ABSTRACT")
+
+    provider._generate_fn = capture_generate
+
+    await provider.generate_abstract(
+        text="Some document content.",
+        max_tokens=200,
+        doc_type="adr",
+    )
+
+    assert captured["prompt"] is not None, "_generate_fn was not invoked"
+    assert SPECIFICS_RESTRAINT_DIRECTIVE in captured["prompt"], (
+        "Specifics-restraint directive missing from the prompt sent to the model. "
+        f"Expected substring: {SPECIFICS_RESTRAINT_DIRECTIVE!r}"
     )
 
 
