@@ -39,6 +39,7 @@ from typing import Callable
 
 from sage.adapters.abstraction_utils import (
     compute_max_tokens,
+    find_fabricated_cardinals,
     find_structure_echo,
     find_unattested_acronym_glosses,
     trim_to_sentence_boundary,
@@ -260,11 +261,13 @@ class MeasurementRecord:
     prompt_tokens: int | None = None
     reported_generated_tokens: int | None = None
 
-    # Mechanical CAS-ADR-020 clause (e) count: unattested acronym glosses
-    # found in the trimmed output. None for a record measured before the
-    # counter existed, which reads differently from a measured zero.
+    # Mechanical CAS-ADR-020 counts on the trimmed output: unattested
+    # acronym glosses and fabricated cardinals (clause (e)), structural
+    # markup (clause (k)). None for a record measured before the counter
+    # existed, which reads differently from a measured zero.
     unattested_gloss_count: int | None = None
     structure_echo_count: int | None = None
+    fabricated_cardinal_count: int | None = None
 
 
 @dataclass
@@ -534,6 +537,7 @@ async def measure_one(
     tokens_generated = len(trimmed.split())
     unattested_gloss_count = len(find_unattested_acronym_glosses(trimmed, projection_text))
     structure_echo_count = len(find_structure_echo(trimmed))
+    fabricated_cardinal_count = len(find_fabricated_cardinals(trimmed, projection_text))
 
     return MeasurementRecord(
         doc_id=doc_id,
@@ -547,6 +551,7 @@ async def measure_one(
         peak_used_bytes_during_call=sampler.peak_used_bytes_during_call,
         unattested_gloss_count=unattested_gloss_count,
         structure_echo_count=structure_echo_count,
+        fabricated_cardinal_count=fabricated_cardinal_count,
         **phase,
     )
 
@@ -1102,6 +1107,17 @@ def _mechanical_faithfulness_note(measurements: list[MeasurementRecord]) -> str:
         note += (
             f"; mechanical clause (k) check: {echo_total} structural feature"
             f"{'' if echo_total == 1 else 's'} across {echo_docs} of {echo_all} documents"
+        )
+
+    cardinal = [m for m in measurements if m.fabricated_cardinal_count is not None]
+    if cardinal:
+        cardinal_total = sum(m.fabricated_cardinal_count or 0 for m in cardinal)
+        cardinal_docs = len({m.doc_id for m in cardinal if (m.fabricated_cardinal_count or 0) > 0})
+        cardinal_all = len({m.doc_id for m in cardinal})
+        note += (
+            f"; mechanical cardinal check: {cardinal_total} fabricated cardinal"
+            f"{'' if cardinal_total == 1 else 's'} across {cardinal_docs} of "
+            f"{cardinal_all} documents"
         )
     return note
 

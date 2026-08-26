@@ -4,14 +4,15 @@ The abstraction path has two entry points -- initial ingest and reabstract --
 and two provider families whose vocabularies overlap only at wall-clock time.
 The records under test live at the one seam both entry points pass through.
 
-Two records share the seam. The latency record carries only fields every
-provider can answer for; a provider with more to say emits its own record
-alongside it. The faithfulness record reports an unattested acronym gloss
-found in the generated abstract (CAS-ADR-020 clause (e)); the seam then
-collapses the reported gloss to its bare acronym -- the repair posture
-clause (h) admits once the check's error rate is measured -- so the
-returned abstract carries no unattested claim. Attested glosses, and the
-structure-echo check (clause (k), still observation-only), leave the
+The latency record carries only fields every provider can answer for; a
+provider with more to say emits its own record alongside it. The
+faithfulness records report three finding classes. An unattested acronym
+gloss (CAS-ADR-020 clause (e)) is recorded and then collapsed to its bare
+acronym -- the repair posture clause (h) admits once the check's error
+rate is measured -- so the returned abstract carries no unattested claim.
+The structure-echo check (clause (k)) and the fabricated-cardinal check
+(clause (e), a separate finding class with no adjudicated measurement)
+record only. Attested glosses and both recording-only checks leave the
 abstract byte-identical to the provider's trimmed output.
 """
 
@@ -125,6 +126,49 @@ class _OutliningStubProvider(AbstractionProvider):
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         return _OUTLINE_ABSTRACT
+
+
+#: A transcript-shaped source with exactly three turn headings, so a stub's
+#: asserted turn count is judged against a derivable value of 3.
+_TURN_TRANSCRIPT = (
+    "### Turn 1 — Reviewer\n\nOpening remarks on the draft.\n\n"
+    "### Turn 2 — Author\n\nA reply addressing the remarks.\n\n"
+    "### Turn 3 — Reviewer\n\nClosing notes.\n"
+)
+
+#: Named at module scope for the same byte-identity reason as
+#: _OUTLINE_ABSTRACT: the non-mutating assertion compares against the exact
+#: bytes the provider returned. Ends on a complete sentence, so the
+#: sentence-boundary trim is a no-op.
+_MISCOUNTING_ABSTRACT = "The transcript unfolds across twenty-six turns of discussion."
+
+
+class _MiscountingStubProvider(AbstractionProvider):
+    """A provider whose abstract asserts a turn count the source contradicts.
+
+    Mirrors the measured breach: an abstract stating an exact count of a
+    source-derivable unit that the source neither exhibits nor states.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return _MISCOUNTING_ABSTRACT
+
+
+class _AccurateCountStubProvider(AbstractionProvider):
+    """A provider whose asserted turn count agrees with the source."""
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return "The transcript unfolds across three turns of discussion."
+
+
+#: Three turn headings whose numbering never states the value 3, so a claim
+#: of "three turns" agrees with the derivable count while remaining
+#: unattested -- the sub-class that separates the record's two fields.
+_GAPPED_TURN_TRANSCRIPT = (
+    "### Turn 2 — Reviewer\n\nOpening remarks on the draft.\n\n"
+    "### Turn 4 — Author\n\nA reply addressing the remarks.\n\n"
+    "### Turn 6 — Reviewer\n\nClosing notes.\n"
+)
 
 
 def _records(caplog):
@@ -392,6 +436,98 @@ async def test_seam_stays_silent_for_a_prose_abstract(ingestion_service, caplog)
         )
 
     assert [r for r in _faithfulness_records(caplog) if r["label"] == "structure_echo"] == []
+
+
+async def test_seam_records_a_fabricated_cardinal(ingestion_service, caplog):
+    """A fabricated turn count emits a record with the adjudication fields.
+
+    The ``"action" not in record`` assertion pins the recording posture: a
+    seam promoted to repair grows that field, and this test is the one
+    that fails when it does before an adjudicated measurement licenses it.
+    """
+    ingestion_service._abstraction = _MiscountingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(
+            _TURN_TRANSCRIPT, "chat_transcript", document_id="doc-4"
+        )
+
+    records = [r for r in _faithfulness_records(caplog) if r["label"] == "fabricated_cardinal"]
+    assert len(records) == 1
+    record = records[0]
+    assert record["layer"] == "abstraction"
+    assert record["provider"] == "_MiscountingStubProvider"
+    assert record["document_id"] == "doc-4"
+    assert record["surface"] == "twenty six turns"
+    assert record["value"] == 26
+    assert record["unit"] == "turn"
+    assert record["derived"] == 3
+    assert record["attested"] is False
+    assert record["agrees_with_derived"] is False
+    assert record["document_chars"] == len(_TURN_TRANSCRIPT)
+    assert record["abstract_chars"] == len(_MISCOUNTING_ABSTRACT)
+    assert "action" not in record
+
+
+async def test_seam_record_distinguishes_agreement_from_attestation(ingestion_service, caplog):
+    """An agreeing-but-unattested claim records True and False respectively.
+
+    Anti-coincidental-pass: every other seam case asserts
+    ``agrees_with_derived`` only where it is False, so a seam that
+    hardcodes the field instead of comparing value to derived passes them
+    all; only this pairing -- agreement True, attestation False -- forces
+    the two fields to come from separate computations.
+    """
+    ingestion_service._abstraction = _AccurateCountStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(
+            _GAPPED_TURN_TRANSCRIPT, "chat_transcript", document_id="doc-5"
+        )
+
+    [record] = [r for r in _faithfulness_records(caplog) if r["label"] == "fabricated_cardinal"]
+    assert record["value"] == 3
+    assert record["derived"] == 3
+    assert record["agrees_with_derived"] is True
+    assert record["attested"] is False
+    assert "action" not in record
+
+
+async def test_seam_leaves_a_miscounting_abstract_unmodified(ingestion_service, caplog):
+    """The check records; it does not repair.
+
+    Byte identity against the provider's own output proves the
+    non-mutating posture CAS-ADR-020 requires until the check's error rate
+    is measured. A prefix assertion would not: a seam that deleted the
+    flagged sentence passes ``startswith`` while doing exactly the repair
+    this posture forbids.
+    """
+    ingestion_service._abstraction = _MiscountingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            _TURN_TRANSCRIPT, "chat_transcript", document_id="doc-4"
+        )
+
+    assert result == _MISCOUNTING_ABSTRACT
+
+
+async def test_seam_stays_silent_for_an_accurate_count(ingestion_service, caplog):
+    """An agreeing, attested count emits nothing and survives byte-identical.
+
+    Anti-coincidental-pass: without this, the tests above pass on a seam
+    wired to log every cardinal claim unconditionally -- a detector with
+    no derivation or attestation check at all.
+    """
+    ingestion_service._abstraction = _AccurateCountStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            _TURN_TRANSCRIPT, "chat_transcript", document_id="doc-4"
+        )
+
+    assert [r for r in _faithfulness_records(caplog) if r["label"] == "fabricated_cardinal"] == []
+    assert result == "The transcript unfolds across three turns of discussion."
 
 
 # ── Both entry paths ────────────────────────────────────────────────

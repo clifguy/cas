@@ -16,6 +16,10 @@ each unattested gloss with its bare acronym (CAS-ADR-020 clause (h)).
 find_structure_echo: deterministic post-generation check that an abstract
 is continuous prose rather than reproduced document structure (CAS-ADR-020
 clause (k)).
+
+find_fabricated_cardinals: deterministic post-generation check that exact
+counts an abstract asserts for source-derivable units agree with the source
+(CAS-ADR-020 clause (e)); recording posture, no repair.
 """
 
 import re
@@ -544,4 +548,343 @@ def find_structure_echo(abstract: str) -> list[StructureEcho]:
 
     _flush("list")
     _flush("subhead")
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Fabricated-cardinal detection (CAS-ADR-020 clause (e))
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FabricatedCardinal:
+    """An exact count an abstract asserts for a source-derivable unit.
+
+    ``surface`` is the normalized text of the claim ("twenty six turns");
+    ``value`` is the asserted count, ``unit`` the canonical singular unit
+    name, ``derived`` the count mechanically derived from the source, and
+    ``attested`` whether the asserted value occurs anywhere in the source
+    as a standalone number in either digit or word form.
+    """
+
+    surface: str
+    value: int
+    unit: str
+    derived: int
+    attested: bool
+
+
+# The hand-rolled number-word lexicon, scoped to 1-999. Deliberately
+# excluded: approximations ("a hundred", "a dozen", "several"), which
+# assert no exact value; "zero"/"no", which are negation prose; ordinal
+# words, which name a position rather than a count; and thousand-and-up
+# compounds, out of scope until measurement shows a need.
+_UNITS_WORD_VALUES = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+}
+_TEEN_VALUES = {
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+}
+_TENS_VALUES = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+
+# Tokens that may appear inside a number-word run. "and" is admitted as the
+# connective of "one hundred and six" but carries no value of its own.
+_NUMBER_RUN_WORDS = (
+    frozenset(_UNITS_WORD_VALUES)
+    | frozenset(_TEEN_VALUES)
+    | frozenset(_TENS_VALUES)
+    | {"hundred", "and"}
+)
+
+# A token asserting an exact digit count. Full-match only: "2026" is one
+# number, never an attestation of 26; leading zeros and separators make no
+# exact claim.
+_EXACT_DIGITS = re.compile(r"[1-9]\d{0,3}")
+
+# Words that mark the cardinal they precede as inexact -- a bound, an
+# approximation, or one end of a range or disjunction. One gate covers all
+# three shapes because they share the grammar "cue CARDINAL unit".
+_NON_EXACT_CUES = frozenset(
+    {
+        "to",
+        "or",
+        "than",
+        "least",
+        "most",
+        "about",
+        "approximately",
+        "roughly",
+        "around",
+        "nearly",
+        "over",
+        "under",
+        "almost",
+        "some",
+    }
+)
+
+# Punctuation stripped from token edges after normalization, so "turns."
+# and "(26)" compare as bare tokens.
+_EDGE_PUNCTUATION = "'\"().,;:!?[]"
+
+
+@dataclass(frozen=True)
+class _DerivableUnit:
+    """A unit whose count is mechanically derivable from source text.
+
+    ``marker`` matches one occurrence of the unit's structural signature in
+    the raw (un-normalized) source; the derived count is the number of
+    matches. A source with zero matches does not exhibit the structure, so
+    the unit is treated as unregistered for that document -- prose that
+    happens to use the unit noun in another sense can then never be
+    flagged.
+    """
+
+    canonical: str
+    singular: str
+    plural: str
+    marker: re.Pattern[str]
+
+
+# A conversation-transcript turn heading: an ATX heading whose text starts
+# with "Turn <number>", any suffix allowed ("### Turn 12 -- Speaker").
+_TURN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+turn\s+\d+\b", re.IGNORECASE | re.MULTILINE)
+
+# The unit registry. Growing it is a data change, not a code change.
+_DERIVABLE_UNITS = (
+    _DerivableUnit(canonical="turn", singular="turn", plural="turns", marker=_TURN_HEADING),
+)
+
+_UNIT_SURFACE_FORMS = {
+    form: unit for unit in _DERIVABLE_UNITS for form in (unit.singular, unit.plural)
+}
+
+
+def _cardinal_tokens(text: str) -> list[str]:
+    """Tokenize normalized text for cardinal-claim scanning."""
+    stripped = (token.strip(_EDGE_PUNCTUATION) for token in text.split())
+    return [token for token in stripped if token]
+
+
+def _parse_number_words(words: list[str]) -> int | None:
+    """Parse a whole number-word run, or None when it is not one number.
+
+    Grammar: ``[units "hundred" ["and"]] [tens [units] | teens | units]``,
+    range 1-999. The run must parse in full -- "six twenty" is two numbers,
+    not one, and returns None so the caller can fall back to per-token
+    values.
+    """
+    if not words:
+        return None
+    index = 0
+    value = 0
+    if len(words) >= 2 and words[0] in _UNITS_WORD_VALUES and words[1] == "hundred":
+        value = _UNITS_WORD_VALUES[words[0]] * 100
+        index = 2
+        if index < len(words) and words[index] == "and":
+            index += 1
+        if index == len(words):
+            return value
+    remainder = words[index:]
+    if "hundred" in remainder or "and" in remainder:
+        return None
+    if remainder[0] in _TENS_VALUES:
+        value += _TENS_VALUES[remainder[0]]
+        if len(remainder) == 1:
+            return value
+        if len(remainder) == 2 and remainder[1] in _UNITS_WORD_VALUES:
+            return value + _UNITS_WORD_VALUES[remainder[1]]
+        return None
+    if len(remainder) == 1 and remainder[0] in _TEEN_VALUES:
+        return value + _TEEN_VALUES[remainder[0]]
+    if len(remainder) == 1 and remainder[0] in _UNITS_WORD_VALUES:
+        return value + _UNITS_WORD_VALUES[remainder[0]]
+    return None
+
+
+def _word_claim_before(tokens: list[str], unit_index: int) -> tuple[int, int] | None:
+    """Parse the number-word claim ending just before a unit token.
+
+    Takes the maximal run of number-run words immediately preceding the
+    unit and parses its longest valid suffix, so a stray number word ahead
+    of a well-formed compound ("3 4" from a normalized range, or prose
+    debris) does not silently swallow the claim -- the unparsed prefix is
+    left for the preceding-token guard to judge.
+
+    Returns:
+        The parsed value and the claim's starting token index, or None
+        when no suffix of the run parses.
+    """
+    run_start = unit_index
+    while run_start > 0 and tokens[run_start - 1] in _NUMBER_RUN_WORDS:
+        run_start -= 1
+    for begin in range(run_start, unit_index):
+        value = _parse_number_words(tokens[begin:unit_index])
+        if value is not None:
+            return value, begin
+    return None
+
+
+def _attested_values(source_text: str) -> set[int]:
+    """Every exact number the source states, in digit or word form.
+
+    Token-level over the normalized source: a full-match digit token
+    contributes its value ("2026" contributes 2026, never 26); a maximal
+    number-word run contributes its whole-run parse when it parses, and
+    the values of its individually parseable words when it does not
+    ("sixty four" attests 64; a malformed "six twenty" attests 6 and 20).
+    """
+    tokens = _cardinal_tokens(_normalize(source_text))
+    values: set[int] = set()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _EXACT_DIGITS.fullmatch(token):
+            values.add(int(token))
+            index += 1
+            continue
+        if token in _NUMBER_RUN_WORDS:
+            run_end = index
+            while run_end < len(tokens) and tokens[run_end] in _NUMBER_RUN_WORDS:
+                run_end += 1
+            run = tokens[index:run_end]
+            whole = _parse_number_words(run)
+            if whole is not None:
+                values.add(whole)
+            else:
+                for word in run:
+                    for lexicon in (_UNITS_WORD_VALUES, _TEEN_VALUES, _TENS_VALUES):
+                        if word in lexicon:
+                            values.add(lexicon[word])
+            index = run_end
+            continue
+        index += 1
+    return values
+
+
+def _cardinal_claims(tokens: list[str]) -> list[tuple[int, _DerivableUnit, str]]:
+    """Exact cardinal-count claims in a normalized token stream.
+
+    A claim is a cardinal (digit token or number-word run) immediately
+    followed by a registered unit's surface form, surviving two gates:
+    number agreement between the value and the unit form (killing the verb
+    reading of "one turns to..."), and a preceding-token guard that rejects
+    ranges, disjunctions, and hedges ("3 4", "three to four", "about
+    sixty") by refusing any claim preceded by another cardinal or an
+    inexactness cue.
+    """
+    claims: list[tuple[int, _DerivableUnit, str]] = []
+    for unit_index, token in enumerate(tokens):
+        unit = _UNIT_SURFACE_FORMS.get(token)
+        if unit is None or unit_index == 0:
+            continue
+        previous = tokens[unit_index - 1]
+        if _EXACT_DIGITS.fullmatch(previous):
+            value, begin = int(previous), unit_index - 1
+        else:
+            found = _word_claim_before(tokens, unit_index)
+            if found is None:
+                continue
+            value, begin = found
+        if (value == 1) != (token == unit.singular):
+            continue
+        if begin > 0:
+            before = tokens[begin - 1]
+            if (
+                before in _NUMBER_RUN_WORDS
+                or before in _NON_EXACT_CUES
+                or _EXACT_DIGITS.fullmatch(before)
+            ):
+                continue
+        claims.append((value, unit, " ".join(tokens[begin : unit_index + 1])))
+    return claims
+
+
+def find_fabricated_cardinals(abstract: str, source_text: str) -> list[FabricatedCardinal]:
+    """Find exact counts of source-derivable units the source does not license.
+
+    A claim is flagged when its value disagrees with the count derived from
+    the source's structure, or when the source never states the value as a
+    standalone number in digit or word form. Only units in the derivable
+    registry participate, and only for sources that exhibit the unit's
+    structure; counts of anything else are the open-ended remainder of
+    CAS-ADR-020 clause (e) and stay with the out-of-band behavioral
+    evaluation.
+
+    This check runs in the recording posture CAS-ADR-020 requires of a
+    finding class with no adjudicated error-rate measurement: the caller
+    records findings and stores the abstract unmodified. A finding is
+    calibration data, not a verdict -- in particular, ``attested`` is a
+    weak signal for exactly the documents this check targets, because a
+    contiguously numbered transcript's heading numerals attest every value
+    up to the turn count; the disagreement arm carries the check.
+
+    Args:
+        abstract: The generated semantic abstract to inspect.
+        source_text: The full source text the abstract was generated from.
+
+    Returns:
+        Findings in order of first appearance, deduplicated on
+        (value, unit). Empty when every claim agrees and is attested, when
+        no claim exists, or when the source exhibits no derivable
+        structure.
+    """
+    derived_counts = {
+        unit.canonical: count
+        for unit in _DERIVABLE_UNITS
+        if (count := len(unit.marker.findall(source_text))) >= 1
+    }
+    if not derived_counts:
+        return []
+    attested: set[int] | None = None
+    findings: list[FabricatedCardinal] = []
+    seen: set[tuple[int, str]] = set()
+    for value, unit, surface in _cardinal_claims(_cardinal_tokens(_normalize(abstract))):
+        derived = derived_counts.get(unit.canonical)
+        if derived is None:
+            continue
+        if attested is None:
+            attested = _attested_values(source_text)
+        is_attested = value in attested
+        if value == derived and is_attested:
+            continue
+        key = (value, unit.canonical)
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(
+            FabricatedCardinal(
+                surface=surface,
+                value=value,
+                unit=unit.canonical,
+                derived=derived,
+                attested=is_attested,
+            )
+        )
     return findings
