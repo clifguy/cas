@@ -5,8 +5,8 @@ corpus of cas-vault documents.
 Reads documents from the named vault (default ``cas``), selects a
 stratified corpus by ``doc_type`` and length tercile, instantiates the
 candidate provider, and times each call. Writes three artifacts to the
-output directory (default ``~/sage_vaults/test_vault/imports/`` --
-disposable scratch space):
+output directory (default ``~/sage_benchmarks/`` -- disposable scratch
+space, deliberately outside every vault tree):
 
   - ``<DATE>_CAS_REF_AbstractionBenchmarkScorecard_<slug>_v1_0.md`` --
     the one-page scorecard per framework §5 step 4.
@@ -22,8 +22,14 @@ after the blind review.
 
 Usage::
 
+    # Benchmark the model this stack is configured to abstract with
+    # (``--model`` defaults to the stack config's abstraction model):
     .venv/bin/python -m scripts.benchmark_abstraction cas \\
-        --model mlx-community/Qwen3-8B-Instruct-2507-4bit \\
+        --corpus-size 20 --repeats 2
+
+    # Benchmark a candidate the stack is not configured for:
+    .venv/bin/python -m scripts.benchmark_abstraction cas \\
+        --model mlx-community/some-candidate-4bit \\
         --corpus-size 20 --repeats 2
 
     # Dry run with the stub provider (no MLX load):
@@ -35,10 +41,11 @@ Usage::
     .venv/bin/python -m scripts.benchmark_abstraction cas \\
         --model <candidate> --context-window 131072 --context-probe
 
-Operational note: the candidate provider loads ~5 GB (Qwen3-8B) or
-larger (other candidates) into unified memory. Do not run while the
-SAGE MCP server's abstraction provider is resident; both processes
-would oversubscribe RAM.
+Operational note: the candidate provider loads several GB of weights
+into unified memory, and a run at a large context window allocates
+several times that again during prefill. Do not run while the SAGE MCP
+server's abstraction provider is resident; both processes would
+oversubscribe RAM.
 """
 
 from __future__ import annotations
@@ -55,7 +62,7 @@ from pathlib import Path
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
-from sage.mcp_init import initialize_services
+from sage.mcp_init import initialize_services, load_stack_config_or_default
 from sage.utils.abstraction_benchmark import (
     CatalogEntry,
     probe_context_window,
@@ -66,8 +73,19 @@ from sage.utils.abstraction_benchmark import (
 )
 from sage.vault_management import config_path_for_vault
 
-DEFAULT_MODEL = "mlx-community/Qwen3-8B-Instruct-2507-4bit"
-DEFAULT_OUTPUT_DIR = Path.home() / "sage_vaults" / "test_vault" / "imports"
+DEFAULT_OUTPUT_DIR = Path.home() / "sage_benchmarks"
+
+
+def _configured_model() -> str | None:
+    """The abstraction model identifier this stack is configured with.
+
+    Resolved from the stack config the running SAGE process would load, so
+    an unqualified run measures the deployed model rather than whichever
+    identifier was current when this script was last edited. Returns None
+    when the stack names no model (a stub-provider stack, or no config
+    file at all), which makes ``--model`` a required argument instead.
+    """
+    return load_stack_config_or_default().abstraction.model
 
 
 def _positive_int(raw: str) -> int:
@@ -336,7 +354,12 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Build the parser and resolve *argv* (defaults to ``sys.argv[1:]``)."""
+    """Build the parser and resolve *argv* (defaults to ``sys.argv[1:]``).
+
+    ``--model`` defaults to the stack's configured abstraction model, and is
+    required when the stack names none.
+    """
+    configured_model = _configured_model()
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark a candidate AbstractionProvider against a stratified "
@@ -352,11 +375,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
+        default=configured_model,
         help=(
             "MLX model identifier for the candidate provider. "
             "Pass 'stub' to use StubAbstractionProvider for dry-runs. "
-            f"Default: {DEFAULT_MODEL}"
+            "Defaults to the stack config's abstraction model "
+            f"({configured_model or 'unset -- --model is then required'}), so "
+            "an unqualified run measures what this stack actually abstracts "
+            "with."
         ),
     )
     parser.add_argument(
@@ -431,10 +457,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_OUTPUT_DIR,
         help=(
             "Directory to write the scorecard, masked outputs, and raw JSON. "
-            f"Default: {DEFAULT_OUTPUT_DIR} (disposable scratch space)."
+            f"Default: {DEFAULT_OUTPUT_DIR} (disposable scratch space, "
+            "outside every vault tree)."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.model is None:
+        parser.error(
+            "--model is required: the stack config names no abstraction model to fall back on."
+        )
+    return args
 
 
 def main() -> None:
