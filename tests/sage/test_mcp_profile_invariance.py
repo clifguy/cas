@@ -137,7 +137,7 @@ async def test_mpi_003_list_directory_discovery_and_vault_check(mpi_vault, tmp_p
     (scan_dir / "opaque.xyz").write_text("no adapter")
 
     first = _parse(await list_directory(_VAULT_ID, str(scan_dir)))
-    assert set(first) == {"files", "warnings"}
+    assert set(first) == {"files", "warnings", "truncated"}
     by_name = {Path(f["file_path"]).name: f for f in first["files"]}
     assert by_name["gamma_note.md"]["sage_status"] == "new"
     assert by_name["opaque.xyz"]["sage_status"] == "no_adapter"

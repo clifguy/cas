@@ -657,6 +657,27 @@ class TestScanEndpoint:
         assert any("top.md" in p for p in paths)
         assert not any("nested.md" in p for p in paths)
 
+    async def test_be_scan_response_truncated_field(self, scan_client, tmp_path):
+        """POST /app/scan carries the truncated flag through the response
+        model, so HTTP consumers can distinguish a complete listing from
+        one cut by a scan ceiling."""
+        client, config = scan_client
+
+        scan_dir = tmp_path / "truncated_field_test"
+        scan_dir.mkdir()
+        (scan_dir / "doc.md").write_text("# Doc")
+
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "example_vault",
+                "directory": str(scan_dir),
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["truncated"] is False
+
     async def test_be_020_computes_hash(self, scan_client, tmp_path):
         """POST /app/scan computes SHA-256 content hash."""
         client, config = scan_client

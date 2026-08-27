@@ -760,6 +760,29 @@ class TestAppScanDirectory:
         result = _parse(await list_directory("test_vault", str(scan_dir)))
         assert isinstance(result["warnings"], list)
 
+    async def test_scan_response_carries_truncated_flag(self, single_vault, tmp_path, monkeypatch):
+        """list_directory reports whether the scan was cut by a ceiling.
+
+        An in-bounds scan carries ``truncated: false``; a scan cut by the
+        file ceiling carries ``truncated: true`` plus a warning, so a
+        partial listing is never mistaken for a complete one.
+        """
+        import sage.services.scan as scan_module
+
+        scan_dir = tmp_path / "truncation_test"
+        scan_dir.mkdir()
+        (scan_dir / "one.md").write_text("# One")
+        (scan_dir / "two.md").write_text("# Two")
+
+        result = _parse(await list_directory("test_vault", str(scan_dir)))
+        assert result["truncated"] is False
+
+        monkeypatch.setattr(scan_module, "MAX_SCAN_FILES", 1)
+        result = _parse(await list_directory("test_vault", str(scan_dir)))
+        assert result["truncated"] is True
+        assert len(result["files"]) == 1
+        assert any("file" in w for w in result["warnings"])
+
 
 # ---------------------------------------------------------------------------
 # 8. bulk_ingest_document (MCP-019, MCP-020, MCP-021, MCP-022)

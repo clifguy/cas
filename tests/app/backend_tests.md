@@ -478,8 +478,10 @@ enables the edge inference engine to build an edge plan before ingestion begins.
 **Category:** app_backend
 
 **Decision:** An optional `max_depth` parameter limits recursion depth. Default
-is unlimited (null). Depth 0 means the directory itself (no recursion). Depth 1
-includes immediate children only.
+(null) applies the server's default depth ceiling; a walk cut by that default is
+reported as truncated. Depth 0 means the directory itself (no recursion). Depth 1
+includes immediate children only. Server-side file-count and hashed-byte ceilings
+always apply, and any ceiling cut sets `truncated: true` plus a warning.
 
 **Precondition:** Directory with nested subdirectories.
 

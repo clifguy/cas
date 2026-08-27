@@ -390,7 +390,10 @@ exception.
 **Category:** mcp_tool, app_backend
 
 **Decision:** The optional `max_depth` parameter limits recursion. Default (None)
-means unlimited depth, matching the HTTP endpoint behavior.
+applies the server's default depth ceiling, matching the HTTP endpoint behavior;
+a walk cut by that default is reported as truncated. Server-side file-count and
+hashed-byte ceilings always apply, and any ceiling cut sets `truncated: true`
+plus a warning.
 
 **Precondition:** Directory with nested subdirectories.
 
