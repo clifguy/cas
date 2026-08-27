@@ -61,7 +61,7 @@ class ScanService:
         if not directory.is_dir():
             raise InvalidDirectoryError(str(directory))
         ext_map = build_extension_map(self.ingestion_service.registered_adapters)
-        results, warnings = await scan_directory(
+        results, warnings, truncated = await scan_directory(
             directory=directory,
             vault_config=self.vault_config,
             graph_store=self.graph_store,
@@ -71,4 +71,5 @@ class ScanService:
         return ScanResponse(
             files=[_scan_result_to_response(r) for r in results],
             warnings=warnings,
+            truncated=truncated,
         )

@@ -63,8 +63,9 @@ class ScanRequest(BaseModel):
         ge=0,
         description=(
             "Optional recursion ceiling. 0 = scan the directory root only, "
-            "1 = root plus one subdirectory level, etc. Null = unlimited "
-            "depth."
+            "1 = root plus one subdirectory level, etc. Null = the server's "
+            "default depth ceiling; a scan cut by that default is reported "
+            "as truncated."
         ),
     )
 
@@ -134,6 +135,14 @@ class ScanResponse(BaseModel):
             'files[] with status "no_adapter" or be omitted depending on '
             "the warning class."
         )
+    )
+    truncated: bool = Field(
+        default=False,
+        description=(
+            "True when a scan ceiling (file count, hashed bytes, or the "
+            "default depth) cut the walk short; the warnings list names "
+            "the ceiling that fired."
+        ),
     )
 
 

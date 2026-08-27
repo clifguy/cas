@@ -65,10 +65,16 @@ def register_app_tools(
         created, no metadata is written. Intended as the discovery
         step before ``bulk_ingest_document``. The response is a list of
         per-file objects with hash, matched adapter, parsed filename
-        metadata, and an ``existing_document_id`` indicator when the
-        hash already exists in the vault (so the caller can skip or
-        decide to re-ingest with ``force=true``). Warnings list files
-        with no matching adapter or filenames that did not parse.
+        metadata, and a ``sage_status`` telling whether the vault
+        already holds the file (``new`` / ``modified`` / ``unchanged`` /
+        ``no_adapter``). Warnings list unreadable entries and any scan
+        ceiling that fired.
+
+        The scan is scope-bound: server-side ceilings on file count and
+        hashed bytes always apply, and omitting ``max_depth`` applies a
+        default depth ceiling. A scan cut by any ceiling returns
+        ``truncated: true`` plus a warning naming the ceiling — narrow
+        the directory or scan subdirectories separately.
 
         Error modes:
         - ``invalid_directory`` (string in response, not a SAGE error):
@@ -89,8 +95,10 @@ def register_app_tools(
                 cloud-hosted. Single and double quote wrappers are
                 stripped, so paths round-tripped from shell pasting are
                 accepted.
-            max_depth: Max recursion depth (null = unlimited,
-                0 = scan only the named directory with no descent).
+            max_depth: Max recursion depth (null = the server's default
+                depth ceiling, 0 = scan only the named directory with no
+                descent). A walk cut by the default ceiling is reported
+                as truncated; an explicit depth prunes silently.
         """
         from sage.services.scan import build_extension_map, scan_directory
 
@@ -114,7 +122,7 @@ def register_app_tools(
                 }
 
             ext_map = build_extension_map(v.ingestion_service.registered_adapters)
-            results, warnings = await scan_directory(
+            results, warnings, truncated = await scan_directory(
                 directory=d,
                 vault_config=v.config,
                 graph_store=v.graph_store,
@@ -124,7 +132,7 @@ def register_app_tools(
             files = []
             for r in results:
                 files.append(r.to_dict())
-            return {"files": files, "warnings": warnings}
+            return {"files": files, "warnings": warnings, "truncated": truncated}
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

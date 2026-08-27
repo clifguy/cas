@@ -320,6 +320,7 @@ export interface ScanResultItem {
 export interface ScanResponse {
   files: ScanResultItem[];
   warnings: string[];
+  truncated?: boolean;
 }
 
 export interface IngestProgressEvent {
