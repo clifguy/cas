@@ -1206,7 +1206,14 @@ class IngestionService:
 
         Returns:
             Trimmed abstract string.
+
+        Every record emitted here also names the emitting vault: the
+        timing and faithfulness loggers are process-global and every
+        loaded vault's file handler is attached to each, so a record in
+        a shared log is attributable to its vault only by what the
+        record itself carries.
         """
+        vault_id = self._config.vault.id
         word_count = len(text.split())
         max_tokens = compute_max_tokens(word_count, self._config.abstraction)
 
@@ -1233,6 +1240,7 @@ class IngestionService:
             json.dumps(
                 {
                     "layer": "abstraction",
+                    "vault_id": vault_id,
                     "label": "abstract",
                     "provider": type(self._abstraction).__name__,
                     "document_chars": len(text),
@@ -1262,6 +1270,7 @@ class IngestionService:
                 json.dumps(
                     {
                         "layer": "abstraction",
+                        "vault_id": vault_id,
                         "label": "unattested_gloss",
                         "provider": type(self._abstraction).__name__,
                         "document_id": document_id,
@@ -1290,6 +1299,7 @@ class IngestionService:
                 json.dumps(
                     {
                         "layer": "abstraction",
+                        "vault_id": vault_id,
                         "label": "structure_echo",
                         "provider": type(self._abstraction).__name__,
                         "document_id": document_id,
@@ -1315,6 +1325,7 @@ class IngestionService:
                 json.dumps(
                     {
                         "layer": "abstraction",
+                        "vault_id": vault_id,
                         "label": "fabricated_cardinal",
                         "provider": type(self._abstraction).__name__,
                         "document_id": document_id,

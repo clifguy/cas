@@ -143,6 +143,7 @@ def test_stop_leaked_timing_threads_targets_only_vault_timing_threads():
             summary_interval_seconds=0.05,
         ),
         layer="storage",
+        vault_id="test_vault",
     )
     leaked = VaultTimingThread(timers=[timer], interval_seconds=0.05)
     leaked.start()
@@ -205,6 +206,7 @@ def test_stop_leaked_timing_threads_swallows_stop_exceptions(monkeypatch):
             summary_interval_seconds=0.05,
         ),
         layer="storage",
+        vault_id="test_vault",
     )
     leaked = VaultTimingThread(timers=[timer], interval_seconds=0.05)
     leaked.start()

@@ -23,8 +23,10 @@ from pathlib import Path
 import pytest
 
 from sage.adapters.interfaces import AbstractionProvider
+from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
+from sage.services.ingestion import IngestionService
 
 TIMING_LOGGER = "sage.abstraction.timing"
 FAITHFULNESS_LOGGER = "sage.abstraction.faithfulness"
@@ -202,6 +204,7 @@ async def test_neutral_record_emitted_with_all_fields(ingestion_service, caplog)
     assert len(records) == 1
     record = records[0]
     assert record["label"] == "abstract"
+    assert record["vault_id"] == "test_vault"
     assert record["document_chars"] == len(text)
     assert "input_chars" not in record
     assert record["document_words"] == len(text.split())
@@ -336,6 +339,7 @@ async def test_seam_records_and_collapses_an_unattested_gloss(ingestion_service,
     assert record["layer"] == "abstraction"
     assert record["label"] == "unattested_gloss"
     assert record["provider"] == "_GlossingStubProvider"
+    assert record["vault_id"] == "test_vault"
     assert record["document_id"] == "doc-1"
     assert record["acronym"] == "QZE"
     assert record["expansion"] == "Quantum Zeta Exchange"
@@ -400,6 +404,7 @@ async def test_seam_emits_record_for_structure_echo(ingestion_service, caplog):
     assert [r["kind"] for r in records] == ["heading", "heading"]
     assert records[0]["line"] == _OUTLINE_ABSTRACT.splitlines()[0]
     assert records[0]["provider"] == "_OutliningStubProvider"
+    assert records[0]["vault_id"] == "test_vault"
     assert records[0]["document_id"] == "doc-2"
 
 
@@ -457,6 +462,7 @@ async def test_seam_records_a_fabricated_cardinal(ingestion_service, caplog):
     record = records[0]
     assert record["layer"] == "abstraction"
     assert record["provider"] == "_MiscountingStubProvider"
+    assert record["vault_id"] == "test_vault"
     assert record["document_id"] == "doc-4"
     assert record["surface"] == "twenty six turns"
     assert record["value"] == 26
@@ -528,6 +534,62 @@ async def test_seam_stays_silent_for_an_accurate_count(ingestion_service, caplog
 
     assert [r for r in _faithfulness_records(caplog) if r["label"] == "fabricated_cardinal"] == []
     assert result == "The transcript unfolds across three turns of discussion."
+
+
+async def test_seam_records_carry_the_emitting_vaults_id(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_vault_config_dict,
+    caplog,
+):
+    """Every seam record names the vault whose service emitted it.
+
+    All loaded vaults share the process-global timing and faithfulness
+    loggers, so a record is attributable only by what it carries.
+    Anti-coincidental-pass: two services with distinct vault ids are
+    both constructed before either emits, and both emit the same
+    document id. A hardcoded id fails the second service's records; an
+    id read from anywhere shared -- module state, a last-constructed
+    config -- fails the first service's, since the second construction
+    would have overwritten it. Only an id read from the emitting
+    instance's own config passes both, which is what keeps records with
+    identical document ids distinguishable by vault.
+    """
+
+    def _service_for(vault_id: str) -> IngestionService:
+        config = VaultConfig.model_validate(
+            {
+                **minimal_vault_config_dict,
+                "vault": {**minimal_vault_config_dict["vault"], "id": vault_id},
+            }
+        )
+        return IngestionService(
+            graph_store=graph_store,
+            lock_manager=lock_manager,
+            content_store=stub_content_store,
+            embedding_provider=stub_embedding_provider,
+            abstraction_provider=_GlossingStubProvider(),
+            config=config,
+        )
+
+    first = _service_for("test_vault")
+    second = _service_for("other_vault")
+    text = "A document about the QZE protocol and its message framing."
+
+    with (
+        caplog.at_level(logging.INFO, logger=TIMING_LOGGER),
+        caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER),
+    ):
+        await first._generate_abstract_text(text, "adr", document_id="doc-1")
+        await second._generate_abstract_text(text, "adr", document_id="doc-1")
+
+    assert [r["vault_id"] for r in _records(caplog)] == ["test_vault", "other_vault"]
+    assert [r["vault_id"] for r in _faithfulness_records(caplog)] == [
+        "test_vault",
+        "other_vault",
+    ]
 
 
 # ── Both entry paths ────────────────────────────────────────────────

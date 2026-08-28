@@ -117,6 +117,7 @@ async def test_storage_emits_record_for_get_document(pg_pool, caplog):
         logger_name="sage.storage.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="storage",
+        vault_id="test_vault",
     )
     store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
@@ -130,6 +131,7 @@ async def test_storage_emits_record_for_get_document(pg_pool, caplog):
     assert len(get_doc_payloads) == 1, payloads
     payload = get_doc_payloads[0]
     assert payload["layer"] == "storage"
+    assert payload["vault_id"] == "test_vault"
     assert isinstance(payload["duration_ms"], float)
     assert payload["duration_ms"] >= 0.0
 
@@ -155,6 +157,7 @@ async def test_content_emits_record_for_search_semantic(pg_pool, caplog):
         logger_name="sage.content.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="content",
+        vault_id="test_vault",
     )
     store = PostgresContentStore(pg_pool, query_timer=timer)
 
@@ -183,6 +186,7 @@ async def test_retrieval_emits_request_record_with_phases(
         logger_name="sage.retrieval.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="retrieval",
+        vault_id="test_vault",
     )
     service = RetrievalService(
         graph_store=graph_store,
@@ -206,6 +210,7 @@ async def test_retrieval_emits_request_record_with_phases(
     assert len(request_payloads) == 1, payloads
     payload = request_payloads[0]
     assert payload["layer"] == "retrieval"
+    assert payload["vault_id"] == "test_vault"
     assert payload["mode"] == RetrievalMode.CATALOG.value
     assert isinstance(payload["phases"], dict)
     assert len(payload["phases"]) >= 1, "expected at least one named phase"
@@ -227,6 +232,7 @@ async def test_warn_threshold_drives_warning_level(pg_pool, caplog):
             warn_threshold_ms=0.0,
         ),
         layer="storage",
+        vault_id="test_vault",
     )
     store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
@@ -254,6 +260,7 @@ async def test_fast_path_suppresses_and_summary_aggregates(pg_pool, caplog):
             summary_interval_seconds=60.0,
         ),
         layer="storage",
+        vault_id="test_vault",
     )
     store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
@@ -276,7 +283,57 @@ async def test_fast_path_suppresses_and_summary_aggregates(pg_pool, caplog):
     summary = summaries[0]
     assert summary["suppressed"].get("get_document") == n
     assert summary["layer"] == "storage"
+    assert summary["vault_id"] == "test_vault"
     assert isinstance(summary["interval_s"], float)
+
+
+# ── 5b. every payload shape names its vault ──────────────────────────
+
+
+def test_query_timer_records_carry_the_constructing_vaults_id(caplog):
+    """All three payload shapes carry the id of the vault whose timer emitted them.
+
+    Every loaded vault's file handler is attached to the same process-global
+    loggers, so a record in a shared log is attributable only by what it
+    carries. Anti-coincidental-pass: two timers with distinct vault ids are
+    both constructed before either emits. A hardcoded string fails the
+    second timer's summary; an id read from anywhere shared -- module
+    state, a last-constructed value -- fails the first timer's per-call
+    and request records, since the second construction would have
+    overwritten it. Only an id held by the emitting instance passes all
+    three shapes.
+    """
+    emitting = QueryTimer(
+        logger_name="sage.storage.timing",
+        config=TimingConfig(emit_threshold_ms=0.0),
+        layer="storage",
+        vault_id="test_vault",
+    )
+    suppressing = QueryTimer(
+        logger_name="sage.storage.timing",
+        config=TimingConfig(emit_threshold_ms=10_000.0),
+        layer="storage",
+        vault_id="other_vault",
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
+        with emitting.measure("get_document"):
+            pass
+        with emitting.request("catalog", "req-1"):
+            pass
+        with suppressing.measure("get_document"):
+            pass
+        suppressing.flush()
+
+    payloads = _payloads(caplog, "sage.storage.timing")
+    measures = [p for p in payloads if p.get("label") == "get_document"]
+    requests = [p for p in payloads if p.get("label") == "request:catalog"]
+    summaries = [p for p in payloads if p.get("summary") is True]
+    assert len(measures) == 1 and len(requests) == 1 and len(summaries) == 1, payloads
+    assert measures[0]["vault_id"] == "test_vault"
+    assert requests[0]["vault_id"] == "test_vault"
+    assert summaries[0]["vault_id"] == "other_vault"
 
 
 # ── 6. no-op default is silent ───────────────────────────────────────
@@ -312,6 +369,7 @@ async def test_write_path_emits_storage_record(pg_pool, caplog):
         logger_name="sage.storage.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="storage",
+        vault_id="test_vault",
     )
     store = PostgresGraphStore(pg_pool, query_timer=timer)
     await store.initialize()
@@ -385,6 +443,13 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
             assert services.graph_store._query_timer is not NULL_QUERY_TIMER
             assert services.content_store._query_timer is not NULL_QUERY_TIMER
             assert services.retrieval_service._query_timer is not NULL_QUERY_TIMER
+
+            # The production wiring must pass the vault's own id through
+            # _build_vault_timers, not a constant: a constructor-level test
+            # cannot see that pass-through.
+            assert services.graph_store._query_timer._vault_id == config.vault.id
+            assert services.content_store._query_timer._vault_id == config.vault.id
+            assert services.retrieval_service._query_timer._vault_id == config.vault.id
 
             # The vault timing thread should be running.
             assert services.timing_thread is not None
@@ -474,6 +539,7 @@ def test_vault_timing_thread_flushes_periodically(caplog):
             summary_interval_seconds=0.05,
         ),
         layer="storage",
+        vault_id="test_vault",
     )
     # Pre-load some suppressed counts.
     with timer.measure("get_document"):
