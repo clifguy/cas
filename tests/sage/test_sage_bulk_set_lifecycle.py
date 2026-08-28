@@ -127,7 +127,7 @@ async def test_mcp_tool_missing_identifier_is_per_item_error(seeded_mcp_vault):
 # Response_mode parameter on bulk mutation tools
 # ---------------------------------------------------------------------------
 
-_T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
+_BLOAT_PROBE_ABSTRACT = "Test abstract used as the bulk-mode bloat probe."
 
 
 @pytest.fixture
@@ -154,7 +154,9 @@ async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empt
     seeded_ids = [_id(f"doc_t0153_{n}") for n in range(6)]
     for doc_id in seeded_ids:
         await services.graph_store.insert_document(_make_doc(doc_id))
-        await services.graph_store.update_document(doc_id, {"semantic_abstract": _T0153_ABSTRACT})
+        await services.graph_store.update_document(
+            doc_id, {"semantic_abstract": _BLOAT_PROBE_ABSTRACT}
+        )
 
     yield vault_id, seeded_ids
 
@@ -187,7 +189,7 @@ async def test_light_strips_document_and_semantic_abstract(
         assert "document" not in entry, (
             f"light mode must strip the per-item `document` field; got {entry!r}"
         )
-    assert _T0153_ABSTRACT not in str(result), (
+    assert _BLOAT_PROBE_ABSTRACT not in str(result), (
         "light mode must not leak the semantic_abstract probe string"
     )
 
@@ -211,7 +213,7 @@ async def test_full_preserves_document_with_semantic_abstract(
         assert entry["status"] == "success"
         # Anti-coincidental: assert the specific cited bloat field, not
         # just truthiness of `document`.
-        assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
+        assert entry["document"]["semantic_abstract"] == _BLOAT_PROBE_ABSTRACT
 
 
 async def test_default_above_threshold_returns_light(
@@ -248,7 +250,7 @@ async def test_default_at_or_below_threshold_returns_full(
     assert "error" not in result, f"unexpected error envelope: {result!r}"
     assert result["success_count"] == 3
     for entry in result["results"]:
-        assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
+        assert entry["document"]["semantic_abstract"] == _BLOAT_PROBE_ABSTRACT
 
 
 async def test_error_envelope_intact_in_light_mode(

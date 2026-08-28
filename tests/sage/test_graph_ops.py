@@ -1724,21 +1724,21 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
 # the graph_ops.py:663 shape). Sentinel fixtures are local -- no shared
 # module -- but the same sentinel constants drive both halves of the
 # parity assertion so the equality check is meaningful.
-_T0124_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C124))
-_T0124_RETRACTED_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C125))
-_T0124_SOURCE_ID = _id("t0124_doc_source")
-_T0124_TARGET_ID = _id("t0124_doc_target")
-_T0124_SOURCE_ANCHOR = _id("t0124_doc_source_anchor")
-_T0124_TARGET_ANCHOR = _id("t0124_doc_target_anchor")
-_T0124_TOMBSTONE = _id("t0124_doc_tombstone")
-_T0124_CREATED_AT_ISO = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat()
-_T0124_EDGE_TYPE = EdgeType.REFERENCES.value
-_T0124_RESOLUTION_POLICY = ResolutionPolicy.TRANSITIVE_BOTH.value
-_T0124_RATIONALE_KIND = RationaleKind.VERSION_CHAIN.value
-_T0124_NOTES = "t0124 sentinel notes"
-_T0124_RATIONALE = "t0124 sentinel rationale"
-_T0124_SYNCED_FROM_VERSION = _id("t0124_doc_synced_from_version")
-_T0124_SYNCED_FROM_CONTENT_HASH = "sha256:" + "cd" * 32
+_PARITY_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C124))
+_PARITY_RETRACTED_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C125))
+_PARITY_SOURCE_ID = _id("parity_doc_source")
+_PARITY_TARGET_ID = _id("parity_doc_target")
+_PARITY_SOURCE_ANCHOR = _id("parity_doc_source_anchor")
+_PARITY_TARGET_ANCHOR = _id("parity_doc_target_anchor")
+_PARITY_TOMBSTONE = _id("parity_doc_tombstone")
+_PARITY_CREATED_AT_ISO = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat()
+_PARITY_EDGE_TYPE = EdgeType.REFERENCES.value
+_PARITY_RESOLUTION_POLICY = ResolutionPolicy.TRANSITIVE_BOTH.value
+_PARITY_RATIONALE_KIND = RationaleKind.VERSION_CHAIN.value
+_PARITY_NOTES = "parity sentinel notes"
+_PARITY_RATIONALE = "parity sentinel rationale"
+_PARITY_SYNCED_FROM_VERSION = _id("parity_doc_synced_from_version")
+_PARITY_SYNCED_FROM_CONTENT_HASH = "sha256:" + "cd" * 32
 
 
 def _edge_row_with_every_edge_field() -> dict:
@@ -1754,21 +1754,21 @@ def _edge_row_with_every_edge_field() -> dict:
     in the CTE row dict).
     """
     return {
-        "id": _T0124_EDGE_ID,
-        "source_id": _T0124_SOURCE_ID,
-        "target_id": _T0124_TARGET_ID,
-        "edge_type": _T0124_EDGE_TYPE,
-        "resolution_policy": _T0124_RESOLUTION_POLICY,
-        "source_valid_from_version": _T0124_SOURCE_ANCHOR,
-        "target_valid_from_version": _T0124_TARGET_ANCHOR,
-        "valid_until_version": _T0124_TOMBSTONE,
-        "retracted_edge_id": _T0124_RETRACTED_EDGE_ID,
-        "created_at": _T0124_CREATED_AT_ISO,
-        "notes": _T0124_NOTES,
-        "rationale": _T0124_RATIONALE,
-        "rationale_kind": _T0124_RATIONALE_KIND,
-        "synced_from_version": _T0124_SYNCED_FROM_VERSION,
-        "synced_from_content_hash": _T0124_SYNCED_FROM_CONTENT_HASH,
+        "id": _PARITY_EDGE_ID,
+        "source_id": _PARITY_SOURCE_ID,
+        "target_id": _PARITY_TARGET_ID,
+        "edge_type": _PARITY_EDGE_TYPE,
+        "resolution_policy": _PARITY_RESOLUTION_POLICY,
+        "source_valid_from_version": _PARITY_SOURCE_ANCHOR,
+        "target_valid_from_version": _PARITY_TARGET_ANCHOR,
+        "valid_until_version": _PARITY_TOMBSTONE,
+        "retracted_edge_id": _PARITY_RETRACTED_EDGE_ID,
+        "created_at": _PARITY_CREATED_AT_ISO,
+        "notes": _PARITY_NOTES,
+        "rationale": _PARITY_RATIONALE,
+        "rationale_kind": _PARITY_RATIONALE_KIND,
+        "synced_from_version": _PARITY_SYNCED_FROM_VERSION,
+        "synced_from_content_hash": _PARITY_SYNCED_FROM_CONTENT_HASH,
     }
 
 
@@ -1785,21 +1785,21 @@ def _edge_cte_row_with_every_edge_field() -> dict:
     storage-layer fields keep their bare names.
     """
     return {
-        "edge_id": _T0124_EDGE_ID,
-        "source_id": _T0124_SOURCE_ID,
-        "target_id": _T0124_TARGET_ID,
-        "edge_type": _T0124_EDGE_TYPE,
-        "resolution_policy": _T0124_RESOLUTION_POLICY,
-        "source_valid_from_version": _T0124_SOURCE_ANCHOR,
-        "target_valid_from_version": _T0124_TARGET_ANCHOR,
-        "valid_until_version": _T0124_TOMBSTONE,
-        "retracted_edge_id": _T0124_RETRACTED_EDGE_ID,
-        "edge_created_at": _T0124_CREATED_AT_ISO,
-        "notes": _T0124_NOTES,
-        "rationale": _T0124_RATIONALE,
-        "rationale_kind": _T0124_RATIONALE_KIND,
-        "synced_from_version": _T0124_SYNCED_FROM_VERSION,
-        "synced_from_content_hash": _T0124_SYNCED_FROM_CONTENT_HASH,
+        "edge_id": _PARITY_EDGE_ID,
+        "source_id": _PARITY_SOURCE_ID,
+        "target_id": _PARITY_TARGET_ID,
+        "edge_type": _PARITY_EDGE_TYPE,
+        "resolution_policy": _PARITY_RESOLUTION_POLICY,
+        "source_valid_from_version": _PARITY_SOURCE_ANCHOR,
+        "target_valid_from_version": _PARITY_TARGET_ANCHOR,
+        "valid_until_version": _PARITY_TOMBSTONE,
+        "retracted_edge_id": _PARITY_RETRACTED_EDGE_ID,
+        "edge_created_at": _PARITY_CREATED_AT_ISO,
+        "notes": _PARITY_NOTES,
+        "rationale": _PARITY_RATIONALE,
+        "rationale_kind": _PARITY_RATIONALE_KIND,
+        "synced_from_version": _PARITY_SYNCED_FROM_VERSION,
+        "synced_from_content_hash": _PARITY_SYNCED_FROM_CONTENT_HASH,
     }
 
 
