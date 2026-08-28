@@ -910,6 +910,16 @@ class VaultConfig(BaseModel):
     def valid_doc_type_values(self) -> set[str]:
         return {dt.value for dt in self.document_types.doc_types}
 
+    def valid_lifecycle_status_values(self) -> set[str]:
+        """Lifecycle states this vault declares.
+
+        Lifecycle states are deliberately not a Python enum -- vaults
+        extend the base set with domain-specific states -- so callers
+        that need to recognize an out-of-vocabulary value have to ask
+        the config rather than a type.
+        """
+        return {state.value for state in self.lifecycle.states}
+
     def build_tier3_validators(self) -> None:
         """Construct and cache a jsonschema Validator per doc_type that
         declared a metadata_schema. Called via ``model_post_init`` so a

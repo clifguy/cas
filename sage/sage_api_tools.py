@@ -1205,8 +1205,15 @@ def register_sage_tools(
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,
-                tier3_metadata. Edge-target keys (only when
+                source_type, tier3_metadata. Edge-target keys (only when
                 ``target="edges"``): source_id, target_id, edge_type.
+                ``source_type`` selects on the format the document was
+                ingested from, and takes one of a closed set: "markdown",
+                "docx", "pdf", "email", "onenote", "teams_chat", "xlsx",
+                "pptx". Anything else is refused via
+                ``invalid_filter_value`` rather than returning an empty
+                result, so a one-call existence question gets a definite
+                answer. ``edge_type`` is closed the same way.
                 The ``tier3_metadata`` key takes a dict of field-name to
                 expected-value pairs that match against each document's
                 ``tier3_metadata``. Equality is exact; ``null``
@@ -1272,6 +1279,14 @@ def register_sage_tools(
         - ``unknown_filter_key`` (400): a key in ``filters`` is not a
           declared field on ``RetrievalFilters``. Detail carries the
           offending ``key``, ``valid_keys``, and a worked ``example``.
+        - ``invalid_filter_value`` (400): a value in ``filters`` falls
+          outside a closed vocabulary (``source_type``, ``edge_type``).
+          Detail carries ``field``, ``value``, and ``valid_values``.
+          Vault-configured vocabularies (``doc_type``,
+          ``lifecycle_status``) cannot be checked this way; they surface
+          as a ``warnings`` entry in the response ``hints`` instead --
+          the result stays successful and empty, but an unrecognized
+          value is named rather than left to look like a true zero.
         - ``invalid_filter_shape`` (400): a value in ``filters`` has the
           wrong type for its field (e.g., ``{"tags": 42}`` where
           ``list[str]`` was expected). Detail carries ``field``,

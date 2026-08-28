@@ -87,6 +87,7 @@ def _make_doc(
     lifecycle_status: str = "active",
     pipeline_status: PipelineStatus = PipelineStatus.ABSTRACTION_COMPLETE,
     project: str | None = None,
+    source_type: SourceType = SourceType.MARKDOWN,
     doc_type: str | None = None,
     authority_scope: str | None = None,
     tags: list[str] | None = None,
@@ -100,7 +101,7 @@ def _make_doc(
     return Document(
         id=doc_id,
         title=f"Test {doc_id}",
-        source_type=SourceType.MARKDOWN,
+        source_type=source_type,
         source_path=f"test/{doc_id}.md",
         lifecycle_status=lifecycle_status,
         source_content_hash=_sha(doc_id),
@@ -4711,6 +4712,7 @@ def test_t0157_target_edges_with_deterministic_mode_is_mode_parameter_mismatch()
         ({"tags": ["a"]}, "tags"),
         ({"document_ids": [_id("d1")]}, "document_ids"),
         ({"tier3_metadata": {"k": "v"}}, "tier3_metadata"),
+        ({"source_type": "markdown"}, "source_type"),
     ],
 )
 def test_t0157_target_edges_rejects_document_only_filter_keys(filter_kwargs, key):
@@ -5238,3 +5240,335 @@ def test_t0169_response_level_field_removed_from_discover_request():
     exists.
     """
     assert "response_level" not in DiscoverRequest.model_fields
+
+
+# ---------------------------------------------------------------------------
+# source_type as a document filter key, and out-of-vocabulary filter-value
+# diagnostics on doc_type / lifecycle_status.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_mixed_source_type_docs(graph_store):
+    """Seed 4 documents spanning two source types.
+
+    Two markdown, two docx, and no pdf. The complement matters: a
+    source_type filter that is silently dropped returns all four, so a
+    homogeneous seed could not tell a working filter from a no-op one.
+    """
+    docs = {
+        _id("st_md_one"): _make_doc(_id("st_md_one"), source_type=SourceType.MARKDOWN),
+        _id("st_md_two"): _make_doc(_id("st_md_two"), source_type=SourceType.MARKDOWN),
+        _id("st_docx_one"): _make_doc(_id("st_docx_one"), source_type=SourceType.DOCX),
+        _id("st_docx_two"): _make_doc(_id("st_docx_two"), source_type=SourceType.DOCX),
+    }
+    for doc in docs.values():
+        await graph_store.insert_document(doc)
+    return docs
+
+
+async def test_t0457_catalog_source_type_filter_hit(graph_store, retrieval_service):
+    """Catalog mode filters on source_type, excluding the complement.
+
+    Anti-coincidental: asserts the markdown ids are ABSENT, not merely
+    that the docx ids are present. A dropped filter returns all four.
+    """
+    await _seed_mixed_source_type_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(source_type=SourceType.DOCX),
+    )
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert result_ids == {_id("st_docx_one"), _id("st_docx_two")}
+    assert _id("st_md_one") not in result_ids
+    assert _id("st_md_two") not in result_ids
+    assert response.total_available == 2
+
+
+async def test_t0457_catalog_source_type_filter_miss(graph_store, retrieval_service):
+    """A valid-but-unrepresented source_type returns empty WITHOUT a warning.
+
+    Anti-coincidental for the vocabulary warning: pdf is a real
+    SourceType, so emptiness here is a genuine zero-match, not a
+    vocabulary error. An implementation that warns on emptiness rather
+    than on vocabulary fails this.
+    """
+    await _seed_mixed_source_type_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(source_type=SourceType.PDF),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.total_available == 0
+    assert response.hints is None or "warnings" not in response.hints
+
+
+async def _seed_mixed_source_type_chunks(
+    graph_store, stub_content_store, seeded_embedding_provider
+):
+    """Seed the mixed-source docs with searchable chunks."""
+    docs = await _seed_mixed_source_type_docs(graph_store)
+    for doc_id in docs:
+        await _index_doc_chunks(
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
+            [("Section 1", "Quarterly compliance narrative for the filing.")],
+        )
+    return docs
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_t0457_source_type_pushdown_scoped_to_matching_docs(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, mode
+):
+    """Semantic and keyword modes honor source_type via document resolution."""
+    await _seed_mixed_source_type_chunks(graph_store, stub_content_store, seeded_embedding_provider)
+
+    request = DiscoverRequest(
+        mode=mode,
+        query="quarterly compliance filing",
+        filters=RetrievalFilters(source_type=SourceType.DOCX),
+    )
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert result_ids, "expected the docx-sourced documents to match the query"
+    assert result_ids <= {_id("st_docx_one"), _id("st_docx_two")}
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_t0457_source_type_pushdown_does_not_call_list_all_documents(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, mode
+):
+    """source_type resolves through a filtered query, never a full scan.
+
+    Anti-coincidental, and it takes a pair of observables. Refusing
+    ``list_all_documents`` alone excludes the obvious rival -- a Python
+    post-filter over every document -- but not the one that costs the
+    same: querying on the OTHER filters and narrowing on source_type in
+    Python touches ``query_documents``, never ``list_all_documents``,
+    and so would satisfy a call-avoidance assertion while still reading
+    the whole vault. The filter dict handed to the store is therefore
+    asserted too. Neither observable discriminates alone; together they
+    pin the predicate to the store.
+    """
+    await _seed_mixed_source_type_chunks(graph_store, stub_content_store, seeded_embedding_provider)
+
+    async def _explode(*args, **kwargs):
+        raise AssertionError("list_all_documents must not be called for a source_type filter")
+
+    graph_store.list_all_documents = _explode
+
+    seen_filters: list[dict | None] = []
+    original_query_documents = graph_store.query_documents
+
+    async def _recording_query_documents(filters=None, *args, **kwargs):
+        seen_filters.append(filters)
+        return await original_query_documents(filters, *args, **kwargs)
+
+    graph_store.query_documents = _recording_query_documents
+
+    request = DiscoverRequest(
+        mode=mode,
+        query="quarterly compliance filing",
+        filters=RetrievalFilters(source_type=SourceType.DOCX),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert {h.document.id for h in response.results} <= {
+        _id("st_docx_one"),
+        _id("st_docx_two"),
+    }
+    assert any((f or {}).get("source_type") == "docx" for f in seen_filters), (
+        "source_type must reach the store as a predicate; resolving it in "
+        f"Python costs a full read. Filters seen: {seen_filters!r}"
+    )
+
+
+async def test_t0457_source_type_in_active_filters_hints(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """An active source_type filter is surfaced in the empty-result hints."""
+    doc = _make_doc(_id("st_hint_md"), source_type=SourceType.MARKDOWN)
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("st_hint_md"),
+        [("Section 1", "Interesting report content about claims.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="report claims",
+        filters=RetrievalFilters(source_type=SourceType.PPTX),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is not None
+    assert response.hints["active_filters"].get("source_type") == "pptx"
+
+
+# --- out-of-vocabulary filter values ---------------------------------------
+#
+# ``minimal_config`` declares doc_types {note, memo} and lifecycle states
+# {active, completed, archived}. Values outside those sets are
+# out-of-vocabulary for this vault.
+
+
+async def test_t0457_undefined_doc_type_emits_warning(graph_store, retrieval_service):
+    """An undefined doc_type value yields a warning naming it and the vocabulary."""
+    await graph_store.insert_document(_make_doc(_id("oov_doc_a"), doc_type="note"))
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="template"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is not None
+    warnings = response.hints.get("warnings")
+    assert warnings, "an undefined doc_type must surface a hints warning"
+    joined = " ".join(warnings)
+    assert "template" in joined
+    assert "note" in joined and "memo" in joined
+
+
+async def test_t0457_defined_doc_type_no_warning(graph_store, retrieval_service):
+    """A defined doc_type with zero matches must NOT warn.
+
+    Anti-coincidental trap for "always warn when doc_type is set".
+    """
+    await graph_store.insert_document(_make_doc(_id("oov_doc_b"), doc_type="note"))
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="memo"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is None or "warnings" not in response.hints
+
+
+async def test_t0457_undefined_lifecycle_status_emits_warning(graph_store, retrieval_service):
+    """An undefined lifecycle_status value yields a warning."""
+    await graph_store.insert_document(_make_doc(_id("oov_lc_a")))
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(lifecycle_status="filed"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is not None
+    warnings = response.hints.get("warnings")
+    assert warnings, "an undefined lifecycle_status must surface a hints warning"
+    joined = " ".join(warnings)
+    assert "filed" in joined
+    assert "archived" in joined
+
+
+async def test_t0457_defined_lifecycle_status_no_warning(graph_store, retrieval_service):
+    """A defined lifecycle_status with zero matches must NOT warn."""
+    await graph_store.insert_document(_make_doc(_id("oov_lc_b"), lifecycle_status="active"))
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(lifecycle_status="completed"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is None or "warnings" not in response.hints
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [RetrievalMode.CATALOG, RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD],
+)
+async def test_t0457_warning_emitted_in_every_mode(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, mode
+):
+    """The vocabulary warning is mode-independent.
+
+    Anti-coincidental: hooking ``_build_hints`` satisfies semantic and
+    keyword but not catalog, which never calls it -- and catalog is the
+    mode a bare existence question uses.
+    """
+    await graph_store.insert_document(_make_doc(_id("oov_mode_a"), doc_type="note"))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("oov_mode_a"),
+        [("Section 1", "Interesting report content about claims.")],
+    )
+
+    request = DiscoverRequest(
+        mode=mode,
+        query=None if mode == RetrievalMode.CATALOG else "report claims",
+        filters=RetrievalFilters(doc_type="template"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.hints is not None, f"{mode.value} produced no hints"
+    assert response.hints.get("warnings"), f"{mode.value} produced no vocabulary warning"
+
+
+async def test_t0457_warning_preserves_response_shape(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """The warning merges into hints; it does not replace them.
+
+    Anti-coincidental: an implementation that assigns rather than merges
+    drops total_before_filtering and still passes every "warning
+    present" assertion.
+    """
+    await graph_store.insert_document(_make_doc(_id("oov_shape_a"), doc_type="note"))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("oov_shape_a"),
+        [("Section 1", "Interesting report content about claims.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="report claims",
+        filters=RetrievalFilters(doc_type="template"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.mode == RetrievalMode.SEMANTIC
+    assert response.results == []
+    assert response.total_available == 0
+    assert response.hints is not None
+    assert "total_before_filtering" in response.hints
+    assert response.hints["active_filters"].get("doc_type") == "template"
+    assert response.hints.get("warnings")
+
+
+async def test_t0457_no_warnings_key_when_all_values_valid(graph_store, retrieval_service):
+    """A fully in-vocabulary filter set carries no ``warnings`` key at all.
+
+    Absent, not an empty list -- so a caller can test membership.
+    """
+    await graph_store.insert_document(_make_doc(_id("oov_ok_a"), doc_type="note"))
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="note", lifecycle_status="active"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) == 1
+    assert response.hints is None or "warnings" not in response.hints
