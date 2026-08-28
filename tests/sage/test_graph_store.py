@@ -755,3 +755,98 @@ async def test_run_raises_after_close_with_warmed_store(graph_store):
     await graph_store.close()
     with pytest.raises(RuntimeError, match="closed"):
         await graph_store.list_all_documents()
+
+
+# ---------------------------------------------------------------------------
+# Bulk source-path lookup
+# ---------------------------------------------------------------------------
+
+
+def _make_doc_at(doc_id: str, source_path: str, **overrides) -> Document:
+    """A document pinned to an explicit source_path.
+
+    ``_make_doc`` derives source_path from the id, so it cannot express the
+    several-documents-one-path case the bulk lookup has to collapse.
+    """
+    doc = _make_doc(doc_id)
+    return doc.model_copy(update={"source_path": source_path, **overrides})
+
+
+async def test_find_documents_by_source_paths_maps_each_present_path_to_its_hash(graph_store):
+    """Each present path maps to that document's own content hash; an absent
+    path is simply not a key.
+
+    Trap: an implementation that echoes its input (``{p: p for p in paths}``)
+    or that returns every path as present satisfies a keys-only assertion.
+    Comparing values against the seeded hashes, and including a path no
+    document carries, closes both.
+    """
+    docs = [_make_doc_at(_id(f"bulk_path_{n}"), f"test/bulk/{n}.md") for n in ("a", "b", "c")]
+    for doc in docs:
+        await graph_store.insert_document(doc)
+
+    result = await graph_store.find_documents_by_source_paths(
+        [d.source_path for d in docs] + ["test/bulk/absent.md"]
+    )
+
+    assert result == {d.source_path: d.source_content_hash for d in docs}
+
+
+async def test_find_documents_by_source_paths_empty_list_returns_empty_dict(graph_store):
+    """An empty path list returns an empty mapping, not the whole table.
+
+    Trap: a query built as ``source_path = ANY('{}')`` is harmless, but a
+    predicate that collapses to a no-op WHERE clause returns every row.
+    Asserting against a store that is *not* empty distinguishes them.
+    """
+    await graph_store.insert_document(_make_doc_at(_id("bulk_empty_probe"), "test/bulk/probe.md"))
+
+    assert await graph_store.find_documents_by_source_paths([]) == {}
+
+
+async def test_find_documents_by_source_paths_returns_one_deterministic_row_per_path(graph_store):
+    """Several documents on one path collapse to a single, stable entry.
+
+    The per-file form consulted ``docs[0]`` of an unordered SELECT, so the
+    winner was arbitrary. Trap: drop the row collapse and both rows come back,
+    leaving the caller-side mapping to keep whichever arrived last -- the
+    opposite document, which a membership-only assertion would not notice.
+    Pinning the value to the lower-ordering id's hash catches that.
+
+    The higher-id document is inserted first on purpose: with the two orders
+    coincident, "lowest id wins" and "first inserted wins" are different rules
+    that no assertion here could separate -- and both are implemented, the
+    former by the durable store and the latter by the in-memory stub.
+
+    What this pins is which document represents the path, not the row count:
+    a collapse-free query that happened to yield the same winner is
+    indistinguishable at this boundary, and behaves identically for callers.
+    """
+    shared = "test/bulk/shared.md"
+    lowest_id = _make_doc_at("00000001_bulk_dup_first", shared)
+    higher_id = _make_doc_at("00000002_bulk_dup_second", shared)
+    await graph_store.insert_document(higher_id)
+    await graph_store.insert_document(lowest_id)
+
+    one = await graph_store.find_documents_by_source_paths([shared])
+    two = await graph_store.find_documents_by_source_paths([shared])
+
+    assert one == {shared: lowest_id.source_content_hash}
+    assert two == one
+
+
+async def test_find_documents_by_source_paths_ignores_lifecycle_status(graph_store):
+    """A non-active document is still found by its path.
+
+    Parity with the per-file form, which applied no lifecycle filter. Trap:
+    the other tests in this group seed only active documents, so a copied-in
+    ``AND lifecycle_status = 'active'`` clause would leave them all green.
+    """
+    archived = _make_doc_at(
+        _id("bulk_archived"), "test/bulk/archived.md", lifecycle_status="archived"
+    )
+    await graph_store.insert_document(archived)
+
+    result = await graph_store.find_documents_by_source_paths([archived.source_path])
+
+    assert result == {archived.source_path: archived.source_content_hash}

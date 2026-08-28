@@ -339,9 +339,6 @@ class StubGraphStore(GraphStore):
     ) -> tuple[list[Document], int]:
         raise self._unsupported("query_documents")
 
-    async def find_by_source_path(self, source_path: str) -> list[Document]:
-        return [d for d in self._docs.values() if d.source_path == source_path]
-
     async def find_documents_by_title(self, title: str) -> list[Document]:
         return [d for d in self._docs.values() if d.title == title]
 
@@ -464,6 +461,16 @@ class StubGraphStore(GraphStore):
             for d in self._docs.values()
             if d.source_content_hash in wanted
         }
+
+    async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
+        wanted = set(source_paths)
+        found: dict[str, str] = {}
+        # Lowest document id per path wins, so the stub answers identically to
+        # the durable store rather than following its own insertion order.
+        for d in sorted(self._docs.values(), key=lambda doc: doc.id):
+            if d.source_path in wanted and d.source_path not in found:
+                found[d.source_path] = d.source_content_hash
+        return found
 
     async def remove_document(self, document_id: str) -> None:
         self._docs.pop(document_id, None)
