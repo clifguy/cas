@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Synthetic-load probe for the semantic-mode tier3 pushdown A/B.
 
-extends the ``json_extract`` pushdown of ``tier3_metadata``
-filters from catalog mode into the shared ``_content_filters()`` resolver
-that gates semantic and keyword retrieval. This probe captures latency
-numbers for semantic-mode tier3 lookups so the AC's required A/B
-comparison can be made against the same query shapes pre/post change.
+Extending the ``json_extract`` pushdown of ``tier3_metadata`` filters
+from catalog mode into the shared ``_content_filters()`` resolver — the
+one that gates semantic and keyword retrieval — needs a before/after
+comparison over identical query shapes. This probe captures the
+semantic-mode tier3 latency numbers that comparison is made from.
 
-Sibling to ``scripts/t0074_load_probe.py``. The t0074 probe deliberately
+Sibling to ``scripts/probe_catalog_index_latency.py``, which deliberately
 omits semantic mode (it skips the embedding provider entirely); this
 probe is the semantic-mode counterpart and uses ``StubEmbeddingProvider``
 so the cas vault's nomic-embed-text model never loads. The probe only
@@ -21,11 +21,11 @@ Procedure:
    tier3 falls through to the legacy ``list_all_documents()`` post-filter
    path (or to the equivalent un-pushed query_documents call). Run::
 
-       .venv/bin/python -m scripts.t0082_load_probe --label before
+       .venv/bin/python -m scripts.probe_semantic_tier3_latency --label before
 
 2. Post-change measurement: with the production pushdown restored, run::
 
-       .venv/bin/python -m scripts.t0082_load_probe --label after
+       .venv/bin/python -m scripts.probe_semantic_tier3_latency --label after
 
 Both runs append to timing.log; ``--label`` distinguishes them.
 
@@ -57,7 +57,7 @@ from sage.models.schemas import (
 from sage.vault_management import config_path_for_vault
 
 # Tier3 shapes drawn from the cas vault's seeded ticket portfolio.
-# Mirrors t0074_load_probe.TIER3_PROBES but framed for semantic-mode
+# Mirrors probe_catalog_index_latency.TIER3_PROBES but framed for semantic-mode
 # discover (so a query string is required).
 TIER3_PROBES = (
     {"ticket_priority": "high"},
@@ -118,7 +118,7 @@ async def _run_probes(label: str, reps: int) -> None:
         abstraction_provider=StubAbstractionProvider(),
     )
 
-    print(f"=== T-0082 probe label={label} reps={reps} ===")
+    print(f"=== semantic tier3 latency probe label={label} reps={reps} ===")
     try:
         # --- semantic discover with no filter (calibration baseline) ---
         for query in PROBE_QUERIES:
@@ -189,7 +189,7 @@ def main() -> None:
 
     if "pytest" in sys.modules:
         print(
-            "scripts.t0082_load_probe is a one-shot probe, not a test. "
+            "scripts.probe_semantic_tier3_latency is a one-shot probe, not a test. "
             "Refusing to run inside pytest.",
             file=sys.stderr,
         )

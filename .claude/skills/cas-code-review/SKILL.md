@@ -1,7 +1,7 @@
 ---
 name: cas-code-review
 description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5), the gate-integrity check (G1), and the public-posture gate (P1) catalogued in the skill's own section list. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
-version: 0.3.0
+version: 0.4.0
 ---
 
 # cas-code-review
@@ -224,13 +224,13 @@ That test also carries an explicit `Anti-coincidental-pass:` paragraph in its do
 
 ## P1 — Public-repo posture drift (release-readiness gate)
 
-**What this catches.** Newly added or modified code, docstrings, or `#` comments that would (a) leak the internal SDLC scaffolding (specific ticket ids, checklists, work plans, dispatcher prompts, decision sheets, cohorts, batches, PR or issue numbers), (b) pin the repo to a particular non-generic use case (e.g., PIM, theology, patent prosecution), or (c) expose the author's personal identity (`/Users/clifguy/...`, GitHub usernames, internal URLs). The repo is intended to be encountered by readers who have no knowledge of the production process that produced CAS/SAGE; the durable code surface must read accordingly.
+**What this catches.** Newly added or modified code, docstrings, `#` comments, or file and directory *names* that would (a) leak the internal SDLC scaffolding (specific ticket ids, checklists, work plans, dispatcher prompts, decision sheets, cohorts, batches, PR or issue numbers), (b) pin the repo to a particular non-generic use case (e.g., PIM, theology, patent prosecution), or (c) expose the author's personal identity (`/Users/clifguy/...`, GitHub usernames, internal URLs). The repo is intended to be encountered by readers who have no knowledge of the production process that produced CAS/SAGE; the durable code surface must read accordingly.
 
 **Convention reference.** The *CAS Code-Surface Discipline* steering document (vault: cas, `doc_type=steering_document`, tag `code-surface-discipline`) is the source-of-truth specification for what may and may not appear in durable surfaces, including the SAGE-as-ticketing and `domains/` exceptions and worked right-vs-wrong examples. Cite it when surfacing a finding so the rationale is traceable rather than re-derived.
 
-**Already gated deterministically.** `tests/test_public_posture.py` is the authoritative deterministic gate and runs in CI. It catches hyphenated `T-NNNN` refs in `.py` docstrings and `#` comments (T2 — via AST + tokenize, so the same token inside a string literal is correctly NOT flagged), use-case terms outside `domains/` across `.py`/`.yaml`/`.yml`/`.json`/`.md` (T1), personal filesystem paths (T3), and SDLC-scaffolding terms in `.py` docstrings/comments. It excludes the `domains/` and `.claude/` subtrees by design. This section's residual value is the heuristic reach *beyond* that scanner: prose that leaks intent ("added for the X flow", "fix from issue #123"), PR or issue numbers, internal URLs, and use-case leakage in surfaces the scanner does not parse. **Anything `test_public_posture` would fail, flag here too** — the pre-commit heuristic and the CI gate must never disagree. For any mechanically-checkable case, prefer running `.venv/bin/pytest tests/test_public_posture.py` over eyeballing the diff.
+**Already gated deterministically.** `tests/test_public_posture.py` is the authoritative deterministic gate and runs in CI. It catches hyphenated `T-NNNN` refs in `.py` docstrings and `#` comments (T2 — via AST + tokenize, so the same token inside a string literal is correctly NOT flagged), use-case terms outside `domains/` across `.py`/`.yaml`/`.yml`/`.json`/`.md` (T1), personal filesystem paths (T3), SDLC-scaffolding terms in `.py` docstrings/comments, and ticket ids or use-case terms in tracked file and directory *names* (T12 — a separate, wider ticket-id pattern, because a name carries the id unhyphenated as `t0074` or `t_0037`). It excludes the `domains/` and `.claude/` subtrees by design. This section's residual value is the heuristic reach *beyond* that scanner: prose that leaks intent ("added for the X flow", "fix from issue #123"), PR or issue numbers, internal URLs, and use-case leakage in surfaces the scanner does not parse. **Anything `test_public_posture` would fail, flag here too** — the pre-commit heuristic and the CI gate must never disagree. For any mechanically-checkable case, prefer running `.venv/bin/pytest tests/test_public_posture.py` over eyeballing the diff.
 
-**Scope note.** This is a forward-only ratchet on NEW changes. Legacy violations (the existing ~1,300 `T-NNNN` references and the broader use-case-specific surface area) are addressed by a separate cleanup pass and are not the concern of this section — the section fires when a diff *adds* a violation, not when an unrelated change touches a file that already contains one. Removing a legacy violation is always welcome but never required by this gate unless the diff also modifies the same docstring/comment.
+**Scope note.** This is a forward-only ratchet on NEW changes. Legacy violations (the existing ~1,300 `T-NNNN` references and the broader use-case-specific surface area) are addressed by a separate cleanup pass and are not the concern of this section — the section fires when a diff *adds* a violation, not when an unrelated change touches a file that already contains one. Removing a legacy violation is always welcome but never required by this gate unless the diff also modifies the same docstring/comment. For names the same rule reads: the section fires when a diff *adds* a file or directory with a violating name, or *renames* one into a violating name — not when it edits the contents of a file that already has one.
 
 **Review prompts.**
 
@@ -239,6 +239,7 @@ That test also carries an explicit `Anti-coincidental-pass:` paragraph in its do
   - A non-ADR internal-scaffolding artifact: "checklist", "work plan", "decision sheet", "dispatcher prompt", "subagent contract", "cohort", "batch", a PR or issue number? Flag.
   - The motivating ticket, flow, or caller ("added for the X flow", "fix from issue #123", "used by Y")? Flag — that belongs in the commit message and PR body, not in the durable code surface.
 - For every code element (identifier, string literal, module name, file path) ADDED or MODIFIED in the diff outside the `domains/` subtree, does it mention `PIM`, `pim_health`, `pim-health`, `theology`, `theological`, `patent`, `prosecution`, or other use-case-specific terminology? Flag.
+- For every file or directory ADDED or RENAMED in the diff, does any component of its path carry a ticket id or use-case term? Flag. Note that a name almost never carries the canonical spacing: check for `t0074`, `t_0037`, and `T0452` as well as `T-0452`. A name that describes what the file *does* is the fix — `probe_tag_filter_latency.py`, not `t0078_load_probe.py`.
 - For every docstring, comment, or test fixture ADDED or MODIFIED, does it hardcode `/Users/clifguy/` or another personally identifying path, URL, or username? Flag.
 - Acceptable references that MUST NOT be flagged:
   - `CAS-ADR-NNN` — ADRs are durable architectural citations and the only sanctioned non-code rationale anchor.
@@ -254,14 +255,16 @@ That test also carries an explicit `Anti-coincidental-pass:` paragraph in its do
 - RIGHT: `"""Process document codes from the configured inbox per the active vault's metadata_extraction config."""`
 - WRONG: `# Per checklist item 4 in the Q2 cleanup workplan, skip the legacy index.`
 - RIGHT: `# Skip the legacy index — see CAS-ADR-NNN for the migration rationale.`
+- WRONG: `scripts/t0074_load_probe.py`
+- RIGHT: `scripts/probe_catalog_index_latency.py`
 
-The rule is: durable surfaces (code, docstrings, comments) describe the pattern and cite ADRs only; ephemeral surfaces (commit messages, PR bodies) carry ticket and process scaffolding.
+The rule is: durable surfaces (code, docstrings, comments, and the names of the files and directories that hold them) describe the pattern and cite ADRs only; ephemeral surfaces (commit messages, PR bodies) carry ticket and process scaffolding.
 
 ---
 
 ## Out of scope
 
-- Style, formatting, naming. Ruff and mypy own this surface. (Public-posture content discipline IS in scope; see P1.)
+- Style, formatting, naming conventions. Ruff and mypy own this surface. (Public-posture discipline IS in scope, in file and directory names as well as in contents; see P1. The line is that P1 asks whether a name *leaks* something, not whether it is well-chosen.)
 - Generic security review. The `security-review` skill (separate, Anthropic-shipped) covers this.
 - Test coverage measurement, performance regression, or dependency-policy review. These are Tier 1 surfaces from the SDLC survey and have their own tooling lanes.
 - Architectural-decision review. ADRs in the cas vault (`doc_type=adr`) are the substrate for that.
