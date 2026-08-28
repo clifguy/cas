@@ -275,13 +275,11 @@ async def scan_directory(
     hash_matches = await graph_store.find_documents_by_hashes(hashes_to_check)
 
     # Also check by source path for "modified" detection
-    # A file is "modified" if its path matches an existing doc but hash differs
+    # A file is "modified" if its path matches an existing doc but hash differs.
+    # Bulk, like the hash check above: the lookup phase costs a fixed number of
+    # graph-store round-trips, so it does not scale with the file count.
     all_source_paths = [str(p) for p, _h, a, _m in file_infos if a is not None]
-    path_to_existing: dict[str, str] = {}
-    for sp in all_source_paths:
-        docs = await graph_store.find_by_source_path(sp)
-        if docs:
-            path_to_existing[sp] = docs[0].source_content_hash
+    path_to_existing = await graph_store.find_documents_by_source_paths(all_source_paths)
 
     # Build results
     results: list[ScanResult] = []

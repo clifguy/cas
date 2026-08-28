@@ -476,13 +476,6 @@ class PostgresGraphStore(GraphStore):
         )
         return f"ORDER BY {nulls_last}{sort_by} {direction}"
 
-    async def find_by_source_path(self, source_path: str) -> list[Document]:
-        with self._query_timer.measure("find_by_source_path"):
-            rows = await self._fetch_rows(
-                "SELECT * FROM documents WHERE source_path = %s", (source_path,)
-            )
-            return [self._row_to_document(r) for r in rows]
-
     async def find_documents_by_title(self, title: str) -> list[Document]:
         with self._query_timer.measure("find_documents_by_title"):
             rows = await self._fetch_rows(
@@ -981,6 +974,21 @@ class PostgresGraphStore(GraphStore):
                 hashes,
             )
             return {row["source_content_hash"]: row["id"] for row in rows}
+
+    async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
+        with self._query_timer.measure("find_documents_by_source_paths"):
+            if not source_paths:
+                return {}
+            # DISTINCT ON collapses the several-documents-one-path case to a
+            # single representative row, and the id tie-break makes which one
+            # deterministic rather than dependent on scan order.
+            rows = await self._fetch_rows(
+                "SELECT DISTINCT ON (source_path) source_path, source_content_hash "
+                "FROM documents WHERE source_path = ANY(%s) "
+                "ORDER BY source_path, id",
+                (source_paths,),
+            )
+            return {row["source_path"]: row["source_content_hash"] for row in rows}
 
     async def remove_document(self, document_id: str) -> None:
         with self._query_timer.measure("remove_document"):

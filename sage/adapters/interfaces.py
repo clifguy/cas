@@ -406,10 +406,6 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
-    async def find_by_source_path(self, source_path: str) -> list[Document]:
-        """Return documents whose source_path matches exactly."""
-
-    @abstractmethod
     async def find_documents_by_title(self, title: str) -> list[Document]:
         """Return documents whose title matches exactly."""
 
@@ -549,6 +545,16 @@ class GraphStore(ABC):
     @abstractmethod
     async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
         """Map source content hashes to the document ids that carry them."""
+
+    @abstractmethod
+    async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
+        """Map source paths to the content hash of one document carrying each.
+
+        Paths no document carries are absent from the mapping. Several
+        documents may share a source path (re-ingest, supersession); the
+        lowest-ordering document id represents the path, so the answer does
+        not depend on storage order. No lifecycle filtering is applied.
+        """
 
     # --- Out-of-band removal / selection ---
     # These exist to support out-of-band operator purge tooling. Document

@@ -1,4 +1,4 @@
-"""Event-loop offload and scope-bound tests for the directory scan service.
+"""Event-loop offload, scope-bound, and round-trip tests for the scan service.
 
 Asserts that ``scan_directory`` runs its blocking walk-and-hash phase on a
 dedicated single-thread executor rather than on the asyncio event loop, and
@@ -6,6 +6,10 @@ that the scan is bounded: a default depth ceiling replaces the previously
 unlimited walk, and file-count / byte ceilings truncate oversized scans with
 an explicit warning instead of a silent partial result. An unbounded on-loop
 scan freezes every concurrent request for the full duration of the walk.
+
+Also asserts that the vault-lookup phase costs a constant number of graph-store
+round-trips regardless of file count, and that the resulting ``sage_status``
+classification is unchanged by that batching.
 
 The tests drive ``scan_directory`` directly against tmp-path trees with a
 stub graph store; no vault services are initialized.
@@ -23,13 +27,25 @@ EXT_MAP = {".md": "markdown"}
 
 
 class _StubGraphStore:
-    """Graph store exposing only the two lookups the scan performs."""
+    """Graph store exposing only the two lookups the scan performs.
+
+    Deliberately narrow: a scan that reached for any other store method
+    would fail with AttributeError here rather than silently working.
+    """
+
+    def __init__(self, hash_matches=None, path_matches=None):
+        self._hash_matches: set[str] = set(hash_matches or ())
+        self._path_matches: dict[str, str] = dict(path_matches or {})
+        self.hash_calls: list[list[str]] = []
+        self.path_calls: list[list[str]] = []
 
     async def find_documents_by_hashes(self, hashes):
-        return {}
+        self.hash_calls.append(list(hashes))
+        return {h: f"doc_for_{h}" for h in hashes if h in self._hash_matches}
 
-    async def find_by_source_path(self, source_path):
-        return []
+    async def find_documents_by_source_paths(self, source_paths):
+        self.path_calls.append(list(source_paths))
+        return {p: self._path_matches[p] for p in source_paths if p in self._path_matches}
 
 
 async def _wait_until(predicate: Callable[[], bool]) -> None:
@@ -271,3 +287,104 @@ async def test_explicit_max_depth_prunes_silently(minimal_config, tmp_path):
     assert not any(p.endswith("nested.md") for p in paths)
     assert not any("depth" in w for w in warnings)
     assert truncated is False
+
+
+def _hash_of(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+
+async def test_scan_issues_constant_graph_store_round_trips(minimal_config, tmp_path):
+    """The vault-lookup phase costs two round-trips no matter how many files
+    are matched, and the path lookup is asked only about adapter-matched
+    files.
+
+    Regression guards: the per-file form issued one path lookup per matched
+    file, so the path-call count would be 6 instead of 1 -- and a bulk method
+    that internally loops over paths would satisfy every classification
+    assertion in this module while leaving that cost in place, which is why
+    this test counts calls rather than inspecting results. Passing the whole
+    walked file list (rather than the adapter-matched subset) would widen the
+    single call's argument list to include the extensionless file.
+    """
+    scan_dir = tmp_path / "round_trip_tree"
+    scan_dir.mkdir()
+    _make_tree(scan_dir, 6)
+    (scan_dir / "thing.xyz").write_text("not ingestable")
+
+    store = _StubGraphStore()
+    results, _warnings, truncated = await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert truncated is False
+    assert len(results) == 7
+    assert len(store.hash_calls) == 1
+    assert len(store.path_calls) == 1
+    assert sorted(store.path_calls[0]) == sorted(
+        str(scan_dir / f"doc_{i:02d}.md") for i in range(6)
+    )
+
+
+async def test_scan_classifies_new_modified_unchanged_and_no_adapter(minimal_config, tmp_path):
+    """Batching the path lookup leaves all four sage_status verdicts intact.
+
+    Regression guard: reading the batched result with the wrong key (a
+    document id rather than the file's own path, say) collapses every
+    matched file to ``new`` -- which no round-trip count would catch.
+    """
+    scan_dir = tmp_path / "classify_tree"
+    scan_dir.mkdir()
+    (scan_dir / "unchanged.md").write_text("# Same")
+    (scan_dir / "modified.md").write_text("# Changed")
+    (scan_dir / "new.md").write_text("# Fresh")
+    (scan_dir / "thing.xyz").write_text("not ingestable")
+
+    store = _StubGraphStore(
+        hash_matches={_hash_of("# Same")},
+        path_matches={str(scan_dir / "modified.md"): _hash_of("# Was")},
+    )
+    results, _warnings, _truncated = await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    status_by_name = {r.file_path.rsplit("/", 1)[-1]: r.sage_status for r in results}
+    assert status_by_name == {
+        "unchanged.md": "unchanged",
+        "modified.md": "modified",
+        "new.md": "new",
+        "thing.xyz": "no_adapter",
+    }
+
+
+async def test_scan_hash_match_wins_over_path_match(minimal_config, tmp_path):
+    """A file matching on both hash and path is ``unchanged``, not
+    ``modified``.
+
+    Regression guard: the two lookups are consulted in a fixed order, and the
+    other tests here never let a single file hit both, so a reordering that
+    checked the path first would leave them green. Re-ingesting an unmodified
+    file already in the vault is exactly this case.
+    """
+    scan_dir = tmp_path / "tie_break_tree"
+    scan_dir.mkdir()
+    (scan_dir / "both.md").write_text("# Both")
+
+    store = _StubGraphStore(
+        hash_matches={_hash_of("# Both")},
+        path_matches={str(scan_dir / "both.md"): _hash_of("# Both")},
+    )
+    results, _warnings, _truncated = await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(results) == 1
+    assert results[0].sage_status == "unchanged"
