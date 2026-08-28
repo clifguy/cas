@@ -125,17 +125,19 @@ def _config_dict_with_ticket_schema(tmp_vault_dir: Path) -> dict:
 
 
 @pytest.fixture
-def t0082_config(tmp_vault_dir):
+def semantic_tier3_config(tmp_vault_dir):
     return VaultConfig.model_validate(_config_dict_with_ticket_schema(tmp_vault_dir))
 
 
 @pytest.fixture
-def t0082_retrieval_service(graph_store, stub_content_store, stub_embedding_provider, t0082_config):
+def semantic_tier3_retrieval_service(
+    graph_store, stub_content_store, stub_embedding_provider, semantic_tier3_config
+):
     return RetrievalService(
         graph_store=graph_store,
         content_store=stub_content_store,
         embedding_provider=stub_embedding_provider,
-        config=t0082_config,
+        config=semantic_tier3_config,
     )
 
 
@@ -228,12 +230,12 @@ async def _seed_tier3_vault(graph_store, content_store, embedding_provider):
 # ---------------------------------------------------------------------------
 
 
-async def test_t0082_semantic_tier3_filter_returns_only_matching_docs(
+async def test_semantic_tier3_filter_returns_only_matching_docs(
     tmp_vault_dir,
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0082_retrieval_service,
+    semantic_tier3_retrieval_service,
 ):
     """Semantic discover with tier3={ticket_priority: high} must surface
     only d_high_ticket. d_medium_ticket is excluded by the tier3
@@ -245,7 +247,7 @@ async def test_t0082_semantic_tier3_filter_returns_only_matching_docs(
     allowlist that gates the LanceDB pre-filter for semantic mode."""
     docs = await _seed_tier3_vault(graph_store, stub_content_store, stub_embedding_provider)
 
-    response = await t0082_retrieval_service.discover(
+    response = await semantic_tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
             query="alpha-marker",
@@ -266,12 +268,12 @@ async def test_t0082_semantic_tier3_filter_returns_only_matching_docs(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
+async def test_semantic_tier3_matches_catalog_tier3_result_set(
     tmp_vault_dir,
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0082_retrieval_service,
+    semantic_tier3_retrieval_service,
 ):
     """The same tier3 filter applied in semantic mode and catalog mode
     must return the same document set, modulo the asymmetry on
@@ -284,7 +286,7 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
 
     tier3_filter = {"ticket_priority": "high"}
 
-    semantic_resp = await t0082_retrieval_service.discover(
+    semantic_resp = await semantic_tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
             query="alpha-marker",
@@ -292,7 +294,7 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
             limit=100,
         )
     )
-    catalog_resp = await t0082_retrieval_service.discover(
+    catalog_resp = await semantic_tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3_filter),
@@ -320,12 +322,12 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
+async def test_keyword_tier3_matches_semantic_tier3_result_set(
     tmp_vault_dir,
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0082_retrieval_service,
+    semantic_tier3_retrieval_service,
 ):
     """Both ``_semantic`` and ``_keyword`` route through ``_content_filters``,
     so the tier3 pushdown applies to both. T2 binds the semantic path;
@@ -337,7 +339,7 @@ async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
 
     tier3_filter = {"ticket_priority": "high"}
 
-    keyword_resp = await t0082_retrieval_service.discover(
+    keyword_resp = await semantic_tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="alpha-marker",
@@ -345,7 +347,7 @@ async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
             limit=100,
         )
     )
-    semantic_resp = await t0082_retrieval_service.discover(
+    semantic_resp = await semantic_tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
             query="alpha-marker",
@@ -365,12 +367,12 @@ async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0082_semantic_tier3_typo_key_raises_against_doc_type_schema(
+async def test_semantic_tier3_typo_key_raises_against_doc_type_schema(
     tmp_vault_dir,
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0082_retrieval_service,
+    semantic_tier3_retrieval_service,
 ):
     """A tier3 key not declared in the resolved doc_type's
     metadata_schema must raise ``Tier3SchemaViolationError`` BEFORE the
@@ -380,7 +382,7 @@ async def test_t0082_semantic_tier3_typo_key_raises_against_doc_type_schema(
     await _seed_tier3_vault(graph_store, stub_content_store, stub_embedding_provider)
 
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
-        await t0082_retrieval_service.discover(
+        await semantic_tier3_retrieval_service.discover(
             DiscoverRequest(
                 mode=RetrievalMode.SEMANTIC,
                 query="alpha-marker",
@@ -402,12 +404,12 @@ async def test_t0082_semantic_tier3_typo_key_raises_against_doc_type_schema(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0082_semantic_tier3_does_not_call_list_all_documents(
+async def test_semantic_tier3_does_not_call_list_all_documents(
     tmp_vault_dir,
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0082_retrieval_service,
+    semantic_tier3_retrieval_service,
     monkeypatch,
 ):
     """Optimization gate for the semantic-mode tier3 path:
@@ -429,7 +431,7 @@ async def test_t0082_semantic_tier3_does_not_call_list_all_documents(
 
     monkeypatch.setattr(graph_store, "list_all_documents", _forbidden)
 
-    response = await t0082_retrieval_service.discover(
+    response = await semantic_tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
             query="alpha-marker",

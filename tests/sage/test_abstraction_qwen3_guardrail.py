@@ -68,7 +68,7 @@ def provider(monkeypatch):
         p._executor.shutdown(wait=False)
 
 
-async def test_t0029_preflight_below_threshold_raises_structured_error(provider, monkeypatch):
+async def test_preflight_below_threshold_raises_structured_error(provider, monkeypatch):
     """When free unified memory is below threshold, generate_abstract
     raises UnifiedMemoryExhaustedError with structured detail in place
     of letting MLX abort the process. Satisfies acceptance.
@@ -103,7 +103,7 @@ async def test_t0029_preflight_below_threshold_raises_structured_error(provider,
     }
 
 
-async def test_t0029_preflight_above_threshold_proceeds(provider, monkeypatch):
+async def test_preflight_above_threshold_proceeds(provider, monkeypatch):
     """When free unified memory is above threshold, generate_abstract
     proceeds to invoke _generate_fn. Without this test, the
     failure-mode test above could pass trivially against an
@@ -132,7 +132,7 @@ async def test_t0029_preflight_above_threshold_proceeds(provider, monkeypatch):
     assert len(calls) == 1
 
 
-async def test_t0029_lock_serializes_concurrent_calls(provider, monkeypatch):
+async def test_lock_serializes_concurrent_calls(provider, monkeypatch):
     """The module-level ``_generation_lock`` is acquired by
     generate_abstract. Holding the lock externally must block a
     concurrent generate_abstract call until the lock is released.

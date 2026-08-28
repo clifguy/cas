@@ -400,7 +400,7 @@ async def test_bh_037_traversal_collapses_multipath_hits(graph_store, graph_ops_
 # ---------------------------------------------------------------------------
 
 
-async def test_t0079_insert_edge_raises_on_duplicate(graph_store):
+async def test_insert_edge_raises_on_duplicate(graph_store):
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
@@ -432,7 +432,7 @@ async def test_t0079_insert_edge_raises_on_duplicate(graph_store):
         await graph_store.insert_edge(dup, on_conflict="raise")
 
 
-async def test_t0079_insert_edge_noop_returns_existing(graph_store):
+async def test_insert_edge_noop_returns_existing(graph_store):
     """on_conflict="noop": duplicate insert returns existing edge."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
@@ -470,7 +470,7 @@ async def test_t0079_insert_edge_noop_returns_existing(graph_store):
     assert stored_dup.rationale == "First"
 
 
-async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_service):
+async def test_link_idempotent_returns_existing(graph_store, graph_ops_service):
     """graph_ops._create_edge: second call returns the existing edge."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
@@ -504,7 +504,7 @@ async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_ser
     assert edge_2.rationale == "initial rationale"
 
 
-async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_service):
+async def test_link_still_raises_on_duplicate(graph_store, graph_ops_service):
     """graph_ops._create_edge_strict (non-idempotent) propagates NaturalKeyConflict."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
@@ -532,7 +532,7 @@ async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_servi
         )
 
 
-async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, graph_ops_service):
+async def test_multiple_retracts_with_null_target_allowed(graph_store, graph_ops_service):
     """SQL UNIQUE treats NULL as distinct: multiple retracts edges
     on the same source with target_id=NULL stay legal per ADR-017.
     The retracted_edge_id differs across retract instances.
@@ -799,7 +799,7 @@ async def test_link_nonexistent_target_raises_404(graph_store, graph_ops_service
 # ---------------------------------------------------------------------------
 
 
-async def test_t0111_synced_from_version_inapplicable_on_supersedes(graph_store, graph_ops_service):
+async def test_synced_from_version_inapplicable_on_supersedes(graph_store, graph_ops_service):
     """supersedes + synced_from_version set → 400 inapplicable error.
 
     `supersedes` does not carry synced-from provenance; only
@@ -824,9 +824,7 @@ async def test_t0111_synced_from_version_inapplicable_on_supersedes(graph_store,
     assert "synced_from_version" in exc_info.value.detail["fields_set"]
 
 
-async def test_t0111_synced_from_content_hash_inapplicable_on_supersedes(
-    graph_store, graph_ops_service
-):
+async def test_synced_from_content_hash_inapplicable_on_supersedes(graph_store, graph_ops_service):
     """supersedes + synced_from_content_hash set → 400 inapplicable error."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
@@ -845,7 +843,7 @@ async def test_t0111_synced_from_content_hash_inapplicable_on_supersedes(
     assert "synced_from_content_hash" in exc_info.value.detail["fields_set"]
 
 
-async def test_t0111_supersedes_without_synced_from_still_succeeds(graph_store, graph_ops_service):
+async def test_supersedes_without_synced_from_still_succeeds(graph_store, graph_ops_service):
     """supersedes edge with NEITHER synced_from_* field set → succeeds.
 
     Load-bearing companion to the rejection tests above: confirms the
@@ -876,7 +874,7 @@ async def test_t0111_supersedes_without_synced_from_still_succeeds(graph_store, 
 # ---------------------------------------------------------------------------
 
 
-async def test_t0111_chain_membership_accepts_predecessor_version(graph_store, graph_ops_service):
+async def test_chain_membership_accepts_predecessor_version(graph_store, graph_ops_service):
     """derived_from edge with synced_from_version pointing at a chain
     member (here: the middle version of a 3-deep chain) succeeds."""
     chain_ids = await _create_linear_chain(graph_store, count=3)
@@ -897,7 +895,7 @@ async def test_t0111_chain_membership_accepts_predecessor_version(graph_store, g
     assert edge.synced_from_version == chain_ids[1]
 
 
-async def test_t0111_chain_membership_accepts_tail_version(graph_store, graph_ops_service):
+async def test_chain_membership_accepts_tail_version(graph_store, graph_ops_service):
     """derived_from + synced_from_version pointing at the chain tail
     (oldest revision) succeeds — every member of the chain is valid."""
     chain_ids = await _create_linear_chain(graph_store, count=3)
@@ -917,7 +915,7 @@ async def test_t0111_chain_membership_accepts_tail_version(graph_store, graph_op
     assert edge.synced_from_version == chain_ids[0]
 
 
-async def test_t0111_chain_membership_rejects_unrelated_doc(graph_store, graph_ops_service):
+async def test_chain_membership_rejects_unrelated_doc(graph_store, graph_ops_service):
     """derived_from + synced_from_version pointing at a document
     OUTSIDE target_id's supersedes chain → 400 not-in-chain error.
 
@@ -944,7 +942,7 @@ async def test_t0111_chain_membership_rejects_unrelated_doc(graph_store, graph_o
     assert exc_info.value.detail["synced_from_version"] == _id("unrelated")
 
 
-async def test_t0111_chain_membership_rejects_nonexistent_id(graph_store, graph_ops_service):
+async def test_chain_membership_rejects_nonexistent_id(graph_store, graph_ops_service):
     """derived_from + synced_from_version pointing at a NON-EXISTENT
     doc id → same SyncedFromVersionNotInSourceChain code (NOT
     DocumentNotFoundError). The chain walk implicitly catches dangling

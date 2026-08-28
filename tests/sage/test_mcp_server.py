@@ -1232,7 +1232,7 @@ async def test_link_self_referential_error(vault_services):
     assert result["error"] == "self_referential_edge"
 
 
-async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
+async def test_sage_link_explicit_rationale_kind(vault_services):
     """T7. create_edge accepts an optional ``rationale_kind`` argument
     and persists it verbatim on the edge — even when the rationale text
     would otherwise derive to a different kind. Tests with a non-default
@@ -1258,7 +1258,7 @@ async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
     assert result["edge"]["rationale_kind"] == "version_chain"
 
 
-async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services):
+async def test_sage_link_derives_rationale_kind_from_prefix(vault_services):
     """T7. create_edge derives rationale_kind from the rationale text
     prefix when the caller omits the explicit argument. A
     ``[version_chain]`` prefix yields ``rationale_kind=version_chain``.
@@ -1281,7 +1281,7 @@ async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services
     assert result["edge"]["rationale_kind"] == "version_chain"
 
 
-async def test_t0080_sage_link_defaults_to_manual(vault_services):
+async def test_sage_link_defaults_to_manual(vault_services):
     """T7. create_edge defaults rationale_kind to ``manual`` when neither
     an explicit kind nor a recognized rationale prefix is supplied.
     """
@@ -1637,7 +1637,7 @@ async def test_discover_invalid_filter_shape(vault_services):
     assert "int" in result["detail"]["received_type"]
 
 
-async def test_t0457_discover_accepts_source_type_filter_key(vault_services):
+async def test_discover_accepts_source_type_filter_key(vault_services):
     """source_type is an accepted document filter key.
 
     Positive control on the pre-change behavior: this exact call used to
@@ -1649,7 +1649,7 @@ async def test_t0457_discover_accepts_source_type_filter_key(vault_services):
     assert "results" in result
 
 
-async def test_t0457_discover_invalid_source_type_value_rejected(vault_services):
+async def test_discover_invalid_source_type_value_rejected(vault_services):
     """An out-of-vocabulary source_type is refused, not silently emptied.
 
     The motivating case: "dotx" is not a SAGE source type at all, so the
@@ -1673,7 +1673,7 @@ async def test_t0457_discover_invalid_source_type_value_rejected(vault_services)
     }
 
 
-async def test_t0457_discover_invalid_edge_type_value_rejected(vault_services):
+async def test_discover_invalid_edge_type_value_rejected(vault_services):
     """The same envelope covers edge_type, which previously fell through.
 
     Anti-coincidental: a translator branch scoped to source_type alone
@@ -2667,7 +2667,7 @@ async def test_recompute_pipeline_tool_concurrent_returns_409(vault_services):
 # ---------------------------------------------------------------------------
 
 
-async def test_t0157_sage_discover_edges_happy_path(vault_services):
+async def test_sage_discover_edges_happy_path(vault_services):
     """28. End-to-end happy path via the MCP tool: target=edges + mode=catalog
     returns a serialized envelope with target field, results array, and
     total_available.
@@ -2715,7 +2715,7 @@ async def test_t0157_sage_discover_edges_happy_path(vault_services):
     assert hit["edge_type"] == "supersedes"
 
 
-async def test_t0157_sage_discover_edges_light_round_trips_through_serializer(vault_services):
+async def test_sage_discover_edges_light_round_trips_through_serializer(vault_services):
     """29. Light mode round-trips through serialize(): the envelope keys
     on the wire match what the model produced.
     """
@@ -2741,7 +2741,7 @@ async def test_t0157_sage_discover_edges_light_round_trips_through_serializer(va
     assert set(hit.keys()) == {"edge_id", "source_id", "target_id", "edge_type"}
 
 
-async def test_t0157_sage_discover_edges_target_edges_with_semantic_returns_error(vault_services):
+async def test_sage_discover_edges_target_edges_with_semantic_returns_error(vault_services):
     """28b. target=edges combined with a non-catalog mode is rejected via
     the typed mode_parameter_mismatch error envelope.
     """
@@ -2756,7 +2756,7 @@ async def test_t0157_sage_discover_edges_target_edges_with_semantic_returns_erro
     assert result["error"] == "mode_parameter_mismatch", result
 
 
-def test_t0157_sage_discover_docstring_carries_edge_example():
+def test_sage_discover_docstring_carries_edge_example():
     """30. search docstring documents the target="edges" dispatch
     with a worked example. This is a guard test that fails closed when
     the cross-tool documentation contract breaks (e.g., a later edit
@@ -2769,7 +2769,7 @@ def test_t0157_sage_discover_docstring_carries_edge_example():
     )
 
 
-def test_t0157_sage_unlink_docstring_points_at_edge_discovery():
+def test_sage_unlink_docstring_points_at_edge_discovery():
     """31. delete_edge docstring references search(target="edges")
     as the canonical path to discover edge_id. Guard test.
     """
@@ -2781,7 +2781,7 @@ def test_t0157_sage_unlink_docstring_points_at_edge_discovery():
     )
 
 
-def test_t0157_retracts_edge_type_docstring_points_at_edge_discovery():
+def test_retracts_edge_type_docstring_points_at_edge_discovery():
     """32. EdgeType class docstring documents the discovery path for
     edge_id when minting a retracts edge. Guard test.
     """
@@ -2805,7 +2805,7 @@ def test_t0157_retracts_edge_type_docstring_points_at_edge_discovery():
 # state both are `documents.id` values.
 
 
-async def test_t0155_traverse_accepts_document_id_alias(vault_services):
+async def test_traverse_accepts_document_id_alias(vault_services):
     """T1. traverse accepts `document_id` as a keyword alias for
     `start_id`. Happy path: alias resolves to the same traversal result
     as the canonical name.
@@ -2824,7 +2824,7 @@ async def test_t0155_traverse_accepts_document_id_alias(vault_services):
     assert result["nodes"][0]["document"]["id"] == doc_b["id"]
 
 
-async def test_t0155_traverse_accepts_start_id_kwarg(vault_services):
+async def test_traverse_accepts_start_id_kwarg(vault_services):
     """T2. traverse continues to accept `start_id` as a keyword
     argument after the alias is added. Back-compat guard.
     """
@@ -2839,7 +2839,7 @@ async def test_t0155_traverse_accepts_start_id_kwarg(vault_services):
     assert result["nodes"][0]["document"]["id"] == doc_b["id"]
 
 
-async def test_t0155_traverse_accepts_start_id_positional(vault_services):
+async def test_traverse_accepts_start_id_positional(vault_services):
     """T3. traverse continues to accept `start_id` positionally
     after the alias is added. Back-compat guard for the form used by
     the vast majority of existing tests.
@@ -2855,7 +2855,7 @@ async def test_t0155_traverse_accepts_start_id_positional(vault_services):
     assert result["nodes"][0]["document"]["id"] == doc_b["id"]
 
 
-async def test_t0155_traverse_rejects_both_kwargs(vault_services):
+async def test_traverse_rejects_both_kwargs(vault_services):
     """T4. traverse rejects supplying both `start_id` and
     `document_id` (even with equal values). Strict ambiguity rule:
     exactly one must be supplied.
@@ -2877,7 +2877,7 @@ async def test_t0155_traverse_rejects_both_kwargs(vault_services):
     assert "document_id" in result["detail"]["supplied"]
 
 
-async def test_t0155_traverse_rejects_missing_identifier(vault_services):
+async def test_traverse_rejects_missing_identifier(vault_services):
     """T5. traverse rejects neither `start_id` nor `document_id`
     being supplied. Specific code (not a downstream `document_not_found`
     or generic ValidationError) confirms the validation branch fired.
@@ -2890,7 +2890,7 @@ async def test_t0155_traverse_rejects_missing_identifier(vault_services):
     assert "document_id" in result["detail"]["accepted"]
 
 
-async def test_t0155_traverse_rejects_positional_plus_alias_kwarg(vault_services):
+async def test_traverse_rejects_positional_plus_alias_kwarg(vault_services):
     """T6. traverse rejects positional `start_id` plus keyword
     `document_id`. Mixing the two forms of the same logical argument
     is treated as the both-supplied case, not as silent precedence.
@@ -2904,7 +2904,7 @@ async def test_t0155_traverse_rejects_positional_plus_alias_kwarg(vault_services
     assert "document_id" in result["detail"]["supplied"]
 
 
-def test_t0155_traverse_docstring_documents_alias():
+def test_traverse_docstring_documents_alias():
     """T7. traverse docstring documents the `document_id` alias
     inline on the `start_id` Args entry (not just in prose elsewhere).
     Guard test: ensures the ticket's docstring requirement lands at
@@ -2954,7 +2954,7 @@ _T0246_READ_TOOLS = [
     "tool_name",
     ["get_document", "read_projection", "read_section", "list_headings", "chain"],
 )
-def test_t0246_publishes_doc_id_as_optional_property(tool_name):
+def test_publishes_doc_id_as_optional_property(tool_name):
     """A1. Both ``document_id`` and ``doc_id`` are published as optional
     (default-null) properties, with ``additionalProperties: false``. This
     is the precise published-schema shape under which a doc_id-only call
@@ -2977,7 +2977,7 @@ def test_t0246_publishes_doc_id_as_optional_property(tool_name):
     assert schema.get("additionalProperties") is False
 
 
-async def test_t0246_get_document_accepts_doc_id_alias(vault_services):
+async def test_get_document_accepts_doc_id_alias(vault_services):
     """B1. get_document resolves ``doc_id`` to the same record as
     ``document_id``. The correct-id assertion (not merely "no error")
     defeats a coincidental pass where the alias was accepted by the
@@ -2989,7 +2989,7 @@ async def test_t0246_get_document_accepts_doc_id_alias(vault_services):
     assert result["title"] == "Sample Document"
 
 
-async def test_t0246_read_projection_accepts_doc_id_alias(vault_services):
+async def test_read_projection_accepts_doc_id_alias(vault_services):
     """B1. read_projection resolves ``doc_id`` to the correct document's
     projection.
     """
@@ -3000,7 +3000,7 @@ async def test_t0246_read_projection_accepts_doc_id_alias(vault_services):
     assert len(result["projection_text"]) > 0
 
 
-async def test_t0246_read_section_accepts_doc_id_alias(vault_services):
+async def test_read_section_accepts_doc_id_alias(vault_services):
     """B1. read_section resolves ``doc_id`` to the correct document's
     section (heading_path supplied alongside the alias).
     """
@@ -3013,7 +3013,7 @@ async def test_t0246_read_section_accepts_doc_id_alias(vault_services):
     assert result["heading_path"] == "Sample Document"
 
 
-async def test_t0246_list_headings_accepts_doc_id_alias(vault_services):
+async def test_list_headings_accepts_doc_id_alias(vault_services):
     """B1. list_headings resolves ``doc_id`` to the correct document's
     heading list.
     """
@@ -3024,7 +3024,7 @@ async def test_t0246_list_headings_accepts_doc_id_alias(vault_services):
     assert "Sample Document" in result["headings"]
 
 
-async def test_t0246_chain_accepts_doc_id_alias(vault_services):
+async def test_chain_accepts_doc_id_alias(vault_services):
     """B1. chain resolves ``doc_id`` to the correct document. A freshly
     ingested doc with no supersedes edges is its own single-entry chain, so
     head_id echoes the resolved id — a coincidental pass that dropped the
@@ -3035,7 +3035,7 @@ async def test_t0246_chain_accepts_doc_id_alias(vault_services):
     assert result["head_id"] == doc["id"]
 
 
-async def test_t0246_chain_accepts_document_id_keyword(vault_services):
+async def test_chain_accepts_document_id_keyword(vault_services):
     """B2. chain still accepts the canonical ``document_id`` keyword after
     the alias and the signature reorder (edge_type moved ahead of the
     optional id params). Back-compat guard.
@@ -3061,7 +3061,7 @@ async def test_t0246_chain_accepts_document_id_keyword(vault_services):
         pytest.param(list_headings, {}, "document_id", id="list_headings"),
     ],
 )
-async def test_t0246_accepts_document_id_keyword(vault_services, tool_fn, extra, echo_key):
+async def test_accepts_document_id_keyword(vault_services, tool_fn, extra, echo_key):
     """B2. The canonical ``document_id`` keyword form still resolves to the
     correct record after the alias is added. Back-compat guard.
     """
@@ -3079,7 +3079,7 @@ async def test_t0246_accepts_document_id_keyword(vault_services, tool_fn, extra,
         pytest.param(list_headings, "document_id", id="list_headings"),
     ],
 )
-async def test_t0246_positional_document_id_still_binds(vault_services, tool_fn, echo_key):
+async def test_positional_document_id_still_binds(vault_services, tool_fn, echo_key):
     """B2-positional. The ``(vault_id, document_id)`` positional form used by
     existing callers still binds after ``document_id`` became optional.
     Guards against an accidental read_section-style reorder on these three
@@ -3093,7 +3093,7 @@ async def test_t0246_positional_document_id_still_binds(vault_services, tool_fn,
 
 
 @pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
-async def test_t0246_rejects_both_equal(vault_services, tool_fn, extra):
+async def test_rejects_both_document_id_and_doc_id_when_equal(vault_services, tool_fn, extra):
     """B3. Supplying both ``document_id`` and ``doc_id`` — even with equal
     values — is rejected. Strict ambiguity rule: exactly one must be
     supplied.
@@ -3108,7 +3108,7 @@ async def test_t0246_rejects_both_equal(vault_services, tool_fn, extra):
 
 
 @pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
-async def test_t0246_rejects_both_unequal(vault_services, tool_fn, extra):
+async def test_rejects_both_document_id_and_doc_id_when_unequal(vault_services, tool_fn, extra):
     """B4. Supplying two *different* ids via the canonical name and the
     alias is rejected. Exercises the conflict branch distinctly from the
     both-equal case.
@@ -3124,7 +3124,7 @@ async def test_t0246_rejects_both_unequal(vault_services, tool_fn, extra):
 
 
 @pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
-async def test_t0246_rejects_neither(vault_services, tool_fn, extra):
+async def test_rejects_neither_document_id_nor_doc_id(vault_services, tool_fn, extra):
     """B5. Supplying neither ``document_id`` nor ``doc_id`` yields the
     structured ``missing_document_identifier`` code (not a downstream
     ``document_not_found`` or a Python TypeError), confirming the
@@ -3141,7 +3141,7 @@ async def test_t0246_rejects_neither(vault_services, tool_fn, extra):
     [get_document, read_projection, read_section, list_headings, chain],
     ids=["get_document", "read_projection", "read_section", "list_headings", "chain"],
 )
-def test_t0246_docstring_documents_doc_id_alias(tool_fn):
+def test_docstring_documents_doc_id_alias(tool_fn):
     """C1. Each tool's docstring documents the ``doc_id`` alias inline on the
     ``document_id`` Args entry (where an MCP caller browsing the schema sees
     it), not in unrelated prose. Anchoring to the ``document_id:`` line

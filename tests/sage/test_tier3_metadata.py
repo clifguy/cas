@@ -1085,7 +1085,7 @@ def test_tier3_matches_ands_multiple_keys():
 # ---------------------------------------------------------------------------
 
 
-async def test_t0075_catalog_filter_unindexed_tier3_value_returns_correct_subset(
+async def test_catalog_filter_unindexed_tier3_value_returns_correct_subset(
     tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
 ):
     """JSON1 pushdown must work for tier3 fields that have no expression
@@ -1108,7 +1108,7 @@ async def test_t0075_catalog_filter_unindexed_tier3_value_returns_correct_subset
     assert returned_ids == {d1.id}
 
 
-async def test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_schema(
+async def test_catalog_filter_unknown_tier3_key_raises_against_doc_type_schema(
     tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
 ):
     """A tier3 key not declared in the resolved doc_type's metadata_schema
@@ -1133,7 +1133,7 @@ async def test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_sc
     )
 
 
-async def test_t0075_catalog_filter_pushes_tier3_into_sql_not_python(
+async def test_catalog_filter_pushes_tier3_into_sql_not_python(
     tmp_vault_dir,
     tier3_ingestion_service,
     tier3_retrieval_service,
@@ -1195,7 +1195,7 @@ async def test_t0075_catalog_filter_pushes_tier3_into_sql_not_python(
     assert len(response.results) == 2  # the two high-severity seeds
 
 
-async def test_t0075_catalog_filter_rejects_sql_unsafe_tier3_key(
+async def test_catalog_filter_rejects_sql_unsafe_tier3_key(
     tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
 ):
     """Defense-in-depth: a tier3 key that contains characters outside

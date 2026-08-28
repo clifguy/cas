@@ -227,7 +227,7 @@ async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empt
     await services.graph_store.close()
 
 
-async def test_t0153_t1_light_strips_document_and_semantic_abstract(
+async def test_light_strips_document_and_semantic_abstract(
     seeded_six_with_abstracts,
 ):
     """T1 — Explicit response_mode='light' with a 3-item all-success batch
@@ -255,7 +255,7 @@ async def test_t0153_t1_light_strips_document_and_semantic_abstract(
     )
 
 
-async def test_t0153_t2_full_preserves_document_with_semantic_abstract(
+async def test_full_preserves_document_with_semantic_abstract(
     seeded_six_with_abstracts,
 ):
     """T2 — Explicit response_mode='full' with a 3-item all-success batch
@@ -274,7 +274,7 @@ async def test_t0153_t2_full_preserves_document_with_semantic_abstract(
         assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
 
 
-async def test_t0153_t3_default_above_threshold_returns_light(
+async def test_default_above_threshold_returns_light(
     seeded_six_with_abstracts,
 ):
     """T3 — Default mode with a 6-item batch returns light. Critical
@@ -293,7 +293,7 @@ async def test_t0153_t3_default_above_threshold_returns_light(
         )
 
 
-async def test_t0153_t4_default_at_or_below_threshold_returns_full(
+async def test_default_at_or_below_threshold_returns_full(
     seeded_six_with_abstracts,
 ):
     """T4 — Default mode with a 3-item batch (at-or-below threshold) is
@@ -309,7 +309,7 @@ async def test_t0153_t4_default_at_or_below_threshold_returns_full(
         assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
 
 
-async def test_t0153_t5_error_envelope_intact_in_light_mode(
+async def test_error_envelope_intact_in_light_mode(
     seeded_six_with_abstracts,
 ):
     """T5 — An error item in light mode keeps the full error envelope,
@@ -350,7 +350,7 @@ async def test_t0153_t5_error_envelope_intact_in_light_mode(
     assert "detail" in light_err["error"]
 
 
-async def test_t0153_t6_error_envelope_intact_in_full_mode(
+async def test_error_envelope_intact_in_full_mode(
     seeded_six_with_abstracts,
 ):
     """T6 — Error item in full mode (regression guard)."""
@@ -366,7 +366,7 @@ async def test_t0153_t6_error_envelope_intact_in_full_mode(
     assert result["results"][1]["error"]["error"] == "tags_add_conflict"
 
 
-async def test_t0153_t7_mixed_batch_in_light_mode(seeded_six_with_abstracts):
+async def test_mixed_batch_in_light_mode(seeded_six_with_abstracts):
     """T7 — Mixed-result batch in light mode: success items have no
     `document`, error items have full `error`."""
     vault_id, seeded_ids = seeded_six_with_abstracts
@@ -389,7 +389,7 @@ async def test_t0153_t7_mixed_batch_in_light_mode(seeded_six_with_abstracts):
     assert "document" not in result["results"][2]
 
 
-async def test_t0153_t8_invalid_response_mode_rejected_up_front(
+async def test_invalid_response_mode_rejected_up_front(
     seeded_six_with_abstracts,
 ):
     """T8 — Invalid response_mode value is rejected up front; no per-item
@@ -414,7 +414,7 @@ async def test_t0153_t8_invalid_response_mode_rejected_up_front(
         )
 
 
-async def test_t0153_t9_empty_batch_with_explicit_light(seeded_six_with_abstracts):
+async def test_empty_batch_with_explicit_light(seeded_six_with_abstracts):
     """T9 — Empty items with response_mode='light' returns empty results
     cleanly (no crash on the threshold check)."""
     vault_id, _ = seeded_six_with_abstracts

@@ -488,7 +488,7 @@ class TestStagingEdgeActions:
         listing = _parse(await list_staging_edges("test_vault"))
         assert listing["count"] == 1
 
-    async def test_t0079_confirm_with_existing_production_edge_is_idempotent(self, single_vault):
+    async def test_confirm_with_existing_production_edge_is_idempotent(self, single_vault):
         """If a production edge with the same natural-key triple
         already exists when a staging edge is confirmed, the promotion
         is idempotent: the staging row is consumed and the response
@@ -1024,7 +1024,7 @@ class TestSageDiscoverCatalog:
         ids2 = {r["document"]["id"] for r in resp2["results"]}
         assert len(ids1 & ids2) == 0  # No overlap
 
-    async def test_t0157_catalog_edges_through_app_wrapper(self, single_vault):
+    async def test_catalog_edges_through_app_wrapper(self, single_vault):
         """Sage_discover(target="edges") wired end-to-end through
         the app-layer MCP adapter. Confirms the new target dispatch
         propagates through the same path that doc-target catalog uses

@@ -406,7 +406,7 @@ class TestEdgePlanConstruction:
     # ---------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_t0076_edge_plan_includes_active_and_chain_repair_only(self):
+    async def test_edge_plan_includes_active_and_chain_repair_only(self):
         """Existing-doc fetch must return exactly:
 
         * active docs (regardless of chain identity), and
@@ -483,7 +483,7 @@ class TestEdgePlanConstruction:
             assert d_completed_unrelated.id not in existing_refs
 
     @pytest.mark.asyncio
-    async def test_t0076_edge_plan_does_not_call_list_all_documents(self):
+    async def test_edge_plan_does_not_call_list_all_documents(self):
         """Anti-coincidental gate: list_all_documents() must not be
         invoked from _build_edge_plan. Monkeypatched to raise; the
         cross-check on the engine call confirms the SQL-pushdown path
@@ -1368,7 +1368,7 @@ class TestChainRepair:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_t0080_chain_repair_link_request_stamps_version_chain(self):
+    async def test_chain_repair_link_request_stamps_version_chain(self):
         """T5. Version-chain inference passes rationale_kind=VERSION_CHAIN
         on the LinkRequest it submits to _create_edge. Without this,
         the auto-inferred edge lands with the default 'manual' kind, the
@@ -1422,7 +1422,7 @@ class TestChainRepair:
             )
 
     @pytest.mark.asyncio
-    async def test_t0080_filename_code_match_stamps_prefix_in_evidence(self):
+    async def test_filename_code_match_stamps_prefix_in_evidence(self):
         """T6. The filename-code-match inference path stamps the
         ``[filename_code_match]`` rationale prefix on the staging edge's
         inference_evidence. When the staging edge is later promoted via
@@ -1480,7 +1480,7 @@ class TestChainRepair:
             )
 
     @pytest.mark.asyncio
-    async def test_t0080_provenance_gate_uses_rationale_kind_column(self):
+    async def test_provenance_gate_uses_rationale_kind_column(self):
         """T8. The CAS-ADR-019 provenance gate downgrades chain repair to
         Tier 2 when an existing supersedes edge has rationale_kind=manual,
         even if its rationale text happens to start with

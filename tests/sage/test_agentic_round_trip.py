@@ -732,7 +732,7 @@ async def _persist_document(
     return doc
 
 
-async def test_t0253_text_document_stamps_body_form_text_and_delivers(
+async def test_text_document_stamps_body_form_text_and_delivers(
     tmp_vault_dir, graph_store, minimal_config
 ):
     """A text-source read delivers content AND declares body_form='text'.
@@ -761,7 +761,7 @@ async def test_t0253_text_document_stamps_body_form_text_and_delivers(
     assert response.read_meta.body_length == len(original.encode())
 
 
-async def test_t0253_binary_container_include_content_is_refused(
+async def test_binary_container_include_content_is_refused(
     tmp_vault_dir, graph_store, minimal_config
 ):
     """include_content against a binary-container source is refused.
@@ -816,7 +816,7 @@ async def test_get_content_binary_container_not_refused(tmp_vault_dir, graph_sto
     assert delivery.filename == "raw.pdf"
 
 
-async def test_t0253_binary_container_without_content_stamps_body_form_binary(
+async def test_binary_container_without_content_stamps_body_form_binary(
     tmp_vault_dir, graph_store, minimal_config
 ):
     """A metadata-only read of a binary-container source succeeds and
