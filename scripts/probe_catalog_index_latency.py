@@ -15,9 +15,9 @@ latency.
 The probe deliberately:
 
 - Hits only catalog-mode discover, traverse, and a small set of tier3
-  filter shapes — the three query families either adds an
-  index for (doc_type, project, composite edges) or must not regress
-  (tier3_metadata, which is job).
+  filter shapes — the three query families a storage-index migration
+  either adds an index for (doc_type, project, composite edges) or
+  must not regress (tier3_metadata, which is left un-indexed).
 - Forces emit_threshold_ms=0.0 so every call is logged individually
   rather than coalesced into a periodic summary record.
 - Uses StubAbstractionProvider so Qwen3 / MLX never loads.
@@ -29,10 +29,10 @@ The probe deliberately:
 Usage::
 
     # Pre-migration baseline (run first, before applying a schema change)
-    .venv/bin/python -m scripts.t0074_load_probe --label before
+    .venv/bin/python -m scripts.probe_catalog_index_latency --label before
 
     # Post-migration A/B (run after migration applies via fresh init)
-    .venv/bin/python -m scripts.t0074_load_probe --label after
+    .venv/bin/python -m scripts.probe_catalog_index_latency --label after
 
 Both runs append to the same timing.log; use --label to grep them
 apart in post-processing. The script prints a per-shape latency
@@ -140,7 +140,7 @@ async def _run_probes(label: str, reps: int) -> None:
         abstraction_provider=StubAbstractionProvider(),
     )
 
-    print(f"=== T-0074 probe label={label} reps={reps} ===")
+    print(f"=== catalog-index latency probe label={label} reps={reps} ===")
     try:
         # --- catalog discover by doc_type ---
         for dt in DOC_TYPES:
@@ -242,7 +242,7 @@ def main() -> None:
     # Sanity guard against accidental invocation from pytest.
     if "pytest" in sys.modules:
         print(
-            "scripts.t0074_load_probe is a one-shot probe, not a test. "
+            "scripts.probe_catalog_index_latency is a one-shot probe, not a test. "
             "Refusing to run inside pytest.",
             file=sys.stderr,
         )

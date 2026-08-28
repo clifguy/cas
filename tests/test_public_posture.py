@@ -7,7 +7,9 @@ and enforced at commit time by the ``cas-code-review`` skill §P1. This test
 is the substrate-level counterpart: a deterministic gate that fails the
 build whenever a forbidden pattern reappears in a tracked file.
 
-Eleven invariants are checked:
+Ten invariants are checked. The numbering is the gate's own and is not
+contiguous: T9 has never been assigned, and T11 is described below but
+has no test function yet.
 
   T1. Use-case-specific terms (PIM, theology, patent, prosecution) must
       not appear in ``.py`` / ``.yaml`` / ``.yml`` / ``.json`` / ``.md``
@@ -31,7 +33,16 @@ Eleven invariants are checked:
       "subagent contract", "work plan") must not appear in ``.py``
       docstrings or ``#`` comments.
 
-Scope — top-level directories excluded from T1/T3/T4:
+  T12. Ticket ids and use-case terms must not appear in tracked file or
+       directory *names*. The counterpart to T1 and T2, which check the
+       same two classes in file contents. Ticket ids reach a name in
+       forms the prose regex does not accept (``t0074_load_probe.py``),
+       so T12 carries its own pattern; use-case terms reuse T1's
+       patterns unchanged. The other two content classes are omitted
+       because neither can structurally match a path component — see
+       ``_name_violations`` for the reasoning.
+
+Scope — top-level directories excluded from T1/T3/T4/T12:
 
 - ``domains/`` is the executor-defined home for use-case-specific configs.
   The establishing cleanup deletes ``domains/pim_health/`` entirely;
@@ -61,10 +72,10 @@ Scope — top-level directories excluded from T1/T3/T4:
 
   T11. ``CLAUDE.md`` is the public stub (under 4096 bytes).
 
-The three allowlist constants near the top of the module follow the
+The four allowlist constants near the top of the module follow the
 pattern of ``KNOWN_VIOLATIONS`` in ``tests/sage/test_typed_alias_coverage.py``
 and ``KNOWN_ARG_DRIFT`` in ``tests/sage/test_mcp_tool_conformance.py``.
-All three are empty at the close of the establishing cleanup. Every
+All four are empty at the close of the establishing cleanup. Every
 entry added later requires a 1-line rationale.
 
 Anti-coincidental-pass coverage:
@@ -75,6 +86,16 @@ Anti-coincidental-pass coverage:
 - ``test_t2_tokenizer_distinguishes_string_from_comment`` confirms a
   ``T-NNNN`` token inside a string literal is NOT extracted, while the
   same token inside ``#`` comment or function docstring IS extracted.
+- ``test_t12_ticket_pattern_matches_every_id_form`` and
+  ``test_t12_use_case_pattern_matches_names`` confirm the name patterns
+  match each form a token reaches a name in, and reject the near-misses
+  (a bare year behind a ``t``, ``CAS-ADR-NNNN``, ``compilation``).
+- ``test_t12_scan_reaches_directory_components_and_basenames`` confirms
+  the scan walks every path component rather than the basename alone,
+  and attributes a hit to the component that owns it. These three
+  matter more than the usual anti-coincidental margin: the tree carries
+  no name-side violation, so T12's gate test passes trivially against a
+  no-op implementation and proves nothing on its own.
 
 A whole-test anti-coincidental probe (manually introduce one violation
 per category, confirm the gate fails with a precise message naming
@@ -88,6 +109,7 @@ import ast
 import re
 import subprocess
 import tokenize
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Final
 
@@ -143,6 +165,28 @@ SDLC_SCAFFOLDING_PHRASES: Final[tuple[str, ...]] = (
 # the only sanctioned durable-surface anchor.
 TICKET_REF_RE: Final[re.Pattern[str]] = re.compile(r"\bT-\d{4}\b")
 
+# Ticket reference as it appears in a *name* rather than in prose.
+#
+# ``TICKET_REF_RE`` is hyphenated-only, which is right for prose but
+# matches almost nothing in a filename: path components rarely carry the
+# canonical spacing, so ids arrive as ``t0074_load_probe.py`` or
+# ``test_t0037_pre_merge_metadata.py``. This pattern accepts all four
+# forms — ``T-0452``, ``T0452``, ``t0074``, ``t_0037`` — case-insensitively
+# via the explicit ``[tT]`` class.
+#
+# Boundary discipline:
+#
+# - The left lookbehind is required. Without it the ``t`` in
+#   ``abstract_2024`` matches, and any name ending in ``t`` before a
+#   four-digit year or count becomes a false positive.
+# - The right lookahead rejects longer digit runs, so a timestamp like
+#   ``t20260825`` is not read as a ticket id.
+# - A bare number with no adjacent ``t`` (``report_0074.py``) is NOT
+#   treated as a ticket id. Four digits alone are as likely a year or a
+#   count, and the token this gate exists to catch always carries the
+#   prefix.
+NAME_TICKET_REF_RE: Final[re.Pattern[str]] = re.compile(r"(?<![0-9A-Za-z])[tT][-_]?\d{4}(?![0-9])")
+
 # Tracked build artifacts that should be .gitignore'd and never committed.
 _BUILD_ARTIFACTS: Final[frozenset[str]] = frozenset(
     {".coverage", "coverage.xml", "repo_file_inventory.xlsx"}
@@ -155,7 +199,7 @@ _MAX_REPORTED_VIOLATIONS: Final[int] = 30
 # ---------------------------------------------------------------------------
 # Allowlists
 #
-# All three are empty at the close of the establishing cleanup. Each entry
+# All four are empty at the close of the establishing cleanup. Each entry
 # added later requires a 1-line rationale alongside it. Pattern matches
 # ``KNOWN_VIOLATIONS`` in tests/sage/test_typed_alias_coverage.py.
 # ---------------------------------------------------------------------------
@@ -171,6 +215,13 @@ TICKET_REF_ALLOWLIST: Final[dict[str, list[int]]] = {}
 # path (relative to repo root) → list of line numbers where a
 # /Users/clifguy/ path is allowlisted.
 PERSONAL_PATH_ALLOWLIST: Final[dict[str, list[int]]] = {}
+
+# path (relative to repo root) → 1-line rationale for a name-token
+# exemption. Keyed by the path whose component offends: the file's own
+# path for a basename hit, the directory's path for a directory hit. A
+# name has no line number, so this allowlist carries prose where the
+# three above carry line lists.
+NAME_TOKEN_ALLOWLIST: Final[dict[str, str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +363,75 @@ def _format_violations(
     overflow = len(violations) - len(head)
     tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
     return f"{header} ({len(violations)} violation(s)):\n{body}{tail}"
+
+
+def _format_name_violations(violations: list[tuple[str, str]], *, header: str) -> str:
+    """Render a name-violation list as a pytest.fail-friendly message.
+
+    Sibling of :func:`_format_violations` with the same cap-and-overflow
+    behaviour. A separate function because a name has no line number, so
+    the three-tuple shape would have to carry a meaningless ``0``.
+    """
+    head = violations[:_MAX_REPORTED_VIOLATIONS]
+    body = "\n".join(f"  {path} → {detail}" for path, detail in head)
+    overflow = len(violations) - len(head)
+    tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
+    return f"{header} ({len(violations)} violation(s)):\n{body}{tail}"
+
+
+# ---------------------------------------------------------------------------
+# Name scanning
+# ---------------------------------------------------------------------------
+
+
+def _name_violations(rel_paths: Iterable[str]) -> list[tuple[str, str]]:
+    """Find forbidden tokens in the *names* along each repo-relative path.
+
+    Every component is inspected, so a directory name is checked exactly
+    as a file name is; a hit on a directory is attributed to that
+    directory's path rather than to whichever file happened to surface
+    it, and is reported once no matter how many files sit beneath it.
+
+    Two of the four classes the content side checks are omitted, because
+    neither can structurally match a path component rather than because
+    they were overlooked:
+
+    - ``SDLC_SCAFFOLDING_PHRASES`` are space-separated ("work plan"), and
+      a path component cannot contain a space in this repo's conventions.
+    - The personal-path check looks for the absolute prefix
+      ``/Users/clifguy/``, which cannot appear inside a repo-relative
+      path.
+
+    Returns ``(offending_path, "'token' (class)")`` pairs, deduplicated.
+    """
+    violations: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for rel_path in rel_paths:
+        parts = Path(rel_path).parts
+        for depth, component in enumerate(parts, start=1):
+            # The path this component names: the directory prefix for an
+            # interior component, the file itself for the last one.
+            owner = str(Path(*parts[:depth]))
+            if owner in NAME_TOKEN_ALLOWLIST:
+                continue
+
+            matches: list[str] = []
+            ticket = NAME_TICKET_REF_RE.search(component)
+            if ticket:
+                matches.append(f"{ticket.group(0)!r} (ticket-id)")
+            for pattern in USE_CASE_PATTERNS:
+                use_case = pattern.search(component)
+                if use_case:
+                    matches.append(f"{use_case.group(0)!r} (use-case-term)")
+
+            for detail in matches:
+                key = (owner, detail)
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(key)
+
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +603,28 @@ def test_branch_protection_md_no_github_internal_ids() -> None:
 
 
 # ---------------------------------------------------------------------------
+# T12 — Forbidden tokens in file and directory names
+# ---------------------------------------------------------------------------
+
+
+def test_no_ticket_or_use_case_terms_in_tracked_names() -> None:
+    """T12: no tracked file or directory name carries a ticket id or a
+    use-case term.
+
+    The counterpart to T1/T2, which scan the same two classes in file
+    *contents*. Scope matches T1/T3/T4 — ``domains/`` and ``.claude/``
+    are excluded, as is this gate file, whose own name is fine but whose
+    exclusion keeps the scan uniform.
+    """
+    rel_paths = [
+        str(path.relative_to(REPO_ROOT)) for path in _tracked_files() if not _is_excluded(path)
+    ]
+    violations = _name_violations(rel_paths)
+    if violations:
+        pytest.fail(_format_name_violations(violations, header="T12 name-token"))
+
+
+# ---------------------------------------------------------------------------
 # Anti-coincidental-pass checks
 #
 # These are the safety net the test-first methodology calls for: they
@@ -554,3 +696,95 @@ def test_t2_tokenizer_distinguishes_string_from_comment(tmp_path: Path) -> None:
     # function docstring all MUST be extracted.
     assert "T-0002" in flat_text, "standalone # comment was not extracted"
     assert "T-0003" in flat_text, "function docstring was not extracted"
+
+
+def test_t12_ticket_pattern_matches_every_id_form() -> None:
+    """T12 name regex catches all four ways a ticket id reaches a name,
+    including one carried by a directory rather than a file, while
+    rejecting the ``t``-before-digits false positive.
+
+    The content-side ``TICKET_REF_RE`` is hyphenated-only and would match
+    none of the positives below; this test is what fails if the name
+    scan is wired to that pattern instead.
+    """
+    positives = {
+        "scripts/t0074_load_probe.py": "unhyphenated, lowercase, at component start",
+        "tests/sage/test_t0037_x.py": "unhyphenated, mid-component after an underscore",
+        "docs/T-0452_notes.md": "canonical hyphenated form",
+        "docs/T0452.md": "hyphenless uppercase form",
+        "docs/t0099/notes.md": "carried by a directory, not the basename",
+    }
+    for rel_path, why in positives.items():
+        assert _name_violations([rel_path]), f"missed a ticket id ({why}): {rel_path}"
+
+    negatives = {
+        "sage/abstract_2024.py": "the ``t`` closing ``abstract`` precedes a bare year",
+        "docs/CAS-ADR-042.md": "the only sanctioned durable-surface anchor",
+        "scripts/benchmark_abstraction.py": "ordinary script name",
+        "tests/test_public_posture.py": "this gate's own name",
+        "sage/storage/t20260825_snapshot.py": "a timestamp, not a four-digit id",
+    }
+    for rel_path, why in negatives.items():
+        assert not _name_violations([rel_path]), f"false positive ({why}): {rel_path}"
+
+
+def test_t12_use_case_pattern_matches_names() -> None:
+    """T12 matches use-case terms in a name with the same per-term
+    boundary tuning T1 applies to contents.
+
+    The assertions are behavioural, so they exclude an implementation
+    that dropped the use-case classes or retuned their boundaries — but
+    not one that inlined equivalent copies of the patterns instead of
+    consulting ``USE_CASE_PATTERNS``. That variant would pass here and
+    drift from T1 later; only reading the helper catches it.
+    """
+    assert _name_violations(["app/src/pim_health.ts"]), "missed a use-case term in a basename"
+    assert _name_violations(["docs/patent_notes/x.md"]), (
+        "missed a use-case term in a directory name"
+    )
+    # The ``pim``-in-``compilation`` trap that
+    # test_t1_regex_word_boundary_negative_case guards on the content side.
+    assert not _name_violations(["sage/compilation_utils.py"]), (
+        "``pim`` matched inside ``compilation``; word-boundary tuning was lost"
+    )
+
+    # Inherited boundary, asserted so it is a documented property rather
+    # than a surprise: the ``pim`` alternates carry a trailing ``\b``, so
+    # the token is caught only when a non-word character follows it.
+    # ``pim_health.ts`` and ``pim-health-mock.ts`` match; ``pim_fixture``
+    # does not, because ``_`` is a regex word character. This is a
+    # property of the shared content-side pattern, not of the name scan —
+    # T1 reads the same way inside file contents. Widening it would
+    # change T1's behaviour too and belongs in its own change.
+    assert _name_violations(["app/src/pim-health-mock.ts"])
+    assert not _name_violations(["app/src/pim_fixture.ts"])
+
+
+def test_t12_scan_reaches_directory_components_and_basenames() -> None:
+    """T12 inspects every path component and attributes a hit to the
+    component that owns it.
+
+    An implementation that looked only at ``Path.name`` would miss the
+    directory entirely; one that matched against the whole path string
+    would report the file rather than the directory, and would drag the
+    clean sibling in alongside it.
+    """
+    violations = _name_violations(["a/t0099/b.py", "scripts/clean.py"])
+
+    assert len(violations) == 1, f"expected exactly one violation, got {violations}"
+    owner, detail = violations[0]
+    assert owner == "a/t0099", f"hit attributed to {owner!r}, not the offending directory"
+    assert "t0099" in detail
+
+    # The same directory under many files is reported once, not per file.
+    repeated = _name_violations(["a/t0099/b.py", "a/t0099/c.py", "a/t0099/d/e.py"])
+    assert len(repeated) == 1, f"directory hit not deduplicated: {repeated}"
+
+    # ...but two DIFFERENT directories that happen to share a name are two
+    # violations, not one. Deduplicating on the component name alone
+    # collapses them, and is indistinguishable from the correct
+    # implementation on every other case in this file — including the
+    # assertion directly above, which it satisfies exactly.
+    distinct = _name_violations(["a/t0099/b.py", "z/t0099/c.py"])
+    assert len(distinct) == 2, f"distinct directories collapsed by name: {distinct}"
+    assert {owner for owner, _ in distinct} == {"a/t0099", "z/t0099"}

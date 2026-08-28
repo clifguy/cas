@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic-load probe for the tag-filter A/B baseline.
 
-Mirrors scripts/t0074_load_probe.py but targets the tag-filter path
+Mirrors scripts/probe_catalog_index_latency.py but targets the tag-filter path
 specifically. Run twice on the same code revision:
 
 1. Pre-rewrite: capture timing against the json_each(tags) query.
@@ -9,8 +9,8 @@ specifically. Run twice on the same code revision:
 
 Usage::
 
-    .venv/bin/python -m scripts.t0078_load_probe --label before
-    .venv/bin/python -m scripts.t0078_load_probe --label after
+    .venv/bin/python -m scripts.probe_tag_filter_latency --label before
+    .venv/bin/python -m scripts.probe_tag_filter_latency --label after
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ async def _run_probes(label: str, reps: int) -> None:
         abstraction_provider=StubAbstractionProvider(),
     )
 
-    print(f"=== T-0078 probe label={label} reps={reps} ===")
+    print(f"=== tag-filter latency probe label={label} reps={reps} ===")
     try:
         for tag_set in TAG_PROBES:
             durations: list[float] = []
@@ -117,7 +117,8 @@ def main() -> None:
 
     if "pytest" in sys.modules:
         print(
-            "t0078_load_probe is a one-shot probe; refusing to run inside pytest.", file=sys.stderr
+            "probe_tag_filter_latency is a one-shot probe; refusing to run inside pytest.",
+            file=sys.stderr,
         )
         raise SystemExit(2)
 
