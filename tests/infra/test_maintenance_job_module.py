@@ -48,6 +48,11 @@ _REQUIRED_ENV: Final[tuple[str, ...]] = (
     "SHAREPOINT_SITE_ID",
     "SHAREPOINT_DRIVE_ID",
     "SHAREPOINT_ROOT_PATH",
+    # The bulk reabstract command regenerates semantic abstracts, so the job
+    # needs the hosted provider's coordinates and the Key Vault its key lives in.
+    "SAGE_KEY_VAULT_URI",
+    "ABSTRACTION_PROVIDER",
+    "ABSTRACTION_MODEL",
 )
 
 # The per-invocation maintenance request — the command selector and both
@@ -63,6 +68,10 @@ _FORBIDDEN_BAKED_ENV: Final[tuple[str, ...]] = (
     "SAGE_PURGE_VAULT_ID",
     "SAGE_PURGE_CONFIRM",
     "SAGE_PURGE_APPLY",
+    "SAGE_REABSTRACT_VAULT_ID",
+    "SAGE_REABSTRACT_STATUSES",
+    "SAGE_REABSTRACT_CONFIRM",
+    "SAGE_REABSTRACT_APPLY",
 )
 
 _GUID_RE: Final[re.Pattern[str]] = re.compile(
@@ -291,3 +300,18 @@ def test_guid_detector_control() -> None:
     """The GUID gate flags a literal GUID (so ``test_no_hardcoded_identity`` is live)."""
     assert _GUID_RE.search("var x = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'\n")
     assert not _GUID_RE.search("var x = 'not-a-guid'\n")
+
+
+def test_replica_timeout_admits_a_long_sweep() -> None:
+    """The replica window must fit a bulk reabstract, not just a purge.
+
+    A purge finishes in seconds; a several-hundred-document reabstract runs for
+    tens of minutes at seconds per document. At the ten-minute window the job
+    originally carried, such a sweep is hard-killed part-way through with no
+    report — and with ``replicaRetryLimit: 0`` it is not resumed.
+    """
+    timeout = re.search(r"replicaTimeout:\s*(\d+)", _strip_line_comments(_module_text()))
+    assert timeout, "the job must declare a replicaTimeout"
+    assert int(timeout.group(1)) >= 3600, (
+        f"replicaTimeout is {timeout.group(1)}s; a bulk reabstract needs at least 3600s"
+    )

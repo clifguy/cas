@@ -29,8 +29,18 @@ def config_from_env(env: Mapping[str, str]):
     site/drive/root the document-store binding addresses. The maintenance jobs are
     cloud-only, so the profile and vault-source backend are fixed here. A missing
     required coordinate fails loud.
+
+    The abstraction block is optional: only a job that regenerates semantic
+    abstracts resolves that seam, and it validates the model itself before doing
+    any work. The purge and teardown entrypoints never touch it, so an
+    environment that declares no model still yields a usable config.
     """
-    from sage.config import SageCoreConfig, StackDocumentStoreConfig, StackPostgresConfig
+    from sage.config import (
+        SageCoreConfig,
+        StackAbstractionConfig,
+        StackDocumentStoreConfig,
+        StackPostgresConfig,
+    )
 
     def _required(key: str) -> str:
         value = env.get(key)
@@ -46,6 +56,10 @@ def config_from_env(env: Mapping[str, str]):
             database=_required("PG_DATABASE"),
             user=_required("PG_USER"),
             sslmode="require",
+        ),
+        abstraction=StackAbstractionConfig(
+            provider=env.get("ABSTRACTION_PROVIDER") or "anthropic",
+            model=env.get("ABSTRACTION_MODEL") or None,
         ),
         document_store=StackDocumentStoreConfig(
             site_id=_required("SHAREPOINT_SITE_ID"),
