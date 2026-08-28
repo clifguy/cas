@@ -209,6 +209,7 @@ def _release_timing_handler(handler: logging.Handler | None) -> None:
 def _build_vault_timers(
     timing: TimingConfig,
     brain_root: Path,
+    vault_id: str,
 ) -> tuple[
     QueryTimer | NullQueryTimer,
     QueryTimer | NullQueryTimer,
@@ -229,9 +230,9 @@ def _build_vault_timers(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     handler = _install_timing_handler(log_path)
 
-    storage_timer = QueryTimer("sage.storage.timing", timing, "storage")
-    content_timer = QueryTimer("sage.content.timing", timing, "content")
-    retrieval_timer = QueryTimer("sage.retrieval.timing", timing, "retrieval")
+    storage_timer = QueryTimer("sage.storage.timing", timing, "storage", vault_id)
+    content_timer = QueryTimer("sage.content.timing", timing, "content", vault_id)
+    retrieval_timer = QueryTimer("sage.retrieval.timing", timing, "retrieval", vault_id)
     flusher = VaultTimingThread(
         timers=[storage_timer, content_timer, retrieval_timer],
         interval_seconds=timing.summary_interval_seconds,
@@ -932,7 +933,7 @@ async def initialize_services(
         brain_root.mkdir(parents=True, exist_ok=True)
 
         storage_timer, content_timer, retrieval_timer, timing_thread, timing_handler = (
-            _build_vault_timers(config.timing, brain_root)
+            _build_vault_timers(config.timing, brain_root, config.vault.id)
         )
 
         # Durable stores: explicit instance > factory > the provisioner the

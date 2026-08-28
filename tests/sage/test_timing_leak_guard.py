@@ -64,6 +64,7 @@ def test_leaked_timing_threads_detected_then_reaped():
         logger_name="sage.storage.timing",
         config=TimingConfig(emit_threshold_ms=10_000.0, summary_interval_seconds=0.05),
         layer="storage",
+        vault_id="test_vault",
     )
     leaked = VaultTimingThread(timers=[timer], interval_seconds=0.05)
     leaked.start()

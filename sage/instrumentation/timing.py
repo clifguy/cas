@@ -142,12 +142,17 @@ class QueryTimer(NullQueryTimer):
     (``sage.storage.timing`` etc.). All emitted records carry a
     JSON-serialized payload as the log message so a downstream
     grep/jq pipeline can join across layers via the ``layer`` field.
+    Every payload names the constructing vault in ``vault_id``: the
+    loggers are process-global and every loaded vault's file handler is
+    attached to each of them, so a record in a shared log is
+    attributable to its vault only by what the record itself carries.
     """
 
-    def __init__(self, logger_name: str, config: TimingConfig, layer: str) -> None:
+    def __init__(self, logger_name: str, config: TimingConfig, layer: str, vault_id: str) -> None:
         self._logger = logging.getLogger(logger_name)
         self._config = config
         self._layer = layer
+        self._vault_id = vault_id
         self._lock = threading.Lock()
         self._suppressed: Counter[str] = Counter()
         self._last_summary_ns = time.monotonic_ns()
@@ -178,6 +183,7 @@ class QueryTimer(NullQueryTimer):
             interval_s = (time.monotonic_ns() - self._last_summary_ns) / 1_000_000_000.0
             payload = {
                 "layer": self._layer,
+                "vault_id": self._vault_id,
                 "summary": True,
                 "interval_s": interval_s,
                 "suppressed": dict(self._suppressed),
@@ -199,6 +205,7 @@ class QueryTimer(NullQueryTimer):
             return
         payload: dict[str, object] = {
             "layer": self._layer,
+            "vault_id": self._vault_id,
             "label": label,
             "duration_ms": duration_ms,
         }
@@ -216,6 +223,7 @@ class QueryTimer(NullQueryTimer):
     ) -> None:
         payload = {
             "layer": self._layer,
+            "vault_id": self._vault_id,
             "label": f"request:{mode}",
             "mode": mode,
             "request_id": request_id,
