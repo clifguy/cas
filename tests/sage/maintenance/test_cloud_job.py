@@ -48,3 +48,30 @@ def test_exit_code_passes_through(monkeypatch):
     monkeypatch.setattr("sage.maintenance.purge_cloud.main", lambda: 3)
     monkeypatch.setenv("SAGE_MAINTENANCE_COMMAND", "purge_document")
     assert main() == 3
+
+
+def test_routes_reabstract_to_the_bulk_reabstract_entrypoint(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "sage.maintenance.delete_vault_cloud.main",
+        lambda: (_ for _ in ()).throw(AssertionError("delete must not run")),
+    )
+    monkeypatch.setattr(
+        "sage.maintenance.purge_cloud.main",
+        lambda: (_ for _ in ()).throw(AssertionError("purge must not run")),
+    )
+    monkeypatch.setattr("sage.maintenance.reabstract_cloud.main", lambda: calls.append("r") or 0)
+    monkeypatch.setenv("SAGE_MAINTENANCE_COMMAND", "reabstract")
+
+    assert main() == 0
+    assert calls == ["r"]
+
+
+def test_the_refusal_names_every_known_command(monkeypatch, capsys):
+    """An operator who mistypes must be able to read the full command set back."""
+    monkeypatch.setenv("SAGE_MAINTENANCE_COMMAND", "optimize_everything")
+
+    assert main() == 2
+    err = capsys.readouterr().err
+    for command in ("delete_vault", "purge_document", "purge_chain", "purge_batch", "reabstract"):
+        assert command in err

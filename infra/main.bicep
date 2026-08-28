@@ -265,7 +265,8 @@ module postgresBootstrap 'modules/postgres-bootstrap.bicep' = {
 
 // In-VNet maintenance job (CAS-ADR-043/029). Declared by the deploy and started
 // out-of-band by the dedicated maintenance workflow, which selects the operation
-// (vault teardown, document purge) per invocation; runs as the SAGE identity,
+// (vault teardown, document purge, bulk abstract recovery) per invocation; runs
+// as the SAGE identity,
 // which already holds every grant the operations need (schema owner + SharePoint
 // writer).
 module maintenanceJob 'modules/maintenance-job.bicep' = {
@@ -285,6 +286,8 @@ module maintenanceJob 'modules/maintenance-job.bicep' = {
     sharepointSiteId: sharepointSiteId
     sharepointDriveId: sharepointDriveId
     vaultSourceRootPath: vaultSourceRootPath
+    keyVaultUri: keyvault.outputs.keyVaultUri
+    abstractionModel: abstractionModel
   }
 }
 

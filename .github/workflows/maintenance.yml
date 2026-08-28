@@ -5,9 +5,12 @@ name: maintenance
 # reachable API surface and off the routine deploy pipeline: they run only when an
 # operator dispatches this workflow, selects the tenant Environment (whose required
 # reviewer is the approval gate) and the command, and supplies the per-invocation
-# request. The workflow does not apply infrastructure — the in-VNet maintenance job
-# is already deployed by infra.yml (main.bicep); this only applies the request to
-# the job's environment, starts it, and waits.
+# request. The bulk reabstract command rides the same path for a different reason:
+# it destroys nothing, but it runs for tens of minutes against a whole vault, which
+# is well past any synchronous call's ceiling. The workflow does not apply
+# infrastructure — the in-VNet maintenance job is already deployed by infra.yml
+# (main.bicep); this only applies the request to the job's environment, starts it,
+# and waits.
 #
 # Per-command input semantics (workflow_dispatch caps the input count, so the
 # generic target/confirm inputs carry per-command meanings):
@@ -17,6 +20,10 @@ name: maintenance
 #                   confirm_length retypes the chain length.
 #   purge_batch:    target is the ingested-since timestamp, target_extra the
 #                   optional ingested-until; confirm retypes the target count.
+#   reabstract:     target is the pipeline-status selector (comma-separated, or
+#                   `all`; blank selects failed + abstraction_skipped),
+#                   target_extra an optional cap on documents swept this run;
+#                   confirm retypes the vault id.
 on:
   workflow_dispatch:
     inputs:
@@ -33,22 +40,23 @@ on:
           - purge_document
           - purge_chain
           - purge_batch
+          - reabstract
       vault_id:
         description: Vault id the operation targets (e.g. cas_smoke).
         type: string
         required: true
       target:
-        description: 'Operation target: document id / chain head id / ingested-since timestamp (unused for delete_vault).'
+        description: 'Operation target: document id / chain head id / ingested-since timestamp / reabstract status selector (unused for delete_vault).'
         type: string
         required: false
         default: ''
       target_extra:
-        description: 'purge_batch only: optional ingested-until timestamp (exclusive).'
+        description: 'purge_batch: optional ingested-until timestamp (exclusive). reabstract: optional cap on documents swept this run.'
         type: string
         required: false
         default: ''
       confirm:
-        description: 'Typed confirmation of PERMANENT deletion: retype the vault id (delete_vault), the target id (purge_document/purge_chain), or the target count (purge_batch).'
+        description: 'Typed confirmation: retype the vault id (delete_vault/reabstract), the target id (purge_document/purge_chain), or the target count (purge_batch). For the destructive commands this confirms PERMANENT deletion.'
         type: string
         required: true
       confirm_length:
@@ -57,7 +65,7 @@ on:
         required: false
         default: ''
       apply:
-        description: Apply the operation. Leave unchecked for a dry-run (prints the plan only).
+        description: Apply the operation. Leave unchecked for a dry-run (prints the plan or worklist only).
         type: boolean
         default: false
       snapshot:
@@ -82,7 +90,7 @@ permissions:
 jobs:
   maintenance:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 70
     # The environment binding is the approval gate: its required reviewer must
     # approve before the job runs, and its scoped variables carry the identity and
     # the resource-group coordinate.
@@ -118,9 +126,11 @@ jobs:
         # from the flags alone, dropping the image and command. The applied
         # request persists in the job definition until the next run or redeploy
         # overwrites it; the job stays inert between dispatches because nothing
-        # starts it. Dry-run is the job's default; APPLY=true is required for any
-        # destruction, and each entrypoint still enforces its typed
-        # confirmation(s).
+        # starts it. Dry-run is the job's default; APPLY=true is required before
+        # any command changes state, and each entrypoint still enforces its typed
+        # confirmation(s). The poll ceiling outlasts the job's own replicaTimeout,
+        # so a long reabstract sweep reports its own terminal status rather than
+        # timing out here first.
         run: |
           set -euo pipefail
           MAINTENANCE_JOB="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
@@ -161,6 +171,15 @@ jobs:
                 "SAGE_PURGE_APPLY=$APPLY"
                 "SAGE_PURGE_REASON=$REASON"
               ) ;;
+            reabstract)
+              ENV_VARS+=(
+                "SAGE_REABSTRACT_VAULT_ID=$VAULT_ID"
+                "SAGE_REABSTRACT_STATUSES=$TARGET"
+                "SAGE_REABSTRACT_LIMIT=$TARGET_EXTRA"
+                "SAGE_REABSTRACT_CONFIRM=$CONFIRM"
+                "SAGE_REABSTRACT_APPLY=$APPLY"
+                "SAGE_REABSTRACT_REASON=$REASON"
+              ) ;;
             *)
               echo "unknown command: $COMMAND"; exit 2 ;;
           esac
@@ -174,7 +193,7 @@ jobs:
           echo "Started maintenance job execution: $EXECUTION (command: $COMMAND, vault: $VAULT_ID, apply: $APPLY)"
           MAINTENANCE_SUCCEEDED=false
           STATUS=""
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 380); do
             STATUS="$(az containerapp job execution show \
               --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
               --job-execution-name "$EXECUTION" --query properties.status -o tsv)"

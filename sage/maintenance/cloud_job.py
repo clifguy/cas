@@ -29,7 +29,11 @@ def main(argv: list[str] | None = None) -> int:
         from sage.maintenance import purge_cloud
 
         return purge_cloud.main()
-    known = ", ".join(("delete_vault", *_PURGE_COMMANDS))
+    if command == "reabstract":
+        from sage.maintenance import reabstract_cloud
+
+        return reabstract_cloud.main()
+    known = ", ".join(("delete_vault", *_PURGE_COMMANDS, "reabstract"))
     print(f"refuse: {_ENV_COMMAND} must be one of {known}; got {command!r}.", file=sys.stderr)
     return 2
 

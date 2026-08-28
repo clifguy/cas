@@ -2,7 +2,8 @@
 //
 // Declares the Container Apps Job that runs the out-of-band cloud maintenance
 // operations for the cloud deployment profile (CAS-ADR-043/042/029): whole-vault
-// teardown and document purge. A cloud vault's durable state lives in places a
+// teardown, document purge, and bulk abstract recovery. A cloud vault's durable
+// state lives in places a
 // developer laptop cannot reach: the Postgres schemas on the Entra-only,
 // VNet-integrated Flexible Server, and the retained-source tree in a SharePoint
 // document library reached over Microsoft Graph. So these operations run from one
@@ -66,6 +67,12 @@ param sharepointDriveId string
 @description('Folder path within the SharePoint document library the vault tree is rooted at.')
 param vaultSourceRootPath string
 
+@description('Key Vault URI the job reads the hosted abstraction provider key from, under the SAGE identity (bulk reabstract only). No secret is carried here.')
+param keyVaultUri string
+
+@description('Claude model id the hosted abstraction provider generates with. Threaded from the same deploy parameter the container apps receive, so the job and the running stack cannot drift to different models.')
+param abstractionModel string
+
 // The SAGE identity's name is the Postgres role the job connects as, derived from
 // the identity resource id — the same derivation the container-apps and bootstrap
 // modules apply for each app's libpq user.
@@ -90,7 +97,12 @@ resource maintenanceJob 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: acaEnvironmentId
     configuration: {
       triggerType: 'Manual'
-      replicaTimeout: 600
+      // One hour. A purge finishes in seconds, but a bulk reabstract runs at
+      // seconds per document, so a several-hundred-document sweep needs tens of
+      // minutes; at the former ten-minute window such a sweep was hard-killed
+      // part-way through and, with no auto-retry, never resumed. The window is a
+      // ceiling, not a duration -- the fast commands are unaffected.
+      replicaTimeout: 3600
       replicaRetryLimit: 0
       manualTriggerConfig: {
         parallelism: 1
@@ -150,10 +162,37 @@ resource maintenanceJob 'Microsoft.App/jobs@2024-03-01' = {
               name: 'SHAREPOINT_ROOT_PATH'
               value: vaultSourceRootPath
             }
+            // Abstraction coordinates for the bulk reabstract command. The API
+            // key itself is never carried here: the job reads it from Key Vault
+            // under the SAGE identity, whose grant the container-apps module
+            // already declares.
+            {
+              name: 'SAGE_KEY_VAULT_URI'
+              value: keyVaultUri
+            }
+            {
+              name: 'ABSTRACTION_PROVIDER'
+              value: 'anthropic'
+            }
+            {
+              name: 'ABSTRACTION_MODEL'
+              value: abstractionModel
+            }
           ]
+          // Matches the SAGE app's allocation, and for the same reason. The purge
+          // and teardown commands open bare stores and would run in far less, but
+          // the bulk reabstract command builds the full per-vault service stack,
+          // whose embedding provider loads its model eagerly at construction --
+          // and then genuinely uses it: regenerating an abstract refreshes the
+          // document's synthetic header chunk so the new abstract is indexed, which
+          // re-embeds once per recovered document. This allocation is therefore
+          // load-bearing rather than headroom; at the ACA default the model load is
+          // OOM-killed. A no-op embedding provider is NOT a valid way to trim it --
+          // stub vectors would silently corrupt the header chunk of every document
+          // the sweep repaired. A manually-triggered job bills only while it runs.
           resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
+            cpu: json('2.0')
+            memory: '4Gi'
           }
         }
       ]

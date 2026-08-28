@@ -14,6 +14,7 @@ These checks read the tracked workflow YAML only; no Azure tooling.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Final
 
@@ -38,7 +39,10 @@ _COMMANDS: Final[tuple[str, ...]] = (
     "purge_document",
     "purge_chain",
     "purge_batch",
+    "reabstract",
 )
+
+MODULE: Final[Path] = REPO_ROOT / "infra" / "modules" / "maintenance-job.bicep"
 
 
 def _load() -> dict:
@@ -166,6 +170,12 @@ def test_request_applied_via_update_then_plain_start() -> None:
         "SAGE_PURGE_VAULT_ID",
         "SAGE_PURGE_CONFIRM",
         "SAGE_PURGE_APPLY",
+        "SAGE_REABSTRACT_VAULT_ID",
+        "SAGE_REABSTRACT_STATUSES",
+        "SAGE_REABSTRACT_LIMIT",
+        "SAGE_REABSTRACT_CONFIRM",
+        "SAGE_REABSTRACT_APPLY",
+        "SAGE_REABSTRACT_REASON",
     ):
         assert var in run, f"the update must thread {var}"
     assert "az containerapp job execution show" in run, "the job must poll for a terminal status"
@@ -222,3 +232,49 @@ def test_request_threaded_through_env_not_interpolated() -> None:
         "the start must use the env var, not the raw input"
     )
     assert "${{ inputs." not in run, "inputs must not be interpolated into the run script"
+
+
+def test_poll_ceiling_exceeds_the_replica_timeout() -> None:
+    """The workflow must outwait the job it started.
+
+    The bulk reabstract sweep runs for tens of minutes, so the job's own
+    ``replicaTimeout`` is the operation's real ceiling. If the workflow's poll
+    loop expires first, an operator sees a failed workflow for a run that is
+    still going — or that already finished — and the per-document report in the
+    job's log is never surfaced. The two bounds are read from their own files so
+    the comparison cannot go vacuous.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    iterations = re.search(r"for\s+_\s+in\s+\$\(seq\s+1\s+(\d+)\)", run)
+    assert iterations, "the poll loop must declare an explicit bound"
+    # Scoped to the loop body: a `sleep` elsewhere in the script must not be
+    # mistaken for the poll interval, which would compute a wrong ceiling and
+    # let this gate pass vacuously.
+    sleep_seconds = re.search(r"sleep\s+(\d+)", run[iterations.end() :])
+    assert sleep_seconds, "the poll loop must sleep between status checks"
+    poll_ceiling = int(iterations.group(1)) * int(sleep_seconds.group(1))
+
+    replica_timeout = re.search(r"replicaTimeout:\s*(\d+)", MODULE.read_text(encoding="utf-8"))
+    assert replica_timeout, "the job module must declare a replicaTimeout"
+
+    assert poll_ceiling > int(replica_timeout.group(1)), (
+        f"the poll ceiling ({poll_ceiling}s) must outlast the job's replicaTimeout "
+        f"({replica_timeout.group(1)}s), or the workflow reports a false failure"
+    )
+
+
+def test_job_timeout_outlasts_the_poll_ceiling() -> None:
+    """The GitHub job-level timeout must not cut the poll loop short either."""
+    workflow = _load()
+    run = _job_run_text(_maintenance_job(workflow))
+    loop = re.search(r"for\s+_\s+in\s+\$\(seq\s+1\s+(\d+)\)", run)
+    iterations = int(loop.group(1))
+    sleep_seconds = int(re.search(r"sleep\s+(\d+)", run[loop.end() :]).group(1))
+    poll_minutes = iterations * sleep_seconds / 60
+
+    timeout_minutes = _maintenance_job(workflow).get("timeout-minutes")
+    assert timeout_minutes is not None, "the maintenance job must declare timeout-minutes"
+    assert timeout_minutes > poll_minutes, (
+        f"timeout-minutes ({timeout_minutes}) must outlast the poll ceiling "
+        f"({poll_minutes:.0f} min)"
+    )

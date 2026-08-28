@@ -240,6 +240,27 @@ def _order_chain_from_head(
 # ─── Store acquisition ──────────────────────────────────────────────
 
 
+def resolve_vault_config(source_store: VaultSourceStore, vault_id: str):
+    """Locate and load ``vault_id``'s declaration through the vault-source store.
+
+    Returns the loaded config, or ``None`` when no discovered vault matches.
+
+    Resolution iterates ``discover()`` rather than asking for a filesystem
+    locator, so it works under a pathless vault-source binding (CAS-ADR-043).
+    Discovery's binding-opaque ``vault_id`` prefilters the candidates -- only a
+    discovered vault that may match is config-loaded, so a sibling vault's load
+    cost (or load failure) never touches the target's resolution -- and the
+    loaded config's own id confirms the match.
+    """
+    for discovered in source_store.discover():
+        if discovered.vault_id not in (None, vault_id):
+            continue
+        candidate = source_store.load_config(discovered)
+        if candidate.vault.id == vault_id:
+            return candidate
+    return None
+
+
 async def open_vault_stores(
     vault_id: str,
     *,
@@ -255,14 +276,7 @@ async def open_vault_stores(
     purge-audit sink are opened through the storage provisioner (CAS-ADR-042).
     Both bindings default to the active profile's stack resolution; a caller
     with no populated stack singleton (the in-cloud job entrypoints) injects
-    its own.
-
-    Resolution iterates ``discover()`` rather than asking for a filesystem
-    locator, so it works under a pathless vault-source binding. Discovery's
-    binding-opaque ``vault_id`` prefilters the candidates -- only a discovered
-    vault that may match is config-loaded, so a sibling vault's load cost (or
-    load failure) never touches the target's resolution -- and the loaded
-    config's own id confirms the match.
+    its own. The declaration itself is located by ``resolve_vault_config``.
     """
     if source_store is None or provisioner is None:
         from sage.mcp_init import (
@@ -277,14 +291,7 @@ async def open_vault_stores(
         if provisioner is None:
             provisioner = resolve_stack_storage_provisioner(stack_config)
 
-    config = None
-    for discovered in source_store.discover():
-        if discovered.vault_id not in (None, vault_id):
-            continue
-        candidate = source_store.load_config(discovered)
-        if candidate.vault.id == vault_id:
-            config = candidate
-            break
+    config = resolve_vault_config(source_store, vault_id)
     if config is None:
         return None
     brain_root = Path(config.vault.brain_root).expanduser()
