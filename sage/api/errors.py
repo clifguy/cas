@@ -5,6 +5,7 @@ ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
 from datetime import datetime
+from enum import StrEnum
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -12,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import ErrorResponse
 
 
@@ -596,6 +598,34 @@ class InvalidModeError(SAGEError):
             f"Unknown discover mode: {mode!r}. Valid modes: {sorted(valid_modes)!r}",
             400,
             {"mode": mode, "valid_modes": sorted(valid_modes)},
+        )
+
+
+class InvalidFilterValueError(SAGEError):
+    """400: a filter value falls outside a closed vocabulary.
+
+    Applies to filter fields typed against a Python enum, where the
+    accepted set is fixed in code rather than per-vault configuration.
+    Such a value can never match a stored row, so refusing it is more
+    useful than returning an empty result the caller cannot distinguish
+    from a genuine zero-match. The valid set travels with the error so
+    the caller can self-correct without a probe round-trip.
+
+    Vault-configured vocabularies (doc_type, lifecycle_status) cannot be
+    checked here -- the accepted set is not known until the request is
+    resolved against a vault -- and surface as a non-fatal hint on the
+    response instead.
+    """
+
+    def __init__(self, field: str, value: object, valid_values: list[str]) -> None:
+        super().__init__(
+            "invalid_filter_value",
+            (
+                f"Invalid value {value!r} for filter {field!r}. "
+                f"Valid values: {sorted(valid_values)!r}."
+            ),
+            400,
+            {"field": field, "value": value, "valid_values": sorted(valid_values)},
         )
 
 
@@ -1530,10 +1560,21 @@ class MissingDocumentIdentifierError(SAGEError):
         )
 
 
+# Filter keys whose accepted values are a closed Python enum. Drives the
+# ``invalid_filter_value`` envelope, which reports the enum's members back
+# to the caller. Vault-configured vocabularies are deliberately absent --
+# their accepted set is not knowable at validation time.
+_ENUM_TYPED_FILTER_FIELDS: dict[str, type[StrEnum]] = {
+    "source_type": SourceType,
+    "edge_type": EdgeType,
+}
+
 # Field-annotation strings used in InvalidFilterShapeError detail.
 # Kept as a small lookup rather than introspected from RetrievalFilters because
 # Pydantic v2's stringified annotations for ``str | None`` shapes are noisy
 # (``typing.Optional[str]`` or ``Union[str, None]`` depending on Python form).
+# Enum-typed keys are absent: a bad value on those raises ``enum`` rather
+# than a ``*_type`` shape error, so it never reaches this table.
 _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
     "doc_type": "str",
     "project": "str",
@@ -1648,6 +1689,24 @@ def translate_validation_error(
                 'metadata, or {"doc_type": "ticket"} for built-in fields'
             )
             return UnknownFilterKeyError(key=key, valid_keys=valid_keys, example=example)
+
+        # 2a) Out-of-vocabulary value for an enum-typed filter key.
+        # Pydantic reports these as `enum` (StrEnum members) or
+        # `literal_error`, neither of which the shape branch below
+        # catches -- it keys on the `*_type` suffix. Without this branch
+        # such a value falls through untranslated to the generic 422/
+        # internal_error path, losing the valid set the caller needs.
+        # Scoped to the field->enum map rather than to any one field, so
+        # every enum-typed filter key gets the same envelope.
+        if len(loc) >= 2 and loc[0] == "filters" and err_type in ("enum", "literal_error"):
+            field = str(loc[1])
+            enum_cls = _ENUM_TYPED_FILTER_FIELDS.get(field)
+            if enum_cls is not None:
+                return InvalidFilterValueError(
+                    field=field,
+                    value=input_value,
+                    valid_values=[member.value for member in enum_cls],
+                )
 
         # 3) Wrong value type for a known filter key.
         # Pydantic emits types like `list_type`, `int_type`, `string_type`,

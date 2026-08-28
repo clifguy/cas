@@ -401,7 +401,13 @@ class PostgresGraphStore(GraphStore):
                 params.append("failed")
 
             if filters:
-                for col in ("doc_type", "project", "lifecycle_status", "pipeline_status"):
+                for col in (
+                    "doc_type",
+                    "project",
+                    "lifecycle_status",
+                    "pipeline_status",
+                    "source_type",
+                ):
                     if col in filters and filters[col]:
                         where_clauses.append(f"{col} = %s")
                         params.append(filters[col])

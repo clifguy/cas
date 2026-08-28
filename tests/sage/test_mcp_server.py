@@ -1620,6 +1620,7 @@ async def test_discover_unknown_filter_key(vault_services):
         "tags",
         "document_ids",
         "pipeline_status",
+        "source_type",
         "tier3_metadata",
     } <= valid_keys
     # A worked example helps the caller self-correct without a probe round-trip.
@@ -1634,6 +1635,64 @@ async def test_discover_invalid_filter_shape(vault_services):
     assert result["detail"]["field"] == "tags"
     assert "list" in result["detail"]["expected_type"]
     assert "int" in result["detail"]["received_type"]
+
+
+async def test_t0457_discover_accepts_source_type_filter_key(vault_services):
+    """source_type is an accepted document filter key.
+
+    Positive control on the pre-change behavior: this exact call used to
+    return ``unknown_filter_key``. Asserting the absence of that error is
+    the whole point, so the assertion names it explicitly.
+    """
+    result = _parse(await search("test_vault", mode="catalog", filters={"source_type": "markdown"}))
+    assert result.get("error") != "unknown_filter_key"
+    assert "results" in result
+
+
+async def test_t0457_discover_invalid_source_type_value_rejected(vault_services):
+    """An out-of-vocabulary source_type is refused, not silently emptied.
+
+    The motivating case: "dotx" is not a SAGE source type at all, so the
+    caller gets the closed vocabulary back rather than an empty success
+    they cannot distinguish from a genuine zero-match.
+    """
+    result = _parse(await search("test_vault", mode="catalog", filters={"source_type": "dotx"}))
+    assert result["error"] == "invalid_filter_value"
+    assert result["detail"]["field"] == "source_type"
+    assert result["detail"]["value"] == "dotx"
+    valid = set(result["detail"]["valid_values"])
+    assert valid == {
+        "markdown",
+        "docx",
+        "pdf",
+        "email",
+        "onenote",
+        "teams_chat",
+        "xlsx",
+        "pptx",
+    }
+
+
+async def test_t0457_discover_invalid_edge_type_value_rejected(vault_services):
+    """The same envelope covers edge_type, which previously fell through.
+
+    Anti-coincidental: a translator branch scoped to source_type alone
+    passes the test above and fails this one. Before the change this
+    input produced an untranslated validation error rather than a typed
+    envelope, so the assertion on the error code is the discriminator.
+    """
+    result = _parse(
+        await search(
+            "test_vault",
+            mode="catalog",
+            target="edges",
+            filters={"edge_type": "refrences"},
+        )
+    )
+    assert result["error"] == "invalid_filter_value"
+    assert result["detail"]["field"] == "edge_type"
+    assert result["detail"]["value"] == "refrences"
+    assert "references" in result["detail"]["valid_values"]
 
 
 async def test_discover_mode_parameter_mismatch_catalog_with_heading_path(vault_services):

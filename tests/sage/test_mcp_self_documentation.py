@@ -248,12 +248,13 @@ def test_discover_filters_args_documents_closed_key_set():
         "tags",
         "document_ids",
         "pipeline_status",
+        "source_type",
         "tier3_metadata",
     )
     for key in document_target_keys:
         assert key in doc, (
             f"search docstring is missing filter key {key!r}. "
-            "All seven document-target filter keys must be enumerated."
+            "All eight document-target filter keys must be enumerated."
         )
     assert "unknown_filter_key" in doc, (
         "search docstring must reference the ``unknown_filter_key`` "
@@ -517,4 +518,39 @@ def test_discover_catalog_mode_named_canonical_document_enumerator():
         "the catalog-mode description must name catalog mode the canonical "
         "vault-document enumerator (the word 'canonical' must appear in the "
         "``catalog:`` block, not merely elsewhere in the docstring)."
+    )
+
+
+def test_t0457_discover_docstring_documents_source_type_vocabulary():
+    """The source_type filter must publish its closed vocabulary.
+
+    source_type is typed against the SourceType enum, so an unlisted
+    value is refused rather than silently returning zero rows. That is
+    only useful if the caller can read the accepted set without a probe
+    round-trip.
+
+    Anti-coincidental-pass: requires (a) every one of the eight source
+    types by name, AND (b) the ``invalid_filter_value`` envelope that
+    names the rejection path. Listing the key alone -- which the closed
+    key-set test already checks -- would not satisfy this.
+    """
+    doc = _docstring(search)
+    for value in (
+        "markdown",
+        "docx",
+        "pdf",
+        "email",
+        "onenote",
+        "teams_chat",
+        "xlsx",
+        "pptx",
+    ):
+        assert value in doc, (
+            f"search docstring is missing source_type value {value!r}. "
+            "The closed vocabulary must be enumerated so a caller can "
+            "self-correct without probing."
+        )
+    assert "invalid_filter_value" in doc, (
+        "search docstring must reference the ``invalid_filter_value`` "
+        "error envelope as the out-of-vocabulary rejection path."
     )

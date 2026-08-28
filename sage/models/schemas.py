@@ -2669,6 +2669,16 @@ class RetrievalFilters(BaseModel):
             "of failed-pipeline documents."
         ),
     )
+    source_type: SourceType | None = Field(
+        default=None,
+        description=(
+            "Filter by the source artifact format the document was "
+            'ingested from (e.g. "docx", "markdown"). Typed against the '
+            "SAGE SourceType enum, so a value outside the closed set is "
+            "rejected at validation time via invalid_filter_value rather "
+            "than silently returning zero rows."
+        ),
+    )
     tier3_metadata: dict | None = Field(
         default=None,
         description=(
@@ -2721,6 +2731,7 @@ _DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "tags",
     "document_ids",
     "pipeline_status",
+    "source_type",
     "tier3_metadata",
 )
 
@@ -3179,14 +3190,18 @@ class DiscoverResponse(BaseModel):
     hints: dict[str, object] | None = Field(
         default=None,
         description=(
-            "Optional retrieval hints surfaced to the caller. Null when no "
-            "hints apply. Empty-result hints (all modes): "
-            "`total_before_filtering`, plus `active_filters` and `scope` "
-            "when applicable. Catalog budget hint (T-0091, fires when the "
-            "serialized response exceeds the MCP inline ceiling): "
-            '`reason="response_exceeds_inline_budget"`, '
+            "Optional retrieval hints surfaced to the caller. Null when "
+            "no hints apply. Empty-result hints (semantic and keyword "
+            "modes): `total_before_filtering`, plus `active_filters` and "
+            "`scope` when applicable. Catalog budget hint (fires when "
+            "the serialized response exceeds the MCP inline "
+            'ceiling): `reason="response_exceeds_inline_budget"`, '
             "`response_size_bytes`, `budget_bytes`, `recommended_limit` "
-            "(re-page at this limit to fit inline)."
+            "(re-page at this limit to fit inline). Vocabulary warnings "
+            "(all modes): `warnings`, a list of advisories naming any "
+            "filter value outside this vault's configured doc_type or "
+            "lifecycle_status vocabulary. Absent when every filter value "
+            "is recognized."
         ),
     )
     read_meta: ReadMeta = Field(

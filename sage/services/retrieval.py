@@ -222,11 +222,14 @@ class RetrievalService:
             or f.tags
             or f.pipeline_status
             or f.document_ids
+            or f.source_type
             or f.tier3_metadata
         )
         if not has_any_filter:
             return request.limit * _FETCH_MULTIPLIER_NONE
-        is_mixed = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3_metadata)
+        is_mixed = bool(
+            f.tags or f.pipeline_status or f.document_ids or f.source_type or f.tier3_metadata
+        )
         return request.limit * (_FETCH_MULTIPLIER_MIXED if is_mixed else _FETCH_MULTIPLIER_PUSHDOWN)
 
     async def _content_filters(
@@ -278,7 +281,9 @@ class RetrievalService:
 
         # Non-pushdownable filters still need a graph-store SQL
         # resolution into a document_id IN clause.
-        has_non_pushdown = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3_metadata)
+        has_non_pushdown = bool(
+            f.tags or f.pipeline_status or f.document_ids or f.source_type or f.tier3_metadata
+        )
         if has_non_pushdown:
             sql_filters: dict[str, object] = {}
             if f.doc_type:
@@ -293,6 +298,8 @@ class RetrievalService:
                 sql_filters["tags"] = f.tags
             if f.document_ids:
                 sql_filters["document_ids"] = f.document_ids
+            if f.source_type:
+                sql_filters["source_type"] = f.source_type.value
             if f.tier3_metadata:
                 sql_filters["tier3_metadata"] = f.tier3_metadata
             # Filter resolution wants the full match set, not a page;
@@ -341,6 +348,8 @@ class RetrievalService:
                 active["document_ids"] = request.filters.document_ids
             if request.filters.pipeline_status:
                 active["pipeline_status"] = request.filters.pipeline_status
+            if request.filters.source_type:
+                active["source_type"] = request.filters.source_type.value
             if request.filters.tier3_metadata:
                 active["tier3_metadata"] = request.filters.tier3_metadata
             if active:
@@ -348,6 +357,58 @@ class RetrievalService:
         if request.scope and request.scope != RetrievalScope.ALL:
             hints["scope"] = request.scope.value
         return hints
+
+    def _vocabulary_warnings(self, request: DiscoverRequest) -> list[str]:
+        """Advisories for filter values outside this vault's vocabularies.
+
+        doc_type and lifecycle_status draw their accepted values from
+        vault config, not from a Python enum, so an unrecognized value
+        cannot be refused at validation time the way an enum-typed
+        filter is. Left unremarked it returns a successful empty
+        response that a caller cannot tell apart from a defined value
+        with no matches -- so the negative is only trustworthy if they
+        first build their own positive control.
+
+        Keyed on vocabulary membership, never on the result count: a
+        recognized value that simply matches nothing is a true zero and
+        must stay silent.
+        """
+        if not request.filters:
+            return []
+        warnings: list[str] = []
+        checks = (
+            ("doc_type", request.filters.doc_type, self._config.valid_doc_type_values()),
+            (
+                "lifecycle_status",
+                request.filters.lifecycle_status,
+                self._config.valid_lifecycle_status_values(),
+            ),
+        )
+        for field, value, vocabulary in checks:
+            if value and value not in vocabulary:
+                warnings.append(
+                    f"Filter {field}={value!r} is not among this vault's "
+                    f"configured values: {sorted(vocabulary)!r}. No document "
+                    f"can carry it, so the empty result reflects the filter "
+                    f"rather than the vault's contents."
+                )
+        return warnings
+
+    @staticmethod
+    def _merge_hints(response: DiscoverResponse, addition: dict[str, object]) -> None:
+        """Fold extra keys into a response's hints without discarding it."""
+        if response.hints is None:
+            response.hints = addition
+        else:
+            response.hints = {**response.hints, **addition}
+
+    def _apply_vocabulary_warnings(
+        self, response: DiscoverResponse, request: DiscoverRequest
+    ) -> None:
+        """Attach vocabulary advisories, if any, to a response."""
+        warnings = self._vocabulary_warnings(request)
+        if warnings:
+            self._merge_hints(response, {"warnings": warnings})
 
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
@@ -359,6 +420,7 @@ class RetrievalService:
             # document-only knobs, so we can route directly.
             if request.target == RetrievalTarget.EDGES:
                 response = await self._catalog_edges(request, phases)
+                self._apply_vocabulary_warnings(response, request)
                 _apply_catalog_budget_hint(response)
                 return response
 
@@ -390,10 +452,17 @@ class RetrievalService:
                         if isinstance(hit.document, DocumentSummary):
                             hit.document.semantic_abstract = None
 
+            # Applied here rather than in _build_hints: that helper runs
+            # only in semantic and keyword mode and only when the result
+            # set is empty, whereas a filter value the vault does not
+            # recognize is worth reporting in every mode.
+            self._apply_vocabulary_warnings(response, request)
+
             # Surface a recommended_limit hint when a catalog
             # response would bust the Claude Code MCP inline ceiling.
             # Applied here (post-projection) so the byte measurement
-            # reflects what the wire actually carries.
+            # reflects what the wire actually carries -- which is why it
+            # runs last, after every other hint is attached.
             if request.mode == RetrievalMode.CATALOG:
                 _apply_catalog_budget_hint(response)
 
@@ -470,6 +539,8 @@ class RetrievalService:
                 sql_filters["tags"] = request.filters.tags
             if request.filters.document_ids:
                 sql_filters["document_ids"] = request.filters.document_ids
+            if request.filters.source_type:
+                sql_filters["source_type"] = request.filters.source_type.value
             if request.filters.tier3_metadata:
                 self._validate_tier3_filter_keys(
                     request.filters.tier3_metadata, request.filters.doc_type
@@ -706,6 +777,8 @@ class RetrievalService:
                 sql_filters["tags"] = filters.tags
             if filters.document_ids:
                 sql_filters["document_ids"] = filters.document_ids
+            if filters.source_type:
+                sql_filters["source_type"] = filters.source_type.value
             if filters.tier3_metadata:
                 self._validate_tier3_filter_keys(filters.tier3_metadata, filters.doc_type)
                 sql_filters["tier3_metadata"] = filters.tier3_metadata
@@ -1147,6 +1220,8 @@ class RetrievalService:
             if filters.document_ids:
                 if doc.id not in filters.document_ids:
                     return False
+            if filters.source_type and doc.source_type != filters.source_type:
+                return False
 
         return True
 
