@@ -31,7 +31,7 @@ from sage.adapters.interfaces import Chunk
 # ── Block 1: Chunk dataclass carries the fields ──────────────────
 
 
-def test_t0077_chunk_dataclass_carries_lifecycle_status_and_project():
+def test_chunk_dataclass_carries_lifecycle_status_and_project():
     """The Chunk dataclass must hold lifecycle_status and project so
     the ingest path can populate them from the parent document at
     chunk-write time (mirroring the existing doc_type pattern).
@@ -136,7 +136,7 @@ class _RecordingContentStore:
 # ── Block 2 / T1: _content_filters pushdown for lifecycle_status only ─
 
 
-async def test_t0077_content_filter_pushdown_lifecycle_only(
+async def test_content_filter_pushdown_lifecycle_only(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config, monkeypatch
 ):
     """When the only active filter is lifecycle_status, _content_filters
@@ -186,7 +186,7 @@ async def test_t0077_content_filter_pushdown_lifecycle_only(
     )
 
 
-async def test_t0077_content_filter_pushdown_project_only(
+async def test_content_filter_pushdown_project_only(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config, monkeypatch
 ):
     """Same contract as lifecycle_status, but for project."""
@@ -223,7 +223,7 @@ async def test_t0077_content_filter_pushdown_project_only(
     assert calls == [], "Pure-pushdown filter sets must skip graph SQL."
 
 
-async def test_t0077_content_filter_pushdown_mixed_doc_type_lifecycle(
+async def test_content_filter_pushdown_mixed_doc_type_lifecycle(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config, monkeypatch
 ):
     """doc_type + lifecycle_status are both pushdownable; the combined
@@ -263,7 +263,7 @@ async def test_t0077_content_filter_pushdown_mixed_doc_type_lifecycle(
     assert calls == [], "Two pushdownable filters must skip graph SQL."
 
 
-async def test_t0077_content_filter_mixed_with_tags_falls_back_to_graph(
+async def test_content_filter_mixed_with_tags_falls_back_to_graph(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config
 ):
     """When a non-pushdownable filter (tags) is present, the graph-store
@@ -307,7 +307,7 @@ async def test_t0077_content_filter_mixed_with_tags_falls_back_to_graph(
     assert has_doc_constraints is True
 
 
-async def test_t0077_pushdown_skips_graph_when_query_documents_raises(
+async def test_pushdown_skips_graph_when_query_documents_raises(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config, monkeypatch
 ):
     """Anti-coincidental-pass gate: if a future change silently reverts
@@ -346,7 +346,7 @@ async def test_t0077_pushdown_skips_graph_when_query_documents_raises(
 # ── Block 2 / T2: end-to-end round-trip via stub content store ────────
 
 
-async def test_t0077_lifecycle_pushdown_round_trip_semantic(
+async def test_lifecycle_pushdown_round_trip_semantic(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config
 ):
     """End-to-end: a semantic-mode discover with a lifecycle_status-only
@@ -390,7 +390,7 @@ async def test_t0077_lifecycle_pushdown_round_trip_semantic(
     )
 
 
-async def test_t0077_lifecycle_pushdown_round_trip_hybrid(
+async def test_lifecycle_pushdown_round_trip_hybrid(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config
 ):
     """Same as above, but exercising the hybrid RRF path. Hybrid invokes
@@ -435,7 +435,7 @@ async def test_t0077_lifecycle_pushdown_round_trip_hybrid(
         )
 
 
-async def test_t0077_lifecycle_pushdown_round_trip_keyword(
+async def test_lifecycle_pushdown_round_trip_keyword(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config
 ):
     """Keyword mode also routes through _content_filters; pushdownable
@@ -471,7 +471,7 @@ async def test_t0077_lifecycle_pushdown_round_trip_keyword(
 # ── Block 3: tiered over-fetch multiplier ─────────────────────────────
 
 
-def test_t0077_fetch_limit_no_filters():
+def test_fetch_limit_no_filters():
     """With no filters present, the multiplier is 5x (dedup-only
     over-fetch headroom).
     """
@@ -487,7 +487,7 @@ def test_t0077_fetch_limit_no_filters():
     assert RetrievalService._fetch_limit(request) == 50
 
 
-def test_t0077_fetch_limit_pushdown_only():
+def test_fetch_limit_pushdown_only():
     """With only pushdownable filters, the multiplier drops to 3x
     because LanceDB can pre-filter the candidate set exactly (no
     document_id IN-clause bloat).
@@ -508,7 +508,7 @@ def test_t0077_fetch_limit_pushdown_only():
     )
 
 
-def test_t0077_fetch_limit_mixed():
+def test_fetch_limit_mixed_filters():
     """When a non-pushdownable filter is present (e.g. tags), keep the
     10x multiplier because the graph-resolved document_id IN list can
     bloat the candidate set.
@@ -551,7 +551,7 @@ class _RecordingChunkMetaStore:
         return getattr(self._inner, name)
 
 
-async def test_t0077_update_metadata_project_syncs_to_chunks(
+async def test_update_metadata_project_syncs_to_chunks(
     graph_store, lock_manager, minimal_config, stub_content_store
 ):
     """When MetadataService._update_metadata changes a document's project,
@@ -579,7 +579,7 @@ async def test_t0077_update_metadata_project_syncs_to_chunks(
     assert project_calls[-1][1]["project"] == "beta"
 
 
-async def test_t0077_update_metadata_doc_type_still_syncs(
+async def test_update_metadata_doc_type_still_syncs(
     graph_store, lock_manager, minimal_config, stub_content_store
 ):
     """Regression guard: the existing doc_type sync behavior must not
@@ -603,7 +603,7 @@ async def test_t0077_update_metadata_doc_type_still_syncs(
     assert dt_calls[-1][1]["doc_type"] == "memo"
 
 
-async def test_t0077_set_lifecycle_syncs_to_chunks(
+async def test_set_lifecycle_syncs_to_chunks(
     graph_store, lock_manager, minimal_config, stub_content_store
 ):
     """When LifecycleService._set_lifecycle transitions a document, the
@@ -632,7 +632,7 @@ async def test_t0077_set_lifecycle_syncs_to_chunks(
     assert ls_calls[-1][1]["lifecycle_status"] == "completed"
 
 
-async def test_t0077_supersede_syncs_predecessor_lifecycle_to_chunks(
+async def test_supersede_syncs_predecessor_lifecycle_to_chunks(
     graph_store, lock_manager, minimal_config, stub_content_store
 ):
     """The supersede flow flips the predecessor's lifecycle_status (to
@@ -667,7 +667,7 @@ async def test_t0077_supersede_syncs_predecessor_lifecycle_to_chunks(
     assert ls_calls[-1][1]["lifecycle_status"] == "archived"
 
 
-async def test_t0077_lifecycle_service_without_content_store_no_op(
+async def test_lifecycle_service_without_content_store_no_op(
     graph_store, lock_manager, minimal_config
 ):
     """Backwards-compat: callers that omit content_store from the
@@ -689,7 +689,7 @@ async def test_t0077_lifecycle_service_without_content_store_no_op(
     assert response.document.lifecycle_status == "completed"
 
 
-async def test_t0077_ingest_supersede_syncs_predecessor_chunks(
+async def test_ingest_supersede_syncs_predecessor_chunks(
     tmp_vault_dir, graph_store, ingestion_service, stub_content_store
 ):
     """cas-code-review F4 finding: the ingest-side supersede path

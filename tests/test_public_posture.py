@@ -7,7 +7,7 @@ and enforced at commit time by the ``cas-code-review`` skill §P1. This test
 is the substrate-level counterpart: a deterministic gate that fails the
 build whenever a forbidden pattern reappears in a tracked file.
 
-Ten invariants are checked. The numbering is the gate's own and is not
+Eleven invariants are checked. The numbering is the gate's own and is not
 contiguous: T9 has never been assigned, and T11 is described below but
 has no test function yet.
 
@@ -42,7 +42,19 @@ has no test function yet.
        because neither can structurally match a path component — see
        ``_name_violations`` for the reasoning.
 
-Scope — top-level directories excluded from T1/T3/T4/T12:
+  T13. Ticket ids must not appear in Python *identifiers* — the names of
+       functions, async functions, and classes — at any nesting depth.
+       The third face of the rule T2 and T12 enforce on file contents and
+       on file and directory names: an identifier is code, so the
+       prohibition always covered it and only the enforcement was
+       missing. Shares T12's ``NAME_TICKET_REF_RE`` for the same reason
+       T12 needs it — a hyphen is not legal in a Python name, so an id
+       reaches an identifier as ``t0157`` or ``t_0148`` and the prose
+       pattern matches neither. Use-case terms are not re-checked here:
+       T1 already scans the whole file, and an identifier is file
+       contents.
+
+Scope — top-level directories excluded from T1/T3/T4/T12/T13:
 
 - ``domains/`` is the executor-defined home for use-case-specific configs.
   The establishing cleanup deletes ``domains/pim_health/`` entirely;
@@ -72,10 +84,10 @@ Scope — top-level directories excluded from T1/T3/T4/T12:
 
   T11. ``CLAUDE.md`` is the public stub (under 4096 bytes).
 
-The four allowlist constants near the top of the module follow the
+The five allowlist constants near the top of the module follow the
 pattern of ``KNOWN_VIOLATIONS`` in ``tests/sage/test_typed_alias_coverage.py``
 and ``KNOWN_ARG_DRIFT`` in ``tests/sage/test_mcp_tool_conformance.py``.
-All four are empty at the close of the establishing cleanup. Every
+All five are empty at the close of the establishing cleanup. Every
 entry added later requires a 1-line rationale.
 
 Anti-coincidental-pass coverage:
@@ -96,6 +108,22 @@ Anti-coincidental-pass coverage:
   matter more than the usual anti-coincidental margin: the tree carries
   no name-side violation, so T12's gate test passes trivially against a
   no-op implementation and proves nothing on its own.
+- ``test_t13_detector_reaches_nested_definitions`` and
+  ``test_t13_detector_covers_all_three_node_types`` confirm the
+  identifier walk reaches a method inside a class, a def inside a
+  function, and a class name — the three positions the tree has almost
+  no natural coverage for. Of the definitions the establishing cleanup
+  renamed, all but seven sat at module level and none was a class, so a
+  detector that walked only ``tree.body``, or skipped ``ClassDef``,
+  would be indistinguishable from a correct one on the live tree alone.
+- ``test_t13_detector_matches_identifier_id_forms_and_rejects_near_misses``
+  confirms the detector consults ``NAME_TICKET_REF_RE`` and not the
+  prose-side ``TICKET_REF_RE``, which matches no identifier at all and
+  would yield a gate that passes on any tree. It also pins the inherited
+  lookbehind: an id buried mid-CamelCase is out of reach, which is the
+  same boundary that keeps ``abstract_2024`` from matching.
+- ``test_t13_scan_scope_is_non_empty_and_honours_exclusions`` guards the
+  failure mode where the gate passes because it enumerated nothing.
 
 A whole-test anti-coincidental probe (manually introduce one violation
 per category, confirm the gate fails with a precise message naming
@@ -108,6 +136,7 @@ from __future__ import annotations
 import ast
 import re
 import subprocess
+import textwrap
 import tokenize
 from collections.abc import Iterable
 from pathlib import Path
@@ -222,6 +251,14 @@ PERSONAL_PATH_ALLOWLIST: Final[dict[str, list[int]]] = {}
 # name has no line number, so this allowlist carries prose where the
 # three above carry line lists.
 NAME_TOKEN_ALLOWLIST: Final[dict[str, str]] = {}
+
+# path (relative to repo root) → names of definitions in that file whose
+# ticket-id-shaped identifier is exempted. Keyed by path and name rather
+# than reusing ``NAME_TOKEN_ALLOWLIST`` above: that one exempts a *path
+# component*, so sharing it would let a single filename exemption
+# silently exempt every identifier the file declares. Shape matches
+# ``ORPHANED_TEST_ALLOWLIST`` in tests/test_collection_integrity.py.
+IDENTIFIER_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +472,43 @@ def _name_violations(rel_paths: Iterable[str]) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Identifier scanning
+# ---------------------------------------------------------------------------
+
+
+def _identifier_violations(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(lineno, name)`` for every definition whose *name* carries a
+    ticket id.
+
+    Covers ``FunctionDef``, ``AsyncFunctionDef``, and ``ClassDef`` at any
+    nesting depth: a method inside a class and a closure inside a function
+    are reached exactly as a module-level ``def`` is. Depth matters more
+    than it looks — the overwhelming majority of definitions in this
+    repository sit at module level, so a walk over ``tree.body`` alone
+    behaves identically on almost every real file and diverges only on the
+    handful this helper exists to catch.
+
+    Uses ``NAME_TICKET_REF_RE`` rather than ``TICKET_REF_RE`` for the same
+    reason ``_name_violations`` does: the hyphenated prose form
+    (``T-0452``) is not how an id reaches an identifier. Underscores are
+    legal in a Python name, so the id arrives as ``t0157`` or ``t_0148``,
+    and the content-side pattern matches neither.
+
+    Pure: takes a parsed tree, consults no allowlist, touches no
+    filesystem. Mirrors ``_orphaned_test_functions`` in
+    tests/test_collection_integrity.py, which factors its walk the same way
+    so the unit tests can drive it against synthetic source.
+    """
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if NAME_TICKET_REF_RE.search(node.name):
+            found.append((node.lineno, node.name))
+    return found
+
+
+# ---------------------------------------------------------------------------
 # T1 — Use-case-specific terms outside domains/
 # ---------------------------------------------------------------------------
 
@@ -625,6 +699,41 @@ def test_no_ticket_or_use_case_terms_in_tracked_names() -> None:
 
 
 # ---------------------------------------------------------------------------
+# T13 — Ticket ids in Python identifiers
+# ---------------------------------------------------------------------------
+
+
+def test_no_ticket_ids_in_python_identifiers() -> None:
+    """T13: no tracked ``.py`` file may define a function or class whose
+    *name* carries a ticket id.
+
+    The third face of the same rule T2 and T12 enforce on file contents and
+    on file and directory names. An identifier is code, so the prohibition
+    already covered it; only the enforcement was missing.
+
+    Scope matches T1/T3/T4/T12 via ``_tracked_files_with_suffixes``, which
+    excludes ``domains/``, ``.claude/``, and this gate file. Unparseable
+    modules are skipped: a file that cannot be parsed fails its own
+    collection loudly and is a different problem.
+    """
+    violations: list[tuple[str, int, str]] = []
+    for path in _tracked_files_with_suffixes((".py",)):
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            continue
+        allowed = set(IDENTIFIER_TOKEN_ALLOWLIST.get(rel, []))
+        for line_no, name in _identifier_violations(tree):
+            if name in allowed:
+                continue
+            violations.append((rel, line_no, name))
+
+    if violations:
+        pytest.fail(_format_violations(violations, header="T13 identifier-token"))
+
+
+# ---------------------------------------------------------------------------
 # Anti-coincidental-pass checks
 #
 # These are the safety net the test-first methodology calls for: they
@@ -788,3 +897,271 @@ def test_t12_scan_reaches_directory_components_and_basenames() -> None:
     distinct = _name_violations(["a/t0099/b.py", "z/t0099/c.py"])
     assert len(distinct) == 2, f"distinct directories collapsed by name: {distinct}"
     assert {owner for owner, _ in distinct} == {"a/t0099", "z/t0099"}
+
+
+# ---------------------------------------------------------------------------
+# T13 detector self-tests
+#
+# These carry more weight than the usual anti-coincidental margin, for the
+# reason T12's do: once the tree is clean, ``test_no_ticket_ids_in_python_
+# identifiers`` passes against a detector that returns nothing at all. The
+# synthetic sources below are the only thing standing between a real gate
+# and a decorative one.
+#
+# Kept as strings so this module's own AST — and the gate's walk over any
+# file that is not excluded — never sees the offending defs as real code.
+# ---------------------------------------------------------------------------
+
+# One offender at each of the four nesting positions a definition can
+# occupy: module level, class body, function body, and a class whose own
+# name is the offender.
+_SYNTHETIC_NESTED_IDENTIFIER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    def test_t0001_module_level():
+        assert True
+
+    class TestThing:
+        async def test_t0002_class_method(self):
+            assert True
+
+    def outer():
+        def test_t0003_inside_a_function():
+            assert True
+        return test_t0003_inside_a_function
+
+    class T0004Config:
+        pass
+    """
+)
+
+# Only clean names, including ones that sit at the same four positions.
+_SYNTHETIC_CLEAN_IDENTIFIER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    def test_module_level():
+        assert True
+
+    class TestThing:
+        async def test_class_method(self):
+            assert True
+
+    def outer():
+        def inner_helper():
+            assert True
+        return inner_helper
+
+    class Config:
+        pass
+    """
+)
+
+
+def test_t13_detector_reaches_nested_definitions() -> None:
+    """T13 walks to every nesting depth, not just module level.
+
+    This is the assertion the gate cannot make for itself. 200 of the
+    definitions the establishing cleanup renamed sat at module level, so a
+    detector that iterated ``tree.body`` alone would have produced an
+    almost-identical violation list against the pre-cleanup tree and an
+    identical (empty) one after — indistinguishable from the correct
+    implementation on the only evidence the gate test consults.
+
+    A ``tree.body``-only walk finds two of the four below; one that skips
+    ``ClassDef`` finds three.
+    """
+    tree = ast.parse(_SYNTHETIC_NESTED_IDENTIFIER_SOURCE)
+    names = {name for _, name in _identifier_violations(tree)}
+
+    assert "test_t0001_module_level" in names, "missed a module-level def"
+    assert "test_t0002_class_method" in names, "missed a method inside a class"
+    assert "test_t0003_inside_a_function" in names, "missed a def inside a function"
+    assert "T0004Config" in names, "missed a class whose own name carries the id"
+    assert len(names) == 4, f"unexpected extra hits: {names}"
+
+    # The same walk over an equivalently-shaped clean tree finds nothing,
+    # so the four hits above are the names and not the shape.
+    assert not _identifier_violations(ast.parse(_SYNTHETIC_CLEAN_IDENTIFIER_SOURCE))
+
+
+def test_t13_detector_covers_all_three_node_types() -> None:
+    """T13 flags ``def``, ``async def``, and ``class`` alike.
+
+    The tree carries no offending class at all, so the ``ClassDef`` arm has
+    no natural coverage anywhere else: it can only be exercised here.
+    """
+    tree = ast.parse(
+        textwrap.dedent(
+            """
+            def test_t0010_sync():
+                assert True
+
+            async def test_t0011_async():
+                assert True
+
+            class T0012Case:
+                pass
+            """
+        )
+    )
+    names = {name for _, name in _identifier_violations(tree)}
+    assert names == {"test_t0010_sync", "test_t0011_async", "T0012Case"}, (
+        f"a node type was dropped: {names}"
+    )
+
+
+def test_t13_detector_matches_identifier_id_forms_and_rejects_near_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T13 uses the name-shaped ticket pattern, not the prose one, and reads
+    it from the module rather than carrying its own copy.
+
+    Anti-coincidental-pass. Three rivals:
+
+    - Wired to ``TICKET_REF_RE``: an identifier cannot carry the canonical
+      ``T-0452`` spacing, since a hyphen is not legal in a Python name, so
+      every positive below is invisible to the prose pattern. That rival
+      matches nothing and passes on any clean tree.
+    - Boundary retuned: the near-misses below fail.
+    - **Pattern inlined** rather than looked up. This one passes every
+      case above and below, and drifts from T12 the moment either pattern
+      moves. The closing monkeypatch is what excludes it: swapping the
+      module attribute must change the detector's answer, which is only
+      true if the detector reads the attribute. The sibling T12 test
+      documents this rival in prose and notes that "only reading the
+      helper catches it" — it is mechanically checkable, so check it.
+    """
+    positives = {
+        "test_t0157_target_edges": "unhyphenated, mid-name after an underscore",
+        "test_t_0148_catalog_default": "underscore-separated form",
+        "t0076_retrieval_service": "at the start of the name",
+        "T0452Case": "uppercase and hyphenless, opening a class name",
+    }
+    for name, why in positives.items():
+        source = f"class {name}:\n    pass\n" if name[0].isupper() else f"def {name}():\n    pass\n"
+        assert _identifier_violations(ast.parse(source)), f"missed a ticket id ({why}): {name}"
+        # The prose pattern this must NOT be wired to.
+        assert not TICKET_REF_RE.search(name), (
+            f"{name!r} is matched by TICKET_REF_RE; it no longer discriminates the two patterns"
+        )
+
+    negatives = {
+        "test_abstract_2024_rollup": "the ``t`` closing ``abstract`` precedes a bare year",
+        "test_t20260825_snapshot": "a timestamp, not a four-digit id",
+        "test_report_0074_shape": "four digits with no adjacent ``t``",
+        "test_cas_adr_042_anchor": "the only sanctioned durable-surface anchor",
+        "test_t1_light_strips_document": "a one-digit case tag, not a ticket id",
+    }
+    for name, why in negatives.items():
+        assert not _identifier_violations(ast.parse(f"def {name}():\n    pass\n")), (
+            f"false positive ({why}): {name}"
+        )
+
+    # Inherited boundary, asserted so it is a documented property rather
+    # than a surprise — the same treatment the ``pim_fixture`` case gets in
+    # ``test_t12_use_case_pattern_matches_names``.
+    #
+    # ``NAME_TICKET_REF_RE`` opens with ``(?<![0-9A-Za-z])``, so the id must
+    # be preceded by a non-alphanumeric character or start the name. An id
+    # buried mid-CamelCase (``TestT0452Case``, ``TicketT0452``) is therefore
+    # NOT caught. The boundary is what keeps ``abstract_2024`` from
+    # matching, and it is shared with T12, where the same lookbehind reads
+    # against path components — widening it would change T12's behaviour
+    # too and belongs in its own change. Snake_case is this repository's
+    # convention for the functions that carry ids, and no class in the tree
+    # carries one in any form, so nothing is escaping through this today.
+    assert not _identifier_violations(ast.parse("class TestT0452Case:\n    pass\n"))
+    assert _identifier_violations(ast.parse("class Test_T0452_Case:\n    pass\n"))
+
+    # Excludes the inlined-copy rival: point the module attribute at a
+    # pattern that matches something else entirely, and the detector's
+    # answer must follow it in both directions.
+    monkeypatch.setitem(globals(), "NAME_TICKET_REF_RE", re.compile(r"zzmarker"))
+    assert not _identifier_violations(ast.parse("def test_t0157_target_edges():\n    pass\n")), (
+        "detector still matched a ticket id after the module pattern was swapped out; "
+        "it carries its own copy instead of consulting NAME_TICKET_REF_RE"
+    )
+    assert _identifier_violations(ast.parse("def zzmarker_probe():\n    pass\n")), (
+        "detector did not pick up the swapped-in pattern; it is not reading the module attribute"
+    )
+
+
+def test_t13_detector_reports_the_offending_line_and_name() -> None:
+    """T13 attributes a hit to the definition that owns it, once per
+    definition.
+
+    An implementation that reported the enclosing module, the first line of
+    the file, or the whole file would satisfy a bare
+    ``assert _identifier_violations(tree)`` and give no way to find the
+    offender in a 4000-line test module.
+
+    Two further rivals, neither of which an undecorated single-offender
+    fixture can separate:
+
+    - Reporting the *decorator's* line instead of the ``def``'s. Nearly
+      every offending definition in this repository carries a
+      ``@pytest.mark`` or ``@pytest.fixture``, so this rival would
+      misreport almost every real hit while passing against a bare def.
+      ``ast.FunctionDef.lineno`` is the ``def`` line, not the decorator's.
+    - Deduplicating by name. The sibling ``_name_violations`` helper dedupes
+      by design, so mirroring it here is the likelier mistake than
+      inventing it — and one file can legitimately declare the same
+      offending name twice, in two different class bodies.
+    """
+    source = "def clean_helper():\n    pass\n\n\ndef test_t0020_offender():\n    pass\n"
+    violations = _identifier_violations(ast.parse(source))
+
+    assert len(violations) == 1, f"expected exactly one violation, got {violations}"
+    line_no, name = violations[0]
+    assert name == "test_t0020_offender"
+    assert line_no == 5, f"hit attributed to line {line_no}, not the def's own line"
+
+    # A decorated definition: the hit belongs to the ``def`` line (4), not
+    # to the decorator above it (3).
+    decorated = ast.parse(
+        textwrap.dedent(
+            """
+            import pytest
+
+            @pytest.mark.asyncio
+            async def test_t0021_decorated():
+                pass
+            """
+        )
+    )
+    decorated_hits = _identifier_violations(decorated)
+    assert len(decorated_hits) == 1
+    assert decorated_hits[0] == (5, "test_t0021_decorated"), (
+        f"decorated def attributed to {decorated_hits[0]}; likely reporting the decorator's line"
+    )
+
+    # The same offending name in two class bodies is two violations, not
+    # one — a name-keyed dedup collapses them and under-reports the tree.
+    repeated = ast.parse(
+        textwrap.dedent(
+            """
+            class TestA:
+                def test_t0022_shared(self):
+                    pass
+
+            class TestB:
+                def test_t0022_shared(self):
+                    pass
+            """
+        )
+    )
+    assert len(_identifier_violations(repeated)) == 2, "two same-named definitions collapsed to one"
+
+
+def test_t13_scan_scope_is_non_empty_and_honours_exclusions() -> None:
+    """T13's file enumeration reaches real files and skips the right ones.
+
+    A gate over an empty file list passes for the wrong reason and looks
+    exactly like a gate over a clean tree. The scope assertions below also
+    pin the exclusions, so widening them silently is not possible.
+    """
+    scanned = {str(p.relative_to(REPO_ROOT)) for p in _tracked_files_with_suffixes((".py",))}
+
+    assert len(scanned) > 100, f"T13 would scan only {len(scanned)} file(s); enumeration is broken"
+    assert "tests/test_collection_integrity.py" in scanned, "a real test module is out of scope"
+    assert not any(rel.startswith("domains/") for rel in scanned)
+    assert not any(rel.startswith(".claude/") for rel in scanned)
+    assert "tests/test_public_posture.py" not in scanned, "the gate must not scan itself"

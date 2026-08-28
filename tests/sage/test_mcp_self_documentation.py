@@ -521,7 +521,7 @@ def test_discover_catalog_mode_named_canonical_document_enumerator():
     )
 
 
-def test_t0457_discover_docstring_documents_source_type_vocabulary():
+def test_discover_docstring_documents_source_type_vocabulary():
     """The source_type filter must publish its closed vocabulary.
 
     source_type is typed against the SourceType enum, so an unlisted

@@ -153,7 +153,7 @@ async def test_bulk_link_partial_success_on_unknown_document(graph_store, graph_
     assert persisted[0].target_id == real_tgt
 
 
-async def test_bulk_link_t0079_idempotency_returns_existing_edge_with_created_false(
+async def test_bulk_link_idempotency_returns_existing_edge_with_created_false(
     graph_store, graph_ops_service
 ):
     """per-item idempotency contract: a duplicate natural-key

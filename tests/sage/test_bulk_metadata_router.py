@@ -176,7 +176,7 @@ def _entry_lacks_document(entry: dict) -> bool:
     return entry.get("document") is None
 
 
-async def test_t0153_t1_http_light_strips_document_and_semantic_abstract(
+async def test_http_light_strips_document_and_semantic_abstract(
     seeded_six_app,
 ):
     """T1 — Explicit response_mode='light' over HTTP drops the per-item
@@ -204,7 +204,7 @@ async def test_t0153_t1_http_light_strips_document_and_semantic_abstract(
     )
 
 
-async def test_t0153_t2_http_full_preserves_document_with_semantic_abstract(
+async def test_http_full_preserves_document_with_semantic_abstract(
     seeded_six_app,
 ):
     """T2 — Explicit response_mode='full' over HTTP preserves the
@@ -226,7 +226,7 @@ async def test_t0153_t2_http_full_preserves_document_with_semantic_abstract(
         assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
 
 
-async def test_t0153_t3_http_default_above_threshold_returns_light(seeded_six_app):
+async def test_http_default_above_threshold_returns_light(seeded_six_app):
     """T3 — Default (no response_mode in body) with 6 items returns
     light. Anti-coincidental: `response_mode` is NOT in the body."""
     app, vault_id, seeded_ids = seeded_six_app
@@ -245,7 +245,7 @@ async def test_t0153_t3_http_default_above_threshold_returns_light(seeded_six_ap
         )
 
 
-async def test_t0153_t4_http_default_at_or_below_threshold_returns_full(
+async def test_http_default_at_or_below_threshold_returns_full(
     seeded_six_app,
 ):
     """T4 — Default with 3 items returns full."""
@@ -262,7 +262,7 @@ async def test_t0153_t4_http_default_at_or_below_threshold_returns_full(
         assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
 
 
-async def test_t0153_t5_http_error_envelope_intact_in_light_mode(seeded_six_app):
+async def test_http_error_envelope_intact_in_light_mode(seeded_six_app):
     """T5 — Error item in light mode carries full error envelope
     (round-trip against full mode)."""
     app, vault_id, seeded_ids = seeded_six_app
@@ -297,7 +297,7 @@ async def test_t0153_t5_http_error_envelope_intact_in_light_mode(seeded_six_app)
     assert "detail" in light_err["error"]
 
 
-async def test_t0153_t6_http_error_envelope_intact_in_full_mode(seeded_six_app):
+async def test_http_error_envelope_intact_in_full_mode(seeded_six_app):
     """T6 — Error item in full mode (regression guard)."""
     app, vault_id, seeded_ids = seeded_six_app
     body = {
@@ -317,7 +317,7 @@ async def test_t0153_t6_http_error_envelope_intact_in_full_mode(seeded_six_app):
     assert raw["results"][1]["error"]["error"] == "tags_add_conflict"
 
 
-async def test_t0153_t7_http_mixed_batch_in_light_mode(seeded_six_app):
+async def test_http_mixed_batch_in_light_mode(seeded_six_app):
     """T7 — Mixed-result batch in light mode."""
     app, vault_id, seeded_ids = seeded_six_app
     body = {
@@ -345,7 +345,7 @@ async def test_t0153_t7_http_mixed_batch_in_light_mode(seeded_six_app):
     assert _entry_lacks_document(raw["results"][2])
 
 
-async def test_t0153_t8_http_invalid_response_mode_rejected_with_422(
+async def test_http_invalid_response_mode_rejected_with_422(
     seeded_six_app,
 ):
     """T8 — Invalid response_mode in request body is rejected by
@@ -372,7 +372,7 @@ async def test_t0153_t8_http_invalid_response_mode_rejected_with_422(
         )
 
 
-async def test_t0153_t9_http_empty_batch_with_explicit_light(seeded_six_app):
+async def test_http_empty_batch_with_explicit_light(seeded_six_app):
     """T9 — Empty items with response_mode='light' returns 200 cleanly."""
     app, vault_id, _ = seeded_six_app
     body = {"response_mode": "light", "items": []}

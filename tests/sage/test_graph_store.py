@@ -397,7 +397,7 @@ async def test_tag_filter_reflects_insert_and_update(graph_store):
     assert total == 1
 
 
-async def test_t0078_tag_filter_and_semantics(graph_store):
+async def test_tag_filter_and_semantics(graph_store):
     """#8: filter for two tags returns only documents that carry both."""
     for suffix, tags in (
         ("a", ["alpha"]),
@@ -484,7 +484,7 @@ async def _seed_query_edges_fixture(graph_store) -> dict[str, list[str]]:
     return edges_by_kind
 
 
-async def test_t0157_query_edges_unfiltered_returns_all_paginated(graph_store):
+async def test_query_edges_unfiltered_returns_all_paginated(graph_store):
     """1. Empty filter returns every edge, paginated. total = unpaginated count."""
     fixture = await _seed_query_edges_fixture(graph_store)
     total_seeded = sum(len(v) for v in fixture.values())  # 13
@@ -500,7 +500,7 @@ async def test_t0157_query_edges_unfiltered_returns_all_paginated(graph_store):
         assert r.edge.edge_type in EdgeType, "edge_type must be a valid EdgeType"
 
 
-async def test_t0157_query_edges_filter_by_source_id(graph_store):
+async def test_query_edges_filter_by_source_id(graph_store):
     """2. source_id filter selects only edges sourced from that document."""
     await _seed_query_edges_fixture(graph_store)
 
@@ -510,7 +510,7 @@ async def test_t0157_query_edges_filter_by_source_id(graph_store):
     assert all(r.edge.source_id == _id("doc_a") for r in rows)
 
 
-async def test_t0157_query_edges_filter_by_target_id(graph_store):
+async def test_query_edges_filter_by_target_id(graph_store):
     """3. target_id filter selects only edges pointing at that document."""
     await _seed_query_edges_fixture(graph_store)
 
@@ -520,7 +520,7 @@ async def test_t0157_query_edges_filter_by_target_id(graph_store):
     assert all(r.edge.target_id == _id("doc_z") for r in rows)
 
 
-async def test_t0157_query_edges_filter_by_edge_type(graph_store):
+async def test_query_edges_filter_by_edge_type(graph_store):
     """4. edge_type filter selects only edges of that type."""
     await _seed_query_edges_fixture(graph_store)
 
@@ -529,7 +529,7 @@ async def test_t0157_query_edges_filter_by_edge_type(graph_store):
     assert all(r.edge.edge_type.value == "depends_on" for r in rows)
 
 
-async def test_t0157_query_edges_combined_filters_AND(graph_store):
+async def test_query_edges_combined_filters_AND(graph_store):
     """5. Combined source_id + edge_type filters AND together."""
     await _seed_query_edges_fixture(graph_store)
 
@@ -543,7 +543,7 @@ async def test_t0157_query_edges_combined_filters_AND(graph_store):
     )
 
 
-async def test_t0157_query_edges_pagination_correctness(graph_store):
+async def test_query_edges_pagination_correctness(graph_store):
     """6. Pagination: offset slices correctly; total reports unpaginated count.
 
     Anti-coincidental: total > limit when the underlying set is larger than
@@ -562,7 +562,7 @@ async def test_t0157_query_edges_pagination_correctness(graph_store):
     assert ids_p1.isdisjoint(ids_p2), "pages must not overlap"
 
 
-async def test_t0157_query_edges_retraction_state_via_left_join(graph_store):
+async def test_query_edges_retraction_state_via_left_join(graph_store):
     """8. Retraction JOIN: a disclaimed edge surfaces retracted_at and
     retracted_by_edge_id IN THE SAME RESULT SET as a sibling non-retracted
     edge that surfaces null for both. The same-result-set assertion is the
@@ -637,7 +637,7 @@ async def test_t0157_query_edges_retraction_state_via_left_join(graph_store):
     assert retracts_row.edge.retracted_edge_id == e1_id
 
 
-async def test_t0157_query_edges_multiple_retracts_earliest_wins(graph_store):
+async def test_query_edges_multiple_retracts_earliest_wins(graph_store):
     """9. Multiple retracts targeting the same edge: earliest by created_at wins.
 
     The window function ORDER BY created_at ASC + rn=1 picks the earliest.
@@ -692,7 +692,7 @@ async def test_t0157_query_edges_multiple_retracts_earliest_wins(graph_store):
     assert disclaimed.retracted_by_edge_id == r_earliest_id
 
 
-async def test_t0157_query_edges_null_target_on_retracts_preserved(graph_store):
+async def test_query_edges_null_target_on_retracts_preserved(graph_store):
     """10. Per CAS-ADR-017 retracts edges have target_id=NULL.
     query_edges must preserve the null (not coerce or drop the row).
     """

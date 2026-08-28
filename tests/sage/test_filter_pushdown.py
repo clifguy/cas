@@ -123,7 +123,7 @@ async def _index_marker(
 
 
 @pytest.fixture
-def t0076_retrieval_service(
+def filter_pushdown_retrieval_service(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config
 ):
     return RetrievalService(
@@ -197,8 +197,8 @@ async def _seed_mixed_vault(graph_store, content_store, embedding_provider):
 # ---------------------------------------------------------------------------
 
 
-async def test_t0076_content_filters_resolves_project_and_lifecycle(
-    graph_store, stub_content_store, stub_embedding_provider, t0076_retrieval_service
+async def test_content_filters_resolves_project_and_lifecycle(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
 ):
     """Keyword search with project=alpha + lifecycle_status=active must
     only surface the two docs that satisfy both filters. The completed
@@ -210,7 +210,7 @@ async def test_t0076_content_filters_resolves_project_and_lifecycle(
     response."""
     docs = await _seed_mixed_vault(graph_store, stub_content_store, stub_embedding_provider)
 
-    response = await t0076_retrieval_service.discover(
+    response = await filter_pushdown_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="alpha-marker",
@@ -226,8 +226,8 @@ async def test_t0076_content_filters_resolves_project_and_lifecycle(
     assert returned_ids == {docs["d_active_alpha"].id, docs["d_authoritative"].id}
 
 
-async def test_t0076_content_filters_zero_match_short_circuits_with_hints(
-    graph_store, stub_content_store, stub_embedding_provider, t0076_retrieval_service
+async def test_content_filters_zero_match_short_circuits_with_hints(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
 ):
     """When the filter set matches zero docs in SQL, the service must
     short-circuit to an empty response with hints surfacing the active
@@ -235,7 +235,7 @@ async def test_t0076_content_filters_zero_match_short_circuits_with_hints(
     matching ids are empty -> caller sees what filtered out."""
     await _seed_mixed_vault(graph_store, stub_content_store, stub_embedding_provider)
 
-    response = await t0076_retrieval_service.discover(
+    response = await filter_pushdown_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="alpha-marker",
@@ -257,15 +257,15 @@ async def test_t0076_content_filters_zero_match_short_circuits_with_hints(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0076_list_filtered_returns_filter_matched_hits_excluding_failed(
-    graph_store, stub_content_store, stub_embedding_provider, t0076_retrieval_service
+async def test_list_filtered_returns_filter_matched_hits_excluding_failed(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
 ):
     """Keyword query '*' triggers _list_filtered(). With
     lifecycle_status=active, the response must include the three active
     non-failed docs and exclude the completed and failed ones."""
     docs = await _seed_mixed_vault(graph_store, stub_content_store, stub_embedding_provider)
 
-    response = await t0076_retrieval_service.discover(
+    response = await filter_pushdown_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="*",
@@ -284,8 +284,8 @@ async def test_t0076_list_filtered_returns_filter_matched_hits_excluding_failed(
     assert docs["d_failed"].id not in returned_ids
 
 
-async def test_t0076_list_filtered_authoritative_scope_survives_refactor(
-    graph_store, stub_content_store, stub_embedding_provider, t0076_retrieval_service
+async def test_list_filtered_authoritative_scope_survives_refactor(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
 ):
     """``scope=AUTHORITATIVE`` is the one filter that cannot be expressed
     as a SQL column predicate today; the Python post-pass on
@@ -293,7 +293,7 @@ async def test_t0076_list_filtered_authoritative_scope_survives_refactor(
     test returns all active docs instead of just the authoritative one."""
     docs = await _seed_mixed_vault(graph_store, stub_content_store, stub_embedding_provider)
 
-    response = await t0076_retrieval_service.discover(
+    response = await filter_pushdown_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="*",
@@ -311,11 +311,11 @@ async def test_t0076_list_filtered_authoritative_scope_survives_refactor(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0076_content_filters_does_not_call_list_all_documents(
+async def test_content_filters_does_not_call_list_all_documents(
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0076_retrieval_service,
+    filter_pushdown_retrieval_service,
     monkeypatch,
 ):
     """Optimization gate for _content_filters(): list_all_documents()
@@ -334,7 +334,7 @@ async def test_t0076_content_filters_does_not_call_list_all_documents(
 
     monkeypatch.setattr(graph_store, "list_all_documents", _forbidden)
 
-    response = await t0076_retrieval_service.discover(
+    response = await filter_pushdown_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="alpha-marker",
@@ -351,16 +351,16 @@ async def test_t0076_content_filters_does_not_call_list_all_documents(
     assert response.results, "filter resolution returned an empty allowlist"
 
 
-async def test_t0076_list_filtered_does_not_call_list_all_documents(
+async def test_list_filtered_does_not_call_list_all_documents(
     graph_store,
     stub_content_store,
     stub_embedding_provider,
-    t0076_retrieval_service,
+    filter_pushdown_retrieval_service,
     monkeypatch,
 ):
     """Optimization gate for _list_filtered(): list_all_documents() must
     never be invoked from the keyword '*' path. Same reasoning as
-    test_t0076_content_filters_does_not_call_list_all_documents."""
+    test_content_filters_does_not_call_list_all_documents."""
     await _seed_mixed_vault(graph_store, stub_content_store, stub_embedding_provider)
 
     async def _forbidden(*_args, **_kwargs):
@@ -370,7 +370,7 @@ async def test_t0076_list_filtered_does_not_call_list_all_documents(
 
     monkeypatch.setattr(graph_store, "list_all_documents", _forbidden)
 
-    response = await t0076_retrieval_service.discover(
+    response = await filter_pushdown_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="*",

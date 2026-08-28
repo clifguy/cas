@@ -756,7 +756,7 @@ async def test_bh_058_document_identity_indexed_in_chunks(
 # ---------------------------------------------------------------------------
 
 
-async def test_t_0038_camelcase_title_searchable_via_split_tokens(
+async def test_camelcase_title_searchable_via_split_tokens(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """A document whose title is a CamelCase compound and whose body is
@@ -831,7 +831,7 @@ async def test_t_0038_camelcase_title_searchable_via_split_tokens(
         )
 
 
-async def test_t_0038_semantic_abstract_drives_keyword_match(
+async def test_semantic_abstract_drives_keyword_match(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """A document with sparse body but a descriptive semantic_abstract is
@@ -872,7 +872,7 @@ async def test_t_0038_semantic_abstract_drives_keyword_match(
     assert _id("doc_abstract_only") in doc_ids
 
 
-async def test_t_0038_hit_heading_path_masks_synthetic_marker(
+async def test_hit_heading_path_masks_synthetic_marker(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """When a hit's winning chunk is the synthetic header, the
@@ -2044,7 +2044,7 @@ async def test_bh_077_catalog_no_filters_returns_all(
 # ---------------------------------------------------------------------------
 
 
-async def test_t_0148_catalog_returns_failed_pipeline_doc_by_default(
+async def test_catalog_returns_failed_pipeline_doc_by_default(
     graph_store,
     retrieval_service,
 ):
@@ -2068,7 +2068,7 @@ async def test_t_0148_catalog_returns_failed_pipeline_doc_by_default(
     assert response.total_available == 2
 
 
-async def test_t_0148_catalog_explicit_pipeline_status_filter_still_narrows(
+async def test_catalog_explicit_pipeline_status_filter_still_narrows(
     graph_store,
     retrieval_service,
 ):
@@ -2094,7 +2094,7 @@ async def test_t_0148_catalog_explicit_pipeline_status_filter_still_narrows(
     assert response.total_available == 1
 
 
-async def test_t_0148_semantic_still_excludes_failed_by_default(
+async def test_semantic_still_excludes_failed_by_default(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -2132,7 +2132,7 @@ async def test_t_0148_semantic_still_excludes_failed_by_default(
     assert _id("t0148_sem_fail") not in doc_ids
 
 
-async def test_t_0148_storage_query_documents_default_exclude_failed_flag(
+async def test_storage_query_documents_default_exclude_failed_flag(
     graph_store,
 ):
     """Storage layer honours the default_exclude_failed flag at both settings.
@@ -2716,7 +2716,7 @@ async def test_bh_103_catalog_returns_abstract(
 # ---------------------------------------------------------------------------
 
 
-async def test_t0090_catalog_includes_tier3_metadata(
+async def test_catalog_includes_tier3_metadata(
     graph_store,
     retrieval_service,
 ):
@@ -2756,7 +2756,7 @@ async def test_t0090_catalog_includes_tier3_metadata(
     }
 
 
-async def test_t0090_catalog_tier3_metadata_null_when_unset(
+async def test_catalog_tier3_metadata_null_when_unset(
     graph_store,
     retrieval_service,
 ):
@@ -2776,7 +2776,7 @@ async def test_t0090_catalog_tier3_metadata_null_when_unset(
     assert hit.document.tier3_metadata is None
 
 
-async def test_t0090_catalog_tier3_filter_round_trips_projection(
+async def test_catalog_tier3_filter_round_trips_projection(
     graph_store,
     retrieval_service,
 ):
@@ -2811,7 +2811,7 @@ async def test_t0090_catalog_tier3_filter_round_trips_projection(
         assert hit.document.tier3_metadata["ticket_priority"] == "high"
 
 
-async def test_t0090_semantic_includes_tier3_metadata(
+async def test_semantic_includes_tier3_metadata(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -2846,7 +2846,7 @@ async def test_t0090_semantic_includes_tier3_metadata(
     }
 
 
-async def test_t0090_keyword_includes_tier3_metadata(
+async def test_keyword_includes_tier3_metadata(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -2925,7 +2925,7 @@ async def _seed_portfolio(
     return inserted
 
 
-async def test_t0091_catalog_emits_budget_hint_when_response_exceeds_budget(
+async def test_catalog_emits_budget_hint_when_response_exceeds_budget(
     graph_store,
     retrieval_service,
     monkeypatch,
@@ -2951,7 +2951,7 @@ async def test_t0091_catalog_emits_budget_hint_when_response_exceeds_budget(
     assert recommended < len(response.results)
 
 
-async def test_t0091_catalog_no_budget_hint_when_under_budget(
+async def test_catalog_no_budget_hint_when_under_budget(
     graph_store,
     retrieval_service,
 ):
@@ -2968,7 +2968,7 @@ async def test_t0091_catalog_no_budget_hint_when_under_budget(
     assert response.hints is None or "recommended_limit" not in response.hints
 
 
-async def test_t0091_recommended_limit_re_pages_within_budget(
+async def test_recommended_limit_re_pages_within_budget(
     graph_store,
     retrieval_service,
     monkeypatch,
@@ -2999,7 +2999,7 @@ async def test_t0091_recommended_limit_re_pages_within_budget(
     assert len(second.results) == recommended
 
 
-async def test_t0091_response_size_bytes_matches_serialization(
+async def test_response_size_bytes_matches_serialization(
     graph_store,
     retrieval_service,
     monkeypatch,
@@ -3027,7 +3027,7 @@ async def test_t0091_response_size_bytes_matches_serialization(
     )
 
 
-async def test_t0091_budget_hint_respects_env_override(
+async def test_budget_hint_respects_env_override(
     graph_store,
     retrieval_service,
     monkeypatch,
@@ -3051,7 +3051,7 @@ async def test_t0091_budget_hint_respects_env_override(
     assert loose.hints is None or "recommended_limit" not in loose.hints
 
 
-async def test_t0091_budget_hint_accounts_for_tier3_metadata(
+async def test_budget_hint_accounts_for_tier3_metadata(
     graph_store,
     retrieval_service,
     monkeypatch,
@@ -3083,7 +3083,7 @@ async def test_t0091_budget_hint_accounts_for_tier3_metadata(
     assert with_t3.hints["recommended_limit"] < without_t3.hints["recommended_limit"]
 
 
-async def test_t0091_budget_hint_absent_on_empty_results(
+async def test_budget_hint_absent_on_empty_results(
     graph_store,
     retrieval_service,
     monkeypatch,
@@ -3104,7 +3104,7 @@ async def test_t0091_budget_hint_absent_on_empty_results(
         assert "response_size_bytes" not in response.hints
 
 
-async def test_t0091_conformance_full_ticket_portfolio_fits_inline_at_default_limit(
+async def test_conformance_full_ticket_portfolio_fits_inline_at_default_limit(
     graph_store,
     retrieval_service,
 ):
@@ -4433,7 +4433,7 @@ async def _seed_edge_fixture(graph_store, *, total_edges: int = 8):
     return src, edge_ids
 
 
-async def test_t0157_catalog_edges_returns_edge_hit_rows(graph_store, retrieval_service):
+async def test_catalog_edges_returns_edge_hit_rows(graph_store, retrieval_service):
     """11. target=edges + mode=catalog returns EdgeHit rows, not DiscoverHit."""
     src, _ = await _seed_edge_fixture(graph_store, total_edges=3)
 
@@ -4464,7 +4464,7 @@ async def test_t0157_catalog_edges_returns_edge_hit_rows(graph_store, retrieval_
         assert hit.retracted_by_edge_id is None
 
 
-async def test_t0157_catalog_edges_light_strips_to_identity_columns(graph_store, retrieval_service):
+async def test_catalog_edges_light_strips_to_identity_columns(graph_store, retrieval_service):
     """12. response_mode=light returns only the identity columns.
 
     Anti-coincidental: assert via model_dump(exclude_unset=True) that
@@ -4488,7 +4488,7 @@ async def test_t0157_catalog_edges_light_strips_to_identity_columns(graph_store,
         )
 
 
-async def test_t0157_catalog_edges_full_carries_complete_envelope(graph_store, retrieval_service):
+async def test_catalog_edges_full_carries_complete_envelope(graph_store, retrieval_service):
     """13. response_mode=full carries the complete envelope.
 
     Anti-coincidental: assert that EVERY full-envelope field is present
@@ -4511,7 +4511,7 @@ async def test_t0157_catalog_edges_full_carries_complete_envelope(graph_store, r
     )
 
 
-async def test_t0157_catalog_edges_default_threshold_at_or_below_five_is_full(
+async def test_catalog_edges_default_threshold_at_or_below_five_is_full(
     graph_store, retrieval_service
 ):
     """14. Default-threshold rule: <=5 results -> full envelope."""
@@ -4531,9 +4531,7 @@ async def test_t0157_catalog_edges_default_threshold_at_or_below_five_is_full(
     )
 
 
-async def test_t0157_catalog_edges_default_threshold_above_five_is_light(
-    graph_store, retrieval_service
-):
+async def test_catalog_edges_default_threshold_above_five_is_light(graph_store, retrieval_service):
     """15. Default-threshold rule: >5 results -> light envelope.
 
     Anti-coincidental: the boundary (5 vs 6) catches a threshold whose
@@ -4554,7 +4552,7 @@ async def test_t0157_catalog_edges_default_threshold_above_five_is_light(
     )
 
 
-async def test_t0157_catalog_edges_explicit_response_mode_overrides_threshold(
+async def test_catalog_edges_explicit_response_mode_overrides_threshold(
     graph_store, retrieval_service
 ):
     """16. Explicit response_mode wins over the default-threshold rule.
@@ -4577,7 +4575,7 @@ async def test_t0157_catalog_edges_explicit_response_mode_overrides_threshold(
     )
 
 
-async def test_t0157_catalog_edges_total_available_unpaginated(graph_store, retrieval_service):
+async def test_catalog_edges_total_available_unpaginated(graph_store, retrieval_service):
     """17. total_available reports the unpaginated edge count."""
     src, _ = await _seed_edge_fixture(graph_store, total_edges=20)
     req = DiscoverRequest(
@@ -4592,7 +4590,7 @@ async def test_t0157_catalog_edges_total_available_unpaginated(graph_store, retr
     assert resp.total_available == 20
 
 
-async def test_t0157_catalog_edges_sort_default_is_created_at_desc(graph_store, retrieval_service):
+async def test_catalog_edges_sort_default_is_created_at_desc(graph_store, retrieval_service):
     """18. Catalog edges sort by created_at DESC (most recent first).
 
     Anti-coincidental: insert with explicit out-of-order timestamps; assert
@@ -4640,9 +4638,7 @@ async def test_t0157_catalog_edges_sort_default_is_created_at_desc(graph_store, 
     )
 
 
-async def test_t0157_target_documents_default_preserves_catalog_behavior(
-    graph_store, retrieval_service
-):
+async def test_target_documents_default_preserves_catalog_behavior(graph_store, retrieval_service):
     """19. Backward compat: catalog without target/response_mode returns
     documents and matches the historical shape (DiscoverHit, document field).
     """
@@ -4673,7 +4669,7 @@ def _ctx(exc: ValidationError) -> dict:
     return exc.errors()[0].get("ctx", {})
 
 
-def test_t0157_target_edges_with_semantic_mode_is_mode_parameter_mismatch():
+def test_target_edges_with_semantic_mode_is_mode_parameter_mismatch():
     """21. target=edges + mode=semantic raises mode_parameter_mismatch."""
     with pytest.raises(ValidationError) as info:
         DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="x", target=RetrievalTarget.EDGES)
@@ -4683,14 +4679,14 @@ def test_t0157_target_edges_with_semantic_mode_is_mode_parameter_mismatch():
     assert err["ctx"]["allowed_modes"] == [RetrievalMode.CATALOG.value]
 
 
-def test_t0157_target_edges_with_keyword_mode_is_mode_parameter_mismatch():
+def test_target_edges_with_keyword_mode_is_mode_parameter_mismatch():
     """22. target=edges + mode=keyword raises mode_parameter_mismatch."""
     with pytest.raises(ValidationError) as info:
         DiscoverRequest(mode=RetrievalMode.KEYWORD, query="x", target=RetrievalTarget.EDGES)
     assert info.value.errors()[0]["type"] == "mode_parameter_mismatch"
 
 
-def test_t0157_target_edges_with_deterministic_mode_is_mode_parameter_mismatch():
+def test_target_edges_with_deterministic_mode_is_mode_parameter_mismatch():
     """23. target=edges + mode=deterministic raises mode_parameter_mismatch."""
     with pytest.raises(ValidationError) as info:
         DiscoverRequest(
@@ -4715,7 +4711,7 @@ def test_t0157_target_edges_with_deterministic_mode_is_mode_parameter_mismatch()
         ({"source_type": "markdown"}, "source_type"),
     ],
 )
-def test_t0157_target_edges_rejects_document_only_filter_keys(filter_kwargs, key):
+def test_target_edges_rejects_document_only_filter_keys(filter_kwargs, key):
     """24. target=edges rejects every document-only filter key with
     mode_parameter_mismatch carrying the offending key.
     """
@@ -4738,7 +4734,7 @@ def test_t0157_target_edges_rejects_document_only_filter_keys(filter_kwargs, key
         ({"edge_type": "references"}, "edge_type"),
     ],
 )
-def test_t0157_target_documents_rejects_edge_only_filter_keys(filter_kwargs, key):
+def test_target_documents_rejects_edge_only_filter_keys(filter_kwargs, key):
     """25. target=documents rejects every edge-only filter key.
     Default target is documents; setting an edge filter without
     target=edges must error rather than silently ignore.
@@ -4763,7 +4759,7 @@ def test_t0157_target_documents_rejects_edge_only_filter_keys(filter_kwargs, key
         ("include_abstracts", True),
     ],
 )
-def test_t0157_target_edges_rejects_doc_only_request_parameters(field, value):
+def test_target_edges_rejects_doc_only_request_parameters(field, value):
     """26. target=edges rejects every document-only DiscoverRequest parameter
     that has an explicit non-default value.
     """
@@ -4775,7 +4771,7 @@ def test_t0157_target_edges_rejects_doc_only_request_parameters(field, value):
     assert err["ctx"]["forbidden_param"] == field
 
 
-def test_t0157_invalid_target_value_raises_enum_validation_error():
+def test_invalid_target_value_raises_enum_validation_error():
     """27. target="invalid" rejected at enum coercion, not as a mode mismatch.
     The error loc must point at the target field so the typed error
     translator can map it.
@@ -4793,7 +4789,7 @@ def test_t0157_invalid_target_value_raises_enum_validation_error():
 # ---------------------------------------------------------------------------
 
 
-def test_t0158_response_mode_light_accepted_with_target_documents():
+def test_response_mode_light_accepted_with_target_documents():
     """Response_mode=light + target=documents is now accepted
     (was rejected in by design)."""
     req = DiscoverRequest(
@@ -4805,7 +4801,7 @@ def test_t0158_response_mode_light_accepted_with_target_documents():
     assert req.target == RetrievalTarget.DOCUMENTS
 
 
-def test_t0158_response_mode_full_accepted_with_target_documents():
+def test_response_mode_full_accepted_with_target_documents():
     """Response_mode=full + target=documents is now accepted."""
     req = DiscoverRequest(
         mode=RetrievalMode.CATALOG,
@@ -4815,7 +4811,7 @@ def test_t0158_response_mode_full_accepted_with_target_documents():
     assert req.response_mode == ResponseMode.FULL
 
 
-def test_t0158_response_mode_unset_with_target_documents_preserves_defaults():
+def test_response_mode_unset_with_target_documents_preserves_defaults():
     """When response_mode is not passed, the request builds with
     response_mode defaulting to None (unset). (Response_level
     field has been removed from DiscoverRequest.)"""
@@ -4823,9 +4819,7 @@ def test_t0158_response_mode_unset_with_target_documents_preserves_defaults():
     assert req.response_mode is None
 
 
-async def test_t0158_catalog_documents_light_returns_stripped_summary(
-    graph_store, retrieval_service
-):
+async def test_catalog_documents_light_returns_stripped_summary(graph_store, retrieval_service):
     """Catalog + target=documents + response_mode=light returns
     a stripped DocumentSummaryLight carrying only id, title, doc_type,
     lifecycle_status, tier3_metadata.
@@ -4887,7 +4881,7 @@ async def test_t0158_catalog_documents_light_returns_stripped_summary(
     assert hit.document.tier3_metadata == {"ticket_id": "T-0158"}
 
 
-async def test_t0158_catalog_documents_full_returns_current_summary(graph_store, retrieval_service):
+async def test_catalog_documents_full_returns_current_summary(graph_store, retrieval_service):
     """Catalog + target=documents + response_mode=full returns
     the current DocumentSummary unchanged.
 
@@ -4932,9 +4926,7 @@ async def test_t0158_catalog_documents_full_returns_current_summary(graph_store,
     assert hit.document.project == "CAS"
 
 
-async def test_t0160_catalog_documents_light_empty_result_does_not_crash(
-    graph_store, retrieval_service
-):
+async def test_catalog_documents_light_empty_result_does_not_crash(graph_store, retrieval_service):
     """Catalog + target=documents + response_mode=light with zero
     matching rows returns an empty response envelope without exception.
 
@@ -4961,7 +4953,7 @@ async def test_t0160_catalog_documents_light_empty_result_does_not_crash(
     assert resp.target == RetrievalTarget.DOCUMENTS
 
 
-async def test_t0160_catalog_documents_light_nonempty_does_not_crash_on_post_projection_mutation(
+async def test_catalog_documents_light_nonempty_does_not_crash_on_post_projection_mutation(
     graph_store, retrieval_service
 ):
     """Catalog + target=documents + response_mode=light with one
@@ -5019,7 +5011,7 @@ async def test_t0160_catalog_documents_light_nonempty_does_not_crash_on_post_pro
     }
 
 
-async def test_t0160_catalog_documents_light_explicit_include_abstracts_false_does_not_crash(
+async def test_catalog_documents_light_explicit_include_abstracts_false_does_not_crash(
     graph_store, retrieval_service
 ):
     """Same regression as the default-include_abstracts test,
@@ -5066,7 +5058,7 @@ async def test_t0160_catalog_documents_light_explicit_include_abstracts_false_do
     assert "semantic_abstract" not in hit.document.model_dump().keys()
 
 
-async def test_t0158_semantic_response_mode_light_suppresses_chunk_content(
+async def test_semantic_response_mode_light_suppresses_chunk_content(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -5098,7 +5090,7 @@ async def test_t0158_semantic_response_mode_light_suppresses_chunk_content(
         assert isinstance(hit.document, DocumentSummary)
 
 
-async def test_t0158_semantic_response_mode_full_includes_chunk_content(
+async def test_semantic_response_mode_full_includes_chunk_content(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -5118,7 +5110,7 @@ async def test_t0158_semantic_response_mode_full_includes_chunk_content(
         assert hit.chunk_content is not None and hit.chunk_content != ""
 
 
-async def test_t0158_keyword_response_mode_light_suppresses_chunk_content(
+async def test_keyword_response_mode_light_suppresses_chunk_content(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -5142,7 +5134,7 @@ async def test_t0158_keyword_response_mode_light_suppresses_chunk_content(
         assert isinstance(hit.document, DocumentSummary)
 
 
-async def test_t0158_keyword_response_mode_full_includes_chunk_content(
+async def test_keyword_response_mode_full_includes_chunk_content(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -5162,7 +5154,7 @@ async def test_t0158_keyword_response_mode_full_includes_chunk_content(
         assert hit.chunk_content is not None and hit.chunk_content != ""
 
 
-async def test_t0158_deterministic_response_mode_light_returns_chunk_content(
+async def test_deterministic_response_mode_light_returns_chunk_content(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Deterministic mode ignores response_mode (always returns
@@ -5193,7 +5185,7 @@ async def test_t0158_deterministic_response_mode_light_returns_chunk_content(
         assert hit.chunk_content is not None and hit.chunk_content != ""
 
 
-async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_above_threshold(
+async def test_catalog_documents_neither_param_set_returns_full_shape_above_threshold(
     graph_store, retrieval_service
 ):
     """Catalog + target=documents with response_mode unset must
@@ -5233,7 +5225,7 @@ async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_abov
         assert hit.document.source_type is not None
 
 
-def test_t0169_response_level_field_removed_from_discover_request():
+def test_response_level_field_removed_from_discover_request():
     """The response_level Field has been removed from
     DiscoverRequest. Anti-coincidental: assert the absence of the
     field rather than rely on a [DEPRECATED] marker that no longer
@@ -5266,7 +5258,7 @@ async def _seed_mixed_source_type_docs(graph_store):
     return docs
 
 
-async def test_t0457_catalog_source_type_filter_hit(graph_store, retrieval_service):
+async def test_catalog_source_type_filter_hit(graph_store, retrieval_service):
     """Catalog mode filters on source_type, excluding the complement.
 
     Anti-coincidental: asserts the markdown ids are ABSENT, not merely
@@ -5287,7 +5279,7 @@ async def test_t0457_catalog_source_type_filter_hit(graph_store, retrieval_servi
     assert response.total_available == 2
 
 
-async def test_t0457_catalog_source_type_filter_miss(graph_store, retrieval_service):
+async def test_catalog_source_type_filter_miss(graph_store, retrieval_service):
     """A valid-but-unrepresented source_type returns empty WITHOUT a warning.
 
     Anti-coincidental for the vocabulary warning: pdf is a real
@@ -5324,7 +5316,7 @@ async def _seed_mixed_source_type_chunks(
 
 
 @pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
-async def test_t0457_source_type_pushdown_scoped_to_matching_docs(
+async def test_source_type_pushdown_scoped_to_matching_docs(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, mode
 ):
     """Semantic and keyword modes honor source_type via document resolution."""
@@ -5343,7 +5335,7 @@ async def test_t0457_source_type_pushdown_scoped_to_matching_docs(
 
 
 @pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
-async def test_t0457_source_type_pushdown_does_not_call_list_all_documents(
+async def test_source_type_pushdown_does_not_call_list_all_documents(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, mode
 ):
     """source_type resolves through a filtered query, never a full scan.
@@ -5391,7 +5383,7 @@ async def test_t0457_source_type_pushdown_does_not_call_list_all_documents(
     )
 
 
-async def test_t0457_source_type_in_active_filters_hints(
+async def test_source_type_in_active_filters_hints(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """An active source_type filter is surfaced in the empty-result hints."""
@@ -5423,7 +5415,7 @@ async def test_t0457_source_type_in_active_filters_hints(
 # out-of-vocabulary for this vault.
 
 
-async def test_t0457_undefined_doc_type_emits_warning(graph_store, retrieval_service):
+async def test_undefined_doc_type_emits_warning(graph_store, retrieval_service):
     """An undefined doc_type value yields a warning naming it and the vocabulary."""
     await graph_store.insert_document(_make_doc(_id("oov_doc_a"), doc_type="note"))
 
@@ -5442,7 +5434,7 @@ async def test_t0457_undefined_doc_type_emits_warning(graph_store, retrieval_ser
     assert "note" in joined and "memo" in joined
 
 
-async def test_t0457_defined_doc_type_no_warning(graph_store, retrieval_service):
+async def test_defined_doc_type_no_warning(graph_store, retrieval_service):
     """A defined doc_type with zero matches must NOT warn.
 
     Anti-coincidental trap for "always warn when doc_type is set".
@@ -5459,7 +5451,7 @@ async def test_t0457_defined_doc_type_no_warning(graph_store, retrieval_service)
     assert response.hints is None or "warnings" not in response.hints
 
 
-async def test_t0457_undefined_lifecycle_status_emits_warning(graph_store, retrieval_service):
+async def test_undefined_lifecycle_status_emits_warning(graph_store, retrieval_service):
     """An undefined lifecycle_status value yields a warning."""
     await graph_store.insert_document(_make_doc(_id("oov_lc_a")))
 
@@ -5478,7 +5470,7 @@ async def test_t0457_undefined_lifecycle_status_emits_warning(graph_store, retri
     assert "archived" in joined
 
 
-async def test_t0457_defined_lifecycle_status_no_warning(graph_store, retrieval_service):
+async def test_defined_lifecycle_status_no_warning(graph_store, retrieval_service):
     """A defined lifecycle_status with zero matches must NOT warn."""
     await graph_store.insert_document(_make_doc(_id("oov_lc_b"), lifecycle_status="active"))
 
@@ -5496,7 +5488,7 @@ async def test_t0457_defined_lifecycle_status_no_warning(graph_store, retrieval_
     "mode",
     [RetrievalMode.CATALOG, RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD],
 )
-async def test_t0457_warning_emitted_in_every_mode(
+async def test_warning_emitted_in_every_mode(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, mode
 ):
     """The vocabulary warning is mode-independent.
@@ -5524,7 +5516,7 @@ async def test_t0457_warning_emitted_in_every_mode(
     assert response.hints.get("warnings"), f"{mode.value} produced no vocabulary warning"
 
 
-async def test_t0457_warning_preserves_response_shape(
+async def test_warning_preserves_response_shape(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """The warning merges into hints; it does not replace them.
@@ -5557,7 +5549,7 @@ async def test_t0457_warning_preserves_response_shape(
     assert response.hints.get("warnings")
 
 
-async def test_t0457_no_warnings_key_when_all_values_valid(graph_store, retrieval_service):
+async def test_no_warnings_key_when_all_values_valid(graph_store, retrieval_service):
     """A fully in-vocabulary filter set carries no ``warnings`` key at all.
 
     Absent, not an empty list -- so a caller can test membership.

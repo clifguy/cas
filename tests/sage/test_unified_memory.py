@@ -14,7 +14,7 @@ from sage.utils import unified_memory
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="vm_stat is macOS-only")
-def test_t0029_free_unified_memory_bytes_returns_positive_int():
+def test_free_unified_memory_bytes_returns_positive_int():
     """Helper parses vm_stat and returns a positive int (bytes).
 
     The page size on Apple Silicon machines varies (4 KiB on Intel
@@ -26,7 +26,7 @@ def test_t0029_free_unified_memory_bytes_returns_positive_int():
     assert free > 0
 
 
-def test_t0029_min_free_bytes_default_when_env_unset(monkeypatch):
+def test_min_free_bytes_default_when_env_unset(monkeypatch):
     """Threshold falls back to DEFAULT_MIN_FREE_GIB when the env var
     is unset.
     """
@@ -34,7 +34,7 @@ def test_t0029_min_free_bytes_default_when_env_unset(monkeypatch):
     assert unified_memory.min_free_bytes() == unified_memory.DEFAULT_MIN_FREE_GIB * 1024**3
 
 
-def test_t0029_min_free_bytes_env_var_override(monkeypatch):
+def test_min_free_bytes_env_var_override(monkeypatch):
     """SAGE_MIN_FREE_UNIFIED_MEMORY_GIB overrides the default.
 
     Operator tunability without redeploy: when the threshold needs
