@@ -4,10 +4,12 @@ Exercises the maintenance surface over the Postgres storage binding
 (CAS-ADR-042):
 
 1. ``migrate_vault`` is a schema no-op — the schema is provisioned
-   externally, so the report carries no column or backfill work, no local
-   file is touched, and the registry is never reloaded — while the
-   backend-agnostic tier3-uniqueness scan (CAS-ADR-031) still runs on
-   every call.
+   externally, so the report carries no column work, no local file is
+   touched, and the registry is never reloaded — while the
+   backend-agnostic tier3-uniqueness scan (CAS-ADR-031) and the one
+   standing data backfill both still run on every call. The backfill
+   names itself in ``backfills_applied`` only when it changed rows, so
+   the no-op reports here stay empty.
 2. ``detect_drift`` classifies sync provenance against supersession-chain
    heads into the four StalenessBasis buckets.
 3. ``verify_vault_source_files`` audits vault-local source files for
@@ -37,7 +39,7 @@ from sage.models.schemas import (
     MigrationReport,
     OptimizeContentStoreReport,
 )
-from sage.services.maintenance import MaintenanceService
+from sage.services.maintenance import BACKFILL_STALE_PIPELINE_ERROR, MaintenanceService
 from sage.storage.tier3_uniqueness import tier3_unique_index_name
 from tests.sage.test_tier3_uniqueness import (
     _config_dict_with_unique_keys,
@@ -173,6 +175,101 @@ async def test_migrate_vault_noop_is_idempotent_and_never_reloads_registry(
         assert await cur.fetchone() is not None, f"{index_name} missing from pg_indexes"
 
     assert registry_service.reload_calls == []
+
+
+def _recovered_doc(short_name: str, ticket_id: str, status: PipelineStatus) -> Document:
+    """A ticket document sitting at ``status`` with a stale pipeline_error."""
+    return _make_ticket_doc(short_name, ticket_id).model_copy(
+        update={
+            "pipeline_status": status,
+            "pipeline_error": "abstraction failed after 3 attempts; last error: stale detail",
+        }
+    )
+
+
+async def test_migrate_vault_backfills_stale_pipeline_errors(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-003: the migration clears errors left on already-recovered documents.
+
+    ``pipeline_error`` predates the rule that a successful terminal
+    ``pipeline_status`` clears it, so documents repaired before the rule
+    existed still describe a failure that no longer holds. The migration is
+    the operator-facing surface that repairs them.
+
+    Trap: a document still at ``failed`` describes a live failure and must
+    keep its message; clearing it would erase real state under cover of a
+    cleanup.
+    """
+    recovered = _recovered_doc("doc-a", "T-0001", PipelineStatus.ABSTRACTION_COMPLETE)
+    skipped = _recovered_doc("doc-b", "T-0002", PipelineStatus.ABSTRACTION_SKIPPED)
+    still_failed = _recovered_doc("doc-c", "T-0003", PipelineStatus.FAILED)
+    for doc in (recovered, skipped, still_failed):
+        await graph_store.insert_document(doc)
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    report = await maintenance.migrate_vault()
+
+    assert report.backfills_applied == [BACKFILL_STALE_PIPELINE_ERROR]
+    assert (await graph_store.get_document(recovered.id)).pipeline_error is None
+    assert (await graph_store.get_document(skipped.id)).pipeline_error is None
+    assert (await graph_store.get_document(still_failed.id)).pipeline_error is not None
+
+
+async def test_migrate_vault_reports_no_backfill_when_clean(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-004: a vault with nothing to repair reports an empty backfill list.
+
+    Anti-coincidental-pass: this is the half MNT-003 cannot catch. An
+    unconditional append passes MNT-003 and turns every migration into a
+    report of work that never happened, which is exactly the false-positive
+    the backfill exists to remove.
+    """
+    clean = _make_ticket_doc("doc-a", "T-0001")
+    assert clean.pipeline_error is None
+    await graph_store.insert_document(clean)
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    first = await maintenance.migrate_vault()
+    assert first.backfills_applied == []
+
+    # And a re-call after a genuine repair reports nothing further.
+    await graph_store.insert_document(
+        _recovered_doc("doc-b", "T-0002", PipelineStatus.ABSTRACTION_COMPLETE)
+    )
+    assert (await maintenance.migrate_vault()).backfills_applied == [BACKFILL_STALE_PIPELINE_ERROR]
+    assert (await maintenance.migrate_vault()).backfills_applied == []
+
+
+async def test_stub_graph_store_clear_pipeline_error_matches_port_contract(minimal_config):
+    """The stub honors the same predicate as the durable store.
+
+    The stub stands in for the graph store across the service tests, so a
+    permissive stub would let a service-level test pass over behavior the real
+    store refuses. Same four-row separation as the Postgres case.
+    """
+    store = StubGraphStore()
+    recovered = _recovered_doc("doc-a", "T-0001", PipelineStatus.ABSTRACTION_COMPLETE)
+    skipped = _recovered_doc("doc-b", "T-0002", PipelineStatus.ABSTRACTION_SKIPPED)
+    still_failed = _recovered_doc("doc-c", "T-0003", PipelineStatus.FAILED)
+    already_clean = _make_ticket_doc("doc-d", "T-0004")
+    for doc in (recovered, skipped, still_failed, already_clean):
+        await store.insert_document(doc)
+
+    statuses = [
+        PipelineStatus.ABSTRACTION_COMPLETE.value,
+        PipelineStatus.ABSTRACTION_SKIPPED.value,
+    ]
+
+    assert await store.clear_pipeline_error_for_statuses(statuses) == 2
+    assert (await store.get_document(recovered.id)).pipeline_error is None
+    assert (await store.get_document(skipped.id)).pipeline_error is None
+    assert (await store.get_document(still_failed.id)).pipeline_error is not None
+    assert await store.clear_pipeline_error_for_statuses(statuses) == 0
+    assert await store.clear_pipeline_error_for_statuses([]) == 0
 
 
 # ---------------------------------------------------------------------------

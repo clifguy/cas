@@ -110,6 +110,22 @@ class _AlwaysFailProvider(AbstractionProvider):
         raise RuntimeError("LLM unavailable (simulated failure)")
 
 
+class _MarkedFailProvider(AbstractionProvider):
+    """Always raises, carrying a caller-supplied marker in the message.
+
+    Two instances with distinct markers make it observable whether a second
+    failure replaced the first document's ``pipeline_error`` or appended to it.
+    """
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+        self.calls = 0
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        self.calls += 1
+        raise RuntimeError(self.marker)
+
+
 class _NonRetryableFailProvider(AbstractionProvider):
     """Always raises a failure that is deterministic in its input. Counts every
     call so the absence of retries is observable."""
@@ -308,6 +324,83 @@ async def test_terminal_failed_after_max_attempts(tmp_vault_dir, ingestion_servi
     doc = await graph_store.get_document(result.document.id)
     assert "3 attempts" in doc.pipeline_error
     assert "LLM unavailable" in doc.pipeline_error
+
+
+async def test_reabstract_clears_stale_pipeline_error(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A document repaired by reabstract does not keep the error it recovered from.
+
+    ``reabstract`` regenerates the abstract from stored chunks without
+    re-projecting, so it is the one repair path that reaches a successful
+    terminal status without passing a Stage-1 write. The document must reach
+    abstraction_complete with pipeline_error null.
+
+    Anti-coincidental-pass: a document that never carried a pipeline_error
+    ends at null for free, so the failure is asserted first -- the field is
+    proved non-null before the repair that must clear it.
+    """
+    _create_test_file(tmp_vault_dir, "samples/stale.md", "# Stale\n\nContent.")
+    # Fails the 3 attempts the ingest budget allows, then succeeds on the
+    # 4th call, which is the one the reabstract job makes.
+    provider = _FailNTimesProvider(3)
+    ingestion_service._abstraction = provider
+
+    async def _no_sleep(_seconds):
+        return None
+
+    ingestion_service._sleep_for_backoff = _no_sleep
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/stale.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+    assert await _await_terminal(graph_store, result.document.id) == PipelineStatus.FAILED
+    failed = await graph_store.get_document(result.document.id)
+    assert "3 attempts" in failed.pipeline_error
+
+    await ingestion_service.reabstract(result.document.id)
+    terminal = await _await_terminal(graph_store, result.document.id)
+
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
+    repaired = await graph_store.get_document(result.document.id)
+    assert repaired.semantic_abstract == "recovered abstract"
+    assert repaired.pipeline_error is None
+
+
+async def test_repeat_failure_replaces_prior_pipeline_error(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A second failure replaces the recorded error rather than appending to it.
+
+    Anti-coincidental-pass: asserting only that the newer marker is present
+    passes just as well under an append. The absence of the older marker is
+    what distinguishes replace from append.
+    """
+    _create_test_file(tmp_vault_dir, "samples/twice.md", "# Twice\n\nContent.")
+    ingestion_service._abstraction = _MarkedFailProvider("simulated failure A")
+
+    async def _no_sleep(_seconds):
+        return None
+
+    ingestion_service._sleep_for_backoff = _no_sleep
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/twice.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+    assert await _await_terminal(graph_store, result.document.id) == PipelineStatus.FAILED
+    first = await graph_store.get_document(result.document.id)
+    assert "simulated failure A" in first.pipeline_error
+
+    ingestion_service._abstraction = _MarkedFailProvider("simulated failure B")
+    await ingestion_service.reabstract(result.document.id)
+    terminal = await _await_terminal(graph_store, result.document.id)
+
+    assert terminal == PipelineStatus.FAILED
+    second = await graph_store.get_document(result.document.id)
+    assert "simulated failure B" in second.pipeline_error
+    assert "simulated failure A" not in second.pipeline_error
 
 
 async def test_retry_backoff_bounded(tmp_vault_dir, minimal_vault_config_dict, graph_store):

@@ -392,6 +392,80 @@ async def test_c5d_concurrent_same_tier3_value_one_winner(postgres_graph_store):
 # ---------------------------------------------------------------------------
 
 
+async def test_clear_pipeline_error_for_statuses_only_touches_recovered_documents(
+    postgres_graph_store,
+):
+    """The backfill nulls stale errors and leaves live failures alone.
+
+    Four fixture rows separate the ways the predicate can be wrong. The
+    ``failed`` row catches a WHERE clause too broad to distinguish a recovered
+    document from one still in failure. The row already carrying a null
+    catches a rowcount inflated by no-op updates -- it would push the return
+    to 3. And the second call catches a dropped ``pipeline_error IS NOT NULL``
+    guard, which would keep re-reporting rows it did not change.
+    """
+    store = postgres_graph_store
+    recovered_complete = _doc(9001).model_copy(
+        update={
+            "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE,
+            "pipeline_error": "abstraction failed after 3 attempts; last error: stale",
+        }
+    )
+    recovered_skipped = _doc(9002).model_copy(
+        update={
+            "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED,
+            "pipeline_error": "abstraction failed after 3 attempts; last error: stale",
+        }
+    )
+    still_failed = _doc(9003).model_copy(
+        update={
+            "pipeline_status": PipelineStatus.FAILED,
+            "pipeline_error": "a failure that is still true",
+        }
+    )
+    already_clean = _doc(9004).model_copy(
+        update={"pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE, "pipeline_error": None}
+    )
+    for doc in (recovered_complete, recovered_skipped, still_failed, already_clean):
+        await store.insert_document(doc)
+
+    statuses = [
+        PipelineStatus.ABSTRACTION_COMPLETE.value,
+        PipelineStatus.ABSTRACTION_SKIPPED.value,
+    ]
+    cleared = await store.clear_pipeline_error_for_statuses(statuses)
+
+    assert cleared == 2
+    assert (await store.get_document(recovered_complete.id)).pipeline_error is None
+    assert (await store.get_document(recovered_skipped.id)).pipeline_error is None
+    assert (
+        await store.get_document(still_failed.id)
+    ).pipeline_error == "a failure that is still true"
+    assert (await store.get_document(already_clean.id)).pipeline_error is None
+
+    assert await store.clear_pipeline_error_for_statuses(statuses) == 0
+
+
+async def test_clear_pipeline_error_for_statuses_no_statuses_is_a_noop(postgres_graph_store):
+    """An empty status list clears nothing rather than every row.
+
+    Trap: ``pipeline_status = ANY('{}')`` matches nothing in Postgres, but an
+    implementation that built the predicate differently could degrade to an
+    unconditional UPDATE. The seeded row proves it did not.
+    """
+    store = postgres_graph_store
+    doc = _doc(9005).model_copy(
+        update={
+            "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE,
+            "pipeline_error": "stale",
+        }
+    )
+    await store.insert_document(doc)
+
+    assert await store.clear_pipeline_error_for_statuses([]) == 0
+    assert (await store.get_document(doc.id)).pipeline_error == "stale"
+
+
 async def test_measured_byte_size_grows_with_ingest(postgres_graph_store):
     """The live relation-size stat grows as documents/edges are inserted."""
     store = postgres_graph_store

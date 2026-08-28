@@ -538,6 +538,16 @@ class StubGraphStore(GraphStore):
     async def count_documents_by_pipeline_status(self, status: str) -> int:
         raise self._unsupported("count_documents_by_pipeline_status")
 
+    async def clear_pipeline_error_for_statuses(self, statuses: list[str]) -> int:
+        wanted = set(statuses)
+        cleared = 0
+        for doc_id, doc in list(self._docs.items()):
+            if doc.pipeline_error is None or doc.pipeline_status not in wanted:
+                continue
+            self._docs[doc_id] = doc.model_copy(update={"pipeline_error": None})
+            cleared += 1
+        return cleared
+
     async def list_pending_metadata_documents(self) -> list[Document]:
         raise self._unsupported("list_pending_metadata_documents")
 

@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.config import VaultConfig
-from sage.models.enums import EdgeType, PipelineStatus, ReabstractOutcome, StalenessBasis
+from sage.models.enums import (
+    SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
+    EdgeType,
+    PipelineStatus,
+    ReabstractOutcome,
+    StalenessBasis,
+)
 from sage.models.schemas import (
     Document,
     DriftEntry,
@@ -55,6 +61,11 @@ if TYPE_CHECKING:
 _POLL_INTERVAL_SECONDS = 0.05
 
 
+# Name reported in MigrationReport.backfills_applied when the migration
+# repaired documents whose pipeline_error outlived the failure it described.
+BACKFILL_STALE_PIPELINE_ERROR = "clear_pipeline_error_on_successful_terminal_status"
+
+
 class MaintenanceService:
     """Pilot of the maintenance/admin API surface (CAS-ADR-029)."""
 
@@ -90,12 +101,20 @@ class MaintenanceService:
         self._reabstract_started_at: datetime | None = None
 
     async def migrate_vault(self) -> MigrationReport:
-        """Run the schema-migration surface's tier3-uniqueness scan (CAS-ADR-042).
+        """Run the schema-migration surface's backfill and tier3-uniqueness scan.
 
-        Postgres provisions each vault's schema externally, so there is no
-        pending-column or backfill work for this method to detect or apply --
-        ``columns_added`` and ``backfills_applied`` are always empty. The
-        method's substantive work is the tier3-uniqueness scan below.
+        Postgres provisions each vault's schema externally (CAS-ADR-042), so
+        there is no pending-column work for this method to detect or apply and
+        ``columns_added`` is always empty.
+
+        One data backfill runs. A document that failed abstraction and was
+        later repaired predates the rule that a successful terminal
+        ``pipeline_status`` clears ``pipeline_error``, so it still carries the
+        message describing a failure that no longer holds. The backfill nulls
+        ``pipeline_error`` on every document already at a successful terminal
+        status and names itself in ``backfills_applied`` only when it changed
+        rows, so a clean vault still reports an empty list and a re-call after
+        a repair reports nothing further.
 
         Scan every ``unique_keys`` declaration in vault config. For each
         declared (doc_type, field), build the chain-head-grouped value map and
@@ -108,12 +127,17 @@ class MaintenanceService:
         ``tier3_uniqueness_activations`` (successful installs) and
         ``tier3_uniqueness_collisions`` (refused activations).
         """
+        cleared = await self._graph_store.clear_pipeline_error_for_statuses(
+            sorted(status.value for status in SUCCESSFUL_TERMINAL_PIPELINE_STATUSES)
+        )
+        backfills_applied = [BACKFILL_STALE_PIPELINE_ERROR] if cleared else []
+
         activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
             vault_id=self._vault_id,
             columns_added=[],
-            backfills_applied=[],
+            backfills_applied=backfills_applied,
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
         )
