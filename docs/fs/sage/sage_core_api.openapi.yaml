@@ -2262,10 +2262,17 @@ paths:
         the registry so subsequent operations observe the new schema.
 
 
-        Idempotent: a re-call against an already-migrated vault returns a
-        MigrationReport with empty columns_added and backfills_applied
-        lists and no error; the registry reload is skipped on the no-op
-        path to avoid pointless thrash.
+        One data backfill runs: documents already at a successful terminal
+        pipeline_status that still carry the pipeline_error of a failure
+        they have since recovered from get that field cleared.
+        backfills_applied names the backfill only when it changed rows.
+
+
+        Idempotent: a re-call against an already-migrated vault with
+        nothing left to repair returns a MigrationReport with empty
+        columns_added and backfills_applied lists and no error; the
+        registry reload is skipped on the no-op path to avoid pointless
+        thrash.
 
 
         Cross-process staleness (F-10, CAS-ADR-029): the operation is not
@@ -2934,10 +2941,13 @@ components:
           type: string
           nullable: true
           description: >-
-            Failure description when pipeline_status is "failed". Null
-            when pipeline has not failed. Contains the error message
-            from the failed pipeline stage (projection, indexing, or
-            abstraction).
+            Failure description when pipeline_status is "failed".
+            Contains the error message from the failed pipeline stage
+            (projection, indexing, or abstraction). Null when the
+            pipeline has not failed, and cleared when the document next
+            reaches a successful terminal pipeline_status, so a
+            recovered document carries no record of the failure it
+            recovered from.
         tier3_metadata:
           type: object
           nullable: true

@@ -626,6 +626,16 @@ class GraphStore(ABC):
         """Return the number of documents in a given pipeline status."""
 
     @abstractmethod
+    async def clear_pipeline_error_for_statuses(self, statuses: list[str]) -> int:
+        """Null pipeline_error on documents whose pipeline_status is in ``statuses``.
+
+        Only rows that actually carry a non-null pipeline_error are touched;
+        the return value is the number of rows changed, so a caller can report
+        the repair only when there was something to repair. Idempotent: a
+        second call over the same statuses returns 0.
+        """
+
+    @abstractmethod
     async def list_pending_metadata_documents(self) -> list[Document]:
         """Return documents awaiting metadata confirmation."""
 

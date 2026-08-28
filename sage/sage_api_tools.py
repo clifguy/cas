@@ -2186,13 +2186,18 @@ def register_sage_tools(
 
     @mcp.tool(name="maint_migrate_vault", annotations=WRITE_ADDITIVE)
     async def migrate_vault(vault_id: str) -> dict:
-        """Run the schema-migration surface's tier3-uniqueness scan for a vault.
+        """Run the schema-migration surface's backfill and tier3-uniqueness scan.
 
         The durable store provisions its schema externally, so there is no
-        pending schema or backfill work for this tool to apply: it always
-        returns an empty no-op report (``columns_added`` and
-        ``backfills_applied`` both empty). Idempotent for the same reason —
-        a re-call returns the same empty shape with no error.
+        pending schema work for this tool to apply and ``columns_added`` is
+        always empty.
+
+        One data backfill runs: documents already at a successful terminal
+        ``pipeline_status`` that still carry the ``pipeline_error`` of a
+        failure they have since recovered from get that field cleared.
+        ``backfills_applied`` names the backfill only when it changed rows, so
+        a vault with nothing to repair reports an empty list. Idempotent: a
+        re-call after a repair reports nothing further and no error.
 
         tier3 uniqueness activation: every ``unique_keys`` declaration in
         vault config is scanned. Clean declarations get partial UNIQUE

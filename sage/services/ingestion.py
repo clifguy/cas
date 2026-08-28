@@ -58,7 +58,11 @@ from sage.api.errors import (
     Tier3UniqueConstraintViolation,
 )
 from sage.config import VaultConfig
-from sage.models.enums import PipelineStatus, SourceType
+from sage.models.enums import (
+    SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
+    PipelineStatus,
+    SourceType,
+)
 from sage.models.schemas import (
     Document,
     IngestRequest,
@@ -373,6 +377,39 @@ class IngestionService:
         """Indirection over asyncio.sleep so tests can observe or skip backoff."""
         await asyncio.sleep(seconds)
 
+    async def _stamp_pipeline_status(
+        self,
+        document_id: str,
+        status: PipelineStatus,
+        extra: dict | None = None,
+    ) -> None:
+        """Write a pipeline_status transition under the document lock.
+
+        Every pipeline_status write goes through here so one rule holds at all
+        of them: reaching a successful terminal status clears
+        ``pipeline_error``. The field records the most recent failure, and a
+        document that has since completed (or skipped) abstraction has no
+        failure to report -- a stale string there reads as a live failure to
+        any health surface keyed on the field rather than on the status.
+
+        ``extra`` carries the fields a particular transition also writes
+        (``semantic_abstract``, ``indexed_at``, or the failure message
+        itself). The clear is applied after ``extra`` so the invariant cannot
+        be defeated by a caller that passes a ``pipeline_error`` alongside a
+        successful status. Failure transitions pass their message through
+        ``extra`` and replace whatever was recorded before; nothing appends.
+        """
+        updates: dict = {
+            "pipeline_status": status.value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if extra:
+            updates.update(extra)
+        if status in SUCCESSFUL_TERMINAL_PIPELINE_STATUSES:
+            updates["pipeline_error"] = None
+        async with self._locks.lock(document_id):
+            await self._store.update_document(document_id, updates)
+
     async def _stamp_abstraction_failed(
         self, document_id: str, attempts: int, exc: Exception | None, *, retried: bool = True
     ) -> None:
@@ -389,15 +426,9 @@ class IngestionService:
             message = (
                 f"abstraction failed on attempt {attempts} and was not retried; error: {detail}"
             )
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "pipeline_status": PipelineStatus.FAILED.value,
-                    "pipeline_error": message,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+        await self._stamp_pipeline_status(
+            document_id, PipelineStatus.FAILED, {"pipeline_error": message}
+        )
 
     async def stop_worker(self) -> None:
         """Cancel and await the drain worker. Safe to call when no worker is
@@ -991,15 +1022,9 @@ class IngestionService:
             await self._execute_pipeline_stages(document_id, projection, doc_type)
         except Exception as exc:
             logger.exception("Pipeline failed for document %s", document_id)
-            async with self._locks.lock(document_id):
-                await self._store.update_document(
-                    document_id,
-                    {
-                        "pipeline_status": PipelineStatus.FAILED.value,
-                        "pipeline_error": str(exc),
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+            await self._stamp_pipeline_status(
+                document_id, PipelineStatus.FAILED, {"pipeline_error": str(exc)}
+            )
 
     async def _execute_pipeline_stages(
         self,
@@ -1026,14 +1051,7 @@ class IngestionService:
 
         # BH-025: abstraction disabled -> abstraction_skipped.
         if not self._config.abstraction.enabled:
-            async with self._locks.lock(document_id):
-                await self._store.update_document(
-                    document_id,
-                    {
-                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+            await self._stamp_pipeline_status(document_id, PipelineStatus.ABSTRACTION_SKIPPED)
             return
 
         # BH-134: empty projection text (e.g., Word template with no body)
@@ -1042,14 +1060,7 @@ class IngestionService:
         # surfaces -- style inventory, tags, metadata -- are already persisted
         # by Stage 2.
         if not projection.text.strip():
-            async with self._locks.lock(document_id):
-                await self._store.update_document(
-                    document_id,
-                    {
-                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+            await self._stamp_pipeline_status(document_id, PipelineStatus.ABSTRACTION_SKIPPED)
             return
 
         await self._stage3_abstraction(document_id, projection, doc_type)
@@ -1091,14 +1102,7 @@ class IngestionService:
         """Stage 2: Chunk projection, embed, store in content store.
         Sets indexed_at on completion (BH-008).
         """
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+        await self._stamp_pipeline_status(document_id, PipelineStatus.INDEXING_IN_PROGRESS)
 
         # Build body chunks from the projection. Document-identity signals
         # live in a standalone synthetic header chunk (F9) — not
@@ -1142,16 +1146,11 @@ class IngestionService:
         await self._content_store.index_chunks(document_id, chunks)
 
         # Mark indexing complete (BH-008)
-        now = datetime.now(timezone.utc)
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "pipeline_status": PipelineStatus.INDEXING_COMPLETE.value,
-                    "indexed_at": now.isoformat(),
-                    "updated_at": now.isoformat(),
-                },
-            )
+        await self._stamp_pipeline_status(
+            document_id,
+            PipelineStatus.INDEXING_COMPLETE,
+            {"indexed_at": datetime.now(timezone.utc).isoformat()},
+        )
 
     async def _refresh_header_chunk(self, document_id: str) -> None:
         """Rebuild the synthetic header chunk after metadata changes.
@@ -1349,29 +1348,17 @@ class IngestionService:
         doc_type: str | None,
     ) -> None:
         """Stage 3: Generate semantic abstract via LLM (BH-024, BH-025)."""
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+        await self._stamp_pipeline_status(document_id, PipelineStatus.ABSTRACTION_IN_PROGRESS)
 
         abstract = await self._generate_abstract_text(
             projection.text, doc_type, document_id=document_id
         )
 
-        now = datetime.now(timezone.utc)
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-                    "semantic_abstract": abstract,
-                    "updated_at": now.isoformat(),
-                },
-            )
+        await self._stamp_pipeline_status(
+            document_id,
+            PipelineStatus.ABSTRACTION_COMPLETE,
+            {"semantic_abstract": abstract},
+        )
 
         # Refresh the synthetic header chunk so retrieval sees the new
         # ``semantic_abstract``. Body chunks are not touched.
@@ -1413,14 +1400,7 @@ class IngestionService:
         # the claim so future calls can proceed (otherwise the orphan claim
         # would permanently 409 every subsequent reabstract against this doc).
         try:
-            async with self._locks.lock(document_id):
-                await self._store.update_document(
-                    document_id,
-                    {
-                        "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+            await self._stamp_pipeline_status(document_id, PipelineStatus.ABSTRACTION_IN_PROGRESS)
         except Exception:
             self._release_claim(document_id)
             raise
@@ -1483,16 +1463,11 @@ class IngestionService:
         abstract = await self._generate_abstract_text(
             projection_text, doc_type, document_id=document_id
         )
-        now = datetime.now(timezone.utc)
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "semantic_abstract": abstract,
-                    "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-                    "updated_at": now.isoformat(),
-                },
-            )
+        await self._stamp_pipeline_status(
+            document_id,
+            PipelineStatus.ABSTRACTION_COMPLETE,
+            {"semantic_abstract": abstract},
+        )
 
         # Refresh the synthetic header chunk so the new abstract is indexed.
         await self._refresh_header_chunk(document_id)

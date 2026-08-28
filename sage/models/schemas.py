@@ -386,10 +386,12 @@ class Document(BaseModel):
     pipeline_error: str | None = Field(
         default=None,
         description=(
-            'Failure description when pipeline_status is "failed". Null '
-            "when pipeline has not failed. Contains the error message "
-            "from the failed pipeline stage (projection, indexing, or "
-            "abstraction)."
+            'Failure description when pipeline_status is "failed". Contains '
+            "the error message from the failed pipeline stage (projection, "
+            "indexing, or abstraction). Null when the pipeline has not "
+            "failed, and cleared when the document next reaches a successful "
+            "terminal pipeline_status, so a recovered document carries no "
+            "record of the failure it recovered from."
         ),
     )
     tier3_metadata: dict | None = Field(

@@ -1135,6 +1135,16 @@ class PostgresGraphStore(GraphStore):
                 "SELECT COUNT(*) FROM documents WHERE pipeline_status = %s", (status,)
             )
 
+    async def clear_pipeline_error_for_statuses(self, statuses: list[str]) -> int:
+        if not statuses:
+            return 0
+        with self._query_timer.measure("clear_pipeline_error_for_statuses"):
+            return await self._execute(
+                "UPDATE documents SET pipeline_error = NULL "
+                "WHERE pipeline_error IS NOT NULL AND pipeline_status = ANY(%s)",
+                (list(statuses),),
+            )
+
     async def list_pending_metadata_documents(self) -> list[Document]:
         with self._query_timer.measure("list_pending_metadata_documents"):
             rows = await self._fetch_rows(

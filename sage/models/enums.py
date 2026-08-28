@@ -279,3 +279,14 @@ TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
         PipelineStatus.FAILED,
     }
 )
+
+# Terminal pipeline statuses that represent success: the pipeline finished
+# without an error. ``pipeline_error`` records the most recent failure, so a
+# document that reaches one of these carries no failure and the field must be
+# cleared as part of the transition.
+SUCCESSFUL_TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
+    {
+        PipelineStatus.ABSTRACTION_COMPLETE,
+        PipelineStatus.ABSTRACTION_SKIPPED,
+    }
+)
