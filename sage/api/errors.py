@@ -588,6 +588,35 @@ class LegacyFormError(SAGEError):
         )
 
 
+class MisplacedMetadataError(SAGEError):
+    """400: caller spelled nested metadata fields as top-level ingest arguments.
+
+    ``ingest_document`` takes caller metadata nested under ``metadata``.
+    The recognized keys are also published as top-level parameters, but
+    only as tripwires: an unpublished parameter is stripped by MCP
+    clients that coerce arguments to the published schema, so a
+    misplaced field would be discarded before the server could object.
+    Publishing the spellings makes the mistake reachable; this error
+    makes it loud.
+
+    Sibling of ``LegacyFormError``: both turn a wrong-shape call that
+    would otherwise be silently partially applied into a structured
+    rejection naming the accepted shape.
+    """
+
+    def __init__(self, fields: list[str], recognized: list[str], example: str) -> None:
+        joined = ", ".join(fields)
+        super().__init__(
+            "misplaced_metadata",
+            (
+                f"{joined} must be nested under `metadata`, not passed as a "
+                f"top-level argument. Use: {example}"
+            ),
+            400,
+            {"fields": fields, "recognized": recognized, "example": example},
+        )
+
+
 class InvalidModeError(SAGEError):
     """400: discover mode value is not in the RetrievalMode enum."""
 

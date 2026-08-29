@@ -464,7 +464,20 @@ def _registered_fastmcp_tools() -> list[Callable]:
 
 
 # Keyed by (qualified_callable_name, param_name). One-line reason values.
-KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
+KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
+    (
+        "sage.sage_api_tools.ingest_document",
+        "document_date",
+    ): (
+        "Tripwire parameter, not a functional argument: ingest_document "
+        "publishes the recognized metadata keys at the top level only so a "
+        "wrong-level spelling reaches the misplaced_metadata guard instead of "
+        "being stripped by a client's published-schema coercion. The value is "
+        "never consumed, so shape validation would be actively harmful -- a "
+        "caller who misplaced a well-formed date would get a date-format "
+        "complaint instead of the message naming the nested shape."
+    ),
+}
 
 
 # Cache: ``module → {adapter_name → alias_class}`` computed via AST.
