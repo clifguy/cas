@@ -278,11 +278,30 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     re-imported for default-config path construction; patch both so a
     test using ``VaultRegistryService.get_default_config`` without overriding
     storage_root/brain_root also lands in tmp space.
+
+    ``SAGE_VAULT_ROOT`` is cleared rather than left alone. Root resolution
+    honors that variable *ahead of* the patched constant, so on a machine that
+    exports it the redirect below would be silently outranked and writes would
+    land in the operator's real vault tree. Clearing it rather than pointing it
+    at ``fake_root`` keeps the patched constant authoritative, which is what
+    the tests that install their own per-test root rely on. Tests that need the
+    variable set do so themselves; their ``monkeypatch.setenv`` runs after this
+    fixture and wins.
+
+    No test in this suite can go red when that ``delenv`` is removed: the
+    condition it defends against is an ambient variable present at process
+    start, which a test body cannot install ahead of an autouse fixture. It is
+    verified out-of-band instead, and reproducibly -- export ``SAGE_VAULT_ROOT``
+    to an empty scratch directory, run the vault-config write tests, and confirm
+    that directory is still empty afterward. Treat the guard as load-bearing
+    despite the green suite: deleting it restores the failure silently on any
+    machine that exports the variable.
     """
     from sage import vault_management
     from sage.services import vault_registry
 
     fake_root = tmp_path_factory.mktemp("sage_vaults_isolated")
+    monkeypatch.delenv("SAGE_VAULT_ROOT", raising=False)
     monkeypatch.setattr(vault_management, "_VAULTS_ROOT", fake_root)
     monkeypatch.setattr(vault_registry, "_VAULTS_ROOT", fake_root)
     yield fake_root

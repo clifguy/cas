@@ -48,7 +48,7 @@ vault config.
 
 Usage::
 
-    # Dry run across every vault under ~/sage_vaults/, all source types
+    # Dry run across every vault under the bound vault root, all source types
     .venv/bin/python -m scripts.reproject_active_documents
 
     # Apply across every vault
@@ -87,9 +87,7 @@ from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.models.enums import PipelineStatus, SourceType
-from sage.vault_management import config_path_for_vault
-
-_VAULTS_ROOT = Path("~/sage_vaults").expanduser()
+from sage.vault_management import bound_vault_root, config_path_for_vault
 
 _TERMINAL_PIPELINE_STATES = {
     PipelineStatus.ABSTRACTION_COMPLETE.value,
@@ -105,14 +103,19 @@ def _truncate(s: str | None, n: int) -> str:
 
 
 def discover_vault_ids() -> list[str]:
-    """Return sorted vault ids found under ``~/sage_vaults/``.
+    """Return sorted vault ids found under the root this process is bound to.
 
     A vault directory qualifies if it contains a ``vault_config.yaml`` file.
+    Discovery resolves the root the same way ``config_path_for_vault`` does, so
+    a vault this function reports is one whose config the loader below can then
+    actually find; resolving the two differently would surface every discovered
+    vault as a missing config under a redirected root.
     """
-    if not _VAULTS_ROOT.exists():
+    root = bound_vault_root()
+    if not root.exists():
         return []
     return sorted(
-        p.name for p in _VAULTS_ROOT.iterdir() if p.is_dir() and (p / "vault_config.yaml").exists()
+        p.name for p in root.iterdir() if p.is_dir() and (p / "vault_config.yaml").exists()
     )
 
 
@@ -373,7 +376,8 @@ def main() -> None:
         "--vault",
         help=(
             "Single vault id (e.g. example_vault). Default: every vault discovered "
-            "under ~/sage_vaults/."
+            "under the vault root this process is bound to ($SAGE_VAULT_ROOT, "
+            "else ~/sage_vaults/)."
         ),
     )
     parser.add_argument(
@@ -407,7 +411,7 @@ def main() -> None:
     else:
         vault_ids = discover_vault_ids()
         if not vault_ids:
-            print(f"No vaults discovered under {_VAULTS_ROOT}", file=sys.stderr)
+            print(f"No vaults discovered under {bound_vault_root()}", file=sys.stderr)
             raise SystemExit(2)
         print(f"Discovered vaults: {', '.join(vault_ids)}")
 
