@@ -129,7 +129,7 @@ async def test_bulk_metadata_endpoint_empty_items_returns_200(seeded_app):
 # Response_mode parameter on the bulk metadata HTTP endpoint
 # ---------------------------------------------------------------------------
 
-_T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
+_BLOAT_PROBE_ABSTRACT = "Test abstract used as the bulk-mode bloat probe."
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
                 "doc_type": "note",
                 "tags": ["a"],
                 "metadata_confirmed": True,
-                "semantic_abstract": _T0153_ABSTRACT,
+                "semantic_abstract": _BLOAT_PROBE_ABSTRACT,
             },
         )
 
@@ -199,7 +199,7 @@ async def test_http_light_strips_document_and_semantic_abstract(
         assert _entry_lacks_document(entry), (
             f"light mode must strip per-item document body; got {entry!r}"
         )
-    assert _T0153_ABSTRACT not in resp.text, (
+    assert _BLOAT_PROBE_ABSTRACT not in resp.text, (
         "light mode must not leak the semantic_abstract probe string"
     )
 
@@ -223,7 +223,7 @@ async def test_http_full_preserves_document_with_semantic_abstract(
     raw = resp.json()
     for entry in raw["results"]:
         assert entry["status"] == "success"
-        assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
+        assert entry["document"]["semantic_abstract"] == _BLOAT_PROBE_ABSTRACT
 
 
 async def test_http_default_above_threshold_returns_light(seeded_six_app):
@@ -259,7 +259,7 @@ async def test_http_default_at_or_below_threshold_returns_full(
     assert resp.status_code == 200, resp.text
     raw = resp.json()
     for entry in raw["results"]:
-        assert entry["document"]["semantic_abstract"] == _T0153_ABSTRACT
+        assert entry["document"]["semantic_abstract"] == _BLOAT_PROBE_ABSTRACT
 
 
 async def test_http_error_envelope_intact_in_light_mode(seeded_six_app):

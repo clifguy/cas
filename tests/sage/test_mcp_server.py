@@ -2941,7 +2941,7 @@ def test_traverse_docstring_documents_alias():
 # (tool_fn, extra-required-kwargs) for the document-id read tools.
 # ``read_section`` also needs ``heading_path`` and ``chain`` needs
 # ``edge_type``; the others take only the id.
-_T0246_READ_TOOLS = [
+_DOC_ID_ALIAS_READ_TOOLS = [
     pytest.param(get_document, {}, id="get_document"),
     pytest.param(read_projection, {}, id="read_projection"),
     pytest.param(read_section, {"heading_path": "Sample Document"}, id="read_section"),
@@ -3092,7 +3092,7 @@ async def test_positional_document_id_still_binds(vault_services, tool_fn, echo_
     assert result[echo_key] == doc["id"]
 
 
-@pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
+@pytest.mark.parametrize("tool_fn,extra", _DOC_ID_ALIAS_READ_TOOLS)
 async def test_rejects_both_document_id_and_doc_id_when_equal(vault_services, tool_fn, extra):
     """B3. Supplying both ``document_id`` and ``doc_id`` — even with equal
     values — is rejected. Strict ambiguity rule: exactly one must be
@@ -3107,7 +3107,7 @@ async def test_rejects_both_document_id_and_doc_id_when_equal(vault_services, to
     assert "doc_id" in result["detail"]["supplied"]
 
 
-@pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
+@pytest.mark.parametrize("tool_fn,extra", _DOC_ID_ALIAS_READ_TOOLS)
 async def test_rejects_both_document_id_and_doc_id_when_unequal(vault_services, tool_fn, extra):
     """B4. Supplying two *different* ids via the canonical name and the
     alias is rejected. Exercises the conflict branch distinctly from the
@@ -3123,7 +3123,7 @@ async def test_rejects_both_document_id_and_doc_id_when_unequal(vault_services, 
     assert "doc_id" in result["detail"]["supplied"]
 
 
-@pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
+@pytest.mark.parametrize("tool_fn,extra", _DOC_ID_ALIAS_READ_TOOLS)
 async def test_rejects_neither_document_id_nor_doc_id(vault_services, tool_fn, extra):
     """B5. Supplying neither ``document_id`` nor ``doc_id`` yields the
     structured ``missing_document_identifier`` code (not a downstream

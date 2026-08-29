@@ -7,7 +7,7 @@ and enforced at commit time by the ``cas-code-review`` skill §P1. This test
 is the substrate-level counterpart: a deterministic gate that fails the
 build whenever a forbidden pattern reappears in a tracked file.
 
-Eleven invariants are checked. The numbering is the gate's own and is not
+Twelve invariants are checked. The numbering is the gate's own and is not
 contiguous: T9 has never been assigned, and T11 is described below but
 has no test function yet.
 
@@ -54,7 +54,24 @@ has no test function yet.
        T1 already scans the whole file, and an identifier is file
        contents.
 
-Scope — top-level directories excluded from T1/T3/T4/T12/T13:
+  T14. Ticket ids must not appear in Python *bindings* — the names a
+       variable, constant, or parameter is bound to — at any nesting
+       depth. The fourth face of the rule T2, T12, and T13 enforce on file
+       contents, on file and directory names, and on definitions. T13's
+       accepted scope was definitions; a constant is code exactly as a
+       function name is, so the prohibition already covered bindings and
+       only the enforcement was missing. Kept separate from T13 rather
+       than folded into it: the two walk different node families, this one
+       must descend into unpacking targets and argument lists, and
+       separate allowlists let one be drained without loosening the other.
+       Shares ``NAME_TICKET_REF_RE`` with T12 and T13 for the same reason
+       they need it. Accepted scope is assignment targets and function
+       parameters; ``for`` targets, ``with ... as``, ``except ... as``,
+       walrus, comprehension targets, import aliases, and attribute or
+       subscript targets are documented exclusions rather than oversights
+       — see ``_binding_violations``.
+
+Scope — top-level directories excluded from T1/T3/T4/T12/T13/T14:
 
 - ``domains/`` is the executor-defined home for use-case-specific configs.
   The establishing cleanup deletes ``domains/pim_health/`` entirely;
@@ -84,10 +101,10 @@ Scope — top-level directories excluded from T1/T3/T4/T12/T13:
 
   T11. ``CLAUDE.md`` is the public stub (under 4096 bytes).
 
-The five allowlist constants near the top of the module follow the
+The six allowlist constants near the top of the module follow the
 pattern of ``KNOWN_VIOLATIONS`` in ``tests/sage/test_typed_alias_coverage.py``
 and ``KNOWN_ARG_DRIFT`` in ``tests/sage/test_mcp_tool_conformance.py``.
-All five are empty at the close of the establishing cleanup. Every
+All six are empty at the close of the establishing cleanup. Every
 entry added later requires a 1-line rationale.
 
 Anti-coincidental-pass coverage:
@@ -124,6 +141,30 @@ Anti-coincidental-pass coverage:
   same boundary that keeps ``abstract_2024`` from matching.
 - ``test_t13_scan_scope_is_non_empty_and_honours_exclusions`` guards the
   failure mode where the gate passes because it enumerated nothing.
+- ``test_t14_detector_reaches_every_assignment_form`` and
+  ``test_t14_detector_covers_every_parameter_kind`` carry more weight than
+  any bullet above. Every binding the establishing change renamed was a
+  module-level plain ``Assign``: the tree held no annotated or augmented
+  assignment, no unpacking target, no class-body or function-local
+  constant, and — once T13's fixture renames landed — no parameter
+  carrying an id. A detector covering only module-level plain ``Assign``
+  therefore reds identically against the pre-change tree and passes
+  identically after it. Every other arm is proven by synthetic source or
+  not at all.
+- ``test_t14_detector_matches_binding_id_forms_and_rejects_near_misses``
+  is T13's sibling and excludes the same three rivals, including the
+  inlined-copy one, via the same monkeypatch in both directions — asserted
+  against the parameter arm as well as the assignment arm, since either
+  could carry its own pattern.
+- ``test_t14_detector_reports_the_offending_line_and_name`` pins
+  attribution to the bound name's own line rather than the statement's,
+  which is the only thing that separates a correct hit from a useless one
+  inside a multi-line unpacking target, and pins the absence of name-keyed
+  dedup.
+- ``test_t14_detector_ignores_non_name_targets_and_unbound_forms`` asserts
+  the documented exclusions are the implementation's actual behaviour, and
+  closes with a positive control so a detector that returns nothing at all
+  cannot satisfy an all-negative test.
 
 A whole-test anti-coincidental probe (manually introduce one violation
 per category, confirm the gate fails with a precise message naming
@@ -228,7 +269,7 @@ _MAX_REPORTED_VIOLATIONS: Final[int] = 30
 # ---------------------------------------------------------------------------
 # Allowlists
 #
-# All four are empty at the close of the establishing cleanup. Each entry
+# All six are empty at the close of the establishing cleanup. Each entry
 # added later requires a 1-line rationale alongside it. Pattern matches
 # ``KNOWN_VIOLATIONS`` in tests/sage/test_typed_alias_coverage.py.
 # ---------------------------------------------------------------------------
@@ -259,6 +300,14 @@ NAME_TOKEN_ALLOWLIST: Final[dict[str, str]] = {}
 # silently exempt every identifier the file declares. Shape matches
 # ``ORPHANED_TEST_ALLOWLIST`` in tests/test_collection_integrity.py.
 IDENTIFIER_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
+
+# path (relative to repo root) -> names of bindings in that file whose
+# ticket-id-shaped name is exempted. Separate from
+# ``IDENTIFIER_TOKEN_ALLOWLIST`` above for the reason that one is separate
+# from ``NAME_TOKEN_ALLOWLIST``: a definition and a binding are different
+# node families, so an exemption granted to one must not silently cover the
+# other.
+BINDING_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +558,99 @@ def _identifier_violations(tree: ast.AST) -> list[tuple[int, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Binding scanning
+# ---------------------------------------------------------------------------
+
+
+def _binding_violations(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(lineno, name)`` for every *binding* whose name carries a
+    ticket id.
+
+    The binding-side counterpart to :func:`_identifier_violations`, which
+    covers definitions. Two families are in scope — the two ways a name is
+    bound outside a ``def`` or ``class`` header:
+
+    - assignment targets: ``Assign`` (every target of a chained
+      ``A = B = value``), ``AnnAssign``, and ``AugAssign``, descending
+      through ``Tuple``, ``List``, and ``Starred`` so an offending element
+      of an unpacking target is reached;
+    - parameters: all five groups of an ``arguments`` node
+      (``posonlyargs``, ``args``, ``kwonlyargs``, ``vararg``, ``kwarg``), on
+      ``FunctionDef``, ``AsyncFunctionDef``, and ``Lambda`` alike.
+
+    Nesting depth is not consulted: a constant in a class body and a local
+    inside a function are reached exactly as a module-level constant is. A
+    constant is code in every one of those positions, and the walk that
+    reaches the outermost reaches them all.
+
+    Deliberately out of reach, recorded here so the next node family over is
+    a visible decision rather than a later discovery:
+
+    - ``Attribute`` and ``Subscript`` targets (``self.x = ...``,
+      ``d["k"] = ...``). These bind an attribute or a key, not a name.
+    - ``for`` targets, ``with ... as``, ``except ... as``, walrus
+      (``NamedExpr``), comprehension targets, and ``import ... as`` aliases.
+      Each does bind a name; each is a distinct node family whose inclusion
+      belongs to its own change.
+    - ``global`` / ``nonlocal`` declarations, which rebind nothing on their
+      own and name a binding caught where it is assigned.
+
+    Uses ``NAME_TICKET_REF_RE`` rather than ``TICKET_REF_RE``, and reads it
+    from the module rather than carrying a copy, for the reasons
+    :func:`_identifier_violations` gives: a hyphen is not legal in a Python
+    name, so the prose pattern matches no binding at all, and an inlined
+    copy drifts from T12 and T13 the moment either pattern moves.
+
+    Line numbers come from the ``ast.Name`` or ``ast.arg`` node itself
+    rather than from the enclosing statement, so an offender inside a
+    multi-line unpacking target is attributed to its own line. Not
+    deduplicated: two bindings of the same offending name are two
+    violations, as they are for definitions.
+
+    Pure: takes a parsed tree, consults no allowlist, touches no filesystem.
+    Mirrors :func:`_identifier_violations`, which factors its walk the same
+    way so the unit tests can drive it against synthetic source.
+    """
+
+    def _name_leaves(target: ast.expr) -> Iterable[ast.Name]:
+        """Yield every ``ast.Name`` an assignment target binds."""
+        if isinstance(target, ast.Name):
+            yield target
+        elif isinstance(target, ast.Starred):
+            yield from _name_leaves(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                yield from _name_leaves(element)
+
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        for target in targets:
+            for leaf in _name_leaves(target):
+                if NAME_TICKET_REF_RE.search(leaf.id):
+                    found.append((leaf.lineno, leaf.id))
+
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            spec = node.args
+            parameters = [
+                *spec.posonlyargs,
+                *spec.args,
+                *spec.kwonlyargs,
+                *([spec.vararg] if spec.vararg is not None else []),
+                *([spec.kwarg] if spec.kwarg is not None else []),
+            ]
+            for parameter in parameters:
+                if NAME_TICKET_REF_RE.search(parameter.arg):
+                    found.append((parameter.lineno, parameter.arg))
+
+    return found
+
+
+# ---------------------------------------------------------------------------
 # T1 — Use-case-specific terms outside domains/
 # ---------------------------------------------------------------------------
 
@@ -731,6 +873,48 @@ def test_no_ticket_ids_in_python_identifiers() -> None:
 
     if violations:
         pytest.fail(_format_violations(violations, header="T13 identifier-token"))
+
+
+# ---------------------------------------------------------------------------
+# T14 — Ticket ids in Python bindings
+# ---------------------------------------------------------------------------
+
+
+def test_no_ticket_ids_in_python_bindings() -> None:
+    """T14: no tracked ``.py`` file may bind a variable, constant, or
+    parameter whose *name* carries a ticket id.
+
+    The binding-side counterpart to T13, whose accepted scope was
+    definitions. A constant is code exactly as a function name is, so the
+    prohibition already covered bindings and only the enforcement was
+    missing — the same gap T13 closed, one AST node family over.
+
+    Kept as its own invariant rather than folded into T13: T13's name,
+    docstring, and failure header all say "definitions"; the two detectors
+    walk different node families, one of which must descend into unpacking
+    targets and argument lists; and separate allowlists let one be drained
+    without loosening the other.
+
+    Scope matches T1/T3/T4/T12/T13 via ``_tracked_files_with_suffixes``,
+    which excludes ``domains/``, ``.claude/``, and this gate file.
+    Unparseable modules are skipped: a file that cannot be parsed fails its
+    own collection loudly and is a different problem.
+    """
+    violations: list[tuple[str, int, str]] = []
+    for path in _tracked_files_with_suffixes((".py",)):
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            continue
+        allowed = set(BINDING_TOKEN_ALLOWLIST.get(rel, []))
+        for line_no, name in _binding_violations(tree):
+            if name in allowed:
+                continue
+            violations.append((rel, line_no, name))
+
+    if violations:
+        pytest.fail(_format_violations(violations, header="T14 binding-token"))
 
 
 # ---------------------------------------------------------------------------
@@ -1165,3 +1349,395 @@ def test_t13_scan_scope_is_non_empty_and_honours_exclusions() -> None:
     assert not any(rel.startswith("domains/") for rel in scanned)
     assert not any(rel.startswith(".claude/") for rel in scanned)
     assert "tests/test_public_posture.py" not in scanned, "the gate must not scan itself"
+
+
+# ---------------------------------------------------------------------------
+# T14 detector self-tests
+#
+# These carry T13's burden and then some. The change that introduced T14
+# also drained the tree of every offending binding, so afterwards
+# ``test_no_ticket_ids_in_python_bindings`` passes against a detector that
+# returns nothing at all. Worse than T13's case: every one of the twenty
+# bindings that change renamed was a module-level plain ``Assign``. The
+# tree held no annotated or augmented assignment, no unpacking target, no
+# class-body or function-local constant, and — once T13's own fixture
+# renames landed — no parameter carrying an id. So a detector covering only
+# module-level plain ``Assign`` behaves identically to a correct one on the
+# only evidence the gate test consults, in both directions. Every other arm
+# is proven below or not at all.
+#
+# Kept as strings so this module's own AST — and the gate's walk over any
+# file that is not excluded — never sees the offending bindings as real
+# code.
+# ---------------------------------------------------------------------------
+
+# One offender in each assignment shape: module level, class body, function
+# body, annotated, augmented, and a tuple-unpacking target where only one
+# element offends.
+_SYNTHETIC_BINDING_SOURCE: Final[str] = textwrap.dedent(
+    """
+    from typing import Final
+
+    _T0001_MODULE_LEVEL = "module level"
+
+    class Holder:
+        _T0002_CLASS_BODY = "class body"
+
+    def enclosing():
+        _t0003_local = "function body"
+        return _t0003_local
+
+    _T0004_ANNOTATED: Final[str] = "annotated"
+
+    _T0005_AUGMENTED = 0
+    _T0005_AUGMENTED += 1
+
+    clean_head, _T0006_UNPACKED, clean_tail = (1, 2, 3)
+
+    clean_lead, *_T0007_STARRED_REST = (1, 2, 3)
+
+    [_T0008_LIST_TARGET, clean_second] = (4, 5)
+    """
+)
+
+# The same eight shapes, all cleanly named.
+_SYNTHETIC_CLEAN_BINDING_SOURCE: Final[str] = textwrap.dedent(
+    """
+    from typing import Final
+
+    MODULE_LEVEL = "module level"
+
+    class Holder:
+        CLASS_BODY = "class body"
+
+    def enclosing():
+        local_value = "function body"
+        return local_value
+
+    ANNOTATED: Final[str] = "annotated"
+
+    AUGMENTED = 0
+    AUGMENTED += 1
+
+    clean_head, unpacked, clean_tail = (1, 2, 3)
+
+    clean_lead, *starred_rest = (1, 2, 3)
+
+    [list_target, clean_second] = (4, 5)
+    """
+)
+
+
+def test_t14_detector_reaches_every_assignment_form() -> None:
+    """T14 reaches every assignment shape, not just the one the tree has.
+
+    This is the assertion the gate cannot make for itself. All twenty
+    bindings the establishing change renamed were module-level plain
+    ``Assign``, so a detector that handled only that shape would have
+    produced an identical violation list against the pre-change tree and an
+    identical (empty) one after — indistinguishable from a correct
+    implementation on the only evidence the gate test consults.
+
+    Of the six below, a module-level-plain-``Assign``-only detector finds
+    one; one that skips ``AnnAssign`` and ``AugAssign`` finds four; one that
+    treats a ``Tuple`` target as opaque finds five.
+    """
+    violations = _binding_violations(ast.parse(_SYNTHETIC_BINDING_SOURCE))
+    names = {name for _, name in violations}
+    expected = {
+        "_T0001_MODULE_LEVEL",
+        "_T0002_CLASS_BODY",
+        "_t0003_local",
+        "_T0004_ANNOTATED",
+        "_T0005_AUGMENTED",
+        "_T0006_UNPACKED",
+        "_T0007_STARRED_REST",
+        "_T0008_LIST_TARGET",
+    }
+    assert names == expected, f"assignment shapes missed or over-matched: {expected ^ names}"
+
+    # ``_T0005_AUGMENTED`` is bound twice — once by the plain ``Assign``
+    # that creates it, once by the ``AugAssign`` that rebinds it. Asserting
+    # the *name* is present cannot tell those apart, so a detector missing
+    # the ``AugAssign`` arm entirely still finds it via the ``Assign``
+    # above. Only the site count separates them.
+    augmented = [line for line, name in violations if name == "_T0005_AUGMENTED"]
+    assert len(augmented) == 2, (
+        f"the augmented-assignment arm is not reached: {len(augmented)} site(s), expected 2"
+    )
+
+    # The same eight shapes with clean names find nothing, so the eight hits
+    # above are the names and not the shape.
+    assert not _binding_violations(ast.parse(_SYNTHETIC_CLEAN_BINDING_SOURCE))
+
+
+def test_t14_detector_covers_every_parameter_kind() -> None:
+    """T14 flags all five parameter groups, and a lambda's alike.
+
+    The tree carries no parameter offender at all — T13's fixture renames
+    removed the last of them — so this arm has no natural coverage anywhere
+    else and can only be exercised here. A detector that reads
+    ``node.args.args`` alone, the obvious first cut, finds one of the six
+    below; one that handles ``FunctionDef`` but not ``Lambda`` finds five.
+    """
+    tree = ast.parse(
+        textwrap.dedent(
+            """
+            def takes_every_kind(
+                t0010_positional_only,
+                /,
+                t0011_ordinary,
+                *t0012_varargs,
+                t0013_keyword_only,
+                **t0014_kwargs
+            ):
+                return None
+
+            lambda_holder = lambda t0015_lambda_param: t0015_lambda_param
+
+            async def takes_async_kind(t0016_async_param):
+                return t0016_async_param
+            """
+        )
+    )
+    names = {name for _, name in _binding_violations(tree)}
+    assert names == {
+        "t0010_positional_only",
+        "t0011_ordinary",
+        "t0012_varargs",
+        "t0013_keyword_only",
+        "t0014_kwargs",
+        "t0015_lambda_param",
+        "t0016_async_param",
+    }, f"a parameter group or definition kind was dropped: {names}"
+
+
+def test_t14_detector_matches_binding_id_forms_and_rejects_near_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T14 uses the name-shaped ticket pattern, not the prose one, and reads
+    it from the module rather than carrying its own copy.
+
+    T13's sibling, and the same three rivals apply:
+
+    - Wired to ``TICKET_REF_RE``: a binding cannot carry the canonical
+      hyphenated spacing, so every positive below is invisible to the prose
+      pattern and that rival returns empty on any tree.
+    - Boundary retuned: the near-misses below fail.
+    - **Pattern inlined** rather than looked up. This one passes every case
+      above and below and drifts from T12 and T13 the moment either pattern
+      moves. The closing monkeypatch is what excludes it, and it is applied
+      to the parameter arm as well as the assignment arm — the detector has
+      two call sites, and either could carry its own copy.
+    """
+    positives = {
+        "_T0124_EDGE_ID": "uppercase, opening the name behind a leading underscore",
+        "t_0148_default": "underscore-separated form",
+        "t0076_service": "at the start of the name",
+        "_ABSTRACT_T0153_PROBE": "mid-name, behind an underscore",
+    }
+    for name, why in positives.items():
+        assert _binding_violations(ast.parse(f"{name} = 1\n")), (
+            f"missed a ticket id ({why}): {name}"
+        )
+        # The prose pattern this must NOT be wired to.
+        assert not TICKET_REF_RE.search(name), (
+            f"{name!r} is matched by TICKET_REF_RE; it no longer discriminates the two patterns"
+        )
+
+    negatives = {
+        "abstract_2024_rollup": "the ``t`` closing ``abstract`` precedes a bare year",
+        "t20260825_snapshot": "a timestamp, not a four-digit id",
+        "report_0074_shape": "four digits with no adjacent ``t``",
+        "cas_adr_042_anchor": "the only sanctioned durable-surface anchor",
+        "t1_light_strips_document": "a one-digit case tag, not a ticket id",
+    }
+    for name, why in negatives.items():
+        assert not _binding_violations(ast.parse(f"{name} = 1\n")), (
+            f"false positive ({why}): {name}"
+        )
+
+    # Inherited boundary, asserted so it is a documented property rather
+    # than a surprise, exactly as T13 asserts it. ``NAME_TICKET_REF_RE``
+    # opens with a non-alphanumeric lookbehind, so an id buried mid-CamelCase
+    # is out of reach. That boundary is what keeps ``abstract_2024`` from
+    # matching and is shared with T12, where the same lookbehind reads
+    # against path components — widening it belongs in its own change.
+    assert not _binding_violations(ast.parse("TicketT0452Sentinel = 1\n"))
+    assert _binding_violations(ast.parse("Ticket_T0452_Sentinel = 1\n"))
+
+    # Excludes the inlined-copy rival: point the module attribute at a
+    # pattern that matches something else entirely, and both arms of the
+    # detector must follow it in both directions.
+    monkeypatch.setitem(globals(), "NAME_TICKET_REF_RE", re.compile(r"zzmarker"))
+    assert not _binding_violations(ast.parse("_T0124_EDGE_ID = 1\n")), (
+        "assignment arm still matched a ticket id after the module pattern was swapped out; "
+        "it carries its own copy instead of consulting NAME_TICKET_REF_RE"
+    )
+    assert not _binding_violations(ast.parse("def probe(t0076_service):\n    pass\n")), (
+        "parameter arm still matched a ticket id after the module pattern was swapped out; "
+        "it carries its own copy instead of consulting NAME_TICKET_REF_RE"
+    )
+    assert _binding_violations(ast.parse("zzmarker_probe = 1\n")), (
+        "assignment arm did not pick up the swapped-in pattern"
+    )
+    assert _binding_violations(ast.parse("def probe(zzmarker_param):\n    pass\n")), (
+        "parameter arm did not pick up the swapped-in pattern"
+    )
+
+
+def test_t14_detector_reports_the_offending_line_and_name() -> None:
+    """T14 attributes a hit to the bound name that owns it, once per binding.
+
+    An implementation that reported the enclosing statement, the first line
+    of the file, or the whole file would satisfy a bare
+    ``assert _binding_violations(tree)`` and give no way to find the
+    offender in a 4000-line module.
+
+    Two rivals a single-offender fixture cannot separate:
+
+    - Reporting the enclosing *statement's* line rather than the name's.
+      Indistinguishable on a one-line assignment, and wrong on every
+      multi-line unpacking target — where the statement's line is the open
+      parenthesis and the offender may be anywhere below it.
+    - Deduplicating by name. The sibling ``_name_violations`` dedupes by
+      design, so mirroring it here is the likelier mistake than inventing
+      it — and one file can legitimately bind the same offending name twice,
+      in two different class bodies.
+    """
+    source = "clean_first = 1\n\n\n_T0020_OFFENDER = 2\n"
+    violations = _binding_violations(ast.parse(source))
+
+    assert len(violations) == 1, f"expected exactly one violation, got {violations}"
+    assert violations[0] == (4, "_T0020_OFFENDER")
+
+    # A multi-line unpacking target: the hit belongs to the offending
+    # element's own line (4), not to the statement's opening line (2).
+    multiline = _binding_violations(
+        ast.parse(
+            textwrap.dedent(
+                """
+                (
+                    clean_head,
+                    _T0021_MIDDLE,
+                    clean_tail,
+                ) = (1, 2, 3)
+                """
+            )
+        )
+    )
+    assert len(multiline) == 1
+    assert multiline[0] == (4, "_T0021_MIDDLE"), (
+        f"unpacked hit attributed to {multiline[0]}; likely reporting the statement's line"
+    )
+
+    # A multi-line signature: the parameter hit belongs to the parameter's
+    # own line (4), not to the ``def`` line (2). Every offending parameter
+    # in this repository sat on a single-line signature, where the two are
+    # indistinguishable, so a detector reporting ``node.lineno`` for
+    # parameters passes against the whole tree.
+    signature = _binding_violations(
+        ast.parse(
+            textwrap.dedent(
+                """
+                def probe(
+                    clean_param,
+                    t0024_offender,
+                ):
+                    return None
+                """
+            )
+        )
+    )
+    assert signature == [(4, "t0024_offender")], (
+        f"parameter hit attributed to {signature}; likely reporting the def's line"
+    )
+
+    # A chained assignment binds both targets; both offend, so both report.
+    chained = _binding_violations(ast.parse("_T0022_FIRST = _T0022_SECOND = 3\n"))
+    assert len(chained) == 2, f"a chained assignment reported {len(chained)} of its 2 targets"
+
+    # The same offending name in two class bodies is two violations, not
+    # one — a name-keyed dedup collapses them and under-reports the tree.
+    repeated = ast.parse(
+        textwrap.dedent(
+            """
+            class HolderA:
+                _T0023_SHARED = 1
+
+            class HolderB:
+                _T0023_SHARED = 2
+            """
+        )
+    )
+    assert len(_binding_violations(repeated)) == 2, "two same-named bindings collapsed to one"
+
+
+def test_t14_detector_ignores_non_name_targets_and_unbound_forms() -> None:
+    """T14's exclusions are the implementation's behaviour, not a claim.
+
+    ``_binding_violations`` accepts assignment targets and function
+    parameters. The forms below also bind, or look like they bind, and are
+    out of scope by decision rather than oversight — each is a distinct node
+    family whose inclusion belongs to its own change. Asserting the
+    exclusions here means widening the detector cannot happen silently: the
+    entry that stops being excluded fails this test and has to be moved
+    deliberately.
+
+    Note where the line falls. A function-*local* assignment IS in scope
+    (see ``test_t14_detector_reaches_every_assignment_form``); a
+    function-local *loop target* is not. Depth is not the criterion; the
+    node family is.
+    """
+    excluded = {
+        "attribute target": (
+            "class Holder:\n    def __init__(self):\n        self.t0030_field = 1\n"
+        ),
+        "subscript target": "registry = {}\nregistry['t0031'] = 1\n",
+        "for target": "for t0032_item in range(3):\n    pass\n",
+        "with-as target": "with open('f') as t0033_handle:\n    pass\n",
+        "except-as target": "try:\n    pass\nexcept ValueError as t0034_error:\n    pass\n",
+        "walrus target": "values = [1]\nif (t0035_seen := len(values)):\n    pass\n",
+        "comprehension target": "squares = [t0036_n * t0036_n for t0036_n in range(3)]\n",
+        "import alias": "import json as t0037_alias\n",
+    }
+    for why, source in excluded.items():
+        assert not _binding_violations(ast.parse(source)), (
+            f"{why} was flagged; T14's accepted scope is assignment targets and parameters"
+        )
+
+    # Positive control. Without it every assertion above is satisfied by a
+    # detector that returns nothing at all — the exact rival this block of
+    # self-tests exists to exclude.
+    assert _binding_violations(ast.parse("_T0038_SENTINEL = 1\n")), (
+        "the detector finds nothing even in a plain module-level assignment; "
+        "the exclusions above prove nothing"
+    )
+
+
+def test_t14_scan_scope_is_non_empty_and_allowlist_ships_empty() -> None:
+    """T14's file enumeration reaches real files, and nothing is exempted.
+
+    A gate over an empty file list passes for the wrong reason and looks
+    exactly like a gate over a clean tree. The exclusions themselves are
+    pinned in full by ``test_t13_scan_scope_is_non_empty_and_honours_
+    exclusions``, which reads the same helper; repeated here is only the
+    non-emptiness guard and the one exclusion whose absence would make the
+    gate scan its own synthetic sources.
+
+    The allowlist assertion is T14's own: it ships empty, and every entry
+    added later owes a 1-line rationale. An allowlist that quietly acquires
+    entries is how a drained gate stops being one.
+    """
+    scanned = {str(p.relative_to(REPO_ROOT)) for p in _tracked_files_with_suffixes((".py",))}
+
+    assert len(scanned) > 100, f"T14 would scan only {len(scanned)} file(s); enumeration is broken"
+    # Membership across two trees, not a bare count. A scan narrowed to
+    # ``tests/`` alone still clears 100 files, so the count by itself does
+    # not distinguish a whole-repo enumeration from a partial one.
+    assert "tests/test_collection_integrity.py" in scanned, "a real test module is out of scope"
+    assert "sage/models/schemas.py" in scanned, "production code is out of scope"
+    assert "tests/test_public_posture.py" not in scanned, "the gate must not scan itself"
+    assert BINDING_TOKEN_ALLOWLIST == {}, (
+        f"T14's allowlist is no longer empty: {BINDING_TOKEN_ALLOWLIST}"
+    )
