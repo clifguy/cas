@@ -248,4 +248,5 @@ jobs:
             BASE_DOMAIN="$BASE_DOMAIN" \
             PREFLIGHT_EXPECTED_VAULTS="$PREFLIGHT_EXPECTED_VAULTS" \
             PREFLIGHT_VAULT_SOURCE="$PREFLIGHT_VAULT_SOURCE" \
+            PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="deploy/resource-token-probe.sh" \
             deploy/cloud-preflight.sh

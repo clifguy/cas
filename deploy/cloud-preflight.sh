@@ -57,6 +57,13 @@
 #                              reads the bearer from AUTH_TOKEN in the env, prints
 #                              a one-line verdict, exits 0 on success (default:
 #                              python3 <script-dir>/mcp_preflight_probe.py)
+#   PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD  resource-registration probe invoked as
+#                              `<cmd> <resource-uri>`; exits 0 iff a token scoped
+#                              <resource-uri>/.default mints, diagnostics on
+#                              stderr, stdout discarded (no default: unset SKIPs
+#                              the registration check; CI arms it with
+#                              <script-dir>/resource-token-probe.sh, which needs
+#                              an authenticated az session)
 #   PREFLIGHT_SLEEP_CMD        warm-up retry delay command (default: sleep)
 #   PREFLIGHT_WARMUP_MAX_ATTEMPTS   shared budget of connection-level (000) probe
 #                              retries before the gate fails (default: 36)
@@ -626,6 +633,71 @@ check_edge_mount_discovery() {
     return 0
   fi
   DETAIL_MSG="mount discovery incoherent:$detail -- a client steered to a bare-host resource serializes a trailing-slash form Entra can never match (AADSTS9010010)"
+  return 1
+}
+
+check_edge_advertised_resources_registered() {
+  # Every resource identity the edge advertises must be held by the directory
+  # as a registered identifier URI, or a standards client steered to that
+  # resource dead-ends at /authorize with invalid_target -- while every
+  # app-scoped probe stays green, because nothing else here carries the
+  # resource through an authorization round trip. This check makes that round
+  # trip: it reads the resource out of each metadata document (the root and
+  # the three path-inserted mount documents), then asks the authorization
+  # server for a token scoped <resource>/.default via the seamed probe, which
+  # is refused (AADSTS500011) exactly when the URI is unregistered. The
+  # comparison is behavioral -- no Graph read, so the calling identity needs
+  # no directory permission. An unset seam SKIPs (an operator shell without an
+  # az session cannot ask the question; CI arms the seam). A document the
+  # check cannot read FAILs rather than shrinking the probed set -- the
+  # unreadable mount is exactly the one most likely to be broken. The
+  # discovery-200 control guards the blanket-edge trap.
+  if [ -z "$PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD" ]; then
+    DETAIL_MSG="skipped: PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD unset -- directory registration of the advertised resources not verified"
+    return 2
+  fi
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); a mintable resource set is the blanket trap, not real registration coverage"
+    return 1
+  fi
+  local resources="" doc_path res
+  for doc_path in "" /mcp /mcp_maint /mcp_admin; do
+    http_get "$SAGE_BASE_URL/.well-known/oauth-protected-resource$doc_path"
+    if [ "$HTTP_CODE" != 200 ]; then
+      DETAIL_MSG="metadata document for '${doc_path:-root}' answered $HTTP_CODE, not 200; the advertised resource set cannot be fully read, so registration cannot be credited"
+      return 1
+    fi
+    res="$(printf '%s' "$HTTP_BODY" \
+      | sed -n 's/.*"resource"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    if [ -z "$res" ]; then
+      DETAIL_MSG="metadata document for '${doc_path:-root}' advertises no resource; the advertised set cannot be established"
+      return 1
+    fi
+    case " $resources " in
+      *" $res "*) : ;;
+      *) resources="$resources $res" ;;
+    esac
+  done
+  # Probe each distinct advertised resource. Stderr is captured for a bounded
+  # AADSTS-code extraction; stdout is discarded outright so a probe that
+  # printed a token could never reach the detail line.
+  local missing="" refusal="" probe_err rc count=0
+  for res in $resources; do
+    count=$((count + 1))
+    probe_err="$($PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD "$res" 2>&1 >/dev/null)"
+    rc=$?
+    if [ "$rc" != 0 ]; then
+      missing="$missing $res"
+      if [ -z "$refusal" ]; then
+        refusal="$(printf '%s' "$probe_err" | grep -oE 'AADSTS[0-9]+' | head -1)"
+      fi
+    fi
+  done
+  if [ -z "$missing" ]; then
+    DETAIL_MSG="all $count advertised resources mint a token scoped <resource>/.default (every identifier URI the edge steers a client to is registered in the directory)"
+    return 0
+  fi
+  DETAIL_MSG="advertised but unregistered resource(s):$missing (token mint refused${refusal:+: $refusal}) -- a standards client steered there dead-ends at /authorize with invalid_target"
   return 1
 }
 
@@ -1239,6 +1311,9 @@ register edge_serves_openapi_spec check_edge_serves_openapi_spec \
 register edge_mount_discovery check_edge_mount_discovery \
   "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \
   "a bare-host resource is the coincidental-pass trap (200s fine, but serializes to a trailing-slash form Entra can neither match nor register -- AADSTS9010010); credited only with the discovery-200 control held"
+register edge_advertised_resources_registered check_edge_advertised_resources_registered \
+  "every resource identity the edge advertises mints a token scoped <resource>/.default (each identifier URI a client is steered to is registered in the directory)" \
+  "an advertised-but-unregistered resource on a live edge is the trap: every document 200s and every app-scoped probe stays green, and only a round trip carrying the resource is refused (AADSTS500011); SKIP when the token-probe seam is unset; credited only with the discovery-200 control held"
 register mcp_maint check_mcp_maint \
   "/mcp_maint 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"
@@ -1469,6 +1544,7 @@ PREFLIGHT_TLS_PROBE_CMD="${PREFLIGHT_TLS_PROBE_CMD:-default_tls_probe}"
 PREFLIGHT_TLS_CHAIN_PROBE_CMD="${PREFLIGHT_TLS_CHAIN_PROBE_CMD:-default_tls_chain_probe}"
 PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
 PREFLIGHT_MCP_PROBE_CMD="${PREFLIGHT_MCP_PROBE_CMD:-python3 $SCRIPT_DIR/mcp_preflight_probe.py}"
+PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="${PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD:-}"
 PREFLIGHT_SLEEP_CMD="${PREFLIGHT_SLEEP_CMD:-sleep}"
 PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-36}"
 PREFLIGHT_WARMUP_INTERVAL_SECONDS="${PREFLIGHT_WARMUP_INTERVAL_SECONDS:-5}"

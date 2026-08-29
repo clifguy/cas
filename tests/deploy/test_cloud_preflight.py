@@ -44,6 +44,10 @@ import yaml
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _SCRIPT: Final[Path] = _REPO_ROOT / "deploy" / "cloud-preflight.sh"
+#: The sibling helper the resource-registration check's token-probe seam points
+#: at in CI: asks the authorization server for a token scoped to one advertised
+#: resource, proving (by refusal) whether its identifier URI is registered.
+_PROBE_SCRIPT: Final[Path] = _REPO_ROOT / "deploy" / "resource-token-probe.sh"
 #: The committed Core API document, plus the vault-config schema behind the one
 #: sweep endpoint that returns an untyped dict. Together they are the authority
 #: the sweep's shape markers resolve against (CAS-ADR-008, CAS-ADR-042). The
@@ -76,6 +80,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_advertises_grant_types",
         "edge_serves_openapi_spec",
         "edge_mount_discovery",
+        "edge_advertised_resources_registered",
         "mcp_maint",
         "mcp_admin",
         "mcp_roundtrip",
@@ -418,6 +423,46 @@ def test_independence_aggregation_pattern() -> None:
     assert re.search(r"exit\s+\"?\$\{?(?:fail|failures|exit_code|rc|status)", text), (
         "exit code is not computed from an aggregated failure flag"
     )
+
+
+def test_resource_token_probe_exists_and_executable() -> None:
+    assert _PROBE_SCRIPT.exists(), f"missing {_PROBE_SCRIPT}"
+    assert os.access(_PROBE_SCRIPT, os.X_OK), f"{_PROBE_SCRIPT} is not executable"
+
+
+@_NEEDS_BASH
+def test_resource_token_probe_bash_syntax_valid() -> None:
+    proc = subprocess.run(
+        [_BASH or "bash", "-n", str(_PROBE_SCRIPT)], capture_output=True, text=True
+    )
+    assert proc.returncode == 0, f"bash -n failed:\n{proc.stderr}"
+
+
+def test_resource_token_probe_mints_v2_scope_and_discards_token() -> None:
+    """The probe must ask the v2 *scope* endpoint for the resource it is handed
+    (``--scope "$1/.default"``, never the v1 ``--resource`` form, whose
+    sts.windows.net issuer the edge rejects), and it must discard the minted
+    token: the probe's only signal is its exit status, so an access token must
+    never reach stdout, a CI log, or a preflight detail line.
+    """
+    text = _PROBE_SCRIPT.read_text(encoding="utf-8")
+    # Scan command lines only: a comment explaining WHY --resource is wrong must
+    # neither trip the ban nor satisfy the mint anchor.
+    commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    collapsed = re.sub(r"\s+", " ", commands.replace("\\\n", " "))
+    match = re.search(r"az account get-access-token[^\n]*", collapsed)
+    assert match is not None, "probe must mint via `az account get-access-token`"
+    mint = match.group(0)
+    assert '--scope "$1/.default"' in mint, (
+        f"probe must mint for the handed resource via the v2 scope endpoint; got: {mint!r}"
+    )
+    assert "--resource " not in mint and not mint.rstrip().endswith("--resource"), (
+        f"v1 --resource endpoint is rejected at the edge; got: {mint!r}"
+    )
+    assert "--output none" in mint, (
+        f"the minted token must be discarded (--output none), never printed; got: {mint!r}"
+    )
+    assert not _GUID_RE.search(text), "no identity GUID may be baked into the probe"
 
 
 # --------------------------------------------------------------------------- #
@@ -1571,6 +1616,201 @@ def test_mount_discovery_dead_edge_fails() -> None:
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_mount_discovery") == "FAIL", verdicts
     assert proc.returncode != 0
+
+
+_ARR_CHECK = "edge_advertised_resources_registered"
+
+
+def _advertised_resources_stub(
+    discovery_status: int = 200,
+    maint_doc_status: int = 200,
+    admin_advertises_maint: bool = False,
+) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
+    """A stub for the advertised-resources registration check: the root and the
+    three per-mount metadata documents each 200 and advertise a ``{{BASE_URL}}``
+    resource (bare for the root, path-carrying for the mounts) -- the four
+    identities a real edge steers clients to. ``maint_doc_status`` breaks just
+    the /mcp_maint document so the unreadable-advertisement leg can be
+    exercised; ``discovery_status`` breaks the root (the blanket-edge control);
+    ``admin_advertises_maint`` makes the alias mount's document advertise the
+    canonical maintenance resource instead of its own path form, so a check
+    that constructs the probe set from the known mount paths -- rather than
+    reading it out of the documents -- can be told apart.
+    """
+
+    def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            if discovery_status != 200:
+                return discovery_status, "{}", {}
+            return 200, '{"resource": "{{BASE_URL}}", "scopes_supported": ["offline_access"]}', {}
+        for mount in ("/mcp_maint", "/mcp_admin", "/mcp"):
+            if p == f"/.well-known/oauth-protected-resource{mount}":
+                if mount == "/mcp_maint" and maint_doc_status != 200:
+                    return maint_doc_status, '{"error":"not_found"}', {}
+                advertised = mount
+                if mount == "/mcp_admin" and admin_advertises_maint:
+                    advertised = "/mcp_maint"
+                body = "{" + f'"resource": "{{{{BASE_URL}}}}{advertised}"' + "}"
+                return 200, body, {}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+def _write_resource_probe_stub(tmp_path: Path, refuse_suffix: str = "") -> str:
+    """A token-probe seam stub: exits 0 (token minted) for every resource,
+    except one whose URI ends in ``refuse_suffix``, which is refused the way
+    Entra refuses an unregistered identifier URI -- a verbose AADSTS500011
+    diagnostic on stderr and a non-zero exit. Nothing goes to stdout, matching
+    the real probe's discarded-token contract.
+    """
+    body = ""
+    if refuse_suffix:
+        body += (
+            f'case "$1" in\n  *{refuse_suffix})\n'
+            '    echo "AADSTS500011: The resource principal named $1 was not found'
+            ' in the tenant. TraceID: deadbeef CorrelationID: cafe" >&2\n'
+            "    exit 1 ;;\nesac\n"
+        )
+    body += "exit 0\n"
+    return _write_stub_cmd(tmp_path, "resprobe", body)
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_passes(tmp_path: Path) -> None:
+    """Every advertised resource mints a token scoped ``<resource>/.default``
+    -> PASS: each identity the edge steers a client to is registered in the
+    directory as an identifier URI.
+    """
+    probe = _write_resource_probe_stub(tmp_path)
+    with serve(_advertised_resources_stub()) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get(_ARR_CHECK) == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_unregistered_mount_fails(tmp_path: Path) -> None:
+    """THE invalid_target regression: the edge advertises a maintenance-mount
+    resource whose identifier URI the directory does not hold. Every document
+    200s and every app-scoped probe stays green -- only the mint carrying the
+    resource is refused (AADSTS500011) -- so the check must FAIL, naming the
+    unregistered URI and the refusal code without echoing the raw diagnostic.
+    """
+    probe = _write_resource_probe_stub(tmp_path, refuse_suffix="/mcp_maint")
+    with serve(_advertised_resources_stub()) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get(_ARR_CHECK) == "FAIL", (proc.stdout, proc.stderr)
+    assert proc.returncode != 0
+    detail = _detail(proc.stdout, _ARR_CHECK)
+    assert "/mcp_maint" in detail, f"detail must name the unregistered URI: {detail!r}"
+    assert "AADSTS500011" in detail, f"detail must carry the refusal code: {detail!r}"
+    # Bounded extraction: the code, never the probe's raw diagnostic line.
+    assert "TraceID" not in detail, f"raw probe output leaked into the detail: {detail!r}"
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_probes_each_advertised_resource(
+    tmp_path: Path,
+) -> None:
+    """The check must put the discriminating question to the authorization
+    server once per distinct advertised resource -- a check that greps the
+    documents but never mints, or probes a hardcoded subset, cannot see an
+    unregistered identifier URI. The recording stub observes the mint attempts.
+    """
+    record = tmp_path / "probed.txt"
+    probe = _write_stub_cmd(tmp_path, "resprobe", f"printf '%s\\n' \"$1\" >> {record}\nexit 0\n")
+    with serve(_advertised_resources_stub()) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+        expected = [url, f"{url}/mcp", f"{url}/mcp_admin", f"{url}/mcp_maint"]
+    assert _verdicts(proc.stdout).get(_ARR_CHECK) == "PASS", (proc.stdout, proc.stderr)
+    probed = record.read_text(encoding="utf-8").split()
+    assert sorted(probed) == sorted(expected), f"probed set != advertised set: {probed}"
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_probes_what_documents_advertise(
+    tmp_path: Path,
+) -> None:
+    """The probed set must come from the DOCUMENTS, not from the known mount
+    paths: with the alias mount's document advertising the canonical
+    maintenance resource, the distinct advertised set is three URIs -- probed
+    once each, and the alias path form (which no document advertises) not at
+    all. A check that constructs <base>+<mount> for each known mount produces
+    the same four-URI set as the healthy case and cannot pass here.
+    """
+    record = tmp_path / "probed.txt"
+    probe = _write_stub_cmd(tmp_path, "resprobe", f"printf '%s\\n' \"$1\" >> {record}\nexit 0\n")
+    with serve(_advertised_resources_stub(admin_advertises_maint=True)) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+        expected = [url, f"{url}/mcp", f"{url}/mcp_maint"]
+    assert _verdicts(proc.stdout).get(_ARR_CHECK) == "PASS", (proc.stdout, proc.stderr)
+    probed = record.read_text(encoding="utf-8").split()
+    assert sorted(probed) == sorted(expected), (
+        f"probed set must be the documents' distinct advertised set: {probed}"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_dead_edge_fails(tmp_path: Path) -> None:
+    """Discovery doc broken (404): a green token probe must NOT be credited --
+    the discovery-200 control rejects the blanket-edge coincidental pass, and
+    the detail must say the CONTROL failed (edge not live), not misdiagnose a
+    dead edge as one unreadable metadata document.
+    """
+    probe = _write_resource_probe_stub(tmp_path)
+    with serve(_advertised_resources_stub(discovery_status=404)) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get(_ARR_CHECK) == "FAIL", verdicts
+    assert proc.returncode != 0
+    detail = _detail(proc.stdout, _ARR_CHECK)
+    assert "control failed" in detail, f"dead edge must be named as the control leg: {detail!r}"
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_missing_mount_doc_fails(tmp_path: Path) -> None:
+    """One mount's metadata document is unreadable (404): the advertised set
+    cannot be fully read, and a check that silently shrank to the readable
+    subset would credit exactly the mount most likely to be broken -- so FAIL,
+    even though every readable resource mints fine.
+    """
+    probe = _write_resource_probe_stub(tmp_path)
+    with serve(_advertised_resources_stub(maint_doc_status=404)) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get(_ARR_CHECK) == "FAIL", verdicts
+    assert proc.returncode != 0
+    assert "mcp_maint" in _detail(proc.stdout, _ARR_CHECK)
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_skips_when_probe_seam_unset() -> None:
+    """No token-probe seam (an operator run without an az session): the check
+    must SKIP -- neither FAIL (the edge may be perfectly healthy) nor PASS
+    (registration was not verified) -- and say which seam arms it.
+    """
+    with serve(_advertised_resources_stub()) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get(_ARR_CHECK) == "SKIP", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+    assert "PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD" in _detail(proc.stdout, _ARR_CHECK)
 
 
 @_NEEDS_RUNTIME

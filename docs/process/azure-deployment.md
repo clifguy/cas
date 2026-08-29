@@ -281,7 +281,11 @@ Postgres-backed retrieval, a read-only sweep across the Core API router groups
 (vault-scoped reads, document reads, and the pure-computation filename parser),
 Key Vault secret resolution, provider-agnostic DNS resolution, and SharePoint
 vault-source reachability — emitting a single pass/fail matrix that names every
-failing layer. Each check carries an
+failing layer. It also verifies that every OAuth resource identity the edge
+advertises is registered in the directory, by minting a token scoped to each
+advertised resource (CI arms this via `PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD`; a
+hand run without it SKIPs the check) — the one gap that otherwise surfaces only
+as a browser-context client dead-ending at `/authorize` with `invalid_target`. Each check carries an
 anti-coincidental control (a `401`, for instance, is credited only when the
 discovery-`200` control proves the edge is genuinely live, not a blanket edge
 failure that makes everything look "as predicted"). It **reports; it never
