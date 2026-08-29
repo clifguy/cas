@@ -688,19 +688,22 @@ def test_error_response_maps_typed_alias_family(code, alias_name, bad_value, det
 
 
 def test_error_response_typed_alias_family_is_scoped():
-    """A ValidationError outside the family (an int-parse failure) still
-    surfaces as internal_error -- _error_response must not broaden into a
-    blanket remap of every ValidationError; the discover/filters
-    mode/unknown-key cases keep their current MCP shape."""
+    """A ValidationError outside the family gets the general code, not a
+    family one. An int-parse failure has nothing to do with a malformed
+    typed-alias boundary value, so it must surface as invalid_parameter --
+    _error_response must not broaden the family into a blanket remap that
+    labels every ValidationError as one of the alias codes."""
     from pydantic import TypeAdapter, ValidationError
 
+    from sage.api.errors import _TYPED_ALIAS_CODES
     from sage.mcp_server import _error_response
 
     try:
         TypeAdapter(int).validate_python("not-an-int")
     except ValidationError as exc:
         result = _error_response(exc)
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_parameter"
+    assert result["error"] not in _TYPED_ALIAS_CODES
 
 
 def test_translate_validation_error_document_id_unchanged():

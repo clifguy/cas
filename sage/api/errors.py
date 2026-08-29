@@ -8,7 +8,6 @@ from datetime import datetime
 from enum import StrEnum
 
 from fastapi import FastAPI, Request
-from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -699,6 +698,46 @@ class ModeParameterMismatchError(SAGEError):
                 "allowed_modes": sorted(allowed_modes),
             },
         )
+
+
+class InvalidParameterError(SAGEError):
+    """422: a request parameter failed validation with no more specific code.
+
+    The general case behind the specific ones. `invalid_filter_value`,
+    `invalid_filter_shape`, `invalid_mode` and the typed-alias family each
+    report something this cannot -- an accepted value set, an expected type,
+    an enum's members -- and are preferred wherever they apply. This code
+    covers what is left: bound violations and type-coercion failures on
+    ordinary request parameters, which would otherwise reach the caller with
+    no envelope at all.
+
+    Built from the structured fields of the underlying validation error
+    rather than from its rendered text, so the model class name and the
+    validator's documentation URL -- both present only in the rendering --
+    cannot reach a caller. See `validation_error_envelope`.
+
+    The 422 status matches what request validation already returns on the
+    HTTP surface, so adopting this envelope changes the response body
+    without moving any endpoint's status code.
+    """
+
+    def __init__(
+        self,
+        parameter: str,
+        value: object,
+        constraint: str,
+        hint: str | None = None,
+    ) -> None:
+        message = f"Invalid value for parameter {parameter!r}: {constraint}."
+        detail: dict = {
+            "parameter": parameter,
+            "value": value,
+            "constraint": constraint,
+        }
+        if hint is not None:
+            message = f"{message} {hint}"
+            detail["hint"] = hint
+        super().__init__("invalid_parameter", message, 422, detail)
 
 
 class PipelineIncompleteError(SAGEError):
@@ -1585,6 +1624,34 @@ _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
     "tier3_metadata": "dict",
 }
 
+# Remedies attached to ``invalid_parameter`` envelopes, keyed by the final
+# segment of the failing location. Deliberately sparse: a hint earns its
+# place by naming a way forward the constraint alone does not imply, and an
+# absent entry yields an envelope with no ``hint`` key rather than filler.
+# The bound itself is never restated here -- it comes from the validator's
+# own message, so a changed cap cannot leave a stale number behind.
+_PARAMETER_HINTS: dict[str, str] = {
+    "limit": "Page through larger result sets with `offset`.",
+}
+
+# Request components FastAPI prepends to a validation error's location to
+# name where the value came from. They are part of the framing, not part of
+# the parameter path, so they are stripped before any location is matched
+# against a rule or reported back to a caller.
+_TRANSPORT_LOC_SEGMENTS = ("body", "query", "path", "header", "cookie")
+
+# Types whose ``input`` a caller can be shown verbatim. Anything else is
+# rendered with ``str`` so the envelope stays JSON-serializable on both
+# transports regardless of what the caller supplied.
+_JSON_NATIVE_TYPES = (str, int, float, bool, type(None))
+
+
+def _strip_transport_segment(loc: tuple) -> tuple:
+    """Drop a leading FastAPI request-component segment from a location."""
+    if loc and loc[0] in _TRANSPORT_LOC_SEGMENTS:
+        return loc[1:]
+    return loc
+
 
 def translate_validation_error(
     exc: ValidationError | RequestValidationError,
@@ -1615,8 +1682,7 @@ def translate_validation_error(
         # came from. Pydantic's ValidationError does not. Strip a leading
         # transport-component segment so one set of loc rules works for
         # both call sites.
-        if loc and loc[0] in ("body", "query", "path", "header", "cookie"):
-            loc = loc[1:]
+        loc = _strip_transport_segment(loc)
         err_type = err.get("type", "")
         input_value = err.get("input")
         ctx = err.get("ctx") or {}
@@ -1724,6 +1790,63 @@ def translate_validation_error(
     return None
 
 
+def _generic_parameter_error(
+    exc: ValidationError | RequestValidationError,
+) -> InvalidParameterError:
+    """Build an `invalid_parameter` envelope from a validation error.
+
+    Reads only the structured fields Pydantic exposes per error --
+    ``loc``, ``input`` and ``msg``. The rendered form of a validation
+    error additionally carries the model class name and a link to the
+    validator's documentation site; neither is meaningful to a caller of
+    this API, so neither is read here. That is a property of the
+    construction, not of any filtering applied afterwards.
+
+    The first error is reported. Callers who need a specific one of
+    several failures to win -- as the argument-model boundary does for
+    unknown parameters -- select it before reaching this function.
+    """
+    errors = exc.errors()
+    if not errors:  # pragma: no cover -- pydantic always reports at least one
+        return InvalidParameterError(
+            parameter="request",
+            value=None,
+            constraint="Request failed validation",
+        )
+
+    err = errors[0]
+    loc = _strip_transport_segment(tuple(err.get("loc") or ()))
+    parameter = ".".join(str(segment) for segment in loc) or "request"
+    value = err.get("input")
+    if not isinstance(value, _JSON_NATIVE_TYPES):
+        value = str(value)
+
+    return InvalidParameterError(
+        parameter=parameter,
+        value=value,
+        constraint=str(err.get("msg", "Invalid value")),
+        hint=_PARAMETER_HINTS.get(str(loc[-1]) if loc else ""),
+    )
+
+
+def validation_error_envelope(
+    exc: ValidationError | RequestValidationError,
+) -> SAGEError:
+    """Map any validation error to a structured envelope (CAS-ADR-028).
+
+    `translate_validation_error` handles the cases with a more specific
+    code and returns ``None`` for the rest; this wrapper supplies the
+    general `invalid_parameter` envelope for that remainder, so no
+    validation failure reaches a caller as a raw Pydantic rendering.
+
+    The division of labour is deliberate. The translator stays scoped to
+    the rules it can state precisely, and remains usable by callers that
+    need to know whether a specific rule matched. Uniformity is a property
+    of this wrapper: every failure reaches *an* envelope, not the same one.
+    """
+    return translate_validation_error(exc) or _generic_parameter_error(exc)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register SAGE exception handlers on the FastAPI app."""
 
@@ -1742,29 +1865,22 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def request_validation_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        """Translate FastAPI request-body validation errors into structured
-        SAGE envelopes for the cases ``translate_validation_error``
-        recognises (today: ADR-028 envelopes for the discover endpoint and
-        the ``legacy_form`` envelope for ``update_metadata`` /
-        ``bulk_update_metadata`` bare-list / bare-dict callers). Falls
-        through to FastAPI's default 422 envelope for any unmatched
-        validation error."""
-        sage_err = translate_validation_error(exc)
-        if sage_err is not None:
-            return JSONResponse(
-                status_code=sage_err.status_code,
-                content=ErrorResponse(
-                    code=sage_err.code,
-                    message=sage_err.message,
-                    detail=sage_err.detail,
-                ).model_dump(exclude_none=True),
-            )
-        # Non-discover validation errors keep FastAPI's default 422 with its
-        # native body shape. Returning a custom 422 envelope here would be a
-        # larger blast radius than scopes; that's a follow-up.
-        # ``jsonable_encoder`` handles ctx.error ValueError values that
-        # ``json.dumps`` cannot serialize directly.
+        """Translate request-validation failures into the SAGE envelope.
+
+        Every failure reaches a structured envelope: the most specific
+        code that applies, or the general `invalid_parameter` for the
+        remainder. The generic envelope carries 422 -- the status request
+        validation already returned -- so what changes on this path is the
+        response body, not any endpoint's status code. Endpoints whose
+        failures translate to a more specific code keep the 400 that code
+        declares.
+        """
+        sage_err = validation_error_envelope(exc)
         return JSONResponse(
-            status_code=422,
-            content={"detail": jsonable_encoder(exc.errors())},
+            status_code=sage_err.status_code,
+            content=ErrorResponse(
+                code=sage_err.code,
+                message=sage_err.message,
+                detail=sage_err.detail,
+            ).model_dump(exclude_none=True),
         )

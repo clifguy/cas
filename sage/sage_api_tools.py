@@ -1298,6 +1298,12 @@ def register_sage_tools(
         - ``missing_query`` / ``missing_document_id`` / ``missing_heading_path``
           (400): a parameter required for the chosen mode is absent (the
           inverse case of ``mode_parameter_mismatch``).
+        - ``invalid_parameter`` (422): a parameter outside ``filters``
+          violates a bound or cannot be coerced to its declared type.
+          Detail carries ``parameter``, ``value``, ``constraint``, and --
+          where one applies -- a ``hint`` naming the way forward.
+          ``limit`` above its cap is the common case; page through larger
+          result sets with ``offset`` rather than raising ``limit``.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

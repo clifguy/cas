@@ -699,7 +699,14 @@ class TestScanEndpoint:
 
     async def test_scan_rejects_negative_max_depth(self, scan_client, tmp_path):
         """Pydantic ge=0 constraint on ScanRequest.max_depth rejects negatives
-        with 422 at the boundary."""
+        with 422 at the boundary, in the structured error envelope.
+
+        The app tier registers the same exception handlers as the Core API,
+        so it carries the same envelope for a request-validation failure.
+        Asserting the body here — not just the status — pins that the app
+        tier actually inherits it rather than falling back to the
+        framework's native list-shaped detail.
+        """
         client, _config = scan_client
         scan_dir = tmp_path / "depth_test"
         scan_dir.mkdir()
@@ -713,6 +720,10 @@ class TestScanEndpoint:
             },
         )
         assert resp.status_code == 422
+        body = resp.json()
+        assert body["code"] == "invalid_parameter"
+        assert isinstance(body["detail"], dict), "must not be the native error list"
+        assert body["detail"]["parameter"] == "max_depth"
 
     async def test_be_021_permission_warnings(self, scan_client, tmp_path):
         """Scan handles permission errors as warnings."""
