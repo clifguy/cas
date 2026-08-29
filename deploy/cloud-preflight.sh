@@ -204,6 +204,16 @@ http_get_browser() { # url   (tokenless; a human-browser Accept header)
   _probe_with_warmup -H "Accept: text/html" "$1"
 }
 
+# A cross-origin GET: the tokenless request a browser-context reader issues,
+# carrying the Origin header that makes the response's Access-Control-Allow-*
+# headers meaningful (a CORS header returned to an origin-less request says
+# nothing). Sets HTTP_HEADERS so a check can assert the header landed on the
+# actual response rather than on a preflight OPTIONS -- a distinction that
+# matters because the two are answered by different edge operations.
+http_get_origin() { # url
+  _probe_with_warmup -H "Origin: https://cors-probe.invalid" "$1"
+}
+
 http_post() { # url json-body [bearer-token]
   local url="$1" data="$2" auth="${3:-}"
   if [ -n "$auth" ]; then
@@ -550,12 +560,29 @@ check_edge_serves_openapi_spec() {
     DETAIL_MSG="/openapi.json 200 but carries none of the authored prose; the served document is the generated skeleton (check that the API specifications are in the image)"
     return 1
   fi
+  # The document has to be loadable from a browser context too -- an API
+  # explorer or a codegen UI fetches it by URL and reads
+  # Access-Control-Allow-Origin off THIS response. The edge operation that
+  # publishes it deliberately skips the API-level inbound policy, so it never
+  # runs the API-level CORS handling and carries its own; nothing else asserts
+  # that block reached the wire. The cross-origin preflight OPTIONS is answered
+  # by a different operation, so a header there proves nothing about this one --
+  # hence an Origin-bearing GET, and the assertion on its response.
+  http_get_origin "$SAGE_BASE_URL/openapi.json"
+  if [ "$HTTP_CODE" != 200 ]; then
+    DETAIL_MSG="/openapi.json answered $HTTP_CODE to an Origin-bearing GET, expected 200; the schema document is not reachable from a browser context"
+    return 1
+  fi
+  if ! printf '%s' "$HTTP_HEADERS" | grep -qi 'access-control-allow-origin'; then
+    DETAIL_MSG="/openapi.json 200 to an Origin-bearing GET but the response carries no Access-Control-Allow-Origin; a browser-context reader cannot load the document (the publishing operation skips the API-level policy, so it needs its own CORS block)"
+    return 1
+  fi
   http_get "$SAGE_BASE_URL/mcp"
   if [ "$HTTP_CODE" != 401 ]; then
     DETAIL_MSG="control failed: /mcp answered $HTTP_CODE unauthenticated, expected 401; the edge gate has collapsed, so the schema document's 200 is not a deliberate exemption"
     return 1
   fi
-  DETAIL_MSG="/openapi.json 200 unauth, is the SAGE document, declares entraBearer, carries the authored prose; /mcp still 401 (the exemption is one path, not an open edge)"
+  DETAIL_MSG="/openapi.json 200 unauth, is the SAGE document, declares entraBearer, carries the authored prose, and answers a cross-origin GET with Access-Control-Allow-Origin; /mcp still 401 (the exemption is one path, not an open edge)"
   return 0
 }
 
@@ -853,6 +880,11 @@ ABSENT_DOCUMENT_ID="00000000_preflight_probe_absent"
 PROBE_VAULT_ID=""
 DOC_FIRST_ID=""
 SWEEP_FAILURES=""
+# Outcomes a sweep leg is allowed to return on a healthy deployment: not a 200,
+# but not a fault either. Recorded separately from SWEEP_FAILURES and surfaced
+# on the PASS line, so an operator sees which leg took the exception and why
+# rather than reading an unqualified green.
+SWEEP_TOLERATED=""
 
 # Resolve the vault the sweep probes: reuse the id vault_load captured, and
 # re-fetch when a sweep check is selected on its own. Leaves PROBE_VAULT_ID empty
@@ -894,9 +926,25 @@ resolve_probe_document() { # vault-id
 # Records a miss in SWEEP_FAILURES naming the endpoint and the observed code
 # rather than returning, so one run reports EVERY failing endpoint instead of
 # stopping at the first -- the same independence the check matrix gives layers.
-sweep_get() { # url label marker what
+#
+# A caller may name ONE non-200 outcome the endpoint is allowed to return on a
+# healthy deployment, as a (status, error-code marker) pair. The pair is
+# deliberate: a status alone would swallow every other condition the route
+# reports under that status, so the body has to name the specific error code for
+# the exception to apply. Anything else at that status stays a failure.
+#
+# Only the endpoint and the observed status are ever recorded. The bodies here
+# include a vault's full configuration and preflight output lands in a deploy
+# log, so no response body reaches a reported string.
+sweep_get() { # url label marker what [tolerated-status] [tolerated-error-marker]
+  local tolerated_status="${5:-}" tolerated_marker="${6:-}"
   http_get "$1" "$AUTH_TOKEN"
   if [ "$HTTP_CODE" != 200 ]; then
+    if [ -n "$tolerated_status" ] && [ "$HTTP_CODE" = "$tolerated_status" ] &&
+      printf '%s' "$HTTP_BODY" | grep -q "$tolerated_marker"; then
+      SWEEP_TOLERATED="$SWEEP_TOLERATED $2 $HTTP_CODE $tolerated_marker;"
+      return 0
+    fi
     SWEEP_FAILURES="$SWEEP_FAILURES $2 $HTTP_CODE (expected 200);"
     return 0
   fi
@@ -937,7 +985,7 @@ check_core_api_document_reads() {
     DETAIL_MSG="skipped: no vault id available to probe (vault_load produced none)"
     return 2
   fi
-  local base="$SAGE_BASE_URL/sage_vaults/$PROBE_VAULT_ID" rc
+  local base="$SAGE_BASE_URL/sage_vaults/$PROBE_VAULT_ID" rc tolerated_note=""
   resolve_probe_document "$PROBE_VAULT_ID"
   rc=$?
   if [ "$rc" = 1 ]; then
@@ -949,10 +997,19 @@ check_core_api_document_reads() {
     return 2
   fi
   SWEEP_FAILURES=""
+  SWEEP_TOLERATED=""
   sweep_get "$base/documents/$DOC_FIRST_ID" "/documents/{id}" \
     "\"$DOC_FIRST_ID\"" "the requested document id echoed back"
+  # The probe reads whichever document a limit:1 catalog page returns, and the
+  # catalog cannot be filtered on projection presence, so the document it lands
+  # on may legitimately have no stored chunks -- mid-pipeline, or awaiting
+  # reabstraction. The headings route reports exactly that as 404
+  # `no_projection`, which is a property of that document rather than a fault in
+  # the route, so it is tolerated HERE and nowhere else. Every other 404 the
+  # route can return, `document_not_found` included, still fails: the document
+  # read above just succeeded on this id, so the store denying it is real.
   sweep_get "$base/documents/$DOC_FIRST_ID/headings" "/documents/{id}/headings" \
-    '"headings"' "a headings list"
+    '"headings"' "a headings list" 404 '"no_projection"'
   http_post "$base/traverse" "{\"start_id\":\"$DOC_FIRST_ID\",\"depth\":1}" "$AUTH_TOKEN"
   if [ "$HTTP_CODE" != 200 ]; then
     SWEEP_FAILURES="$SWEEP_FAILURES /traverse $HTTP_CODE (expected 200);"
@@ -973,7 +1030,8 @@ check_core_api_document_reads() {
     DETAIL_MSG="control failed: an absent start_id answered $HTTP_CODE from /traverse, expected 404"
     return 1
   fi
-  DETAIL_MSG="3 document-scoped reads 200 on '$DOC_FIRST_ID' (document/headings/traverse, each echoing the requested id); absent-document negative controls 404"
+  [ -n "$SWEEP_TOLERATED" ] && tolerated_note=" tolerated:$SWEEP_TOLERATED"
+  DETAIL_MSG="document-scoped reads healthy on '$DOC_FIRST_ID' (document/headings/traverse, each echoing the requested id);$tolerated_note absent-document negative controls 404"
   return 0
 }
 
@@ -1176,7 +1234,7 @@ register edge_advertises_grant_types check_edge_advertises_grant_types \
   "the authorization-server metadata advertises both authorization_code and client_credentials (a conformant client can reach the machine-to-machine leg, not just the interactive one)" \
   "either grant dropped from a genuinely-live edge is the regression trap (the document keeps 200ing and every other edge check stays green); credited only with the discovery-200 control held"
 register edge_serves_openapi_spec check_edge_serves_openapi_spec \
-  "GET /openapi.json returns 200 unauthenticated carrying SAGE's own document with its entraBearer scheme (an outside developer can generate a working client from the deployment alone)" \
+  "GET /openapi.json returns 200 unauthenticated carrying SAGE's own document with its entraBearer scheme, and answers a cross-origin GET with Access-Control-Allow-Origin (an outside developer can generate a working client from the deployment alone, browser-context readers included)" \
   "a 200 that is some other document, or one declaring no security scheme, is the coincidental-pass trap; /mcp must still 401 so an open edge cannot credit it; discovery-200 credits the fetch"
 register edge_mount_discovery check_edge_mount_discovery \
   "each MCP mount's 401 challenge points at its path-inserted metadata document, whose resource is the path-carrying mount URI" \

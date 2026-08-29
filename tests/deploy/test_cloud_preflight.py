@@ -34,15 +34,24 @@ import shutil
 import socket
 import subprocess
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Final
 
 import pytest
+import yaml
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _SCRIPT: Final[Path] = _REPO_ROOT / "deploy" / "cloud-preflight.sh"
+#: The committed Core API document, plus the vault-config schema behind the one
+#: sweep endpoint that returns an untyped dict. Together they are the authority
+#: the sweep's shape markers resolve against (CAS-ADR-008, CAS-ADR-042). The
+#: OpenAPI document is itself gated against the live FastAPI app, so a marker
+#: bound to it is bound transitively to the response model the app serves --
+#: which a marker mirrored between the script and a stub is not.
+_OPENAPI_SPEC: Final[Path] = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
+_VAULT_CONFIG_SCHEMA: Final[Path] = _REPO_ROOT / "docs" / "fs" / "sage" / "vault_config.schema.json"
 
 _BASH: Final[str | None] = shutil.which("bash")
 _CURL: Final[str | None] = shutil.which("curl")
@@ -212,9 +221,20 @@ def serve(responder: Responder) -> Iterator[str]:
             body = self.rfile.read(length) if length else b""
             # Responders are (method, path, body); a header-sensitive responder may
             # opt into a 4th `accept` parameter (the request's Accept header) so the
-            # Accept-routed checks (the browser redirect) can be exercised offline.
-            # Existing 3-arg responders are called unchanged.
-            if len(inspect.signature(responder).parameters) >= 4:
+            # Accept-routed checks (the browser redirect) can be exercised offline,
+            # and a 5th `origin` parameter (the request's Origin header) so a check
+            # that must prove it asked cross-origin can be observed rather than
+            # assumed. Existing 3- and 4-arg responders are called unchanged.
+            arity = len(inspect.signature(responder).parameters)
+            if arity >= 5:
+                status, text, headers = responder(
+                    method,
+                    self.path,
+                    body,
+                    self.headers.get("Accept", ""),
+                    self.headers.get("Origin", ""),
+                )
+            elif arity == 4:
                 status, text, headers = responder(
                     method, self.path, body, self.headers.get("Accept", "")
                 )
@@ -480,7 +500,15 @@ _CONFIG_BODY = (
     '{"vault":{"id":"cas"},"document_types":[],"lifecycle":{},'
     '"metadata_extraction":{},"edge_inference":{"tier_assignments":[]}}'
 )
-_DOCUMENT_BODY = '{"id":"' + _PROBE_DOC_ID + '","title":"Probe","lifecycle_status":"active"}'
+#: A DocumentWithContent carrying every property the schema requires -- the
+#: shape the binding gate above resolves this stub against.
+_DOCUMENT_BODY = (
+    '{"id":"' + _PROBE_DOC_ID + '","title":"Probe","source_type":"markdown",'
+    '"source_path":"imports/probe.md","lifecycle_status":"active",'
+    '"created_by":"preflight","created_at":"2026-01-01T00:00:00Z",'
+    '"last_modified_by":"preflight","updated_at":"2026-01-01T00:00:00Z",'
+    '"pipeline_status":"abstraction_complete"}'
+)
 _HEADINGS_BODY = '{"document_id":"' + _PROBE_DOC_ID + '","title":"Probe","headings":[]}'
 _TRAVERSE_BODY = '{"start_id":"' + _PROBE_DOC_ID + '","nodes":[]}'
 _PARSE_BODY = (
@@ -562,7 +590,7 @@ def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str
     if p == "/health":
         return 200, _HEALTH_BODY, {}
     if p == "/openapi.json":
-        return 200, _OPENAPI_BODY, {}
+        return 200, _OPENAPI_BODY, {"Access-Control-Allow-Origin": "*"}
     if p == "/sage_vaults":
         return 200, _VAULTS_BODY, {}
     if p.endswith("/discover"):
@@ -1246,13 +1274,21 @@ def _openapi_spec_stub(
     carries_prose: bool = True,
     gated_status: int = 401,
     discovery_status: int = 200,
+    cors_on_get: bool = True,
+    cors_on_options: bool = True,
 ) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
     """A stub for the schema-document check.
 
     When healthy the document is served unauthenticated, is SAGE's own,
-    declares the bearer scheme, and carries the authored prose; the gated MCP
-    surface still answers 401. Each knob turns off exactly one of those, so a
-    test can isolate the regression it targets.
+    declares the bearer scheme, carries the authored prose, and answers a
+    cross-origin GET with Access-Control-Allow-Origin; the gated MCP surface
+    still answers 401. Each knob turns off exactly one of those, so a test can
+    isolate the regression it targets.
+
+    ``cors_on_get`` and ``cors_on_options`` are separate because the operation
+    policy's CORS block has to reach the GET response a browser-context reader
+    actually consumes -- the preflight OPTIONS is answered by a different
+    operation, so a header present there says nothing about this one.
     """
 
     def responder(method: str, path: str, body: bytes) -> "tuple[int, str, dict[str, str]]":
@@ -1260,6 +1296,8 @@ def _openapi_spec_stub(
         if p == "/.well-known/oauth-protected-resource":
             return discovery_status, _DISCOVERY_BODY, {}
         if p == "/openapi.json":
+            if method == "OPTIONS":
+                return 200, "", ({"Access-Control-Allow-Origin": "*"} if cors_on_options else {})
             if spec_status != 200:
                 return spec_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
             components = (
@@ -1279,7 +1317,7 @@ def _openapi_spec_stub(
                 f'{{"openapi":"3.1.0","info":{{"title":"{title}","version":"2.0.0",'
                 f'"description":"{description}"}},'
                 f'"paths":{{"/sage_vaults":{{"get":{{}}}}}},"components":{{{components}}}}}',
-                {},
+                {"Access-Control-Allow-Origin": "*"} if cors_on_get else {},
             )
         if p in ("/mcp", "/mcp_maint", "/mcp_admin"):
             return gated_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
@@ -1385,6 +1423,59 @@ def test_serves_openapi_spec_dead_edge_fails() -> None:
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_serves_openapi_spec") == "FAIL", verdicts
     assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_without_cors_header_fails() -> None:
+    """The document is published, well-formed, and unauthenticated -- but the
+    GET response carries no Access-Control-Allow-Origin, so a browser-context
+    reader cannot load it. The operation's whole reason for carrying its own
+    CORS block is that it omits <base /> and so never runs the API-level one;
+    losing that block leaves every other assertion in this check green.
+    """
+    with serve(_openapi_spec_stub(cors_on_get=False)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    detail = _detail(proc.stdout, "edge_serves_openapi_spec")
+    assert _verdicts(proc.stdout).get("edge_serves_openapi_spec") == "FAIL", proc.stdout
+    assert "Access-Control-Allow-Origin" in detail, detail
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_cors_on_options_only_fails() -> None:
+    """The preflight OPTIONS carries the header and the actual GET does not.
+
+    A browser reads the header off the real response, not off the preflight, and
+    the two are answered by different APIM operations -- so a check that settled
+    for a preflight header would credit exactly the configuration this one
+    exists to reject.
+    """
+    with serve(_openapi_spec_stub(cors_on_get=False, cors_on_options=True)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    assert _verdicts(proc.stdout).get("edge_serves_openapi_spec") == "FAIL", proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_serves_openapi_spec_probes_with_an_origin_header() -> None:
+    """The CORS assertion is made against a request that actually carries an
+    Origin. A header returned to an origin-less request proves nothing about
+    cross-origin behaviour, so the probe has to send one.
+    """
+    healthy = _openapi_spec_stub()
+    seen: list[tuple[str, str, str]] = []
+
+    def recording(
+        method: str, path: str, body: bytes, accept: str, origin: str
+    ) -> tuple[int, str, dict[str, str]]:
+        seen.append((method, path.split("?", 1)[0], origin))
+        return healthy(method, path, body)
+
+    with serve(recording) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_serves_openapi_spec"))
+    assert _verdicts(proc.stdout).get("edge_serves_openapi_spec") == "PASS", proc.stdout
+    assert any(m == "GET" and p == "/openapi.json" and origin for m, p, origin in seen), (
+        f"no Origin-bearing GET of the schema document was issued: {seen}"
+    )
 
 
 def _mount_discovery_stub(
@@ -2394,24 +2485,137 @@ def _classify(method: str, path: str) -> tuple[str, str]:
     return method, p
 
 
-def _sweep_function_bodies() -> dict[str, str]:
-    """The shipped text of each sweep check function, keyed by function name.
+def _join_continuations(text: str) -> str:
+    """Fold ``\\``-continued shell lines into one physical line, so a line-wise
+    scan reads the statement the author wrote rather than its formatting."""
+    return re.sub(r"\\\n\s*", " ", text)
+
+
+#: A command substitution whose pipeline reduces its input to a bounded token --
+#: an id, a status, a single field. Interpolating a response body *through* one
+#: of these is extraction, not disclosure, so the leak scan below strips such
+#: spans before looking for the body.
+_BOUNDED_EXTRACTORS: Final[tuple[str, ...]] = ("grep -o", "sed", "cut", "awk", "tr ", "head -c")
+
+#: The response-body globals a check must never publish. ``HTTP_BODY`` is the raw
+#: payload; ``body`` is the conventional local a check copies it into.
+_BODY_TOKENS: Final[tuple[str, ...]] = ("$HTTP_BODY", "${HTTP_BODY}", "$body", "${body}")
+
+
+def _strip_comment_lines(text: str) -> str:
+    """Drop whole-line ``#`` comments so prose naming a function or a variable
+    cannot be mistaken for a call or an assignment."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _all_function_bodies(text: str) -> dict[str, str]:
+    """Every shell function in ``text``, keyed by name.
 
     Spans run from the function's ``name() {`` line to the closing ``}`` at
     column 0 -- the script's own formatting, so no parser is needed.
     """
+    stripped = _strip_comment_lines(text)
+    return {
+        m.group(1): m.group(2)
+        for m in re.finditer(r"^([a-z_0-9]+)\(\) \{.*?$(.*?)^\}$", stripped, re.S | re.M)
+    }
+
+
+def _reachable_from(roots: Iterable[str], bodies: dict[str, str]) -> dict[str, str]:
+    """The call-graph closure of ``roots`` over ``bodies``.
+
+    Keying the sweep's structural gates on reachability rather than on a
+    hand-maintained name list is the point: the helper that actually composes a
+    failure string is one call away from the check that reports it, and a list
+    written when the check was authored does not learn about a helper added
+    later. Word-boundary matching is exact here because ``_`` is a word
+    character -- ``http_get`` does not match inside ``http_get_browser``.
+    """
+    seen: dict[str, str] = {}
+    queue = [name for name in roots if name in bodies]
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen[name] = bodies[name]
+        for candidate in bodies:
+            if candidate not in seen and re.search(rf"\b{re.escape(candidate)}\b", bodies[name]):
+                queue.append(candidate)
+    return seen
+
+
+def _sweep_roots(text: str) -> list[str]:
+    """The check functions the registry wires to the sweep's check ids -- read
+    out of the ``register`` lines rather than restated here, so a renamed check
+    cannot silently drop out of the scan."""
+    return re.findall(r"^register\s+core_api_\w+\s+(\w+)", _strip_comment_lines(text), re.M)
+
+
+def _sweep_function_bodies() -> dict[str, str]:
+    """Every function the sweep checks reach, keyed by name."""
     text = _script_text()
-    bodies: dict[str, str] = {}
-    for name in (
-        "check_core_api_vault_reads",
-        "check_core_api_document_reads",
-        "check_core_api_parse_filename",
-        "resolve_probe_document",
-    ):
-        m = re.search(rf"^{name}\(\) \{{.*?$(.*?)^\}}$", text, re.S | re.M)
-        assert m, f"{name} is not defined in the harness"
-        bodies[name] = m.group(1)
-    return bodies
+    roots = _sweep_roots(text)
+    assert roots, "the registry wires no core_api_* check to a function"
+    reachable = _reachable_from(roots, _all_function_bodies(text))
+    assert set(roots) <= set(reachable), "a registered sweep check is not defined in the harness"
+    return reachable
+
+
+def _reported_variables(bodies: dict[str, str]) -> set[str]:
+    """``DETAIL_MSG`` plus every variable interpolated into a ``DETAIL_MSG``.
+
+    Derived rather than listed: a check does not build its matrix line in one
+    statement, it accumulates text in a helper variable and interpolates that.
+    Whatever flows into ``DETAIL_MSG`` is as published as ``DETAIL_MSG`` itself,
+    so the leak scan has to cover it -- and has to keep covering it when a
+    later accumulator is added under a name nobody wrote down here.
+    """
+    reported = {"DETAIL_MSG"}
+    for body in bodies.values():
+        for line in _join_continuations(body).splitlines():
+            m = re.search(r"DETAIL_MSG=\"(.*)\"\s*$", line)
+            if not m:
+                continue
+            reported.update(re.findall(r"\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?", m.group(1)))
+    return reported
+
+
+def _body_leak_findings(bodies: dict[str, str]) -> list[str]:
+    """Assignments that would publish a response body on the matrix line.
+
+    The sweep reads ``GET .../config``, which returns the vault's full
+    configuration, and preflight output lands in a deploy log. A finding is any
+    assignment to a reported variable that interpolates the body outside a
+    bounded extraction -- so pulling an id out of a payload is allowed and
+    pasting the payload into a message is not.
+
+    ``DETAIL_MSG`` is exempt from that allowance: it *is* the matrix line, and no
+    extraction is narrow enough to justify composing it out of a response body.
+    Scoping the allowance to the derived variables that actually need it keeps
+    this scan from relaxing the rule it inherited while widening the surface.
+    """
+    reported = _reported_variables(bodies)
+    findings: list[str] = []
+    for name, body in bodies.items():
+        for line in _join_continuations(body).splitlines():
+            m = re.match(r"\s*(?:local\s+)?([A-Za-z_][A-Za-z_0-9]*)=", line)
+            if not m or m.group(1) not in reported:
+                continue
+            if m.group(1) == "DETAIL_MSG":
+                residue = line
+            else:
+                residue = re.sub(
+                    r"\$\((?:[^()]|\([^()]*\))*\)",
+                    lambda s: (
+                        "" if any(e in s.group(0) for e in _BOUNDED_EXTRACTORS) else s.group(0)
+                    ),
+                    line,
+                )
+            for token in _BODY_TOKENS:
+                if token in residue:
+                    findings.append(f"{name}: {line.strip()}")
+                    break
+    return findings
 
 
 # --- Side-effect freedom (the acceptance criterion, made testable) ---------- #
@@ -2433,8 +2637,7 @@ def _post_targets(body: str) -> list[str]:
             )
     targets: list[str] = []
     # A call may wrap onto a continuation line; join them before matching.
-    joined = re.sub(r"\\\n\s*", " ", body)
-    for line in joined.splitlines():
+    for line in _join_continuations(body).splitlines():
         m = re.search(r'http_post\s+"([^"]*)"', line)
         if m:
             targets.append(
@@ -2460,23 +2663,337 @@ def test_core_api_sweep_text_carries_no_mutating_route() -> None:
         assert "-X DELETE" not in body, f"{name} issues a DELETE"
 
 
+# --- Shape markers bound to the authoritative response schema -------------- #
+#: Each ``sweep_get`` label, and the Core API operation whose 200 response its
+#: shape marker is asserting. Mirroring a marker between the shipped script and
+#: a stub proves only that the two copies agree; resolving it against the
+#: committed document proves it names something the deployment actually returns.
+_SWEEP_MARKER_TABLE: Final[dict[str, tuple[str, str]]] = {
+    "/stats": ("get", "/sage_vaults/{vault_id}/stats"),
+    "/config": ("get", "/sage_vaults/{vault_id}/config"),
+    "/pending-metadata": ("get", "/sage_vaults/{vault_id}/pending-metadata"),
+    "/staging-edges": ("get", "/sage_vaults/{vault_id}/staging-edges"),
+    "/documents/{id}": ("get", "/sage_vaults/{vault_id}/documents/{document_id}"),
+    "/documents/{id}/headings": (
+        "get",
+        "/sage_vaults/{vault_id}/documents/{document_id}/headings",
+    ),
+}
+
+#: GET /config returns an untyped dict, so the OpenAPI document defers its shape
+#: to the vault-config JSON Schema. That schema is this label's authority.
+_SCHEMA_BACKED_LABELS: Final[frozenset[str]] = frozenset({"/config"})
+
+#: Each stub response body, and the operation whose 200 schema it stands in for.
+#: Binding the stub side too is what stops the pair drifting together: a
+#: response model that gains a required field reds the stub that omits it.
+_STUB_BODY_AUTHORITY: Final[dict[str, tuple[str, str]]] = {
+    "_STATS_BODY": ("get", "/sage_vaults/{vault_id}/stats"),
+    "_CONFIG_BODY": ("get", "/sage_vaults/{vault_id}/config"),
+    "_DOCUMENT_BODY": ("get", "/sage_vaults/{vault_id}/documents/{document_id}"),
+    "_HEADINGS_BODY": ("get", "/sage_vaults/{vault_id}/documents/{document_id}/headings"),
+    "_TRAVERSE_BODY": ("post", "/sage_vaults/{vault_id}/traverse"),
+    "_PARSE_BODY": ("post", "/sage_vaults/{vault_id}/parse-filename"),
+    "_DISCOVER_OK": ("post", "/sage_vaults/{vault_id}/discover"),
+}
+
+#: The marker the sweep uses where a response is a bare JSON array rather than
+#: an object with a named field.
+_ARRAY_MARKER: Final[str] = r"^[[:space:]]*\["
+
+_SPEC_CACHE: dict[str, dict] = {}
+
+
+def _openapi_document() -> dict:
+    if "spec" not in _SPEC_CACHE:
+        _SPEC_CACHE["spec"] = yaml.safe_load(_OPENAPI_SPEC.read_text(encoding="utf-8"))
+    return _SPEC_CACHE["spec"]
+
+
+def _vault_config_schema() -> dict:
+    if "vault_config" not in _SPEC_CACHE:
+        _SPEC_CACHE["vault_config"] = json.loads(_VAULT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+    return _SPEC_CACHE["vault_config"]
+
+
+def _deref(schema: dict) -> dict:
+    """Follow a ``$ref`` into ``components/schemas``."""
+    ref = schema.get("$ref")
+    if not ref:
+        return schema
+    name = ref.rsplit("/", 1)[-1]
+    resolved = _openapi_document()["components"]["schemas"].get(name)
+    assert resolved is not None, f"the document has no component schema {name}"
+    return resolved
+
+
+def _response_schema(method: str, path: str) -> dict:
+    """The 200 response schema of one operation, with a ``$ref`` followed once."""
+    operation = _openapi_document()["paths"].get(path, {}).get(method)
+    assert operation is not None, f"the document has no {method.upper()} {path}"
+    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    return _deref(schema)
+
+
+def _required_and_properties(schema: dict) -> tuple[set[str], set[str]]:
+    """The required and declared property names of a schema, flattening one
+    level of ``allOf`` -- the composition FastAPI emits for a model that extends
+    another, and where several of the sweep's fields actually live."""
+    required: set[str] = set(schema.get("required", []))
+    properties: set[str] = set(schema.get("properties", {}))
+    for member in schema.get("allOf", []):
+        member_required, member_properties = _required_and_properties(_deref(member))
+        required |= member_required
+        properties |= member_properties
+    return required, properties
+
+
+def _authority_for(label: str) -> tuple[set[str], set[str], dict]:
+    """``(required, properties, schema)`` for a sweep label."""
+    if label in _SCHEMA_BACKED_LABELS:
+        schema = _vault_config_schema()
+    else:
+        schema = _response_schema(*_SWEEP_MARKER_TABLE[label])
+    required, properties = _required_and_properties(schema)
+    return required, properties, schema
+
+
+def _sweep_get_call_sites(text: str) -> list[tuple[str, str]]:
+    """``(label, marker)`` for every ``sweep_get`` call in ``text``.
+
+    The marker is returned with its shell quoting stripped, so the assertion is
+    about the pattern the check greps for rather than about how it was quoted.
+    """
+    pattern = re.compile(r"""sweep_get\s+"[^"]*"\s+"([^"]*)"\s+('[^']*'|"(?:\\.|[^"\\])*")""")
+    sites: list[tuple[str, str]] = []
+    for label, raw in pattern.findall(_join_continuations(_strip_comment_lines(text))):
+        marker = raw[1:-1]
+        if raw.startswith('"'):
+            marker = marker.replace('\\"', '"')
+        sites.append((label, marker))
+    return sites
+
+
+def test_sweep_marker_table_covers_every_sweep_get() -> None:
+    """Every shipped call site is bound, and no table entry outlives its call
+    site. Also pins the count: an extractor that found nothing would make every
+    binding assertion below pass vacuously.
+    """
+    sites = _sweep_get_call_sites(_script_text())
+    assert len(sites) == 6, f"expected 6 sweep_get call sites, found {len(sites)}: {sites}"
+    assert {label for label, _ in sites} == set(_SWEEP_MARKER_TABLE), (
+        f"call sites {sorted({label for label, _ in sites})} vs table {sorted(_SWEEP_MARKER_TABLE)}"
+    )
+
+
+def test_sweep_marker_paths_exist_in_the_openapi_document() -> None:
+    """Every bound operation is one the committed document actually declares --
+    so a renamed or retired route reds the gate here rather than on a tenant."""
+    for label, (method, path) in _SWEEP_MARKER_TABLE.items():
+        schema = _response_schema(method, path)
+        assert schema, f"{label}: {method.upper()} {path} declares no 200 schema"
+
+
+@pytest.mark.parametrize("label,marker", _sweep_get_call_sites(_SCRIPT.read_text(encoding="utf-8")))
+def test_sweep_marker_resolves_against_its_response_schema(label: str, marker: str) -> None:
+    """Each shape marker names something the operation's 200 response is
+    guaranteed to carry.
+
+    Three marker forms, one rule each: a JSON field marker must be a *required*
+    property (an optional one would let a healthy response miss it); the array
+    marker must front an array-typed response; and the echoed-document-id marker
+    must have a required ``id`` to echo.
+    """
+    required, _, schema = _authority_for(label)
+    if marker == _ARRAY_MARKER:
+        assert schema.get("type") == "array", f"{label}: array marker on a non-array response"
+        return
+    if "$DOC_FIRST_ID" in marker:
+        assert "id" in required, f"{label}: the echoed id is not a required response property"
+        return
+    field = marker.strip('"')
+    assert field in required, (
+        f"{label}: marker '{field}' is not a required property of the 200 response "
+        f"(required: {sorted(required)})"
+    )
+
+
+def test_config_marker_is_a_required_vault_config_section() -> None:
+    """The one label whose response the document types only as an object: its
+    marker is resolved against the vault-config schema instead."""
+    required, _, _ = _authority_for("/config")
+    assert "edge_inference" in required
+
+
+def test_marker_binding_detects_a_phantom_field() -> None:
+    """The teeth test: a marker naming a field no response model declares is
+    rejected. Without it, an authority that resolved to an empty required set
+    would pass every marker above.
+    """
+    with pytest.raises(AssertionError):
+        test_sweep_marker_resolves_against_its_response_schema("/stats", '"totally_not_a_field"')
+
+
+def test_marker_binding_rejects_a_declared_but_optional_field() -> None:
+    """The teeth test the phantom-field case cannot supply.
+
+    A phantom name is absent from both the required list and the property list,
+    so a resolver that returned *properties* instead of *required* would reject
+    it too -- and would then accept a marker naming a merely-optional field. A
+    healthy deployment may omit such a field, so the sweep would red on a
+    correct tenant, which is the exact defect class this binding exists to
+    prevent. `last_optimize` is declared on the stats response and not required.
+    """
+    _, properties, _ = _authority_for("/stats")
+    assert "last_optimize" in properties, (
+        "the probe field is no longer declared; pick another optional property"
+    )
+    with pytest.raises(AssertionError):
+        test_sweep_marker_resolves_against_its_response_schema("/stats", '"last_optimize"')
+
+
+def test_body_leak_detector_does_not_exempt_a_detail_msg_extraction() -> None:
+    """The matrix line takes no extraction allowance.
+
+    Deriving an accumulator's value from a payload through a bounded pipeline is
+    legitimate; composing the reported line itself that way is not, and the scan
+    this one replaced had no such allowance. Without this case, widening the
+    surface would have quietly relaxed the rule on its most exposed variable.
+    """
+    leaking_detail = """
+check_probe() {
+  DETAIL_MSG="$(printf '%s' "$HTTP_BODY" | grep -oE '.*')"
+  return 1
+}
+"""
+    assert _body_leak_findings(_all_function_bodies(leaking_detail))
+
+
+@pytest.mark.parametrize(
+    "mutation,expected",
+    [
+        ('{"headings":[],"title":"Probe"}', "document_id"),
+        ('{"document_id":"x","title":"Probe","headings":[],"invented":1}', "invented"),
+    ],
+    ids=["omits-required", "invents-property"],
+)
+def test_stub_conformance_detects_a_drifted_stub(mutation: str, expected: str) -> None:
+    """The teeth test for both halves of the stub binding: a stub that drops a
+    required property and one that invents a property each have to be caught, or
+    the conformance check below passes on stubs it never really constrained.
+    """
+    required, properties = _required_and_properties(
+        _response_schema(*_STUB_BODY_AUTHORITY["_HEADINGS_BODY"])
+    )
+    keys = set(json.loads(mutation))
+    assert not (required <= keys and keys <= properties), (
+        f"a stub drifted on '{expected}' would pass the conformance check"
+    )
+
+
+@pytest.mark.parametrize("stub_name", sorted(_STUB_BODY_AUTHORITY))
+def test_stub_bodies_conform_to_their_response_schema(stub_name: str) -> None:
+    """The other half of the binding: each stub body carries every required
+    property of the response it stands in for, and invents none.
+
+    A stub is what the behavioral tests assert against, so a stub that has
+    drifted from the response model makes those tests prove something about a
+    shape no deployment serves.
+    """
+    method, path = _STUB_BODY_AUTHORITY[stub_name]
+    required, properties = _required_and_properties(_response_schema(method, path))
+    if stub_name == "_CONFIG_BODY":
+        required, properties = _required_and_properties(_vault_config_schema())
+    payload = json.loads(globals()[stub_name])
+    keys = set(payload)
+    assert required <= keys, f"{stub_name} omits required {sorted(required - keys)}"
+    assert keys <= properties, f"{stub_name} invents {sorted(keys - properties)}"
+
+
 def test_core_api_sweep_never_reports_a_response_body() -> None:
-    """No sweep check may put a response body on the matrix line.
+    """Nothing the sweep reaches may put a response body on the matrix line.
 
     The sweep reads GET .../config, which returns the vault's full configuration.
     Preflight output lands in a deploy log, so a detail message that interpolated
     a body would publish that configuration. Every check must report the endpoint
     and the observed status instead -- the same discipline the token diagnostic
     keeps when it prints decoded claims but never the token.
+
+    The scan runs over the call-graph closure, not over the checks alone: the
+    strings a check reports are composed one call away, in a shared helper, and
+    a scan that stopped at the check would read the interpolation and never the
+    text being interpolated.
     """
-    for name, body in _sweep_function_bodies().items():
-        for line in body.splitlines():
-            if "DETAIL_MSG=" not in line:
-                continue
-            for leak in ("$HTTP_BODY", "${HTTP_BODY}", "$body", "${body}"):
-                assert leak not in line, (
-                    f"{name} reports a response body on the matrix line: {line.strip()}"
-                )
+    findings = _body_leak_findings(_sweep_function_bodies())
+    assert not findings, f"a response body reaches the matrix line: {findings}"
+
+
+def test_sweep_reachable_set_includes_shared_helpers() -> None:
+    """The closure the structural gates scan actually contains the helpers the
+    sweep composes its output in -- the coverage a name list silently lost."""
+    reachable = _sweep_function_bodies()
+    for helper in ("sweep_get", "resolve_probe_vault", "resolve_probe_document"):
+        assert helper in reachable, f"{helper} is outside the scanned closure"
+    for transport in ("http_get", "http_post"):
+        assert transport in reachable, f"{transport} is outside the scanned closure"
+
+
+def test_reported_variable_closure_is_derived_not_listed() -> None:
+    """``SWEEP_FAILURES`` is in the reported set because the script interpolates
+    it into a DETAIL_MSG, not because this file names it. A later accumulator
+    joins the set the same way."""
+    reported = _reported_variables(_sweep_function_bodies())
+    assert "DETAIL_MSG" in reported
+    assert "SWEEP_FAILURES" in reported, (
+        "the accumulator the sweep reports through is outside the leak scan"
+    )
+
+
+_LEAKING_HELPER = """
+check_core_api_probe() {
+  ACCUMULATOR=""
+  probe_one "$base/config"
+  DETAIL_MSG="reads failed:$ACCUMULATOR"
+  return 1
+}
+
+probe_one() {
+  ACCUMULATOR="$ACCUMULATOR $1 $HTTP_BODY;"
+  return 0
+}
+"""
+
+_EXTRACTING_HELPER = """
+check_core_api_probe() {
+  ACCUMULATOR=""
+  probe_one "$base/config"
+  DETAIL_MSG="read '$ACCUMULATOR'"
+  return 1
+}
+
+probe_one() {
+  ACCUMULATOR="$(printf '%s' "$HTTP_BODY" | grep -oE '"[0-9a-f]{8}_[a-z0-9_]+"' | head -1)"
+  return 0
+}
+"""
+
+
+def test_body_leak_detector_fires() -> None:
+    """The teeth test: a body pasted into an accumulator inside a *helper* --
+    never into a DETAIL_MSG directly -- is caught. This is exactly the edit the
+    name-list scan would have passed.
+    """
+    findings = _body_leak_findings(_all_function_bodies(_LEAKING_HELPER))
+    assert findings, "the detector missed a response body reaching the matrix line"
+    assert any("probe_one" in f for f in findings), findings
+
+
+def test_body_leak_detector_permits_bounded_extraction() -> None:
+    """The false-positive guard: pulling a document id out of a payload through
+    a bounded pipeline is extraction, not disclosure. A detector that flagged it
+    would force the sweep to stop resolving a document at all.
+    """
+    assert not _body_leak_findings(_all_function_bodies(_EXTRACTING_HELPER))
 
 
 @_NEEDS_RUNTIME
@@ -2663,6 +3180,89 @@ def test_core_api_document_reads_fails_on_traverse_error() -> None:
     assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
     assert "traverse" in detail, detail
     assert "500" in detail, detail
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_tolerates_no_projection() -> None:
+    """A document that exists but has no stored projection is a legitimate state
+    on a healthy tenant -- ingestion mid-pipeline, or a document awaiting
+    reabstraction -- and the headings route reports it as 404 `no_projection`.
+
+    The probe reads whichever document a limit:1 catalog page returns, so which
+    document it lands on is not the harness's to choose. Failing there would red
+    a healthy tenant on a property of its first catalog row.
+    """
+
+    def no_projection(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/headings"):
+            return 404, '{"code":"no_projection","message":"No projection stored"}', {}
+        return _green(method, path, body)
+
+    with serve(no_projection) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    detail = _detail(proc.stdout, "core_api_document_reads")
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "PASS", proc.stdout
+    assert "no_projection" in detail, f"the tolerated outcome is not reported: {detail}"
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_fails_when_headings_reports_document_not_found() -> None:
+    """The same status, a different meaning: the document read just succeeded on
+    this id, so `document_not_found` from the headings route is a real fault.
+    Tolerance is keyed on the error code, never on the status alone -- otherwise
+    it would swallow every 404 the route can produce.
+    """
+
+    def wrong_code(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/headings"):
+            return 404, '{"code":"document_not_found","message":"No such document"}', {}
+        return _green(method, path, body)
+
+    with serve(wrong_code) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    detail = _detail(proc.stdout, "core_api_document_reads")
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
+    assert "/headings" in detail, detail
+
+
+@_NEEDS_RUNTIME
+def test_core_api_document_reads_fails_when_headings_500s() -> None:
+    """The tolerance must not have stopped the check reading the headings leg at
+    all: an endpoint fault still FAILs, naming the route and the code.
+    """
+
+    def headings_500(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/headings"):
+            return 500, '{"code":"internal"}', {}
+        return _green(method, path, body)
+
+    with serve(headings_500) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    detail = _detail(proc.stdout, "core_api_document_reads")
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
+    assert "/headings" in detail, detail
+    assert "500" in detail, detail
+
+
+@_NEEDS_RUNTIME
+def test_no_projection_tolerance_is_scoped_to_the_headings_leg() -> None:
+    """Only the headings route can legitimately answer `no_projection`. The same
+    code from the document read means the store cannot return a record it just
+    listed in the catalog -- a fault, and it must stay red.
+    """
+
+    def document_no_projection(
+        method: str, path: str, body: bytes
+    ) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if "/documents/" in p and not p.endswith("/headings"):
+            return 404, '{"code":"no_projection","message":"No projection stored"}', {}
+        return _green(method, path, body)
+
+    with serve(document_no_projection) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_document_reads"))
+    assert _verdicts(proc.stdout).get("core_api_document_reads") == "FAIL", proc.stdout
 
 
 # --- core_api_parse_filename ------------------------------------------------ #
