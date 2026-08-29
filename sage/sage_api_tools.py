@@ -25,6 +25,7 @@ from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
     AmbiguousIngestSourceError,
     LegacyFormError,
+    MisplacedMetadataError,
     MissingDocumentIdentifierError,
     MissingIngestSourceError,
     SAGEError,
@@ -90,6 +91,44 @@ def _check_legacy_patch_form(field: str, value: object) -> None:
         )
 
 
+# The closed set of caller-supplied metadata keys ``ingest_document``
+# recognizes inside its ``metadata`` argument, in canonical order. Each is
+# also published as a top-level tool parameter so that a caller who spells
+# it at the wrong level reaches ``_check_misplaced_metadata`` below rather
+# than having the value stripped in transit: MCP clients coerce arguments
+# to the published schema and drop unknown properties, which would discard
+# the field before the server could object (CAS-ADR-037 covers the
+# framework-level rejection that this publication step makes reachable).
+_INGEST_METADATA_KEYS: tuple[str, ...] = (
+    "title",
+    "version_label",
+    "project",
+    "doc_type",
+    "authority_scope",
+    "document_date",
+    "tags",
+)
+
+_MISPLACED_METADATA_EXAMPLE = 'metadata={"title": "...", "tags": ["..."]}'
+
+
+def _check_misplaced_metadata(supplied: dict[str, object]) -> None:
+    """Raise ``MisplacedMetadataError`` when metadata fields arrive at the top level.
+
+    ``supplied`` maps each recognized metadata key to the value passed as
+    a top-level argument. Every non-None entry is collected so a caller
+    who misplaced several fields repairs them in one round-trip instead
+    of discovering them one error at a time.
+    """
+    misplaced = [key for key in _INGEST_METADATA_KEYS if supplied.get(key) is not None]
+    if misplaced:
+        raise MisplacedMetadataError(
+            fields=misplaced,
+            recognized=list(_INGEST_METADATA_KEYS),
+            example=_MISPLACED_METADATA_EXAMPLE,
+        )
+
+
 def register_sage_tools(
     mcp: FastMCP,
     get_vault: Callable[[str], SAGEServices],
@@ -133,6 +172,19 @@ def register_sage_tools(
         tier3_metadata: dict | None = None,
         document_id: str | None = None,
         transfer_token: str | None = None,
+        # Tripwires, not functional arguments. These are the ``metadata``
+        # keys; they are published here only so a wrong-level spelling
+        # reaches the guard instead of being stripped client-side. The
+        # annotations are deliberately permissive so any shape arrives and
+        # earns the actionable ``misplaced_metadata`` message rather than a
+        # generic framework type error.
+        title: str | list | dict | None = None,
+        version_label: str | list | dict | None = None,
+        project: str | list | dict | None = None,
+        doc_type: str | list | dict | None = None,
+        authority_scope: str | list | dict | None = None,
+        document_date: str | list | dict | None = None,
+        tags: str | list | dict | None = None,
     ) -> dict:
         """Ingest a source file into SAGE, running the projection ->
         indexing -> abstraction pipeline.
@@ -157,6 +209,14 @@ def register_sage_tools(
         ``maint_get_vault_config``) and the document is held with
         ``metadata_confirmed=false`` until confirmed via ``update_metadata``.
 
+        Metadata goes in ``metadata``, nested. The recognized keys are
+        ``title``, ``version_label``, ``project``, ``doc_type``,
+        ``authority_scope``, ``document_date``, and ``tags`` -- for example
+        ``metadata={"title": "...", "tags": ["..."]}``. Each is also accepted
+        at the top level only to be refused there: passing one as a direct
+        argument raises ``misplaced_metadata`` naming every misplaced field,
+        rather than applying part of the call and discarding the rest.
+
         Trio-field inheritance on supersede: when ``predecessor_id`` is set
         and the caller omits ``doc_type``, ``project``, or
         ``authority_scope`` from ``metadata``, each omitted field inherits
@@ -172,6 +232,11 @@ def register_sage_tools(
         the ``cas`` vault, ``ticket.ticket_id`` is the live example.
 
         Error modes:
+        - ``misplaced_metadata`` (400): a recognized ``metadata`` key was
+          passed as a top-level argument instead of nested under
+          ``metadata``. Detail carries ``fields`` (every misplaced key, so a
+          single retry fixes them all), ``recognized`` (the full key set),
+          and ``example``. No document is created.
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
@@ -247,7 +312,13 @@ def register_sage_tools(
                 one-time token, then repeat this call with
                 ``transfer_token`` to complete the ingest.
             source_type: Source artifact format (markdown, docx, xlsx, pptx,
-                pdf). Selects the source adapter.
+                pdf). Selects the source adapter. Optional: when omitted,
+                it is inferred from the source's file extension against the
+                registered adapters' declared extensions (``.md`` and
+                ``.markdown`` to markdown, ``.docx``/``.dotx`` to docx, and
+                so on). An explicit value is never overridden by inference,
+                and an extension no registered adapter claims leaves the
+                format unresolved rather than guessed.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``adapter_defaults`` in
                 ``maint_get_vault_config`` for the per-adapter shape.
@@ -308,6 +379,20 @@ def register_sage_tools(
                 originating call.
         """
         try:
+            # First, before any validation or vault work: a misplaced
+            # metadata field must not produce partial state. Rejecting here
+            # guarantees the call is a no-op.
+            _check_misplaced_metadata(
+                {
+                    "title": title,
+                    "version_label": version_label,
+                    "project": project,
+                    "doc_type": doc_type,
+                    "authority_scope": authority_scope,
+                    "document_date": document_date,
+                    "tags": tags,
+                }
+            )
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             if predecessor_id is not None:
                 predecessor_id = _DOCUMENT_ID_ADAPTER.validate_python(predecessor_id)
@@ -325,10 +410,25 @@ def register_sage_tools(
             if source is None and transfer_token is None:
                 raise MissingIngestSourceError()
 
+            def effective_source_type(resolved_source: str) -> str | None:
+                """Caller's ``source_type`` when given, else inferred from the extension.
+
+                Inference is strictly a fallback: an explicit value is
+                passed through untouched even when it disagrees with the
+                extension, because the caller may legitimately know better
+                than the filename does. An unrecognized extension resolves
+                to None and the existing missing-source-type validation
+                error stands.
+                """
+                if source_type is not None:
+                    return source_type
+                inferred = v.ingestion_service.infer_source_type(resolved_source)
+                return inferred.value if inferred is not None else None
+
             def _build_request(resolved_source: str) -> IngestRequest:
                 return IngestRequest(
                     source=resolved_source,
-                    source_type=source_type,
+                    source_type=effective_source_type(resolved_source),
                     config=config,
                     created_by=created_by,
                     force=force,

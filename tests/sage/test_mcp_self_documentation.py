@@ -30,6 +30,7 @@ from sage.mcp_server import (
     update_metadata,
 )
 from sage.models.enums import EdgeType, RationaleKind, RetrievalMode
+from sage.sage_api_tools import _INGEST_METADATA_KEYS
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
 # CAS-ADR-029 v4 plural-noun collapse: the pre-CAS-ADR-029 singleton tools
@@ -194,6 +195,47 @@ def test_adapter_error_tools_still_document_adapter_not_found():
         assert "adapter_not_found" in _docstring(tool), (
             f"{tool.__name__} docstring must document ``adapter_not_found`` as an error mode."
         )
+
+
+def test_ingest_document_documents_the_nested_metadata_shape():
+    """``ingest_document`` names every recognized metadata key and the nesting.
+
+    A caller who has to learn the shape by erroring is the failure this
+    gate exists to prevent, and metadata is the field most often spelled
+    at the wrong level. Structural rather than substring-only: the
+    docstring must name the *set* of keys the guard recognizes, so a key
+    added to ``_INGEST_METADATA_KEYS`` without a docs update fails here
+    instead of silently becoming undocumented.
+    """
+    doc = _docstring(ingest_document)
+    undocumented = [key for key in _INGEST_METADATA_KEYS if f"``{key}``" not in doc]
+    assert not undocumented, (
+        f"ingest_document docstring must name every recognized metadata key; "
+        f"missing: {undocumented}"
+    )
+    assert "misplaced_metadata" in doc, (
+        "ingest_document docstring must document ``misplaced_metadata`` as an error mode."
+    )
+    # The worked example, not just the prose claim.
+    assert 'metadata={"title"' in doc, (
+        "ingest_document docstring must show the nested metadata call shape."
+    )
+
+
+def test_ingest_document_documents_source_type_inference():
+    """``ingest_document`` states that ``source_type`` may be omitted.
+
+    The parameter is optional and inferred from the file extension; a
+    docstring that presents it as mandatory sends callers to pass a value
+    they do not need, which is the paper cut this documents away.
+    """
+    doc = _docstring(ingest_document)
+    assert "inferred" in doc, (
+        "ingest_document docstring must state that source_type is inferred when omitted."
+    )
+    assert "``.md``" in doc or ".md" in doc, (
+        "ingest_document docstring must give a concrete inferred extension."
+    )
 
 
 def test_set_lifecycle_signature_exposes_dry_run():

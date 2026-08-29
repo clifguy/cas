@@ -476,6 +476,29 @@ class IngestionService:
             enqueued += 1
         return enqueued
 
+    def infer_source_type(self, source: str) -> SourceType | None:
+        """Return the source type whose adapter claims ``source``'s extension.
+
+        Driven by the registered adapters' own ``EXTENSIONS`` declarations
+        rather than a separate table, so a vault that registers a subset of
+        adapters infers only into the ones it actually has, and a new
+        adapter needs no change here.
+
+        Returns ``None`` when no registered adapter claims the extension --
+        including for adapters that declare none at all. Callers keep their
+        existing "source type could not be resolved" error rather than
+        receiving a guess, because routing bytes to the wrong adapter is a
+        worse outcome than an explicit failure.
+        """
+        suffix = Path(source).suffix.lower()
+        if not suffix:
+            return None
+        for source_type, adapter in self._adapters.items():
+            extensions = getattr(adapter, "EXTENSIONS", None) or ()
+            if any(suffix == ext.lower() for ext in extensions):
+                return source_type
+        return None
+
     def _merge_adapter_config(
         self, source_type: SourceType, request_config: dict | None
     ) -> dict | None:

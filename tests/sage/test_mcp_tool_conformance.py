@@ -203,7 +203,28 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # has no counterpart on the JSON ``IngestRequest`` -- HTTP callers use
     # the discrete multipart ``/documents:batch`` upload endpoint -- so this
     # is a permanent MCP-side divergence by design, not pending remediation.
-    ("sage_core", "ingest_document"): frozenset({"transfer_token"}),
+    # The seven metadata keys alongside it are tripwires, not functional
+    # arguments. Caller metadata belongs nested under ``metadata``; these
+    # spellings are published at the top level solely so a wrong-level call
+    # reaches the ``misplaced_metadata`` guard. Publication is what makes the
+    # mistake reachable: an MCP client coerces arguments to the published
+    # schema and strips unknown properties, so an unpublished parameter is
+    # discarded in transit and the framework-level rejection (CAS-ADR-037)
+    # never sees it. They are deliberately absent from the REST surface,
+    # where callers read the OpenAPI schema and do not guess field names.
+    # Permanent MCP-side divergence by design, not pending remediation.
+    ("sage_core", "ingest_document"): frozenset(
+        {
+            "transfer_token",
+            "title",
+            "version_label",
+            "project",
+            "doc_type",
+            "authority_scope",
+            "document_date",
+            "tags",
+        }
+    ),
 }
 
 
