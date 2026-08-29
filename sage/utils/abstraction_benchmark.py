@@ -41,6 +41,7 @@ from sage.adapters.abstraction_utils import (
     compute_max_tokens,
     find_fabricated_cardinals,
     find_structure_echo,
+    find_type_restating_opener,
     find_unattested_acronym_glosses,
     trim_to_sentence_boundary,
 )
@@ -263,11 +264,13 @@ class MeasurementRecord:
 
     # Mechanical CAS-ADR-020 counts on the trimmed output: unattested
     # acronym glosses and fabricated cardinals (clause (e)), structural
-    # markup (clause (k)). None for a record measured before the counter
-    # existed, which reads differently from a measured zero.
+    # markup (clause (k)), type-restating openers (clause (f)). None for
+    # a record measured before the counter existed, which reads
+    # differently from a measured zero.
     unattested_gloss_count: int | None = None
     structure_echo_count: int | None = None
     fabricated_cardinal_count: int | None = None
+    type_restating_opener_count: int | None = None
 
 
 @dataclass
@@ -538,6 +541,7 @@ async def measure_one(
     unattested_gloss_count = len(find_unattested_acronym_glosses(trimmed, projection_text))
     structure_echo_count = len(find_structure_echo(trimmed))
     fabricated_cardinal_count = len(find_fabricated_cardinals(trimmed, projection_text))
+    type_restating_opener_count = len(find_type_restating_opener(trimmed, doc_type))
 
     return MeasurementRecord(
         doc_id=doc_id,
@@ -552,6 +556,7 @@ async def measure_one(
         unattested_gloss_count=unattested_gloss_count,
         structure_echo_count=structure_echo_count,
         fabricated_cardinal_count=fabricated_cardinal_count,
+        type_restating_opener_count=type_restating_opener_count,
         **phase,
     )
 
@@ -1081,7 +1086,7 @@ def _render_runtime_pin() -> list[str]:
 
 
 def _mechanical_faithfulness_note(measurements: list[MeasurementRecord]) -> str:
-    """Blind-review note carrying the mechanical clause (e) and (k) tallies.
+    """Blind-review note carrying the mechanical clause (e), (k), and (f) tallies.
 
     Empty when no measurement carries a count -- a result recorded before
     the counter existed is unmeasured, not clean -- so the reviewer's
@@ -1118,6 +1123,17 @@ def _mechanical_faithfulness_note(measurements: list[MeasurementRecord]) -> str:
             f"; mechanical cardinal check: {cardinal_total} fabricated cardinal"
             f"{'' if cardinal_total == 1 else 's'} across {cardinal_docs} of "
             f"{cardinal_all} documents"
+        )
+
+    opener = [m for m in measurements if m.type_restating_opener_count is not None]
+    if opener:
+        opener_total = sum(m.type_restating_opener_count or 0 for m in opener)
+        opener_docs = len({m.doc_id for m in opener if (m.type_restating_opener_count or 0) > 0})
+        opener_all = len({m.doc_id for m in opener})
+        note += (
+            f"; mechanical clause (f) check: {opener_total} type-restating opener"
+            f"{'' if opener_total == 1 else 's'} across {opener_docs} of "
+            f"{opener_all} documents"
         )
     return note
 

@@ -243,7 +243,7 @@ class TestAuditCardinalEntries:
     """The corpus audit's pure core, exercised against a synthetic catalog.
 
     Storage access lives in the script's ``run``; the core reuses the same
-    catalog shape as the gloss audit, so the two instruments read one
+    catalog shape as the gloss audit, so the abstract audits all read one
     reconstruction of each document's source.
     """
 

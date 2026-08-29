@@ -29,6 +29,7 @@ from sage.adapters.abstraction_utils import (
     compute_max_tokens,
     find_fabricated_cardinals,
     find_structure_echo,
+    find_type_restating_opener,
     find_unattested_acronym_glosses,
     trim_to_sentence_boundary,
 )
@@ -85,12 +86,13 @@ logger = logging.getLogger(__name__)
 abstraction_timing_logger = logging.getLogger("sage.abstraction.timing")
 
 # Faithfulness records for the deterministic post-generation checks on the
-# abstraction seam (CAS-ADR-020). Three finding classes share the channel,
+# abstraction seam (CAS-ADR-020). Four finding classes share the channel,
 # each in the posture its own measurement licenses: an unattested acronym
 # gloss (clause (e)) is recorded and repaired; a structure echo (clause
-# (k)) and a fabricated cardinal (clause (e), a separate finding class)
-# are recorded only, the abstract stored unmodified, while their error
-# rates await adjudicated measurement.
+# (k)), a fabricated cardinal (clause (e), a separate finding class), and
+# a type-restating opener (clause (f)) are recorded only, the abstract
+# stored unmodified, while their error rates await adjudicated
+# measurement.
 abstraction_faithfulness_logger = logging.getLogger("sage.abstraction.faithfulness")
 
 
@@ -1191,8 +1193,9 @@ class IngestionService:
         checks (CAS-ADR-020). An unattested acronym gloss (clause (e)) is
         recorded and then repaired -- the gloss collapses to its bare
         acronym, so the returned abstract carries no unattested claim. A
-        structure echo (clause (k)) or a fabricated cardinal (clause (e),
-        a separate finding class) is recorded only.
+        structure echo (clause (k)), a fabricated cardinal (clause (e),
+        a separate finding class), or a type-restating opener (clause
+        (f)) is recorded only.
 
         Args:
             text: Full projection text of the document.
@@ -1334,6 +1337,37 @@ class IngestionService:
                         "derived": cardinal.derived,
                         "attested": cardinal.attested,
                         "agrees_with_derived": cardinal.value == cardinal.derived,
+                        "document_chars": len(text),
+                        "abstract_chars": len(abstract),
+                    }
+                )
+            )
+
+        # Deterministic type-restating-opener check (CAS-ADR-020 clause
+        # (f)), recording-only: no adjudicated error-rate measurement, so
+        # the posture the ADR requires before any repair holds here,
+        # gated independently of the other classes. It reads the
+        # post-repair abstract so the record describes the abstract
+        # actually stored -- load-bearing for this check, since a gloss
+        # collapse can rewrite the very opener it inspects. It reads the
+        # same doc_type the prompt received: the breach is relative to
+        # that metadata, not to the source text. The absence of an
+        # "action" field is the machine-readable trace of the posture. A
+        # finding is calibration data, not a verdict.
+        for opener in find_type_restating_opener(abstract, doc_type):
+            abstraction_faithfulness_logger.info(
+                json.dumps(
+                    {
+                        "layer": "abstraction",
+                        "vault_id": vault_id,
+                        "label": "type_restating_opener",
+                        "provider": type(self._abstraction).__name__,
+                        "document_id": document_id,
+                        "doc_type": opener.doc_type,
+                        "surface": opener.surface,
+                        "verb": opener.verb,
+                        "form": opener.form,
+                        "opener": opener.opener,
                         "document_chars": len(text),
                         "abstract_chars": len(abstract),
                     }

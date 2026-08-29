@@ -448,6 +448,61 @@ async def test_measure_one_counts_fabricated_cardinals():
     assert accurate.fabricated_cardinal_count == 0
 
 
+async def test_measure_one_counts_type_restating_openers():
+    """The record carries the mechanical clause (f) opener count.
+
+    Anti-coincidental-pass: the contentful call is the control -- a
+    counter that tallies every opener mentioning the type word, rather
+    than only classifying frames, reports 1 on both calls and fails the
+    second assertion. No trimmed-output case: the opener is by definition
+    the first sentence and cannot be trimmed away.
+    """
+    config = _default_config()
+
+    restating = await measure_one(
+        RecordingProvider("This document is a ticket requesting a retention change."),
+        "source text",
+        "ticket",
+        config,
+        CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        doc_id="restating",
+    )
+    contentful = await measure_one(
+        RecordingProvider("This document describes the partitioning of the ticket store."),
+        "source text",
+        "ticket",
+        config,
+        CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        doc_id="contentful",
+    )
+
+    assert restating.type_restating_opener_count == 1
+    assert contentful.type_restating_opener_count == 0
+
+
+async def test_type_opener_count_uses_the_measured_documents_doc_type():
+    """The counter reads the doc_type the measurement runs under.
+
+    Anti-coincidental-pass: the restating case above pairs the opener
+    with its matching type, so a counter with a hardcoded type -- or one
+    that never threads ``measure_one``'s parameter -- passes it; only the
+    mismatched pairing fails it.
+    """
+    record = await measure_one(
+        RecordingProvider("This document is a ticket requesting a retention change."),
+        "source text",
+        "adr",
+        _default_config(),
+        CountingProbe([0, 0]),
+        poll_interval_s=0.005,
+        doc_id="mismatched",
+    )
+
+    assert record.type_restating_opener_count == 0
+
+
 async def test_cardinal_count_is_taken_on_trimmed_output():
     """The count reads the trimmed output, which is what would be stored.
 
@@ -812,6 +867,31 @@ def test_scorecard_reports_fabricated_cardinal_tally():
 
     unmeasured = render_scorecard(_sample_result())
     assert "fabricated" not in unmeasured
+
+
+def test_scorecard_reports_type_restating_opener_tally():
+    """A measured opener count reaches the Faithfulness row.
+
+    Anti-coincidental-pass: a result whose counts are all None must render
+    no opener note -- None is "unmeasured", which reads differently from
+    a measured zero. An ``or 0`` conflation of the two fails the second
+    half.
+    """
+    measured = _sample_result()
+    for measurement in measured.measurements:
+        measurement.unattested_gloss_count = 0
+        measurement.structure_echo_count = 0
+        measurement.fabricated_cardinal_count = 0
+        measurement.type_restating_opener_count = 0
+    measured.measurements[0].type_restating_opener_count = 1
+
+    md = render_scorecard(measured)
+
+    assert "1 type-restating opener" in md
+    assert "1 of 5 documents" in md
+
+    unmeasured = render_scorecard(_sample_result())
+    assert "type-restating" not in unmeasured
 
 
 def test_scorecard_includes_all_seven_decision_criteria_sections():

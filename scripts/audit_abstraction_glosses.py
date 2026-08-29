@@ -38,12 +38,18 @@ from sage.vault_management import config_path_for_vault
 
 @dataclass(frozen=True)
 class AuditEntry:
-    """One document's stored abstract paired with its reconstructed source."""
+    """One document's stored abstract paired with its reconstructed source.
+
+    ``doc_type`` is carried for the audits whose detector reads it (the
+    type-restating-opener check keys on it) and defaulted so audits that
+    need only text can build entries without one.
+    """
 
     doc_id: str
     lifecycle_status: str
     abstract: str
     source_text: str
+    doc_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,12 +100,14 @@ async def build_entries(services) -> list[AuditEntry]:
         if not source_text.strip():
             continue
         status = getattr(doc, "lifecycle_status", None)
+        doc_type = getattr(doc, "doc_type", None)
         entries.append(
             AuditEntry(
                 doc_id=doc.id,
                 lifecycle_status=str(getattr(status, "value", status) or ""),
                 abstract=abstract,
                 source_text=source_text,
+                doc_type=str(doc_type) if doc_type else None,
             )
         )
     return entries
