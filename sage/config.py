@@ -980,6 +980,23 @@ class TransitionTable:
         """Return action names valid from current_state (BH-012, BH-013)."""
         return [t.action for t in self._table.get(current_state, [])]
 
+    def states_allowing(self, action: str) -> list[str]:
+        """Return the states from which `action` is a valid transition.
+
+        The inverse of `get_valid_actions`. A caller rejecting a document
+        whose state does not permit an action uses this to report which
+        states would, so the precondition is derived from the vault's
+        configuration rather than restated as a literal. Sorted, for a
+        stable error payload. `(new)` never appears: those rows are
+        dropped on construction, so the result contains only states a
+        document can actually occupy.
+        """
+        return sorted(
+            from_state
+            for from_state, transitions in self._table.items()
+            if any(t.action == action for t in transitions)
+        )
+
     def is_known_action(self, action: str) -> bool:
         """True if action appears anywhere in the transition table.
 

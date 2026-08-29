@@ -16,6 +16,7 @@ from sage.api.errors import (
     InvalidLifecycleTransitionError,
     MissingFieldError,
     SAGEError,
+    SupersedeTargetNotActiveError,
 )
 from sage.config import TransitionTable, VaultConfig, build_transition_table
 from sage.models.enums import (
@@ -340,17 +341,24 @@ class LifecycleService:
         The caller is responsible for ensuring `predecessor` is freshly
         loaded and that the calling context holds whatever lock is
         appropriate.
+
+        Raises:
+            SupersedeTargetNotActiveError: `supersede` is not a legal
+                transition from the predecessor's state (409). This is
+                the ingest surface's code for that condition rather than
+                `invalid_lifecycle_transition`, which belongs to the
+                explicit lifecycle-action surface: reached only from
+                ingest, this check fires when the predecessor's state
+                changed after ingest's pre-validation passed, and
+                reporting a second code would make the caller-visible
+                error for one rejection depend on timing.
         """
         result = self._table.validate_transition(predecessor.lifecycle_status, "supersede")
         if result is None:
-            valid = self._table.get_valid_actions(predecessor.lifecycle_status)
-            raise InvalidLifecycleTransitionError(
+            raise SupersedeTargetNotActiveError(
+                predecessor.id,
                 predecessor.lifecycle_status,
-                "supersede",
-                valid,
-                pipeline_status=predecessor.pipeline_status.value
-                if predecessor.pipeline_status
-                else None,
+                self._table.states_allowing("supersede"),
             )
         to_state, _ = result
         now = datetime.now(timezone.utc)

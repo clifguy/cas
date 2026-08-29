@@ -509,11 +509,15 @@ paths:
             `new_source_path`, and `source_content_hash`.
 
 
-            `supersede_target_not_active`: `predecessor_id` was
-            set but the predecessor is not in `active`. For completed,
-            filed, or otherwise non-active predecessors, run the
-            archive → reactivate dance via
-            `POST /documents/{id}/lifecycle` before retrying.
+            `supersede_target_not_active`: `predecessor_id` was set but
+            the vault's lifecycle transition table does not permit
+            `supersede` from the predecessor's current state. Under the
+            base lifecycle that is every state other than `active`; for
+            completed, filed, or otherwise non-active predecessors, run
+            the archive → reactivate dance via
+            `POST /documents/{id}/lifecycle` before retrying. Detail
+            carries `current_state` and the `allowed_states` the table
+            does permit.
 
 
             `identical_content_supersede`: the new file's content hash
@@ -3689,8 +3693,9 @@ components:
             transition on the predecessor: creates a `supersedes` edge
             from the new document to the predecessor and sets the
             predecessor's lifecycle_status to `archived`. Predecessor
-            validation (exists + active + different content hash) runs
-            before projection; failures return 404/409 before any
+            validation (exists + the vault's transition table permits
+            `supersede` from its current state + different content hash)
+            runs before projection; failures return 404/409 before any
             pipeline work begins.
         expected_head_version:
           type: string
