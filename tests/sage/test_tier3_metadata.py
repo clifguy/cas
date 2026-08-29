@@ -46,7 +46,7 @@ from sage.models.schemas import (
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
-from sage.services.retrieval import RetrievalService, _tier3_matches
+from sage.services.retrieval import RetrievalService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
 # ---------------------------------------------------------------------------
@@ -1085,34 +1085,6 @@ async def test_catalog_filter_tier3_pagination_after_post_filter(
     )
     assert len(response.results) == 1
     assert response.total_available == 2
-
-
-# ---------------------------------------------------------------------------
-# _tier3_matches helper — direct unit coverage of the matching predicate
-# ---------------------------------------------------------------------------
-
-
-def test_tier3_matches_empty_filter_matches_anything():
-    assert _tier3_matches(None, {}) is True
-    assert _tier3_matches({"x": 1}, {}) is True
-
-
-def test_tier3_matches_none_filter_matches_absent_or_null():
-    assert _tier3_matches(None, {"x": None}) is True
-    assert _tier3_matches({}, {"x": None}) is True
-    assert _tier3_matches({"x": None}, {"x": None}) is True
-    assert _tier3_matches({"x": "value"}, {"x": None}) is False
-
-
-def test_tier3_matches_exact_value():
-    assert _tier3_matches({"x": "value"}, {"x": "value"}) is True
-    assert _tier3_matches({"x": "other"}, {"x": "value"}) is False
-
-
-def test_tier3_matches_ands_multiple_keys():
-    stored = {"x": "a", "y": "b"}
-    assert _tier3_matches(stored, {"x": "a", "y": "b"}) is True
-    assert _tier3_matches(stored, {"x": "a", "y": "c"}) is False
 
 
 # ---------------------------------------------------------------------------

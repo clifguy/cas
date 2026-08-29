@@ -155,34 +155,6 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
         response.hints = {**response.hints, **budget_hint}
 
 
-def _tier3_matches(
-    stored: dict | None,
-    requested: dict,
-) -> bool:
-    """Return True when every key/value pair in ``requested`` matches the
-    corresponding entry in ``stored``. None in ``requested`` matches a
-    stored value that is either null or absent from the dict (the natural
-    "no value here" semantics). An empty requested dict matches anything
-    and is treated as no filter by callers.
-
-    Used as the document-level post-filter for
-    ``RetrievalFilters.tier3_metadata`` across all retrieval modes
-    .
-    """
-    if not requested:
-        return True
-    s = stored or {}
-    for key, expected in requested.items():
-        actual = s.get(key)
-        if expected is None:
-            if actual is not None:
-                return False
-        else:
-            if actual != expected:
-                return False
-    return True
-
-
 class RetrievalService:
     def __init__(
         self,
