@@ -686,6 +686,35 @@ class InvalidFilterValueError(SAGEError):
         )
 
 
+class StorageQueryFailedError(SAGEError):
+    """500: the storage backend refused a filtered document query.
+
+    The driver's own rejection quotes the failing statement and any
+    backend hint. Returned verbatim that becomes an unstructured leak of
+    internal query shape through what is otherwise a typed envelope, and
+    a caller cannot act on it either way. This carries the operation that
+    failed and nothing more; the driver text is logged where an operator
+    can read it.
+
+    A caller reaching this has found a defect rather than a usable
+    correction, which is why it is a 500 and carries no remediation
+    hint -- unlike the 400-class filter errors above, where the request
+    itself is the thing to fix.
+    """
+
+    def __init__(self, operation: str) -> None:
+        super().__init__(
+            "storage_query_failed",
+            (
+                "The storage backend refused the query. This is a defect, not "
+                "a correctable request; the failure has been logged for the "
+                "vault operator."
+            ),
+            500,
+            {"operation": operation},
+        )
+
+
 class UnknownFilterKeyError(SAGEError):
     """400: a key in `filters` is not in RetrievalFilters.
 

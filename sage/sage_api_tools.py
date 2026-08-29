@@ -1504,6 +1504,11 @@ def register_sage_tools(
           where one applies -- a ``hint`` naming the way forward.
           ``limit`` above its cap is the common case; page through larger
           result sets with ``offset`` rather than raising ``limit``.
+        - ``storage_query_failed`` (500): the storage backend refused the
+          query. Detail carries the ``operation`` that failed. The
+          backend's own wording is logged for the vault operator rather
+          than returned, so this names a defect to report rather than a
+          request to correct.
         """
         try:
             # First, before any validation or vault work: a misplaced filter

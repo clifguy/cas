@@ -35,7 +35,12 @@ from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from sage.adapters.interfaces import DOCUMENT_FACET_FIELDS, GraphStore, NaturalKeyConflict
+from sage.adapters.interfaces import (
+    DOCUMENT_FACET_FIELDS,
+    GraphStore,
+    NaturalKeyConflict,
+    StorageQueryError,
+)
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
@@ -95,6 +100,42 @@ FOR EACH ROW
 WHEN (NEW.edge_type = 'supersedes' AND NEW.target_id IS NOT NULL)
 EXECUTE FUNCTION trg_fn_chain_head_on_supersedes();
 """
+
+
+def _tier3_equality_predicate(key: str, value: object) -> tuple[str, list[object]]:
+    """Build an equality predicate for one tier3 field, routed by value type.
+
+    ``tier3_metadata->>'<key>'`` extracts the member as ``text``. A Python
+    ``int``, ``bool``, or ``float`` bound as a parameter adapts to a native
+    Postgres type, and ``text = integer`` has no operator -- so a typed
+    filter value could not be compared at all through the text accessor.
+
+    Three branches, each load-bearing:
+
+    * ``None`` keeps ``->> IS NULL``, which matches a stored JSON null and
+      an absent key alike.
+    * ``str`` keeps the text accessor. The canonical string keys are backed
+      by expression indexes built on ``(tier3_metadata->>'<field>')``, and
+      jsonb containment could not use them. It also preserves the string
+      spelling of a typed field, which containment would reject as a type
+      mismatch.
+    * Every other value compares as jsonb through the ``->`` accessor,
+      which yields the member itself rather than its text rendering.
+      jsonb equality is typed and, for numbers, numeric: a stored ``1.0``
+      renders as ``"1.0"`` and would not match a filter of ``1`` under
+      text equality, but does here. It is equality and not containment
+      (``@>``) on purpose -- containment is a subset test, so an array
+      filter of ``[1, 2]`` would match a stored ``[1, 2, 3]``, which is
+      not the exact-equality semantics this filter documents.
+
+    ``key`` must already have passed ``_TIER3_KEY_FORMAT``; it is
+    interpolated into the accessor on every branch.
+    """
+    if value is None:
+        return f"tier3_metadata->>'{key}' IS NULL", []
+    if isinstance(value, str):
+        return f"tier3_metadata->>'{key}' = %s", [value]
+    return f"tier3_metadata->'{key}' = %s::jsonb", [Jsonb(value)]
 
 
 def _validate_tier3_identifier(doc_type: str, field: str) -> None:
@@ -302,11 +343,15 @@ class PostgresGraphStore(GraphStore):
         if not doc.tier3_metadata or field not in doc.tier3_metadata:
             return
         colliding_value = doc.tier3_metadata[field]
+        # Same type-routing as the read path: a non-string unique key would
+        # otherwise fail the holder lookup with `text = <native type>` while
+        # reporting the collision it just caught.
+        holder_clause, holder_params = _tier3_equality_predicate(field, colliding_value)
         row = await self._fetch_one(
             f"SELECT id FROM documents "  # noqa: S608 -- field validated by _TIER3_KEY_FORMAT
             f"WHERE doc_type = %s AND is_chain_head "
-            f"AND tier3_metadata->>'{field}' = %s LIMIT 1",
-            (doc.doc_type, colliding_value),
+            f"AND {holder_clause} LIMIT 1",
+            (doc.doc_type, *holder_params),
         )
         if row is None:
             return  # holder vanished between the failed write and the lookup
@@ -397,16 +442,26 @@ class PostgresGraphStore(GraphStore):
                 filters, default_exclude_failed=default_exclude_failed
             )
 
-            total_count = await self._fetch_scalar(
-                f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s
-                params,
-            )
-            order_sql = self._build_order_clause(sort_by, sort_order)
-            rows = await self._fetch_rows(
-                f"SELECT * FROM documents WHERE {where_sql} {order_sql} "  # noqa: S608 -- builder-trusted; values are %s
-                f"LIMIT %s OFFSET %s",
-                [*params, limit, offset],
-            )
+            # The filter predicates are the one part of this statement built
+            # from caller input, so a driver rejection here is the caller's to
+            # hear about -- but not in the driver's words, which quote the
+            # statement and its hint. Scoped to this method rather than the
+            # shared _fetch_* helpers: the write path relies on psycopg's
+            # UniqueViolation propagating out of those to detect a tier3
+            # collision, and a broader wrap would swallow it.
+            try:
+                total_count = await self._fetch_scalar(
+                    f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s
+                    params,
+                )
+                order_sql = self._build_order_clause(sort_by, sort_order)
+                rows = await self._fetch_rows(
+                    f"SELECT * FROM documents WHERE {where_sql} {order_sql} "  # noqa: S608 -- builder-trusted; values are %s
+                    f"LIMIT %s OFFSET %s",
+                    [*params, limit, offset],
+                )
+            except pg_errors.Error as exc:
+                raise StorageQueryError("query_documents", str(exc)) from exc
             return [self._row_to_document(r) for r in rows], total_count
 
     @staticmethod
@@ -464,12 +519,9 @@ class PostgresGraphStore(GraphStore):
                             f"tier3_metadata filter key {key!r} is not safe for "
                             "SQL interpolation; keys must match [A-Za-z0-9_]+"
                         )
-                    path_expr = f"tier3_metadata->>'{key}'"
-                    if value is None:
-                        where_clauses.append(f"{path_expr} IS NULL")
-                    else:
-                        where_clauses.append(f"{path_expr} = %s")
-                        params.append(value)
+                    clause, clause_params = _tier3_equality_predicate(key, value)
+                    where_clauses.append(clause)
+                    params.extend(clause_params)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "TRUE"
         return where_sql, params
@@ -1133,40 +1185,52 @@ class PostgresGraphStore(GraphStore):
             # exclusion, matching catalog document enumeration.
             where_sql, params = self._build_document_where(filters, default_exclude_failed=False)
 
-            facets: dict[str, dict[str, int]] = {}
-            for field in DOCUMENT_FACET_FIELDS:
-                if field == "tags":
-                    # The tag filter predicate inside ``where_sql`` is a
-                    # correlated EXISTS subquery qualified as
-                    # ``documents.id``; the outer ``documents`` table must
-                    # stay unaliased for that correlation to resolve. The
-                    # join against ``document_tags`` (one row per
-                    # (document, tag) primary key) makes COUNT(*) the
-                    # per-tag distinct-document count.
-                    rows = await self._fetch_tuples(
-                        "SELECT document_tags.tag, COUNT(*) "  # noqa: S608 -- builder-trusted; values are %s
-                        "FROM document_tags JOIN documents "
-                        "ON documents.id = document_tags.document_id "
-                        f"WHERE {where_sql} "
-                        "GROUP BY document_tags.tag "
-                        "ORDER BY COUNT(*) DESC, document_tags.tag ASC",
-                        params,
-                    )
-                else:
-                    rows = await self._fetch_tuples(
-                        f"SELECT {field}, COUNT(*) FROM documents "  # noqa: S608 -- field from DOCUMENT_FACET_FIELDS
-                        f"WHERE ({where_sql}) AND {field} IS NOT NULL "
-                        f"GROUP BY {field} "
-                        f"ORDER BY COUNT(*) DESC, {field} ASC",
-                        params,
-                    )
-                facets[field] = {row[0]: row[1] for row in rows}
+            # Same containment as query_documents: the caller-built filter
+            # predicates are what can make the backend refuse, and the
+            # driver's wording is not the caller's to receive.
+            try:
+                return await self._collect_document_facets(where_sql, params)
+            except pg_errors.Error as exc:
+                raise StorageQueryError("query_document_facets", str(exc)) from exc
 
-            total = await self._fetch_scalar(
-                f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s
-                params,
-            )
-            return facets, total
+    async def _collect_document_facets(
+        self, where_sql: str, params: list[object]
+    ) -> tuple[dict[str, dict[str, int]], int]:
+        """Run the per-field facet counts and the total for one WHERE clause."""
+        facets: dict[str, dict[str, int]] = {}
+        for field in DOCUMENT_FACET_FIELDS:
+            if field == "tags":
+                # The tag filter predicate inside ``where_sql`` is a
+                # correlated EXISTS subquery qualified as
+                # ``documents.id``; the outer ``documents`` table must
+                # stay unaliased for that correlation to resolve. The
+                # join against ``document_tags`` (one row per
+                # (document, tag) primary key) makes COUNT(*) the
+                # per-tag distinct-document count.
+                rows = await self._fetch_tuples(
+                    "SELECT document_tags.tag, COUNT(*) "  # noqa: S608 -- builder-trusted; values are %s
+                    "FROM document_tags JOIN documents "
+                    "ON documents.id = document_tags.document_id "
+                    f"WHERE {where_sql} "
+                    "GROUP BY document_tags.tag "
+                    "ORDER BY COUNT(*) DESC, document_tags.tag ASC",
+                    params,
+                )
+            else:
+                rows = await self._fetch_tuples(
+                    f"SELECT {field}, COUNT(*) FROM documents "  # noqa: S608 -- field from DOCUMENT_FACET_FIELDS
+                    f"WHERE ({where_sql}) AND {field} IS NOT NULL "
+                    f"GROUP BY {field} "
+                    f"ORDER BY COUNT(*) DESC, {field} ASC",
+                    params,
+                )
+            facets[field] = {row[0]: row[1] for row in rows}
+
+        total = await self._fetch_scalar(
+            f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s
+            params,
+        )
+        return facets, total
 
     async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
         with self._query_timer.measure("get_document_counts_by_field"):

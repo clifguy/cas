@@ -19,6 +19,7 @@ Deterministic mode:
 """
 
 import json
+import logging
 import math
 import os
 import uuid
@@ -31,12 +32,14 @@ from sage.adapters.interfaces import (
     EmbeddingProvider,
     GraphStore,
     SearchResult,
+    StorageQueryError,
 )
 from sage.api.errors import (
     DocumentNotFoundError,
     HeadingNotFoundError,
     MissingFieldError,
     PipelineIncompleteError,
+    StorageQueryFailedError,
     Tier3SchemaViolationError,
 )
 from sage.config import VaultConfig
@@ -69,6 +72,8 @@ from sage.models.schemas import (
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
 from sage.utils.rrf import rrf_fuse
+
+logger = logging.getLogger(__name__)
 
 # Filter keys the content store can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
@@ -413,7 +418,27 @@ class RetrievalService:
             self._merge_hints(response, {"warnings": warnings})
 
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
-        """Dispatch to the appropriate retrieval mode handler."""
+        """Dispatch to the appropriate retrieval mode handler.
+
+        Every graph-store query this service issues is reachable only from
+        here, so this is where a backend query refusal is translated into
+        the public envelope. The driver's message names the failing
+        statement and is logged rather than returned; see
+        ``StorageQueryFailedError``.
+        """
+        try:
+            return await self._dispatch(request)
+        except StorageQueryError as exc:
+            logger.error(
+                "storage query %s failed during %s retrieval: %s",
+                exc.operation,
+                request.mode.value,
+                exc.driver_message,
+            )
+            raise StorageQueryFailedError(exc.operation) from exc
+
+    async def _dispatch(self, request: DiscoverRequest) -> DiscoverResponse:
+        """Route a request to its mode handler and apply shared post-processing."""
         request_id = uuid.uuid4().hex[:12]
         with self._query_timer.request(request.mode.value, request_id) as phases:
             # Edge enumeration bypasses the document-target post-
@@ -526,11 +551,19 @@ class RetrievalService:
         document-level metadata only (no chunk content or relevance scores).
         Supports pagination via limit + offset.
 
-        ``RetrievalFilters.tier3_metadata`` is pushed into SQL as
-        ``tier3_metadata->>'<key>' = %s`` predicates; the high-frequency
-        canonical keys (``ticket_id``, ``failure_id``, ``tool_name``) are
-        backed by Postgres expression indexes. When the
-        request also names a ``doc_type`` that declares a
+        ``RetrievalFilters.tier3_metadata`` is pushed into SQL, with the
+        predicate chosen per value so that every JSON type a
+        ``metadata_schema`` can declare is filterable. A string compares
+        through the ``tier3_metadata->>'<key>' = %s`` text accessor, which
+        is what the expression indexes on the high-frequency canonical
+        keys (``ticket_id``, ``failure_id``, ``tool_name``) are built on.
+        Any other value compares as jsonb through the ``->`` accessor,
+        since the text accessor cannot be compared against a natively
+        typed parameter and rendering the value to text would not survive
+        numeric formatting. ``None`` matches a stored null or an absent
+        key.
+
+        When the request also names a ``doc_type`` that declares a
         ``metadata_schema``, tier3 keys are validated against that
         schema's declared properties before the query runs -- a typo'd
         key raises ``Tier3SchemaViolationError`` instead of silently
