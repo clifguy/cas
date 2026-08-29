@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import GraphStore
+from sage.config import TransitionTable
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
@@ -83,6 +84,27 @@ _METHOD_TO_RATIONALE_KIND: dict[str, RationaleKind] = {
     "filename_code_match": RationaleKind.FILENAME_CODE_MATCH,
     "identifier_mention": RationaleKind.REFERENCES_MENTION,
 }
+
+
+def _supersede_landing_states(transition_table: TransitionTable) -> set[str]:
+    """The states a `supersede` transition can leave a document in.
+
+    A target already in one of these has nothing left to transition: an
+    earlier supersession put it there. Chain repair reaches that case
+    routinely -- inserting an intermediate version re-points a
+    `supersedes` edge at a predecessor archived by the supersession the
+    repair is replacing -- and such an edge is sound, because the
+    predecessor already holds the state the edge asserts of it.
+
+    Derived from the table rather than enumerated, so a vault that lands
+    supersessions somewhere other than `archived` is read correctly.
+    """
+    landings: set[str] = set()
+    for from_state in transition_table.states_allowing("supersede"):
+        result = transition_table.validate_transition(from_state, "supersede")
+        if result is not None:
+            landings.add(result[0])
+    return landings
 
 
 @dataclass
@@ -393,6 +415,12 @@ async def plan_batch_edges(
     # Existing-doc fetch: two SQL-pushed passes feed the
     # union of "always include" + "chain-repair candidates" instead
     # of pulling the entire vault into Python.
+    #
+    # The "active" here scopes which documents are inference candidates at
+    # all, across every edge type -- it is a query filter, not a lifecycle
+    # precondition, and it is deliberately not derived from the transition
+    # table. Whether a particular supersession is legal is settled against
+    # the table in `resolve_and_execute`, on the target, per planned edge.
     active_docs, _ = await vault_services.graph_store.query_documents(
         filters={"lifecycle_status": "active"},
         limit=10_000_000,
@@ -478,11 +506,28 @@ async def resolve_and_execute(
     path_to_id: dict[str, str],
     graph_store: GraphStore,
     graph_ops_service: GraphOpsService,
+    transition_table: TransitionTable,
 ) -> EdgeResult:
     """Phase 2: resolve file paths to document IDs and execute edges.
 
     Removals run first so chain-repair leaves no transient invalid state
     visible to the lifecycle side effects fired during the add pass.
+
+    A Tier-1 ``supersedes`` add carries a lifecycle side effect on its
+    target, settled against the vault's transition table *before* the edge
+    is written so the two never come apart. Three cases:
+
+    * the target's state permits ``supersede`` -- the edge is created and
+      the target moves to the state the table names;
+    * the target already holds a state a supersession lands in -- the edge
+      is created and nothing is written, the chain-repair case where an
+      earlier supersession already moved it;
+    * neither -- no edge is created, ``edges_dropped`` advances, and a
+      ``supersede_target_not_transitionable`` warning names the observed
+      and permitted states.
+
+    The invariant across all three: no ``supersedes`` edge is left pointing
+    at a predecessor that does not hold a superseded state.
 
     Args:
         edge_plan: The pre-ingest edge plan.
@@ -490,6 +535,10 @@ async def resolve_and_execute(
             successfully ingested files.
         graph_store: For staging edge insertion.
         graph_ops_service: For Tier 1 link() and unlink() calls.
+        transition_table: The vault's lifecycle transition table. Supplies
+            both halves of the ``supersede`` transition -- the states it may
+            be taken from and the state it lands in -- so this path agrees
+            with every other supersede surface by construction.
     """
     result = EdgeResult()
 
@@ -545,6 +594,77 @@ async def resolve_and_execute(
                 }
             )
             continue
+
+        # A Tier-1 supersedes carries a lifecycle transition on its target.
+        # Settle that transition against the vault's table before writing
+        # the edge, not after: the edge and the transition are two halves
+        # of one supersession, and creating the edge first means a target
+        # whose state does not declare `supersede` is left as a successor
+        # edge pointing at an untransitioned predecessor. Gating here makes
+        # the pair all-or-nothing on this path.
+        supersede_to_state: str | None = None
+        if planned.tier == 1 and planned.edge_type == EdgeType.SUPERSEDES:
+            try:
+                target_doc = await graph_store.get_document(target_id)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to read supersedes target %s; edge not created",
+                    target_id,
+                )
+                result.edges_dropped += 1
+                result.warnings.append(
+                    {
+                        "source": source_id,
+                        "target": target_id,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "lifecycle_transition_failed",
+                        "detail": str(exc),
+                    }
+                )
+                continue
+            current_state = target_doc.lifecycle_status if target_doc else None
+            transition = (
+                transition_table.validate_transition(current_state, "supersede")
+                if current_state is not None
+                else None
+            )
+            if transition is not None:
+                supersede_to_state = transition[0]
+            elif current_state in _supersede_landing_states(transition_table):
+                # Already where a supersession leaves a document. The edge
+                # is sound and there is nothing to write -- the ordinary
+                # chain-repair case, not an anomaly, so it is not warned.
+                logger.debug(
+                    "Supersedes target %s already in state '%s'; no transition needed",
+                    target_id,
+                    current_state,
+                )
+            else:
+                allowed = transition_table.states_allowing("supersede")
+                observed = current_state if current_state is not None else "(document absent)"
+                logger.warning(
+                    "Supersedes edge %s -> %s not created: target state '%s' does not "
+                    "permit supersede (permitted from: %s)",
+                    source_id,
+                    target_id,
+                    observed,
+                    ", ".join(allowed) or "(none)",
+                )
+                result.edges_dropped += 1
+                result.warnings.append(
+                    {
+                        "source": source_id,
+                        "target": target_id,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "supersede_target_not_transitionable",
+                        "detail": (
+                            f"Cannot supersede document {target_id}: current state "
+                            f"'{observed}', required "
+                            f"'{' or '.join(allowed) if allowed else '(none)'}'"
+                        ),
+                    }
+                )
+                continue
 
         # Every auto-inference method stamps its provenance prefix
         # on the evidence string above; derive the typed discriminator
@@ -616,20 +736,23 @@ async def resolve_and_execute(
             )
             continue
 
-        # Lifecycle side effect: transition target to "archived"
-        if planned.tier == 1 and planned.edge_type == EdgeType.SUPERSEDES:
+        # Lifecycle side effect: land the target in the state the vault's
+        # table declares for `supersede`. The precondition and the state
+        # itself were both settled by the pre-flight gate above, so this
+        # is the write alone.
+        if supersede_to_state is not None:
             try:
-                target_doc = await graph_store.get_document(target_id)
-                if target_doc and target_doc.lifecycle_status == "active":
-                    now = datetime.now(timezone.utc).isoformat()
-                    await graph_store.update_document(
-                        target_id,
-                        {"lifecycle_status": "archived", "updated_at": now},
-                    )
+                now = datetime.now(timezone.utc).isoformat()
+                await graph_store.update_document(
+                    target_id,
+                    {"lifecycle_status": supersede_to_state, "updated_at": now},
+                )
             except Exception as exc:
                 logger.warning(
-                    "Supersedes edge created but failed to transition target %s to archived",
+                    "Supersedes edge created but failed to transition target %s to '%s': %s",
                     target_id,
+                    supersede_to_state,
+                    exc,
                 )
                 result.warnings.append(
                     {

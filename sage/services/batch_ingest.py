@@ -165,16 +165,29 @@ class BatchIngestService:
         later items are not rolled back. Mirrors the bulk-tool
         atomicity contract used by ``sage_bulk_*`` operations.
 
-        Predecessor auto-archive on Tier-1 supersedes inference:
+        Predecessor auto-transition on Tier-1 supersedes inference:
         When ``infer_edges=True`` and Phase 3 edge resolution
         creates a Tier-1 ``supersedes`` edge via version-chain
-        inference, the target document silently transitions from
-        ``active`` to ``archived`` as part of edge execution — no
-        explicit lifecycle-transition call is required and none
-        surfaces in the summary. Lifecycle transition failures
-        during this phase are collected as warnings in
-        ``IngestSummary.edge_warnings`` only; they do not raise and
-        do not appear in ``IngestSummary.errors``.
+        inference, the target document transitions as part of edge
+        execution — no explicit lifecycle-transition call is
+        required. Both halves of that transition come from the
+        vault's lifecycle table: the states it may be taken from,
+        and the state it lands in (``active -> archived`` under the
+        base lifecycle).
+
+        A target already holding a state a supersession lands in
+        gets the edge and no write — the chain-repair case, where an
+        earlier supersession already moved it. A target in any other
+        state is not superseded at all: the edge is not created,
+        ``edges_dropped`` advances, and a
+        ``supersede_target_not_transitionable`` warning names the
+        observed state and the permitted ones. The edge and the
+        transition are all-or-nothing, so the batch never leaves a
+        ``supersedes`` edge pointing at a predecessor that does not
+        hold a superseded state. Lifecycle-transition failures after
+        the edge lands are collected as warnings in
+        ``IngestSummary.edge_warnings``; no case raises, and none
+        appears in ``IngestSummary.errors``.
 
         Tier-1 provenance-gate downgrade:
         Tier-1 ``supersedes`` adds are gated on provenance: if any
@@ -274,6 +287,11 @@ class BatchIngestService:
                 path_to_id,
                 vault_services.graph_store,
                 vault_services.graph_ops_service,
+                # The table the lifecycle service already built for this
+                # vault, not a second one built from the same config: one
+                # table means the supersede transition cannot diverge
+                # between the batch path and the explicit lifecycle path.
+                vault_services.lifecycle_service.transition_table,
             )
             summary.edges_created = edge_result.edges_created
             summary.edges_staged = edge_result.edges_staged

@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.18",
-  "manifest_date": "2026-04-25",
+  "manifest_version": "0.9.19",
+  "manifest_date": "2026-08-29",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -146,9 +146,9 @@
         "docs/fs/sage/edge_inference.schema.json",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 34,
+      "test_count": 40,
       "decision_date": "2026-04-08",
-      "notes": "Filename parser (12 tests: segment recognition, date/version/code detection, doc_type resolution via keyword_to_doc_type and code_to_doc_type), version_chain inference (8 tests: normalization, linear chain, grouping by title/project/doc_type, doc_type-mismatch isolation, existing vault documents, null version handling), filename_code_match inference (6 tests: workflow-to-content direction, workflow-to-workflow exclusion, cross-batch matching, multi-code edges), two-phase orchestration (6 tests: pre-ingest edge plan, post-ingest resolution, tier-based creation, failed ingestion handling), lifecycle side effects (2 tests: supersedes transitions target to archived, skipped on non-active target). EI-033 covers infer_edges=False short-circuit."
+      "notes": "Filename parser (12 tests: segment recognition, date/version/code detection, doc_type resolution via keyword_to_doc_type and code_to_doc_type), version_chain inference (8 tests: normalization, linear chain, grouping by title/project/doc_type, doc_type-mismatch isolation, existing vault documents, null version handling), filename_code_match inference (6 tests: workflow-to-content direction, workflow-to-workflow exclusion, cross-batch matching, multi-code edges), two-phase orchestration (6 tests: pre-ingest edge plan, post-ingest resolution, tier-based creation, failed ingestion handling), lifecycle side effects (8 tests: the supersede transition derived from the vault's lifecycle table in both halves, the pre-flight gate that drops an edge whose target's state forbids supersede, the already-superseded target that is linked without a write, and the batch-wide invariant that no supersedes edge outlives an unsuperseded target). EI-033 covers infer_edges=False short-circuit."
     },
     {
       "path": "tests/sage/metadata_extraction_tests.md",
@@ -362,6 +362,11 @@
       "version": "0.9.18",
       "date": "2026-04-25",
       "summary": "Spec-file registry reconciliation. Audit of tests/ vs the manifest found six spec markdown files on disk that were not registered. One, tests/sage/ingestion_dedup_tests.md, was a single-test redundant copy of TEST-SAGE-BH-071 already specified in tests/sage/behavioral_tests.md; the standalone file additionally described an outdated force=True-based test path that no longer matches the pytest implementation. Resolution: deleted the redundant file (no test coverage lost). The remaining five files were registered as new test_specs entries: tests/app/batch_ingest_service_tests.md (19 tests, BIS-001..019, covers the shared three-phase batch ingest pipeline); tests/app/cleanup_tests.md (6 tests, APP-CL-001..006, covers app/backend module hygiene); tests/sage/migrate_flag_tests.md (13 tests, MIG-001..013, covers --migrate CLI gating for SQLite and LanceDB migrations); tests/sage/test_cleanup_refactor.md (9 tests, sparse CLN-001..012, covers SAGE/MCP cleanup pass from the 2026-04-10 review); tests/sage/vault_management_tests.md (14 tests, MCP-030..040 + SAGE-VM-REST-001..003, covers vault-management MCP tools and REST force-gate parity). +61 tests across the manifest. test_cleanup_refactor.md uses the test_*.md prefix rather than the *_tests.md convention used elsewhere; flagged but not renamed in this sweep."
+    },
+    {
+      "version": "0.9.19",
+      "date": "2026-08-29",
+      "summary": "Lifecycle side-effects section rewritten in tests/app/edge_inference_tests.md for the table-derived supersede transition. EI-031 and EI-032 previously specified the transition with the state literals \"active\" and \"archived\"; EI-032 in particular specified that a non-active target has its lifecycle update skipped while the supersedes edge is created anyway, which left a successor edge pointing at a predecessor that was never transitioned. Both were rewritten against the vault's lifecycle transition table, and EI-032's disposition changed from skip-the-update to drop-the-edge-and-warn. Six new specifications were added for the properties that distinguish a table-derived implementation from a hardcoded one, which coincide under the base lifecycle: EI-034 (landing state read from the table), EI-035 (supersede permitted from any state the table declares), EI-036 (batch-wide invariant, asserted over the targets actually linked), EI-037 (absent target), EI-038 (already-superseded target linked without a write -- the chain-repair case), and EI-039 (landing-state recognition itself table-derived). Edge inference test count: 34 -> 40. The new ids start at EI-034 because EI-033 was already allocated to the infer_edges=False short-circuit."
     }
   ]
 }

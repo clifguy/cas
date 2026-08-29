@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, IngestRequest, UnlinkResponse
 from sage.services.batch_inference import EdgePlan
@@ -29,6 +30,27 @@ from sage.services.batch_ingest import (
     ParsedMetadataInput,
 )
 from sage.services.ingestion import IngestResult
+
+
+def _base_transition_table() -> TransitionTable:
+    """The base vault's lifecycle table: supersede archives an active doc.
+
+    A real table rather than a MagicMock attribute: edge execution reads
+    the supersede transition off it to decide whether an edge may be
+    created and what state its target lands in, so a mock would make both
+    a MagicMock and silently defeat every lifecycle assertion below.
+    """
+    return TransitionTable(
+        [
+            LifecycleTransition(
+                from_state="active",
+                action="supersede",
+                to_state="archived",
+                creates_edge="supersedes",
+            )
+        ]
+    )
+
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -105,6 +127,7 @@ def _make_services(
 ):
     """Create a mock SAGEServices bundle."""
     services = MagicMock()
+    services.lifecycle_service.transition_table = _base_transition_table()
 
     # Config
     services.config.abstraction.enabled = abstraction_enabled
@@ -164,7 +187,17 @@ def _make_services(
     services.graph_ops_service._create_edge_strict = AsyncMock()
     services.graph_ops_service._create_edge = AsyncMock(return_value=(_MM(), True))
     services.graph_store.insert_staging_edge = AsyncMock(return_value=(_MM(), True))
-    services.graph_store.get_document = AsyncMock(return_value=None)
+
+    # Edge execution reads the supersedes target's lifecycle state to
+    # settle the transition before writing the edge. These tests ingest
+    # their targets in the same batch, so the double reports them present
+    # and active rather than absent.
+    async def _get_document(doc_id):
+        doc = _MM()
+        doc.lifecycle_status = "active"
+        return doc
+
+    services.graph_store.get_document = AsyncMock(side_effect=_get_document)
     services.graph_store.update_document = AsyncMock()
 
     return services
@@ -1090,6 +1123,7 @@ def _make_chain_services(
     """Build a SAGEServices mock backed by a _MockGraphState."""
     state = _MockGraphState(docs, edges)
     services = MagicMock()
+    services.lifecycle_service.transition_table = _base_transition_table()
     services.config.abstraction.enabled = abstraction_enabled
     services.graph_store.list_all_documents = AsyncMock(side_effect=state.list_all_documents)
     services.graph_store.query_documents = AsyncMock(side_effect=state.query_documents)
