@@ -2750,16 +2750,20 @@ components:
 
     RetrievalTarget:
       type: string
-      enum: [documents, edges]
+      enum: [documents, edges, facets]
       default: documents
       description: >-
-        Discriminates whether search enumerates documents or edges
-        (T-0157). "documents" (default) preserves the historical surface:
+        Discriminates what search enumerates: documents, edges, or
+        facets. "documents" (default) preserves the historical surface:
         results are DiscoverHit rows. "edges" switches the dispatch to
         first-class edge enumeration: results are EdgeHit rows carrying
         edge_id, endpoints, edge_type, anchor versions, rationale, and
-        retraction state. Valid only with mode="catalog"; other modes are
-        rejected at request validation.
+        retraction state. "facets" switches to vocabulary aggregation:
+        results are FacetHit rows carrying distinct values with counts
+        for a fixed set of document metadata fields, bounded by
+        vocabulary size rather than document count. "edges" and "facets"
+        are valid only with mode="catalog"; other modes are rejected at
+        request validation.
 
     ResponseMode:
       type: string
@@ -3321,11 +3325,14 @@ components:
           $ref: "#/components/schemas/RetrievalTarget"
           default: documents
           description: >-
-            Selects whether the query enumerates documents (default) or
-            edges. "edges" is valid only with mode=catalog and with
-            edge-only filter keys (source_id, target_id, edge_type);
-            other mode/parameter combinations are rejected via
-            mode_parameter_mismatch. (T-0157)
+            Selects what the query enumerates: documents (default),
+            edges, or facets. "edges" is valid only with mode=catalog
+            and with edge-only filter keys (source_id, target_id,
+            edge_type). "facets" is valid only with mode=catalog and
+            document-only filter keys, and rejects non-default
+            pagination and payload-shape parameters (limit, offset,
+            sort_by, sort_order, response_mode). Other mode/parameter
+            combinations are rejected via mode_parameter_mismatch.
         response_mode:
           $ref: "#/components/schemas/ResponseMode"
           nullable: true
@@ -4028,24 +4035,29 @@ components:
           default: documents
           description: >-
             The result row type. "documents" (default) yields DiscoverHit
-            rows; "edges" yields EdgeHit rows. Consumers switch on this
-            field to know how to read `results`. (T-0157)
+            rows; "edges" yields EdgeHit rows; "facets" yields FacetHit
+            rows. Consumers switch on this field to know how to read
+            `results`.
         results:
           type: array
           items:
             oneOf:
               - $ref: "#/components/schemas/DiscoverHit"
               - $ref: "#/components/schemas/EdgeHit"
+              - $ref: "#/components/schemas/FacetHit"
           description: >-
             Retrieval hits, ordered by descending relevance
             (semantic/keyword) or by sort_by (catalog) for documents;
-            ordered by edge created_at DESC for edges. Row type is
-            discriminated by `target`.
+            ordered by edge created_at DESC for edges; one FacetHit row
+            per faceted field for facets. Row type is discriminated by
+            `target`.
         total_available:
           type: integer
           description: >-
             Total number of results available (before pagination).
-            May be approximate for semantic mode.
+            May be approximate for semantic mode. For target="facets",
+            the count of documents matching the filters (the facet
+            denominator).
         hints:
           type: object
           nullable: true
@@ -4190,6 +4202,37 @@ components:
             Computed. The edge_id of the earliest retracts edge that
             disclaims this row. Null when this edge is still live.
             Omitted in light mode.
+
+    FacetHit:
+      type: object
+      required: [field, values]
+      description: >-
+        A single facet aggregation result. Returned by search when
+        target="facets": one row per faceted document metadata field,
+        carrying that field's distinct values with matching-document
+        counts. The row count is fixed by the facet field set and each
+        value map is bounded by the field's vocabulary size, so the
+        response stays small regardless of how many documents the vault
+        holds.
+      properties:
+        field:
+          type: string
+          description: >-
+            The faceted document metadata field. One of the fixed facet
+            field set: doc_type, lifecycle_status, source_type,
+            pipeline_status, tags.
+        values:
+          type: object
+          additionalProperties:
+            type: integer
+          description: >-
+            Distinct non-null values of the field mapped to the count
+            of matching documents, ordered by descending count and then
+            by value. Documents where the field is null are excluded
+            from the value counts but still counted in the response's
+            total_available; tag counts may sum above it (multi-tag
+            documents) or below it (untagged documents). Empty when no
+            matching document carries the field.
 
     FieldChange:
       type: object

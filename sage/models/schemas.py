@@ -2864,11 +2864,14 @@ class DiscoverRequest(BaseModel):
     target: RetrievalTarget = Field(
         default=RetrievalTarget.DOCUMENTS,
         description=(
-            "Selects whether the query enumerates documents (default) or "
-            'edges. "edges" is valid only with mode=catalog and with '
-            "edge-only filter keys (source_id, target_id, edge_type); "
-            "other mode/parameter combinations are rejected via "
-            "mode_parameter_mismatch. (T-0157)"
+            "Selects what the query enumerates: documents (default), "
+            'edges, or facets. "edges" is valid only with mode=catalog '
+            "and with edge-only filter keys (source_id, target_id, "
+            'edge_type). "facets" is valid only with mode=catalog and '
+            "document-only filter keys, and rejects non-default "
+            "pagination and payload-shape parameters (limit, offset, "
+            "sort_by, sort_order, response_mode). Other mode/parameter "
+            "combinations are rejected via mode_parameter_mismatch."
         ),
     )
     response_mode: ResponseMode | None = Field(
@@ -3003,6 +3006,71 @@ class DiscoverRequest(BaseModel):
                     raise PydanticCustomError(
                         "mode_parameter_mismatch",
                         ("Parameter '{forbidden_param}' is not valid for target 'edges'. (T-0157)"),
+                        {
+                            "mode": self.mode.value,
+                            "forbidden_param": name,
+                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                        },
+                    )
+
+        # Target=facets is valid only with mode=catalog.
+        if self.target == RetrievalTarget.FACETS and self.mode != RetrievalMode.CATALOG:
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                ("Target 'facets' is not valid for mode '{mode}'. Allowed: catalog only."),
+                {
+                    "mode": self.mode.value,
+                    "forbidden_param": "target",
+                    "allowed_modes": [RetrievalMode.CATALOG.value],
+                },
+            )
+
+        # Target=facets aggregates document metadata, so document-only
+        # filter keys are allowed and edge-only filter keys are not.
+        if self.target == RetrievalTarget.FACETS and self.filters is not None:
+            for key in _EDGE_ONLY_FILTER_KEYS:
+                if getattr(self.filters, key) is not None:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        (
+                            "Filter key 'filters.{key}' is not valid for "
+                            "target 'facets'. Allowed filter keys: "
+                            "doc_type, project, lifecycle_status, tags, "
+                            "document_ids, pipeline_status, source_type, "
+                            "tier3_metadata."
+                        ),
+                        {
+                            "mode": self.mode.value,
+                            "forbidden_param": f"filters.{key}",
+                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "key": key,
+                        },
+                    )
+
+        # Target=facets rejects every parameter without facet semantics,
+        # including the pagination and payload-shape knobs: a facets
+        # response is one fixed row per facet field, so limit, offset,
+        # sort, and response_mode have nothing to act on. Only
+        # explicitly non-default values are flagged so callers can
+        # leave the other knobs alone without triggering this branch.
+        if self.target == RetrievalTarget.FACETS:
+            facet_forbidden_params: list[tuple[str, object, object]] = [
+                ("query", self.query, None),
+                ("document_id", self.document_id, None),
+                ("heading_path", self.heading_path, None),
+                ("min_relevance", self.min_relevance, None),
+                ("sort_by", self.sort_by, None),
+                ("sort_order", self.sort_order, None),
+                ("include_abstracts", self.include_abstracts, False),
+                ("response_mode", self.response_mode, None),
+                ("limit", self.limit, 10),
+                ("offset", self.offset, 0),
+            ]
+            for name, value, default in facet_forbidden_params:
+                if value != default:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        ("Parameter '{forbidden_param}' is not valid for target 'facets'."),
                         {
                             "mode": self.mode.value,
                             "forbidden_param": name,
@@ -3164,29 +3232,63 @@ class EdgeHit(BaseModel):
     )
 
 
+class FacetHit(BaseModel):
+    """A single facet aggregation result.
+
+    Returned by ``search`` when ``target="facets"``: one row per faceted
+    document metadata field, carrying that field's distinct values with
+    matching-document counts. The row count is fixed by the facet field
+    set and each value map is bounded by the field's vocabulary size, so
+    the response stays small regardless of how many documents the vault
+    holds.
+    """
+
+    field: str = Field(
+        description=(
+            "The faceted document metadata field. One of the fixed facet "
+            "field set: doc_type, lifecycle_status, source_type, "
+            "pipeline_status, tags."
+        )
+    )
+    values: dict[str, int] = Field(
+        description=(
+            "Distinct non-null values of the field mapped to the count "
+            "of matching documents, ordered by descending count and then "
+            "by value. Documents where the field is null are excluded "
+            "from the value counts but still counted in the response's "
+            "total_available; tag counts may sum above it (multi-tag "
+            "documents) or below it (untagged documents). Empty when no "
+            "matching document carries the field."
+        )
+    )
+
+
 class DiscoverResponse(BaseModel):
     mode: RetrievalMode = Field(description="The retrieval mode that produced these results.")
     target: RetrievalTarget = Field(
         default=RetrievalTarget.DOCUMENTS,
         description=(
             'The result row type. "documents" (default) yields '
-            'DiscoverHit rows; "edges" yields EdgeHit rows. Consumers '
-            "switch on this field to know how to read `results`. "
-            "(T-0157)"
+            'DiscoverHit rows; "edges" yields EdgeHit rows; "facets" '
+            "yields FacetHit rows. Consumers switch on this field to "
+            "know how to read `results`."
         ),
     )
-    results: list[DiscoverHit] | list[EdgeHit] = Field(
+    results: list[DiscoverHit] | list[EdgeHit] | list[FacetHit] = Field(
         description=(
             "Retrieval hits, ordered by descending relevance "
             "(semantic/keyword) or by sort_by (catalog) for documents; "
-            "ordered by edge created_at DESC for edges. Row type is "
+            "ordered by edge created_at DESC for edges; one FacetHit "
+            "row per faceted field for facets. Row type is "
             "discriminated by `target`."
         )
     )
     total_available: int = Field(
         description=(
             "Total number of results available (before pagination). May be "
-            "approximate for semantic mode."
+            'approximate for semantic mode. For target="facets", the '
+            "count of documents matching the filters (the facet "
+            "denominator)."
         )
     )
     hints: dict[str, object] | None = Field(

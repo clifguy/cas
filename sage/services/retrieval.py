@@ -25,6 +25,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sage.adapters.interfaces import (
+    DOCUMENT_FACET_FIELDS,
     SYNTHETIC_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
@@ -63,6 +64,7 @@ from sage.models.schemas import (
     DocumentSummary,
     DocumentSummaryLight,
     EdgeHit,
+    FacetHit,
 )
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
@@ -424,6 +426,16 @@ class RetrievalService:
                 _apply_catalog_budget_hint(response)
                 return response
 
+            # Facet aggregation likewise bypasses the document-target
+            # post-processing pipeline. No budget hint: the response is
+            # bounded by vocabulary size by construction, and the hint's
+            # recommended_limit would name a parameter the facets
+            # validator rejects.
+            if request.target == RetrievalTarget.FACETS:
+                response = await self._catalog_facets(request, phases)
+                self._apply_vocabulary_warnings(response, request)
+                return response
+
             if request.mode == RetrievalMode.SEMANTIC:
                 response = await self._semantic(request, phases)
             elif request.mode == RetrievalMode.KEYWORD:
@@ -524,28 +536,7 @@ class RetrievalService:
         key raises ``Tier3SchemaViolationError`` instead of silently
         matching zero rows.
         """
-        # Build filter dict from request
-        sql_filters: dict[str, object] = {}
-        if request.filters:
-            if request.filters.doc_type:
-                sql_filters["doc_type"] = request.filters.doc_type
-            if request.filters.project:
-                sql_filters["project"] = request.filters.project
-            if request.filters.lifecycle_status:
-                sql_filters["lifecycle_status"] = request.filters.lifecycle_status
-            if request.filters.pipeline_status:
-                sql_filters["pipeline_status"] = request.filters.pipeline_status
-            if request.filters.tags:
-                sql_filters["tags"] = request.filters.tags
-            if request.filters.document_ids:
-                sql_filters["document_ids"] = request.filters.document_ids
-            if request.filters.source_type:
-                sql_filters["source_type"] = request.filters.source_type.value
-            if request.filters.tier3_metadata:
-                self._validate_tier3_filter_keys(
-                    request.filters.tier3_metadata, request.filters.doc_type
-                )
-                sql_filters["tier3_metadata"] = request.filters.tier3_metadata
+        sql_filters = self._build_catalog_sql_filters(request)
 
         with phases.phase("query_documents"):
             # Catalog is filter-only enumeration; failed-pipeline
@@ -572,6 +563,65 @@ class RetrievalService:
 
         return DiscoverResponse(
             mode=RetrievalMode.CATALOG,
+            results=hits,
+            total_available=total_count,
+        )
+
+    def _build_catalog_sql_filters(self, request: DiscoverRequest) -> dict[str, object] | None:
+        """Translate ``RetrievalFilters`` into the graph-store filter dict.
+
+        Shared by document catalog enumeration and facet aggregation so
+        both resolve identical filter semantics, including the tier3
+        filter-key validation against the resolved doc_type's
+        metadata_schema. Returns None when no filter is active.
+        """
+        sql_filters: dict[str, object] = {}
+        if request.filters:
+            if request.filters.doc_type:
+                sql_filters["doc_type"] = request.filters.doc_type
+            if request.filters.project:
+                sql_filters["project"] = request.filters.project
+            if request.filters.lifecycle_status:
+                sql_filters["lifecycle_status"] = request.filters.lifecycle_status
+            if request.filters.pipeline_status:
+                sql_filters["pipeline_status"] = request.filters.pipeline_status
+            if request.filters.tags:
+                sql_filters["tags"] = request.filters.tags
+            if request.filters.document_ids:
+                sql_filters["document_ids"] = request.filters.document_ids
+            if request.filters.source_type:
+                sql_filters["source_type"] = request.filters.source_type.value
+            if request.filters.tier3_metadata:
+                self._validate_tier3_filter_keys(
+                    request.filters.tier3_metadata, request.filters.doc_type
+                )
+                sql_filters["tier3_metadata"] = request.filters.tier3_metadata
+        return sql_filters or None
+
+    async def _catalog_facets(
+        self,
+        request: DiscoverRequest,
+        phases: PhaseCollector | _NullPhaseCollector,
+    ) -> DiscoverResponse:
+        """Vocabulary aggregation via GROUP BY on the graph store.
+
+        Builds the same filter dict as document catalog enumeration,
+        calls ``GraphStore.query_document_facets``, and wraps each facet
+        field's value counts in a ``FacetHit`` row. The response carries
+        one row per facet field regardless of vault size;
+        ``total_available`` is the count of documents matching the
+        filters (the facet denominator).
+        """
+        sql_filters = self._build_catalog_sql_filters(request)
+
+        with phases.phase("query_document_facets"):
+            facets, total_count = await self._graph.query_document_facets(sql_filters)
+
+        hits = [FacetHit(field=f, values=facets.get(f, {})) for f in DOCUMENT_FACET_FIELDS]
+
+        return DiscoverResponse(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
             results=hits,
             total_available=total_count,
         )

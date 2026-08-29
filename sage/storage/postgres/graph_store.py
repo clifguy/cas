@@ -35,7 +35,7 @@ from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from sage.adapters.interfaces import GraphStore, NaturalKeyConflict
+from sage.adapters.interfaces import DOCUMENT_FACET_FIELDS, GraphStore, NaturalKeyConflict
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
@@ -393,56 +393,9 @@ class PostgresGraphStore(GraphStore):
         default_exclude_failed: bool = True,
     ) -> tuple[list[Document], int]:
         with self._query_timer.measure("query_documents"):
-            where_clauses: list[str] = []
-            params: list[object] = []
-
-            if default_exclude_failed and (not filters or "pipeline_status" not in filters):
-                where_clauses.append("pipeline_status != %s")
-                params.append("failed")
-
-            if filters:
-                for col in (
-                    "doc_type",
-                    "project",
-                    "lifecycle_status",
-                    "pipeline_status",
-                    "source_type",
-                ):
-                    if col in filters and filters[col]:
-                        where_clauses.append(f"{col} = %s")
-                        params.append(filters[col])
-                if "document_ids" in filters and filters["document_ids"]:
-                    placeholders = ",".join("%s" for _ in filters["document_ids"])
-                    where_clauses.append(f"id IN ({placeholders})")
-                    params.extend(filters["document_ids"])
-                if "tags" in filters and filters["tags"]:
-                    for tag in filters["tags"]:
-                        where_clauses.append(
-                            "EXISTS (SELECT 1 FROM document_tags "
-                            "WHERE document_id = documents.id AND tag = %s)"
-                        )
-                        params.append(tag)
-                if "tier3_metadata" in filters and filters["tier3_metadata"]:
-                    tier3_metadata = filters["tier3_metadata"]
-                    if not isinstance(tier3_metadata, dict):
-                        raise ValueError(
-                            f"tier3_metadata filter must be a dict, got "
-                            f"{type(tier3_metadata).__name__}"
-                        )
-                    for key, value in tier3_metadata.items():
-                        if not isinstance(key, str) or not _TIER3_KEY_FORMAT.fullmatch(key):
-                            raise ValueError(
-                                f"tier3_metadata filter key {key!r} is not safe for "
-                                "SQL interpolation; keys must match [A-Za-z0-9_]+"
-                            )
-                        path_expr = f"tier3_metadata->>'{key}'"
-                        if value is None:
-                            where_clauses.append(f"{path_expr} IS NULL")
-                        else:
-                            where_clauses.append(f"{path_expr} = %s")
-                            params.append(value)
-
-            where_sql = " AND ".join(where_clauses) if where_clauses else "TRUE"
+            where_sql, params = self._build_document_where(
+                filters, default_exclude_failed=default_exclude_failed
+            )
 
             total_count = await self._fetch_scalar(
                 f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s
@@ -455,6 +408,71 @@ class PostgresGraphStore(GraphStore):
                 [*params, limit, offset],
             )
             return [self._row_to_document(r) for r in rows], total_count
+
+    @staticmethod
+    def _build_document_where(
+        filters: dict[str, object] | None,
+        *,
+        default_exclude_failed: bool,
+    ) -> tuple[str, list[object]]:
+        """Translate a document filter dict into a WHERE clause plus params.
+
+        Shared by ``query_documents`` and ``query_document_facets`` so both
+        surfaces resolve identical filter semantics. Returns ``("TRUE", [])``
+        when nothing constrains the query. The tag predicate is a correlated
+        ``EXISTS`` subquery qualified as ``documents.id``, so every consumer
+        must keep the outer ``documents`` table unaliased.
+        """
+        where_clauses: list[str] = []
+        params: list[object] = []
+
+        if default_exclude_failed and (not filters or "pipeline_status" not in filters):
+            where_clauses.append("pipeline_status != %s")
+            params.append("failed")
+
+        if filters:
+            for col in (
+                "doc_type",
+                "project",
+                "lifecycle_status",
+                "pipeline_status",
+                "source_type",
+            ):
+                if col in filters and filters[col]:
+                    where_clauses.append(f"{col} = %s")
+                    params.append(filters[col])
+            if "document_ids" in filters and filters["document_ids"]:
+                placeholders = ",".join("%s" for _ in filters["document_ids"])
+                where_clauses.append(f"id IN ({placeholders})")
+                params.extend(filters["document_ids"])
+            if "tags" in filters and filters["tags"]:
+                for tag in filters["tags"]:
+                    where_clauses.append(
+                        "EXISTS (SELECT 1 FROM document_tags "
+                        "WHERE document_id = documents.id AND tag = %s)"
+                    )
+                    params.append(tag)
+            if "tier3_metadata" in filters and filters["tier3_metadata"]:
+                tier3_metadata = filters["tier3_metadata"]
+                if not isinstance(tier3_metadata, dict):
+                    raise ValueError(
+                        f"tier3_metadata filter must be a dict, got {type(tier3_metadata).__name__}"
+                    )
+                for key, value in tier3_metadata.items():
+                    if not isinstance(key, str) or not _TIER3_KEY_FORMAT.fullmatch(key):
+                        raise ValueError(
+                            f"tier3_metadata filter key {key!r} is not safe for "
+                            "SQL interpolation; keys must match [A-Za-z0-9_]+"
+                        )
+                    path_expr = f"tier3_metadata->>'{key}'"
+                    if value is None:
+                        where_clauses.append(f"{path_expr} IS NULL")
+                    else:
+                        where_clauses.append(f"{path_expr} = %s")
+                        params.append(value)
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "TRUE"
+        return where_sql, params
 
     @classmethod
     def _build_order_clause(cls, sort_by: str | None, sort_order: str | None) -> str:
@@ -1105,6 +1123,50 @@ class PostgresGraphStore(GraphStore):
     # ------------------------------------------------------------------
     # Statistics
     # ------------------------------------------------------------------
+
+    async def query_document_facets(
+        self,
+        filters: dict[str, object] | None = None,
+    ) -> tuple[dict[str, dict[str, int]], int]:
+        with self._query_timer.measure("query_document_facets"):
+            # Facets are an enumeration surface: no default failed-pipeline
+            # exclusion, matching catalog document enumeration.
+            where_sql, params = self._build_document_where(filters, default_exclude_failed=False)
+
+            facets: dict[str, dict[str, int]] = {}
+            for field in DOCUMENT_FACET_FIELDS:
+                if field == "tags":
+                    # The tag filter predicate inside ``where_sql`` is a
+                    # correlated EXISTS subquery qualified as
+                    # ``documents.id``; the outer ``documents`` table must
+                    # stay unaliased for that correlation to resolve. The
+                    # join against ``document_tags`` (one row per
+                    # (document, tag) primary key) makes COUNT(*) the
+                    # per-tag distinct-document count.
+                    rows = await self._fetch_tuples(
+                        "SELECT document_tags.tag, COUNT(*) "  # noqa: S608 -- builder-trusted; values are %s
+                        "FROM document_tags JOIN documents "
+                        "ON documents.id = document_tags.document_id "
+                        f"WHERE {where_sql} "
+                        "GROUP BY document_tags.tag "
+                        "ORDER BY COUNT(*) DESC, document_tags.tag ASC",
+                        params,
+                    )
+                else:
+                    rows = await self._fetch_tuples(
+                        f"SELECT {field}, COUNT(*) FROM documents "  # noqa: S608 -- field from DOCUMENT_FACET_FIELDS
+                        f"WHERE ({where_sql}) AND {field} IS NOT NULL "
+                        f"GROUP BY {field} "
+                        f"ORDER BY COUNT(*) DESC, {field} ASC",
+                        params,
+                    )
+                facets[field] = {row[0]: row[1] for row in rows}
+
+            total = await self._fetch_scalar(
+                f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s
+                params,
+            )
+            return facets, total
 
     async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
         with self._query_timer.measure("get_document_counts_by_field"):

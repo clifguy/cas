@@ -1144,7 +1144,7 @@ def register_sage_tools(
         sort_by: str | None = None,
         sort_order: str | None = None,
     ) -> dict:
-        """Search for documents or edges; semantic, keyword, catalog, or deterministic retrieval.
+        """Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.
 
         Modes:
             semantic: Vector + optional BM25 fusion. Requires query.
@@ -1179,9 +1179,34 @@ def register_sage_tools(
                     filters={"source_id": "<doc_id>", "edge_type": "references"},
                     response_mode="full")
 
+        Facet enumeration:
+            When ``target="facets"`` (only valid with ``mode="catalog"``),
+            results are one row per facet field -- doc_type,
+            lifecycle_status, source_type, pipeline_status, tags -- each
+            carrying that field's distinct values with matching-document
+            counts. This is the bounded way to ask what exists in a
+            vault: response size is set by vocabulary sizes, never by
+            document count, so no pagination applies (non-default
+            ``limit``, ``offset``, ``sort_by``, ``sort_order``, and
+            ``response_mode`` are rejected via
+            ``mode_parameter_mismatch``). Document-target filter keys
+            narrow the slice being faceted; ``total_available`` is the
+            count of documents matching the filters. Documents with a
+            null field are excluded from that field's values but still
+            counted in ``total_available``; tag counts may sum above it
+            (multi-tag documents) or below it (untagged documents).
+
+            Example::
+
+                search(
+                    vault_id="cas",
+                    mode="catalog",
+                    target="facets",
+                    filters={"doc_type": "ticket"})
+
         Response-mode semantics across targets:
-            ``response_mode`` is the canonical payload-depth selector for both
-            targets. Behavior matrix:
+            ``response_mode`` is the canonical payload-depth selector for the
+            document and edge targets. Behavior matrix:
 
             - ``target="documents", mode="catalog"``: ``light`` returns a
               stripped ``DocumentSummaryLight`` carrying only id, title,
@@ -1197,6 +1222,9 @@ def register_sage_tools(
               ``response_mode`` is ignored. Deterministic always returns
               chunk content.
             - ``target="edges"``: see the *Edge enumeration* section above.
+            - ``target="facets"``: ``response_mode`` is rejected via
+              ``mode_parameter_mismatch`` -- facet rows have a single
+              fixed shape.
 
         Args:
             vault_id: Target vault identifier.
@@ -1205,8 +1233,10 @@ def register_sage_tools(
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,
-                source_type, tier3_metadata. Edge-target keys (only when
-                ``target="edges"``): source_id, target_id, edge_type.
+                source_type, tier3_metadata (these also narrow the
+                faceted slice when ``target="facets"``). Edge-target keys
+                (only when ``target="edges"``): source_id, target_id,
+                edge_type.
                 ``source_type`` selects on the format the document was
                 ingested from, and takes one of a closed set: "markdown",
                 "docx", "pdf", "email", "onenote", "teams_chat", "xlsx",
@@ -1242,8 +1272,10 @@ def register_sage_tools(
             target: Result row type. "documents" (default) preserves the
                 historical surface; "edges" enumerates production edges
                 via filter on ``source_id`` / ``target_id`` /
-                ``edge_type`` and is valid only with ``mode="catalog"``.
-                See the *Edge enumeration* section above.
+                ``edge_type``; "facets" aggregates distinct values with
+                counts per document metadata field. "edges" and "facets"
+                are valid only with ``mode="catalog"``. See the *Edge
+                enumeration* and *Facet enumeration* sections above.
             response_mode: Canonical payload-depth selector. See the
                 *Response-mode semantics across targets* section above for
                 the full matrix. "light" returns the stripped shape

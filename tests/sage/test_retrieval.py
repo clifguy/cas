@@ -43,6 +43,7 @@ from sage.models.schemas import (
     DocumentSummary,
     Edge,
     EdgeHit,
+    FacetHit,
     RetrievalFilters,
     UpdateMetadataRequest,
 )
@@ -4781,6 +4782,232 @@ def test_invalid_target_value_raises_enum_validation_error():
     err = info.value.errors()[0]
     assert err["type"] == "enum"
     assert err["loc"] == ("target",)
+
+
+# ---------------------------------------------------------------------------
+# Facet aggregation via search(target="facets")
+# ---------------------------------------------------------------------------
+
+# Deliberately a literal rather than an import of the implementation's
+# field constant: the tests assert the contract vocabulary independently.
+_FACET_FIELDS = (
+    "doc_type",
+    "lifecycle_status",
+    "source_type",
+    "pipeline_status",
+    "tags",
+)
+
+
+async def _seed_facet_docs(graph_store) -> None:
+    """Three documents using vault-configured doc_types (note, memo).
+
+    doc_type: 2x note, 1x memo. tags: "alpha" on two docs, "beta" on
+    one multi-tag doc. Configured doc_types keep the vocabulary-warning
+    hint quiet in the no-warning tests.
+    """
+    await graph_store.insert_document(
+        _make_doc(_id("fct_1"), doc_type="note", tags=["alpha", "beta"])
+    )
+    await graph_store.insert_document(_make_doc(_id("fct_2"), doc_type="note", tags=["alpha"]))
+    await graph_store.insert_document(_make_doc(_id("fct_3"), doc_type="memo"))
+
+
+async def test_catalog_facets_returns_facet_hit_rows(graph_store, retrieval_service):
+    """target=facets returns one FacetHit per facet field with exact counts."""
+    await _seed_facet_docs(graph_store)
+
+    req = DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    resp = await retrieval_service.discover(req)
+
+    assert resp.target == RetrievalTarget.FACETS
+    assert resp.mode == RetrievalMode.CATALOG
+    assert resp.total_available == 3
+    for hit in resp.results:
+        assert isinstance(hit, FacetHit), (
+            f"target=facets must return FacetHit rows, got {type(hit).__name__}"
+        )
+    assert [hit.field for hit in resp.results] == list(_FACET_FIELDS)
+    by_field = {hit.field: hit.values for hit in resp.results}
+    assert by_field["doc_type"] == {"note": 2, "memo": 1}
+    assert by_field["lifecycle_status"] == {"active": 3}
+    assert by_field["source_type"] == {"markdown": 3}
+    assert by_field["pipeline_status"] == {"abstraction_complete": 3}
+    assert by_field["tags"] == {"alpha": 2, "beta": 1}
+
+
+async def test_catalog_facets_respects_filters(graph_store, retrieval_service):
+    """Facets are computed within the filter slice, not vault-wide."""
+    await _seed_facet_docs(graph_store)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        filters=RetrievalFilters(doc_type="note"),
+    )
+    resp = await retrieval_service.discover(req)
+
+    assert resp.total_available == 2
+    by_field = {hit.field: hit.values for hit in resp.results}
+    assert by_field["doc_type"] == {"note": 2}
+    assert by_field["tags"] == {"alpha": 2, "beta": 1}
+
+
+async def test_catalog_facets_empty_vault(graph_store, retrieval_service):
+    """Empty vault: every facet field present with empty values, zero total."""
+    req = DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    resp = await retrieval_service.discover(req)
+
+    assert resp.total_available == 0
+    assert [hit.field for hit in resp.results] == list(_FACET_FIELDS)
+    assert all(hit.values == {} for hit in resp.results)
+
+
+async def test_catalog_facets_surfaces_vocabulary_warnings(graph_store, retrieval_service):
+    """An out-of-vocabulary doc_type filter yields the warnings hint.
+
+    Proves the facets dispatch branch runs the vocabulary advisory --
+    a branch that returned before _apply_vocabulary_warnings would
+    yield empty facets with no explanation.
+    """
+    await _seed_facet_docs(graph_store)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        filters=RetrievalFilters(doc_type="template"),
+    )
+    resp = await retrieval_service.discover(req)
+
+    assert resp.total_available == 0
+    assert all(hit.values == {} for hit in resp.results)
+    assert resp.hints is not None
+    assert resp.hints.get("warnings"), "an undefined doc_type must surface a hints warning"
+
+
+async def test_catalog_facets_never_emits_budget_hint(graph_store, retrieval_service, monkeypatch):
+    """No budget hint on facets, even under a tiny inline budget.
+
+    Deliberate deviation from the edges branch: the hint's
+    recommended_limit names a parameter the facets validator rejects,
+    and the response is vocabulary-bounded by construction. Pins the
+    skip so a future consistency edit re-introducing the hint fails.
+    """
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "64")
+    await _seed_facet_docs(graph_store)
+
+    req = DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    resp = await retrieval_service.discover(req)
+
+    assert resp.hints is None or "recommended_limit" not in resp.hints
+
+
+# ---------------------------------------------------------------------------
+# DiscoverRequest validator: target="facets" combinations
+# ---------------------------------------------------------------------------
+
+
+def test_target_facets_with_semantic_mode_is_mode_parameter_mismatch():
+    """target=facets + mode=semantic raises mode_parameter_mismatch."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="x", target="facets")
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == "target"
+    assert err["ctx"]["allowed_modes"] == [RetrievalMode.CATALOG.value]
+
+
+def test_target_facets_with_keyword_mode_is_mode_parameter_mismatch():
+    """target=facets + mode=keyword raises mode_parameter_mismatch."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="x", target="facets")
+    assert info.value.errors()[0]["type"] == "mode_parameter_mismatch"
+
+
+def test_target_facets_with_deterministic_mode_is_mode_parameter_mismatch():
+    """target=facets + mode=deterministic raises mode_parameter_mismatch."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(
+            mode=RetrievalMode.DETERMINISTIC,
+            document_id=_id("d1"),
+            heading_path="x",
+            target="facets",
+        )
+    assert info.value.errors()[0]["type"] == "mode_parameter_mismatch"
+
+
+@pytest.mark.parametrize(
+    "filter_kwargs,key",
+    [
+        ({"source_id": _id("d1")}, "source_id"),
+        ({"target_id": _id("d1")}, "target_id"),
+        ({"edge_type": "references"}, "edge_type"),
+    ],
+)
+def test_target_facets_rejects_edge_only_filter_keys(filter_kwargs, key):
+    """target=facets rejects every edge-only filter key with
+    mode_parameter_mismatch carrying the offending key.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target="facets",
+            filters=RetrievalFilters(**filter_kwargs),
+        )
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == f"filters.{key}"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("query", "anything"),
+        ("document_id", _id("d1")),
+        ("heading_path", "Section 1"),
+        ("min_relevance", 0.5),
+        ("sort_by", "title"),
+        ("sort_order", "desc"),
+        ("include_abstracts", True),
+        ("response_mode", "light"),
+        ("limit", 11),
+        ("offset", 5),
+    ],
+)
+def test_target_facets_rejects_non_default_request_parameters(field, value):
+    """target=facets rejects every request parameter that has no facet
+    semantics when it carries an explicit non-default value. Unlike
+    target=edges, that includes the pagination knobs: a facets response
+    is one fixed row per field, so limit/offset/sort/response_mode have
+    nothing to act on.
+
+    Asserting ctx["forbidden_param"] (not just the error type) keeps a
+    different validator branch from passing this test for the wrong
+    reason.
+    """
+    kwargs = {"mode": RetrievalMode.CATALOG, "target": "facets", field: value}
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(**kwargs)
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == field
+
+
+def test_target_facets_accepts_document_filters_with_default_parameters():
+    """target=facets + document-only filters + all-default knobs
+    constructs successfully — guards against over-rejection making the
+    rejection tests pass trivially.
+    """
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target="facets",
+        filters=RetrievalFilters(
+            doc_type="ticket",
+            tags=["a"],
+            tier3_metadata={"k": "v"},
+        ),
+    )
+    assert req.target.value == "facets"
 
 
 # ---------------------------------------------------------------------------

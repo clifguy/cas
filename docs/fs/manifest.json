@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.10",
+      "version": "0.11",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.46",
+  "substrate_version": "1.47",
   "revision_history": [
+    {
+      "version": "1.47",
+      "date": "2026-08-28",
+      "summary": "Facets target added to the search catalog surface (T-0458). sage_core_api.openapi.yaml bumped v0.10->v0.11: RetrievalTarget gains the 'facets' member, DiscoverResponse.results gains the FacetHit row type (new component schema), and the discover request/response target, results, and total_available descriptions are updated. search(mode=catalog, target=facets) returns distinct values with counts for doc_type, lifecycle_status, source_type, pipeline_status, and tags, computed within any supplied document filters; response size is bounded by vocabulary sizes, so no pagination parameters apply (non-default limit/offset/sort_by/sort_order/response_mode are rejected via mode_parameter_mismatch)."
+    },
     {
       "version": "1.46",
       "date": "2026-08-23",

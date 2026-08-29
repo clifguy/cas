@@ -339,6 +339,12 @@ class StubGraphStore(GraphStore):
     ) -> tuple[list[Document], int]:
         raise self._unsupported("query_documents")
 
+    async def query_document_facets(
+        self,
+        filters: dict[str, object] | None = None,
+    ) -> tuple[dict[str, dict[str, int]], int]:
+        raise self._unsupported("query_document_facets")
+
     async def find_documents_by_title(self, title: str) -> list[Document]:
         return [d for d in self._docs.values() if d.title == title]
 

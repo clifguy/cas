@@ -176,18 +176,23 @@ class RetrievalScope(StrEnum):
 
 
 class RetrievalTarget(StrEnum):
-    """Discriminates whether ``search`` enumerates documents or edges.
+    """Discriminates what ``search`` enumerates: documents, edges, or facets.
 
     `documents` (default) preserves the historical surface: results are
     ``DiscoverHit`` rows backed by ``DocumentSummary``. `edges` switches
     the dispatch to first-class edge enumeration: results are ``EdgeHit``
     rows carrying ``edge_id``, endpoints, edge_type, anchor versions,
-    rationale, and retraction state. Only valid in combination with
-    ``mode="catalog"``; other modes are rejected at request validation.
+    rationale, and retraction state. `facets` switches to vocabulary
+    aggregation: results are ``FacetHit`` rows carrying distinct values
+    with counts for a fixed set of document metadata fields, bounded by
+    vocabulary size rather than document count. `edges` and `facets` are
+    only valid in combination with ``mode="catalog"``; other modes are
+    rejected at request validation.
     """
 
     DOCUMENTS = "documents"
     EDGES = "edges"
+    FACETS = "facets"
 
 
 class ResponseMode(StrEnum):
