@@ -20,6 +20,10 @@ clause (k)).
 find_fabricated_cardinals: deterministic post-generation check that exact
 counts an abstract asserts for source-derivable units agree with the source
 (CAS-ADR-020 clause (e)); recording posture, no repair.
+
+find_type_restating_opener: deterministic post-generation check that an
+abstract does not open by classifying the document as an instance of its
+own doc_type (CAS-ADR-020 clause (f)); recording posture, no repair.
 """
 
 import re
@@ -888,3 +892,252 @@ def find_fabricated_cardinals(abstract: str, source_text: str) -> list[Fabricate
             )
         )
     return findings
+
+
+# ---------------------------------------------------------------------------
+# Type-restating-opener detection (CAS-ADR-020 clause (f))
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TypeRestatingOpener:
+    """An opener that classifies the document as an instance of its own type.
+
+    ``surface`` is the matched type phrase as it appeared in the opener
+    ("Architecture Decision Record"); ``verb`` the classifying verb that
+    anchored the frame ("serves as"); ``form`` names which surface-form
+    path matched -- "token" for the doc_type's own words, "expansion" for
+    a registered spelled-out form -- calibration data for the expansion
+    registry; ``opener`` the inspected first sentence, so a finding is
+    adjudicable from the record alone.
+    """
+
+    doc_type: str
+    surface: str
+    verb: str
+    form: str
+    opener: str
+
+
+# The opener's subject must be a generic artifact deictic ("This document
+# ...") for the frame to read as classification. A type word in subject
+# position is either a title mention ("The ticket conventions steering
+# document prescribes...") or the sanctioned descriptive style the
+# abstraction prompt itself models ("The guideline...", "The text..."),
+# and neither is the breach this check covers.
+_DEICTIC_SUBJECT = re.compile(r"^(?:this|the)\s+(?:document|text|file)\b", re.IGNORECASE)
+
+# Classifying verbs that introduce a predicate complement naming what the
+# document *is*. Contentful verbs (prescribes, defines, governs, records)
+# are deliberately absent: they introduce what the document is about.
+# "describes" is registered because a measured breach used it to classify
+# ("describes a ticket requesting..."). Growing the registry is a data
+# change, not a code change.
+_CLASSIFYING_VERBS: tuple[tuple[str, ...], ...] = (
+    ("is",),
+    ("serves", "as"),
+    ("acts", "as"),
+    ("functions", "as"),
+    ("constitutes",),
+    ("represents",),
+    ("describes",),
+)
+
+# The type phrase must begin within this many tokens after the verb --
+# determiners and adjectives ("an accepted") pass through unenumerated,
+# while a phrase deep in the predicate is content, not classification.
+_MAX_COMPLEMENT_TOKENS = 6
+
+# Connectives that end a predicate complement. A token from this set
+# between the verb and the type phrase marks the phrase as content the
+# document is about ("describes the partitioning OF the ticket store"),
+# not a class the document is asserted to belong to.
+_COMPLEMENT_BREAKERS = frozenset(
+    {
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "from",
+        "about",
+        "across",
+        "between",
+        "within",
+        "and",
+        "or",
+    }
+)
+
+# Conventional spelled-out forms of acronymic doc_types. The registry holds
+# only forms with an observed spelled-out breach; unknown doc_types match
+# by their own words alone. Growing it is a data change, not a code change
+# (cf. _DERIVABLE_UNITS).
+_DOC_TYPE_EXPANSIONS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "adr": (("architecture", "decision", "record"),),
+}
+
+# Edge punctuation for opener tokens: the shared set plus typographic
+# quotes, so a curly-quoted type word still compares bare. Detector-local
+# rather than a widening of _EDGE_PUNCTUATION, whose exact membership the
+# cardinal tokenizer's tests pin.
+_OPENER_EDGE_PUNCTUATION = _EDGE_PUNCTUATION + "“”‘’"
+
+
+def _opener_sentence(abstract: str) -> str:
+    """The abstract's first sentence, or the whole text when unterminated.
+
+    Reuses the sentence-boundary machinery so an abbreviation or an
+    identifier period inside the opener ("e.g.", a hyphen-numbered id)
+    does not truncate it.
+    """
+    stripped = abstract.strip()
+    for match in _SENTENCE_END.finditer(stripped):
+        if not _is_non_terminal(stripped, match):
+            return stripped[: match.end()]
+    return stripped
+
+
+def _opener_tokens(opener: str) -> list[tuple[str, str]]:
+    """(surface, comparable) pairs for each word of the opener.
+
+    The surface is the NFKC-normalized token stripped of edge
+    punctuation, preserved for the finding's ``surface`` field; the
+    comparable is its casefold. Deliberately not ``_normalize``: its
+    hyphen-to-space split would read a compound like "ticket-store" as
+    containing the bare type word, and would destroy the hyphenated id
+    suffix the final-word tolerance keys on.
+    """
+    tokens: list[tuple[str, str]] = []
+    for raw in opener.split():
+        stripped = unicodedata.normalize("NFKC", raw).strip(_OPENER_EDGE_PUNCTUATION)
+        if stripped:
+            tokens.append((stripped, stripped.casefold()))
+    return tokens
+
+
+def _match_type_phrase(
+    tokens: list[tuple[str, str]], start: int, doc_type: str
+) -> tuple[str, str] | None:
+    """Match a type surface form beginning at ``start``.
+
+    Candidate forms are the doc_type's own underscore-split words and any
+    registered spelled-out expansions. The final word of a form tolerates
+    a hyphen-digit id suffix, so a numbered instance name ("ADR-029")
+    still counts as the type; a non-digit suffix never matches, keeping
+    compounds like "ticket-store" out.
+
+    Returns:
+        The matched surface text and the form name ("token" or
+        "expansion"), or None.
+    """
+    own_words = tuple(word.casefold() for word in doc_type.split("_") if word)
+    candidates: list[tuple[tuple[str, ...], str]] = [(own_words, "token")]
+    for expansion in _DOC_TYPE_EXPANSIONS.get(doc_type.casefold(), ()):
+        candidates.append((expansion, "expansion"))
+    for words, form in candidates:
+        if not words or start + len(words) > len(tokens):
+            continue
+        head = tokens[start : start + len(words) - 1]
+        if any(comparable != word for (_, comparable), word in zip(head, words[:-1])):
+            continue
+        last_comparable = tokens[start + len(words) - 1][1]
+        if not re.fullmatch(rf"{re.escape(words[-1])}(?:-\d+)?", last_comparable):
+            continue
+        surface = " ".join(surface for surface, _ in tokens[start : start + len(words)])
+        return surface, form
+    return None
+
+
+def _complement_type_phrase(
+    tokens: list[tuple[str, str]], start: int, doc_type: str
+) -> tuple[str, str] | None:
+    """Find a type phrase in the complement window after a verb.
+
+    The phrase must begin within ``_MAX_COMPLEMENT_TOKENS`` tokens of the
+    verb, with no connective from ``_COMPLEMENT_BREAKERS`` intervening.
+    """
+    limit = min(len(tokens), start + _MAX_COMPLEMENT_TOKENS)
+    for position in range(start, limit):
+        if tokens[position][1] in _COMPLEMENT_BREAKERS:
+            return None
+        matched = _match_type_phrase(tokens, position, doc_type)
+        if matched is not None:
+            return matched
+    return None
+
+
+def find_type_restating_opener(abstract: str, doc_type: str | None) -> list[TypeRestatingOpener]:
+    """Find an opener that restates the document's type as its class.
+
+    CAS-ADR-020 clause (f) instructs the prompt against restating
+    metadata the discovering agent already sees; this is the
+    deterministic post-generation check for the opening-clause shape of
+    that constraint, inspecting recorded model output rather than prompt
+    construction so it can fail while the constraint is breached. The
+    caller decides what to do with a finding; the function mutates
+    nothing.
+
+    A finding requires the classifying frame in the abstract's first
+    sentence: a generic deictic subject ("This document..."), a
+    registered classifying verb, and the doc_type's surface form
+    beginning within the complement window with no connective between
+    verb and phrase. The gates exist for the false positives they
+    exclude: type words in subject position are title mentions or
+    sanctioned descriptive style; a phrase past a connective or deep in
+    the predicate is content the document is about.
+
+    This is a proxy for clause (f) and is recorded as one. It detects
+    the frame the measured breaches took: a restatement through an
+    unregistered verb or synonym, an unregistered spelled-out form, or
+    subject-position naming passes it, and a type noun heading a
+    contentful compound inside the window ("describes the ticket
+    lifecycle") fires it -- the false-positive class the recording
+    posture exists to measure before any promotion. The out-of-band
+    behavioral evaluation carries the remainder, as it does for the
+    other checks.
+
+    Args:
+        abstract: The generated semantic abstract to inspect.
+        doc_type: The document's type as supplied to the abstraction
+            prompt; None when the document carries none.
+
+    Returns:
+        At most one finding -- one opener is one breach, whatever
+        matches inside it. Empty when the frame is absent or doc_type
+        is None.
+    """
+    if not doc_type:
+        return []
+    opener = _opener_sentence(abstract)
+    if not opener or _DEICTIC_SUBJECT.match(opener) is None:
+        return []
+    tokens = _opener_tokens(opener)
+    comparables = [comparable for _, comparable in tokens]
+    for index in range(len(tokens)):
+        verb = next(
+            (
+                words
+                for words in _CLASSIFYING_VERBS
+                if tuple(comparables[index : index + len(words)]) == words
+            ),
+            None,
+        )
+        if verb is None:
+            continue
+        matched = _complement_type_phrase(tokens, index + len(verb), doc_type)
+        if matched is not None:
+            surface, form = matched
+            return [
+                TypeRestatingOpener(
+                    doc_type=doc_type,
+                    surface=surface,
+                    verb=" ".join(verb),
+                    form=form,
+                    opener=opener,
+                )
+            ]
+    return []

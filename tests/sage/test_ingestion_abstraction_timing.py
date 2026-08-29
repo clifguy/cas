@@ -6,13 +6,14 @@ The records under test live at the one seam both entry points pass through.
 
 The latency record carries only fields every provider can answer for; a
 provider with more to say emits its own record alongside it. The
-faithfulness records report three finding classes. An unattested acronym
+faithfulness records report four finding classes. An unattested acronym
 gloss (CAS-ADR-020 clause (e)) is recorded and then collapsed to its bare
 acronym -- the repair posture clause (h) admits once the check's error
 rate is measured -- so the returned abstract carries no unattested claim.
-The structure-echo check (clause (k)) and the fabricated-cardinal check
-(clause (e), a separate finding class with no adjudicated measurement)
-record only. Attested glosses and both recording-only checks leave the
+The structure-echo check (clause (k)), the fabricated-cardinal check
+(clause (e), a separate finding class), and the type-restating-opener
+check (clause (f)) have no adjudicated measurement of their own and
+record only. Attested glosses and the recording-only checks leave the
 abstract byte-identical to the provider's trimmed output.
 """
 
@@ -171,6 +172,47 @@ _GAPPED_TURN_TRANSCRIPT = (
     "### Turn 4 — Author\n\nA reply addressing the remarks.\n\n"
     "### Turn 6 — Reviewer\n\nClosing notes.\n"
 )
+
+#: Named at module scope for the same byte-identity reason as
+#: _OUTLINE_ABSTRACT: the non-mutating assertion compares against the exact
+#: bytes the provider returned. Ends on a complete sentence, so the
+#: sentence-boundary trim is a no-op; the parenthetical is not a gloss
+#: candidate (the hyphenated id falls outside the acronym shape), so the
+#: clause (e) repair leaves it untouched.
+_TYPE_RESTATING_ABSTRACT = (
+    "This document serves as an accepted Architecture Decision Record "
+    "(ADR-029) that revises the retention policy."
+)
+
+
+class _TypeRestatingStubProvider(AbstractionProvider):
+    """A provider whose abstract opens by restating the document's type.
+
+    Mirrors the measured breach. Whether the opener is a finding is
+    decided entirely by the doc_type a test pairs it with.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return _TYPE_RESTATING_ABSTRACT
+
+
+class _ContentfulOpenerStubProvider(AbstractionProvider):
+    """A provider whose opener mentions a type word as content, not class."""
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return "This document describes the partitioning of the ticket store across vaults."
+
+
+class _GlossedOpenerStubProvider(AbstractionProvider):
+    """A provider whose type-restating opener carries a collapsible gloss.
+
+    Paired with a source that does not attest the expansion, the clause
+    (e) repair rewrites the opener before the recording-only checks read
+    it -- the one case where check ordering is observable in the record.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return "This document serves as an Architecture Decision Record (ADR) governing retention."
 
 
 def _records(caplog):
@@ -534,6 +576,159 @@ async def test_seam_stays_silent_for_an_accurate_count(ingestion_service, caplog
 
     assert [r for r in _faithfulness_records(caplog) if r["label"] == "fabricated_cardinal"] == []
     assert result == "The transcript unfolds across three turns of discussion."
+
+
+async def test_seam_records_a_type_restating_opener(ingestion_service, caplog):
+    """A type-restating opener emits a record with the adjudication fields.
+
+    The ``"action" not in record`` assertion pins the recording posture: a
+    seam promoted to repair grows that field, and this test is the one
+    that fails when it does before an adjudicated measurement licenses it.
+    """
+    text = "A policy document about retention."
+    ingestion_service._abstraction = _TypeRestatingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-6")
+
+    records = [r for r in _faithfulness_records(caplog) if r["label"] == "type_restating_opener"]
+    assert len(records) == 1
+    record = records[0]
+    assert record["layer"] == "abstraction"
+    assert record["provider"] == "_TypeRestatingStubProvider"
+    assert record["vault_id"] == "test_vault"
+    assert record["document_id"] == "doc-6"
+    assert record["doc_type"] == "adr"
+    assert record["surface"] == "Architecture Decision Record"
+    assert record["verb"] == "serves as"
+    assert record["form"] == "expansion"
+    assert record["opener"] == _TYPE_RESTATING_ABSTRACT
+    assert record["document_chars"] == len(text)
+    assert record["abstract_chars"] == len(_TYPE_RESTATING_ABSTRACT)
+    assert "action" not in record
+
+
+async def test_seam_leaves_a_type_restating_abstract_unmodified(ingestion_service, caplog):
+    """The check records; it does not repair.
+
+    Byte identity against the provider's own output proves the
+    non-mutating posture CAS-ADR-020 requires until the check's error rate
+    is measured. A prefix assertion would not: a seam that rewrote or
+    stripped the opener passes ``endswith`` or a length band while doing
+    exactly the repair this posture forbids.
+    """
+    ingestion_service._abstraction = _TypeRestatingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            "A policy document about retention.", "adr", document_id="doc-6"
+        )
+
+    assert result == _TYPE_RESTATING_ABSTRACT
+
+
+async def test_seam_stays_silent_for_a_contentful_opener(ingestion_service, caplog):
+    """An opener that mentions a type word as content emits nothing.
+
+    Anti-coincidental-pass: without this, the tests above pass on a seam
+    wired to log whenever the type word appears anywhere in the opener --
+    a detector with no complement gates at all.
+    """
+    ingestion_service._abstraction = _ContentfulOpenerStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            "A document about vault partitioning.", "ticket", document_id="doc-7"
+        )
+
+    assert [r for r in _faithfulness_records(caplog) if r["label"] == "type_restating_opener"] == []
+    assert result == "This document describes the partitioning of the ticket store across vaults."
+
+
+async def test_seam_keys_the_check_to_the_documents_doc_type(ingestion_service, caplog):
+    """The same opener is a finding only against the type it restates.
+
+    Anti-coincidental-pass: every other case pairs the stub with the
+    matching type, so a seam that hardcodes a type -- or never passes the
+    parameter through -- passes them all; only the mismatched pairing
+    fails it.
+    """
+    ingestion_service._abstraction = _TypeRestatingStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await ingestion_service._generate_abstract_text(
+            "A policy document about retention.", "ticket", document_id="doc-6"
+        )
+
+    assert [r for r in _faithfulness_records(caplog) if r["label"] == "type_restating_opener"] == []
+
+
+async def test_type_opener_check_reads_the_gloss_repaired_abstract(ingestion_service, caplog):
+    """The record describes the stored abstract, not the model's raw output.
+
+    The clause (e) repair rewrites this opener -- the unattested gloss
+    collapses to its bare acronym -- before the recording-only checks
+    run. A check placed before the repair reports the expansion form and
+    the pre-repair length, describing text that was never stored; the
+    ``form == "token"`` assertion is what catches that ordering.
+    """
+    text = "A policy document about retention."
+    collapsed = "This document serves as an ADR governing retention."
+    ingestion_service._abstraction = _GlossedOpenerStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(text, "adr", document_id="doc-8")
+
+    [record] = [r for r in _faithfulness_records(caplog) if r["label"] == "type_restating_opener"]
+    assert record["form"] == "token"
+    assert record["surface"] == "ADR"
+    assert record["abstract_chars"] == len(collapsed)
+    assert result == collapsed
+
+
+async def test_type_opener_records_carry_the_emitting_vaults_id(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_vault_config_dict,
+    caplog,
+):
+    """The new finding class names its vault like the three before it.
+
+    Same construction as the multi-vault case above: two services with
+    distinct vault ids, both emitting the same document id, so only an id
+    read from the emitting instance's own config passes.
+    """
+
+    def _service_for(vault_id: str) -> IngestionService:
+        config = VaultConfig.model_validate(
+            {
+                **minimal_vault_config_dict,
+                "vault": {**minimal_vault_config_dict["vault"], "id": vault_id},
+            }
+        )
+        return IngestionService(
+            graph_store=graph_store,
+            lock_manager=lock_manager,
+            content_store=stub_content_store,
+            embedding_provider=stub_embedding_provider,
+            abstraction_provider=_TypeRestatingStubProvider(),
+            config=config,
+        )
+
+    first = _service_for("test_vault")
+    second = _service_for("other_vault")
+    text = "A policy document about retention."
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        await first._generate_abstract_text(text, "adr", document_id="doc-6")
+        await second._generate_abstract_text(text, "adr", document_id="doc-6")
+
+    opener_records = [
+        r for r in _faithfulness_records(caplog) if r["label"] == "type_restating_opener"
+    ]
+    assert [r["vault_id"] for r in opener_records] == ["test_vault", "other_vault"]
 
 
 async def test_seam_records_carry_the_emitting_vaults_id(
