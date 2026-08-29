@@ -225,6 +225,33 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
             "tags",
         }
     ),
+    # The eleven filter keys are tripwires, not functional arguments, on
+    # the same mechanism as the ingest metadata keys above. Scope
+    # constraints belong nested under ``filters``; these spellings are
+    # published at the top level solely so a wrong-level call reaches the
+    # ``misplaced_filters`` guard instead of being stripped in transit by
+    # a client's published-schema coercion, which returned an unfiltered
+    # result set with nothing naming the dropped constraint. The set is
+    # the whole ``RetrievalFilters`` vocabulary rather than a chosen
+    # subset, so no filter key retains the silent-drop behavior. They are
+    # deliberately absent from the REST surface, where callers read the
+    # OpenAPI schema and do not guess field names.
+    # Permanent MCP-side divergence by design, not pending remediation.
+    ("sage_core", "search"): frozenset(
+        {
+            "doc_type",
+            "project",
+            "lifecycle_status",
+            "tags",
+            "document_ids",
+            "pipeline_status",
+            "source_type",
+            "tier3_metadata",
+            "source_id",
+            "target_id",
+            "edge_type",
+        }
+    ),
 }
 
 

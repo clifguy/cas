@@ -30,7 +30,7 @@ from sage.mcp_server import (
     update_metadata,
 )
 from sage.models.enums import EdgeType, RationaleKind, RetrievalMode
-from sage.sage_api_tools import _INGEST_METADATA_KEYS
+from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
 # CAS-ADR-029 v4 plural-noun collapse: the pre-CAS-ADR-029 singleton tools
@@ -220,6 +220,29 @@ def test_ingest_document_documents_the_nested_metadata_shape():
     assert 'metadata={"title"' in doc, (
         "ingest_document docstring must show the nested metadata call shape."
     )
+
+
+def test_search_documents_the_nested_filters_shape():
+    """``search`` names every protected filter key and the nesting.
+
+    The read-side counterpart of the ingest metadata gate, and the one
+    with the quieter failure: a metadata key at the wrong level yields a
+    mis-titled document, while a filter key at the wrong level yields
+    plausible rows that were never filtered. Structural rather than
+    substring-only: a key added to ``RetrievalFilters`` -- and so to
+    ``_SEARCH_FILTER_KEYS`` -- without a docs update fails here instead
+    of silently becoming undocumented.
+    """
+    doc = _docstring(search)
+    undocumented = [key for key in _SEARCH_FILTER_KEYS if f"``{key}``" not in doc]
+    assert not undocumented, (
+        f"search docstring must name every protected filter key; missing: {undocumented}"
+    )
+    assert "misplaced_filters" in doc, (
+        "search docstring must document ``misplaced_filters`` as an error mode."
+    )
+    # The worked example, not just the prose claim.
+    assert 'filters={"doc_type"' in doc, "search docstring must show the nested filters call shape."
 
 
 def test_ingest_document_documents_source_type_inference():
