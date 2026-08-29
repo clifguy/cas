@@ -199,7 +199,7 @@
     },
     "timing": {
       "type": "object",
-      "description": "Per-vault query-timing instrumentation configuration (T-0073). Enables structured timing records on the storage, content, and retrieval layers, written to a per-vault rotating log file under brain_root.",
+      "description": "Per-vault query-timing instrumentation configuration. Enables structured timing records on the storage, content, and retrieval layers, written to a per-vault rotating log file under brain_root.",
       "additionalProperties": false,
       "properties": {
         "enabled": {

@@ -1,4 +1,4 @@
-# SAGE Core API stack-wide configuration (CAS-ADR-030, T-0103).
+# SAGE Core API stack-wide configuration (CAS-ADR-030).
 #
 # Per ADR-030, the abstraction provider and model identifier live here at
 # stack scope rather than in each vault's vault_config.yaml. The local MLX

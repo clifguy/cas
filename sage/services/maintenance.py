@@ -647,7 +647,7 @@ class MaintenanceService:
                 "was constructed without one. The production "
                 "initialize_services path wires it in; tests that exercise "
                 "the maintenance surface must pass ingestion_service "
-                "explicitly (T-0089, F-8 guard)."
+                "explicitly."
             )
 
         self._reject_if_in_flight()

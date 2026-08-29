@@ -858,7 +858,7 @@ class VaultConfig(BaseModel):
     timing: TimingConfig = Field(
         default_factory=TimingConfig,
         description=(
-            "Per-vault query-timing instrumentation configuration (T-0073). "
+            "Per-vault query-timing instrumentation configuration. "
             "Enables structured timing records on the storage, content, "
             "and retrieval layers, written to a per-vault rotating log "
             "file under brain_root."

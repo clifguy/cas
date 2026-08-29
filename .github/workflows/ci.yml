@@ -16,7 +16,7 @@ jobs:
   paths-filter:
     # Gate frontend jobs (vitest, playwright-e2e) on app/ changes so push
     # events that touch only sage/, root_harness/, docs/, etc. skip the
-    # expensive Node + Playwright + browser-install setup (T-0128 AC:
+    # expensive Node + Playwright + browser-install setup (acceptance criterion:
     # "on every push and pull request that touches app/"). The Python
     # jobs below are not gated; they continue to run on every push.
     runs-on: ubuntu-latest
@@ -259,12 +259,12 @@ jobs:
         run: npm run lint
 
   vitest:
-    # Frontend unit tests + TypeScript/Vite build gate for the CAS app
-    # (T-0128, T-0140). Pure Node; no Python or backend needed. Gated on
+    # Frontend unit tests + TypeScript/Vite build gate for the CAS app.
+    # Pure Node; no Python or backend needed. Gated on
     # app/** changes via paths-filter. The build step (`npm run build` =
     # `tsc -b && vite build`) catches type errors and bundling failures
     # that the dev server (Vite) tolerates silently; this gate exists
-    # because pre-T-0140 such errors could sit on main undetected.
+    # because previously such errors could sit on main undetected.
     needs: paths-filter
     if: needs.paths-filter.outputs.app == 'true'
     runs-on: ubuntu-latest
@@ -291,7 +291,7 @@ jobs:
         run: npm test
 
   playwright-e2e:
-    # Playwright e2e for the CAS app (T-0128). Starts SAGE backend via
+    # Playwright e2e for the CAS app. Starts SAGE backend via
     # the Playwright webServer block in app/playwright.config.ts.
     # SAGE_TEST_STUB_PROVIDERS=1 short-circuits the Qwen3 MLX provider
     # (MLX is Apple Silicon-only; the runner is ubuntu-latest). The
