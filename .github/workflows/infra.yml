@@ -83,7 +83,11 @@ jobs:
     # which fails loudly if the tenant's identity is not configured.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Covers the what-if gate, the full Bicep apply (managed Postgres is the long
+    # pole), the retry-inclusive bootstrap wait below, app-tier convergence, and
+    # the preflight gate — with headroom, so the bootstrap wait expiring reports
+    # its own failure rather than the runner killing the job mid-poll.
+    timeout-minutes: 60
     environment: ${{ inputs.environment }}
     env:
       # The tenant's parameter set — every coordinate is an environment-scoped
@@ -159,6 +163,15 @@ jobs:
         # and pre-creates the extensions from inside the VNet (the server has no
         # public endpoint). It must complete before the apps can connect, so start
         # it and wait. Idempotent: a re-run reconciles.
+        #
+        # Wait budget: the job's own `replicaTimeout` bounds one replica, and its
+        # `replicaRetryLimit` lets that window be spent once per attempt, so the
+        # wait must cover the product — a budget sized for a single attempt turns
+        # a legitimate retry into a failed deploy and abandons the running
+        # execution. The budget is therefore derived from the two settings rather
+        # than hand-set, and it is spent against the wall clock rather than a
+        # count of iterations: the status call's own latency would otherwise
+        # shorten an iteration-bounded loop by an unbounded amount.
         run: |
           set -euo pipefail
           BOOTSTRAP_JOB="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
@@ -167,9 +180,20 @@ jobs:
             --name "$BOOTSTRAP_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
             --query name -o tsv)"
           echo "Started bootstrap job execution: $EXECUTION"
+          # Mirrors infra/modules/postgres-bootstrap.bicep; the poll-budget gate
+          # binds both to that module's replicaTimeout / replicaRetryLimit, so
+          # neither number can move without the other.
+          REPLICA_TIMEOUT=600
+          RETRY_LIMIT=1
+          # The queue wait and image pull precede the replica, so they fall
+          # outside replicaTimeout and are not covered by the product above.
+          POLL_SLACK=300
+          POLL_BUDGET=$(( REPLICA_TIMEOUT * (RETRY_LIMIT + 1) + POLL_SLACK ))
+          POLL_DEADLINE=$(( $(date +%s) + POLL_BUDGET ))
+          echo "Waiting up to ${POLL_BUDGET}s for the bootstrap job to reach a terminal status"
           BOOTSTRAP_SUCCEEDED=false
           STATUS=""
-          for _ in $(seq 1 60); do
+          while [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; do
             STATUS="$(az containerapp job execution show \
               --name "$BOOTSTRAP_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
               --job-execution-name "$EXECUTION" --query properties.status -o tsv)"
@@ -180,8 +204,8 @@ jobs:
             esac
             sleep 10
           done
-          # A bounded poll that simply ends — the job still non-terminal at the last
-          # iteration — must fail the deploy, not fall through to success. Converging
+          # A bounded poll that simply ends — the job still non-terminal when the
+          # budget expires — must fail the deploy, not fall through to success. Converging
           # the app tier against an incomplete bootstrap restarts SAGE before the
           # extensions exist, so its CREATE EXTENSION hits InsufficientPrivilege and
           # the vault load fails. Fail loud here instead.
