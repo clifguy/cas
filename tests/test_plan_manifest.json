@@ -216,7 +216,7 @@
       ],
       "test_count": 5,
       "decision_date": "2026-04-10",
-      "notes": "Code hygiene and refactoring safety for app/backend modules after iterative development. Two sections: import hygiene (TEST-APP-CL-002..003 cover scan pathlib-only convention, router HTTPException at module level; CL-001 retired by T-0138 when app/backend/edge_inference.py was deleted); metadata conversion fidelity (TEST-APP-CL-004..006 cover ScanResult to response, response to file descriptor, full round-trip preservation of all ParsedMetadata fields)."
+      "notes": "Code hygiene and refactoring safety for app/backend modules after iterative development. Two sections: import hygiene (TEST-APP-CL-002..003 cover scan pathlib-only convention, router HTTPException at module level; CL-001 retired when app/backend/edge_inference.py was deleted); metadata conversion fidelity (TEST-APP-CL-004..006 cover ScanResult to response, response to file descriptor, full round-trip preservation of all ParsedMetadata fields)."
     },
     {
       "path": "tests/sage/test_cleanup_refactor.md",

@@ -482,7 +482,7 @@ class DocumentSummary(BaseModel):
             "varies by doc_type. Null when the document carries no tier3 "
             "metadata, either because the doc_type declares no schema or "
             "because no values have been set. Surfaced on the projection "
-            "(T-0090) so callers can read fields like ticket_priority or "
+            " so callers can read fields like ticket_priority or "
             "failure_class from a single catalog/semantic/keyword pass "
             "without follow-up get_document round-trips."
         ),
@@ -630,8 +630,8 @@ class DocumentSummaryLight(BaseModel):
 class Edge(BaseModel):
     id: EdgeIdStr = Field(
         description=(
-            "Unique edge identifier, auto-generated at creation. Per T-0079, "
-            "the production edges table enforces UNIQUE (source_id, target_id, "
+            "Unique edge identifier, auto-generated at creation. The "
+            "production edges table enforces UNIQUE (source_id, target_id, "
             "edge_type), so at most one edge per natural-key triple ever exists; "
             "the id is still per-edge for retracted_edge_id targeting and for "
             "audit trails."
@@ -710,7 +710,7 @@ class Edge(BaseModel):
         description=(
             "Typed discriminator for the rationale's provenance source. "
             "Promoted from the rationale-text prefix convention in "
-            "CAS-ADR-019 to a typed, indexed column (T-0080). Auto- "
+            "CAS-ADR-019 to a typed, indexed column. Auto- "
             "inference paths stamp this explicitly; hand-curated edges "
             "and legacy rows take the default `manual`."
         ),
@@ -727,7 +727,7 @@ class Edge(BaseModel):
             "`source_valid_from_version`, which records chain-scoped "
             "edge visibility per CAS-ADR-017 — the two must not be "
             "conflated. Unset = explicit null; never inferred from chain "
-            "anchors. (T-0110 schema; T-0111 typed)"
+            "anchors."
         ),
     )
     synced_from_content_hash: Sha256Str | None = Field(
@@ -738,7 +738,7 @@ class Edge(BaseModel):
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
             "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
-            "unset = explicit null. (T-0110 schema; T-0111 typed)"
+            "unset = explicit null."
         ),
     )
 
@@ -1140,10 +1140,10 @@ class SetLifecycleRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, run all validators and compute "
+            "When true, run all validators and compute "
             "the would-be projection of the post-transition state, but "
             "do NOT persist. The response carries the would-be "
-            "`document`, `dry_run=true`, and a `changes` block (T-0163) "
+            "`document`, `dry_run=true`, and a `changes` block "
             "with a single `lifecycle_status` entry when the action "
             "changes state; for `supersede`, the would-be `created_edge` "
             "is also populated with the nil-UUID sentinel id "
@@ -1176,7 +1176,7 @@ class SetLifecycleResponse(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`; in that "
+            "True when the request set `dry_run=true`; in that "
             "case no state was written and `document` carries the "
             "would-be projection of the post-transition state without "
             "the persisted `updated_at` advance."
@@ -1185,7 +1185,7 @@ class SetLifecycleResponse(BaseModel):
     changes: list[FieldChange] | None = Field(
         default=None,
         description=(
-            "T-0163: Field-level deltas the transition would persist on a "
+            "Field-level deltas the transition would persist on a "
             "real run. Populated only when `dry_run=true`; null on "
             "real-run responses. For lifecycle transitions, contains a "
             "single entry for `lifecycle_status` when the action changes "
@@ -1197,7 +1197,7 @@ class SetLifecycleResponse(BaseModel):
     created_edge: Edge | None = Field(
         default=None,
         description=(
-            "T-0152: Populated only when `action=supersede`. On a real "
+            "Populated only when `action=supersede`. On a real "
             "run, this is the `supersedes` edge that was created "
             "atomically with the lifecycle flip. On a dry-run, this is "
             "the would-be edge with the nil-UUID sentinel `id` "
@@ -1264,7 +1264,7 @@ class BulkLifecycleRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            'Per-item payload depth (T-0153). "full" returns each '
+            'Per-item payload depth. "full" returns each '
             "success item's complete `document` body (including the "
             'potentially-large `semantic_abstract`); "light" strips the '
             "per-item `document` field entirely, returning only identity "
@@ -1278,10 +1278,10 @@ class BulkLifecycleRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, every item runs in dry-run "
+            "When true, every item runs in dry-run "
             "mode — validators execute, the would-be projection of the "
             "post-state is computed, and each per-item result carries a "
-            "`changes` block (T-0163) with a single `lifecycle_status` "
+            "`changes` block with a single `lifecycle_status` "
             "entry on state-changing transitions (preserved under "
             "`response_mode=light`). No persistence occurs. Per-item "
             "override is not supported. **Limitation:** each item's "
@@ -1318,7 +1318,7 @@ class BulkLifecycleItemResult(BaseModel):
         description=(
             "The updated document record when `status=success`. Absent on "
             "error entries. Also absent on success entries when the "
-            "request's `response_mode=light` (T-0153)."
+            "request's `response_mode=light`."
         ),
     )
     warnings: list[str] | None = Field(
@@ -1341,7 +1341,7 @@ class BulkLifecycleItemResult(BaseModel):
     changes: list[FieldChange] | None = Field(
         default=None,
         description=(
-            "T-0163: Field-level deltas the per-item transition would "
+            "Field-level deltas the per-item transition would "
             "persist on a real run. Populated only when the envelope's "
             "`dry_run=true` and the per-item transition succeeds; null "
             "on real-run responses, error entries, and no-op transitions. "
@@ -1388,11 +1388,11 @@ class BulkLifecycleResponse(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`. Every "
+            "True when the request set `dry_run=true`. Every "
             "per-item result reflects the dry-run path: success items "
             "carry the would-be projection of the post-transition "
             "document (subject to `response_mode`) and a `changes` block "
-            "(T-0163) enumerating field-level deltas, and no state was "
+            " enumerating field-level deltas, and no state was "
             "written."
         ),
     )
@@ -1570,10 +1570,10 @@ class UpdateMetadataRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, run all validators and compute "
+            "When true, run all validators and compute "
             "the would-be projection of the post-patch state, but do NOT "
             "persist. The response carries the would-be `document`, "
-            "`dry_run=true`, and a `changes` block (T-0163) enumerating "
+            "`dry_run=true`, and a `changes` block enumerating "
             "field-level deltas (scalar fields by bare name; tier3 keys "
             "as dotted paths; tags as full before/after lists); no "
             "chunk-store sync, no `metadata_confirmed` flip, no "
@@ -1745,7 +1745,7 @@ class BulkMetadataRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            'Per-item payload depth (T-0153). "full" returns each '
+            'Per-item payload depth. "full" returns each '
             "success item's complete `document` body (including the "
             'potentially-large `semantic_abstract`); "light" strips the '
             "per-item `document` field entirely, returning only identity "
@@ -1759,10 +1759,10 @@ class BulkMetadataRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, every item runs in dry-run "
+            "When true, every item runs in dry-run "
             "mode — validators execute, the would-be projection of the "
             "post-state is computed, and each per-item result carries a "
-            "`changes` block (T-0163) enumerating field-level deltas "
+            "`changes` block enumerating field-level deltas "
             "(preserved under `response_mode=light`). No persistence "
             "occurs. Per-item override is not supported. "
             "**Limitation:** each item's dry-run is evaluated against "
@@ -1798,7 +1798,7 @@ class BulkMetadataItemResult(BaseModel):
         description=(
             "The updated document record when `status=success`. Absent on "
             "error entries. Also absent on success entries when the "
-            "request's `response_mode=light` (T-0153)."
+            "request's `response_mode=light`."
         ),
     )
     warnings: list[str] | None = Field(
@@ -1820,7 +1820,7 @@ class BulkMetadataItemResult(BaseModel):
     changes: list[FieldChange] | None = Field(
         default=None,
         description=(
-            "T-0163: Field-level deltas the per-item patch would persist "
+            "Field-level deltas the per-item patch would persist "
             "on a real run. Populated only when the envelope's "
             "`dry_run=true` and the per-item patch succeeds; null on "
             "real-run responses, error entries, and patches that touch "
@@ -1846,10 +1846,10 @@ class BulkMetadataResponse(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`. Every "
+            "True when the request set `dry_run=true`. Every "
             "per-item result reflects the dry-run path: success items "
             "carry the would-be projection of the post-patch document "
-            "(subject to `response_mode`) and a `changes` block (T-0163) "
+            "(subject to `response_mode`) and a `changes` block "
             "enumerating field-level deltas, and no state was written."
         ),
     )
@@ -1875,7 +1875,7 @@ class UpdateMetadataResponse(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`; in that "
+            "True when the request set `dry_run=true`; in that "
             "case no state was written and `document` carries the "
             "would-be projection of the post-patch state."
         ),
@@ -1883,7 +1883,7 @@ class UpdateMetadataResponse(BaseModel):
     changes: list[FieldChange] | None = Field(
         default=None,
         description=(
-            "T-0163: Field-level deltas the patch would persist on a "
+            "Field-level deltas the patch would persist on a "
             "real run. Populated only when `dry_run=true`; null on "
             "real-run responses and on dry-runs that touch no "
             "caller-supplied fields. Scalar field changes use the bare "
@@ -2022,7 +2022,7 @@ class LinkRequest(BaseModel):
     rationale_kind: RationaleKind | None = Field(
         default=None,
         description=(
-            "Optional explicit discriminator (CAS-ADR-019 / T-0080). "
+            "Optional explicit discriminator (CAS-ADR-019). "
             "When omitted or null, the service derives the value from "
             "the rationale text prefix and falls back to `manual` for "
             "unrecognized or absent rationale. Callers should pass this "
@@ -2042,7 +2042,7 @@ class LinkRequest(BaseModel):
             "`source_valid_from_version`, which records chain-scoped "
             "edge visibility per CAS-ADR-017 — the two must not be "
             "conflated. Unset = explicit null; never inferred from chain "
-            "anchors. (T-0110 schema; T-0111 typed)"
+            "anchors."
         ),
     )
     synced_from_content_hash: Sha256Str | None = Field(
@@ -2053,14 +2053,14 @@ class LinkRequest(BaseModel):
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
             "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
-            "unset = explicit null. (T-0110 schema; T-0111 typed)"
+            "unset = explicit null."
         ),
     )
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, run all validators (including "
-            "the T-0079 natural-key pre-check) and compute the would-be "
+            "When true, run all validators (including "
+            "the natural-key pre-check) and compute the would-be "
             "projection of the edge, but do NOT persist. The response "
             "carries the would-be `edge` with the nil-UUID sentinel id "
             "`00000000-0000-0000-0000-000000000000` (or the existing "
@@ -2068,7 +2068,7 @@ class LinkRequest(BaseModel):
             "and `dry_run=true`. Note: link is an edge mutation, not a "
             "document field mutation, so the change surface is the "
             "existing `edge` field rather than a separate `changes` "
-            "block (T-0163). The process-wide `_link_lock` is still "
+            "block. The process-wide `_link_lock` is still "
             "acquired so the preview is consistent with concurrent link "
             "writes."
         ),
@@ -2109,13 +2109,13 @@ class LinkResponse(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`; in that "
+            "True when the request set `dry_run=true`; in that "
             "case no state was written and `edge` carries the would-be "
             "projection of the edge that would be persisted (nil-UUID "
             "sentinel id, or the existing edge id on a natural-key hit). "
             "Note: link is an edge mutation, not a document field "
             "mutation, so the change surface is the existing `edge` "
-            "field rather than a separate `changes` block (T-0163)."
+            "field rather than a separate `changes` block."
         ),
     )
 
@@ -2163,22 +2163,17 @@ class BulkLinkItem(BaseModel):
     rationale_kind: RationaleKind | None = Field(
         default=None,
         description=(
-            "Optional explicit discriminator (CAS-ADR-019 / T-0080). Same "
+            "Optional explicit discriminator (CAS-ADR-019). Same "
             "semantics as `LinkRequest.rationale_kind`."
         ),
     )
     synced_from_version: DocumentIdStr | None = Field(
         default=None,
-        description=(
-            "T-0110 / T-0111 provenance field. Same semantics as `LinkRequest.synced_from_version`."
-        ),
+        description=("Provenance field. Same semantics as `LinkRequest.synced_from_version`."),
     )
     synced_from_content_hash: Sha256Str | None = Field(
         default=None,
-        description=(
-            "T-0110 / T-0111 provenance field. Same semantics as "
-            "`LinkRequest.synced_from_content_hash`."
-        ),
+        description=("Provenance field. Same semantics as `LinkRequest.synced_from_content_hash`."),
     )
 
 
@@ -2200,7 +2195,7 @@ class BulkLinkRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            'Per-item payload depth (T-0153 / T-0158). "full" returns '
+            'Per-item payload depth. "full" returns '
             "each success item's complete `edge` body (the persisted "
             'edge, or the would-be edge under dry-run); "light" strips '
             "the per-item `edge` field entirely, returning only "
@@ -2214,8 +2209,8 @@ class BulkLinkRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, every item runs in dry-run "
-            "mode — validators execute (including the T-0079 natural-key "
+            "When true, every item runs in dry-run "
+            "mode — validators execute (including the natural-key "
             "pre-check), the would-be projection of the edge is computed, "
             "and each per-item result carries the would-be `edge` with "
             "the nil-UUID sentinel id (or the existing edge id on a "
@@ -2223,7 +2218,7 @@ class BulkLinkRequest(BaseModel):
             "occurs. Note: link is an edge mutation, not a document "
             "field mutation, so the change surface is the per-item "
             "`edge` field (subject to `response_mode`) rather than a "
-            "separate `changes` block (T-0163). Envelope-level only; "
+            "separate `changes` block. Envelope-level only; "
             "per-item override is not supported. **Limitation:** each "
             "item's dry-run is evaluated against the committed state at "
             "batch start; no item's would-be effects are visible to "
@@ -2261,7 +2256,7 @@ class BulkLinkItemResult(BaseModel):
         description=(
             "The edge record when `status=success`. Absent on error "
             "entries. Also absent on success entries when the request's "
-            "`response_mode=light` (T-0153). On a real run this is the "
+            "`response_mode=light`. On a real run this is the "
             "persisted edge (with `created=true`) or the existing edge "
             "that satisfied the natural-key idempotency check (with "
             "`created=false`). On a dry-run this is the would-be edge "
@@ -2272,7 +2267,7 @@ class BulkLinkItemResult(BaseModel):
     created: bool | None = Field(
         default=None,
         description=(
-            "T-0079 idempotency flag. True iff a new edge was (or would "
+            "Idempotency flag. True iff a new edge was (or would "
             "be) created for this item; false on the natural-key "
             "idempotency path where an edge already exists for "
             "`(source, target, edge_type)`. Null on error entries."
@@ -2322,7 +2317,7 @@ class BulkLinkResponse(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`. Every "
+            "True when the request set `dry_run=true`. Every "
             "per-item result reflects the dry-run path: success items "
             "carry the would-be edge (subject to `response_mode`) with "
             "the nil-UUID sentinel id on the create path or the existing "
@@ -2335,26 +2330,24 @@ class UnlinkResponse(BaseModel):
     """Returned after deleting (or previewing the deletion of) a production edge."""
 
     deleted: bool = Field(
-        description=("True on a successful real-run deletion. False on a dry-run preview (T-0152).")
+        description=("True on a successful real-run deletion. False on a dry-run preview.")
     )
     edge_id: EdgeIdStr = Field(description="Id of the edge that was (or would be) deleted.")
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the unlink call set `dry_run=true`; in "
+            "True when the unlink call set `dry_run=true`; in "
             "that case no state was written and `preview_edge` carries "
             "the would-be projection of the edge that would be deleted. "
             "Note: unlink is an edge mutation, not a document field "
             "mutation, so the change surface is the existing "
             "`preview_edge` field rather than a separate `changes` "
-            "block (T-0163)."
+            "block."
         ),
     )
     preview_edge: Edge | None = Field(
         default=None,
-        description=(
-            "T-0152: On a dry-run, the existing edge that would be deleted. Null on a real-run."
-        ),
+        description=("On a dry-run, the existing edge that would be deleted. Null on a real-run."),
     )
 
 
@@ -2698,7 +2691,7 @@ class RetrievalFilters(BaseModel):
     source_id: DocumentIdStr | None = Field(
         default=None,
         description=(
-            "Edge-only filter (T-0157). Filter edges by source document "
+            "Edge-only filter. Filter edges by source document "
             'id. Valid only when target="edges"; document-target '
             "requests that set this are rejected via "
             "mode_parameter_mismatch."
@@ -2707,7 +2700,7 @@ class RetrievalFilters(BaseModel):
     target_id: DocumentIdStr | None = Field(
         default=None,
         description=(
-            "Edge-only filter (T-0157). Filter edges by target document "
+            "Edge-only filter. Filter edges by target document "
             'id. Valid only when target="edges". Note: retracts-type '
             "edges have target_id=NULL and are not selected by this "
             "filter."
@@ -2716,7 +2709,7 @@ class RetrievalFilters(BaseModel):
     edge_type: EdgeType | None = Field(
         default=None,
         description=(
-            "Edge-only filter (T-0157). Filter edges by edge_type (e.g., "
+            "Edge-only filter. Filter edges by edge_type (e.g., "
             '"references", "depends_on"). Valid only when target="edges". '
             "Typed against the SAGE EdgeType enum so a typo like "
             '"refrences" is rejected at validation time rather than '
@@ -2877,8 +2870,8 @@ class DiscoverRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            "Canonical payload-depth selector across SAGE surfaces "
-            "(T-0157, T-0158, T-0153, T-0169). Semantics by target and "
+            "Canonical payload-depth selector across SAGE surfaces. "
+            "Semantics by target and "
             "mode: (edges) `light` returns identity columns only "
             "(edge_id, endpoints, edge_type); `full` carries the "
             "complete envelope; default obeys a >5-results threshold "
@@ -2978,7 +2971,7 @@ class DiscoverRequest(BaseModel):
                         (
                             "Filter key 'filters.{key}' is not valid for "
                             "target 'documents'. Use ``target=\"edges\"`` "
-                            "for edge enumeration. (T-0157)"
+                            "for edge enumeration."
                         ),
                         {
                             "mode": self.mode.value,
@@ -3005,7 +2998,7 @@ class DiscoverRequest(BaseModel):
                 if value != default:
                     raise PydanticCustomError(
                         "mode_parameter_mismatch",
-                        ("Parameter '{forbidden_param}' is not valid for target 'edges'. (T-0157)"),
+                        ("Parameter '{forbidden_param}' is not valid for target 'edges'."),
                         {
                             "mode": self.mode.value,
                             "forbidden_param": name,
@@ -3088,8 +3081,8 @@ class DiscoverHit(BaseModel):
         description=(
             "Compact summary of the matching document. Returns "
             "DocumentSummaryLight (stripped) when the request set "
-            '`target="documents", mode="catalog", response_mode="light"` '
-            "(T-0158); DocumentSummary (full) otherwise."
+            '`target="documents", mode="catalog", response_mode="light"`; '
+            "DocumentSummary (full) otherwise."
         )
     )
     chunk_content: str | None = Field(
@@ -3201,7 +3194,7 @@ class EdgeHit(BaseModel):
     rationale_kind: str | None = Field(
         default=None,
         description=(
-            "Typed provenance discriminator (T-0080: manual, version_chain, "
+            "Typed provenance discriminator (manual, version_chain, "
             "references_mention, filename_code_match). Omitted in light mode."
         ),
     )
@@ -3561,7 +3554,7 @@ class MigrationReport(BaseModel):
         description=(
             "Per-(doc_type, field) entries for each `unique_keys` declaration "
             "whose underlying partial UNIQUE index was created or confirmed by "
-            "this migration (T-0115). Empty when no `unique_keys` are declared "
+            "this migration. Empty when no `unique_keys` are declared "
             "or all were already active."
         ),
     )
@@ -3569,7 +3562,7 @@ class MigrationReport(BaseModel):
         default_factory=list,
         description=(
             "Per-(doc_type, field, value) entries for every collision that "
-            "prevented activation of a `unique_keys` declaration (T-0115). "
+            "prevented activation of a `unique_keys` declaration. "
             "Non-empty means at least one declaration is NOT live; the "
             "substrate refuses to activate the constraint while collisions "
             "remain (CAS-ADR-031 §5). The operator resolves via renumber, "
@@ -4437,7 +4430,7 @@ class UpdateVaultConfigRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152 / T-0163: When true, validate the merged config and "
+            "When true, validate the merged config and "
             "compute the would-be projection of which sections would "
             "change plus destructive-change warnings, but do NOT write "
             "the yaml or reload the registry. The response carries "
@@ -4446,7 +4439,7 @@ class UpdateVaultConfigRequest(BaseModel):
             "top-level sections would change. Note: vault-config updates "
             "are a config mutation, not a document field mutation, so "
             "the change surface is the existing `preview.changed_sections` "
-            "field rather than a separate `changes` block (T-0163). "
+            "field rather than a separate `changes` block. "
             "**On dry-run, `force` is a no-op**: dry-run never raises "
             "`destructive_config_change`; warnings are always returned "
             "in the response body so the caller can plan a follow-up "
@@ -4491,7 +4484,7 @@ class UpdateVaultConfigResponse(BaseModel):
     status: Literal["updated", "previewed"] = Field(
         description=(
             "`updated` on a successful real-run write. `previewed` on a "
-            "dry-run preview (T-0152); no yaml or registry state was "
+            "dry-run preview; no yaml or registry state was "
             "modified."
         )
     )
@@ -4503,26 +4496,26 @@ class UpdateVaultConfigResponse(BaseModel):
             "Destructive-change warnings. Populated when `force=true` "
             "was used on a real-run to override the 409 rejection, OR "
             "when `dry_run=true` returned a preview that would trip "
-            "destructive-change detection (T-0152: dry-run always "
+            "destructive-change detection (dry-run always "
             "surfaces warnings in the response body rather than raising)."
         )
     )
     dry_run: bool = Field(
         default=False,
         description=(
-            "T-0152: True when the request set `dry_run=true`; in that "
+            "True when the request set `dry_run=true`; in that "
             "case no yaml or registry state was modified and `preview` "
             "carries the would-be projection of the config sections that "
             "would change. Note: vault-config updates are a config "
             "mutation, not a document field mutation, so the change "
             "surface is the existing `preview` field rather than a "
-            "separate `changes` block (T-0163)."
+            "separate `changes` block."
         ),
     )
     preview: VaultConfigPreview | None = Field(
         default=None,
         description=(
-            "T-0152: Structural diff populated on dry-run; null on a "
+            "Structural diff populated on dry-run; null on a "
             "real-run. This is the would-be projection of the config "
             "sections that would change."
         ),

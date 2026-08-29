@@ -2065,7 +2065,7 @@ paths:
         `heading_not_found` error response.
 
 
-        The synthetic header chunk (T-0038) is excluded from the
+        The synthetic header chunk is excluded from the
         result, so heading paths in this response are exactly those a
         caller may pass to `read_section`.
       tags: [Utilities]
@@ -2134,7 +2134,7 @@ paths:
           in: query
           required: false
           description: >-
-            T-0152 / T-0163: When true, confirm the edge exists and
+            When true, confirm the edge exists and
             preview the would-be projection of the deletion without
             persisting. The response carries `deleted=false`,
             `dry_run=true`, and `preview_edge` populated with the
@@ -2142,7 +2142,7 @@ paths:
             `edge_not_found` error as a real-run. Note: unlink is an
             edge mutation, not a document field mutation, so the
             change surface is the existing `preview_edge` field rather
-            than a separate `changes` block (T-0163).
+            than a separate `changes` block.
           schema:
             type: boolean
             default: false
@@ -2169,7 +2169,7 @@ paths:
   /sage_vaults/{vault_id}/admin/detect-drift:
     post:
       operationId: maint_verify_vault_drift
-      summary: Audit active sync_target / derived_from edges for drift (T-0111).
+      summary: Audit active sync_target / derived_from edges for drift.
       description: >-
         Walks every active provenance-bearing edge in the vault and
         compares its recorded ``synced_from_*`` fields against the
@@ -2302,7 +2302,7 @@ paths:
       summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
-        to the maintenance API surface (T-0089, CAS-ADR-029). Enumerates
+        to the maintenance API surface (CAS-ADR-029). Enumerates
         documents whose pipeline_status is 'abstraction_skipped', dispatches
         IngestionService.reabstract per document, and polls until each
         reaches a terminal pipeline_status (abstraction_complete or failed).
@@ -2321,7 +2321,7 @@ paths:
         the running operation rather than queueing.
 
 
-        Response is `text/event-stream` (T-0134). Per-document state
+        Response is `text/event-stream`. Per-document state
         transitions surface as `progress` events
         (`status` = started / completed / failed / skipped); a final
         `summary` event carries the ReabstractReport payload. The 404
@@ -2673,11 +2673,11 @@ components:
         Typed discriminator for the provenance source of an edge's
         `rationale` text. Promoted from the rationale-prefix convention
         introduced in CAS-ADR-019 (auto edge inference may delete only its
-        own edges) to a typed, indexed column on the edges table (T-0080).
+        own edges) to a typed, indexed column on the edges table.
         Auto-inference paths stamp this explicitly:
         `version_chain` for chain-repair supersedes edges,
         `references_mention` for the (future) references-mention inference
-        rule (T-0016), and `filename_code_match` for the filename code
+        rule, and `filename_code_match` for the filename code
         match inference rule. `manual` is the default for any edge whose
         rationale lacks a recognized prefix (hand-curated edges via
         create_edge, legacy edges, edges written before this column existed).
@@ -2769,8 +2769,8 @@ components:
       type: string
       enum: [light, full]
       description: >-
-        Canonical payload-depth selector across SAGE surfaces (T-0157,
-        T-0153). "light" omits large per-item fields and returns only
+        Canonical payload-depth selector across SAGE surfaces.
+        "light" omits large per-item fields and returns only
         identity/status; "full" returns the complete envelope. When
         unset, surfaces that honor this parameter apply their own
         default-resolution rule (search edges and the bulk
@@ -3018,7 +3018,7 @@ components:
             varies by doc_type. Null when the document carries no tier3
             metadata, either because the doc_type declares no schema or
             because no values have been set. Surfaced on the projection
-            (T-0090) so callers can read fields like ticket_priority or
+            so callers can read fields like ticket_priority or
             failure_class from a single catalog/semantic/keyword pass
             without follow-up get_document round-trips.
 
@@ -3026,8 +3026,8 @@ components:
       type: object
       description: >-
         Stripped DocumentSummary returned by `search` with
-        `target="documents", mode="catalog", response_mode="light"`
-        (T-0158). Carries only the identity columns plus the two fields
+        `target="documents", mode="catalog", response_mode="light"`.
+        Carries only the identity columns plus the two fields
         most callers need for triage (doc_type and tier3_metadata).
         Other DocumentSummary fields (source_type, source_path,
         version_label, project, tags, document_date, source_modified_at,
@@ -3081,8 +3081,8 @@ components:
         id:
           type: string
           description: >-
-            Unique edge identifier, auto-generated at creation. Per T-0079,
-            the production edges table enforces UNIQUE (source_id, target_id,
+            Unique edge identifier, auto-generated at creation. The
+            production edges table enforces UNIQUE (source_id, target_id,
             edge_type), so at most one edge per natural-key triple ever
             exists; the id is still per-edge for retracted_edge_id targeting
             and for audit trails.
@@ -3161,7 +3161,7 @@ components:
           description: >-
             Typed discriminator for the rationale's provenance source.
             Promoted from the rationale-text prefix convention in
-            CAS-ADR-019 to a typed, indexed column (T-0080). Auto-
+            CAS-ADR-019 to a typed, indexed column. Auto-
             inference paths stamp this explicitly; hand-curated edges
             and legacy rows take the default `manual`.
         synced_from_version:
@@ -3177,7 +3177,7 @@ components:
             `source_valid_from_version`, which records chain-scoped
             edge visibility per CAS-ADR-017 — the two must not be
             conflated. Unset = explicit null; never inferred from chain
-            anchors. (T-0110 schema; T-0111 typed)
+            anchors.
         synced_from_content_hash:
           type: string
           nullable: true
@@ -3188,7 +3188,7 @@ components:
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
             (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
-            unset = explicit null. (T-0110 schema; T-0111 typed)
+            unset = explicit null.
 
     User:
       type: object
@@ -3337,8 +3337,8 @@ components:
           $ref: "#/components/schemas/ResponseMode"
           nullable: true
           description: >-
-            Canonical payload-depth selector across SAGE surfaces
-            (T-0157, T-0158, T-0153, T-0169). Semantics by target and
+            Canonical payload-depth selector across SAGE surfaces.
+            Semantics by target and
             mode: (edges) `light` returns identity columns only
             (edge_id, endpoints, edge_type); `full` carries the
             complete envelope; default obeys a >5-results threshold
@@ -3406,19 +3406,19 @@ components:
         source_id:
           type: string
           description: >-
-            Edge-only filter (T-0157). Filter edges by source document
+            Edge-only filter. Filter edges by source document
             id. Valid only when target="edges"; document-target requests
             that set this are rejected via mode_parameter_mismatch.
         target_id:
           type: string
           description: >-
-            Edge-only filter (T-0157). Filter edges by target document
+            Edge-only filter. Filter edges by target document
             id. Valid only when target="edges". Note: retracts-type edges
             have target_id=NULL and are not selected by this filter.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
           description: >-
-            Edge-only filter (T-0157). Filter edges by edge_type (e.g.,
+            Edge-only filter. Filter edges by edge_type (e.g.,
             "references", "depends_on"). Valid only when target="edges".
             Typed against the SAGE EdgeType enum so a typo like
             "refrences" is rejected at validation time rather than
@@ -3452,10 +3452,10 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, run all validators and compute
+            When true, run all validators and compute
             the would-be projection of the post-transition state, but
             do NOT persist. The response carries the would-be
-            `document`, `dry_run=true`, and a `changes` block (T-0163)
+            `document`, `dry_run=true`, and a `changes` block
             with a single `lifecycle_status` entry when the action
             changes state; for `supersede`, the would-be `created_edge`
             is also populated with the nil-UUID sentinel id
@@ -3523,10 +3523,10 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, run all validators and compute
+            When true, run all validators and compute
             the would-be projection of the post-patch state, but do NOT
             persist. The response carries the would-be `document`,
-            `dry_run=true`, and a `changes` block (T-0163) enumerating
+            `dry_run=true`, and a `changes` block enumerating
             field-level deltas (scalar fields by bare name; tier3 keys
             as dotted paths; tags as full before/after lists); no
             chunk-store sync, no `metadata_confirmed` flip, no
@@ -3865,7 +3865,7 @@ components:
           $ref: "#/components/schemas/RationaleKind"
           nullable: true
           description: >-
-            Optional explicit discriminator (CAS-ADR-019 / T-0080).
+            Optional explicit discriminator (CAS-ADR-019).
             When omitted or null, the service derives the value from
             the rationale text prefix and falls back to `manual` for
             unrecognized or absent rationale. Callers should pass this
@@ -3884,7 +3884,7 @@ components:
             `source_valid_from_version`, which records chain-scoped
             edge visibility per CAS-ADR-017 — the two must not be
             conflated. Unset = explicit null; never inferred from chain
-            anchors. (T-0110 schema; T-0111 typed)
+            anchors.
         synced_from_content_hash:
           type: string
           nullable: true
@@ -3895,13 +3895,13 @@ components:
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
             (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
-            unset = explicit null. (T-0110 schema; T-0111 typed)
+            unset = explicit null.
         dry_run:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, run all validators (including
-            the T-0079 natural-key pre-check) and compute the would-be
+            When true, run all validators (including
+            the natural-key pre-check) and compute the would-be
             projection of the edge, but do NOT persist. The response
             carries the would-be `edge` with the nil-UUID sentinel id
             `00000000-0000-0000-0000-000000000000` (or the existing
@@ -3909,7 +3909,7 @@ components:
             and `dry_run=true`. Note: link is an edge mutation, not a
             document field mutation, so the change surface is the
             existing `edge` field rather than a separate `changes`
-            block (T-0163). The process-wide `_link_lock` is still
+            block. The process-wide `_link_lock` is still
             acquired so the preview is consistent with concurrent link
             writes.
 
@@ -4026,7 +4026,7 @@ components:
     DiscoverResponse:
       type: object
       required: [mode, results]
-      description: Response body for the discover endpoint; carries the retrieval mode used and the ordered list of hits. Row type in `results` is discriminated by `target` (T-0157).
+      description: Response body for the discover endpoint; carries the retrieval mode used and the ordered list of hits. Row type in `results` is discriminated by `target`.
       properties:
         mode:
           $ref: "#/components/schemas/RetrievalMode"
@@ -4090,7 +4090,7 @@ components:
             Compact summary of the matching document. Returns
             DocumentSummaryLight (stripped) when the request set
             `target="documents", mode="catalog",
-            response_mode="light"` (T-0158); DocumentSummary (full)
+            response_mode="light"`; DocumentSummary (full)
             otherwise.
           oneOf:
             - $ref: "#/components/schemas/DocumentSummary"
@@ -4126,7 +4126,7 @@ components:
     EdgeHit:
       type: object
       description: >-
-        A single edge enumeration result (T-0157). Returned by
+        A single edge enumeration result. Returned by
         search when target="edges". Field population depends on
         response_mode: "light" returns only identity columns (edge_id,
         source_id, target_id, edge_type); "full" returns the complete
@@ -4176,7 +4176,7 @@ components:
           type: string
           nullable: true
           description: >-
-            Typed provenance discriminator (T-0080: manual,
+            Typed provenance discriminator (manual,
             version_chain, references_mention, filename_code_match).
             Omitted in light mode.
         retracted_edge_id:
@@ -4239,7 +4239,7 @@ components:
       additionalProperties: false
       required: [path]
       description: >-
-        T-0163: A single field-level delta inside a dry-run response.
+        A single field-level delta inside a dry-run response.
         Used by `UpdateMetadataResponse`, `SetLifecycleResponse`,
         `BulkLifecycleItemResult`, and `BulkMetadataItemResult` to
         enumerate the would-be deltas a dry-run would persist on a
@@ -4288,7 +4288,7 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`; in that
+            True when the request set `dry_run=true`; in that
             case no state was written and `document` carries the
             would-be projection of the post-transition state without
             the persisted `updated_at` advance.
@@ -4298,7 +4298,7 @@ components:
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
-            T-0163: Field-level deltas the transition would persist on a
+            Field-level deltas the transition would persist on a
             real run. Populated only when `dry_run=true`; null on
             real-run responses. For lifecycle transitions, contains a
             single entry for `lifecycle_status` when the action changes
@@ -4309,7 +4309,7 @@ components:
           $ref: "#/components/schemas/Edge"
           nullable: true
           description: >-
-            T-0152: Populated only when `action=supersede`. On a real
+            Populated only when `action=supersede`. On a real
             run, this is the `supersedes` edge that was created
             atomically with the lifecycle flip. On a dry-run, this is
             the would-be edge with the nil-UUID sentinel `id`
@@ -4370,7 +4370,7 @@ components:
           $ref: "#/components/schemas/ResponseMode"
           nullable: true
           description: >-
-            Per-item payload depth (T-0153). "full" returns each
+            Per-item payload depth. "full" returns each
             success item's complete `document` body (including the
             potentially-large `semantic_abstract`); "light" strips the
             per-item `document` field entirely, returning only identity
@@ -4383,10 +4383,10 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, every item runs in dry-run
+            When true, every item runs in dry-run
             mode — validators execute, the would-be projection of the
             post-state is computed, and each per-item result carries a
-            `changes` block (T-0163) with a single `lifecycle_status`
+            `changes` block with a single `lifecycle_status`
             entry on state-changing transitions (preserved under
             `response_mode=light`). No persistence occurs. Per-item
             override is not supported. **Limitation:** each item's
@@ -4421,7 +4421,7 @@ components:
           description: >-
             The updated document record when `status=success`. Absent
             on error entries. Also absent on success entries when the
-            request's `response_mode=light` (T-0153).
+            request's `response_mode=light`.
         warnings:
           type: array
           items:
@@ -4443,7 +4443,7 @@ components:
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
-            T-0163: Field-level deltas the per-item transition would
+            Field-level deltas the per-item transition would
             persist on a real run. Populated only when the envelope's
             `dry_run=true` and the per-item transition succeeds; null
             on real-run responses, error entries, and no-op
@@ -4479,18 +4479,18 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`. Every
+            True when the request set `dry_run=true`. Every
             per-item result reflects the dry-run path: success items
             carry the would-be projection of the post-transition
             document (subject to `response_mode`) and a `changes` block
-            (T-0163) enumerating field-level deltas, and no state was
+            enumerating field-level deltas, and no state was
             written.
 
     BulkLinkItem:
       type: object
       required: [source_id, edge_type]
       description: >-
-        One edge-creation request inside a bulk batch (T-0165). Mirrors
+        One edge-creation request inside a bulk batch. Mirrors
         `LinkRequest` field-for-field except for the envelope-level
         `dry_run` (which lives on `BulkLinkRequest` and is propagated to
         each item; per-item override is not supported per CAS-ADR-029).
@@ -4536,20 +4536,20 @@ components:
           $ref: "#/components/schemas/RationaleKind"
           nullable: true
           description: >-
-            Optional explicit discriminator (CAS-ADR-019 / T-0080). Same
+            Optional explicit discriminator (CAS-ADR-019). Same
             semantics as `LinkRequest.rationale_kind`.
         synced_from_version:
           type: string
           nullable: true
           description: >-
-            T-0110 / T-0111 provenance field. Same semantics as
+            Provenance field. Same semantics as
             `LinkRequest.synced_from_version`.
         synced_from_content_hash:
           type: string
           nullable: true
           pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
-            T-0110 / T-0111 provenance field. Same semantics as
+            Provenance field. Same semantics as
             `LinkRequest.synced_from_content_hash`.
 
     BulkLinkRequest:
@@ -4573,7 +4573,7 @@ components:
           $ref: "#/components/schemas/ResponseMode"
           nullable: true
           description: >-
-            Per-item payload depth (T-0153 / T-0158). "full" returns
+            Per-item payload depth. "full" returns
             each success item's complete `edge` body (the persisted
             edge, or the would-be edge under dry-run); "light" strips
             the per-item `edge` field entirely, returning only identity
@@ -4586,8 +4586,8 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, every item runs in dry-run
-            mode — validators execute (including the T-0079 natural-key
+            When true, every item runs in dry-run
+            mode — validators execute (including the natural-key
             pre-check), the would-be projection of the edge is
             computed, and each per-item result carries the would-be
             `edge` with the nil-UUID sentinel id (or the existing edge
@@ -4595,7 +4595,7 @@ components:
             persistence occurs. Note: link is an edge mutation, not a
             document field mutation, so the change surface is the
             per-item `edge` field (subject to `response_mode`) rather
-            than a separate `changes` block (T-0163). Envelope-level
+            than a separate `changes` block. Envelope-level
             only; per-item override is not supported. **Limitation:**
             each item's dry-run is evaluated against the committed
             state at batch start; no item's would-be effects are
@@ -4607,7 +4607,7 @@ components:
     BulkLinkItemResult:
       type: object
       required: [source_id, edge_type, status]
-      description: Outcome record for a single item inside a bulk-link response (T-0165).
+      description: Outcome record for a single item inside a bulk-link response.
       properties:
         source_id:
           type: string
@@ -4632,7 +4632,7 @@ components:
           description: >-
             The edge record when `status=success`. Absent on error
             entries. Also absent on success entries when the request's
-            `response_mode=light` (T-0153). On a real run this is the
+            `response_mode=light`. On a real run this is the
             persisted edge (with `created=true`) or the existing edge
             that satisfied the natural-key idempotency check (with
             `created=false`). On a dry-run this is the would-be edge
@@ -4642,7 +4642,7 @@ components:
           type: boolean
           nullable: true
           description: >-
-            T-0079 idempotency flag. True iff a new edge was (or would
+            Idempotency flag. True iff a new edge was (or would
             be) created for this item; false on the natural-key
             idempotency path where an edge already exists for
             `(source, target, edge_type)`. Null on error entries.
@@ -4668,7 +4668,7 @@ components:
       type: object
       required: [results, success_count, error_count, total]
       description: >-
-        Response body for the bulk-link endpoint (T-0165). Carries
+        Response body for the bulk-link endpoint. Carries
         per-item outcomes plus aggregate counts. Aggregate counts are
         redundant with iterating `results` and exist for caller
         ergonomics.
@@ -4694,7 +4694,7 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`. Every
+            True when the request set `dry_run=true`. Every
             per-item result reflects the dry-run path: success items
             carry the would-be edge (subject to `response_mode`) with
             the nil-UUID sentinel id on the create path or the
@@ -4780,7 +4780,7 @@ components:
           $ref: "#/components/schemas/ResponseMode"
           nullable: true
           description: >-
-            Per-item payload depth (T-0153). "full" returns each
+            Per-item payload depth. "full" returns each
             success item's complete `document` body (including the
             potentially-large `semantic_abstract`); "light" strips the
             per-item `document` field entirely, returning only identity
@@ -4793,10 +4793,10 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, every item runs in dry-run
+            When true, every item runs in dry-run
             mode — validators execute, the would-be projection of the
             post-state is computed, and each per-item result carries a
-            `changes` block (T-0163) enumerating field-level deltas
+            `changes` block enumerating field-level deltas
             (preserved under `response_mode=light`). No persistence
             occurs. Per-item override is not supported.
             **Limitation:** each item's dry-run is evaluated against
@@ -4830,7 +4830,7 @@ components:
           description: >-
             The updated document record when `status=success`. Absent
             on error entries. Also absent on success entries when the
-            request's `response_mode=light` (T-0153).
+            request's `response_mode=light`.
         warnings:
           type: array
           items:
@@ -4852,7 +4852,7 @@ components:
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
-            T-0163: Field-level deltas the per-item patch would persist
+            Field-level deltas the per-item patch would persist
             on a real run. Populated only when the envelope's
             `dry_run=true` and the per-item patch succeeds; null on
             real-run responses, error entries, and patches that touch
@@ -4890,17 +4890,17 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`. Every
+            True when the request set `dry_run=true`. Every
             per-item result reflects the dry-run path: success items
             carry the would-be projection of the post-patch document
-            (subject to `response_mode`) and a `changes` block (T-0163)
+            (subject to `response_mode`) and a `changes` block
             enumerating field-level deltas, and no state was written.
 
     UpdateMetadataResponse:
       type: object
       required: [document]
       description: >-
-        T-0152 wrapper for single-item `update_metadata`. Promotes the
+        Wrapper for single-item `update_metadata`. Promotes the
         bare-Document return so the dry-run flag has a home. The
         `document` field is the post-patch state — persisted on a real
         run, computed in memory on a dry-run (the "would-be projection").
@@ -4917,7 +4917,7 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`; in that
+            True when the request set `dry_run=true`; in that
             case no state was written and `document` carries the
             would-be projection of the post-patch state.
         changes:
@@ -4926,7 +4926,7 @@ components:
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
-            T-0163: Field-level deltas the patch would persist on a
+            Field-level deltas the patch would persist on a
             real run. Populated only when `dry_run=true`; null on
             real-run responses and on dry-runs that touch no
             caller-supplied fields. Scalar field changes use the bare
@@ -4969,13 +4969,13 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`; in that
+            True when the request set `dry_run=true`; in that
             case no state was written and `edge` carries the would-be
             projection of the edge that would be persisted (nil-UUID
             sentinel id, or the existing edge id on a natural-key hit).
             Note: link is an edge mutation, not a document field
             mutation, so the change surface is the existing `edge`
-            field rather than a separate `changes` block (T-0163).
+            field rather than a separate `changes` block.
 
     IngestResponse:
       type: object
@@ -5657,7 +5657,7 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152 / T-0163: When true, validate the merged config and
+            When true, validate the merged config and
             compute the would-be projection of which sections would
             change plus destructive-change warnings, but do NOT write
             the yaml or reload the registry. The response carries
@@ -5666,7 +5666,7 @@ components:
             top-level sections would change. Note: vault-config updates
             are a config mutation, not a document field mutation, so
             the change surface is the existing `preview.changed_sections`
-            field rather than a separate `changes` block (T-0163).
+            field rather than a separate `changes` block.
             **On dry-run, `force` is a no-op**: dry-run never raises
             `destructive_config_change`; warnings are always returned
             in the response body so the caller can plan a follow-up
@@ -5682,7 +5682,7 @@ components:
           enum: [updated, previewed]
           description: >-
             `updated` on a successful real-run write. `previewed` on a
-            dry-run preview (T-0152); no yaml or registry state was
+            dry-run preview; no yaml or registry state was
             modified.
         vault_id:
           type: string
@@ -5695,24 +5695,24 @@ components:
             Destructive-change warnings. Populated when `force=true` was
             used on a real-run to override the 409 rejection, OR when
             `dry_run=true` returned a preview that would trip
-            destructive-change detection (T-0152: dry-run always
+            destructive-change detection (dry-run always
             surfaces warnings in the response body rather than raising).
         dry_run:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the request set `dry_run=true`; in that
+            True when the request set `dry_run=true`; in that
             case no yaml or registry state was modified and `preview`
             carries the would-be projection of the config sections that
             would change. Note: vault-config updates are a config
             mutation, not a document field mutation, so the change
             surface is the existing `preview` field rather than a
-            separate `changes` block (T-0163).
+            separate `changes` block.
         preview:
           $ref: "#/components/schemas/VaultConfigPreview"
           nullable: true
           description: >-
-            T-0152: Structural diff populated on dry-run; null on a
+            Structural diff populated on dry-run; null on a
             real-run. This is the would-be projection of the config
             sections that would change.
 
@@ -5720,7 +5720,7 @@ components:
       type: object
       required: [changed_sections]
       description: >-
-        T-0152: structural diff of a would-be vault config update.
+        structural diff of a would-be vault config update.
         Populated only on dry-run responses; lists which top-level
         sections of the vault config would change if the request were
         committed.
@@ -5946,7 +5946,7 @@ components:
       description: >-
         Response body for the list-headings endpoint; returns the distinct
         heading paths of a document in document order. Body content is not
-        included. The synthetic header chunk (T-0038) is excluded.
+        included. The synthetic header chunk is excluded.
       properties:
         document_id:
           type: string
@@ -6056,7 +6056,7 @@ components:
           description: >-
             Per-(doc_type, field) entries for each `unique_keys` declaration
             whose underlying partial UNIQUE index was created or confirmed by
-            this migration (T-0115). Empty when no `unique_keys` are declared
+            this migration. Empty when no `unique_keys` are declared
             or all were already active.
         tier3_uniqueness_collisions:
           type: array
@@ -6064,7 +6064,7 @@ components:
             $ref: "#/components/schemas/Tier3UniquenessCollision"
           description: >-
             Per-(doc_type, field, value) entries for every collision that
-            prevented activation of a `unique_keys` declaration (T-0115).
+            prevented activation of a `unique_keys` declaration.
             Non-empty means at least one declaration is NOT live; the
             substrate refuses to activate the constraint while collisions
             remain (CAS-ADR-031 §5). The operator resolves via renumber,
@@ -6075,7 +6075,7 @@ components:
       required: [doc_type, field]
       description: >-
         One (doc_type, field) pair whose partial UNIQUE index was created
-        or confirmed by the migration (T-0115, CAS-ADR-031).
+        or confirmed by the migration (CAS-ADR-031).
       properties:
         doc_type:
           type: string
@@ -6088,8 +6088,8 @@ components:
       type: object
       required: [doc_type, field, value, document_ids]
       description: >-
-        One value held by multiple chain heads of the same doc_type
-        (T-0115). Surfaced by the migration scan when a vault's
+        One value held by multiple chain heads of the same doc_type.
+        Surfaced by the migration scan when a vault's
         `unique_keys` declaration cannot be activated because the existing
         portfolio violates the constraint. Per CAS-ADR-031 §5 the substrate
         refuses to activate (does not auto-resolve, does not flag-and-pass);
@@ -6119,7 +6119,7 @@ components:
       type: string
       enum: [success, skipped_pdf, llm_failure]
       description: >-
-        Per-document outcome classification in a ReabstractReport (T-0089).
+        Per-document outcome classification in a ReabstractReport.
         `success`: the document's pipeline_status transitioned to
         abstraction_complete. `skipped_pdf`: the document is source_type=pdf
         and was excluded because include_pdf was False. `llm_failure`:
@@ -6236,7 +6236,7 @@ components:
     ReabstractReportEntry:
       type: object
       required: [document_id, outcome]
-      description: One per-document outcome record in a ReabstractReport (T-0089).
+      description: One per-document outcome record in a ReabstractReport.
       properties:
         document_id:
           type: string
@@ -6260,7 +6260,7 @@ components:
       enum:
         [content_drift, chain_advanced_no_content_change, recorded_null, chain_nonlinear]
       description: >-
-        Per-edge drift classification in a DriftReport (T-0111).
+        Per-edge drift classification in a DriftReport.
         `content_drift`: recorded hash differs from the head's hash —
         real drift, action required. `chain_advanced_no_content_change`:
         chain advanced past recorded version but content unchanged —
@@ -6273,7 +6273,7 @@ components:
       type: object
       required: [edge_id, edge_type, source_id, target_id, staleness_basis]
       description: >-
-        Per-edge entry in a DriftReport (T-0111). Surfaced when an
+        Per-edge entry in a DriftReport. Surfaced when an
         active sync_target / derived_from edge no longer matches the
         current head of its target's supersedes chain. Hash is the
         authoritative comparator; version doc-id is a display key.
@@ -6529,8 +6529,8 @@ components:
       type: object
       required: [event_type, processed, total, current_document_id, current_title, status]
       description: >-
-        SSE `progress` event payload for recompute_deferred_vault_abstracts
-        (T-0134). Emitted twice per non-PDF document (a `started` event
+        SSE `progress` event payload for recompute_deferred_vault_abstracts.
+        Emitted twice per non-PDF document (a `started` event
         before dispatch, then a `completed` or `failed` event after the
         polling loop reaches a terminal pipeline_status) and once per
         skipped PDF (a `skipped` event). Shape mirrors the ingest
@@ -6597,8 +6597,8 @@ components:
       required:
         [event_type, vault_id, reabstracted_count, skipped_pdf_count, failed_count, entries]
       description: >-
-        SSE `summary` event payload for recompute_deferred_vault_abstracts
-        (T-0134). Emitted once at the end of the stream, after all per-
+        SSE `summary` event payload for recompute_deferred_vault_abstracts.
+        Emitted once at the end of the stream, after all per-
         document progress events. Payload fields (sans the `event_type`
         discriminator) are structurally identical to ReabstractReport so
         the MCP tool aggregator can derive its return dict directly from
@@ -6639,7 +6639,7 @@ components:
           type: boolean
           description: >-
             True on a successful real-run deletion. False on a dry-run
-            preview (T-0152).
+            preview.
         edge_id:
           type: string
           description: Id of the edge that was (or would be) deleted.
@@ -6647,18 +6647,18 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: True when the unlink call set `dry_run=true`; in
+            True when the unlink call set `dry_run=true`; in
             that case no state was written and `preview_edge` carries
             the would-be projection of the edge that would be deleted.
             Note: unlink is an edge mutation, not a document field
             mutation, so the change surface is the existing
             `preview_edge` field rather than a separate `changes`
-            block (T-0163).
+            block.
         preview_edge:
           $ref: "#/components/schemas/Edge"
           nullable: true
           description: >-
-            T-0152: On a dry-run, the existing edge that would be
+            On a dry-run, the existing edge that would be
             deleted. Null on a real-run.
 
     # -------------------------------------------------------------------------

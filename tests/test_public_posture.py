@@ -257,6 +257,21 @@ TICKET_REF_RE: Final[re.Pattern[str]] = re.compile(r"\bT-\d{4}\b")
 #   prefix.
 NAME_TICKET_REF_RE: Final[re.Pattern[str]] = re.compile(r"(?<![0-9A-Za-z])[tT][-_]?\d{4}(?![0-9])")
 
+# Keyword-argument names that mark a string literal as *published*
+# documentation wherever the call appears: Pydantic ``Field(description=)``
+# renders into the OpenAPI spec and the MCP tool schemas; argparse
+# ``description`` / ``help`` / ``epilog`` render into ``--help`` output.
+# The published set is defined by these destination markers, not by which
+# callable receives them — a ``description=`` kwarg is documentation on
+# any call.
+_PUBLISHED_STRING_KWARGS: Final[frozenset[str]] = frozenset({"description", "help", "epilog"})
+
+# Attribute names that mark a call as a logging emission whose message
+# text reaches operators. Matches the stdlib ``logging`` method surface.
+_LOGGING_METHOD_NAMES: Final[frozenset[str]] = frozenset(
+    {"debug", "info", "warning", "error", "exception", "critical", "log"}
+)
+
 # Tracked build artifacts that should be .gitignore'd and never committed.
 _BUILD_ARTIFACTS: Final[frozenset[str]] = frozenset(
     {".coverage", "coverage.xml", "repo_file_inventory.xlsx"}
@@ -269,7 +284,7 @@ _MAX_REPORTED_VIOLATIONS: Final[int] = 30
 # ---------------------------------------------------------------------------
 # Allowlists
 #
-# All six are empty at the close of the establishing cleanup. Each entry
+# All seven are empty at the close of the establishing cleanup. Each entry
 # added later requires a 1-line rationale alongside it. Pattern matches
 # ``KNOWN_VIOLATIONS`` in tests/sage/test_typed_alias_coverage.py.
 # ---------------------------------------------------------------------------
@@ -308,6 +323,12 @@ IDENTIFIER_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
 # node families, so an exemption granted to one must not silently cover the
 # other.
 BINDING_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
+
+# path (relative to repo root) → list of line numbers where a T-NNNN ref
+# in a *published* string is allowlisted. Shared by both T15 arms (the
+# ``.py`` sink detector and the substrate text scan); line-keyed like
+# ``TICKET_REF_ALLOWLIST`` because both arms attribute hits to lines.
+PUBLISHED_TICKET_REF_ALLOWLIST: Final[dict[str, list[int]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +672,111 @@ def _binding_violations(tree: ast.AST) -> list[tuple[int, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Published-string scanning
+# ---------------------------------------------------------------------------
+
+
+def _published_string_violations(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(lineno, matched_ref)`` for every ticket id in a *published*
+    string literal.
+
+    The string-literal counterpart to T2, scoped by destination rather than
+    by file tree: a literal is in scope when it is written directly at a
+    sink that renders it to a reader outside the process. Three sink
+    families:
+
+    - documentation keywords: a keyword argument named in
+      ``_PUBLISHED_STRING_KWARGS`` on any call — Pydantic
+      ``Field(description=)`` (rendered into the OpenAPI spec and MCP tool
+      schemas) and argparse ``description`` / ``help`` / ``epilog``
+      (rendered into ``--help`` text);
+    - raise messages: every literal argument of the call in a ``raise``
+      statement, positional or keyword — error text is API response and
+      console surface;
+    - logging messages: literal positional arguments of a call whose
+      method name is in ``_LOGGING_METHOD_NAMES`` — log text reaches
+      operators.
+
+    A literal is either a plain ``Constant`` (implicit concatenation folds
+    to one at parse time) or the ``Constant`` fragments of a ``JoinedStr``
+    (an f-string). A multi-line concatenated literal is attributed to its
+    first line.
+
+    Deliberately out of reach, recorded here so the boundary is a visible
+    decision rather than a later discovery:
+
+    - **indirect construction** — a string reaching a sink through a
+      variable, attribute, or concatenation expression
+      (``raise ValueError(msg)``, ``Field(description=DETAIL)``,
+      ``"..." + reason``). Following dataflow is a different detector; the
+      literal-at-sink scope matches how every measured real offender was
+      written.
+    - unpublished literals — fixture values, dict payloads, non-sink
+      keyword arguments. The whole rule is the distinction between these
+      and the sinks above.
+
+    Uses ``TICKET_REF_RE`` — the hyphenated prose pattern, since a
+    published string is prose — and reads it from the module rather than
+    carrying a copy, so it cannot drift from T2's notion of a ticket ref.
+
+    Pure: takes a parsed tree, consults no allowlist, touches no
+    filesystem. Mirrors :func:`_identifier_violations` and
+    :func:`_binding_violations`, which factor their walks the same way so
+    the unit tests can drive them against synthetic source.
+    """
+    found: list[tuple[int, str]] = []
+
+    def _scan(expr: ast.expr) -> None:
+        texts: list[tuple[int, str]] = []
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            texts.append((expr.lineno, expr.value))
+        elif isinstance(expr, ast.JoinedStr):
+            for part in expr.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    texts.append((part.lineno, part.value))
+        for lineno, text in texts:
+            for match in TICKET_REF_RE.finditer(text):
+                found.append((lineno, match.group(0)))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg in _PUBLISHED_STRING_KWARGS:
+                    _scan(keyword.value)
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _LOGGING_METHOD_NAMES:
+                for arg in node.args:
+                    _scan(arg)
+        elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            for arg in node.exc.args:
+                _scan(arg)
+            for keyword in node.exc.keywords:
+                # A documentation keyword on a raised call is already
+                # scanned by the Call arm above; skipping it here keeps
+                # one physical literal from being reported twice.
+                if keyword.arg not in _PUBLISHED_STRING_KWARGS:
+                    _scan(keyword.value)
+
+    return found
+
+
+def _published_string_py_paths() -> list[Path]:
+    """Tracked ``.py`` files in scope for T15's published-string arm.
+
+    The T13/T14 scope minus the test tree. The exclusion is the point, not
+    an accident: the rule is scoped by destination, and nothing in
+    ``tests/`` is published — its raise messages are simulated-error
+    fixtures and its literals are fixture values, so a sink-scoped walk
+    over the test tree would flag text no reader outside the process ever
+    sees. Asserted in the scope self-test so the decision stays visible.
+    """
+    return [
+        path
+        for path in _tracked_files_with_suffixes((".py",))
+        if not str(path.relative_to(REPO_ROOT)).startswith("tests/")
+    ]
+
+
+# ---------------------------------------------------------------------------
 # T1 — Use-case-specific terms outside domains/
 # ---------------------------------------------------------------------------
 
@@ -915,6 +1041,75 @@ def test_no_ticket_ids_in_python_bindings() -> None:
 
     if violations:
         pytest.fail(_format_violations(violations, header="T14 binding-token"))
+
+
+# ---------------------------------------------------------------------------
+# T15 — Ticket ids in published strings
+# ---------------------------------------------------------------------------
+
+
+def test_no_ticket_refs_in_published_py_strings() -> None:
+    """T15a: no in-scope ``.py`` file may carry a ticket id in a string
+    literal written at a published sink — a documentation keyword
+    (``description`` / ``help`` / ``epilog``), a raise message, or a
+    logging message.
+
+    T2 gates docstrings and ``#`` comments and excludes string literals so
+    a fixture value is not confused with a comment. That exclusion is right
+    for literals that stay inside the process, but a ``Field`` description
+    is rendered into the OpenAPI spec, argparse text into ``--help``
+    output, and error text into API responses — those literals are durable
+    public surfaces exactly as a docstring is. The rule is scoped by
+    destination, not by tree.
+
+    Scope is the T13/T14 file set minus ``tests/``
+    (:func:`_published_string_py_paths`); unparseable modules are skipped
+    for the reason T13 gives.
+    """
+    violations: list[tuple[str, int, str]] = []
+    for path in _published_string_py_paths():
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            continue
+        allowed = set(PUBLISHED_TICKET_REF_ALLOWLIST.get(rel, []))
+        for line_no, ref in _published_string_violations(tree):
+            if line_no in allowed:
+                continue
+            violations.append((rel, line_no, ref))
+
+    if violations:
+        pytest.fail(_format_violations(violations, header="T15 published-string ticket-ref"))
+
+
+def test_no_ticket_refs_in_published_substrate_files() -> None:
+    """T15b: no tracked ``.yaml`` / ``.yml`` / ``.json`` file may carry a
+    ticket id anywhere in its text.
+
+    The substrate arm of T15. The committed Formal Substrate — OpenAPI
+    ``description:`` and ``summary:`` blocks, JSON Schema descriptions, the
+    manifest's revision history — is published in its entirety, so the scan
+    is whole-text rather than key-scoped: there is no unpublished position
+    inside these files for a literal to be exempt from. Scope and line
+    attribution match T1's walk of the same suffixes.
+    """
+    violations: list[tuple[str, int, str]] = []
+    for path in _tracked_files_with_suffixes((".yaml", ".yml", ".json")):
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        allowed = set(PUBLISHED_TICKET_REF_ALLOWLIST.get(rel, []))
+        for match in TICKET_REF_RE.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1
+            if line_no in allowed:
+                continue
+            violations.append((rel, line_no, match.group(0)))
+
+    if violations:
+        pytest.fail(_format_violations(violations, header="T15 substrate ticket-ref"))
 
 
 # ---------------------------------------------------------------------------
@@ -1740,4 +1935,248 @@ def test_t14_scan_scope_is_non_empty_and_allowlist_ships_empty() -> None:
     assert "tests/test_public_posture.py" not in scanned, "the gate must not scan itself"
     assert BINDING_TOKEN_ALLOWLIST == {}, (
         f"T14's allowlist is no longer empty: {BINDING_TOKEN_ALLOWLIST}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T15 detector self-tests
+#
+# These carry the T13/T14 burden in its sharpest form yet. Of the real
+# offenders the establishing sweep drained, all but four sat in a single
+# form in a single file — ``Field(description=)`` in
+# sage/models/schemas.py — so a detector handling only that one arm reds
+# identically against the pre-sweep tree and passes identically after it.
+# Every other sink arm (argparse keywords, raise messages, both logging
+# shapes, the f-string path) is unfalsifiable against production code and
+# is proven below or not at all.
+#
+# Kept as strings so this module's own AST — and the gate's walk over any
+# file that is not excluded — never sees the offending literals as real
+# code.
+# ---------------------------------------------------------------------------
+
+# One offender at each published sink form: a Pydantic Field description,
+# the three argparse documentation keywords, a plain raise, an
+# implicit-concatenation raise, an f-string raise, a bound-logger call,
+# and a chained ``logging.getLogger(...)`` call.
+_SYNTHETIC_PUBLISHED_SINK_SOURCE: Final[str] = textwrap.dedent(
+    """
+    import argparse
+    import logging
+
+    from pydantic import BaseModel, Field
+
+    logger = logging.getLogger("probe")
+
+
+    class Request(BaseModel):
+        limit: int = Field(default=10, description="Page-size cap (T-0301).")
+
+
+    parser = argparse.ArgumentParser(
+        description="Reprojects staged documents (T-0302).",
+        epilog="Safe to re-run (T-0303).",
+    )
+    parser.add_argument("--all", help="Process every vault (T-0304).")
+
+
+    def check(count: int) -> None:
+        if count < 0:
+            raise ValueError("negative count is unsupported (T-0305)")
+        if count == 0:
+            raise RuntimeError(
+                "empty batch: nothing to reproject; stage documents "
+                "first (T-0306)"
+            )
+        raise LookupError(f"count {count} exceeds the shard budget (T-0307)")
+
+
+    def report() -> None:
+        logger.warning("falling back to serial mode (T-0308)")
+        logging.getLogger("audit").error("shard drift detected (T-0309)")
+    """
+)
+
+# The same id shapes at unpublished positions only: module constants, dict
+# and list fixture values, a parameter default, and non-sink keyword
+# arguments. A detector that scans every string literal — the rival T2's
+# original exclusion exists to rule out — flags all of these.
+_SYNTHETIC_UNPUBLISHED_LITERAL_SOURCE: Final[str] = textwrap.dedent(
+    """
+    FIXTURE_ID = "T-0310"
+    PROBES = {"ticket_id": "T-0311"}
+    ROWS = ["T-0312", "T-0313"]
+
+
+    def build(name: str = "T-0314") -> dict:
+        payload = {"summary": "simulated failure for T-0315 atomicity test"}
+        return make_record(name="T-0316", tag="T-0317", payload=payload)
+
+
+    def message() -> str:
+        msg = "deferred guard tripped (T-0318)"
+        return msg
+    """
+)
+
+# Offending text that reaches a sink only *indirectly* — through a name,
+# a module constant, or a concatenation expression. Deliberately out of
+# the detector's scope; this fixture is what pins that decision.
+_SYNTHETIC_INDIRECT_SINK_SOURCE: Final[str] = textwrap.dedent(
+    """
+    from pydantic import Field
+
+    DETAIL = "projection stale (T-0320)"
+
+
+    def fail(reason: str) -> None:
+        msg = "reprojection halted (T-0321)"
+        raise RuntimeError(msg)
+
+
+    def concat(reason: str) -> None:
+        raise ValueError("shard missing (T-0322): " + reason)
+
+
+    def declare():
+        return Field(default=None, description=DETAIL)
+    """
+)
+
+
+def test_t15_detector_flags_each_published_sink_form() -> None:
+    """T15 reaches every published sink form, not just Field descriptions.
+
+    This is the concentration risk named at the top of this section: the
+    real tree exercises one arm almost exclusively, so each of the other
+    arms — argparse keywords, all three raise shapes (plain,
+    implicit-concatenation, f-string), and both logging shapes (bound
+    logger, chained ``getLogger``) — can only be proven here. The exact-set
+    assertion also fails on double-reporting: a raise whose literal is
+    scanned by two arms would surface a duplicate id.
+    """
+    tree = ast.parse(_SYNTHETIC_PUBLISHED_SINK_SOURCE)
+    refs = [ref for _, ref in _published_string_violations(tree)]
+
+    expected = {f"T-03{i:02d}" for i in range(1, 10)}
+    assert set(refs) == expected, f"sink arms missed or over-reached: {sorted(refs)}"
+    assert len(refs) == len(expected), f"a literal was reported more than once: {sorted(refs)}"
+
+
+def test_t15_detector_ignores_unpublished_literals_in_same_source() -> None:
+    """T15 flags nothing in a file whose ticket ids all sit at unpublished
+    positions.
+
+    The whole rule is this distinction. T2 excluded string literals so a
+    fixture value is not confused with a comment; T15 re-includes only the
+    published subset, and the rival it must exclude is the blanket scan
+    that would sweep 170 test-tree fixture literals for no public-posture
+    gain.
+    """
+    tree = ast.parse(_SYNTHETIC_UNPUBLISHED_LITERAL_SOURCE)
+    assert not _published_string_violations(tree), (
+        "an unpublished literal was flagged; the destination scoping is broken"
+    )
+
+
+def test_t15_detector_ignores_indirect_construction() -> None:
+    """T15 does not follow a string through a variable, a constant, or a
+    concatenation expression to a sink.
+
+    A deliberate scope decision, asserted so it is a documented property
+    rather than a later discovery: the detector is literal-at-sink only,
+    matching how every measured real offender was written. Widening to
+    dataflow is its own change.
+    """
+    tree = ast.parse(_SYNTHETIC_INDIRECT_SINK_SOURCE)
+    assert not _published_string_violations(tree), (
+        "an indirectly-constructed string was flagged; the literal-at-sink scope moved"
+    )
+
+
+def test_t15_detector_matches_id_forms_and_rejects_near_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T15 uses the hyphenated prose pattern, reads it from the module, and
+    rejects near-misses.
+
+    Anti-coincidental-pass. Two rivals:
+
+    - Boundary retuned or pattern widened: the near-misses below fail.
+      A published string is prose, so the name-shaped pattern T12/T13/T14
+      share would over-match here (``t0157`` appears legitimately in
+      prose-adjacent identifiers quoted inside descriptions).
+    - **Pattern inlined** rather than looked up. Passes every fixed case
+      and drifts from T2 the moment the pattern moves. The closing
+      monkeypatch excludes it: swapping the module attribute must change
+      the detector's answer in both directions.
+    """
+    near_misses = 'raise ValueError("CAT-0001 T-123 T-01234 CAS-ADR-042")\n'
+    assert not _published_string_violations(ast.parse(near_misses)), (
+        "a near-miss token was flagged; the prose pattern's boundaries moved"
+    )
+
+    # Line attribution: the hit belongs to the literal's own line.
+    source = 'def f():\n    raise ValueError("boom (T-0330)")\n'
+    violations = _published_string_violations(ast.parse(source))
+    assert violations == [(2, "T-0330")], (
+        f"expected [(2, 'T-0330')], got {violations}; line attribution is broken"
+    )
+
+    # Excludes the inlined-copy rival: point the module attribute at a
+    # pattern that matches something else entirely, and the detector's
+    # answer must follow it in both directions.
+    monkeypatch.setitem(globals(), "TICKET_REF_RE", re.compile(r"zzmarker"))
+    assert not _published_string_violations(ast.parse('raise ValueError("boom (T-0330)")\n')), (
+        "detector still matched a ticket id after the module pattern was swapped out; "
+        "it carries its own copy instead of consulting TICKET_REF_RE"
+    )
+    assert _published_string_violations(ast.parse('raise ValueError("zzmarker probe")\n')), (
+        "detector did not pick up the swapped-in pattern; it is not reading the module attribute"
+    )
+
+
+def test_t15_scan_scope_is_non_empty_and_honours_exclusions() -> None:
+    """T15's two enumerations reach real files, skip the right ones, and
+    exempt nothing.
+
+    A gate over an empty file list passes for the wrong reason. The
+    membership assertions pin the two scope decisions T15 adds over the
+    shared enumeration: the ``.py`` arm excludes the test tree (nothing in
+    ``tests/`` is published), and the substrate arm includes the manifest —
+    its revision-history summaries are published ledger prose, decided in
+    scope rather than carved out.
+    """
+    py_scanned = {str(p.relative_to(REPO_ROOT)) for p in _published_string_py_paths()}
+
+    assert len(py_scanned) > 50, (
+        f"T15a would scan only {len(py_scanned)} file(s); enumeration is broken"
+    )
+    assert "sage/models/schemas.py" in py_scanned, "production code is out of scope"
+    # Membership across trees, not just one: the argparse sinks the rule
+    # exists to reach live under scripts/, so an enumeration that quietly
+    # dropped that tree would pass every other assertion here.
+    assert "scripts/reproject_active_documents.py" in py_scanned, "scripts/ is out of scope"
+    assert not any(rel.startswith("tests/") for rel in py_scanned), (
+        "the test tree is in scope; fixture and simulated-error literals would be swept"
+    )
+    assert not any(rel.startswith("domains/") for rel in py_scanned)
+    assert not any(rel.startswith(".claude/") for rel in py_scanned)
+
+    substrate_scanned = {
+        str(p.relative_to(REPO_ROOT))
+        for p in _tracked_files_with_suffixes((".yaml", ".yml", ".json"))
+    }
+
+    assert "docs/fs/sage/sage_core_api.openapi.yaml" in substrate_scanned, (
+        "the OpenAPI spec is out of scope"
+    )
+    assert "docs/fs/manifest.json" in substrate_scanned, (
+        "the manifest is out of scope; its revision history was decided IN scope"
+    )
+    assert "docs/fs/sage/vault_config.schema.json" in substrate_scanned
+    assert not any(rel.startswith((".claude/", "domains/")) for rel in substrate_scanned)
+
+    assert PUBLISHED_TICKET_REF_ALLOWLIST == {}, (
+        f"T15's allowlist is no longer empty: {PUBLISHED_TICKET_REF_ALLOWLIST}"
     )
