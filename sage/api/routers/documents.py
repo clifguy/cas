@@ -91,8 +91,9 @@ async def recompute_abstract(
     Calls the shared per-document re-abstraction service path so this route and
     the equivalent MCP tool dispatch identical work against one queue and one
     single-flight claim. Returns as soon as the background job is enqueued; the
-    caller polls ``GET /documents/{document_id}`` for the transition out of
-    ``abstraction_in_progress``. A concurrent call against the same document
+    caller waits on ``GET /documents/{document_id}`` for the transition out of
+    ``abstraction_in_progress``, as a single bounded wait rather than one status
+    read per unit of caller work. A concurrent call against the same document
     returns 409 rather than dispatching a parallel task. Regenerates regardless
     of the document's current terminal ``pipeline_status`` as long as its
     projection chunks are still stored.

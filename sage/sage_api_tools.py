@@ -226,13 +226,23 @@ def register_sage_tools(
         Stages 2-3 (indexing, abstraction) dispatch as a background task;
         the call returns in seconds with ``pipeline_status`` typically
         non-terminal (projection_complete or indexing_in_progress), keeping
-        the RPC under the 60-second MCP client timeout. Poll
-        ``get_document`` for the terminal status: ``abstraction_complete``
-        (the happy path), ``abstraction_skipped`` (the vault sets
-        ``abstraction.enabled=false`` or the projection is empty, so Stage 3
-        is bypassed), or ``failed`` (any Stage exception; ``pipeline_error``
-        is populated). A requested supersede transition runs synchronously,
-        so the version chain is complete on return.
+        the RPC under the 60-second MCP client timeout. To observe the
+        outcome, wait for a terminal ``pipeline_status`` on the document:
+        ``abstraction_complete`` (the happy path), ``abstraction_skipped``
+        (the vault sets ``abstraction.enabled=false`` or the projection is
+        empty, so Stage 3 is bypassed), or ``failed`` (any Stage exception;
+        ``pipeline_error`` is populated). A requested supersede transition
+        runs synchronously, so the version chain is complete on return.
+
+        Run that wait on the caller's side, as a single wait that returns
+        once the status becomes terminal -- not as one status request per
+        unit of caller work. ``get_document`` and
+        ``GET /sage_vaults/{vault_id}/documents/{document_id}`` both report
+        the current status cheaply, so the cost of waiting is set by how
+        often the caller asks. Bound the wait: a document left at
+        ``abstraction_in_progress`` with no work in flight (the process
+        restarted mid-job) never reaches a terminal status on its own, and
+        an unbounded wait on that state does not return.
 
         Metadata is caller-authoritative. Pass prepared values via
         ``metadata`` and leave ``needs_review=false``; the document commits
@@ -479,8 +489,8 @@ def register_sage_tools(
                 )
 
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP client
-            # timeout (BH-130). Callers poll get_document for terminal
-            # pipeline_status.
+            # timeout (BH-130). Callers wait for a terminal pipeline_status on
+            # the document rather than requesting status per unit of work.
             if transfer_token is not None:
                 # Completion leg of a two-phase caller-local ingest: redeem
                 # the token against the bytes the caller's environment already
@@ -2271,9 +2281,17 @@ def register_sage_tools(
 
         The background task generates and persists ``semantic_abstract`` and
         flips ``pipeline_status`` to ``abstraction_complete`` (success) or
-        ``failed`` (error). To observe terminal state, poll ``get_document``
-        until ``pipeline_status`` is no longer ``abstraction_in_progress``.
-        A caller that assumes this tool returns the new abstract in place
+        ``failed`` (error). Those two are the only terminal states this tool
+        produces: it abstracts from stored chunks, so the
+        ``abstraction_skipped`` branches that apply when a vault disables
+        abstraction or a projection is empty are not on this path. To observe
+        the outcome, wait for a terminal ``pipeline_status`` -- a single
+        caller-side wait that returns once the status leaves
+        ``abstraction_in_progress``, not one status request per unit of
+        caller work. Bound the wait: a document left at
+        ``abstraction_in_progress`` with no work in flight (the process
+        restarted mid-job) never reaches a terminal status on its own. A
+        caller that assumes this tool returns the new abstract in place
         will observe stale state.
 
         Per-document single-flight lock: a concurrent call against the same
@@ -2346,9 +2364,13 @@ def register_sage_tools(
         The background task re-indexes the chunks, regenerates the abstract,
         and flips ``pipeline_status`` to ``abstraction_complete`` /
         ``abstraction_skipped`` (success) or ``failed`` (Stage 2/3 error). To
-        observe terminal state, poll ``get_document`` until
-        ``pipeline_status`` is no longer ``indexing_in_progress`` or
-        ``abstraction_in_progress``.
+        observe the outcome, wait for a terminal ``pipeline_status`` on the
+        document -- a single caller-side wait that returns once the status
+        is no longer ``indexing_in_progress`` or ``abstraction_in_progress``,
+        not one status request per unit of caller work. Bound the wait: a
+        document left in either in-progress state with no work in flight
+        (the process restarted mid-job) never reaches a terminal status on
+        its own.
 
         Per-document single-flight lock: a concurrent call against the same
         ``document_id`` while a recompute is in-flight returns a structured

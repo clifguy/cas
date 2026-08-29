@@ -591,7 +591,7 @@ class IngestionService:
         keys live in vault config under ``adapter_defaults``.
 
         ``pipeline_status`` terminal-state outcomes (CAS-ADR-021):
-        The terminal status observed by a poll of ``get_document``
+        The terminal status a caller ultimately observes on the document
         depends on vault config and runtime outcome.
         ``PipelineStatus.abstraction_complete`` is the happy path:
         projection + indexing + abstraction all succeed and
@@ -609,8 +609,9 @@ class IngestionService:
             IngestResult with the document and whether it was newly created.
             When `wait_for_pipeline` is False the document's
             pipeline_status will typically be non-terminal (indexing_in_progress
-            or projection_complete); callers poll `get_document` for terminal
-            state.
+            or projection_complete); callers wait for a terminal state on the
+            document, as a single bounded wait rather than one status read per
+            unit of caller work.
 
         Raises:
             DuplicateContentError: Same content hash exists anywhere in vault
@@ -1465,7 +1466,8 @@ class IngestionService:
         document (raising ReabstractDocumentAlreadyInFlightError if a job is
         already queued or in flight for it), pre-marks ABSTRACTION_IN_PROGRESS,
         and enqueues a Stage-3-from-chunks job. Returns immediately; the caller
-        polls get_document for the transition to ABSTRACTION_COMPLETE or FAILED.
+        waits for the transition to ABSTRACTION_COMPLETE or FAILED, as a single
+        bounded wait rather than one status read per unit of caller work.
 
         Args:
             document_id: ID of the document to re-abstract.

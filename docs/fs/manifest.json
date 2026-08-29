@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-08-23",
+  "manifest_date": "2026-08-29",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.48",
+  "substrate_version": "1.49",
   "revision_history": [
+    {
+      "version": "1.49",
+      "date": "2026-08-29",
+      "summary": "Caller-side wait guidance replaces per-turn poll guidance on the surfaces that dispatch pipeline stages as a background task. No structural surface change: sage_core_api.openapi.yaml operation descriptions for the ingest, get-document, and recompute-abstract operations, plus the ReabstractStartedResponse.dispatched_at property description, are reworded to direct callers to wait for a terminal pipeline_status -- naming the full terminal set and the unbounded-wait hazard when a process restarts mid-job -- instead of instructing them to poll. The prior wording invited one status request per unit of caller work, which for an agent caller means a turn and a result payload per tick for the duration of the work. Mirrored Pydantic Field descriptions in sage/models/schemas.py move in lockstep (Principle 8, verbatim descriptions), as do the MCP tool docstrings in sage/sage_api_tools.py and the service-layer docstrings in sage/services/ingestion.py. Descriptions of the server's own internal polling (the deferred-abstract sweep, the SSE progress events) and of endpoints that are genuinely inexpensive to poll (vault stats) are deliberately unchanged. Enforced by three docstring invariants in tests/sage/test_mcp_self_documentation.py: the async-dispatch tools must name every member of TERMINAL_PIPELINE_STATUSES, must carry the wait direction rather than the retired poll phrasing, and must stay free of caller-environment specifics. Per-schema versions are unchanged: no field, path, type, or operation moved."
+    },
     {
       "version": "1.48",
       "date": "2026-08-29",
