@@ -49,6 +49,7 @@ from sage.api.errors import (
     ExpectedHeadVersionRequiresPredecessorError,
     ForceReingestPathMismatchError,
     IdenticalContentSupersedeError,
+    InvalidLifecycleTransitionError,
     NoProjectionError,
     ReabstractDocumentAlreadyInFlightError,
     RecomputePipelineAlreadyInFlightError,
@@ -58,7 +59,7 @@ from sage.api.errors import (
     Tier3SchemaViolationError,
     Tier3UniqueConstraintViolation,
 )
-from sage.config import VaultConfig
+from sage.config import VaultConfig, build_transition_table
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
     PipelineStatus,
@@ -174,6 +175,12 @@ class IngestionService:
         self._config = config
         self._adapters = source_adapters or {}
         self._lifecycle_service = lifecycle_service
+        # Built from the vault config rather than read off the lifecycle
+        # service: the supersede pre-validation below must consult the same
+        # transition table the lifecycle service enforces against, and the
+        # lifecycle service is optional in this constructor while the config
+        # is not.
+        self._transition_table = build_transition_table(config)
         # Identifier_mention inference runs inside the per-document
         # pipeline so all ingest pathways (bulk and ingest_document) honor the
         # vault's declared rules. Optional in the constructor signature so
@@ -615,7 +622,10 @@ class IngestionService:
                 overwriting an unrelated byte-identical document.
             AdapterNotFoundError: No adapter for requested source type.
             DocumentNotFoundError: `predecessor_id` does not exist.
-            SupersedeTargetNotActiveError: predecessor is not active.
+            SupersedeTargetNotActiveError: the vault's lifecycle
+                transition table does not permit ``supersede`` from the
+                predecessor's current state. Under the base lifecycle
+                that is any state other than ``active``.
             IdenticalContentSupersedeError: new content matches predecessor.
             SourceFileNotFoundError: ``request.source`` does not resolve to
                 a readable source on the vault-source store -- neither on the
@@ -645,15 +655,29 @@ class IngestionService:
         # (BH-121, BH-122, BH-124). Fail-fast keeps pipeline work behind
         # cheap validity checks. The identical-content check happens
         # post-projection, once the new file's hash is known.
+        #
+        # The predicate is the transition table's, not a literal: the
+        # authoritative check under the predecessor lock below asks the
+        # table whether `supersede` is legal from the predecessor's state,
+        # and a fail-fast that asked a different question would shadow it.
+        # A vault that declares supersede from a further state would then
+        # get a configured transition this check refused before the table
+        # was ever consulted.
         predecessor: Document | None = None
         if request.predecessor_id:
             predecessor = await self._store.get_document(request.predecessor_id)
             if predecessor is None:
                 raise DocumentNotFoundError(request.predecessor_id)
-            if predecessor.lifecycle_status != "active":
+            if (
+                self._transition_table.validate_transition(
+                    predecessor.lifecycle_status, "supersede"
+                )
+                is None
+            ):
                 raise SupersedeTargetNotActiveError(
                     request.predecessor_id,
                     predecessor.lifecycle_status,
+                    self._transition_table.states_allowing("supersede"),
                 )
 
         # Resolve the source through the vault-source store, not a raw local
@@ -896,10 +920,23 @@ class IngestionService:
             # incremental safety cost is acceptable until a caller needs
             # the contract here.
             if predecessor is not None and self._lifecycle_service is not None:
-                await self._lifecycle_service._set_lifecycle(
-                    predecessor.id,
-                    SetLifecycleRequest(action="supersede", successor_id=doc.id),
-                )
+                try:
+                    await self._lifecycle_service._set_lifecycle(
+                        predecessor.id,
+                        SetLifecycleRequest(action="supersede", successor_id=doc.id),
+                    )
+                except InvalidLifecycleTransitionError as exc:
+                    # `_set_lifecycle` serves the explicit lifecycle-action
+                    # surface and reports its rejection in that surface's
+                    # vocabulary. Reached from here it is the same condition
+                    # the pre-validation above screens for -- a predecessor
+                    # whose state does not permit supersede, changed by a
+                    # racer since -- so it carries this surface's code.
+                    raise SupersedeTargetNotActiveError(
+                        predecessor.id,
+                        exc.detail["current_state"],
+                        self._transition_table.states_allowing("supersede"),
+                    ) from exc
         else:
             # New document. When a predecessor is being superseded the
             # doc insert + predecessor lifecycle flip + supersedes edge

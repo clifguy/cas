@@ -1148,11 +1148,28 @@ class ContentFileMissingError(SAGEError):
 
 
 class SupersedeTargetNotActiveError(SAGEError):
-    """409: supersede target is not in the `active` state (BH-122)."""
+    """409: supersede is not legal from the target's state (BH-122).
+
+    `allowed_states` comes from the vault's lifecycle transition table --
+    the states that declare a `supersede` transition -- so the reported
+    precondition tracks the vault's configuration instead of restating
+    it. Under the base lifecycle that is exactly `["active"]`, which is
+    what the error name reflects; a vault that declares supersede from a
+    further state reports it here rather than being rejected against a
+    rule it does not hold.
+
+    `required_state` renders the same set for humans and remains in the
+    detail payload for callers that key remediation prose off it.
+    """
 
     def __init__(
-        self, predecessor_id: str, current_state: str, required_state: str = "active"
+        self,
+        predecessor_id: str,
+        current_state: str,
+        allowed_states: list[str] | None = None,
     ) -> None:
+        states = list(allowed_states) if allowed_states else ["active"]
+        required_state = " or ".join(states)
         super().__init__(
             "supersede_target_not_active",
             (
@@ -1164,6 +1181,7 @@ class SupersedeTargetNotActiveError(SAGEError):
                 "predecessor_id": predecessor_id,
                 "current_state": current_state,
                 "required_state": required_state,
+                "allowed_states": states,
             },
         )
 

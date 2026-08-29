@@ -842,8 +842,10 @@ class IngestRequest(BaseModel):
             "the predecessor: creates a `supersedes` edge from the new "
             "document to the predecessor and sets the predecessor's "
             "lifecycle_status to `archived`. Predecessor validation (exists "
-            "+ active + different content hash) runs before projection; "
-            "failures return 404/409 before any pipeline work begins."
+            "+ the vault's transition table permits `supersede` from its "
+            "current state + different content hash) runs before "
+            "projection; failures return 404/409 before any pipeline work "
+            "begins."
         ),
     )
     expected_head_version: str | None = Field(

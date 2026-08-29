@@ -303,8 +303,12 @@ def register_sage_tools(
           ``source_content_hash``. Pass ``document_id`` to confirm the intended
           record (for example, a document whose file legitimately moved).
         - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
-          but the predecessor is not ``active``. Run the archive ->
-          reactivate dance via ``update_lifecycles`` before retrying.
+          but the vault's lifecycle transition table does not permit
+          ``supersede`` from the predecessor's current state -- under the
+          base lifecycle, any state other than ``active``. Run the archive
+          -> reactivate dance via ``update_lifecycles`` before retrying.
+          Detail carries ``current_state`` and the ``allowed_states`` the
+          table does permit.
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; chains require distinct content
           per step.
