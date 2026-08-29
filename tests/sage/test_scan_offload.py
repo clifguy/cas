@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 import sage.services.scan as scan_module
 from sage.services.scan import scan_directory
@@ -31,6 +32,12 @@ class _StubGraphStore:
 
     Deliberately narrow: a scan that reached for any other store method
     would fail with AttributeError here rather than silently working.
+
+    ``path_matches`` is keyed the way the durable store keys it: ingest
+    records ``source_path`` vault-relative (``imports/alpha.md``), so a
+    seed keyed by absolute path describes a row no real store holds.
+    Seeding it that way is what let the ``modified`` verdict stay dead
+    while the tests covering it stayed green.
     """
 
     def __init__(self, hash_matches=None, path_matches=None):
@@ -56,6 +63,19 @@ async def _wait_until(predicate: Callable[[], bool]) -> None:
 def _make_tree(root, count: int, content: str = "# Doc") -> None:
     for i in range(count):
         (root / f"doc_{i:02d}.md").write_text(content)
+
+
+def _vault_imports(config) -> Path:
+    """The vault's own ``imports/`` directory, created on first use.
+
+    Where retained sources live, and so the tree a scan of
+    already-ingested files walks. A file here has a vault-relative path
+    (``imports/<name>``) that a stored ``source_path`` can equal; a file
+    anywhere else does not.
+    """
+    imports = Path(config.vault.storage_root) / "imports"
+    imports.mkdir(parents=True, exist_ok=True)
+    return imports
 
 
 async def test_scan_walk_hash_offloaded_to_worker_thread(minimal_config, tmp_path, monkeypatch):
@@ -293,7 +313,7 @@ def _hash_of(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
 
-async def test_scan_issues_constant_graph_store_round_trips(minimal_config, tmp_path):
+async def test_scan_issues_constant_graph_store_round_trips(minimal_config):
     """The vault-lookup phase costs two round-trips no matter how many files
     are matched, and the path lookup is asked only about adapter-matched
     files.
@@ -304,10 +324,11 @@ async def test_scan_issues_constant_graph_store_round_trips(minimal_config, tmp_
     assertion in this module while leaving that cost in place, which is why
     this test counts calls rather than inspecting results. Passing the whole
     walked file list (rather than the adapter-matched subset) would widen the
-    single call's argument list to include the extensionless file.
+    single call's argument list to include the extensionless file. Asking for
+    both path forms in one call is what keeps the round-trip count at one
+    while the lookup covers vault-relative and absolute stored paths alike.
     """
-    scan_dir = tmp_path / "round_trip_tree"
-    scan_dir.mkdir()
+    scan_dir = _vault_imports(minimal_config)
     _make_tree(scan_dir, 6)
     (scan_dir / "thing.xyz").write_text("not ingestable")
 
@@ -324,19 +345,21 @@ async def test_scan_issues_constant_graph_store_round_trips(minimal_config, tmp_
     assert len(store.hash_calls) == 1
     assert len(store.path_calls) == 1
     assert sorted(store.path_calls[0]) == sorted(
-        str(scan_dir / f"doc_{i:02d}.md") for i in range(6)
+        [str(scan_dir / f"doc_{i:02d}.md") for i in range(6)]
+        + [f"imports/doc_{i:02d}.md" for i in range(6)]
     )
 
 
-async def test_scan_classifies_new_modified_unchanged_and_no_adapter(minimal_config, tmp_path):
+async def test_scan_classifies_new_modified_unchanged_and_no_adapter(minimal_config):
     """Batching the path lookup leaves all four sage_status verdicts intact.
 
     Regression guard: reading the batched result with the wrong key (a
     document id rather than the file's own path, say) collapses every
     matched file to ``new`` -- which no round-trip count would catch.
+    The path seed is vault-relative, matching what ingest actually
+    stores; an absolute seed would describe a row no real store holds.
     """
-    scan_dir = tmp_path / "classify_tree"
-    scan_dir.mkdir()
+    scan_dir = _vault_imports(minimal_config)
     (scan_dir / "unchanged.md").write_text("# Same")
     (scan_dir / "modified.md").write_text("# Changed")
     (scan_dir / "new.md").write_text("# Fresh")
@@ -344,7 +367,7 @@ async def test_scan_classifies_new_modified_unchanged_and_no_adapter(minimal_con
 
     store = _StubGraphStore(
         hash_matches={_hash_of("# Same")},
-        path_matches={str(scan_dir / "modified.md"): _hash_of("# Was")},
+        path_matches={"imports/modified.md": _hash_of("# Was")},
     )
     results, _warnings, _truncated = await scan_directory(
         directory=scan_dir,
@@ -362,7 +385,7 @@ async def test_scan_classifies_new_modified_unchanged_and_no_adapter(minimal_con
     }
 
 
-async def test_scan_hash_match_wins_over_path_match(minimal_config, tmp_path):
+async def test_scan_hash_match_wins_over_path_match(minimal_config):
     """A file matching on both hash and path is ``unchanged``, not
     ``modified``.
 
@@ -371,13 +394,12 @@ async def test_scan_hash_match_wins_over_path_match(minimal_config, tmp_path):
     checked the path first would leave them green. Re-ingesting an unmodified
     file already in the vault is exactly this case.
     """
-    scan_dir = tmp_path / "tie_break_tree"
-    scan_dir.mkdir()
+    scan_dir = _vault_imports(minimal_config)
     (scan_dir / "both.md").write_text("# Both")
 
     store = _StubGraphStore(
         hash_matches={_hash_of("# Both")},
-        path_matches={str(scan_dir / "both.md"): _hash_of("# Both")},
+        path_matches={"imports/both.md": _hash_of("# Both")},
     )
     results, _warnings, _truncated = await scan_directory(
         directory=scan_dir,
@@ -388,3 +410,149 @@ async def test_scan_hash_match_wins_over_path_match(minimal_config, tmp_path):
 
     assert len(results) == 1
     assert results[0].sage_status == "unchanged"
+
+
+async def test_scan_reports_modified_for_edited_file_in_vault_imports(minimal_config):
+    """An already-ingested file edited in place under the vault's own
+    ``imports/`` is ``modified``, and its reported path stays absolute.
+
+    Regression guard: this is the verdict that was unreachable. Ingest
+    stores ``source_path`` vault-relative, so a lookup keyed only by the
+    absolute path can never match and the file comes back ``new``. The
+    stored-path seed here is the relative form a real store holds.
+
+    The ``file_path`` assertion pins the other half of the contract: the
+    relative form is a lookup key, not an output change. Callers feed
+    ``file_path`` straight back into a subsequent ingest, so it must stay
+    the absolute path the caller asked about.
+    """
+    scan_dir = _vault_imports(minimal_config)
+    (scan_dir / "alpha.md").write_text("# Edited")
+
+    store = _StubGraphStore(path_matches={"imports/alpha.md": _hash_of("# Original")})
+    results, _warnings, _truncated = await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(results) == 1
+    assert results[0].sage_status == "modified"
+    assert results[0].file_path == str(scan_dir / "alpha.md")
+
+
+async def test_scan_asks_the_store_by_vault_relative_path_for_in_vault_files(minimal_config):
+    """The lookup the scan issues carries the vault-relative form for a
+    file inside the vault tree.
+
+    Regression guard: separate from the verdict test because a verdict can
+    be reached without asking the store the right question -- resolving
+    every stored path client-side, say, or matching on basename after the
+    fact. Only inspecting the call argument pins the key, and only a
+    pinned key keeps the lookup a single indexed query.
+    """
+    scan_dir = _vault_imports(minimal_config)
+    (scan_dir / "alpha.md").write_text("# Edited")
+
+    store = _StubGraphStore()
+    await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(store.path_calls) == 1
+    assert "imports/alpha.md" in store.path_calls[0]
+
+
+async def test_scan_outside_the_vault_classifies_edited_file_as_new(minimal_config, tmp_path):
+    """A file scanned from a staging directory outside the vault is
+    ``new``, even when the vault holds a document retained from it.
+
+    The scope decision, made executable: path equality is the predicate,
+    and a staged file bears no relation to the vault's storage root. It is
+    also the truthful verdict -- retaining a same-named source whose
+    content differs disambiguates to ``imports/<stem>_<hash>``, so
+    ingesting this file produces a new document rather than updating the
+    existing one.
+
+    Regression guard: a basename fallback added later to make the staging
+    case report ``modified`` would turn this red, which is the point. Such
+    a fallback would also fire on an unrelated same-named file that was
+    never ingested at all.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "alpha.md").write_text("# Edited")
+
+    store = _StubGraphStore(path_matches={"imports/alpha.md": _hash_of("# Original")})
+    results, _warnings, _truncated = await scan_directory(
+        directory=staging,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(results) == 1
+    assert results[0].sage_status == "new"
+    assert store.path_calls[0] == [str(staging / "alpha.md")]
+
+
+async def test_scan_still_matches_a_stored_absolute_source_path(minimal_config, tmp_path):
+    """A document whose stored ``source_path`` is itself absolute still
+    matches, wherever the file sits.
+
+    Regression guard: normalizing the scanned path to the vault-relative
+    form is an addition, not a replacement, and this is the out-of-vault
+    half of that property -- asserted by verdict, where the sibling
+    round-trip test asserts it by inspecting the lookup keys.
+
+    An implementation that dropped the absolute key outright would fail
+    this test, but not only this one: the round-trip and outside-the-vault
+    tests pin the key list directly and would fail alongside it. The case
+    no other test in this module reaches is the narrower one -- dropping
+    the absolute key just for files that also have a relative form -- and
+    that is the companion in-vault test's job, not this one's.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "alpha.md").write_text("# Edited")
+
+    store = _StubGraphStore(path_matches={str(staging / "alpha.md"): _hash_of("# Original")})
+    results, _warnings, _truncated = await scan_directory(
+        directory=staging,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(results) == 1
+    assert results[0].sage_status == "modified"
+
+
+async def test_scan_matches_an_absolute_stored_path_for_a_file_inside_the_vault(minimal_config):
+    """A file inside the vault whose stored source path is absolute still
+    matches, even though the vault-relative form is also available.
+
+    Regression guard: the in-vault half of the strict-superset property,
+    and the one the out-of-vault case cannot cover -- there the absolute
+    path is the only key either way, so dropping the absolute key for
+    files that have a relative form leaves that test green. Only a file
+    carrying both forms distinguishes "ask by both" from "ask by the
+    relative form instead".
+    """
+    scan_dir = _vault_imports(minimal_config)
+    (scan_dir / "alpha.md").write_text("# Edited")
+
+    store = _StubGraphStore(path_matches={str(scan_dir / "alpha.md"): _hash_of("# Original")})
+    results, _warnings, _truncated = await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(results) == 1
+    assert results[0].sage_status == "modified"

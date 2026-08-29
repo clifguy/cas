@@ -107,6 +107,23 @@ def _detect_adapter(path: Path, extension_map: dict[str, str]) -> str | None:
     return extension_map.get(path.suffix.lower())
 
 
+def _vault_relative_path(path: Path, storage_root: Path) -> str | None:
+    """Express a scanned file the way a document row records its source.
+
+    A retained source is recorded relative to the vault's storage root, so
+    that relative form -- not the absolute one a walk produces -- is what a
+    stored source path can equal. Returns None for a file outside the vault
+    tree, which has no such form.
+
+    Resolving is a per-file syscall, so this belongs to the blocking
+    walk-and-hash unit rather than to result assembly on the event loop.
+    """
+    try:
+        return str(path.resolve().relative_to(storage_root))
+    except (OSError, ValueError):
+        return None
+
+
 def _walk_directory(
     directory: Path, max_depth: int, max_files: int
 ) -> tuple[list[Path], list[str], bool, bool]:
@@ -160,13 +177,18 @@ def _scan_files_sync(
     extension_map: dict[str, str],
     max_files: int,
     max_bytes: int,
-) -> tuple[list[tuple[Path, str, str | None, str]], list[str], bool]:
+    storage_root: Path,
+) -> tuple[list[tuple[Path, str, str | None, str, str | None]], list[str], bool]:
     """Walk, hash, and stat a directory tree as one blocking unit.
 
     Encapsulates the entire blocking filesystem phase of a scan so the
     caller can dispatch it to the scan executor in a single hop. Returns
     ``(file_infos, warnings, truncated)`` where each file info is
-    ``(path, file_hash, adapter, mtime_iso)``.
+    ``(path, file_hash, adapter, mtime_iso, vault_relative)``.
+    ``vault_relative`` is the file's path relative to ``storage_root``,
+    or None when the file lies outside the vault tree; it is computed
+    only for adapter-matched files, being needed only by the vault
+    lookup those files feed.
 
     Truncation semantics: the walk stops at ``max_files``; hashing stops
     once the cumulative bytes read reach ``max_bytes``; and a walk pruned
@@ -192,7 +214,7 @@ def _scan_files_sync(
             "pass max_depth to scan deeper"
         )
 
-    file_infos: list[tuple[Path, str, str | None, str]] = []
+    file_infos: list[tuple[Path, str, str | None, str, str | None]] = []
     bytes_hashed = 0
     for index, path in enumerate(file_paths):
         if bytes_hashed >= max_bytes:
@@ -206,7 +228,8 @@ def _scan_files_sync(
         file_hash = _compute_file_hash(path)
         bytes_hashed += path.stat().st_size
         mtime = _get_mtime_iso(path)
-        file_infos.append((path, file_hash, adapter, mtime))
+        vault_relative = _vault_relative_path(path, storage_root) if adapter is not None else None
+        file_infos.append((path, file_hash, adapter, mtime, vault_relative))
 
     return file_infos, warnings, truncated
 
@@ -224,6 +247,14 @@ async def scan_directory(
 
     The blocking walk-and-hash phase runs on the dedicated scan executor;
     only the vault lookups and result assembly run on the event loop.
+
+    The ``modified`` verdict is vault-scoped: it requires a stored source
+    path equal to the scanned file's, and a document records its source
+    relative to the vault's storage root, so only a file inside the vault
+    tree can match. A file scanned from elsewhere is ``new`` -- which is
+    also what ingesting it would produce, since retaining a same-named
+    source whose content differs yields a new document rather than an
+    update to the existing one.
 
     Args:
         directory: Absolute path to scan.
@@ -258,6 +289,7 @@ async def scan_directory(
     # availability is code-determined, not per-vault (CAS-ADR-046), so scan
     # reports exactly what an ingest of the same file would accept.
     loop = asyncio.get_running_loop()
+    storage_root = Path(vault_config.vault.storage_root).expanduser().resolve()
     file_infos, warnings, truncated = await loop.run_in_executor(
         _get_scan_executor(),
         _scan_files_sync,
@@ -267,30 +299,39 @@ async def scan_directory(
         extension_map,
         effective_max_files,
         effective_max_bytes,
+        storage_root,
     )
 
-    hashes_to_check = [h for _p, h, a, _m in file_infos if a is not None]
+    hashes_to_check = [h for _p, h, a, _m, _r in file_infos if a is not None]
 
     # Bulk hash check against vault
     hash_matches = await graph_store.find_documents_by_hashes(hashes_to_check)
 
-    # Also check by source path for "modified" detection
+    # Also check by source path for "modified" detection.
     # A file is "modified" if its path matches an existing doc but hash differs.
-    # Bulk, like the hash check above: the lookup phase costs a fixed number of
-    # graph-store round-trips, so it does not scale with the file count.
-    all_source_paths = [str(p) for p, _h, a, _m in file_infos if a is not None]
+    # Ask by the vault-relative form, which is what a document records, and by
+    # the absolute one alongside it, so a record that does store an absolute
+    # path still matches. Both forms travel in the same call: the lookup phase
+    # costs a fixed number of graph-store round-trips either way, so it does not
+    # scale with the file count.
+    keys_by_path: dict[Path, tuple[str, ...]] = {
+        path: (str(path),) if relative is None else (str(path), relative)
+        for path, _h, adapter, _m, relative in file_infos
+        if adapter is not None
+    }
+    all_source_paths = sorted({key for keys in keys_by_path.values() for key in keys})
     path_to_existing = await graph_store.find_documents_by_source_paths(all_source_paths)
 
     # Build results
     results: list[ScanResult] = []
-    for path, file_hash, adapter, mtime in file_infos:
+    for path, file_hash, adapter, mtime, _relative in file_infos:
         parsed = parser.parse(path.stem, adapter=adapter)
 
         if adapter is None:
             status = "no_adapter"
         elif file_hash in hash_matches:
             status = "unchanged"
-        elif str(path) in path_to_existing:
+        elif any(key in path_to_existing for key in keys_by_path[path]):
             status = "modified"
         else:
             status = "new"
