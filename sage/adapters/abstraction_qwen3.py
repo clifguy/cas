@@ -81,6 +81,52 @@ class TruncationOutcome(NamedTuple):
     input_tokens: int | None
 
 
+# The smallest input slice worth sending when the output budget and template
+# overhead have already claimed the whole window. A non-positive budget is not
+# a usable answer -- it reads either as "everything fits" or as "send nothing"
+# depending on which comparison consumes it -- so the degenerate case resolves
+# to a token count that is small but real.
+MINIMUM_INPUT_TOKENS = 100
+
+
+def available_input_tokens(effective_window: int, max_tokens: int, overhead_tokens: int) -> int:
+    """Tokens of document text that fit alongside the output and the template.
+
+    The prompt window is shared three ways: the generated abstract reserves
+    ``max_tokens``, the chat template and system prompt cost
+    ``overhead_tokens``, and whatever remains is what the document itself may
+    spend. A document longer than the remainder is truncated before the model
+    sees it.
+
+    Module-level and free of provider state so that a caller measuring a
+    corpus offline computes the same threshold this provider enforces,
+    without loading model weights to ask. Keeping that arithmetic in one
+    place is the point: a second copy would agree today and diverge silently
+    later, and a survey run against a drifted threshold reports the wrong set
+    of documents with no signal that it did.
+
+    Scoped to this provider. The hosted provider reserves its own input
+    budget on a different basis -- charging the system prompt at its byte
+    length to avoid a tokenizer round trip, and holding back a safety margin
+    against a ceiling it cannot measure locally -- so the two are
+    deliberately separate rather than a duplication waiting to be collapsed.
+
+    Args:
+        effective_window: The window actually in force -- the smaller of the
+            configured value and the loaded model's native prompt length.
+        max_tokens: Output budget reserved for the generated abstract.
+        overhead_tokens: Chat-template and system-prompt cost for the
+            document type in question.
+
+    Returns:
+        The input budget in tokens, never below ``MINIMUM_INPUT_TOKENS``.
+    """
+    available = effective_window - max_tokens - overhead_tokens
+    if available <= 0:
+        return MINIMUM_INPUT_TOKENS
+    return available
+
+
 def _phase_duration_ms(tokens: int | None, tokens_per_second: float | None) -> float | None:
     """Convert a token count and a rate into a duration in milliseconds.
 
@@ -355,10 +401,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         """
         overhead_tokens = self._template_overhead_tokens(doc_type)
 
-        available = self._effective_context_window() - max_tokens - overhead_tokens
-        if available <= 0:
-            # Extreme case: just use a minimal slice
-            available = 100
+        available = available_input_tokens(
+            self._effective_context_window(), max_tokens, overhead_tokens
+        )
 
         if len(text.encode("utf-8")) <= available:
             return TruncationOutcome(text=text, input_tokens=None)

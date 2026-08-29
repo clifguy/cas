@@ -19,10 +19,12 @@ import types
 
 import pytest
 
+from sage.adapters import abstraction_qwen3
 from sage.adapters.abstraction_qwen3 import (
     DEFAULT_CONTEXT_WINDOW,
     Qwen3AbstractionProvider,
     _reset_qwen3_singleton,
+    available_input_tokens,
     get_qwen3_abstraction_provider,
 )
 
@@ -320,3 +322,47 @@ def test_wrapper_native_window_drives_clamping(monkeypatch, caplog):
     assert "131072" in message
     assert "65536" in message
     assert provider._effective_context_window() == 65536
+
+
+# ---------------------------------------------------------------------------
+# Input budget: the arithmetic the truncation helper spends, extracted so a
+# caller holding no model weights can ask the provider the same question
+# rather than restating it and drifting.
+# ---------------------------------------------------------------------------
+
+
+def test_available_input_tokens_subtracts_output_and_overhead():
+    """The budget is the window less what the output and template claim."""
+    assert available_input_tokens(32768, 1500, 332) == 30936
+
+
+def test_available_input_tokens_floors_at_a_minimal_slice():
+    """A window the output and overhead exhaust still yields a usable slice.
+
+    Boundary: the subtraction goes non-positive here, and a budget of zero
+    or below would either read as "everything fits" or slice nothing at all.
+    Neither is a sane input to the caller, so the floor stands in.
+    """
+    assert available_input_tokens(500, 400, 200) == 100
+
+
+def test_truncation_spends_the_shared_budget_function(monkeypatch):
+    """The truncation helper routes through the extracted budget.
+
+    Anti-coincidental-pass: the two preceding tests pass against a function
+    nothing calls, which is exactly the failure the extraction exists to
+    prevent -- an offline caller and the provider computing the same
+    quantity in two places and drifting apart. Forcing the budget to a value
+    the inline arithmetic could never produce proves the provider reads it.
+    """
+    _install_fake_mlx(monkeypatch, native_window=40960)
+
+    provider = Qwen3AbstractionProvider(model_id="stub-model", context_window=40960)
+    provider._ensure_loaded()
+
+    monkeypatch.setattr(abstraction_qwen3, "available_input_tokens", lambda *_: 50)
+
+    outcome = provider._truncate_for_context("z" * 400, max_tokens=500, doc_type=None)
+
+    assert len(outcome.text) == 50
+    assert outcome.input_tokens == 400

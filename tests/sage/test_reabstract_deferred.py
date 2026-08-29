@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from sage.models.enums import PipelineStatus
-from scripts.reabstract_deferred import _build_parser, _build_worklist
+from scripts.reabstract_deferred import _build_parser, _build_worklist, _load_ids_file
 
 
 def _doc(doc_id: str, *, status: str, source_type: str = "markdown") -> SimpleNamespace:
@@ -121,3 +121,94 @@ def test_argparse_all_flag_parses():
     args = _build_parser().parse_args(["cas", "--all"])
     assert args.all is True
     assert args.include_pdf is False
+
+
+# ---------------------------------------------------------------------------
+# Explicit-id mode. The predicate modes answer "whichever documents currently
+# look like this"; this one answers "these documents", which is what a pass
+# reproducing an earlier survey needs -- the set is fixed when the survey ran,
+# not re-derived from live state at each invocation.
+# ---------------------------------------------------------------------------
+
+
+def test_build_worklist_named_ids_returns_them_in_request_order(mixed_docs):
+    worklist = _build_worklist(
+        mixed_docs,
+        include_all_statuses=False,
+        include_pdf=False,
+        document_ids=["d_complete", "d_skipped"],
+    )
+    assert [d.id for d in worklist] == ["d_complete", "d_skipped"]
+
+
+def test_build_worklist_named_ids_honor_a_pdf_without_the_flag(mixed_docs):
+    """A named id is honored whatever the predicate filters would say.
+
+    Naming a document is a stronger statement than any predicate the other
+    modes apply, so neither the status filter nor the PDF skip may quietly
+    drop it. A pass that silently omitted a document it was handed would
+    report success for one it never touched.
+    """
+    worklist = _build_worklist(
+        mixed_docs,
+        include_all_statuses=False,
+        include_pdf=False,
+        document_ids=["d_skipped_pdf"],
+    )
+    assert [d.id for d in worklist] == ["d_skipped_pdf"]
+
+
+def test_build_worklist_named_ids_raise_on_an_unknown_id(mixed_docs):
+    """An id absent from the vault fails the run rather than shortening it."""
+    with pytest.raises(KeyError, match="no_such_doc"):
+        _build_worklist(
+            mixed_docs,
+            include_all_statuses=False,
+            include_pdf=False,
+            document_ids=["d_skipped", "no_such_doc"],
+        )
+
+
+def test_build_worklist_named_ids_reject_a_duplicate(mixed_docs):
+    """A repeated id is a defect in the caller's list, not a request to
+    abstract the same document twice."""
+    with pytest.raises(ValueError, match="d_skipped"):
+        _build_worklist(
+            mixed_docs,
+            include_all_statuses=False,
+            include_pdf=False,
+            document_ids=["d_skipped", "d_skipped"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ids-file loading.
+# ---------------------------------------------------------------------------
+
+
+def test_load_ids_file_keeps_order_and_drops_comments_and_blanks(tmp_path):
+    """The file a survey writes carries a provenance header; it is context
+    for the reader, not part of the worklist."""
+    path = tmp_path / "ids.txt"
+    path.write_text("# vault: example_vault\n# window: 32768\n\ndoc_b\n  doc_a  \n\ndoc_c\n")
+    assert _load_ids_file(path) == ["doc_b", "doc_a", "doc_c"]
+
+
+def test_load_ids_file_rejects_a_file_with_no_ids(tmp_path):
+    """An empty list must not read downstream as 'no filter'.
+
+    The degenerate case is the dangerous one: an empty worklist is
+    indistinguishable from 'nothing to do', while an empty *filter* would
+    sweep the whole vault. Failing here is the only thing standing between a
+    truncated manifest and an unintended full-vault pass.
+    """
+    path = tmp_path / "ids.txt"
+    path.write_text("# header only\n\n")
+    with pytest.raises(ValueError):
+        _load_ids_file(path)
+
+
+def test_parser_rejects_ids_file_together_with_all():
+    """The two modes contradict each other; argparse settles it."""
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["example_vault", "--ids-file", "ids.txt", "--all"])
