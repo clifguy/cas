@@ -74,9 +74,9 @@ You will also choose placeholders that downstream work fixes concretely:
 
 ## 1. SAGE resource-server registration
 
-Create (or reuse) the application, give it **four** identifier URIs — the
+Create (or reuse) the application, give it **five** identifier URIs — the
 `api://<SAGE_APP_ID>` audience URI, the `https://<SAGE_PUBLIC_HOSTNAME>`
-custom-domain identity, and the two MCP-mount forms of that identity — and
+custom-domain identity, and the three MCP-mount forms of that identity — and
 create its service principal. The lookup-then-create guard makes the step
 idempotent.
 
@@ -123,7 +123,7 @@ request. Two hard-won facts shape this set:
 The client independently requires the advertised resource to match the server
 origin it connected to (RFC 9728), which is why the https identities derive
 from the custom domain rather than a made-up URI. `--identifier-uris` is a
-declarative full-set replace: declare all four together so a re-run cannot drop
+declarative full-set replace: declare all five together so a re-run cannot drop
 any — and re-running the updated invocation is also how a *removed* URI (the
 retired SSE-transport endpoint forms) is trimmed from a live tenant. The https
 forms require their host under a tenant-verified domain; `az` fails loudly if
@@ -135,6 +135,23 @@ bare app-id GUID as its `aud` no matter which identifier form the scope used.
 > MCP Streamable HTTP surface, mirrored from the uvicorn mounts. Adding a new
 > MCP mount means adding its identifier URI here and its path-inserted
 > metadata operation at the APIM edge in the same change.
+
+**Live-tenant remediation when the set changes.** This bootstrap is one-time
+per tenant, so a tenant registered before the set changed holds the old set:
+the edge advertises a resource the directory does not hold, and a standards
+client steered to it dead-ends at `/authorize` with `invalid_target` while
+every app-scoped probe stays green. The post-deploy preflight's
+advertised-resources registration check fails on exactly this gap. To close
+it, do **not** re-run the whole script — several of its Graph writes are
+declarative full-set replaces whose scope and role ids regenerate, orphaning
+live role assignments. Run only the `az ad app update --identifier-uris`
+invocation above, passing all five URIs: it replaces the one `identifierUris`
+collection (plain strings, no generated ids) and touches nothing else. Then
+verify by reading the collection back:
+
+```bash
+az ad app show --id "$SAGE_APP_ID" --query identifierUris -o json
+```
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and

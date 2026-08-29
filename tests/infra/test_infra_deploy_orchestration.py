@@ -324,6 +324,28 @@ def test_preflight_mints_v2_scoped_token() -> None:
     )
 
 
+def test_preflight_wires_resource_token_probe() -> None:
+    """The preflight step arms the resource-registration check's token-probe
+    seam with the committed helper. The check SKIPs when the seam is unset --
+    correct for an operator shell without an az session, but silent false
+    assurance if CI never sets it: the one advertised-but-unregistered resource
+    the check exists to catch would sail through every deploy unprobed.
+    """
+    runs = _uncommented_run_text(_deploy_job(_load()))
+    collapsed = re.sub(r"\s+", " ", runs.replace("\\\n", " "))
+    # The assignment must sit among the env prefixes of the preflight command
+    # itself -- an assignment on some other step's command line arms nothing.
+    assert re.search(
+        r'PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="deploy/resource-token-probe\.sh"'
+        r'(?: [A-Z_]+="[^"]*")* deploy/cloud-preflight\.sh',
+        collapsed,
+    ), (
+        "the preflight invocation must set PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD to the "
+        "committed probe helper as one of its own env prefixes, or the "
+        "advertised-resources registration check SKIPs in CI forever"
+    )
+
+
 def test_uncommented_run_text_strips_comment_lines() -> None:
     """A command named only in a shell comment is absent from the scanned text, so a
     comment cannot be mistaken for a real invocation. Without this, the re.search mint
