@@ -2,9 +2,9 @@
 """Re-project active documents so chunk content carries the ATX
 heading line.
 
-changed the persisted shape of ``Chunk.content``: each body chunk
-now holds its own ATX heading line ("#...", "##...",...) followed by
-the body text. The fix lives in ``IngestionService._chunk_projection``
+A chunking fix changed the persisted shape of ``Chunk.content``: each
+body chunk now holds its own ATX heading line ("#...", "##...",...)
+followed by the body text. The fix lives in ``IngestionService._chunk_projection``
 and is source-type-agnostic: it iterates ``projection.headings`` produced
 by whatever adapter ran Stage 1. Every adapter that emits ``HeadingNode``
 entries with populated ``level`` is therefore in scope — markdown, docx,
@@ -30,7 +30,12 @@ Per-document flow:
    synthetic header chunk is rebuilt as part of Stage 2.
 7. Restore the snapshotted ``pipeline_status`` if it was a terminal
    state (``abstraction_complete``, ``abstraction_skipped``, ``failed``)
-   so docs with existing abstracts keep their reporting status.
+   so docs with existing abstracts keep their reporting status. The
+   restore is written through the ingestion service's pipeline-status
+   seam, so a restored successful terminal status clears any
+   ``pipeline_error`` the document still carried, exactly as the same
+   transition does during ingestion. A restored ``failed`` keeps its
+   recorded error.
 
 The script does NOT:
 
@@ -86,14 +91,8 @@ from pathlib import Path
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
-from sage.models.enums import PipelineStatus, SourceType
+from sage.models.enums import TERMINAL_PIPELINE_STATUSES, SourceType
 from sage.vault_management import bound_vault_root, config_path_for_vault
-
-_TERMINAL_PIPELINE_STATES = {
-    PipelineStatus.ABSTRACTION_COMPLETE.value,
-    PipelineStatus.ABSTRACTION_SKIPPED.value,
-    PipelineStatus.FAILED.value,
-}
 
 
 def _truncate(s: str | None, n: int) -> str:
@@ -252,15 +251,12 @@ async def reproject_vault_with_services(
 
             # Restore prior terminal pipeline_status so that
             # `search filter pipeline_status=abstraction_complete`
-            # continues to return this doc.
-            if prior_status in _TERMINAL_PIPELINE_STATES:
-                await graph.update_document(
-                    doc.id,
-                    {
-                        "pipeline_status": prior_status,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+            # continues to return this doc. The write goes through the
+            # ingestion service's status seam rather than straight to the
+            # store, so the rule that a successful terminal status clears
+            # `pipeline_error` holds here as it does in the service.
+            if prior_status in TERMINAL_PIPELINE_STATUSES:
+                await ingestion._stamp_pipeline_status(doc.id, prior_status)
             n_done += 1
             print(f"  {label}  ✓")
         except Exception as exc:
@@ -367,7 +363,7 @@ _DEFAULT_SOURCE_TYPES = frozenset({st.value for st in SourceType})
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Re-project active documents so the T-0081 chunk-content shape "
+            "Re-project active documents so the current chunk-content shape "
             "applies. Covers every SourceType by default. See module docstring "
             "for full details."
         )
