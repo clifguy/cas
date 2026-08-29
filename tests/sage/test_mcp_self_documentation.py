@@ -19,17 +19,27 @@ import inspect
 import re
 from typing import Any, get_args, get_origin
 
+import pytest
+
 from sage.mcp_server import (
     create_edges,
     get_filename_metadata,
     get_vault_config,
     ingest_document,
     list_directory,
+    recompute_abstract,
+    recompute_pipeline,
     search,
     update_lifecycles,
     update_metadata,
 )
-from sage.models.enums import EdgeType, RationaleKind, RetrievalMode
+from sage.models.enums import (
+    TERMINAL_PIPELINE_STATUSES,
+    EdgeType,
+    PipelineStatus,
+    RationaleKind,
+    RetrievalMode,
+)
 from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
@@ -666,3 +676,249 @@ def test_discover_facet_block_documents_facet_field_vocabulary():
             f"the Facet enumeration block must name facet field {field!r} "
             "(inside the block, not merely elsewhere in the docstring)."
         )
+
+
+# ---------------------------------------------------------------------------
+# Async-dispatch wait guidance
+# ---------------------------------------------------------------------------
+
+#: The tools that dispatch pipeline stages as a background task and return
+#: with a non-terminal ``pipeline_status``, paired with the terminal states
+#: each one can actually reach. Their docstrings are the only place a caller
+#: learns how to observe the outcome, so the guidance they carry decides
+#: whether a caller waits once or polls per turn.
+#:
+#: The per-tool sets differ because the paths differ: ``recompute_abstract``
+#: abstracts from stored chunks via ``_execute_abstract_from_chunks``, which
+#: stamps ``abstraction_complete`` or raises, so the ``abstraction_skipped``
+#: branches (abstraction disabled, empty projection text) are unreachable
+#: from it. The other two run ``_execute_pipeline_stages``, which carries
+#: both of those branches.
+_ASYNC_DISPATCH_TOOLS: tuple[tuple[str, Any, frozenset[PipelineStatus]], ...] = (
+    (
+        "ingest_document",
+        ingest_document,
+        frozenset(
+            {
+                PipelineStatus.ABSTRACTION_COMPLETE,
+                PipelineStatus.ABSTRACTION_SKIPPED,
+                PipelineStatus.FAILED,
+            }
+        ),
+    ),
+    (
+        "recompute_abstract",
+        recompute_abstract,
+        frozenset({PipelineStatus.ABSTRACTION_COMPLETE, PipelineStatus.FAILED}),
+    ),
+    (
+        "recompute_pipeline",
+        recompute_pipeline,
+        frozenset(
+            {
+                PipelineStatus.ABSTRACTION_COMPLETE,
+                PipelineStatus.ABSTRACTION_SKIPPED,
+                PipelineStatus.FAILED,
+            }
+        ),
+    ),
+)
+
+_ASYNC_DISPATCH_IDS = [name for name, _, _ in _ASYNC_DISPATCH_TOOLS]
+
+#: The phrasing this guidance retired. An LLM caller reads "poll X" as an
+#: instruction to call X once per turn, which is the behavior these tools
+#: must not invite.
+_RETIRED_POLL_PHRASE = "poll ``get_document``"
+
+#: The canonical direction that replaces it.
+_WAIT_PHRASE = "wait for a terminal"
+
+#: Tokens that belong to a specific caller's environment rather than to the
+#: tool contract. A docstring is read by callers with no shell, no harness,
+#: and no access to this project's internal guidance, so the executable
+#: recipe lives outside the published surface.
+_CALLER_ENVIRONMENT_TOKENS: tuple[str, ...] = (
+    "run_in_background",
+    "curl",
+    "sleep ",
+    "sage mcp tool surface",
+)
+
+
+def _normalized_docstring(fn: Any) -> str:
+    """``fn``'s docstring, whitespace-collapsed and lowercased.
+
+    Docstring prose wraps, so a phrase under test can straddle a line
+    break; collapsing first makes the assertions independent of where the
+    wrap happens to fall.
+    """
+    return re.sub(r"\s+", " ", _docstring(fn)).lower()
+
+
+def test_async_dispatch_reachable_statuses_cover_the_terminal_enum():
+    """The per-tool reachable sets together account for every terminal status.
+
+    Guards the table above against the enum moving underneath it. Without
+    this, a terminal status added to ``TERMINAL_PIPELINE_STATUSES`` would
+    simply go unmentioned by every tool and the per-tool gate below would
+    stay green -- the table would silently stop being a partition of the
+    thing it claims to partition. Failing here forces the author to decide
+    which tools can reach the new status rather than defaulting to none.
+    """
+    covered = frozenset().union(*(reachable for _, _, reachable in _ASYNC_DISPATCH_TOOLS))
+    assert covered == TERMINAL_PIPELINE_STATUSES, (
+        "the per-tool reachable-status table must account for every member of "
+        f"TERMINAL_PIPELINE_STATUSES; unaccounted: "
+        f"{sorted(s.value for s in TERMINAL_PIPELINE_STATUSES - covered)}, "
+        f"not terminal: {sorted(s.value for s in covered - TERMINAL_PIPELINE_STATUSES)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool", "reachable"), _ASYNC_DISPATCH_TOOLS, ids=_ASYNC_DISPATCH_IDS
+)
+def test_async_dispatch_tools_name_every_reachable_terminal_status(
+    tool_name: str, tool: Any, reachable: frozenset[PipelineStatus]
+):
+    """Each async-dispatch tool enumerates the terminal states it can reach.
+
+    A caller writing a wait needs the full exit condition for *that* tool.
+    Naming only the status the happy path reaches produces a wait that hangs
+    on the others.
+
+    Scoped per tool rather than to the whole enum on purpose. A uniform
+    assertion against ``TERMINAL_PIPELINE_STATUSES`` reads as stricter but
+    is worse: it forces every tool to name ``abstraction_skipped``, which
+    ``recompute_abstract`` cannot produce, so the gate would be satisfied
+    only by documenting an outcome that never occurs. A test that can be
+    satisfied by a false statement is not a gate.
+    """
+    doc = _normalized_docstring(tool)
+    missing = sorted(status.value for status in reachable if status.value not in doc)
+    assert not missing, (
+        f"{tool_name} docstring must name every terminal pipeline_status it can reach "
+        f"so a caller can write a complete exit condition; missing: {missing}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool", "reachable"), _ASYNC_DISPATCH_TOOLS, ids=_ASYNC_DISPATCH_IDS
+)
+def test_async_dispatch_tools_direct_callers_to_a_caller_side_wait(
+    tool_name: str, tool: Any, reachable: frozenset[PipelineStatus]
+):
+    """Each async-dispatch tool directs callers to a wait, not a poll.
+
+    These tools return before the pipeline finishes, so the docstring has
+    to say how to observe the terminal outcome. Saying "poll" invites one
+    call per turn; an agent caller that reads it literally spends a turn
+    and a result payload per tick for the whole duration of the work. The
+    replacement directs the caller to wait for a terminal status instead,
+    leaving where that wait runs to the caller's environment.
+    """
+    doc = _normalized_docstring(tool)
+    assert _RETIRED_POLL_PHRASE not in doc, (
+        f"{tool_name} docstring still carries the retired per-turn poll direction "
+        f"{_RETIRED_POLL_PHRASE!r}; direct the caller to wait for a terminal status instead."
+    )
+    assert _WAIT_PHRASE in doc, (
+        f"{tool_name} docstring must direct the caller to {_WAIT_PHRASE!r} "
+        "pipeline_status, so the disclosure survives the removal of the poll phrasing."
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool", "reachable"), _ASYNC_DISPATCH_TOOLS, ids=_ASYNC_DISPATCH_IDS
+)
+def test_async_dispatch_docstrings_carry_no_caller_environment_recipe(
+    tool_name: str, tool: Any, reachable: frozenset[PipelineStatus]
+):
+    """The wait guidance stays a contract, not a recipe.
+
+    Regression guard rather than a driver: it passes on the pre-rewrite
+    docstrings too. It exists because the natural way to write good wait
+    guidance is to show the caller a working loop, and a loop is only
+    workable for a caller that shares this project's shell, transport
+    reachability, and internal guidance documents. The tool contract is
+    read by callers that share none of those.
+    """
+    doc = _normalized_docstring(tool)
+    found = sorted(token for token in _CALLER_ENVIRONMENT_TOKENS if token in doc)
+    assert not found, (
+        f"{tool_name} docstring carries caller-environment specifics {found}; "
+        "the published contract names the endpoint and the terminal statuses, "
+        "and leaves the mechanics to the caller."
+    )
+
+
+#: Words that direct a caller to repeat a status read.
+_POLL_WORD = re.compile(r"\bpoll(?:s|ed|ing)?\b")
+
+#: The document-status surfaces a caller would be told to poll.
+_STATUS_SURFACE = re.compile(r"get_document|get /documents|/documents/\{document_id\}")
+
+#: How close a poll word and a status surface must be to read as one direction
+#: rather than two unrelated sentences.
+_POLL_PROXIMITY_CHARS = 90
+
+
+def _poll_directions(doc: str) -> list[str]:
+    """Spans where a poll word sits near a document-status surface.
+
+    Matches on proximity rather than on a fixed phrase because the direction
+    was written four different ways across the surface -- ``poll
+    get_document``, ``poll `GET /documents/{id}` ``, and ``get_document polls
+    terminal ...`` among them. A fixed-phrase check retires whichever spelling
+    it was written against and leaves the rest, which is how the same guidance
+    survived on a sibling tool surface after the first sweep.
+    """
+    hits: list[str] = []
+    for match in _POLL_WORD.finditer(doc):
+        window = doc[
+            max(0, match.start() - _POLL_PROXIMITY_CHARS) : match.end() + _POLL_PROXIMITY_CHARS
+        ]
+        if _STATUS_SURFACE.search(window):
+            hits.append(window.strip())
+    return hits
+
+
+def _registered_mcp_tools() -> dict[str, Any]:
+    """Every registered MCP tool across both surfaces, keyed by tool name."""
+    from sage import mcp_server
+
+    tools: dict[str, Any] = {}
+    for attr in ("_sage_tools", "_app_tools"):
+        tools.update(getattr(mcp_server, attr))
+    return tools
+
+
+def test_no_registered_mcp_tool_directs_callers_to_poll_for_status():
+    """No tool on either surface tells a caller to poll a document for status.
+
+    Surface-wide rather than enumerated, because the enumerated form is what
+    let this guidance persist: a sweep keyed to a list of known async-dispatch
+    tools left the same direction standing on ``bulk_ingest_document``, whose
+    docstring is on the sibling app surface and phrased it in the opposite
+    word order. Walking the live registry means a tool added later, or one
+    nobody thought to list, is covered without anyone remembering to add it.
+
+    Deliberately not flagged: guidance to poll a surface that is genuinely
+    cheap to poll (vault stats, the liveness probe) and descriptions of the
+    server's own internal wait loops, neither of which pairs a poll word with
+    a document-status read.
+    """
+    offenders: dict[str, list[str]] = {}
+    for name, tool in _registered_mcp_tools().items():
+        doc = inspect.getdoc(tool)
+        if doc is None:
+            continue
+        hits = _poll_directions(re.sub(r"\s+", " ", doc).lower())
+        if hits:
+            offenders[name] = hits
+
+    assert not offenders, (
+        "MCP tool docstring(s) direct the caller to poll a document for status; "
+        "direct them to wait for a terminal pipeline_status instead:\n"
+        + "\n".join(f"  {name}: {hits}" for name, hits in sorted(offenders.items()))
+    )

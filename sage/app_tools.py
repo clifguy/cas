@@ -149,10 +149,14 @@ def register_app_tools(
         files to ingest, optionally adjusts the parsed metadata, and submits
         the curated list here. Per-file ingest applies the same precedence
         chain as ``ingest_document`` (caller-supplied metadata wins over
-        filename inference). Pipeline staging (projection, indexing,
-        abstraction) dispatches fire-and-forget; the summary reports
-        synchronous status, and ``get_document`` polls terminal
-        pipeline_status if needed.
+        filename inference). Unlike ``ingest_document``, the pipeline
+        (projection, indexing, abstraction) is awaited inline for each file
+        in turn, which bounds peak memory to one document at a time: the
+        documents have reached a terminal ``pipeline_status`` by the time
+        the summary returns, and ``abstracts_generated`` /
+        ``abstracts_deferred`` report the Stage-3 outcome. No caller-side
+        wait is needed. The cost is duration -- a large batch can exceed a
+        client's RPC timeout.
 
         When ``infer_edges=True``, two-phase edge inference runs across the
         whole batch after all documents are inserted: Tier 1 edges (e.g.
