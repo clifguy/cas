@@ -2797,6 +2797,75 @@ def test_retracts_edge_type_docstring_points_at_edge_discovery():
 
 
 # ---------------------------------------------------------------------------
+# Facet aggregation via search(target="facets")
+# ---------------------------------------------------------------------------
+
+
+async def test_sage_discover_facets_happy_path(vault_services):
+    """End-to-end happy path via the MCP tool: target=facets + mode=catalog
+    returns a serialized envelope with one facet row per field.
+
+    The wire-shape assertion (each row carries exactly {"field",
+    "values"}) also pins that serialize()'s exclude_none=True drops only
+    None -- a zero-count field must keep its empty values object.
+    """
+    await ingest_document("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/second.md", "markdown")
+    await asyncio.sleep(0.3)
+
+    result = _parse(await search("test_vault", mode="catalog", target="facets"))
+
+    assert result.get("target") == "facets"
+    assert result.get("mode") == "catalog"
+    assert result["total_available"] == 2
+    rows = result["results"]
+    assert [r["field"] for r in rows] == [
+        "doc_type",
+        "lifecycle_status",
+        "source_type",
+        "pipeline_status",
+        "tags",
+    ]
+    for r in rows:
+        assert set(r.keys()) == {"field", "values"}, (
+            f"facet rows on the wire must carry exactly field+values, got {set(r.keys())}"
+        )
+    by_field = {r["field"]: r["values"] for r in rows}
+    assert by_field["source_type"] == {"markdown": 2}
+    assert by_field["lifecycle_status"] == {"active": 2}
+    # No tags were ingested: the zero-count field keeps an explicit
+    # empty object on the wire rather than being dropped.
+    assert by_field["tags"] == {}
+
+
+async def test_sage_discover_facets_with_semantic_returns_error(vault_services):
+    """target=facets combined with a non-catalog mode is rejected via
+    the typed mode_parameter_mismatch error envelope.
+    """
+    result = _parse(
+        await search(
+            "test_vault",
+            mode="semantic",
+            target="facets",
+            query="anything",
+        )
+    )
+    assert result["error"] == "mode_parameter_mismatch", result
+
+
+def test_sage_discover_docstring_carries_facet_example():
+    """search docstring documents the target="facets" dispatch with a
+    worked example. Guard test that fails closed when the documentation
+    contract breaks.
+    """
+    doc = search.__doc__
+    assert doc is not None
+    assert 'target="facets"' in doc, (
+        "search docstring must carry a worked example for the target='facets' dispatch"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Document_id alias on traverse + docstring clarification on create_edge
 # ---------------------------------------------------------------------------
 #

@@ -342,6 +342,18 @@ class AbstractionMemoryExhaustedError(NonRetryableAbstractionError):
         self.input_chars = input_chars
 
 
+# The fixed set of document metadata fields exposed as facets by
+# ``GraphStore.query_document_facets``. Scalar columns aggregate directly;
+# ``tags`` aggregates over the normalized per-document tag rows.
+DOCUMENT_FACET_FIELDS: tuple[str, ...] = (
+    "doc_type",
+    "lifecycle_status",
+    "source_type",
+    "pipeline_status",
+    "tags",
+)
+
+
 class GraphStore(ABC):
     """Interface for the document/edge/user graph store (Postgres in production).
 
@@ -403,6 +415,21 @@ class GraphStore(ABC):
 
         Returns the page plus the total count of matching rows. By default
         excludes documents whose pipeline ended in a failed state.
+        """
+
+    @abstractmethod
+    async def query_document_facets(
+        self,
+        filters: dict[str, object] | None = None,
+    ) -> tuple[dict[str, dict[str, int]], int]:
+        """Distinct-value counts per facet field within a filter slice.
+
+        Returns a mapping keyed by every ``DOCUMENT_FACET_FIELDS`` entry --
+        each value a dict of distinct non-null field values to matching-
+        document counts, ordered by descending count then value -- plus the
+        total count of documents matching the filters. Fields with no
+        matching values map to an empty dict. Applies no default
+        failed-pipeline exclusion, matching catalog enumeration.
         """
 
     @abstractmethod

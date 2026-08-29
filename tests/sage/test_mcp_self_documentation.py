@@ -554,3 +554,50 @@ def test_discover_docstring_documents_source_type_vocabulary():
         "search docstring must reference the ``invalid_filter_value`` "
         "error envelope as the out-of-vocabulary rejection path."
     )
+
+
+def test_discover_docstring_documents_every_retrieval_target():
+    """Every RetrievalTarget member must appear as target="<value>" in
+    the search docstring.
+
+    Enum-driven so the gate fails closed: adding another target member
+    without documenting it fails here with no test edit required.
+    """
+    from sage.models.enums import RetrievalTarget
+
+    doc = _docstring(search)
+    for member in RetrievalTarget:
+        needle = f'target="{member.value}"'
+        assert needle in doc, (
+            f"search docstring must document {needle} alongside the other "
+            "retrieval targets; every RetrievalTarget member needs a "
+            "documented dispatch."
+        )
+
+
+def test_discover_facet_block_documents_facet_field_vocabulary():
+    """The Facet enumeration block must enumerate all five facet fields.
+
+    Anti-coincidental-pass: every facet field name also appears in the
+    filters arg documentation, so a whole-docstring substring check
+    would pass without the block existing at all. The block is isolated
+    first, mirroring the catalog-block isolation above.
+    """
+    doc = _docstring(search)
+    match = re.search(r"Facet enumeration:.*?(?=\n\s*Response-mode semantics)", doc, re.DOTALL)
+    assert match is not None, (
+        "search docstring must carry a ``Facet enumeration:`` section "
+        "between the edge-enumeration example and the response-mode matrix."
+    )
+    facet_block = match.group(0)
+    for field in (
+        "doc_type",
+        "lifecycle_status",
+        "source_type",
+        "pipeline_status",
+        "tags",
+    ):
+        assert field in facet_block, (
+            f"the Facet enumeration block must name facet field {field!r} "
+            "(inside the block, not merely elsewhere in the docstring)."
+        )

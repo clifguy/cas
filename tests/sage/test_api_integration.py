@@ -496,6 +496,44 @@ async def test_discover_semantic_missing_query_422(client):
     assert resp.status_code == 400
 
 
+async def test_discover_facets_200(client):
+    """POST /discover with target=facets returns facet rows over HTTP.
+
+    The HTTP path re-validates DiscoverResponse through FastAPI's
+    response_model serialization, which the MCP path bypasses -- a
+    facet row type missing from the response union would 500 here
+    while the MCP surface still worked.
+    """
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    assert resp1.status_code == 201
+
+    # Wait for background pipeline
+    await asyncio.sleep(0.5)
+
+    resp2 = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "catalog", "target": "facets"},
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["mode"] == "catalog"
+    assert body["target"] == "facets"
+    assert body["total_available"] >= 1
+    fields = [row["field"] for row in body["results"]]
+    assert fields == [
+        "doc_type",
+        "lifecycle_status",
+        "source_type",
+        "pipeline_status",
+        "tags",
+    ]
+    by_field = {row["field"]: row["values"] for row in body["results"]}
+    assert by_field["source_type"].get("markdown", 0) >= 1
+
+
 # ---------------------------------------------------------------------------
 # Retrieval: discover — ADR-028 error envelope on parameter validation
 # ---------------------------------------------------------------------------

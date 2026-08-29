@@ -850,3 +850,161 @@ async def test_find_documents_by_source_paths_ignores_lifecycle_status(graph_sto
     result = await graph_store.find_documents_by_source_paths([archived.source_path])
 
     assert result == {archived.source_path: archived.source_content_hash}
+
+
+# ---------------------------------------------------------------------------
+# Document facet aggregation via query_document_facets
+# ---------------------------------------------------------------------------
+
+# Deliberately a literal rather than an import of the implementation's
+# field constant: the tests assert the contract vocabulary independently,
+# so a drifted constant cannot re-shape the expectations it is tested by.
+_FACET_FIELDS = (
+    "doc_type",
+    "lifecycle_status",
+    "source_type",
+    "pipeline_status",
+    "tags",
+)
+
+
+async def _seed_facet_fixture(graph_store) -> None:
+    """Six documents with a skewed facet distribution.
+
+    doc_type: 3x adr, 2x ticket, one NULL. lifecycle_status: 5x active,
+    1x archived. source_type: 5x markdown, 1x docx. pipeline_status:
+    5x abstraction_complete, 1x failed (on the NULL-doc_type doc).
+    tags: "alpha" on fac_a1 + fac_a2, "beta" on fac_a1 + fac_t1
+    (fac_a1 is multi-tag; three documents carry no tags). The skew
+    means no two facet fields share a count vector, and the multi-tag
+    doc keeps the tag-count sum from coinciding with the total.
+    """
+    seeds = [
+        ("fac_a1", {"doc_type": "adr", "tags": ["alpha", "beta"]}),
+        ("fac_a2", {"doc_type": "adr", "tags": ["alpha"]}),
+        (
+            "fac_a3",
+            {
+                "doc_type": "adr",
+                "lifecycle_status": "archived",
+                "source_type": SourceType.DOCX,
+            },
+        ),
+        (
+            "fac_t1",
+            {
+                "doc_type": "ticket",
+                "tags": ["beta"],
+                "tier3_metadata": {"ticket_id": "tk_1"},
+            },
+        ),
+        ("fac_t2", {"doc_type": "ticket"}),
+        ("fac_n1", {"pipeline_status": PipelineStatus.FAILED}),
+    ]
+    for name, overrides in seeds:
+        doc = _make_doc(_id(name)).model_copy(update=overrides)
+        await graph_store.insert_document(doc)
+
+
+async def test_query_document_facets_full_vault_counts(graph_store):
+    """Unfiltered facets: exact per-value counts for every field.
+
+    Trap coverage: the skewed distribution defeats a COUNT(*)-everywhere
+    implementation; the NULL-doc_type document must be excluded from the
+    doc_type values but included in the total; the multi-tag document
+    keeps the tag sum from matching the denominator.
+    """
+    await _seed_facet_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets()
+
+    assert set(facets.keys()) == set(_FACET_FIELDS)
+    assert total == 6
+    assert facets["doc_type"] == {"adr": 3, "ticket": 2}
+    assert facets["lifecycle_status"] == {"active": 5, "archived": 1}
+    assert facets["source_type"] == {"markdown": 5, "docx": 1}
+    assert facets["pipeline_status"] == {"abstraction_complete": 5, "failed": 1}
+    assert facets["tags"] == {"alpha": 2, "beta": 2}
+    assert sum(facets["tags"].values()) != total
+    # Deterministic value ordering: count DESC, then value ASC. The
+    # source_type facet is the discriminating case -- its higher-count
+    # value ("markdown") sorts alphabetically AFTER "docx", so a pure
+    # value-ASC ordering fails here while passing the other two. The
+    # tags facet (a 2/2 count tie) pins the value-ASC tiebreak.
+    assert list(facets["source_type"].keys()) == ["markdown", "docx"]
+    assert list(facets["doc_type"].keys()) == ["adr", "ticket"]
+    assert list(facets["tags"].keys()) == ["alpha", "beta"]
+
+
+async def test_query_document_facets_respects_filters(graph_store):
+    """Facets computed within a filter slice, not vault-wide."""
+    await _seed_facet_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets({"doc_type": "adr"})
+
+    assert total == 3
+    assert facets["doc_type"] == {"adr": 3}
+    assert facets["lifecycle_status"] == {"active": 2, "archived": 1}
+    assert facets["source_type"] == {"markdown": 2, "docx": 1}
+    assert facets["tags"] == {"alpha": 2, "beta": 1}
+
+
+async def test_query_document_facets_composes_with_tags_filter(graph_store):
+    """The tag-filter EXISTS predicate composes under the tags-facet join.
+
+    Trap coverage: the tags facet joins document_tags while the tags
+    filter is a correlated EXISTS against the same table; an alias on
+    the outer ``documents`` table would break the correlation silently.
+    """
+    await _seed_facet_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets({"tags": ["alpha"]})
+
+    assert total == 2
+    assert facets["tags"] == {"alpha": 2, "beta": 1}
+    assert facets["doc_type"] == {"adr": 2}
+
+
+async def test_query_document_facets_composes_with_tier3_filter(graph_store):
+    """tier3_metadata predicates restrict the facet slice."""
+    await _seed_facet_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets(
+        {"tier3_metadata": {"ticket_id": "tk_1"}}
+    )
+
+    assert total == 1
+    assert facets["doc_type"] == {"ticket": 1}
+    assert facets["tags"] == {"beta": 1}
+
+
+async def test_query_document_facets_includes_failed_pipeline_documents(graph_store):
+    """Failed-pipeline documents are facet-visible.
+
+    Catalog parity: enumeration surfaces apply no default failed-pipeline
+    exclusion. The fixture seeds exactly one failed document so an
+    implementation that quietly excluded it could not pass by accident.
+    """
+    await _seed_facet_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets()
+
+    assert facets["pipeline_status"].get("failed") == 1
+    assert total == 6
+
+
+async def test_query_document_facets_empty_vault(graph_store):
+    """Empty vault: every field present with empty values, zero total."""
+    facets, total = await graph_store.query_document_facets()
+
+    assert facets == {f: {} for f in _FACET_FIELDS}
+    assert total == 0
+
+
+async def test_stub_graph_store_facets_unsupported():
+    """The in-memory stub declares the method but refuses to answer."""
+    from sage.adapters.stubs import StubGraphStore
+
+    store = StubGraphStore()
+    with pytest.raises(NotImplementedError):
+        await store.query_document_facets()
