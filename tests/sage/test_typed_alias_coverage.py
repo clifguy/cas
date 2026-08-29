@@ -477,6 +477,26 @@ KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
         "caller who misplaced a well-formed date would get a date-format "
         "complaint instead of the message naming the nested shape."
     ),
+    (
+        "sage.sage_api_tools.search",
+        "source_id",
+    ): (
+        "Tripwire parameter, not a functional argument: search publishes the "
+        "RetrievalFilters keys at the top level only so a wrong-level spelling "
+        "reaches the misplaced_filters guard instead of being stripped by a "
+        "client's published-schema coercion. The value is never consumed, so "
+        "shape validation would be actively harmful -- a caller who misplaced "
+        "a well-formed document id would get an id-grammar complaint instead "
+        "of the message naming the nested shape."
+    ),
+    (
+        "sage.sage_api_tools.search",
+        "target_id",
+    ): (
+        "Tripwire parameter, not a functional argument: the target_id half of "
+        "the same edge-filter pair as search.source_id above, published and "
+        "left unvalidated for the same reason."
+    ),
 }
 
 

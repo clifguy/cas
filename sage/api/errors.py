@@ -617,6 +617,35 @@ class MisplacedMetadataError(SAGEError):
         )
 
 
+class MisplacedFilterError(SAGEError):
+    """400: caller spelled nested filter keys as top-level search arguments.
+
+    ``search`` takes its scope constraints nested under ``filters``. The
+    recognized keys are also published as top-level parameters, but only
+    as tripwires: an unpublished parameter is stripped by MCP clients
+    that coerce arguments to the published schema, so a misplaced key
+    would be discarded before the server could object. Publishing the
+    spellings makes the mistake reachable; this error makes it loud.
+
+    Read-side sibling of ``MisplacedMetadataError``. The write-side case
+    costs a mis-titled document, which is visible; this one costs an
+    unfiltered result set, which is not -- the caller receives plausible
+    rows carrying no indication that the constraint was dropped.
+    """
+
+    def __init__(self, fields: list[str], recognized: list[str], example: str) -> None:
+        joined = ", ".join(fields)
+        super().__init__(
+            "misplaced_filters",
+            (
+                f"{joined} must be nested under `filters`, not passed as a "
+                f"top-level argument. Use: {example}"
+            ),
+            400,
+            {"fields": fields, "recognized": recognized, "example": example},
+        )
+
+
 class InvalidModeError(SAGEError):
     """400: discover mode value is not in the RetrievalMode enum."""
 

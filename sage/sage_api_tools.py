@@ -25,6 +25,7 @@ from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
     AmbiguousIngestSourceError,
     LegacyFormError,
+    MisplacedFilterError,
     MisplacedMetadataError,
     MissingDocumentIdentifierError,
     MissingIngestSourceError,
@@ -50,6 +51,7 @@ from sage.models.schemas import (
     FunctionIdStr,
     HashCheckRequest,
     IngestRequest,
+    RetrievalFilters,
     Sha256Str,
     TraverseRequest,
     UpdateVaultConfigRequest,
@@ -111,21 +113,53 @@ _INGEST_METADATA_KEYS: tuple[str, ...] = (
 
 _MISPLACED_METADATA_EXAMPLE = 'metadata={"title": "...", "tags": ["..."]}'
 
+# The filter keys ``search`` recognizes inside its ``filters`` argument,
+# derived from the model that defines them so the two cannot drift. Each is
+# also published as a top-level tool parameter for the same reason the
+# ingest metadata keys are: a wrong-level spelling must reach
+# ``_check_misplaced_filters`` below rather than being stripped in transit.
+# The whole vocabulary is protected rather than a chosen subset, which
+# leaves no key whose flat spelling still returns an unfiltered result set.
+# What remains outside the guard is a *misspelled* key, which no
+# publication strategy can cover -- but that case loses a constraint the
+# caller never successfully named, while a correctly spelled key at the
+# wrong level looked like it had been honored.
+_SEARCH_FILTER_KEYS: tuple[str, ...] = tuple(RetrievalFilters.model_fields)
+
+_MISPLACED_FILTERS_EXAMPLE = 'filters={"doc_type": "adr", "lifecycle_status": "active"}'
+
+
+def _collect_misplaced(keys: tuple[str, ...], supplied: dict[str, object]) -> list[str]:
+    """Return the recognized keys that arrived as top-level arguments.
+
+    ``supplied`` maps each recognized key to the value passed at the top
+    level. Every non-None entry is collected, in canonical key order, so a
+    caller who misplaced several fields repairs them in one round-trip
+    instead of discovering them one error at a time -- and so the reported
+    order is stable rather than varying with client argument order.
+    """
+    return [key for key in keys if supplied.get(key) is not None]
+
 
 def _check_misplaced_metadata(supplied: dict[str, object]) -> None:
-    """Raise ``MisplacedMetadataError`` when metadata fields arrive at the top level.
-
-    ``supplied`` maps each recognized metadata key to the value passed as
-    a top-level argument. Every non-None entry is collected so a caller
-    who misplaced several fields repairs them in one round-trip instead
-    of discovering them one error at a time.
-    """
-    misplaced = [key for key in _INGEST_METADATA_KEYS if supplied.get(key) is not None]
+    """Raise ``MisplacedMetadataError`` when metadata fields arrive at the top level."""
+    misplaced = _collect_misplaced(_INGEST_METADATA_KEYS, supplied)
     if misplaced:
         raise MisplacedMetadataError(
             fields=misplaced,
             recognized=list(_INGEST_METADATA_KEYS),
             example=_MISPLACED_METADATA_EXAMPLE,
+        )
+
+
+def _check_misplaced_filters(supplied: dict[str, object]) -> None:
+    """Raise ``MisplacedFilterError`` when filter keys arrive at the top level."""
+    misplaced = _collect_misplaced(_SEARCH_FILTER_KEYS, supplied)
+    if misplaced:
+        raise MisplacedFilterError(
+            fields=misplaced,
+            recognized=list(_SEARCH_FILTER_KEYS),
+            example=_MISPLACED_FILTERS_EXAMPLE,
         )
 
 
@@ -1243,6 +1277,23 @@ def register_sage_tools(
         response_mode: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        # Tripwires, not functional arguments. These are the ``filters``
+        # keys; they are published here only so a wrong-level spelling
+        # reaches the guard instead of being stripped client-side. The
+        # annotations are deliberately permissive so any shape arrives and
+        # earns the actionable ``misplaced_filters`` message rather than a
+        # generic framework type error.
+        doc_type: str | list | dict | None = None,
+        project: str | list | dict | None = None,
+        lifecycle_status: str | list | dict | None = None,
+        tags: str | list | dict | None = None,
+        document_ids: str | list | dict | None = None,
+        pipeline_status: str | list | dict | None = None,
+        source_type: str | list | dict | None = None,
+        tier3_metadata: str | list | dict | None = None,
+        source_id: str | list | dict | None = None,
+        target_id: str | list | dict | None = None,
+        edge_type: str | list | dict | None = None,
     ) -> dict:
         """Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.
 
@@ -1337,6 +1388,17 @@ def register_sage_tools(
                 faceted slice when ``target="facets"``). Edge-target keys
                 (only when ``target="edges"``): source_id, target_id,
                 edge_type.
+                Every key belongs nested here -- ``doc_type``,
+                ``project``, ``lifecycle_status``, ``tags``,
+                ``document_ids``, ``pipeline_status``, ``source_type``,
+                ``tier3_metadata``, ``source_id``, ``target_id``, and
+                ``edge_type`` -- for example
+                ``filters={"doc_type": "adr", "lifecycle_status":
+                "active"}``. Each is also accepted at the top level only
+                to be refused there: passing one as a direct argument
+                raises ``misplaced_filters`` naming every misplaced key,
+                rather than searching with the constraint silently
+                dropped and returning an unfiltered result set.
                 ``source_type`` selects on the format the document was
                 ingested from, and takes one of a closed set: "markdown",
                 "docx", "pdf", "email", "onenote", "teams_chat", "xlsx",
@@ -1405,6 +1467,12 @@ def register_sage_tools(
             via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
 
         Error modes:
+        - ``misplaced_filters`` (400): a recognized ``filters`` key was
+          passed as a top-level argument instead of nested under
+          ``filters``. Detail carries ``fields`` (every misplaced key, so
+          a single retry fixes them all), ``recognized`` (the full key
+          set), and ``example``. No search is run, so the constraint can
+          never go missing from the result set unannounced.
         - ``invalid_mode`` (400): ``mode`` is not one of ``semantic``,
           ``keyword``, ``catalog``, ``deterministic``. Detail carries
           the offending ``mode`` and ``valid_modes``.
@@ -1438,6 +1506,24 @@ def register_sage_tools(
           result sets with ``offset`` rather than raising ``limit``.
         """
         try:
+            # First, before any validation or vault work: a misplaced filter
+            # key must not reach the retrieval path, where it would be
+            # missing from the constraints rather than named in an error.
+            _check_misplaced_filters(
+                {
+                    "doc_type": doc_type,
+                    "project": project,
+                    "lifecycle_status": lifecycle_status,
+                    "tags": tags,
+                    "document_ids": document_ids,
+                    "pipeline_status": pipeline_status,
+                    "source_type": source_type,
+                    "tier3_metadata": tier3_metadata,
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "edge_type": edge_type,
+                }
+            )
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             if document_id is not None:
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
