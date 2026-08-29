@@ -191,6 +191,45 @@ async def test_only_selected_statuses_are_enumerated(make_doc):
     assert all(c["default_exclude_failed"] is False for c in graph.calls)
 
 
+async def test_failed_selector_resumes_a_recovered_document_drops_out(make_doc):
+    """Re-dispatch semantics, resume half: the worklist is recomputed from live
+    pipeline status on every run, so under the ``failed`` selector a document
+    recovered to ``abstraction_complete`` by an earlier partial run no longer
+    matches. This is the property that makes a re-run of an interrupted sweep —
+    operator re-dispatch or platform-level retry alike — a resume rather than a
+    redo.
+    """
+    stranded = make_doc("stranded", pipeline_status=PipelineStatus.FAILED)
+    recovered = make_doc("recovered", pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE)
+    graph = RecordingGraphStore([stranded, recovered])
+
+    worklist, total = await rb.collect_worklist(
+        graph_store=graph, statuses=rb.parse_status_selector("failed"), limit=None
+    )
+
+    assert [d.id for d in worklist] == [stranded.id]
+    assert total == 1, "a recovered document must leave the worklist entirely"
+
+
+async def test_all_selector_redoes_a_recovered_document_stays(make_doc):
+    """Re-dispatch semantics, redo half: ``all`` selects every pipeline status,
+    so a document already recovered stays on the worklist and is swept again.
+    An ``all`` implemented as the default statuses plus extras — or one that
+    inherited the storage layer's failed-pipeline exclusion — would drop one of
+    the two documents here.
+    """
+    stranded = make_doc("stranded", pipeline_status=PipelineStatus.FAILED)
+    recovered = make_doc("recovered", pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE)
+    graph = RecordingGraphStore([stranded, recovered])
+
+    worklist, total = await rb.collect_worklist(
+        graph_store=graph, statuses=rb.parse_status_selector("all"), limit=None
+    )
+
+    assert {d.id for d in worklist} == {stranded.id, recovered.id}
+    assert total == 2
+
+
 async def test_a_per_document_dispatch_failure_does_not_abort_the_sweep(corpus):
     graph = RecordingGraphStore(corpus)
     failing = corpus[1].id

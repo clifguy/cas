@@ -82,7 +82,10 @@ var sageDbRole = last(split(sageIdentityId, '/'))
 // out-of-band by the maintenance workflow after it applies the per-invocation
 // request to the job's environment. No auto-retry — a destructive operation re-runs only on an
 // explicit operator dispatch (the entrypoints are idempotent, so a resumed run is
-// safe, but re-execution stays deliberate).
+// safe, but re-execution stays deliberate). replicaRetryLimit 0 is the deployed
+// default the destructive commands always run under (CAS-ADR-029); the workflow
+// raises it per non-destructive dispatch through the same `job update` merge
+// that applies the request env, and a redeploy resets both.
 resource maintenanceJob 'Microsoft.App/jobs@2024-03-01' = {
   name: 'job-maintenance-${environmentName}'
   location: location

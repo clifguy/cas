@@ -180,3 +180,6 @@ output postgresSubnetId string = vnet.properties.subnets[1].id
 
 @description('Resource id of the Log Analytics workspace. Downstream modules (e.g. the APIM facade diagnostic settings) route their own resource logs to the same workspace by composing through this output rather than re-deriving the id.')
 output logAnalyticsWorkspaceId string = logAnalytics.id
+
+@description('Customer (workspace) id of the Log Analytics workspace — the GUID the log query APIs address the workspace by, distinct from its ARM resource id. The maintenance workflow resolves it from the deployment outputs for failure diagnostics; composing through this output keeps the workspace naming convention single-sourced here.')
+output logAnalyticsCustomerId string = logAnalytics.properties.customerId

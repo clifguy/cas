@@ -23,7 +23,10 @@ name: maintenance
 #   reabstract:     target is the pipeline-status selector (comma-separated, or
 #                   `all`; blank selects failed + abstraction_skipped),
 #                   target_extra an optional cap on documents swept this run;
-#                   confirm retypes the vault id.
+#                   confirm retypes the vault id. Re-dispatch semantics follow
+#                   the selector: the worklist is recomputed from live pipeline
+#                   status each run, so `failed` resumes (documents already
+#                   recovered drop out) while `all` redoes every document.
 on:
   workflow_dispatch:
     inputs:
@@ -46,7 +49,7 @@ on:
         type: string
         required: true
       target:
-        description: 'Operation target: document id / chain head id / ingested-since timestamp / reabstract status selector (unused for delete_vault).'
+        description: 'Operation target: document id / chain head id / ingested-since timestamp / reabstract status selector (unused for delete_vault). Reabstract re-dispatch: ''failed'' resumes (recovered documents drop out); ''all'' redoes.'
         type: string
         required: false
         default: ''
@@ -90,7 +93,7 @@ permissions:
 jobs:
   maintenance:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 130
     # The environment binding is the approval gate: its required reviewer must
     # approve before the job runs, and its scoped variables carry the identity and
     # the resource-group coordinate.
@@ -128,14 +131,31 @@ jobs:
         # overwrites it; the job stays inert between dispatches because nothing
         # starts it. Dry-run is the job's default; APPLY=true is required before
         # any command changes state, and each entrypoint still enforces its typed
-        # confirmation(s). The poll ceiling outlasts the job's own replicaTimeout,
-        # so a long reabstract sweep reports its own terminal status rather than
-        # timing out here first.
+        # confirmation(s). The poll ceiling outlasts the job's own replicaTimeout
+        # even for a retried execution, so a long reabstract sweep reports its own
+        # terminal status rather than timing out here first.
+        #
+        # Retry posture: the job is deployed with replicaRetryLimit 0, and every
+        # dispatch re-pins the limit here — raised for the non-destructive
+        # reabstract sweep (whose re-run resumes; see the input semantics above),
+        # held at 0 for the destructive commands, whose re-execution stays a
+        # deliberate operator dispatch (CAS-ADR-029). The update mutates the
+        # standing job spec, so the limit is set on every dispatch rather than
+        # only when raised — otherwise a destructive dispatch would inherit a
+        # previously raised value.
+        #
+        # Failure diagnostics: on a pre-start failure no container ever ran, so
+        # the log stream returns a container-not-found error and only the
+        # Log Analytics system-log table has rows — keyed by JobName_s, because
+        # Container App Jobs log with an empty ContainerAppName_s. The workspace
+        # id composes from the deployment outputs so the workspace naming
+        # convention stays single-sourced in Bicep.
         run: |
           set -euo pipefail
           MAINTENANCE_JOB="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
             --query properties.outputs.maintenanceJobName.value -o tsv)"
           ENV_VARS=("SAGE_MAINTENANCE_COMMAND=$COMMAND")
+          RETRY_LIMIT=0
           case "$COMMAND" in
             delete_vault)
               ENV_VARS+=(
@@ -172,6 +192,7 @@ jobs:
                 "SAGE_PURGE_REASON=$REASON"
               ) ;;
             reabstract)
+              RETRY_LIMIT=1
               ENV_VARS+=(
                 "SAGE_REABSTRACT_VAULT_ID=$VAULT_ID"
                 "SAGE_REABSTRACT_STATUSES=$TARGET"
@@ -186,6 +207,7 @@ jobs:
           az containerapp job update \
             --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
             --set-env-vars "${ENV_VARS[@]}" \
+            --replica-retry-limit "$RETRY_LIMIT" \
             --output none
           EXECUTION="$(az containerapp job start \
             --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
@@ -193,7 +215,7 @@ jobs:
           echo "Started maintenance job execution: $EXECUTION (command: $COMMAND, vault: $VAULT_ID, apply: $APPLY)"
           MAINTENANCE_SUCCEEDED=false
           STATUS=""
-          for _ in $(seq 1 380); do
+          for _ in $(seq 1 740); do
             STATUS="$(az containerapp job execution show \
               --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
               --job-execution-name "$EXECUTION" --query properties.status -o tsv)"
@@ -205,9 +227,26 @@ jobs:
             sleep 10
           done
           if [ "$MAINTENANCE_SUCCEEDED" != true ]; then
-            echo "maintenance job did not reach Succeeded (last status: ${STATUS:-unknown}); recent logs:"
+            echo "maintenance job did not reach Succeeded (last status: ${STATUS:-unknown}); execution record:"
+            az containerapp job execution show \
+              --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+              --job-execution-name "$EXECUTION" --output json || true
+            echo "console logs (absent when no container started):"
             az containerapp job logs show \
               --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
               --execution "$EXECUTION" --container maintenance --tail 100 || true
+            az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors || true
+            LOG_CUSTOMER_ID="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
+              --query properties.outputs.logAnalyticsCustomerId.value -o tsv || true)"
+            if [ -n "$LOG_CUSTOMER_ID" ]; then
+              echo "system logs from Log Analytics (waiting for ingestion):"
+              sleep 120
+              az monitor log-analytics query --workspace "$LOG_CUSTOMER_ID" \
+                --analytics-query "ContainerAppSystemLogs_CL | where JobName_s == '$MAINTENANCE_JOB' | where TimeGenerated > ago(2h) | order by TimeGenerated asc | project TimeGenerated, Log_s | take 200" \
+                --output table || true
+              echo "empty system-log output can be ingestion lag; re-run the query in a few minutes"
+            else
+              echo "deployment outputs carry no logAnalyticsCustomerId; redeploy infra to enable the system-log query"
+            fi
             exit 1
           fi

@@ -25,6 +25,12 @@ Safeguards:
   bulk lever.
 - ``limit`` caps a single run so a sweep larger than the execution window can be
   taken in chunks rather than killed part-way through with no record.
+- Re-execution is selector-shaped: the worklist is recomputed from live pipeline
+  status on every run, so a ``failed`` selector resumes an interrupted sweep
+  (documents already recovered to ``abstraction_complete`` drop out) while
+  ``all`` redoes every document. Platform-level retry tolerance for the sweep
+  leans on this property; the destructive maintenance commands run with no
+  retry at all (CAS-ADR-029).
 
 Non-destructive: the sweep only regenerates abstracts on documents whose
 projection chunks are still stored. It removes nothing.
@@ -115,6 +121,10 @@ async def collect_worklist(
 
     Every query opts out of the default failed-pipeline exclusion: ``failed`` is
     the status this sweep exists to recover, and the default would filter it out.
+
+    Because enumeration reads live ``pipeline_status``, a re-run with a
+    ``failed`` selector resumes — recovered documents no longer match — while
+    ``all`` re-enumerates everything.
     """
     worklist: list[Document] = []
     total = 0

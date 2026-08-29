@@ -78,6 +78,26 @@ def _invocation(run: str, marker: str) -> str:
     return "\n".join(taken)
 
 
+def _case_arm(run: str, label: str) -> str:
+    """The body of the ``case`` arm labelled ``label``: from ``label)`` to the
+    arm's closing ``;;``, so a per-command assertion cannot be satisfied (or
+    violated) by another arm's text."""
+    start = run.index(f"{label})")
+    return run[start : run.index(";;", start)]
+
+
+def _all_invocations(run: str, marker: str) -> list[str]:
+    """Every shell invocation starting at an occurrence of ``marker`` — each its
+    first line plus backslash-continued lines — for commands the script issues
+    more than once."""
+    found: list[str] = []
+    cursor = 0
+    while (at := run.find(marker, cursor)) != -1:
+        found.append(_invocation(run[at:], marker))
+        cursor = at + len(marker)
+    return found
+
+
 def _job_environment(job: dict) -> str | None:
     env = job.get("environment")
     if isinstance(env, str):
@@ -181,6 +201,77 @@ def test_request_applied_via_update_then_plain_start() -> None:
     assert "az containerapp job execution show" in run, "the job must poll for a terminal status"
 
 
+def test_retry_limit_initialized_to_zero_before_the_command_case() -> None:
+    """Every dispatch resolves an explicit replica-retry limit, defaulted to zero
+    before the command dispatch, so an arm that never touches it — every
+    destructive arm — runs with no auto-retry (CAS-ADR-029).
+
+    Anti-coincidental-pass: the initialization must precede the ``case`` — a
+    default established later (or not at all) would let a destructive dispatch
+    reach the update with the variable unset (the script runs under ``set -u``)
+    or carrying a leftover value.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    assert "RETRY_LIMIT=0" in run, "the run script must default RETRY_LIMIT to 0"
+    assert run.index("RETRY_LIMIT=0") < run.index('case "$COMMAND"'), (
+        "the zero default must be established before the command dispatch"
+    )
+
+
+def test_only_the_reabstract_arm_raises_the_retry_limit() -> None:
+    """Retry tolerance is scoped to the non-destructive sweep: only the
+    ``reabstract`` arm may raise the replica-retry limit. Re-execution of a
+    destructive command stays a deliberate operator dispatch, never a silent
+    platform retry (CAS-ADR-029).
+
+    Anti-coincidental-pass: exactly two assignments are allowed — the zero
+    default and the reabstract raise, located inside that arm via ``_case_arm``
+    — and each destructive arm is asserted not to touch the variable at all, so
+    neither a stray third assignment nor a raise that migrated into a
+    destructive arm can pass.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    assignments = re.findall(r"RETRY_LIMIT=(\d+)", run)
+    assert assignments, "the run script must assign RETRY_LIMIT"
+    assert assignments[0] == "0", "the first assignment must be the zero default"
+    assert len(assignments) == 2, (
+        f"exactly the zero default and the single reabstract raise are allowed; found {assignments}"
+    )
+    assert int(assignments[1]) >= 1, "the reabstract arm must raise the limit"
+    assert f"RETRY_LIMIT={assignments[1]}" in _case_arm(run, "reabstract"), (
+        "the raise must live inside the reabstract arm"
+    )
+    for arm in ("delete_vault", "purge_document", "purge_chain", "purge_batch"):
+        assert "RETRY_LIMIT" not in _case_arm(run, arm), (
+            f"the {arm} arm must not touch the retry limit"
+        )
+
+
+def test_update_always_pins_the_retry_limit() -> None:
+    """The job update carries ``--replica-retry-limit "$RETRY_LIMIT"`` on every
+    dispatch. ``az containerapp job update`` mutates the standing job spec, so a
+    limit raised for one dispatch persists until something overwrites it;
+    re-pinning it on the same invocation that applies the request env is what
+    keeps a destructive dispatch at zero after a reabstract raised it
+    (CAS-ADR-029).
+
+    Anti-coincidental-pass: the assertion scopes to the update invocation via
+    ``_invocation`` — the flag mentioned in a comment, or moved to a
+    conditional second update that a destructive dispatch skips, cannot pass.
+    The update must also be unique: a second update elsewhere could hardcode a
+    raised limit past the variable discipline, and ``_invocation`` reads only
+    the first occurrence.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    assert run.count("az containerapp job update") == 1, (
+        "exactly one job update is allowed — a second could re-raise the retry limit"
+    )
+    update = _invocation(run, "az containerapp job update")
+    assert '--replica-retry-limit "$RETRY_LIMIT"' in update, (
+        "the update must pin the per-dispatch retry limit"
+    )
+
+
 def test_failure_log_fetch_names_the_container() -> None:
     """The failure-path log fetch passes ``--container maintenance`` — the
     container name the maintenance-job module declares.
@@ -195,6 +286,58 @@ def test_failure_log_fetch_names_the_container() -> None:
     logs = _invocation(run, "az containerapp job logs show")
     assert "--container maintenance" in logs, (
         "the log fetch must name the deployed container explicitly"
+    )
+
+
+def test_failure_path_dumps_the_execution_detail() -> None:
+    """On a failure the workflow dumps the execution record itself.
+
+    A pre-start failure leaves no container to stream logs from, so the log
+    fetch alone returns a not-found error and nothing else; the execution
+    record always exists once the start succeeded and carries the status and
+    timestamps.
+
+    Anti-coincidental-pass: the poll loop issues the same command with
+    ``--query properties.status``, so the assertion requires an invocation
+    carrying ``--output json`` — the loop alone cannot satisfy it.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    shows = _all_invocations(run, "az containerapp job execution show")
+    assert any("--output json" in show for show in shows), (
+        "the failure path must dump the execution record as JSON"
+    )
+
+
+def test_failure_path_queries_system_logs_by_job_name() -> None:
+    """On a failure the workflow queries the Log Analytics system-log table —
+    the only table with rows when no container ever started — filtered on the
+    job-name column.
+
+    Anti-coincidental-pass traps, each with its own assertion: Container App
+    Jobs log with an empty container-app-name column, so filtering on it
+    returns zero rows and reads as "no logs exist"; and the workspace id must
+    compose from the deployment outputs rather than re-deriving the workspace
+    naming convention in the workflow, where drift would surface only live, on
+    a failure.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    assert "az monitor log-analytics query" in run, (
+        "a failed run must query the workspace for the job's system logs"
+    )
+    query = _invocation(run, "az monitor log-analytics query")
+    assert "ContainerAppSystemLogs_CL" in query, (
+        "the query must read the system-log table (the only one populated on a pre-start failure)"
+    )
+    assert "JobName_s ==" in query, "the query must filter on the job-name column"
+    assert "ContainerAppName_s" not in query, (
+        "Container App Jobs log with an empty ContainerAppName_s — filtering on"
+        " it returns zero rows"
+    )
+    assert "properties.outputs.logAnalyticsCustomerId.value" in run, (
+        "the workspace id must resolve from the deployment outputs"
+    )
+    assert "log-${ENVIRONMENT_NAME}" not in run, (
+        "the workflow must not re-derive the workspace naming convention"
     )
 
 
@@ -278,3 +421,54 @@ def test_job_timeout_outlasts_the_poll_ceiling() -> None:
         f"timeout-minutes ({timeout_minutes}) must outlast the poll ceiling "
         f"({poll_minutes:.0f} min)"
     )
+
+
+def test_poll_ceiling_covers_a_retried_execution() -> None:
+    """The poll ceiling must also outlast the worst-case retried execution:
+    ``(max retry limit + 1) * replicaTimeout``. Raising the retry limit without
+    extending the loop reopens, for the retried attempt, the same false-failure
+    window the plain poll-vs-timeout gate closes for a single attempt.
+    """
+    run = _job_run_text(_maintenance_job(_load()))
+    loop = re.search(r"for\s+_\s+in\s+\$\(seq\s+1\s+(\d+)\)", run)
+    assert loop, "the poll loop must declare an explicit bound"
+    sleep_seconds = re.search(r"sleep\s+(\d+)", run[loop.end() :])
+    assert sleep_seconds, "the poll loop must sleep between status checks"
+    poll_ceiling = int(loop.group(1)) * int(sleep_seconds.group(1))
+
+    limits = [int(v) for v in re.findall(r"RETRY_LIMIT=(\d+)", run)]
+    assert limits, "the run script must declare RETRY_LIMIT"
+    replica_timeout = re.search(r"replicaTimeout:\s*(\d+)", MODULE.read_text(encoding="utf-8"))
+    assert replica_timeout, "the job module must declare a replicaTimeout"
+
+    worst_case = (max(limits) + 1) * int(replica_timeout.group(1))
+    assert poll_ceiling > worst_case, (
+        f"the poll ceiling ({poll_ceiling}s) must outlast a fully retried execution "
+        f"({worst_case}s), or the workflow reports a false failure mid-retry"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Detector controls
+# ---------------------------------------------------------------------------
+
+
+def test_case_arm_scopes_to_one_arm() -> None:
+    """``_case_arm`` must stop at the arm's ``;;`` — otherwise a per-arm
+    assertion could be satisfied (or violated) by a neighboring arm's text."""
+    sample = 'case "$X" in\n  alpha)\n    FIRST=1 ;;\n  beta)\n    SECOND=2 ;;\nesac'
+    arm = _case_arm(sample, "alpha")
+    assert "FIRST=1" in arm
+    assert "SECOND=2" not in arm
+
+
+def test_all_invocations_returns_each_occurrence() -> None:
+    """``_all_invocations`` must return every occurrence with its own continued
+    lines — a single-occurrence extraction would let the poll loop's invocation
+    stand in for the failure path's."""
+    sample = "az thing show \\\n  --query a\nfiller\naz thing show \\\n  --output json\n"
+    got = _all_invocations(sample, "az thing show")
+    assert len(got) == 2
+    assert "--query a" in got[0]
+    assert "--output json" not in got[0]
+    assert "--output json" in got[1]
