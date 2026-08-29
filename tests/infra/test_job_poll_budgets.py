@@ -172,8 +172,9 @@ def _retry_limits(run: str) -> list[int]:
 
 
 def _poll_slack(run: str) -> int | None:
-    """The arm's allowance for the queue and image pull, which sit outside
-    ``replicaTimeout`` and so are not covered by the retry-inclusive product."""
+    """The arm's allowance for the pre-replica queue wait and the terminal
+    status-propagation lag; each attempt's image pull is charged against
+    ``replicaTimeout`` and so is already covered by the retry-inclusive product."""
     found = _SLACK_RE.search(run)
     return int(found.group(1)) if found else None
 
@@ -355,8 +356,9 @@ def test_budget_is_derived_from_the_replica_settings(arm: PollingArm) -> None:
 
     slack = _poll_slack(run)
     assert slack is not None and slack > 0, (
-        f"{arm.label}: POLL_SLACK must be positive -- the queue wait and image "
-        "pull precede the replica and so are not covered by replicaTimeout"
+        f"{arm.label}: POLL_SLACK must be positive -- the queue wait before the "
+        "replica and the status-propagation lag after termination fall outside "
+        "replicaTimeout"
     )
 
 

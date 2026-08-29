@@ -185,8 +185,10 @@ jobs:
           # neither number can move without the other.
           REPLICA_TIMEOUT=600
           RETRY_LIMIT=1
-          # The queue wait and image pull precede the replica, so they fall
-          # outside replicaTimeout and are not covered by the product above.
+          # Each attempt's image pull and container start are charged against its
+          # replicaTimeout, so the product below bounds them; the slack covers the
+          # queue wait before the replica exists and the lag before the execution
+          # reports a terminal status after it ends.
           POLL_SLACK=300
           POLL_BUDGET=$(( REPLICA_TIMEOUT * (RETRY_LIMIT + 1) + POLL_SLACK ))
           POLL_DEADLINE=$(( $(date +%s) + POLL_BUDGET ))
