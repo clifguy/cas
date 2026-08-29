@@ -35,6 +35,11 @@ Safety envelope, adapted to the CI/in-cloud context:
   a named vault, and a wrong-vault dispatch is the mistake worth catching.
 - The status selector and the abstraction model are validated up front, so a
   misconfiguration is a usage error rather than a mid-run failure.
+- Re-dispatch follows the selector: the worklist is recomputed from live
+  pipeline status each run, so a ``failed`` selector resumes (documents already
+  recovered drop out) while ``all`` redoes every document. This is what makes a
+  platform-level retry of an interrupted sweep safe; the destructive commands
+  run with no retry at all (CAS-ADR-029).
 """
 
 from __future__ import annotations

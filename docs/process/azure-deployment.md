@@ -129,7 +129,11 @@ Grant `Contributor` **and** `User Access Administrator` at the subscription
 scope — the least-privilege built-in pair that can both create the resource
 group and assign roles within it (`Owner` is the single-role alternative, but
 broader than required). Once the group exists you may narrow later deployments
-to a resource-group-scoped assignment of the same pair.
+to a resource-group-scoped assignment of the same pair. The `Contributor` half
+also covers the Log Analytics workspace query actions
+(`Microsoft.OperationalInsights/workspaces/query/read` and the per-table reads)
+that the maintenance workflow's failure diagnostics use, so the diagnostics
+path needs no additional role.
 
 ```bash
 az role assignment create \

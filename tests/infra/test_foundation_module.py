@@ -270,6 +270,33 @@ def test_foundation_exposes_log_analytics_workspace_id_output() -> None:
     )
 
 
+def test_foundation_exposes_log_analytics_customer_id_output() -> None:
+    """The foundation also exposes the workspace's customer (workspace) id — the
+    GUID the log query APIs address the workspace by, distinct from its ARM
+    resource id. The maintenance workflow's failure diagnostics resolve it from
+    the deployment outputs to query the job's system logs; without the output
+    the workflow would have to re-derive the workspace name, a second source of
+    truth that drifts silently.
+    """
+    outputs = _output_lines(FOUNDATION.read_text(encoding="utf-8"))
+    assert any("logAnalytics.properties.customerId" in rhs for _, rhs in outputs), (
+        "missing a Log Analytics customer id output (RHS referencing "
+        f"logAnalytics.properties.customerId); have {[(n, r) for n, r in outputs]}"
+    )
+
+
+def test_main_bicep_reexports_log_analytics_customer_id() -> None:
+    """The orchestrator re-exports the customer id at subscription scope, where
+    the maintenance workflow reads deployment outputs (``az deployment sub
+    show``). A foundation-only output never reaches that scope, so this
+    re-export is what keeps the failure-diagnostics query resolvable.
+    """
+    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    assert (
+        "output logAnalyticsCustomerId string = foundation.outputs.logAnalyticsCustomerId" in text
+    ), "main.bicep must re-export logAnalyticsCustomerId for the maintenance workflow"
+
+
 def test_foundation_outputs_contain_no_secrets() -> None:
     """No module output exposes a secret (shared key, admin password) or a
     hardcoded identity GUID — a local mirror of the bicep

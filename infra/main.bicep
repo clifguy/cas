@@ -339,6 +339,9 @@ output bootstrapJobName string = postgresBootstrap.outputs.bootstrapJobName
 @description('Name of the in-VNet maintenance job — the dedicated maintenance workflow starts it out-of-band after applying the per-invocation request to its environment.')
 output maintenanceJobName string = maintenanceJob.outputs.maintenanceJobName
 
+@description('Customer (workspace) id of the Log Analytics workspace, re-exported at subscription scope so the maintenance workflow can resolve it from the deployment outputs to query the system logs of a failed job execution.')
+output logAnalyticsCustomerId string = foundation.outputs.logAnalyticsCustomerId
+
 @description('Name of the SAGE container app — the deploy pipeline restarts it to converge the app tier after the bootstrap job runs.')
 output sageContainerAppName string = containerApps.outputs.sageContainerAppName
 
