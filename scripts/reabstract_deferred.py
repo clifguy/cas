@@ -28,6 +28,13 @@ Behavior:
     * ``--all`` mode: enumerates every document in the vault regardless
       of pipeline_status. Use for model-switch or prompt-change passes
       where every existing abstract must be regenerated.
+    * ``--ids-file`` mode: reabstracts exactly the ids the named file
+      lists, in file order. Where the other two modes ask "which
+      documents currently satisfy this predicate", this one replays a
+      set decided when some earlier survey ran -- so the pass is
+      auditable against that survey and repeatable from it. A named id
+      is honored regardless of pipeline_status or source_type, and an
+      id absent from the vault aborts the run rather than shortening it.
     * Skips scanned-PDF rows by default (``--include-pdf`` to include them).
       The scanned-PDF row has no extractable text; reabstract returns
       ``no_projection`` or a degenerate abstract.
@@ -43,6 +50,9 @@ Usage::
 
     # Reabstract every document (model switch, prompt change, full sweep)
     .venv/bin/python -m scripts.reabstract_deferred VAULT_ID --all
+
+    # Reabstract exactly the documents a survey manifest names
+    .venv/bin/python -m scripts.reabstract_deferred VAULT_ID --ids-file ids.txt
 
     # Include scanned PDFs in the worklist
     .venv/bin/python -m scripts.reabstract_deferred VAULT_ID --include-pdf
@@ -67,6 +77,7 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
@@ -81,21 +92,82 @@ def _truncate(s: str | None, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _load_ids_file(path: Path) -> list[str]:
+    """Read document ids from a manifest, one per line, in file order.
+
+    Blank lines and ``#`` comments are skipped, so a manifest may carry a
+    provenance header -- which vault it describes, at what window, measured
+    when -- above the ids without the header becoming part of the worklist.
+
+    Raises:
+        ValueError: The file carries no ids. An empty list must not reach
+            the worklist builder, where it would be indistinguishable from
+            "no id filter requested" and would sweep the whole vault.
+    """
+    ids = [
+        stripped
+        for line in path.read_text().splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    ]
+    if not ids:
+        raise ValueError(f"no document ids found in {path}")
+    return ids
+
+
+def _select_named(all_docs: list[Document], document_ids: list[str]) -> list[Document]:
+    """Select exactly the named documents, in the order given.
+
+    An id absent from the vault raises rather than shortening the worklist:
+    a pass that quietly abstracted fewer documents than it was handed would
+    report a clean result for one it never read. Mirrors the selection
+    semantics ``sage.utils.abstraction_benchmark.select_named_corpus``
+    applies to a benchmark corpus; the two differ only in the record type
+    they select over.
+
+    Raises:
+        ValueError: An id appears more than once.
+        KeyError: An id has no document in the vault.
+    """
+    seen: set[str] = set()
+    for document_id in document_ids:
+        if document_id in seen:
+            raise ValueError(f"document id requested more than once: {document_id}")
+        seen.add(document_id)
+
+    by_id = {doc.id: doc for doc in all_docs}
+    missing = [document_id for document_id in document_ids if document_id not in by_id]
+    if missing:
+        raise KeyError(f"document ids not found in vault: {', '.join(missing)}")
+
+    return [by_id[document_id] for document_id in document_ids]
+
+
 def _build_worklist(
     all_docs: list[Document],
     *,
     include_all_statuses: bool,
     include_pdf: bool,
+    document_ids: list[str] | None = None,
 ) -> list[Document]:
     """Filter the full document list to the reabstract worklist.
 
-    Default (``include_all_statuses=False``): only documents with
+    With ``document_ids``: exactly those documents, in the order given, and
+    neither filter below applies. Naming a document is a stronger statement
+    than any predicate, so a named id is honored whatever its
+    ``pipeline_status`` or ``source_type`` -- the caller has already settled
+    which documents belong in the pass.
+
+    Otherwise the predicate modes apply. Default
+    (``include_all_statuses=False``): only documents with
     ``pipeline_status='abstraction_skipped'``. With
     ``include_all_statuses=True``: every document regardless of status
     (used for model-switch or prompt-change full-vault sweeps).
     The PDF filter composes independently: PDFs are excluded unless
     ``include_pdf=True``.
     """
+    if document_ids is not None:
+        return _select_named(all_docs, document_ids)
+
     return [
         d
         for d in all_docs
@@ -125,6 +197,7 @@ async def run(
     include_all_statuses: bool,
     include_pdf: bool,
     poll_interval: float,
+    document_ids: list[str] | None = None,
 ) -> int:
     config_path = config_path_for_vault(vault_id)
     if not config_path.exists():
@@ -149,21 +222,33 @@ async def run(
             all_docs,
             include_all_statuses=include_all_statuses,
             include_pdf=include_pdf,
+            document_ids=document_ids,
         )
         total = len(worklist)
         # PDFs that would have entered the worklist if --include-pdf were set.
-        skipped_pdfs = [
-            d
-            for d in all_docs
-            if (
-                include_all_statuses
-                or d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
-            )
-            and d.source_type == "pdf"
-            and not include_pdf
-        ]
+        # Named ids bypass the PDF filter, so nothing was skipped on that
+        # basis and reporting a count would misdescribe the run.
+        skipped_pdfs = (
+            []
+            if document_ids is not None
+            else [
+                d
+                for d in all_docs
+                if (
+                    include_all_statuses
+                    or d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
+                )
+                and d.source_type == "pdf"
+                and not include_pdf
+            ]
+        )
 
-        mode_label = "all documents" if include_all_statuses else "deferred-abstract documents"
+        if document_ids is not None:
+            mode_label = "named documents"
+        elif include_all_statuses:
+            mode_label = "all documents"
+        else:
+            mode_label = "deferred-abstract documents"
         print(f"Vault: {vault_id}")
         print(f"{mode_label.capitalize()} found: {total + len(skipped_pdfs)}")
         print(f"  to reabstract:    {total}")
@@ -226,7 +311,10 @@ def _build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("vault_id", help="Vault id (e.g. example_vault)")
-    parser.add_argument(
+    # --all sweeps by predicate, --ids-file by name. A run is one or the
+    # other; supplying both leaves the selected set ambiguous.
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--all",
         action="store_true",
         help=(
@@ -234,6 +322,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "Without this flag, only documents in 'abstraction_skipped' "
             "are enumerated (the original behavior). Use for a full-vault "
             "model-switch or prompt-change reabstract pass."
+        ),
+    )
+    selection.add_argument(
+        "--ids-file",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Reabstract exactly the document ids listed in this file, one "
+            "per line, in file order. Blank lines and '#' comments are "
+            "skipped, so a manifest may carry a provenance header. Named "
+            "ids are honored regardless of pipeline_status or source_type, "
+            "and an id absent from the vault aborts the run rather than "
+            "shortening it. Use to reproduce a pass over a set fixed by an "
+            "earlier survey."
         ),
     )
     parser.add_argument(
@@ -256,14 +358,30 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_parser().parse_args()
 
-    rc = asyncio.run(
-        run(
-            args.vault_id,
-            include_all_statuses=args.all,
-            include_pdf=args.include_pdf,
-            poll_interval=args.poll_interval,
+    document_ids = None
+    if args.ids_file is not None:
+        try:
+            document_ids = _load_ids_file(args.ids_file)
+        except (OSError, ValueError) as exc:
+            print(f"cannot read ids file: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+
+    try:
+        rc = asyncio.run(
+            run(
+                args.vault_id,
+                include_all_statuses=args.all,
+                include_pdf=args.include_pdf,
+                poll_interval=args.poll_interval,
+                document_ids=document_ids,
+            )
         )
-    )
+    except (KeyError, ValueError) as exc:
+        # A defective id list is a caller error, not a crash worth a
+        # traceback: report which ids were wrong and stop before any
+        # document is reabstracted.
+        print(f"worklist rejected: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
     raise SystemExit(rc)
 
 
