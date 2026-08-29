@@ -3396,13 +3396,17 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            Tier 3 (per-doc_type typed metadata) post-filter. Each
-            key/value pair in the dict is matched against the
-            document's `tier3_metadata` dict via exact equality. A
-            value of null matches documents whose stored field is
-            either null or absent from the tier3_metadata dict. All
-            pairs AND together; an empty dict is treated as no
-            filter.
+            Tier 3 (per-doc_type typed metadata) filter, applied in
+            SQL. Each key/value pair in the dict is matched against
+            the document's `tier3_metadata` dict via exact equality,
+            compared by JSON type: a string matches a stored string,
+            and a number, integer, or boolean matches a stored value
+            of that same JSON type. Numbers compare by value rather
+            than by rendered text, so a stored 1.0 matches a filter
+            of 1. A value of null matches documents whose stored
+            field is either null or absent from the tier3_metadata
+            dict. All pairs AND together; an empty dict is treated
+            as no filter.
         source_id:
           type: string
           description: >-

@@ -286,6 +286,26 @@ class NaturalKeyConflict(Exception):
         self.edge_type = edge_type
 
 
+class StorageQueryError(Exception):
+    """Storage-layer signal that the backend refused a document query.
+
+    Backend-neutral by design, like ``NaturalKeyConflict``: a concrete
+    store translates its driver's query failure into this one type, so
+    callers above the port never branch on the driver.
+
+    A driver's own message quotes the failing statement and any backend
+    hint. That text is diagnostic for an operator and must not reach a
+    caller, so it travels here in ``driver_message`` for server-side
+    logging while the service layer raises the public, curated
+    ``StorageQueryFailedError`` in its place.
+    """
+
+    def __init__(self, operation: str, driver_message: str) -> None:
+        super().__init__(f"storage query {operation!r} failed")
+        self.operation = operation
+        self.driver_message = driver_message
+
+
 class NonRetryableAbstractionError(Exception):
     """Abstraction failure that is deterministic in its input.
 

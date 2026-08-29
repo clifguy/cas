@@ -81,6 +81,7 @@ def _config_dict_with_tier3(tmp_vault_dir: Path) -> dict:
                                 "enum": ["high", "medium", "low"],
                             },
                             "fix_commit": {"type": ["string", "null"]},
+                            "caught_by_gate": {"type": "boolean"},
                         },
                     },
                 },
@@ -96,6 +97,40 @@ def _config_dict_with_tier3(tmp_vault_dir: Path) -> dict:
                                 "type": "string",
                                 "enum": ["high", "medium", "low"],
                             },
+                            "close_pr": {"type": ["integer", "null"]},
+                        },
+                    },
+                },
+                {
+                    "value": "tooling_entry",
+                    "label": "Tooling Entry",
+                    "metadata_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "tool_name": {"type": "string"},
+                            "false_positive_rate": {"type": ["number", "null"]},
+                            "gated_failure_modes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                {
+                    # Declares `close_pr` as a *string* where `ticket`
+                    # declares it as an integer. Two doc_types may name the
+                    # same tier3 key with different JSON types, which is what
+                    # makes an un-narrowed filter on that key a heterogeneous
+                    # scan.
+                    "value": "legacy_ticket",
+                    "label": "Legacy Ticket",
+                    "metadata_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "ticket_id": {"type": "string"},
+                            "close_pr": {"type": "string"},
                         },
                     },
                 },
@@ -1216,3 +1251,319 @@ async def test_catalog_filter_rejects_sql_unsafe_tier3_key(
                 ),
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Non-string tier3 filter values
+#
+# ``->>`` extracts a jsonb member as ``text``. A Python int, bool, or float
+# bound as a query parameter adapts to a native Postgres type, and
+# ``text = integer`` has no operator -- so every non-string JSON scalar was
+# unfilterable until the predicate builder learned to route by value type.
+# These tests pin all three JSON scalar types plus the null and string
+# branches that must keep working alongside them.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_typed_tier3_records(tmp_vault_dir, ingestion_service) -> dict:
+    """Seed documents covering every non-string JSON scalar tier3 type.
+
+    Returns a dict of role -> Document. The number seeds are chosen to
+    discriminate a real numeric comparison from string coercion: ``1.0``
+    is stored so that a filter of ``1`` must still match, which text
+    equality ("1.0" != "1") cannot do.
+    """
+    for name in ("pr_a", "pr_b", "pr_null", "pr_absent"):
+        _write_md(tmp_vault_dir, f"{name}.md", f"# {name}\n\nBody.")
+    for name in ("gate_true", "gate_false"):
+        _write_md(tmp_vault_dir, f"{name}.md", f"# {name}\n\nBody.")
+    for name in ("rate_low", "rate_one", "rate_null", "modes_three", "legacy_pr"):
+        _write_md(tmp_vault_dir, f"{name}.md", f"# {name}\n\nBody.")
+
+    async def _ingest(source: str, doc_type: str, tier3: dict):
+        result = await ingestion_service.ingest(
+            IngestRequest(
+                source=source,
+                source_type=SourceType.MARKDOWN,
+                metadata={"doc_type": doc_type},
+                tier3_metadata=tier3,
+            )
+        )
+        return result.document
+
+    return {
+        # integer
+        "pr_a": await _ingest("pr_a.md", "ticket", {"ticket_id": "T-1001", "close_pr": 273}),
+        "pr_b": await _ingest("pr_b.md", "ticket", {"ticket_id": "T-1002", "close_pr": 381}),
+        "pr_null": await _ingest("pr_null.md", "ticket", {"ticket_id": "T-1003", "close_pr": None}),
+        "pr_absent": await _ingest("pr_absent.md", "ticket", {"ticket_id": "T-1004"}),
+        # boolean
+        "gate_true": await _ingest(
+            "gate_true.md", "failure_record", {"severity": "high", "caught_by_gate": True}
+        ),
+        "gate_false": await _ingest(
+            "gate_false.md", "failure_record", {"severity": "high", "caught_by_gate": False}
+        ),
+        # number
+        "rate_low": await _ingest(
+            "rate_low.md", "tooling_entry", {"tool_name": "alpha", "false_positive_rate": 0.05}
+        ),
+        "rate_one": await _ingest(
+            "rate_one.md", "tooling_entry", {"tool_name": "beta", "false_positive_rate": 1.0}
+        ),
+        "rate_null": await _ingest(
+            "rate_null.md", "tooling_entry", {"tool_name": "gamma", "false_positive_rate": None}
+        ),
+        # array, for the exact-vs-subset distinction
+        "modes_three": await _ingest(
+            "modes_three.md",
+            "tooling_entry",
+            {"tool_name": "delta", "gated_failure_modes": ["drift", "leak", "stale"]},
+        ),
+        # a non-numeric string stored under the same key `ticket` types as
+        # an integer, so an un-narrowed filter scans mixed types
+        "legacy_pr": await _ingest(
+            "legacy_pr.md", "legacy_ticket", {"ticket_id": "L-1", "close_pr": "n/a"}
+        ),
+    }
+
+
+async def _catalog_ids(retrieval_service, doc_type: str, tier3: dict) -> set[str]:
+    """Run a catalog-mode tier3 filter and return the matched document ids."""
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type=doc_type, tier3_metadata=tier3),
+            limit=50,
+        )
+    )
+    return {hit.document.id for hit in response.results}
+
+
+async def test_catalog_filter_matches_integer_typed_tier3_value(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """An integer-valued tier3 filter selects exactly its own row.
+
+    Before the type-routed predicate this raised
+    ``operator does not exist: text = integer`` out of the driver.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    matched = await _catalog_ids(tier3_retrieval_service, "ticket", {"close_pr": 273})
+
+    assert matched == {docs["pr_a"].id}
+
+
+async def test_catalog_filter_matches_boolean_typed_tier3_value(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """Both boolean values select only their own rows.
+
+    Anti-coincidental-pass: ``False`` is the load-bearing half. A
+    truthiness guard (``if value:``) around the predicate drops the
+    clause entirely for ``False`` and returns every failure_record,
+    which the ``True`` case alone would never reveal.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    matched_true = await _catalog_ids(
+        tier3_retrieval_service, "failure_record", {"caught_by_gate": True}
+    )
+    matched_false = await _catalog_ids(
+        tier3_retrieval_service, "failure_record", {"caught_by_gate": False}
+    )
+
+    assert matched_true == {docs["gate_true"].id}
+    assert matched_false == {docs["gate_false"].id}
+
+
+async def test_catalog_filter_matches_number_typed_tier3_value(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """A float filter matches numerically, not textually.
+
+    Anti-coincidental-pass: this is the case that separates a genuine
+    type-correct comparison from string coercion. ``1.0`` is stored and
+    ``1`` is filtered; jsonb compares those numerics as equal, while
+    ``str(1)`` against the stored text ``"1.0"`` does not match. An
+    implementation that merely coerced the parameter to text would pass
+    the integer and boolean tests above and fail here.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    matched_fraction = await _catalog_ids(
+        tier3_retrieval_service, "tooling_entry", {"false_positive_rate": 0.05}
+    )
+    matched_whole = await _catalog_ids(
+        tier3_retrieval_service, "tooling_entry", {"false_positive_rate": 1}
+    )
+
+    assert matched_fraction == {docs["rate_low"].id}
+    assert matched_whole == {docs["rate_one"].id}
+
+
+async def test_integer_and_string_tier3_filter_forms_return_identical_rows(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """The typed form and the string form agree.
+
+    The string spelling was the documented workaround while the typed
+    spelling crashed; it stays supported, and the two must not diverge.
+    """
+    await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    as_integer = await _catalog_ids(tier3_retrieval_service, "ticket", {"close_pr": 273})
+    as_string = await _catalog_ids(tier3_retrieval_service, "ticket", {"close_pr": "273"})
+
+    assert as_integer == as_string
+    assert as_integer, "expected the seeded row, not an empty set on both sides"
+
+
+async def test_null_tier3_filter_on_non_string_field_matches_null_and_absent(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """The null branch is untouched by the type routing.
+
+    ``None`` still means "stored null or key absent", and must not start
+    behaving like a typed comparison against JSON null alone.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    matched = await _catalog_ids(tier3_retrieval_service, "ticket", {"close_pr": None})
+
+    assert matched == {docs["pr_null"].id, docs["pr_absent"].id}
+
+
+async def test_catalog_filter_pushes_non_string_tier3_into_sql_not_python(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service, graph_store, monkeypatch
+):
+    """The optimization gate for the non-string branch.
+
+    Twin of ``test_catalog_filter_pushes_tier3_into_sql_not_python``,
+    which covers only the string accessor. Without this, the typed
+    branch could be "fixed" by fetching wide and narrowing in Python and
+    every behavioral test above would still pass.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    captured: list[tuple[str, int | None]] = []
+    real_fetch_rows = graph_store._fetch_rows
+    real_fetch_scalar = graph_store._fetch_scalar
+
+    async def tracing_fetch_rows(sql, params=()):
+        rows = await real_fetch_rows(sql, params)
+        captured.append((sql, len(rows)))
+        return rows
+
+    async def tracing_fetch_scalar(sql, params=()):
+        captured.append((sql, None))
+        return await real_fetch_scalar(sql, params)
+
+    monkeypatch.setattr(graph_store, "_fetch_rows", tracing_fetch_rows)
+    monkeypatch.setattr(graph_store, "_fetch_scalar", tracing_fetch_scalar)
+
+    response = await tier3_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket", tier3_metadata={"close_pr": 273}),
+        )
+    )
+
+    joined = "\n".join(sql for sql, _ in captured)
+    assert "tier3_metadata->'close_pr' =" in joined, joined
+    assert "LIMIT 10000000" not in joined, joined
+    predicate_row_counts = [
+        n for sql, n in captured if n is not None and "tier3_metadata->'close_pr' =" in sql
+    ]
+    assert predicate_row_counts, "no row fetch carried the jsonb predicate"
+    assert predicate_row_counts == [len(response.results)]
+    assert {hit.document.id for hit in response.results} == {docs["pr_a"].id}
+
+
+async def test_string_typed_tier3_filter_still_uses_the_text_accessor(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service, graph_store, monkeypatch
+):
+    """String filters keep the ``->>`` predicate, and with it the indexes.
+
+    The canonical string keys (``ticket_id``, ``failure_id``,
+    ``tool_name``) are backed by Postgres expression indexes built on
+    ``(tier3_metadata->>'<field>')``. Routing strings through the jsonb
+    accessor instead would silently strand those indexes, and would also
+    break the string spelling of a typed field, since jsonb equality is
+    type-strict. This is the fence against that simplification.
+    """
+    await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    captured: list[str] = []
+    real_fetch_rows = graph_store._fetch_rows
+
+    async def tracing_fetch_rows(sql, params=()):
+        captured.append(sql)
+        return await real_fetch_rows(sql, params)
+
+    monkeypatch.setattr(graph_store, "_fetch_rows", tracing_fetch_rows)
+
+    await tier3_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket", tier3_metadata={"ticket_id": "T-1001"}),
+        )
+    )
+
+    joined = "\n".join(captured)
+    assert "tier3_metadata->>'ticket_id'" in joined, joined
+    assert "tier3_metadata->'ticket_id'" not in joined, joined
+
+
+async def test_array_typed_tier3_filter_is_exact_not_subset(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """A list filter means equality, not "contains these elements".
+
+    The typed branch could equally have been written with jsonb
+    containment (``@>``), which handles every scalar type correctly and
+    would pass every other test in this section. Containment is a subset
+    test, though, so under it a filter of two elements would match a
+    stored three-element list -- quietly contradicting the exact-equality
+    semantics this filter documents. This is the test that distinguishes
+    the two implementations.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    subset = await _catalog_ids(
+        tier3_retrieval_service, "tooling_entry", {"gated_failure_modes": ["drift", "leak"]}
+    )
+    exact = await _catalog_ids(
+        tier3_retrieval_service,
+        "tooling_entry",
+        {"gated_failure_modes": ["drift", "leak", "stale"]},
+    )
+
+    assert subset == set()
+    assert exact == {docs["modes_three"].id}
+
+
+async def test_typed_tier3_filter_survives_a_heterogeneously_typed_key(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """An un-narrowed typed filter tolerates other doc_types storing text there.
+
+    Two doc_types may declare the same tier3 key with different JSON
+    types, and a filter that names no doc_type scans both. This is the
+    case that rules out the other obvious implementation: casting the
+    text accessor, ``(tier3_metadata->>'close_pr')::bigint = %s``, which
+    compares correctly for every value in the tests above but aborts the
+    whole query with a cast error the moment one row holds a
+    non-numeric string. Comparing as jsonb has no such failure mode --
+    a mismatched type is simply not equal.
+
+    Without this test the cast implementation is excluded only by the
+    SQL-shape assertion in the pushdown gate, which is an incidental
+    exclusion rather than a behavioural one.
+    """
+    docs = await _seed_typed_tier3_records(tmp_vault_dir, tier3_ingestion_service)
+
+    matched = await _catalog_ids(tier3_retrieval_service, None, {"close_pr": 273})
+
+    assert matched == {docs["pr_a"].id}
