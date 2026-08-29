@@ -49,6 +49,27 @@ def default_vault_root() -> Path:
     return Path(env).expanduser() if env else _VAULTS_ROOT
 
 
+def bound_vault_root() -> Path:
+    """Return the vault root this process is bound to.
+
+    Resolution order: the root the active transport lifespan published, else
+    ``default_vault_root()`` (``$SAGE_VAULT_ROOT``, else the module-level
+    ``_VAULTS_ROOT``). The lifespan-published root is the authority whenever one
+    exists, because it is what discovery and the vault-source binding already
+    resolved from ``--vault-root`` / ``SAGE_VAULT_ROOT`` / the default
+    (CAS-ADR-043); falling back to the default chain covers the callers that run
+    without a lifespan at all -- repo scripts, in-process mounts, and
+    injected-config paths.
+
+    The import is function-local because ``sage.mcp_init`` sits above this
+    module: resolving it at call time keeps the dependency one-directional at
+    import time.
+    """
+    from sage.mcp_init import get_vault_root
+
+    return get_vault_root() or default_vault_root()
+
+
 def _validate_config(config_dict: dict) -> VaultConfig:
     """Validate a config dict, raising VaultConfigValidationError on failure.
 
@@ -133,5 +154,13 @@ async def _check_destructive_changes(
 
 
 def config_path_for_vault(vault_id: str) -> Path:
-    """Return the canonical config file path for a vault."""
-    return _VAULTS_ROOT / vault_id / "vault_config.yaml"
+    """Return the canonical config file path for a vault, under the root this
+    process is bound to.
+
+    Resolves through :func:`bound_vault_root`, so the path tracks the same root
+    authority discovery and the vault-source binding use rather than a fixed
+    location. Callers that want the vault *directory* rather than the config
+    file take ``.parent`` of this result and inherit the same resolution -- the
+    maintenance audit log's writer and reader both do, and must agree.
+    """
+    return bound_vault_root() / vault_id / "vault_config.yaml"

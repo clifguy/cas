@@ -86,10 +86,11 @@ class MaintenanceService:
         self._content_store = content_store
         self._ingestion = ingestion_service
         # vault_dir resolves where the audit log lives. Production
-        # invocations through mcp_init don't pass it -- the canonical
-        # ~/sage_vaults/<vault_id>/ location is derived on demand from
-        # vault_management.config_path_for_vault. Tests with ephemeral
-        # vaults outside that root pass the path explicitly.
+        # invocations through mcp_init don't pass it -- the directory is
+        # derived on demand from vault_management.config_path_for_vault,
+        # which resolves against the root this process is bound to
+        # (CAS-ADR-043). Tests with ephemeral vaults outside that root
+        # pass the path explicitly.
         self._vault_dir = vault_dir
         # Per-vault single-flight lock for reabstract_deferred.
         # Non-blocking check: a second caller raises rather than queueing

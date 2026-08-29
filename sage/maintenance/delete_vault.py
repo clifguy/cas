@@ -377,15 +377,14 @@ async def _run(
 
     from sage.mcp_init import (
         get_stack_config,
-        get_vault_root,
         resolve_stack_storage_provisioner,
         resolve_stack_vault_source_store,
     )
     from sage.storage.postgres.pool import PostgresConnectionParams, build_conn_kwargs
-    from sage.vault_management import default_vault_root
+    from sage.vault_management import bound_vault_root
 
     stack_config = get_stack_config()
-    vault_root = get_vault_root() or default_vault_root()
+    vault_root = bound_vault_root()
     source_store = resolve_stack_vault_source_store(stack_config, vault_root=vault_root)
     provisioner = resolve_stack_storage_provisioner(stack_config)
 
