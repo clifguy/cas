@@ -402,7 +402,8 @@ async def test_invalid_response_mode_rejected_up_front(
     )
 
     assert "error" in result, f"expected validation error envelope, got {result!r}"
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_parameter"
+    assert result["detail"]["parameter"].endswith("response_mode")
     # Anti-coincidental: no per-item state was committed. If validation
     # ran AFTER per-item processing, item 0 would have gained tag 'b'.
     services = mcp_server._vaults[vault_id]

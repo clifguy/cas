@@ -50,7 +50,7 @@ from pydantic import ValidationError
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
 from sage._tool_naming import MAINT_ALIAS_MAPPING
-from sage.api.errors import _TYPED_ALIAS_CODES, SAGEError, translate_validation_error
+from sage.api.errors import SAGEError, validation_error_envelope
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
 from sage.mcp_init import (
@@ -137,16 +137,15 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
             payload["detail"] = exc.detail
     elif isinstance(exc, VaultNotFoundError):
         payload = {"error": "unknown_vault", "message": str(exc)}
-    elif isinstance(exc, ValidationError) and (
-        (sage_err := translate_validation_error(exc)) is not None
-        and sage_err.code in _TYPED_ALIAS_CODES
-    ):
-        # A malformed typed-alias boundary value (vault_id, edge_id, sha256,
-        # function_id, document_date, user_id, or document_id) surfaces as its
-        # structured invalid_<alias> (400) rather than the generic
-        # internal_error. Scoped to the family via _TYPED_ALIAS_CODES so every
-        # other ValidationError category -- e.g. the discover/filters
-        # mode/unknown-key cases -- keeps its current MCP shape.
+    elif isinstance(exc, ValidationError):
+        # Every validation failure carries a structured envelope: the most
+        # specific code that applies -- a malformed typed-alias boundary
+        # value, an unknown filter key, an out-of-vocabulary enum -- or the
+        # general invalid_parameter for a bound or coercion failure with no
+        # more specific code. What a caller must never receive is the
+        # rendered form of the error, which names the model class and links
+        # to the validator's documentation site.
+        sage_err = validation_error_envelope(exc)
         payload = {"error": sage_err.code, "message": sage_err.message}
         if sage_err.detail:
             payload["detail"] = sage_err.detail
@@ -209,64 +208,74 @@ def _envelope_error_kind(result: Any) -> str | None:
     return None
 
 
-def _unknown_parameter_envelope(
+def _argument_validation_envelope(
     tool_name: str,
     exc: ToolError,
     tool_manager: Any,
 ) -> list[TextContent] | None:
-    """Translate an ``extra_forbidden`` ToolError into the SAGE error envelope.
+    """Translate an argument-validation ToolError into the SAGE error envelope.
 
-    FastMCP wraps every per-tool exception in ``ToolError`` at
-    ``Tool.run`` (``mcp/server/fastmcp/tools/base.py``); the original
-    Pydantic ``ValidationError`` survives as ``ToolError.__cause__``. When
-    the cause carries one or more errors of type ``extra_forbidden`` —
-    the signal that ``ArgModelBase``'s ``extra="forbid"`` rejected a
-    caller-supplied kwarg — the SAGE substrate translates the failure
-    into the ``unknown_parameter`` envelope at the framework boundary
+    FastMCP validates incoming arguments against a model generated from
+    the tool signature, before the tool body runs. A failure there wraps
+    in ``ToolError`` at ``Tool.run``
+    (``mcp/server/fastmcp/tools/base.py``), with the original Pydantic
+    ``ValidationError`` surviving as ``ToolError.__cause__``. Because the
+    body never executes, its own error handling cannot see the failure;
+    this boundary is the only place the substrate can normalize it
     (CAS-ADR-037).
 
-    Returns ``None`` when the ToolError is not the result of an
-    ``extra_forbidden`` rejection — the cause is a different
-    ``ValidationError`` category (type coercion, missing required
-    field) or a non-validation tool-body failure. The caller continues
-    to propagate the ToolError unchanged in that case.
+    Two envelopes come out of here. An ``extra_forbidden`` error — the
+    signal that ``ArgModelBase``'s ``extra="forbid"`` rejected a
+    caller-supplied kwarg — yields ``unknown_parameter``, whose detail
+    enumerates the rejected names alongside the full set of valid ones so
+    the caller can correct the invocation in one round-trip. Any other
+    argument-validation failure yields whatever envelope
+    ``validation_error_envelope`` selects, typically
+    ``invalid_parameter``.
 
-    The envelope detail enumerates the rejected parameter names and the
-    full set of valid parameters declared in the tool's signature, so
-    the caller can correct the invocation in one round-trip without
-    consulting external documentation. The envelope is wrapped as
-    ``[TextContent(text=<json>)]`` to match the production wire shape
-    that ``_envelope_error_kind`` already understands, so the existing
-    WARNING-log path covers the new error kind without duplication.
+    ``extra_forbidden`` is checked first and wins outright: when a call
+    carries both an unknown kwarg and a malformed known one, naming the
+    valid parameter set is the more useful of the two answers, and which
+    failure Pydantic happens to report first is not a basis for choosing.
+
+    Returns ``None`` when the cause is not a ``ValidationError`` at all —
+    a genuine tool-body failure — so the caller propagates that ToolError
+    unchanged. The envelope is wrapped as ``[TextContent(text=<json>)]``
+    to match the production wire shape ``_envelope_error_kind`` already
+    understands, so the existing WARNING-log path covers these error
+    kinds without duplication.
     """
     cause = exc.__cause__
     if not isinstance(cause, ValidationError):
         return None
+
     rejected = [
         err["loc"][0]
         for err in cause.errors()
         if err.get("type") == "extra_forbidden" and err.get("loc")
     ]
-    if not rejected:
-        return None
 
-    tool = tool_manager.get_tool(tool_name)
-    if tool is not None:
-        valid_params = sorted(tool.parameters.get("properties", {}).keys())
-    else:  # pragma: no cover -- defensive; ToolError implies the tool exists
-        valid_params = []
-    rejected_sorted = sorted(set(rejected))
+    if rejected:
+        tool = tool_manager.get_tool(tool_name)
+        if tool is not None:
+            valid_params = sorted(tool.parameters.get("properties", {}).keys())
+        else:  # pragma: no cover -- defensive; ToolError implies the tool exists
+            valid_params = []
+        rejected_sorted = sorted(set(rejected))
 
-    sage_err = SAGEError(
-        code="unknown_parameter",
-        message=(f"Tool {tool_name!r} received unknown parameter(s): {rejected_sorted}."),
-        status_code=400,
-        detail={
-            "tool": tool_name,
-            "rejected_params": rejected_sorted,
-            "valid_params": valid_params,
-        },
-    )
+        sage_err: SAGEError = SAGEError(
+            code="unknown_parameter",
+            message=(f"Tool {tool_name!r} received unknown parameter(s): {rejected_sorted}."),
+            status_code=400,
+            detail={
+                "tool": tool_name,
+                "rejected_params": rejected_sorted,
+                "valid_params": valid_params,
+            },
+        )
+    else:
+        sage_err = validation_error_envelope(cause)
+
     envelope = _error_response(sage_err)
     return [TextContent(type="text", text=_json.dumps(envelope))]
 
@@ -348,7 +357,7 @@ class _LoggingFastMCP(FastMCP):
         try:
             result = await super().call_tool(name, arguments)
         except ToolError as e:
-            envelope = _unknown_parameter_envelope(name, e, self._tool_manager)
+            envelope = _argument_validation_envelope(name, e, self._tool_manager)
             if envelope is None:
                 logger.exception("mcp tool failed: %s", name)
                 raise

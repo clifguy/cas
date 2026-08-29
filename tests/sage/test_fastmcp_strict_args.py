@@ -193,13 +193,18 @@ async def test_t4_call_tool_lists_all_unknown_kwargs_and_full_valid_params():
 # ---------------------------------------------------------------------------
 
 
-async def test_t5_non_extra_forbidden_validation_error_still_propagates():
-    """Type-coercion ValidationError remains a propagated ``ToolError``.
+async def test_t5_type_coercion_validation_error_becomes_envelope():
+    """A coercion failure at the argument model returns an envelope.
 
-    The translation must catch only ``extra_forbidden`` errors. If the
-    implementation blindly translates every ValidationError, this test
-    fails because the int-parsing failure would become an envelope
-    rather than a raised ``ToolError``.
+    This failure happens before the tool body runs, so the body's own
+    error handling cannot reach it; the framework boundary is the only
+    place to normalize it. Left alone, the caller receives a bare
+    tool-execution failure carrying the generated argument model's class
+    name and the validator's documentation URL.
+
+    T6 is the guard on the other side: a genuine tool-body failure must
+    still propagate as a raised ``ToolError`` rather than be swallowed
+    into an envelope.
     """
     mcp = _LoggingFastMCP("test_t5")
 
@@ -207,8 +212,12 @@ async def test_t5_non_extra_forbidden_validation_error_still_propagates():
     async def typed(n: int) -> dict:
         return {"n": n}
 
-    with pytest.raises(ToolError):
-        await mcp.call_tool("typed", {"n": "not-an-int"})
+    envelope = _decode_envelope(await mcp.call_tool("typed", {"n": "not-an-int"}))
+
+    assert envelope["error"] == "invalid_parameter"
+    assert envelope["detail"]["parameter"] == "n"
+    assert envelope["detail"]["value"] == "not-an-int"
+    assert "Arguments" not in json.dumps(envelope)
 
 
 async def test_t6_non_validation_error_tool_failure_still_propagates():
