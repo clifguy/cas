@@ -1154,6 +1154,7 @@ class IngestionService:
                 edge_inference_config=edge_inference_cfg,
                 graph_store=self._store,
                 graph_ops_service=self._graph_ops_service,
+                resolution_states=self._config.lifecycle.supersession_surviving_states(),
             )
         except Exception:
             logger.exception(

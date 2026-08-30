@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.51",
+  "substrate_version": "1.52",
   "revision_history": [
+    {
+      "version": "1.52",
+      "date": "2026-08-30",
+      "summary": "Two engine assumptions that a freshly ingested document is `active` are closed, leaving no schema change. (1) The LifecycleConfig validator gains its first advisory class -- logged in both the strict and lenient modes, rejecting in neither -- for an ingest landing state that no `supersede` transition leaves. Such a document is not supersedable until it is transitioned out, so ingesting with a predecessor and version-chain edge inference both refuse against it; naming that at configuration time beats discovering it later as refused chain edges. It advises rather than rejects because CAS-ADR-047 sanctions a review-style landing state, and refusing one would make unconstructible through the write surfaces exactly what a configuration is entitled to declare. (2) Identifier-mention resolution no longer prefers candidates by an `active` literal. The preferred pool is now `LifecycleConfig.supersession_surviving_states()` -- the declared states a supersession does not leave a document in, the complement of `TransitionTable.landing_states(\"supersede\")`. A vault landing ingest outside the base lifecycle's choice thereby resolves mentions to its fresh documents, and under the base lifecycle a chain with a completed head no longer empties the preference and fall through to whichever version was stamped most recently -- which, because a supersession stamps the predecessor last, was the retired one. The batch-inference and retrieval active-state filters are unchanged, per the carve-out CAS-ADR-047 records. Cross-array invariants of this kind remain loader-owned: `sage/lifecycle.schema.json` stays at 0.3."
+    },
     {
       "version": "1.51",
       "date": "2026-08-30",

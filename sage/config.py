@@ -279,6 +279,27 @@ class LifecycleConfig(BaseModel):
             )
         )
 
+    def supersession_surviving_states(self) -> frozenset[str]:
+        """The declared states a supersession does not leave a document in.
+
+        The complement, over the declared states, of the set
+        `TransitionTable.landing_states("supersede")` reports: a document
+        holding one of those states was retired by a supersession, and a
+        document holding any other was not. Callers that must choose
+        among several documents carrying one identifier — the newest
+        version and the versions it replaced — use this to prefer the
+        ones still standing.
+
+        Derived from the transitions rather than restated as a literal,
+        so it reads a vault that lands ingest outside the base
+        lifecycle's choice, or retires a document into a state of its
+        own, correctly. Computed here rather than on the transition
+        table because the declared states live on this model and the
+        table is built from the transitions alone.
+        """
+        retired = {t.to_state for t in self.transitions if t.action == "supersede"}
+        return frozenset(state.value for state in self.states) - retired
+
     @model_validator(mode="after")
     def _validate_lifecycle_shape(self, info: ValidationInfo) -> "LifecycleConfig":
         """Reject configurations the lifecycle engine cannot honour.
@@ -301,6 +322,16 @@ class LifecycleConfig(BaseModel):
         exact rows, so extensions (extra supersede sources, a non-active
         landing state) stay legal.
 
+        Separately from all of that, one condition is advised rather than
+        refused: an ingest landing state that no `supersede` transition
+        leaves. A document freshly ingested there is not supersedable
+        until it is transitioned out, so version chains cannot be built
+        against it — worth naming, but a shape the lifecycle vocabulary
+        sanctions (CAS-ADR-047), and refusing it would make
+        unconstructible through the write surfaces exactly what a
+        configuration is entitled to declare. Advisories are logged in
+        both modes and reject in neither.
+
         Strictness is contextual. Direct validation — the vault-create and
         update-config API paths — rejects a violating configuration, so a
         bad edit gets an interactive error while the vault keeps its
@@ -313,6 +344,7 @@ class LifecycleConfig(BaseModel):
         below for the same lenient-load posture, per CAS-ADR-046).
         """
         problems: list[str] = []
+        advisories: list[str] = []
         declared_states = {state.value for state in self.states}
         new_rows = [t for t in self.transitions if t.from_state == "(new)"]
         if len(new_rows) != 1:
@@ -324,6 +356,19 @@ class LifecycleConfig(BaseModel):
                 problems.append(
                     "the '(new)' ingestion transition must carry the action "
                     f"'ingest', not '{row.action}'"
+                )
+        supersede_sources = {t.from_state for t in self.transitions if t.action == "supersede"}
+        for row in new_rows:
+            # Guarded by the loop rather than indexing: with no `(new)`
+            # row there is no landing state, and the missing row is
+            # already reported above.
+            if row.to_state not in supersede_sources:
+                advisories.append(
+                    f"the ingest landing state '{row.to_state}' permits no 'supersede' "
+                    "transition, so a freshly ingested document cannot be superseded "
+                    "until it is transitioned out of it: ingesting with a predecessor, "
+                    "and version-chain edge inference, will refuse against it "
+                    f"(supersede is permitted from: {render_state_set(supersede_sources)})"
                 )
         for row in self.transitions:
             where = f"{row.from_state} -> {row.action} -> {row.to_state}"
@@ -375,6 +420,8 @@ class LifecycleConfig(BaseModel):
                 "depends_on precondition would fail permanently; declare "
                 "satisfies_dependency: true on at least one state"
             )
+        for advisory in advisories:
+            logger.warning("lifecycle configuration advisory: %s", advisory)
         if problems:
             mode = (info.context or {}).get("lifecycle_validation", "strict")
             if mode == "warn":

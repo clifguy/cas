@@ -386,3 +386,155 @@ def test_schema_expresses_transition_endpoint_patterns(minimal_vault_config_dict
     assert _schema_errors(undeclared) == [], (
         "endpoint declaration is a loader-only invariant; the schema cannot express it"
     )
+
+
+def _draft_landing_variant(config_dict: dict) -> dict:
+    """A configuration landing ingest in a state that cannot be superseded.
+
+    Valid on every rejecting rule the validator carries — the base states
+    are declared, all five base actions are used, every endpoint names a
+    declared state, and the dependency-satisfying set is non-empty — so
+    the landing-state advisory is the only thing it can trip.
+    """
+    mutated = _lifecycle_variant(config_dict)
+    mutated["lifecycle"]["states"].append({"value": "draft", "label": "Draft"})
+    for transition in mutated["lifecycle"]["transitions"]:
+        if transition["from_state"] == "(new)":
+            transition["to_state"] = "draft"
+    mutated["lifecycle"]["transitions"].append(
+        {"from_state": "draft", "action": "activate", "to_state": "active"}
+    )
+    return mutated
+
+
+def _landing_advisories(records) -> list[str]:
+    return [r.getMessage() for r in records if "ingest landing state" in r.getMessage()]
+
+
+def test_landing_state_without_supersede_is_advisory_not_rejection(
+    minimal_vault_config_dict, caplog
+):
+    """A landing state no supersede transition leaves is advised, not refused.
+
+    The vault lands new documents in `draft`, which no `supersede` row
+    leaves, so a freshly ingested document is not supersedable until it
+    is transitioned out — worth surfacing, but a shape the lifecycle
+    vocabulary sanctions (CAS-ADR-047), so refusing it would make
+    unconstructible through the write surfaces exactly what the
+    configuration is entitled to declare. That is what the two halves
+    pin: strict validation *returns*, and still warns. An implementation
+    that filed this among the rejecting problems passes the warning half
+    and fails the first.
+
+    Two further rivals pass this test alone and are excluded elsewhere in
+    this file: one that advises unconditionally (caught by the
+    base-lifecycle negative control), and one that tests the landing
+    state against the `active` literal rather than against the states
+    supersede leaves (caught by the review-landing case below, the only
+    configuration here that lands outside `active` and still permits
+    supersede).
+    """
+    mutated = _draft_landing_variant(minimal_vault_config_dict)
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = VaultConfig.model_validate(mutated)
+
+    assert config.lifecycle.dependency_satisfying_states() == frozenset({"active", "completed"})
+    advisories = _landing_advisories(caplog.records)
+    assert advisories, "a non-supersedable landing state must be surfaced"
+    assert any("draft" in message and "supersede" in message for message in advisories), (
+        f"the advisory must name the landing state and the action: {advisories}"
+    )
+
+
+def test_landing_state_advisory_also_fires_on_the_lenient_load_path(
+    minimal_vault_config_dict, tmp_path, caplog
+):
+    """The same configuration on disk carries the same advisory.
+
+    The advisory is a property of the declaration, not of the surface it
+    arrived through, so the lenient load path must not be the quieter
+    one.
+    """
+    mutated = _draft_landing_variant(minimal_vault_config_dict)
+    config_path = tmp_path / "vault_config.yaml"
+    config_path.write_text(yaml.safe_dump(mutated))
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = load_vault_config(config_path)
+
+    assert config.vault.id == mutated["vault"]["id"]
+    advisories = _landing_advisories(caplog.records)
+    assert any("draft" in message for message in advisories), (
+        f"the lenient load must carry the advisory too: {advisories}"
+    )
+
+
+def test_base_lifecycle_emits_no_landing_state_advisory(
+    minimal_vault_config_dict, extended_vault_config_dict, caplog
+):
+    """The canonical fixtures land in a state supersede leaves, and stay quiet.
+
+    The negative control: an advisory appended unconditionally passes
+    both positive cases above and fails here.
+    """
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        VaultConfig.model_validate(minimal_vault_config_dict)
+        VaultConfig.model_validate(extended_vault_config_dict)
+
+    assert _landing_advisories(caplog.records) == []
+
+
+def test_landing_state_advisory_silent_when_new_row_is_malformed(minimal_vault_config_dict, caplog):
+    """With no `(new)` row there is no landing state to advise about.
+
+    The advisory reads the `(new)` row's target, so it has to stand down
+    when that row is absent rather than reaching into an empty list. The
+    rejection for the missing row is what the operator gets.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    mutated["lifecycle"]["transitions"] = [
+        t for t in mutated["lifecycle"]["transitions"] if t["from_state"] != "(new)"
+    ]
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        with pytest.raises(ValidationError, match=r"\(new\)"):
+            VaultConfig.model_validate(mutated)
+
+    assert _landing_advisories(caplog.records) == []
+
+
+def test_non_active_landing_state_that_permits_supersede_is_not_advised(
+    minimal_vault_config_dict, caplog
+):
+    """A landing state outside the base lifecycle's choice is fine if supersede leaves it.
+
+    The discriminating case for the advisory's predicate. Both this
+    configuration and the one above land ingest somewhere other than
+    `active`; only the other lacks a `supersede` row from the landing
+    state. An implementation testing the landing state against the
+    `active` literal — rather than against the states supersede actually
+    leaves — advises on both and passes every other test in this file,
+    including the base-lifecycle negative control, because that control
+    does land in `active`.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    mutated["lifecycle"]["states"].append({"value": "review", "label": "Review"})
+    for transition in mutated["lifecycle"]["transitions"]:
+        if transition["from_state"] == "(new)":
+            transition["to_state"] = "review"
+    mutated["lifecycle"]["transitions"].extend(
+        [
+            {"from_state": "review", "action": "activate", "to_state": "active"},
+            {
+                "from_state": "review",
+                "action": "supersede",
+                "to_state": "archived",
+                "creates_edge": "supersedes",
+            },
+        ]
+    )
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = VaultConfig.model_validate(mutated)
+
+    assert config.lifecycle.supersession_surviving_states() == frozenset(
+        {"active", "completed", "review"}
+    )
+    assert _landing_advisories(caplog.records) == []

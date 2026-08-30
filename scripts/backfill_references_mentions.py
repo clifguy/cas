@@ -125,6 +125,7 @@ async def _process_document(
     doc,
     *,
     edge_inference_cfg: dict,
+    resolution_states: frozenset[str],
     cache: dict[str, str | None],
     execute: bool,
     reconcile: bool = False,
@@ -136,6 +137,7 @@ async def _process_document(
         body_text=body_text,
         edge_inference_config=edge_inference_cfg,
         graph_store=services.graph_store,
+        resolution_states=resolution_states,
         resolution_cache=cache,
     )
     report = DocReport(
@@ -196,6 +198,7 @@ async def run(args: argparse.Namespace) -> int:
                 services,
                 doc,
                 edge_inference_cfg=config.edge_inference,
+                resolution_states=config.lifecycle.supersession_surviving_states(),
                 cache=cache,
                 execute=args.execute,
                 reconcile=args.reconcile,

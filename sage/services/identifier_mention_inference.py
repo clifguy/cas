@@ -149,6 +149,7 @@ async def _resolve_identifier(
     identifier: str,
     pattern: dict,
     graph_store: GraphStore,
+    resolution_states: frozenset[str],
 ) -> str | None:
     """Resolve an identifier literal to a vault document id.
 
@@ -157,11 +158,19 @@ async def _resolve_identifier(
     contain ``{id}`` or ``{adr_num}`` placeholders substituted from the
     matched identifier via :func:`_format_tag`.
 
-    Among multiple matches, an ``active`` lifecycle status wins; among
-    multiple active matches, the most recently updated wins. That tiebreak
-    is safe only when the filter discriminates on the identifier (via
-    ``target_tier3`` or a placeholder-bearing ``target_tags`` entry) so the
-    matches are versions of one logical document. A *non-discriminating*
+    Among multiple matches, a lifecycle status in ``resolution_states``
+    wins; among multiple such matches, the most recently updated wins.
+    That set is the vault's own -- the states a supersession does not
+    leave a document in -- rather than a literal, so a vault landing
+    ingest outside the base lifecycle's choice still prefers its fresh
+    documents over the versions they replaced, and a chain whose head is
+    not the base lifecycle's ``active`` does not empty the preference and
+    fall through to whichever version was stamped most recently.
+
+    That tiebreak is safe only when the filter discriminates on the
+    identifier (via ``target_tier3`` or a placeholder-bearing
+    ``target_tags`` entry) so the matches are versions of one logical
+    document. A *non-discriminating*
     pattern -- only ``target_doc_type`` and/or static ``target_tags`` --
     would match every document of the type and the tiebreak would return an
     arbitrary one (e.g., the most-recently-updated ADR for any ``CAS-ADR-NNN``
@@ -197,8 +206,8 @@ async def _resolve_identifier(
     if not docs:
         return None
 
-    active = [d for d in docs if d.lifecycle_status == "active"]
-    pool = active or docs
+    live = [d for d in docs if d.lifecycle_status in resolution_states]
+    pool = live or docs
     pool.sort(key=lambda d: d.updated_at, reverse=True)
     return pool[0].id
 
@@ -209,6 +218,7 @@ async def plan_identifier_mention_edges(
     body_text: str,
     edge_inference_config: object,
     graph_store: GraphStore,
+    resolution_states: frozenset[str],
     resolution_cache: dict[str, str | None] | None = None,
 ) -> list[PlannedIdentifierMention]:
     """Resolve identifier mentions in body text without writing edges.
@@ -245,6 +255,7 @@ async def plan_identifier_mention_edges(
                     identifier=identifier,
                     pattern=pattern,
                     graph_store=graph_store,
+                    resolution_states=resolution_states,
                 )
                 cache[cache_key] = target_id
             if target_id is None:
@@ -276,6 +287,7 @@ async def infer_identifier_mentions_for_document(
     edge_inference_config: object,
     graph_store: GraphStore,
     graph_ops_service: GraphOpsService,
+    resolution_states: frozenset[str],
     resolution_cache: dict[str, str | None] | None = None,
 ) -> IdentifierMentionResult:
     """Plan and write identifier-mention edges in one pass.
@@ -299,6 +311,7 @@ async def infer_identifier_mentions_for_document(
         body_text=body_text,
         edge_inference_config=edge_inference_config,
         graph_store=graph_store,
+        resolution_states=resolution_states,
         resolution_cache=resolution_cache,
     )
     # plan_identifier_mention_edges already logs unresolved identifiers;
