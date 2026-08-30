@@ -441,6 +441,7 @@ export interface LifecycleStateConfig {
   label: string;
   description?: string | null;
   is_terminal?: boolean;
+  satisfies_dependency?: boolean | null;
 }
 
 export interface LifecycleTransitionConfig {

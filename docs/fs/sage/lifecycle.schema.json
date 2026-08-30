@@ -34,6 +34,11 @@
             "type": "boolean",
             "default": false,
             "description": "Whether this state represents an end state from which no further transitions are expected under normal operation. Archived is terminal by default but reactivation is permitted as an exceptional case."
+          },
+          "satisfies_dependency": {
+            "type": ["boolean", "null"],
+            "default": null,
+            "description": "Whether documents in this state satisfy inbound depends_on preconditions. Omitted or null defers to the engine default: active and completed satisfy, every other state does not. Set true to let a domain-specific state satisfy dependencies, or false to exclude a base state."
           }
         }
       }
@@ -73,9 +78,8 @@
     },
     "base_states_required": {
       "type": "boolean",
-      "const": true,
       "default": true,
-      "description": "The base state set (active, completed, archived) and base transitions (ingest, supersede, complete, archive, reactivate) are always present. Domain-specific states and transitions extend this base; they do not replace it."
+      "description": "When true (the default), the configuration must declare the base states (active, completed, archived) and use each base action (ingest, supersede, complete, archive, reactivate) in at least one transition; a configuration missing any of them is rejected at load. Domain-specific states and transitions extend this base. Set false only for a configuration that replaces the base lifecycle entirely."
     }
   }
 }

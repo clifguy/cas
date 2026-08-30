@@ -1069,10 +1069,10 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
     "maint_optimize_vault_content_store": (False, False, False),
     # -- Write, may be destructive -----------------------------------
     # `force=true` overwrites a record keyed by content hash, and
-    # `predecessor_id` archives the predecessor.
+    # `predecessor_id` applies the supersede transition to the predecessor.
     "ingest_document": (False, True, False),
-    # `ingest_document` semantics per item, plus Tier-1 supersedes
-    # auto-archive.
+    # `ingest_document` semantics per item, plus the Tier-1 supersedes
+    # auto-transition.
     "bulk_ingest_document": (False, True, False),
     # In-place lifecycle transitions, e.g. active -> archived.
     "update_lifecycles": (False, True, False),

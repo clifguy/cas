@@ -61,6 +61,8 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
                 },
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
+                {"from_state": "completed", "action": "archive", "to_state": "archived"},
+                {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
         "metadata_extraction": {

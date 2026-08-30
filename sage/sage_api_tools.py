@@ -383,9 +383,12 @@ def register_sage_tools(
                 re-ingestion is unaffected.
             predecessor_id: When set, the ingested document supersedes this
                 predecessor: SAGE creates a ``supersedes`` edge (new -> old)
-                and archives the predecessor synchronously. The predecessor
-                must be active with a content hash differing from the new
-                file. Trio fields inherit from it when omitted (see above).
+                and applies the ``supersede`` transition to the predecessor
+                synchronously, landing it where the vault's transition table
+                says (``archived`` under the base lifecycle). The
+                predecessor's current state must permit ``supersede`` under
+                that table, with a content hash differing from the new file.
+                Trio fields inherit from it when omitted (see above).
             expected_head_version: Optimistic-concurrency token on the chain
                 head identified by ``predecessor_id``. Verified against the
                 predecessor's current ``updated_at`` under the
@@ -778,7 +781,7 @@ def register_sage_tools(
         **For ``supersedes`` edges, prefer ``update_lifecycles`` with
         ``action="supersede"``** (or ``ingest_document(..., predecessor_id=...)``
         when the successor is not yet ingested): those wire the edge AND
-        archive the predecessor atomically. ``create_edges`` with an
+        transition the predecessor atomically. ``create_edges`` with an
         ``edge_type="supersedes"`` item creates the edge alone and does
         **not** transition the predecessor's lifecycle — use it only to
         stitch a missing edge into a chain whose lifecycle states are
@@ -1079,11 +1082,13 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def verify_preconditions(vault_id: str, function_id: str) -> dict:
         """Check whether all depends_on targets for a function document are
-        satisfied (active or completed lifecycle, pipeline complete).
+        satisfied (dependency-satisfying lifecycle, pipeline complete).
 
         Iterates the document's outbound ``depends_on`` edges; for each
-        target, verifies lifecycle in (active, completed) and
-        pipeline_status terminal. Returns ``satisfied`` boolean plus a
+        target, verifies the lifecycle status is one the vault's
+        configuration declares dependency-satisfying (``active`` or
+        ``completed`` under the base lifecycle) and pipeline_status
+        terminal. Returns ``satisfied`` boolean plus a
         per-edge breakdown of failing reasons (e.g. predecessor still
         in projection, target archived) so the caller can act on the
         gap rather than re-querying each dependency.

@@ -130,11 +130,6 @@ class _LineageCache:
         return self._cache[doc_id]
 
 
-# Lifecycle states that satisfy depends_on preconditions (BH-033, BH-034).
-# Domain-specific states like 'filed' are excluded (BH-036).
-_SATISFYING_STATUSES = frozenset({"active", "completed"})
-
-
 class GraphOpsService:
     def __init__(
         self,
@@ -847,6 +842,11 @@ class GraphOpsService:
             function_id, EdgeType.DEPENDS_ON.value
         )
 
+        # Derived from the vault's declared states (BH-033 through BH-036),
+        # so an opted-in domain state or an opted-out base state is honoured.
+        satisfying = self._config.lifecycle.dependency_satisfying_states()
+        required = " or ".join(sorted(satisfying)) or "(no state satisfies dependencies)"
+
         checks: list[PreconditionCheck] = []
         for edge in depends_on_edges:
             target = await self._store.get_document(edge.target_id)
@@ -854,7 +854,7 @@ class GraphOpsService:
                 checks.append(
                     PreconditionCheck(
                         target_id=edge.target_id,
-                        required="active or completed",
+                        required=required,
                         actual="not found",
                         satisfied=False,
                     )
@@ -866,18 +866,18 @@ class GraphOpsService:
                 checks.append(
                     PreconditionCheck(
                         target_id=edge.target_id,
-                        required="active or completed",
+                        required=required,
                         actual="failed (pipeline_incomplete)",
                         satisfied=False,
                     )
                 )
                 continue
 
-            satisfied = target.lifecycle_status in _SATISFYING_STATUSES
+            satisfied = target.lifecycle_status in satisfying
             checks.append(
                 PreconditionCheck(
                     target_id=edge.target_id,
-                    required="active or completed",
+                    required=required,
                     actual=target.lifecycle_status,
                     satisfied=satisfied,
                 )
