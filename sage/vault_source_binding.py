@@ -671,7 +671,11 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # mapping is the only place the stale section is still visible
         # (CAS-ADR-046).
         warn_on_retired_sections(raw)
-        return VaultConfig.model_validate(raw)
+        # A stored configuration is a fact, not a request: lifecycle-shape
+        # violations load with a warning instead of rejecting, matching
+        # load_vault_config — a rejected declaration drops its vault from
+        # the registry, unreachable by the surfaces that could repair it.
+        return VaultConfig.model_validate(raw, context={"lifecycle_validation": "warn"})
 
     def config_locator(self, vault_id: str) -> Path | None:
         return None

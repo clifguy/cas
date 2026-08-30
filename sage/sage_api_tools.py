@@ -1082,13 +1082,14 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def verify_preconditions(vault_id: str, function_id: str) -> dict:
         """Check whether all depends_on targets for a function document are
-        satisfied (dependency-satisfying lifecycle, pipeline complete).
+        satisfied (dependency-satisfying lifecycle, pipeline not failed).
 
         Iterates the document's outbound ``depends_on`` edges; for each
         target, verifies the lifecycle status is one the vault's
         configuration declares dependency-satisfying (``active`` or
-        ``completed`` under the base lifecycle) and pipeline_status
-        terminal. Returns ``satisfied`` boolean plus a
+        ``completed`` under the base lifecycle) and pipeline_status not
+        ``failed`` — a target still mid-pipeline is not rejected.
+        Returns ``satisfied`` boolean plus a
         per-edge breakdown of failing reasons (e.g. predecessor still
         in projection, target archived) so the caller can act on the
         gap rather than re-querying each dependency.

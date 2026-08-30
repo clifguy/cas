@@ -19,6 +19,8 @@ These tests pin three properties:
 
 import copy
 
+import pytest
+
 from sage.config import LifecycleTransition, TransitionTable, VaultConfig, build_transition_table
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
@@ -92,18 +94,21 @@ def test_ingest_landing_state_reads_configured_new_row(minimal_vault_config_dict
     assert table.ingest_landing_state() == "draft"
 
 
-def test_ingest_landing_state_falls_back_without_new_row():
-    """A table built without a `(new)` row falls back to `active`.
+def test_ingest_landing_state_requires_new_row():
+    """A table built without a `(new)` row has no landing state to report.
 
     Only reachable by direct construction; a validated config always
-    carries the row.
+    carries the row. Raising beats guessing: a substituted default could
+    land documents in a state the vault never declared, leaving them
+    untransitionable.
     """
     table = TransitionTable(
         [
             LifecycleTransition(from_state="active", action="archive", to_state="archived"),
         ]
     )
-    assert table.ingest_landing_state() == "active"
+    with pytest.raises(ValueError, match=r"\(new\)"):
+        table.ingest_landing_state()
 
 
 def test_capturing_landing_state_keeps_ingest_uninvocable(minimal_vault_config_dict):
