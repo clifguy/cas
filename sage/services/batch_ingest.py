@@ -199,10 +199,11 @@ class BatchIngestService:
         two calls under no shared lock, so a write that fails after the
         edge lands leaves the edge in place with a
         ``lifecycle_transition_failed`` warning as the only signal, and
-        a state change racing the check is not detected. The write also
-        omits the chunk-store lifecycle sync that the explicit
-        lifecycle path performs, so a superseded document's chunks keep
-        their prior lifecycle value until reprojection. All of these
+        a state change racing the check is not detected. A successful
+        write is followed by the chunk-store lifecycle sync the
+        explicit lifecycle path performs, keeping chunk-level
+        pre-filtering aligned with the document's new state; a sync
+        failure warns as ``chunk_lifecycle_sync_failed``. All of these
         surface as warnings in ``IngestSummary.edge_warnings``; no case
         raises, and none appears in ``IngestSummary.errors``.
 
@@ -309,6 +310,9 @@ class BatchIngestService:
                 # table means the supersede transition cannot diverge
                 # between the batch path and the explicit lifecycle path.
                 vault_services.lifecycle_service.transition_table,
+                # For the chunk-store lifecycle sync that follows a
+                # supersede's document write.
+                content_store=vault_services.content_store,
             )
             summary.edges_created = edge_result.edges_created
             summary.edges_staged = edge_result.edges_staged

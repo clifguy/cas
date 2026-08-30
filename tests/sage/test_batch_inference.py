@@ -27,6 +27,8 @@ from uuid import uuid4
 
 import pytest
 
+from sage.adapters.interfaces import Chunk
+from sage.adapters.stubs import StubContentStore
 from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, PipelineStatus, RationaleKind, SourceType
 from sage.models.schemas import Document, Edge
@@ -1034,6 +1036,187 @@ class TestTwoPhaseOrchestration:
         # has no state to report against the table's permitted set.
         assert result.warnings[0]["reason"] == "supersede_target_missing"
         assert DOC_V1 in result.warnings[0]["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ei_041_supersede_syncs_chunk_lifecycle_to_landing_state(self):
+        """The lifecycle write carries its chunk-store sync.
+
+        Pre-filter pushdown reads lifecycle_status off the chunk row, so a
+        supersession that moves only the document leaves the predecessor's
+        chunks answering active-filtered searches indefinitely. The sync
+        mirrors what the explicit lifecycle path does after its own write.
+
+        Runs against a table landing supersessions in ``retired`` rather
+        than the base table's ``archived`` (see ``_table_with``): a sync
+        that hardcoded the base landing state instead of mirroring the
+        settled one would pass under the base table and fails here.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        content_store = StubContentStore()
+        await content_store.index_chunks(
+            DOC_V1,
+            [
+                Chunk(
+                    document_id=DOC_V1,
+                    heading_path="Claims",
+                    content="claim set details",
+                    chunk_index=0,
+                    lifecycle_status="active",
+                ),
+                Chunk(
+                    document_id=DOC_V1,
+                    heading_path="Notes",
+                    content="claim revision notes",
+                    chunk_index=1,
+                    lifecycle_status="active",
+                ),
+            ],
+        )
+        # Positive control: the chunks are present and answer an
+        # active-filtered search before the supersession runs, so the
+        # post-run emptiness below can only come from the sync.
+        before = await content_store.search_bm25("claim", filters={"lifecycle_status": "active"})
+        assert {r.document_id for r in before} == {DOC_V1}
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "active"})
+        result = await resolve_and_execute(
+            plan,
+            {},
+            mock_store,
+            mock_ops,
+            _table_with(("active", "supersede", "retired")),
+            content_store=content_store,
+        )
+
+        assert result.edges_created == {"supersedes": 1}
+        assert mock_store.state_of(DOC_V1) == "retired"
+        assert result.warnings == []
+        # Every chunk moved to the landing state the table names -- not the
+        # base table's, so a hardcoded state cannot coincide with it.
+        chunks = await content_store.get_chunks_by_heading_prefix(DOC_V1, "Claims")
+        assert all(c.lifecycle_status == "retired" for c in chunks)
+        after = await content_store.search_bm25("claim", filters={"lifecycle_status": "active"})
+        assert after == []
+
+    @pytest.mark.asyncio
+    async def test_ei_042_chunk_sync_failure_warns_and_never_raises(self):
+        """A failed chunk sync is a warning, not a batch failure.
+
+        The edge landed and the document moved; only the mirror into the
+        content store failed. That is triage information, not grounds to
+        abort the batch -- the same best-effort contract the lifecycle
+        write itself holds under ``lifecycle_transition_failed``.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _ExplodingContentStore(StubContentStore):
+            async def update_chunk_metadata(self, document_id, metadata):
+                raise RuntimeError("chunk store unavailable")
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "active"})
+        result = await resolve_and_execute(
+            plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=_ExplodingContentStore()
+        )
+
+        # Edge and document write both succeeded and still count.
+        assert result.edges_created == {"supersedes": 1}
+        assert mock_store.state_of(DOC_V1) == "archived"
+        assert len(result.warnings) == 1
+        assert result.warnings[0]["reason"] == "chunk_lifecycle_sync_failed"
+        assert result.warnings[0]["source"] == DOC_V2
+        assert result.warnings[0]["target"] == DOC_V1
+        assert "chunk store unavailable" in result.warnings[0]["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ei_043_no_chunk_sync_when_lifecycle_write_fails(self):
+        """No sync when the document write fails.
+
+        The sync mirrors a transition that happened. If the document did
+        not move, pushing the landing state onto its chunks would create
+        the very divergence the sync exists to prevent, in the opposite
+        direction.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _WriteFailingStore(_SupersedeStore):
+            async def update_document(self, doc_id, updates):
+                raise RuntimeError("document write failed")
+
+        class _RecordingContentStore(StubContentStore):
+            def __init__(self):
+                super().__init__()
+                self.sync_calls = []
+
+            async def update_chunk_metadata(self, document_id, metadata):
+                self.sync_calls.append((document_id, metadata))
+
+        content_store = _RecordingContentStore()
+        mock_ops = _SupersedeOps()
+        mock_store = _WriteFailingStore({DOC_V1: "active"})
+        result = await resolve_and_execute(
+            plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store
+        )
+
+        assert len(result.warnings) == 1
+        assert result.warnings[0]["reason"] == "lifecycle_transition_failed"
+        assert content_store.sync_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ei_044_no_chunk_sync_on_landing_state_no_write(self):
+        """The chain-repair no-write case performs no sync either.
+
+        A target already in a landing state gets the edge and no document
+        write (EI-038); there is no transition for the chunks to mirror,
+        so the content store is not touched.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _RecordingContentStore(StubContentStore):
+            def __init__(self):
+                super().__init__()
+                self.sync_calls = []
+
+            async def update_chunk_metadata(self, document_id, metadata):
+                self.sync_calls.append((document_id, metadata))
+
+        content_store = _RecordingContentStore()
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "archived"})
+        result = await resolve_and_execute(
+            plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store
+        )
+
+        assert result.edges_created == {"supersedes": 1}
+        assert mock_store.updated == []
+        assert result.warnings == []
+        assert content_store.sync_calls == []
 
     def test_ei_029_empty_manifest_empty_plan(self):
         """Empty manifest produces empty edge plan."""

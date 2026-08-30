@@ -462,3 +462,39 @@ state.
 **Rationale:** The summary counter must agree with what the Review tab will
 show. Otherwise users see contradictory information across screens (the
 regression that motivated this fix).
+
+### TEST-BIS-021: Batch-inferred supersession syncs predecessor chunk lifecycle
+
+**Artifact:** Bug fix (batch supersede skipped the chunk-store lifecycle sync)
+**Category:** batch_ingest_service
+
+**Decision:** When Phase 3 edge execution applies the Tier-1 `supersedes`
+lifecycle side effect to a predecessor document, it also syncs the new
+`lifecycle_status` to the predecessor's chunks via
+`ContentStore.update_chunk_metadata`, exactly as `LifecycleService` and the
+atomic ingest path do after their document writes. Pre-filter pushdown
+requires the chunk-level `lifecycle_status` column to stay aligned with the
+document's current state; without the sync, chunks of superseded documents
+remain visible to active-filtered search indefinitely. The sync is
+best-effort: a failure is recorded in `edge_warnings` under
+`chunk_lifecycle_sync_failed` and never fails the batch.
+
+**Precondition:** Services wired with a real in-memory content store. An
+active predecessor (v1) exists in the graph with chunks indexed as
+`lifecycle_status="active"`; an active-filtered chunk search returns them
+(positive control).
+
+**Input:** One v2 file of the same chain, `infer_edges=True`, so version-chain
+inference plans the supersede.
+
+**Expected:**
+- Predecessor document lands in the transition table's landing state
+  (`archived` under the base lifecycle).
+- Every predecessor chunk carries `lifecycle_status="archived"`.
+- An active-filtered chunk search no longer returns the predecessor's chunks.
+- `edge_warnings` is empty.
+
+**Rationale:** The document store and the content store must agree on
+lifecycle state after every supersede surface, not just the explicit
+lifecycle path — otherwise superseded content keeps surfacing in
+lifecycle-filtered retrieval until the next reprojection.

@@ -1,4 +1,4 @@
-"""Tests for BatchIngestService (TEST-BIS-001 through TEST-BIS-019).
+"""Tests for BatchIngestService (TEST-BIS-001 through TEST-BIS-021).
 
 Covers:
   - Service interface and return types (BIS-001, BIS-002)
@@ -8,6 +8,8 @@ Covers:
   - Phase 3: Post-ingest edge execution (BIS-012, BIS-013)
   - Progress callbacks (BIS-014, BIS-015, BIS-016, BIS-017)
   - Caller integration (BIS-018, BIS-019)
+  - Summary counters (BIS-020)
+  - Chunk-store lifecycle sync on supersession (BIS-021)
 """
 
 import hashlib
@@ -19,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sage.adapters.interfaces import Chunk
+from sage.adapters.stubs import StubContentStore
 from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, IngestRequest, UnlinkResponse
@@ -1123,6 +1127,12 @@ def _make_chain_services(
     """Build a SAGEServices mock backed by a _MockGraphState."""
     state = _MockGraphState(docs, edges)
     services = MagicMock()
+    # A real in-memory content store rather than the auto-created MagicMock
+    # attribute: edge execution awaits ``update_chunk_metadata`` on it after
+    # a supersede lifecycle write, and awaiting a plain MagicMock raises --
+    # which the best-effort sync would swallow into a spurious
+    # ``chunk_lifecycle_sync_failed`` warning in every test here.
+    services.content_store = StubContentStore()
     services.lifecycle_service.transition_table = _base_transition_table()
     services.config.abstraction.enabled = abstraction_enabled
     services.graph_store.list_all_documents = AsyncMock(side_effect=state.list_all_documents)
@@ -1649,3 +1659,72 @@ class TestChainRepair:
 
         # v1 is untouched -- not transitioned, and still linked.
         assert state.docs[V1_ID].lifecycle_status == "completed"
+
+
+class TestChunkLifecycleSync:
+    """TEST-BIS-021: supersession syncs predecessor chunks (see spec doc)."""
+
+    @pytest.mark.asyncio
+    async def test_supersede_batch_syncs_predecessor_chunks(self):
+        """A batch-inferred supersession moves the predecessor's chunks too.
+
+        End-to-end through ``BatchIngestService.run`` rather than against
+        ``resolve_and_execute`` directly: the wiring under test is that the
+        service threads its vault's content store into edge execution at
+        all -- a sync implemented but never handed a store would pass every
+        unit test and still leave production chunks stale.
+        """
+        V1_ID = "cccccccc_v1"
+        v1 = _make_document(
+            V1_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v1",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        services, state = _make_chain_services([v1], [])
+        await services.content_store.index_chunks(
+            V1_ID,
+            [
+                Chunk(
+                    document_id=V1_ID,
+                    heading_path="Claims",
+                    content="claim set details",
+                    chunk_index=0,
+                    lifecycle_status="active",
+                ),
+                Chunk(
+                    document_id=V1_ID,
+                    heading_path="Notes",
+                    content="claim revision notes",
+                    chunk_index=1,
+                    lifecycle_status="active",
+                ),
+            ],
+        )
+        # Positive control: the predecessor's chunks answer an
+        # active-filtered search before the batch runs.
+        before = await services.content_store.search_bm25(
+            "claim", filters={"lifecycle_status": "active"}
+        )
+        assert {r.document_id for r in before} == {V1_ID}
+
+        svc = BatchIngestService()
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        assert result.edge_warnings == []
+        assert result.edges_created.get("supersedes", 0) == 1
+        # Document and chunks agree on the landing state.
+        assert state.docs[V1_ID].lifecycle_status == "archived"
+        chunks = await services.content_store.get_chunks_by_heading_prefix(V1_ID, "Claims")
+        assert chunks and all(c.lifecycle_status == "archived" for c in chunks)
+        after = await services.content_store.search_bm25(
+            "claim", filters={"lifecycle_status": "active"}
+        )
+        assert after == []
