@@ -8,13 +8,20 @@ import asyncio
 import json
 import logging
 import time
+import unicodedata
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from sage.adapters.abstraction_prompt import (
     SYSTEM_PROMPT_TEMPLATE,  # noqa: F401 -- re-exported for callers importing from this module
     _format_system_prompt,
     wrap_source_document,
+)
+from sage.adapters.abstraction_utils import (
+    _OPENER_EDGE_PUNCTUATION,
+    forbidden_opener_continuations,
+    opener_sentence_terminated,
 )
 from sage.adapters.interfaces import AbstractionMemoryExhaustedError, AbstractionProvider
 from sage.utils.unified_memory import (
@@ -195,6 +202,145 @@ def _is_memory_exhaustion(exc: BaseException) -> bool:
     return "metal" in message and any(marker in message for marker in _MEMORY_EXHAUSTION_MARKERS)
 
 
+# ---------------------------------------------------------------------------
+# Type-restating-opener constraint (CAS-ADR-020 clause (f))
+# ---------------------------------------------------------------------------
+
+
+def _normalize_surface(text: str) -> str:
+    """Index key for a token's decoded surface.
+
+    Mirrors what the detector's tokenizer does to a word of the opener --
+    NFKC, edge punctuation stripped, casefolded -- with one addition: a
+    leading space is preserved as a single space, because it is what
+    separates a token that opens a word from one that continues it. The
+    constraint names both, and masking one for the other would change
+    generation at a position the detector never inspects.
+
+    Returns the empty string for a surface that carries no word, which
+    the caller drops.
+    """
+    normalized = unicodedata.normalize("NFKC", text)
+    leading = " " if normalized[:1].isspace() else ""
+    body = normalized.strip().strip(_OPENER_EDGE_PUNCTUATION)
+    return f"{leading}{body.casefold()}" if body else ""
+
+
+def _build_surface_index(tokenizer: Any) -> dict[str, tuple[int, ...]]:
+    """Map each normalized surface in the vocabulary to the ids rendering it.
+
+    One pass over the vocabulary, so the per-token work during generation
+    is a dict lookup rather than a search. Built lazily on the first
+    constrained call and released with the tokenizer it was read from: the
+    ids are meaningless against a different vocabulary, and a stale index
+    would mask arbitrary tokens rather than fail.
+
+    Ids are grouped rather than overwritten because several surfaces
+    normalize together -- case variants, and the punctuation-adjacent
+    forms the detector compares bare.
+    """
+    vocab_size = getattr(tokenizer, "vocab_size", None) or len(tokenizer)
+    decoded = tokenizer.batch_decode([[token_id] for token_id in range(vocab_size)])
+
+    index: dict[str, list[int]] = {}
+    for token_id, surface in enumerate(decoded):
+        key = _normalize_surface(surface)
+        if key:
+            index.setdefault(key, []).append(token_id)
+    return {key: tuple(ids) for key, ids in index.items()}
+
+
+def _suppress_logits(logits: Any, token_ids: tuple[int, ...]) -> Any:
+    """Drive *token_ids* out of contention in *logits*.
+
+    Additive rather than assigned, mirroring how mlx-lm's own logit-bias
+    processor writes to logits. The MLX import is local because it happens
+    only inside a live generation: constructing a constraint, and every
+    test that drives one, stays free of the accelerator runtime.
+    """
+    import mlx.core as mx
+
+    floor = mx.full((len(token_ids),), mx.finfo(logits.dtype).min, dtype=logits.dtype)
+    return logits.at[:, mx.array(token_ids)].add(floor)
+
+
+class _OpenerConstraint:
+    """Suppress the tokens that would complete a type-restating opener.
+
+    CAS-ADR-020 clause (f) instructs the prompt against restating the type
+    the discovering agent already sees as metadata. The post-generation
+    check reports the breach and the bounded excision repairs the one
+    shape whose relative clause can be promoted to the main predicate;
+    the rest were measured unrepairable, because reaching a finite verb
+    from a participial or prepositional modifier means composing one.
+    This closes those at the only point where nothing has to be composed:
+    before the type word is emitted.
+
+    Applied during decoding, so it composes with greedy sampling instead
+    of competing with it. Every position the automaton does not name is
+    left at argmax, and the extent of what it names is the detector's,
+    which is what lets the same detector measure whether this worked.
+
+    Stateful for the length of one generation and no longer: the sole
+    state is the prompt watermark and the closed flag, and a reused
+    instance would carry a stale watermark into the next call and decode
+    the wrong span. The provider constructs one per generation.
+
+    Args:
+        doc_type: The document's type as supplied to the prompt.
+        decode: Renders a token id sequence as text.
+        surfaces: Normalized surface to the token ids rendering it.
+        mask: Drives the named ids out of contention in the logits.
+    """
+
+    def __init__(
+        self,
+        doc_type: str | None,
+        *,
+        decode: Callable[[Sequence[int]], str],
+        surfaces: Mapping[str, tuple[int, ...]],
+        mask: Callable[[Any, tuple[int, ...]], Any],
+    ) -> None:
+        self._doc_type = doc_type
+        self._decode = decode
+        self._surfaces = surfaces
+        self._mask = mask
+        self._prompt_tokens: int | None = None
+        self._closed = doc_type is None
+
+    def __call__(self, tokens: Any, logits: Any) -> Any:
+        if self._closed:
+            return logits
+
+        ids = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
+        if self._prompt_tokens is None:
+            # MLX runs a processor only from the sampling step, never from
+            # the chunked prefill loop, so this call precedes the first
+            # generated token and whatever it carries is prompt.
+            self._prompt_tokens = len(ids)
+
+        generated = self._decode(ids[self._prompt_tokens :])
+
+        # The detector reads only the opening sentence, so once that
+        # sentence closes the constraint has nothing left to prevent.
+        # Latched rather than re-derived because the rest of a generation
+        # is most of it, and a decode per token there would buy nothing.
+        if opener_sentence_terminated(generated):
+            self._closed = True
+            return logits
+
+        forbidden = forbidden_opener_continuations(generated, self._doc_type)
+        if not forbidden:
+            return logits
+
+        blocked = sorted(
+            {token_id for surface in forbidden for token_id in self._surfaces.get(surface, ())}
+        )
+        if not blocked:
+            return logits
+        return self._mask(logits, tuple(blocked))
+
+
 class Qwen3AbstractionProvider(AbstractionProvider):
     """Production abstraction provider using Qwen3 via MLX.
 
@@ -212,8 +358,15 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self,
         model_id: str,
         context_window: int | None = None,
+        opener_constraint: bool = False,
     ) -> None:
         self._model_id = model_id
+        # Whether generation is constrained against CAS-ADR-020 clause (f)
+        # openers. A decoding-time property, so it is available only here:
+        # a hosted provider exposes no sampling loop to constrain, and its
+        # coverage of the clause stays the prompt directive plus the
+        # post-generation check.
+        self._opener_constraint = opener_constraint
         # None is the "unconfigured" sentinel and resolves to the module
         # default here, at the single point that owns it. Callers forward
         # whatever their configuration carries without having to know the
@@ -238,6 +391,13 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         # single-valued because the system prompt varies by doc_type, and
         # cleared on unload because a reload may bring a different tokenizer.
         self._overhead_tokens: dict[str | None, int] = {}
+
+        # Vocabulary surface index for the opener constraint, built on the
+        # first constrained generation. Keyed to the loaded tokenizer and
+        # cleared with it: token ids carry no meaning against a different
+        # vocabulary, and a retained index would mask arbitrary tokens
+        # rather than fail.
+        self._surface_index: dict[str, tuple[int, ...]] | None = None
 
         # Dedicated single-thread executor for the blocking model load and
         # inference. Created lazily on first generate_abstract and released
@@ -513,6 +673,28 @@ class Qwen3AbstractionProvider(AbstractionProvider):
 
         return abstract
 
+    def _build_opener_constraint(self, doc_type: str | None) -> "_OpenerConstraint | None":
+        """A fresh clause (f) constraint for one generation, or None.
+
+        None when the stack has not enabled the constraint, and when the
+        document carries no type -- there is then no phrase to restate,
+        and an inert processor would cost a decode per token for nothing.
+
+        Fresh per call because the constraint carries per-generation state;
+        reusing one would carry a stale prompt watermark into the next
+        generation, and greedy decoding would stop being reproducible.
+        """
+        if not self._opener_constraint or doc_type is None:
+            return None
+        if self._surface_index is None:
+            self._surface_index = _build_surface_index(self._tokenizer)
+        return _OpenerConstraint(
+            doc_type,
+            decode=self._tokenizer.decode,
+            surfaces=self._surface_index,
+            mask=_suppress_logits,
+        )
+
     def _generate_sync(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         """Blocking model load + inference. Runs on the dedicated executor.
 
@@ -527,6 +709,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         outcome = self._truncate_for_context(text, max_tokens, doc_type)
         prompt = self._build_prompt(outcome.text, doc_type)
 
+        constraint = self._build_opener_constraint(doc_type)
         result = ""
         final = None
         for response in self._generate_fn(
@@ -535,6 +718,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             prompt=prompt,
             max_tokens=max_tokens,
             sampler=self._greedy_sampler,
+            **({"logits_processors": [constraint]} if constraint is not None else {}),
         ):
             result += response.text
             final = response
@@ -663,6 +847,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             # silently mis-size every subsequent prompt.
             self._native_context_window = None
             self._overhead_tokens = {}
+            self._surface_index = None
 
             # Release the dedicated inference thread alongside the model so
             # an evicted (or never-completed) provider holds no resident
@@ -728,6 +913,7 @@ _singleton: Qwen3AbstractionProvider | None = None
 def get_qwen3_abstraction_provider(
     model_id: str,
     context_window: int | None = None,
+    opener_constraint: bool = False,
 ) -> Qwen3AbstractionProvider:
     """Return the process-wide Qwen3AbstractionProvider, constructing on first call.
 
@@ -738,7 +924,11 @@ def get_qwen3_abstraction_provider(
     """
     global _singleton
     if _singleton is None:
-        _singleton = Qwen3AbstractionProvider(model_id=model_id, context_window=context_window)
+        _singleton = Qwen3AbstractionProvider(
+            model_id=model_id,
+            context_window=context_window,
+            opener_constraint=opener_constraint,
+        )
     elif _singleton._model_id != model_id:
         raise RuntimeError(
             f"Qwen3AbstractionProvider singleton already initialized with "

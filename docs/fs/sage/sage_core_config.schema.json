@@ -40,6 +40,11 @@
           "default": null,
           "description": "LLM model identifier for abstract generation, passed to the provider's factory. Required when provider is 'local-mlx' or 'anthropic' (startup fails loudly if null): a local model identifier for 'local-mlx', a Claude model identifier for 'anthropic'. Ignored when provider is 'stub'."
         },
+        "opener_constraint": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the local MLX provider constrains decoding against the CAS-ADR-020 clause (f) type-restating opener, suppressing the tokens that would complete a classifying frame ('This document is a <doc_type>...') at exactly the positions the post-generation check flags. Consumed only by the local MLX provider: the constraint is a property of a sampling loop, and a hosted provider exposes none, so enabling it against a non-local provider fails loudly at startup rather than being silently ignored. Clause (f) coverage is therefore provider-dependent -- prevention is local-only, while detection and the bounded post-generation repair stay provider-neutral."
+        },
         "context_window": {
           "type": ["integer", "null"],
           "default": null,

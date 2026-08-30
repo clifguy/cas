@@ -416,3 +416,98 @@ def test_stk_014_committed_context_window_reaches_the_local_factory(monkeypatch)
     assert len(calls) == 1
     assert calls[0]["context_window"] is not None
     assert calls[0]["context_window"] == cfg.abstraction.context_window
+
+
+def test_stk_015_opener_constraint_passed_to_local_factory(monkeypatch):
+    """A configured `opener_constraint` reaches the local factory.
+
+    The knob controls a decoding-time constraint inside the local
+    provider's sampling loop, so a value that never reaches the factory
+    leaves generation unchanged while the config claims otherwise.
+
+    Anti-coincidental-pass: STK-016 is the negative pair, asserting the
+    unset field still forwards -- explicitly False, not absent.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return StubAbstractionProvider()
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    cfg = _stack_config(
+        provider="local-mlx", model="mlx-community/test-qwen3", opener_constraint=True
+    )
+    build_stack_abstraction_provider(cfg)
+
+    assert calls[0]["opener_constraint"] is True
+
+
+def test_stk_016_opener_constraint_unset_forwards_false(monkeypatch):
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return StubAbstractionProvider()
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    cfg = _stack_config(provider="local-mlx", model="mlx-community/test-qwen3")
+    build_stack_abstraction_provider(cfg)
+
+    assert "opener_constraint" in calls[0], "opener_constraint was not forwarded at all"
+    assert calls[0]["opener_constraint"] is False
+
+
+def test_stk_017_opener_constraint_against_anthropic_rejected(monkeypatch):
+    """The constraint is a property of a sampling loop the hosted provider
+    does not have, so setting it there fails loud at startup.
+
+    Clause (f) coverage is therefore provider-dependent by construction:
+    the hosted provider keeps the prompt directive and the post-generation
+    check, and gains no prevention. That asymmetry is stated here rather
+    than discovered from an abstract that breached anyway.
+
+    Anti-coincidental-pass: the positive control constructs the same
+    hosted provider from the same config without the field, so a
+    rejection firing for every anthropic config would fail here.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    from sage.adapters.abstraction_anthropic import AnthropicAbstractionProvider
+
+    cfg = _stack_config(provider="anthropic", model="claude-haiku-4-5", opener_constraint=True)
+    with pytest.raises(ValueError) as excinfo:
+        build_stack_abstraction_provider(cfg)
+    message = str(excinfo.value)
+    assert "opener_constraint" in message
+    assert "anthropic" in message
+
+    ok = _stack_config(provider="anthropic", model="claude-haiku-4-5")
+    assert isinstance(build_stack_abstraction_provider(ok), AnthropicAbstractionProvider)
+
+
+def test_stk_018_opener_constraint_false_against_anthropic_is_accepted(monkeypatch):
+    """Only an *enabled* constraint is a misconfiguration.
+
+    A rejection keyed on the field's presence rather than its value would
+    make a stack config that spells out the default unloadable on the
+    hosted provider.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    from sage.adapters.abstraction_anthropic import AnthropicAbstractionProvider
+
+    cfg = _stack_config(provider="anthropic", model="claude-haiku-4-5", opener_constraint=False)
+    assert isinstance(build_stack_abstraction_provider(cfg), AnthropicAbstractionProvider)

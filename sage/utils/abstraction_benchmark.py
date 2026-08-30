@@ -315,6 +315,10 @@ class BenchmarkResult:
     # None for a run predating the field, which reads differently from a
     # run explicitly conducted on the production construction.
     prompt_construction: str | None = None
+    #: Whether generation ran under the CAS-ADR-020 clause (f) decoding
+    #: constraint. None for a record measured before the arm existed,
+    #: which reads differently from a measured off arm.
+    opener_constraint: bool | None = None
 
     context_probe: "ContextProbeOutcome | None" = None
 
@@ -1170,6 +1174,8 @@ def render_scorecard(result: BenchmarkResult) -> str:
     lines.append(f"**Corpus size:** {result.corpus_size} documents × {result.repeats} repeats")
     if result.prompt_construction is not None:
         lines.append(f"**Prompt construction:** {result.prompt_construction}")
+    if result.opener_constraint is not None:
+        lines.append(f"**Opener constraint:** {'on' if result.opener_constraint else 'off'}")
     lines.append("")
 
     lines.append("## Candidate")

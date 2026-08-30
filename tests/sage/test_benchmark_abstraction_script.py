@@ -37,8 +37,8 @@ def recorded_factory(monkeypatch):
     """Capture the arguments the provider factory is constructed with."""
     calls: list[dict] = []
 
-    def fake_factory(model_id: str, context_window: int | None = None):
-        calls.append({"model_id": model_id, "context_window": context_window})
+    def fake_factory(model_id: str, context_window: int | None = None, **kwargs):
+        calls.append({"model_id": model_id, "context_window": context_window, **kwargs})
         return object()
 
     monkeypatch.setattr(qwen3_module, "get_qwen3_abstraction_provider", fake_factory)
@@ -55,7 +55,9 @@ def test_context_window_flag_is_forwarded_to_the_provider(recorded_factory):
     args = _parse_args(["cas", "--model", "some-model", "--context-window", "131072"])
     _build_provider(args.model, args.context_window)
 
-    assert recorded_factory == [{"model_id": "some-model", "context_window": 131072}]
+    assert len(recorded_factory) == 1
+    assert recorded_factory[0]["model_id"] == "some-model"
+    assert recorded_factory[0]["context_window"] == 131072
 
 
 def test_context_window_defaults_to_none(recorded_factory):
@@ -68,7 +70,9 @@ def test_context_window_defaults_to_none(recorded_factory):
     args = _parse_args(["cas", "--model", "some-model"])
     _build_provider(args.model, args.context_window)
 
-    assert recorded_factory == [{"model_id": "some-model", "context_window": None}]
+    assert len(recorded_factory) == 1
+    assert recorded_factory[0]["model_id"] == "some-model"
+    assert recorded_factory[0]["context_window"] is None
 
 
 def test_stub_model_ignores_context_window():
@@ -189,3 +193,82 @@ def test_the_stub_provider_refuses_a_non_default_prompt_construction():
     assert _build_provider("stub") is not None
     with pytest.raises(ValueError, match="renders no prompt"):
         _build_provider("stub", prompt_construction="pre-revision")
+
+
+def test_opener_constraint_flag_is_forwarded_to_the_provider(recorded_factory):
+    """The arm the scorecard names is the arm the provider was built with.
+
+    The constraint is the whole subject of the measurement, so a flag that
+    parses and is then dropped produces two identical runs reported as an
+    off arm and an on arm -- a measurement that cannot fail.
+    """
+    args = _parse_args(["cas", "--model", "some-model", "--opener-constraint", "on"])
+    _build_provider(args.model, args.context_window, opener_constraint=args.opener_constraint)
+
+    assert recorded_factory[0]["opener_constraint"] is True
+
+
+def test_opener_constraint_defaults_to_off(recorded_factory):
+    """An unqualified run reproduces one recorded before the flag existed."""
+    args = _parse_args(["cas", "--model", "some-model"])
+    _build_provider(args.model, args.context_window, opener_constraint=args.opener_constraint)
+
+    assert args.opener_constraint is False
+    assert recorded_factory[0]["opener_constraint"] is False
+
+
+def test_the_two_constraint_arms_ask_the_provider_for_different_things(recorded_factory):
+    """The arms must differ, or the axis is wired to nothing.
+
+    Asserting that each arm parses says only that argparse works. What
+    makes the pair a measurement is that they reach the provider as
+    different values.
+    """
+    for arm in ("off", "on"):
+        args = _parse_args(["cas", "--model", "some-model", "--opener-constraint", arm])
+        _build_provider(args.model, args.context_window, opener_constraint=args.opener_constraint)
+
+    assert recorded_factory[0]["opener_constraint"] != recorded_factory[1]["opener_constraint"]
+
+
+def test_the_stub_provider_refuses_the_constraint_arm():
+    """The stub loads no tokenizer, so it can carry no vocabulary mask.
+
+    Mirrors the prompt-arm refusal: a stub run reporting a constraint it
+    never applied is the measurement error the refusal exists to prevent.
+    """
+    assert _build_provider("stub", opener_constraint=False) is not None
+    with pytest.raises(ValueError):
+        _build_provider("stub", opener_constraint=True)
+
+
+def test_ids_file_selects_exactly_the_named_corpus_in_file_order(tmp_path):
+    """A manifest of ids is the corpus, comments and blanks skipped.
+
+    The audit writes its findings as a commented manifest whose bare lines
+    are document ids, so the same file names the corpus a measurement runs
+    against -- which is what makes the before and after arms comparable.
+    """
+    manifest = tmp_path / "openers.ids"
+    manifest.write_text("# vault: cas\n# documents_audited: 3\n\ndoc-b\ndoc-a\n")
+
+    args = _parse_args(["cas", "--model", "stub", "--ids-file", str(manifest)])
+
+    assert args.document_id == ["doc-b", "doc-a"]
+
+
+def test_ids_file_and_document_id_are_mutually_exclusive(capsys):
+    """Two ways to name a corpus, silently merged, is a corpus nobody chose."""
+    with pytest.raises(SystemExit):
+        _parse_args(
+            ["cas", "--model", "stub", "--document-id", "doc-a", "--ids-file", "/nonexistent"]
+        )
+
+
+def test_an_empty_ids_file_is_an_error(tmp_path, capsys):
+    """An empty selection must not read as 'no filter'."""
+    manifest = tmp_path / "empty.ids"
+    manifest.write_text("# vault: cas\n")
+
+    with pytest.raises(SystemExit):
+        _parse_args(["cas", "--model", "stub", "--ids-file", str(manifest)])

@@ -483,6 +483,34 @@ def _reject_context_window_for_non_local(abstraction: StackAbstractionConfig) ->
     )
 
 
+def _reject_opener_constraint_for_non_local(abstraction: StackAbstractionConfig) -> None:
+    """Fail loud when ``opener_constraint`` is enabled for a non-local provider.
+
+    The constraint applies a mask inside the sampling loop, which only the
+    local MLX provider has. A hosted provider exposes no equivalent
+    surface, so a stack that enabled it there would keep the prompt
+    directive and the post-generation check it already had and gain
+    nothing -- while the config asserted otherwise. CAS-ADR-020 clause (f)
+    is therefore prevented locally and only detected elsewhere, which is a
+    property of the stack worth reading off its config rather than
+    inferring from an abstract that breached anyway.
+
+    Only an enabled constraint is rejected: a config that spells out the
+    default must stay loadable on every provider.
+    """
+    if not abstraction.opener_constraint or abstraction.provider == "local-mlx":
+        return
+    raise ValueError(
+        "sage_core_config.abstraction.opener_constraint is consumed only by the "
+        "'local-mlx' provider, but abstraction.provider is "
+        f"{abstraction.provider!r} (CAS-ADR-030). The constraint masks tokens in "
+        "the sampling loop, which a hosted provider does not expose; clause (f) "
+        "there is covered by the prompt directive and the post-generation check. "
+        "Remove the opener_constraint field from the stack config, or set "
+        "abstraction.provider to 'local-mlx'."
+    )
+
+
 def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> AbstractionProvider:
     """Construct the SAGE-stack-wide abstraction provider (CAS-ADR-030).
 
@@ -503,6 +531,8 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
          and stack.abstraction.model is not None -> hosted Claude provider
       7. stack.abstraction.context_window is not None
          and provider is not "local-mlx" -> raise ValueError
+      8. stack.abstraction.opener_constraint is True
+         and provider is not "local-mlx" -> raise ValueError
 
     The env override remains the topmost short-circuit so that tests
     cannot load the local MLX model alongside the running MCP server (F-8).
@@ -518,6 +548,7 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
 
     abstraction = stack_config.abstraction
     _reject_context_window_for_non_local(abstraction)
+    _reject_opener_constraint_for_non_local(abstraction)
     if abstraction.provider == "stub":
         return StubAbstractionProvider()
     if abstraction.provider == "local-mlx":
@@ -534,6 +565,7 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
         return get_qwen3_abstraction_provider(
             model_id=abstraction.model,
             context_window=abstraction.context_window,
+            opener_constraint=abstraction.opener_constraint,
         )
     if abstraction.provider == "anthropic":
         if abstraction.model is None:
@@ -667,6 +699,7 @@ def _cloud_abstraction_binding(stack_config: SageCoreConfig) -> AbstractionProvi
         return StubAbstractionProvider()
     abstraction = stack_config.abstraction
     _reject_context_window_for_non_local(abstraction)
+    _reject_opener_constraint_for_non_local(abstraction)
     if abstraction.provider == "stub":
         return StubAbstractionProvider()
     if abstraction.provider == "anthropic":

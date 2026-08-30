@@ -1067,6 +1067,22 @@ def _opener_tokens(opener: str) -> list[_OpenerToken]:
     return tokens
 
 
+def _type_phrase_candidates(doc_type: str) -> list[tuple[tuple[str, ...], str]]:
+    """The surface forms that name *doc_type*, each with its form name.
+
+    The doc_type's own underscore-split words, then any registered
+    spelled-out expansion. Shared by the detector's phrase match and the
+    generation-side constraint so the two read one registry: a constraint
+    that carried its own copy would keep matching the old vocabulary after
+    the registry grew, and nothing would say so.
+    """
+    own_words = tuple(word.casefold() for word in doc_type.split("_") if word)
+    candidates: list[tuple[tuple[str, ...], str]] = [(own_words, "token")]
+    for expansion in _DOC_TYPE_EXPANSIONS.get(doc_type.casefold(), ()):
+        candidates.append((expansion, "expansion"))
+    return [(words, form) for words, form in candidates if words]
+
+
 def _match_type_phrase(
     tokens: list[_OpenerToken], start: int, doc_type: str
 ) -> tuple[str, str, int] | None:
@@ -1082,12 +1098,8 @@ def _match_type_phrase(
         The matched surface text, the form name ("token" or
         "expansion"), and the token index just past the phrase, or None.
     """
-    own_words = tuple(word.casefold() for word in doc_type.split("_") if word)
-    candidates: list[tuple[tuple[str, ...], str]] = [(own_words, "token")]
-    for expansion in _DOC_TYPE_EXPANSIONS.get(doc_type.casefold(), ()):
-        candidates.append((expansion, "expansion"))
-    for words, form in candidates:
-        if not words or start + len(words) > len(tokens):
+    for words, form in _type_phrase_candidates(doc_type):
+        if start + len(words) > len(tokens):
             continue
         head = tokens[start : start + len(words) - 1]
         if any(token.comparable != word for token, word in zip(head, words[:-1])):
@@ -1223,7 +1235,13 @@ def strip_type_restating_opener(abstract: str, doc_type: str | None) -> str:
     The repair CAS-ADR-020 clause (l) admits for the opening-clause
     breach, on the terms clause (h) established for stored output: the
     text is rewritten in place rather than regenerated, because under
-    greedy decoding a regeneration reproduces the same opening.
+    greedy decoding an unconstrained regeneration reproduces the same
+    opening. Where generation is constrained against the frame -- see
+    ``forbidden_opener_continuations``, available only to a provider that
+    exposes its sampling loop -- a regeneration is a correction rather
+    than a no-op, and stored text may be reached that way instead. This
+    repair remains the only remedy for output already stored, and for
+    every provider with no decoding surface to constrain.
 
     The rewrite cuts from the classifying verb through the relativizer
     and splices the relative clause's finite verb onto the deictic
@@ -1274,3 +1292,144 @@ def strip_type_restating_opener(abstract: str, doc_type: str | None) -> str:
     leading = len(abstract) - len(abstract.lstrip())
     remainder = stripped[len(site.opener) :]
     return abstract[:leading] + f"{head} {tail}" + remainder + abstract[leading + len(stripped) :]
+
+
+# ---------------------------------------------------------------------------
+# Type-restating-opener prevention (CAS-ADR-020 clause (f))
+# ---------------------------------------------------------------------------
+
+
+def _licensed_phrase_positions(tokens: list[_OpenerToken]) -> set[int]:
+    """Token indices at which a type phrase would begin a classifying frame.
+
+    The detector's complement scan, run forward past the tokens emitted so
+    far: a position is licensed when some registered classifying verb ends
+    within ``_MAX_COMPLEMENT_TOKENS`` before it and no connective from
+    ``_COMPLEMENT_BREAKERS`` intervenes. Positions at or beyond
+    ``len(tokens)`` are the ones the constraint cares about -- they are
+    where the next token will land -- so the scan is deliberately not
+    bounded by the token count the way ``_complement_type_phrase`` is.
+
+    Every verb is scanned rather than the first, matching the detector's
+    behavior of reporting a finding when any frame matches.
+    """
+    comparables = [token.comparable for token in tokens]
+    positions: set[int] = set()
+    for index in range(len(tokens)):
+        verb = next(
+            (
+                words
+                for words in _CLASSIFYING_VERBS
+                if tuple(comparables[index : index + len(words)]) == words
+            ),
+            None,
+        )
+        if verb is None:
+            continue
+        start = index + len(verb)
+        for position in range(start, start + _MAX_COMPLEMENT_TOKENS):
+            if position < len(tokens) and comparables[position] in _COMPLEMENT_BREAKERS:
+                break
+            positions.add(position)
+    return positions
+
+
+def opener_sentence_terminated(text: str) -> bool:
+    """Whether *text* has closed the sentence the opener check inspects.
+
+    The detector reads only the abstract's first sentence, so once a
+    terminator is emitted nothing further can join the span it examines.
+    A generation-side constraint uses this to stop working rather than
+    recompute against prose no check inspects.
+
+    Reuses the boundary machinery ``_opener_sentence`` runs on, so an
+    abbreviation or an enumerator period does not read as a stop.
+    """
+    stripped = text.strip()
+    return any(not _is_non_terminal(stripped, match) for match in _SENTENCE_END.finditer(stripped))
+
+
+def forbidden_opener_continuations(generated_text: str, doc_type: str | None) -> frozenset[str]:
+    """Next-token surfaces that would complete a type-restating opener.
+
+    The generation-side counterpart to ``find_type_restating_opener``, for
+    the shapes ``strip_type_restating_opener`` cannot reach. Excision can
+    only repair an opener whose relative clause can be promoted to the
+    main predicate; the dominant measured shape carries a participle, a
+    preposition, or nothing at all, and composing a finite verb for it is
+    generation rather than repair. Preventing the frame is what remains,
+    and prevention has to happen while the frame is still one token away.
+
+    Each returned string is a literal decoded surface, leading whitespace
+    included, because that is how a byte-level tokenizer renders a token
+    at a word boundary. A caller masks the token ids whose surfaces these
+    are; it must not treat them as prefixes.
+
+    Only the phrase's final word is forbidden. Blocking an earlier word
+    would forbid a legitimate complement noun -- "failure" is content,
+    "failure record" is the breach -- and would make the constraint wider
+    than the detector that measures whether it worked. Both readings of a
+    text that ends mid-word are returned: the suffix that finishes the
+    partial word, and the whole word starting one position later.
+
+    The extent is the detector's, deliberately and testably. Restatement
+    through an unregistered verb or synonym passes both, as does a surface
+    a tokenizer renders as one token with its following word attached, or
+    a hyphenated identifier emitted whole ("ADR-020"). Those residuals
+    stay with the post-generation check, which keeps its recording posture
+    for them and for every provider with no decoding surface to constrain.
+
+    Args:
+        generated_text: The text generated so far, decoded. Empty before
+            the first token.
+        doc_type: The document's type as supplied to the abstraction
+            prompt; None when the document carries none.
+
+    Returns:
+        The forbidden surfaces, or empty when no next token could complete
+        the frame -- including once the opening sentence has terminated,
+        after which the detector can no longer fire.
+    """
+    if not doc_type or not generated_text:
+        return frozenset()
+
+    stripped = generated_text.strip()
+    if not stripped or _DEICTIC_SUBJECT.match(stripped) is None:
+        return frozenset()
+    if opener_sentence_terminated(stripped):
+        return frozenset()
+
+    tokens = _opener_tokens(stripped)
+    if not tokens:
+        return frozenset()
+    positions = _licensed_phrase_positions(tokens)
+    if not positions:
+        return frozenset()
+
+    comparables = [token.comparable for token in tokens]
+    # A text ending in whitespace has closed its last word, so the next
+    # token opens one without carrying the separator itself.
+    separator = "" if generated_text != generated_text.rstrip() else " "
+
+    forbidden: set[str] = set()
+    for words, _form in _type_phrase_candidates(doc_type):
+        # The next token starts a fresh word at index len(tokens), so the
+        # phrase would span the trailing len(words) - 1 emitted tokens.
+        head = len(tokens) - len(words) + 1
+        if head >= 0 and head in positions and tuple(comparables[head:]) == words[:-1]:
+            forbidden.add(separator + words[-1])
+
+        # The next token continues the partial word the text ends on.
+        if separator:
+            head = len(tokens) - len(words)
+            partial = comparables[-1]
+            if (
+                head >= 0
+                and head in positions
+                and tuple(comparables[head : len(tokens) - 1]) == words[:-1]
+                and words[-1].startswith(partial)
+                and words[-1] != partial
+            ):
+                forbidden.add(words[-1][len(partial) :])
+
+    return frozenset(forbidden)
