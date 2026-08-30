@@ -541,6 +541,20 @@ class StackAbstractionConfig(BaseModel):
             "'anthropic'. Ignored when provider is 'stub'."
         ),
     )
+    opener_constraint: bool = Field(
+        default=False,
+        description=(
+            "Whether the local MLX provider constrains decoding against the CAS-ADR-020 clause "
+            "(f) type-restating opener, suppressing the tokens that would complete a classifying "
+            "frame ('This document is a <doc_type>...') at exactly the positions the "
+            "post-generation check flags. Consumed only by the local MLX provider: the constraint "
+            "is a property of a sampling loop, and a hosted provider exposes none, so enabling it "
+            "against a non-local provider fails loudly at startup rather than being silently "
+            "ignored. Clause (f) coverage is therefore provider-dependent -- prevention is "
+            "local-only, while detection and the bounded post-generation repair stay "
+            "provider-neutral."
+        ),
+    )
     context_window: int | None = Field(
         default=None,
         ge=1,

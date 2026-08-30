@@ -139,10 +139,34 @@ async def _collect_baseline_outputs(services, corpus: list[CatalogEntry]) -> dic
     return baselines
 
 
+def _read_ids_file(path: Path) -> list[str]:
+    """Document ids named by a manifest, one per line, in file order.
+
+    Blank lines and '#' comments are skipped, so an audit manifest may
+    carry its provenance header and its evidence blocks and still be read
+    as a corpus. The same shape ``scripts.reabstract_deferred`` consumes,
+    so one manifest names the documents a measurement covers and the
+    documents a correction pass would regenerate.
+
+    Raises:
+        ValueError: when the file names no ids. An empty selection must
+            not be mistaken for no selection at all.
+    """
+    ids = [
+        stripped
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    ]
+    if not ids:
+        raise ValueError(f"{path} names no document ids")
+    return ids
+
+
 def _build_provider(
     model: str,
     context_window: int | None = None,
     prompt_construction: str = DEFAULT_CONSTRUCTION,
+    opener_constraint: bool = False,
 ):
     """Instantiate the candidate provider. ``stub`` swaps in the stub.
 
@@ -150,6 +174,13 @@ def _build_provider(
     provider's unconfigured sentinel, so omitting the flag reproduces the
     built-in window exactly and keeps a run comparable with earlier ones.
     The stub carries no window and ignores it.
+
+    ``opener_constraint`` selects the decoding arm: whether generation runs
+    with the CAS-ADR-020 clause (f) constraint applied. It is an axis of
+    its own rather than a fourth prompt construction, because it changes
+    what the sampler may select rather than what the prompt says. The stub
+    loads no tokenizer and so can carry no vocabulary mask; asking it to
+    is refused for the same reason a prompt arm is.
 
     A non-default ``prompt_construction`` rebinds the local provider's
     prompt assembly to that arm. The stub assembles no prompt, so the
@@ -160,11 +191,17 @@ def _build_provider(
     if model == "stub":
         if prompt_construction != DEFAULT_CONSTRUCTION:
             raise ValueError("the stub provider renders no prompt; it cannot carry an arm")
+        if opener_constraint:
+            raise ValueError(
+                "the stub provider loads no tokenizer; it cannot carry the opener constraint"
+            )
         return StubAbstractionProvider()
     from sage.adapters import abstraction_qwen3
 
     provider = abstraction_qwen3.get_qwen3_abstraction_provider(
-        model_id=model, context_window=context_window
+        model_id=model,
+        context_window=context_window,
+        opener_constraint=opener_constraint,
     )
     if prompt_construction != DEFAULT_CONSTRUCTION:
         bind_construction(provider, PROMPT_CONSTRUCTIONS[prompt_construction])
@@ -205,6 +242,7 @@ def _serialize_result(result, baselines: dict[str, str]) -> dict:
         "native_context_window": result.native_context_window,
         "effective_context_window": result.effective_context_window,
         "prompt_construction": result.prompt_construction,
+        "opener_constraint": result.opener_constraint,
         "context_probe": asdict(result.context_probe) if result.context_probe else None,
         "baselines": baselines,
         "notes": result.notes,
@@ -315,9 +353,15 @@ async def run(args: argparse.Namespace) -> int:
             print(f"  found {len(baselines)} of {len(corpus)} baselines")
 
         print(f"Instantiating provider: {args.model}", flush=True)
-        provider = _build_provider(args.model, args.context_window, args.prompt_construction)
+        provider = _build_provider(
+            args.model,
+            args.context_window,
+            args.prompt_construction,
+            opener_constraint=args.opener_constraint,
+        )
         if args.prompt_construction != DEFAULT_CONSTRUCTION:
             print(f"  prompt construction: {args.prompt_construction}", flush=True)
+        print(f"  opener constraint: {'on' if args.opener_constraint else 'off'}", flush=True)
 
         print(
             f"Running benchmark: {len(corpus)} docs × {args.repeats} repeats "
@@ -334,6 +378,7 @@ async def run(args: argparse.Namespace) -> int:
             warmup_calls=args.warmup_calls,
         )
         result.prompt_construction = args.prompt_construction
+        result.opener_constraint = args.opener_constraint
         _record_context_window(result, provider, args.context_window)
 
         if args.context_probe:
@@ -449,6 +494,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ids-file",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Measure exactly the document ids listed in this file, one per "
+            "line, in file order. Blank lines and '#' comments are skipped, "
+            "so an audit manifest is readable as-is. Mutually exclusive "
+            "with --document-id."
+        ),
+    )
+    parser.add_argument(
+        "--opener-constraint",
+        choices=("off", "on"),
+        default="off",
+        help=(
+            "Whether generation runs under the CAS-ADR-020 clause (f) "
+            "decoding constraint (default: off, which reproduces a run "
+            "recorded before this flag existed). The pair of arms is the "
+            "measurement: run the same corpus both ways and compare the "
+            "per-document clause (f) counts. Not available with --model "
+            "stub, which loads no tokenizer."
+        ),
+    )
+    parser.add_argument(
         "--corpus-seed",
         type=int,
         default=42,
@@ -523,6 +592,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(
             "--model is required: the stack config names no abstraction model to fall back on."
         )
+    if args.ids_file is not None:
+        if args.document_id:
+            parser.error("--ids-file and --document-id name the corpus two ways; pass one.")
+        try:
+            args.document_id = _read_ids_file(args.ids_file)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+    args.opener_constraint = args.opener_constraint == "on"
     return args
 
 
