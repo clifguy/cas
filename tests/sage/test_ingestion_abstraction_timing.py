@@ -10,11 +10,14 @@ faithfulness records report four finding classes. An unattested acronym
 gloss (CAS-ADR-020 clause (e)) is recorded and then collapsed to its bare
 acronym -- the repair posture clause (h) admits once the check's error
 rate is measured -- so the returned abstract carries no unattested claim.
-The structure-echo check (clause (k)), the fabricated-cardinal check
-(clause (e), a separate finding class), and the type-restating-opener
-check (clause (f)) have no adjudicated measurement of their own and
-record only. Attested glosses and the recording-only checks leave the
-abstract byte-identical to the provider's trimmed output.
+The type-restating-opener check (clause (f)) has since been measured and
+adjudicated too, and repairs the one shape whose excision is licensed --
+a relative clause directly against the type phrase -- recording every
+other shape unrepaired. The structure-echo check (clause (k)) and the
+fabricated-cardinal check (clause (e), a separate finding class) have no
+adjudicated measurement of their own and record only. Attested glosses,
+the recording-only checks, and openers outside the licensed shape leave
+the abstract byte-identical to the provider's trimmed output.
 """
 
 import json
@@ -196,6 +199,46 @@ class _TypeRestatingStubProvider(AbstractionProvider):
         return _TYPE_RESTATING_ABSTRACT
 
 
+#: The dominant stored shape: a participial modifier follows the type
+#: phrase rather than a relative clause, so no finite verb can be spliced
+#: onto the subject by excision alone.
+_UNREPAIRABLE_TYPE_RESTATING_ABSTRACT = (
+    "This document serves as an accepted Architecture Decision Record "
+    "governing the retention policy."
+)
+
+
+#: A repairable opener followed by a second sentence. The single-sentence
+#: fixture above cannot express whether the seam stores the repaired
+#: abstract or merely its repaired opening sentence -- both are the same
+#: string when there is nothing after it.
+_TYPE_RESTATING_ABSTRACT_WITH_TAIL = (
+    "This document serves as an accepted Architecture Decision Record "
+    "(ADR-029) that revises the retention policy. It also records the "
+    "migration path for archived chunks."
+)
+
+
+class _TypeRestatingWithTailStubProvider(AbstractionProvider):
+    """A repairable opener carrying a following sentence."""
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return _TYPE_RESTATING_ABSTRACT_WITH_TAIL
+
+
+class _UnrepairableOpenerStubProvider(AbstractionProvider):
+    """A type-restating opener whose classifying frame cannot be excised.
+
+    Reaching a finite verb here would mean composing one from
+    "governing", which is generation rather than excision. This is the
+    class clause (f)'s promotion deliberately leaves in the recording
+    posture.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        return _UNREPAIRABLE_TYPE_RESTATING_ABSTRACT
+
+
 class _ContentfulOpenerStubProvider(AbstractionProvider):
     """A provider whose opener mentions a type word as content, not class."""
 
@@ -207,8 +250,10 @@ class _GlossedOpenerStubProvider(AbstractionProvider):
     """A provider whose type-restating opener carries a collapsible gloss.
 
     Paired with a source that does not attest the expansion, the clause
-    (e) repair rewrites the opener before the recording-only checks read
-    it -- the one case where check ordering is observable in the record.
+    (e) repair rewrites the opener before the clause (f) check reads it --
+    the one case where check ordering is observable in the record. The
+    rewritten opener carries a participial modifier, so clause (f) records
+    it without repairing it.
     """
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
@@ -579,11 +624,14 @@ async def test_seam_stays_silent_for_an_accurate_count(ingestion_service, caplog
 
 
 async def test_seam_records_a_type_restating_opener(ingestion_service, caplog):
-    """A type-restating opener emits a record with the adjudication fields.
+    """A repaired opener emits a record naming its disposition.
 
-    The ``"action" not in record`` assertion pins the recording posture: a
-    seam promoted to repair grows that field, and this test is the one
-    that fails when it does before an adjudicated measurement licenses it.
+    The record must describe the output the model produced, not the
+    repaired form: the sizes, the surface, and the opener are all read
+    from the inspected abstract, so instruments that measure provider
+    faithfulness keep their discrimination after the promotion. The
+    ``action`` assertion is the machine-readable trace of the repair
+    posture, mirroring the clause (e) record's own.
     """
     text = "A policy document about retention."
     ingestion_service._abstraction = _TypeRestatingStubProvider()
@@ -605,17 +653,18 @@ async def test_seam_records_a_type_restating_opener(ingestion_service, caplog):
     assert record["opener"] == _TYPE_RESTATING_ABSTRACT
     assert record["document_chars"] == len(text)
     assert record["abstract_chars"] == len(_TYPE_RESTATING_ABSTRACT)
-    assert "action" not in record
+    assert record["action"] == "stripped"
 
 
-async def test_seam_leaves_a_type_restating_abstract_unmodified(ingestion_service, caplog):
-    """The check records; it does not repair.
+async def test_seam_repairs_a_relativizer_bearing_opener(ingestion_service, caplog):
+    """The stored abstract is the excised form, not the model's output.
 
-    Byte identity against the provider's own output proves the
-    non-mutating posture CAS-ADR-020 requires until the check's error rate
-    is measured. A prefix assertion would not: a seam that rewrote or
-    stripped the opener passes ``endswith`` or a length band while doing
-    exactly the repair this posture forbids.
+    The expected string is spelled out rather than compared by prefix or
+    length: a seam that truncated the opener, dropped the subject, or
+    stored the raw output would satisfy a looser assertion while getting
+    the repair wrong. Inequality against the provider's own return value
+    is asserted separately, so a stub that happened to emit clean text
+    could not carry this test.
     """
     ingestion_service._abstraction = _TypeRestatingStubProvider()
 
@@ -624,7 +673,54 @@ async def test_seam_leaves_a_type_restating_abstract_unmodified(ingestion_servic
             "A policy document about retention.", "adr", document_id="doc-6"
         )
 
-    assert result == _TYPE_RESTATING_ABSTRACT
+    assert result != _TYPE_RESTATING_ABSTRACT
+    assert result == "This document revises the retention policy."
+
+
+async def test_seam_repair_preserves_the_rest_of_the_abstract(ingestion_service, caplog):
+    """Only the opening sentence is rewritten; the remainder is untouched.
+
+    The single-sentence fixture cannot separate a seam that stores the
+    repaired abstract from one that stores only its repaired opening
+    sentence -- with nothing after the opener, the two produce the same
+    string. A second sentence is what makes the difference expressible,
+    and it is asserted byte-for-byte rather than by prefix so a seam that
+    re-wrapped or re-trimmed the tail is caught too.
+    """
+    ingestion_service._abstraction = _TypeRestatingWithTailStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            "A policy document about retention.", "adr", document_id="doc-6"
+        )
+
+    assert result == (
+        "This document revises the retention policy. "
+        "It also records the migration path for archived chunks."
+    )
+
+
+async def test_seam_leaves_an_unrepairable_type_restating_abstract_unmodified(
+    ingestion_service, caplog
+):
+    """The recording posture survives for the class excision cannot reach.
+
+    Byte identity against the provider's own output, plus the absent
+    ``action`` field, together pin that clause (f)'s promotion extended
+    only to the shape whose repair was licensed. A prefix assertion would
+    not: a seam that rewrote or stripped this opener passes ``endswith``
+    or a length band while composing a verb it has no warrant to compose.
+    """
+    ingestion_service._abstraction = _UnrepairableOpenerStubProvider()
+
+    with caplog.at_level(logging.INFO, logger=FAITHFULNESS_LOGGER):
+        result = await ingestion_service._generate_abstract_text(
+            "A policy document about retention.", "adr", document_id="doc-6"
+        )
+
+    assert result == _UNREPAIRABLE_TYPE_RESTATING_ABSTRACT
+    [record] = [r for r in _faithfulness_records(caplog) if r["label"] == "type_restating_opener"]
+    assert "action" not in record
 
 
 async def test_seam_stays_silent_for_a_contentful_opener(ingestion_service, caplog):
@@ -667,9 +763,9 @@ async def test_type_opener_check_reads_the_gloss_repaired_abstract(ingestion_ser
     """The record describes the stored abstract, not the model's raw output.
 
     The clause (e) repair rewrites this opener -- the unattested gloss
-    collapses to its bare acronym -- before the recording-only checks
-    run. A check placed before the repair reports the expansion form and
-    the pre-repair length, describing text that was never stored; the
+    collapses to its bare acronym -- before the clause (f) check runs. A
+    check placed before the repair reports the expansion form and the
+    pre-repair length, describing text that was never stored; the
     ``form == "token"`` assertion is what catches that ordering.
     """
     text = "A policy document about retention."

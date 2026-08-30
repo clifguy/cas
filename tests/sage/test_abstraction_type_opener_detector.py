@@ -4,9 +4,9 @@ CAS-ADR-020 clause (f) instructs the abstraction prompt against restating
 metadata the discovering agent already sees, and the type-restating-opener
 check enforces one surface shape of that constraint: an abstract whose
 opening sentence classifies the document as an instance of its own
-doc_type. The check runs in the recording posture the ADR requires of any
-finding class without an adjudicated error-rate measurement: it reports
-findings and mutates nothing.
+doc_type. The check itself reports findings and mutates nothing; the
+repair its measurement licensed is a separate function, exercised in
+``test_abstraction_type_opener_repair.py``.
 
 The check is a proxy and is documented as one. It anchors on the
 predicate-complement frame the measured breaches took ("This document
@@ -25,7 +25,13 @@ from types import SimpleNamespace
 from sage.adapters.abstraction_utils import TypeRestatingOpener, find_type_restating_opener
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from scripts.audit_abstraction_glosses import AuditEntry, build_entries
-from scripts.audit_abstraction_type_openers import audit_type_opener_entries
+from scripts.audit_abstraction_type_openers import (
+    TypeOpenerAuditFinding,
+    audit_type_opener_entries,
+    render_manifest,
+    summarize_by_doc_type,
+)
+from scripts.reabstract_deferred import _load_ids_file
 
 _OBSERVED_ADR_OPENER = (
     "This document serves as an accepted Architecture Decision Record "
@@ -310,3 +316,150 @@ class TestAuditTypeOpenerEntries:
 
         assert entry.doc_type == "adr"
         assert entry.source_text == "Body text."
+
+
+class TestRenderManifest:
+    """The audit's adjudication manifest.
+
+    The manifest is read twice: once by a reviewer adjudicating every
+    finding, and once by machinery that replays the flagged set. Both
+    readings constrain the rendering -- the first wants each finding's
+    evidence beside its id, the second wants nothing but ids to survive
+    ``scripts.reabstract_deferred._load_ids_file``.
+    """
+
+    def _finding(self, doc_id, *, doc_type="adr", opener=_OBSERVED_ADR_OPENER, lifecycle="active"):
+        [detected] = find_type_restating_opener(opener, doc_type)
+        return TypeOpenerAuditFinding(
+            doc_id=doc_id,
+            lifecycle_status=lifecycle,
+            doc_type=doc_type,
+            findings=(detected,),
+        )
+
+    def test_carries_a_provenance_header(self):
+        """The header names what selected the ids.
+
+        A bare list of ids read a week later says nothing about which
+        vault it describes or how many documents it was drawn from, and
+        the same ids under a different detector are a different set.
+        """
+        text = render_manifest(
+            [self._finding("doc-a")],
+            vault_id="example_vault",
+            total_audited=42,
+            measured_at="2026-08-29T12:00:00Z",
+        )
+
+        assert "# vault: example_vault" in text
+        assert "# documents_audited: 42" in text
+        assert "# documents_with_type_restating_opener: 1" in text
+        assert "# measured_at: 2026-08-29T12:00:00Z" in text
+
+    def test_is_consumable_as_an_ids_file(self, tmp_path):
+        """Every non-id line is a comment the id loader skips.
+
+        Asserting the ids appear in the text would pass on a rendering
+        whose evidence lines are also read as ids; round-tripping through
+        the real loader is what catches that.
+        """
+        manifest = tmp_path / "openers.txt"
+        manifest.write_text(
+            render_manifest(
+                [self._finding("doc-a"), self._finding("doc-b")],
+                vault_id="example_vault",
+                total_audited=2,
+                measured_at="2026-08-29T12:00:00Z",
+            )
+        )
+
+        assert _load_ids_file(manifest) == ["doc-a", "doc-b"]
+
+    def test_folds_a_multiline_opener_onto_one_comment_line(self, tmp_path):
+        """An opener carrying a newline stays inside its comment.
+
+        Abstracts are stored prose and may wrap mid-sentence. Interpolated
+        raw, the tail of such an opener becomes a bare line -- which the id
+        loader reads as a document id, handing a replay pass a worklist
+        entry that is a fragment of English.
+        """
+        wrapped = (
+            "This document serves as an accepted Architecture Decision\nRecord "
+            "(ADR-029) that revises the retention policy."
+        )
+        manifest = tmp_path / "openers.txt"
+        manifest.write_text(
+            render_manifest(
+                [self._finding("doc-a", opener=wrapped)],
+                vault_id="example_vault",
+                total_audited=1,
+                measured_at="2026-08-29T12:00:00Z",
+            )
+        )
+
+        assert _load_ids_file(manifest) == ["doc-a"]
+        assert "Record (ADR-029) that revises" in manifest.read_text()
+
+    def test_ordering_is_independent_of_catalog_order(self):
+        """Two runs over the same findings render byte-identical text.
+
+        A manifest that reordered itself with the vault's enumeration
+        order could not be diffed against an earlier one, which is how
+        the recalibration check confirms a narrowing introduced nothing.
+        """
+        a = self._finding("doc-a", doc_type="adr")
+        b = self._finding("doc-b", doc_type="adr")
+        kwargs = {
+            "vault_id": "example_vault",
+            "total_audited": 2,
+            "measured_at": "2026-08-29T12:00:00Z",
+        }
+
+        assert render_manifest([a, b], **kwargs) == render_manifest([b, a], **kwargs)
+
+    def test_groups_ids_by_doc_type(self):
+        """Findings of one type are adjacent, so adjudication runs by type.
+
+        The measured breach is concentrated by doc_type rather than spread
+        evenly, so a reviewer adjudicates a type at a time.
+        """
+        ticket = self._finding("doc-z", doc_type="ticket", opener="This document is a ticket.")
+        adr_a = self._finding("doc-a")
+        adr_b = self._finding("doc-b")
+
+        text = render_manifest(
+            [adr_b, ticket, adr_a],
+            vault_id="example_vault",
+            total_audited=3,
+            measured_at="2026-08-29T12:00:00Z",
+        )
+        ids = [line for line in text.splitlines() if line and not line.startswith("#")]
+
+        assert ids == ["doc-a", "doc-b", "doc-z"]
+
+
+class TestSummarizeByDocType:
+    """The report's per-type breakdown."""
+
+    def test_counts_findings_per_doc_type_ordered_by_count(self):
+        """The heaviest type reads first, ties broken by name.
+
+        The fixture is ordered so that first appearance runs opposite to
+        count -- the singleton type is seen first and the heaviest last.
+        A summary that preserved the catalog's enumeration would render
+        this fixture exactly backwards, which is the point: enumeration
+        order buries the concentration the measurement exists to show.
+        """
+        findings = [
+            TypeOpenerAuditFinding("d1", "active", "work_plan", ()),
+            TypeOpenerAuditFinding("d2", "active", "adr", ()),
+            TypeOpenerAuditFinding("d3", "active", "ticket", ()),
+            TypeOpenerAuditFinding("d4", "active", "adr", ()),
+            TypeOpenerAuditFinding("d5", "active", "ticket", ()),
+            TypeOpenerAuditFinding("d6", "active", "ticket", ()),
+        ]
+
+        assert summarize_by_doc_type(findings) == [("ticket", 3), ("adr", 2), ("work_plan", 1)]
+
+    def test_empty_findings_summarize_to_nothing(self):
+        assert summarize_by_doc_type([]) == []

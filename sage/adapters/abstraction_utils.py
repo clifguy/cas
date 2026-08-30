@@ -21,9 +21,11 @@ find_fabricated_cardinals: deterministic post-generation check that exact
 counts an abstract asserts for source-derivable units agree with the source
 (CAS-ADR-020 clause (e)); recording posture, no repair.
 
-find_type_restating_opener: deterministic post-generation check that an
-abstract does not open by classifying the document as an instance of its
-own doc_type (CAS-ADR-020 clause (f)); recording posture, no repair.
+find_type_restating_opener / strip_type_restating_opener: deterministic
+post-generation check that an abstract does not open by classifying the
+document as an instance of its own doc_type, paired with the excision that
+repairs the one shape whose rewrite is licensed (CAS-ADR-020 clause (f));
+every other shape is reported and left alone.
 """
 
 import re
@@ -919,6 +921,38 @@ class TypeRestatingOpener:
     opener: str
 
 
+@dataclass(frozen=True)
+class _OpenerToken:
+    """One word of the opener, with the span it occupies."""
+
+    surface: str
+    comparable: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _OpenerSite:
+    """Where a classifying frame sits in an opener.
+
+    Shared by the detector and the repair so the two cannot disagree
+    about what was matched or where it begins -- the same reason the
+    clause (e) pair shares one site-detection core.
+    """
+
+    opener: str
+    tokens: tuple[_OpenerToken, ...]
+    verb_start_index: int
+    type_end_index: int
+    surface: str
+    verb: str
+    form: str
+
+
+# Relativizers whose clause the repair may promote to the main predicate.
+_RELATIVIZERS = frozenset({"that", "which"})
+
+
 # The opener's subject must be a generic artifact deictic ("This document
 # ...") for the frame to read as classification. A type word in subject
 # position is either a title mention ("The ticket conventions steering
@@ -1001,8 +1035,8 @@ def _opener_sentence(abstract: str) -> str:
     return stripped
 
 
-def _opener_tokens(opener: str) -> list[tuple[str, str]]:
-    """(surface, comparable) pairs for each word of the opener.
+def _opener_tokens(opener: str) -> list[_OpenerToken]:
+    """One record per word of the opener, carrying its span.
 
     The surface is the NFKC-normalized token stripped of edge
     punctuation, preserved for the finding's ``surface`` field; the
@@ -1010,18 +1044,32 @@ def _opener_tokens(opener: str) -> list[tuple[str, str]]:
     hyphen-to-space split would read a compound like "ticket-store" as
     containing the bare type word, and would destroy the hyphenated id
     suffix the final-word tolerance keys on.
+
+    ``start`` and ``end`` bound the token as it appears in the opener,
+    punctuation included. The repair cuts on these offsets rather than
+    searching the opener for the verb it matched: "is" is the commonest
+    classifying verb in the measured corpus and also a substring of the
+    deictic subject that precedes it, so a search-anchored cut would
+    truncate the subject on the majority of repairs.
     """
-    tokens: list[tuple[str, str]] = []
-    for raw in opener.split():
-        stripped = unicodedata.normalize("NFKC", raw).strip(_OPENER_EDGE_PUNCTUATION)
+    tokens: list[_OpenerToken] = []
+    for match in re.finditer(r"\S+", opener):
+        stripped = unicodedata.normalize("NFKC", match.group()).strip(_OPENER_EDGE_PUNCTUATION)
         if stripped:
-            tokens.append((stripped, stripped.casefold()))
+            tokens.append(
+                _OpenerToken(
+                    surface=stripped,
+                    comparable=stripped.casefold(),
+                    start=match.start(),
+                    end=match.end(),
+                )
+            )
     return tokens
 
 
 def _match_type_phrase(
-    tokens: list[tuple[str, str]], start: int, doc_type: str
-) -> tuple[str, str] | None:
+    tokens: list[_OpenerToken], start: int, doc_type: str
+) -> tuple[str, str, int] | None:
     """Match a type surface form beginning at ``start``.
 
     Candidate forms are the doc_type's own underscore-split words and any
@@ -1031,8 +1079,8 @@ def _match_type_phrase(
     compounds like "ticket-store" out.
 
     Returns:
-        The matched surface text and the form name ("token" or
-        "expansion"), or None.
+        The matched surface text, the form name ("token" or
+        "expansion"), and the token index just past the phrase, or None.
     """
     own_words = tuple(word.casefold() for word in doc_type.split("_") if word)
     candidates: list[tuple[tuple[str, ...], str]] = [(own_words, "token")]
@@ -1042,19 +1090,20 @@ def _match_type_phrase(
         if not words or start + len(words) > len(tokens):
             continue
         head = tokens[start : start + len(words) - 1]
-        if any(comparable != word for (_, comparable), word in zip(head, words[:-1])):
+        if any(token.comparable != word for token, word in zip(head, words[:-1])):
             continue
-        last_comparable = tokens[start + len(words) - 1][1]
+        last_comparable = tokens[start + len(words) - 1].comparable
         if not re.fullmatch(rf"{re.escape(words[-1])}(?:-\d+)?", last_comparable):
             continue
-        surface = " ".join(surface for surface, _ in tokens[start : start + len(words)])
-        return surface, form
+        end = start + len(words)
+        surface = " ".join(token.surface for token in tokens[start:end])
+        return surface, form, end
     return None
 
 
 def _complement_type_phrase(
-    tokens: list[tuple[str, str]], start: int, doc_type: str
-) -> tuple[str, str] | None:
+    tokens: list[_OpenerToken], start: int, doc_type: str
+) -> tuple[str, str, int] | None:
     """Find a type phrase in the complement window after a verb.
 
     The phrase must begin within ``_MAX_COMPLEMENT_TOKENS`` tokens of the
@@ -1062,7 +1111,7 @@ def _complement_type_phrase(
     """
     limit = min(len(tokens), start + _MAX_COMPLEMENT_TOKENS)
     for position in range(start, limit):
-        if tokens[position][1] in _COMPLEMENT_BREAKERS:
+        if tokens[position].comparable in _COMPLEMENT_BREAKERS:
             return None
         matched = _match_type_phrase(tokens, position, doc_type)
         if matched is not None:
@@ -1079,7 +1128,8 @@ def find_type_restating_opener(abstract: str, doc_type: str | None) -> list[Type
     that constraint, inspecting recorded model output rather than prompt
     construction so it can fail while the constraint is breached. The
     caller decides what to do with a finding; the function mutates
-    nothing.
+    nothing. ``strip_type_restating_opener`` is the repair the caller may
+    apply, and covers a subset of what this reports.
 
     A finding requires the classifying frame in the abstract's first
     sentence: a generic deictic subject ("This document..."), a
@@ -1091,14 +1141,15 @@ def find_type_restating_opener(abstract: str, doc_type: str | None) -> list[Type
     the predicate is content the document is about.
 
     This is a proxy for clause (f) and is recorded as one. It detects
-    the frame the measured breaches took: a restatement through an
+    the frame the measured breaches took, so a restatement through an
     unregistered verb or synonym, an unregistered spelled-out form, or
-    subject-position naming passes it, and a type noun heading a
-    contentful compound inside the window ("describes the ticket
-    lifecycle") fires it -- the false-positive class the recording
-    posture exists to measure before any promotion. The out-of-band
-    behavioral evaluation carries the remainder, as it does for the
-    other checks.
+    subject-position naming passes it. The converse gap -- a type noun
+    heading a contentful compound inside the window ("describes the
+    ticket lifecycle") -- is the false-positive shape the calibration
+    sized, and it was measured empty at corpus scale: every finding
+    adjudicated was a restatement, so the finding definition needed no
+    narrowing. The out-of-band behavioral evaluation carries the
+    remainder, as it does for the other checks.
 
     Args:
         abstract: The generated semantic abstract to inspect.
@@ -1110,13 +1161,36 @@ def find_type_restating_opener(abstract: str, doc_type: str | None) -> list[Type
         matches inside it. Empty when the frame is absent or doc_type
         is None.
     """
-    if not doc_type:
+    site = _find_opener_site(abstract, doc_type)
+    if site is None:
         return []
+    return [
+        TypeRestatingOpener(
+            doc_type=doc_type,
+            surface=site.surface,
+            verb=site.verb,
+            form=site.form,
+            opener=site.opener,
+        )
+    ]
+
+
+def _find_opener_site(abstract: str, doc_type: str | None) -> _OpenerSite | None:
+    """Locate the classifying frame in an abstract's opening sentence.
+
+    The gates are the detector's, stated in ``find_type_restating_opener``:
+    a generic deictic subject, a registered classifying verb, and the
+    doc_type's surface form inside the complement window with no
+    connective between verb and phrase. Returns the first frame found --
+    one opener is one breach.
+    """
+    if not doc_type:
+        return None
     opener = _opener_sentence(abstract)
     if not opener or _DEICTIC_SUBJECT.match(opener) is None:
-        return []
+        return None
     tokens = _opener_tokens(opener)
-    comparables = [comparable for _, comparable in tokens]
+    comparables = [token.comparable for token in tokens]
     for index in range(len(tokens)):
         verb = next(
             (
@@ -1130,14 +1204,73 @@ def find_type_restating_opener(abstract: str, doc_type: str | None) -> list[Type
             continue
         matched = _complement_type_phrase(tokens, index + len(verb), doc_type)
         if matched is not None:
-            surface, form = matched
-            return [
-                TypeRestatingOpener(
-                    doc_type=doc_type,
-                    surface=surface,
-                    verb=" ".join(verb),
-                    form=form,
-                    opener=opener,
-                )
-            ]
-    return []
+            surface, form, type_end = matched
+            return _OpenerSite(
+                opener=opener,
+                tokens=tuple(tokens),
+                verb_start_index=index,
+                type_end_index=type_end,
+                surface=surface,
+                verb=" ".join(verb),
+                form=form,
+            )
+    return None
+
+
+def strip_type_restating_opener(abstract: str, doc_type: str | None) -> str:
+    """Excise a type-restating classifying frame from the opening sentence.
+
+    The repair CAS-ADR-020 clause (l) admits for the opening-clause
+    breach, on the terms clause (h) established for stored output: the
+    text is rewritten in place rather than regenerated, because under
+    greedy decoding a regeneration reproduces the same opening.
+
+    The rewrite cuts from the classifying verb through the relativizer
+    and splices the relative clause's finite verb onto the deictic
+    subject, leaving everything before the verb and after the relativizer
+    byte-identical, along with the rest of the abstract.
+
+    Licensed only when the relativizer sits immediately after the type
+    phrase -- optionally past a parenthesised identifier, which is an
+    appositive for the same referent and so does not move what the clause
+    attaches to. Measured against stored abstracts, a relativizer further
+    out attaches to something the document merely mentions, and excising
+    to it yields either an ungrammatical sentence or a grammatical one
+    asserting something false; the second is the worse outcome, being
+    indistinguishable from a faithful abstract on every later retrieval.
+    Every other shape -- a participial or prepositional modifier, a bare
+    complement -- would need a finite verb composed rather than cut, and
+    is returned untouched for the recording posture to carry.
+
+    Returns:
+        The repaired abstract, or the input unchanged when no frame is
+        present or the excision is not licensed.
+    """
+    site = _find_opener_site(abstract, doc_type)
+    if site is None:
+        return abstract
+
+    index = site.type_end_index
+    if index < len(site.tokens):
+        appositive = site.opener[site.tokens[index].start : site.tokens[index].end]
+        if appositive.startswith("(") and appositive.endswith(")"):
+            index += 1
+    if index >= len(site.tokens):
+        return abstract
+
+    relativizer = site.tokens[index]
+    # The raw span must be the bare word: a trailing comma or period
+    # means the clause is parenthetical or absent, and promoting its verb
+    # would strand the punctuation that paired it.
+    if site.opener[relativizer.start : relativizer.end].casefold() not in _RELATIVIZERS:
+        return abstract
+
+    head = site.opener[: site.tokens[site.verb_start_index].start].rstrip()
+    tail = site.opener[relativizer.end :].lstrip()
+    if not head or not tail:
+        return abstract
+
+    stripped = abstract.strip()
+    leading = len(abstract) - len(abstract.lstrip())
+    remainder = stripped[len(site.opener) :]
+    return abstract[:leading] + f"{head} {tail}" + remainder + abstract[leading + len(stripped) :]

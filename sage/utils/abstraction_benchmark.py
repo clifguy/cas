@@ -264,9 +264,11 @@ class MeasurementRecord:
 
     # Mechanical CAS-ADR-020 counts on the trimmed output: unattested
     # acronym glosses and fabricated cardinals (clause (e)), structural
-    # markup (clause (k)), type-restating openers (clause (f)). None for
-    # a record measured before the counter existed, which reads
-    # differently from a measured zero.
+    # markup (clause (k)), type-restating openers (clause (f)). Counted
+    # on raw model output, before the seam's clause (e) and clause (f)
+    # repairs, so a provider is judged on what it produced rather than on
+    # what the corpus ends up serving. None for a record measured before
+    # the counter existed, which reads differently from a measured zero.
     unattested_gloss_count: int | None = None
     structure_echo_count: int | None = None
     fabricated_cardinal_count: int | None = None
@@ -305,6 +307,14 @@ class BenchmarkResult:
     configured_context_window: int | None = None
     native_context_window: int | None = None
     effective_context_window: int | None = None
+
+    # Which prompt construction the run was conducted under. Recorded on
+    # the result rather than left to the operator's notes: an attribution
+    # measurement is several runs differing only in this, and scorecards
+    # that did not name their arm could not be told apart afterwards.
+    # None for a run predating the field, which reads differently from a
+    # run explicitly conducted on the production construction.
+    prompt_construction: str | None = None
 
     context_probe: "ContextProbeOutcome | None" = None
 
@@ -1158,6 +1168,8 @@ def render_scorecard(result: BenchmarkResult) -> str:
     lines.append("")
     lines.append(f"**Run window:** {result.started_at} → {result.finished_at}")
     lines.append(f"**Corpus size:** {result.corpus_size} documents × {result.repeats} repeats")
+    if result.prompt_construction is not None:
+        lines.append(f"**Prompt construction:** {result.prompt_construction}")
     lines.append("")
 
     lines.append("## Candidate")

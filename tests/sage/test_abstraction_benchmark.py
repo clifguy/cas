@@ -894,6 +894,25 @@ def test_scorecard_reports_type_restating_opener_tally():
     assert "type-restating" not in unmeasured
 
 
+def test_scorecard_names_the_prompt_construction_it_was_run_under():
+    """An attribution arm is identifiable from its scorecard alone.
+
+    Anti-coincidental-pass: a result that never recorded a construction
+    must render no such line -- None is "not recorded", which reads
+    differently from a run explicitly conducted on the production
+    construction. Several arms differ in nothing else a scorecard shows,
+    so a label defaulted into every run would make them indistinguishable
+    in exactly the case it exists to disambiguate.
+    """
+    labelled = _sample_result()
+    labelled.prompt_construction = "pre-revision"
+
+    md = render_scorecard(labelled)
+
+    assert "**Prompt construction:** pre-revision" in md
+    assert "Prompt construction" not in render_scorecard(_sample_result())
+
+
 def test_scorecard_includes_all_seven_decision_criteria_sections():
     result = _sample_result()
     md = render_scorecard(result)
