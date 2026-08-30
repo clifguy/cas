@@ -562,6 +562,18 @@ export default function Ingest() {
                   </tr>
                 </tbody>
               </table>
+              {summary?.edge_warnings && summary.edge_warnings.length > 0 && (
+                <div style={{ marginTop: 8, padding: 8, border: '1px solid #f57f17', borderRadius: 4, fontSize: 12 }}>
+                  <strong style={{ color: '#f57f17' }}>Edge warnings ({summary.edge_warnings.length})</strong>
+                  {summary.edge_warnings.map((w, i) => (
+                    <div key={i} style={{ marginTop: 4 }}>
+                      {w.reason}: <span style={{ fontFamily: 'monospace' }}>{w.source}</span> →{' '}
+                      <span style={{ fontFamily: 'monospace' }}>{w.target}</span>
+                      <div style={{ color: '#666', fontSize: 11 }}>{w.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

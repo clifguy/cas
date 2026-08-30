@@ -213,10 +213,10 @@ def register_app_tools(
         transaction — the edge insert and the lifecycle write are two calls
         under no shared lock, so a write that fails after the edge lands
         leaves the edge in place with a ``lifecycle_transition_failed``
-        entry as the only signal, and the write omits the chunk-store
-        lifecycle sync that ``update_lifecycles`` performs, so a superseded
-        document's chunks keep their prior lifecycle value until
-        reprojection. None of these raise.
+        entry as the only signal. The follow-up chunk-store lifecycle sync
+        that mirrors ``update_lifecycles`` is likewise best-effort: a sync
+        failure is reported as a ``chunk_lifecycle_sync_failed`` entry
+        while the document write stands. None of these raise.
 
         Tier-1 provenance-gate downgrade: Tier-1 ``supersedes`` adds are
         gated on provenance — if any existing edge in a candidate version
