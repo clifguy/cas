@@ -126,6 +126,7 @@ def _vault_config_with_every_summary_field() -> VaultConfig:
                     label="Sentinel State",
                     description="sentinel lifecycle state description",
                     is_terminal=True,
+                    satisfies_dependency=True,
                 ),
             ],
             transitions=[

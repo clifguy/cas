@@ -318,7 +318,9 @@ def register_sage_tools(
           base lifecycle, any state other than ``active``. Run the archive
           -> reactivate dance via ``update_lifecycles`` before retrying.
           Detail carries ``current_state`` and the ``allowed_states`` the
-          table does permit.
+          table does permit; a table permitting ``supersede`` from no
+          state reports an empty ``allowed_states`` and a
+          ``required_state`` of ``(none)``.
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; chains require distinct content
           per step.

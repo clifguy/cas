@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cas.local/fs/sage/lifecycle.schema.json",
   "title": "SAGE Lifecycle State Machine Configuration",
-  "description": "Defines lifecycle states and valid transitions for documents in a vault. When base_states_required is true (the default) the base state machine (active, completed, archived) must be declared; vaults may define additional states and transitions. The base-required and lands-in-a-declared-state checks are enforced by the configuration loader; this schema expresses the structural subset (exactly one '(new)' ingestion transition, with 'ingest' reserved to it). See SAGE Architecture Reference Section 4.8.",
+  "description": "Defines lifecycle states and valid transitions for documents in a vault. When base_states_required is true (the default) the base state machine (active, completed, archived) must be declared; vaults may define additional states and transitions. This schema expresses the structural subset it can carry: exactly one '(new)' ingestion transition, with 'ingest' reserved to it, and the identifier shapes of the transition endpoints. Whether an endpoint names a *declared* state, and whether any state satisfies depends_on preconditions, are cross-array invariants JSON Schema cannot state and the configuration loader enforces alone, as it does the base-required checks. See SAGE Architecture Reference Section 4.8.",
   "type": "object",
   "required": ["states", "transitions"],
   "additionalProperties": false,
@@ -101,6 +101,7 @@
         "properties": {
           "from_state": {
             "type": "string",
+            "pattern": "^([a-z][a-z0-9_]*|\\(new\\))$",
             "description": "Source state. Use '(new)' for the initial ingestion transition."
           },
           "action": {
@@ -110,7 +111,8 @@
           },
           "to_state": {
             "type": "string",
-            "description": "Target state after the transition."
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Target state after the transition. Always a real state: '(new)' is the ingestion pseudo-state and no transition may land in it."
           },
           "semantics": {
             "type": "string",
