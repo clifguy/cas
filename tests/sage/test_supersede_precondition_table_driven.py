@@ -19,6 +19,7 @@ These tests pin three properties:
 """
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,8 +27,13 @@ from sage.api.errors import (
     InvalidLifecycleTransitionError,
     SupersedeTargetNotActiveError,
 )
-from sage.config import VaultConfig, build_transition_table
-from sage.models.enums import SourceType
+from sage.config import (
+    LifecycleTransition,
+    TransitionTable,
+    VaultConfig,
+    build_transition_table,
+)
+from sage.models.enums import RationaleKind, SourceType
 from sage.models.schemas import IngestRequest, SetLifecycleRequest
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
@@ -148,6 +154,42 @@ def test_states_allowing_excludes_the_ingest_pseudo_state(minimal_vault_config_d
     )
     assert table.states_allowing("ingest") == []
     assert "(new)" not in table.states_allowing("supersede")
+
+
+def test_landing_states_reports_every_state_the_action_lands_in():
+    """`landing_states` derives the arrival set from the table.
+
+    Two supersede rows landing in different states must both be
+    reported. Asserting set equality on a two-landing table excludes an
+    implementation that hardcodes `archived`, and the `reactivate` row
+    excludes one that pools the `to_state` of every action.
+    """
+    table = TransitionTable(
+        [
+            LifecycleTransition(
+                from_state="active",
+                action="supersede",
+                to_state="archived",
+                creates_edge="supersedes",
+            ),
+            LifecycleTransition(
+                from_state="completed",
+                action="supersede",
+                to_state="retired",
+                creates_edge="supersedes",
+            ),
+            LifecycleTransition(
+                from_state="archived",
+                action="reactivate",
+                to_state="active",
+                creates_edge=None,
+            ),
+        ]
+    )
+
+    assert table.landing_states("supersede") == {"archived", "retired"}
+    assert table.landing_states("reactivate") == {"active"}
+    assert table.landing_states("no_such_action") == set()
 
 
 async def test_supersede_from_table_permitted_non_active_state_succeeds(
@@ -396,6 +438,46 @@ async def test_prepare_supersede_raises_supersede_target_not_active(
     assert err.status_code == 409
     assert err.detail["predecessor_id"] == v1.document.id
     assert err.detail["current_state"] == "archived"
+
+
+def test_prepare_supersede_carries_caller_edge_provenance():
+    """The built edge carries caller-supplied rationale and kind.
+
+    An auto-inference caller committing the transition atomically stamps
+    its provenance on the supersedes edge here, because the chain-repair
+    provenance gate reads the typed `rationale_kind` column: an edge that
+    landed with the default `manual` kind would downgrade every future
+    repair of its chain to staging. Omitting the kwargs must preserve
+    the prior defaults — that is the existing single-ingest contract.
+    """
+    svc = LifecycleService.__new__(LifecycleService)
+    svc._table = TransitionTable(
+        [
+            LifecycleTransition(
+                from_state="active",
+                action="supersede",
+                to_state="archived",
+                creates_edge="supersedes",
+            )
+        ]
+    )
+    predecessor = SimpleNamespace(id="0000000b_pred", lifecycle_status="active")
+
+    stamped = svc.prepare_supersede(
+        predecessor,
+        "0000000a_succ",
+        rationale="[version_chain] v2 supersedes v1",
+        rationale_kind=RationaleKind.VERSION_CHAIN,
+    )
+    assert stamped.edge.rationale == "[version_chain] v2 supersedes v1"
+    assert stamped.edge.rationale_kind is RationaleKind.VERSION_CHAIN
+    assert stamped.edge.source_id == "0000000a_succ"
+    assert stamped.edge.target_id == "0000000b_pred"
+    assert stamped.predecessor_updates["lifecycle_status"] == "archived"
+
+    default = svc.prepare_supersede(predecessor, "0000000a_succ")
+    assert default.edge.rationale is None
+    assert default.edge.rationale_kind is RationaleKind.MANUAL
 
 
 async def test_force_reingest_supersede_surfaces_the_ingest_surface_code(

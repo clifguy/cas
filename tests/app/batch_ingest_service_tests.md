@@ -498,3 +498,37 @@ inference plans the supersede.
 lifecycle state after every supersede surface, not just the explicit
 lifecycle path — otherwise superseded content keeps surfacing in
 lifecycle-filtered retrieval until the next reprojection.
+
+### TEST-BIS-022: Chain repair never commits a removal whose replacement failed to land
+
+**Artifact:** Bug fix (batch supersede settlement made atomic; removals
+reordered after adds)
+**Category:** batch_ingest_service
+
+**Decision:** Phase 3 commits each transition-carrying Tier-1 `supersedes`
+add through the storage layer's atomic supersede primitive, under the same
+per-predecessor lock the explicit lifecycle and single-document supersede
+ingest paths take, so the edge and the lifecycle write land together or not
+at all. Replacement adds are written before the removals they replace; a
+repair group whose add is refused at settlement time or fails at write time
+withholds its removals (`chain_repair_withheld`), so the graph never ends
+holding fewer supersedes edges than it started with.
+
+**Precondition:** A two-document chain (v3 supersedes v1, both active) whose
+existing edge chain repair will re-route through an arriving v2. The store's
+atomic supersede commit is made to fail for the v1 predecessor only.
+
+**Input:** One v2 file of the same chain, `infer_edges=True`.
+
+**Expected:**
+- The pre-existing edge set is a subset of the post-run edge set (nothing
+  severed); `edges_removed == 0` and the v3->v1 edge survives.
+- `edge_warnings` carries both `edge_creation_failed` (the injected write
+  failure — also the control that it fired) and `chain_repair_withheld`.
+- The v1 predecessor keeps `lifecycle_status="active"`: the failed commit
+  landed neither the edge nor the transition.
+
+**Rationale:** The settlement-refusal half of this invariant already held;
+a write-time failure previously left the chain shorter because removals
+committed first. Ordering adds first and withholding on failure closes the
+window without a wider transaction over the whole repair group.

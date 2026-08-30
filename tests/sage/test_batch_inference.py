@@ -27,8 +27,9 @@ from uuid import uuid4
 
 import pytest
 
-from sage.adapters.interfaces import Chunk
+from sage.adapters.interfaces import Chunk, NaturalKeyConflict
 from sage.adapters.stubs import StubContentStore
+from sage.api.errors import SupersedeTargetNotActiveError
 from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, PipelineStatus, RationaleKind, SourceType
 from sage.models.schemas import Document, Edge
@@ -46,6 +47,8 @@ from sage.services.filename_parser import (
     format_version,
     normalize_version,
 )
+from sage.services.lifecycle import LifecycleService
+from sage.storage.locks import DocumentLockManager
 
 
 def _table_with(*transitions: tuple[str, str, str]) -> TransitionTable:
@@ -75,16 +78,20 @@ BASE_TABLE = _table_with(("active", "supersede", "archived"))
 
 
 class _SupersedeOps:
-    """Records the Tier-1 link requests resolve_and_execute issues."""
+    """Records the Tier-1 link and unlink calls resolve_and_execute issues."""
 
     def __init__(self):
         self.linked = []
+        self.unlinked = []
 
     async def _create_edge(self, request):
         self.linked.append(request)
         from unittest.mock import MagicMock
 
         return MagicMock(), True
+
+    async def unlink(self, edge_id):
+        self.unlinked.append(edge_id)
 
 
 class _SupersedeStore:
@@ -94,12 +101,20 @@ class _SupersedeStore:
     to the seeded state, so a test can assert on where documents ended up
     rather than on a count it fixed in advance. An id absent from the seed
     reads back as a missing document.
+
+    `supersede_atomic` mirrors the production contract the tests rely on:
+    all-or-nothing (the lifecycle write and the edge record land together
+    or not at all) and `NaturalKeyConflict` on a duplicate natural key,
+    raised before anything is applied. Seed pre-existing edges through
+    `edge_keys` to exercise the duplicate path.
     """
 
-    def __init__(self, docs: dict[str, str]):
+    def __init__(self, docs: dict[str, str], edge_keys: set[tuple[str, str, str]] | None = None):
         self.staged = []
         self.updated = []
+        self.superseded = []
         self._docs = dict(docs)
+        self._edge_keys = set(edge_keys or ())
 
     def state_of(self, doc_id: str) -> str | None:
         return self._docs.get(doc_id)
@@ -115,6 +130,7 @@ class _SupersedeStore:
         if status is None:
             return None
         mock_doc = MagicMock()
+        mock_doc.id = doc_id
         mock_doc.lifecycle_status = status
         return mock_doc
 
@@ -123,6 +139,42 @@ class _SupersedeStore:
         if "lifecycle_status" in updates:
             self._docs[doc_id] = updates["lifecycle_status"]
         return None
+
+    async def supersede_atomic(self, predecessor_id, predecessor_updates, edge):
+        key = (edge.source_id, edge.target_id, edge.edge_type.value)
+        if key in self._edge_keys:
+            raise NaturalKeyConflict(edge.source_id, edge.target_id, edge.edge_type.value)
+        self.superseded.append((predecessor_id, predecessor_updates, edge))
+        self._edge_keys.add(key)
+        if "lifecycle_status" in predecessor_updates:
+            self._docs[predecessor_id] = predecessor_updates["lifecycle_status"]
+        return await self.get_document(predecessor_id)
+
+
+def _lifecycle_for(table: TransitionTable) -> LifecycleService:
+    """A LifecycleService double whose only live part is the table.
+
+    `prepare_supersede` and the `transition_table` property touch nothing
+    beyond `self._table`, so bypassing `__init__` gives these unit tests
+    the real validation and edge-building logic without a store, a lock
+    manager, or a vault config.
+    """
+    svc = LifecycleService.__new__(LifecycleService)
+    svc._table = table
+    return svc
+
+
+async def _run(plan, path_to_id, store, ops, table, content_store=None):
+    """Invoke resolve_and_execute with per-test services built from `table`."""
+    return await resolve_and_execute(
+        plan,
+        path_to_id,
+        store,
+        ops,
+        _lifecycle_for(table),
+        DocumentLockManager(),
+        content_store=content_store,
+    )
 
 
 def _pim_metadata_extraction():
@@ -553,50 +605,15 @@ class TestTwoPhaseOrchestration:
         )
         path_to_id = {"f_v7": DOC_V7, "f_v6": DOC_V6}
 
-        # Use mock objects for graph_store and graph_ops_service
-        class MockGraphOps:
-            def __init__(self):
-                self.linked = []
-
-            async def _create_edge(self, request):
-                self.linked.append(request)
-                # Stub returns a placeholder edge and created=True so
-                # resolve_and_execute counts it under edges_created.
-                from unittest.mock import MagicMock
-
-                return MagicMock(), True
-
-        class MockGraphStore:
-            def __init__(self):
-                self.staged = []
-                self.updated = []
-
-            async def insert_staging_edge(self, edge, on_conflict="raise"):
-                self.staged.append(edge)
-                return edge, True
-
-            async def get_document(self, doc_id):
-                # These tests exercise id resolution and tier routing, not
-                # the supersede lifecycle gate: every target is supersedable
-                # so the gate lets the planned edges through.
-                from unittest.mock import MagicMock
-
-                mock_doc = MagicMock()
-                mock_doc.lifecycle_status = "active"
-                return mock_doc
-
-            async def update_document(self, doc_id, updates):
-                self.updated.append((doc_id, updates))
-                return None
-
-        mock_ops = MockGraphOps()
-        mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, path_to_id, mock_store, mock_ops, BASE_TABLE)
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V6: "active"})
+        result = await _run(plan, path_to_id, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
-        assert len(mock_ops.linked) == 1
-        assert mock_ops.linked[0].source_id == DOC_V7
-        assert mock_ops.linked[0].target_id == DOC_V6
+        assert len(mock_store.superseded) == 1
+        _pred, _updates, edge = mock_store.superseded[0]
+        assert edge.source_id == DOC_V7
+        assert edge.target_id == DOC_V6
 
     @pytest.mark.asyncio
     async def test_ei_027_tier_routing(self):
@@ -622,46 +639,13 @@ class TestTwoPhaseOrchestration:
             ]
         )
 
-        class MockGraphOps:
-            def __init__(self):
-                self.linked = []
-
-            async def _create_edge(self, request):
-                self.linked.append(request)
-                from unittest.mock import MagicMock
-
-                return MagicMock(), True
-
-        class MockGraphStore:
-            def __init__(self):
-                self.staged = []
-                self.updated = []
-
-            async def insert_staging_edge(self, edge, on_conflict="raise"):
-                self.staged.append(edge)
-                return edge, True
-
-            async def get_document(self, doc_id):
-                # These tests exercise id resolution and tier routing, not
-                # the supersede lifecycle gate: every target is supersedable
-                # so the gate lets the planned edges through.
-                from unittest.mock import MagicMock
-
-                mock_doc = MagicMock()
-                mock_doc.lifecycle_status = "active"
-                return mock_doc
-
-            async def update_document(self, doc_id, updates):
-                self.updated.append((doc_id, updates))
-                return None
-
-        mock_ops = MockGraphOps()
-        mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({"bbbbbbbb_doc_b": "active"})
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
         assert result.edges_staged == {"covers": 1}
-        assert len(mock_ops.linked) == 1
+        assert len(mock_store.superseded) == 1
         assert len(mock_store.staged) == 1
 
     @pytest.mark.asyncio
@@ -690,42 +674,9 @@ class TestTwoPhaseOrchestration:
         # Only doc-a and doc-b resolved; /path/to/failed.docx not in map
         path_to_id = {}
 
-        class MockGraphOps:
-            def __init__(self):
-                self.linked = []
-
-            async def _create_edge(self, request):
-                self.linked.append(request)
-                from unittest.mock import MagicMock
-
-                return MagicMock(), True
-
-        class MockGraphStore:
-            def __init__(self):
-                self.staged = []
-                self.updated = []
-
-            async def insert_staging_edge(self, edge, on_conflict="raise"):
-                self.staged.append(edge)
-                return edge, True
-
-            async def get_document(self, doc_id):
-                # These tests exercise id resolution and tier routing, not
-                # the supersede lifecycle gate: every target is supersedable
-                # so the gate lets the planned edges through.
-                from unittest.mock import MagicMock
-
-                mock_doc = MagicMock()
-                mock_doc.lifecycle_status = "active"
-                return mock_doc
-
-            async def update_document(self, doc_id, updates):
-                self.updated.append((doc_id, updates))
-                return None
-
-        mock_ops = MockGraphOps()
-        mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, path_to_id, mock_store, mock_ops, BASE_TABLE)
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({"bbbbbbbb_doc_b": "active"})
+        result = await _run(plan, path_to_id, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_dropped == 1
         assert result.edges_created == {"supersedes": 1}
@@ -743,15 +694,20 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "active"})
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
-        # Target document must have been transitioned to "archived"
-        assert len(mock_store.updated) == 1
-        updated_id, updates = mock_store.updated[0]
-        assert updated_id == DOC_V1
+        # Target document must have been transitioned to "archived", and
+        # committed together with the edge, not as a trailing second write.
+        assert mock_store.state_of(DOC_V1) == "archived"
+        assert mock_store.updated == []
+        assert len(mock_store.superseded) == 1
+        superseded_id, updates, edge = mock_store.superseded[0]
+        assert superseded_id == DOC_V1
         assert updates["lifecycle_status"] == "archived"
         assert "updated_at" in updates
+        assert edge.source_id == DOC_V2
+        assert edge.target_id == DOC_V1
 
     @pytest.mark.asyncio
     async def test_ei_032_supersede_gated_when_target_state_forbids_it(self):
@@ -777,7 +733,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V2: "completed"})
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {}
         assert mock_ops.linked == []
@@ -797,6 +753,12 @@ class TestTwoPhaseOrchestration:
         # read off the table rather than restated.
         assert "completed" in warning["detail"]
         assert "active" in warning["detail"]
+        # And it is the same text the ingest surface raises for this
+        # condition, so one precondition reads identically everywhere.
+        assert (
+            warning["detail"]
+            == SupersedeTargetNotActiveError(DOC_V2, "completed", ["active"]).message
+        )
 
     @pytest.mark.asyncio
     async def test_ei_034_supersede_target_state_comes_from_the_table(self):
@@ -816,7 +778,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "active"})
-        result = await resolve_and_execute(
+        result = await _run(
             plan,
             {},
             mock_store,
@@ -825,9 +787,10 @@ class TestTwoPhaseOrchestration:
         )
 
         assert result.edges_created == {"supersedes": 1}
-        assert len(mock_store.updated) == 1
-        updated_id, updates = mock_store.updated[0]
-        assert updated_id == DOC_V1
+        assert mock_store.state_of(DOC_V1) == "retired"
+        assert len(mock_store.superseded) == 1
+        superseded_id, updates, _edge = mock_store.superseded[0]
+        assert superseded_id == DOC_V1
         assert updates["lifecycle_status"] == "retired"
         assert "updated_at" in updates
 
@@ -849,7 +812,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "completed"})
-        result = await resolve_and_execute(
+        result = await _run(
             plan,
             {},
             mock_store,
@@ -861,9 +824,10 @@ class TestTwoPhaseOrchestration:
         )
 
         assert result.edges_created == {"supersedes": 1}
-        assert len(mock_store.updated) == 1
-        updated_id, updates = mock_store.updated[0]
-        assert updated_id == DOC_V1
+        assert mock_store.state_of(DOC_V1) == "archived"
+        assert len(mock_store.superseded) == 1
+        superseded_id, updates, _edge = mock_store.superseded[0]
+        assert superseded_id == DOC_V1
         assert updates["lifecycle_status"] == "archived"
 
     @pytest.mark.asyncio
@@ -903,9 +867,12 @@ class TestTwoPhaseOrchestration:
                 DOC_B1: "completed",  # forbidden: gated
             }
         )
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
-        superseded = {
+        # A transition-carrying supersede lands atomically through the
+        # store; the already-superseded shape links without a write. The
+        # invariant quantifies over both.
+        superseded = {edge.target_id for _pred, _updates, edge in mock_store.superseded} | {
             request.target_id
             for request in mock_ops.linked
             if request.edge_type == EdgeType.SUPERSEDES
@@ -941,7 +908,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _ExplodingStore({DOC_V1: "active"})
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {}
         assert mock_ops.linked == []
@@ -970,7 +937,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "archived"})
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
         assert result.edges_dropped == 0
@@ -998,7 +965,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "retired", DOC_B1: "archived"})
-        result = await resolve_and_execute(
+        result = await _run(
             plan,
             {},
             mock_store,
@@ -1025,7 +992,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({})  # DOC_V1 never ingested
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {}
         assert mock_ops.linked == []
@@ -1087,7 +1054,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "active"})
-        result = await resolve_and_execute(
+        result = await _run(
             plan,
             {},
             mock_store,
@@ -1129,7 +1096,7 @@ class TestTwoPhaseOrchestration:
 
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "active"})
-        result = await resolve_and_execute(
+        result = await _run(
             plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=_ExplodingContentStore()
         )
 
@@ -1143,13 +1110,15 @@ class TestTwoPhaseOrchestration:
         assert "chunk store unavailable" in result.warnings[0]["detail"]
 
     @pytest.mark.asyncio
-    async def test_ei_043_no_chunk_sync_when_lifecycle_write_fails(self):
-        """No sync when the document write fails.
+    async def test_ei_043_no_chunk_sync_when_the_settlement_write_fails(self):
+        """No sync, no edge, no transition when the atomic write fails.
 
-        The sync mirrors a transition that happened. If the document did
-        not move, pushing the landing state onto its chunks would create
+        The sync mirrors a transition that happened. If the commit did
+        not land, pushing the landing state onto the chunks would create
         the very divergence the sync exists to prevent, in the opposite
-        direction.
+        direction. And because the edge and the transition commit
+        together, a failed commit leaves neither behind: the target's
+        state is unchanged and no supersedes edge points at it.
         """
         DOC_V2 = "aaaaaaa2_doc_v2"
         DOC_V1 = "aaaaaaa1_doc_v1"
@@ -1160,8 +1129,8 @@ class TestTwoPhaseOrchestration:
         )
 
         class _WriteFailingStore(_SupersedeStore):
-            async def update_document(self, doc_id, updates):
-                raise RuntimeError("document write failed")
+            async def supersede_atomic(self, predecessor_id, predecessor_updates, edge):
+                raise RuntimeError("settlement write failed")
 
         class _RecordingContentStore(StubContentStore):
             def __init__(self):
@@ -1174,13 +1143,17 @@ class TestTwoPhaseOrchestration:
         content_store = _RecordingContentStore()
         mock_ops = _SupersedeOps()
         mock_store = _WriteFailingStore({DOC_V1: "active"})
-        result = await resolve_and_execute(
-            plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store
-        )
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store)
 
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "lifecycle_transition_failed"
+        assert result.warnings[0]["reason"] == "edge_creation_failed"
+        assert "settlement write failed" in result.warnings[0]["detail"]
         assert content_store.sync_calls == []
+        # Nothing landed: no edge counted, no state moved, no strand.
+        assert result.edges_created == {}
+        assert result.edges_dropped == 1
+        assert mock_store.state_of(DOC_V1) == "active"
+        assert mock_ops.linked == []
 
     @pytest.mark.asyncio
     async def test_ei_044_no_chunk_sync_on_landing_state_no_write(self):
@@ -1209,14 +1182,286 @@ class TestTwoPhaseOrchestration:
         content_store = _RecordingContentStore()
         mock_ops = _SupersedeOps()
         mock_store = _SupersedeStore({DOC_V1: "archived"})
-        result = await resolve_and_execute(
-            plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store
-        )
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store)
 
         assert result.edges_created == {"supersedes": 1}
         assert mock_store.updated == []
         assert result.warnings == []
         assert content_store.sync_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ei_045_settled_edge_carries_version_chain_provenance(self):
+        """The atomically committed edge is stamped as version_chain.
+
+        The chain-repair provenance gate reads the typed `rationale_kind`
+        column: a batch supersedes edge that landed with the default
+        `manual` kind would downgrade every future repair of its own
+        chain to staging review. Asserted on the edge the store received,
+        so an implementation that stamps the LinkRequest path but not the
+        atomic path cannot pass.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "active"})
+        await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert len(mock_store.superseded) == 1
+        _pred, _updates, edge = mock_store.superseded[0]
+        assert edge.rationale_kind is RationaleKind.VERSION_CHAIN
+        assert edge.rationale == "v2 > v1"
+
+    @pytest.mark.asyncio
+    async def test_ei_046_racer_between_settlement_and_write_is_refused(self):
+        """A state change after settlement refuses the write in-lock.
+
+        The settlement read is advisory; the authoritative check re-runs
+        on a fresh read under the per-predecessor lock. A target whose
+        state changed in between -- here to the landing state itself, the
+        signature a concurrent supersession leaves -- gets no edge and no
+        write: creating the edge would fork the chain at a target another
+        successor just claimed. This differs from a target *planned*
+        against a landing state (EI-038), which is linked without a write.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _RacingStore(_SupersedeStore):
+            """First read (settlement) sees active; later reads see archived."""
+
+            def __init__(self, docs):
+                super().__init__(docs)
+                self.reads = 0
+
+            async def get_document(self, doc_id):
+                self.reads += 1
+                if self.reads > 1:
+                    self._docs[doc_id] = "archived"
+                return await super().get_document(doc_id)
+
+        mock_ops = _SupersedeOps()
+        mock_store = _RacingStore({DOC_V1: "active"})
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert mock_store.reads >= 2, "control: the in-lock re-read must have happened"
+        assert result.edges_created == {}
+        assert mock_ops.linked == []
+        assert mock_store.superseded == []
+        assert result.edges_dropped == 1
+        assert len(result.warnings) == 1
+        assert result.warnings[0]["reason"] == "supersede_target_not_transitionable"
+        assert "archived" in result.warnings[0]["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ei_047_existing_edge_converges_the_stranded_transition(self):
+        """A pre-existing edge with an untransitioned target is converged.
+
+        This is the state a mid-settlement failure used to leave behind:
+        the supersedes edge landed, the lifecycle write did not. On
+        re-ingest the settlement finds the target still transitionable,
+        the atomic commit reports the duplicate, and the recovery applies
+        the transition alone -- silently, because the wound was warned
+        about when it was inflicted, and counting the edge again would
+        double-report it.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _RecordingContentStore(StubContentStore):
+            def __init__(self):
+                super().__init__()
+                self.sync_calls = []
+
+            async def update_chunk_metadata(self, document_id, metadata):
+                self.sync_calls.append((document_id, metadata))
+
+        content_store = _RecordingContentStore()
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore(
+            {DOC_V1: "active"},
+            edge_keys={(DOC_V2, DOC_V1, EdgeType.SUPERSEDES.value)},
+        )
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store)
+
+        assert mock_store.state_of(DOC_V1) == "archived"
+        assert mock_store.updated and mock_store.updated[0][0] == DOC_V1
+        assert content_store.sync_calls == [(DOC_V1, {"lifecycle_status": "archived"})]
+        assert result.warnings == []
+        assert result.edges_created == {}
+        assert result.edges_dropped == 0
+
+    @pytest.mark.asyncio
+    async def test_ei_048_failed_convergence_write_reports_the_standing_strand(self):
+        """A convergence write that fails re-reports the stranded pair.
+
+        The edge exists and the target still did not move -- exactly what
+        `lifecycle_transition_failed` has always meant. The chunks are
+        not synced: they agree with the document as it stands.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _ConvergenceFailingStore(_SupersedeStore):
+            async def update_document(self, doc_id, updates):
+                raise RuntimeError("document write failed")
+
+        class _RecordingContentStore(StubContentStore):
+            def __init__(self):
+                super().__init__()
+                self.sync_calls = []
+
+            async def update_chunk_metadata(self, document_id, metadata):
+                self.sync_calls.append((document_id, metadata))
+
+        content_store = _RecordingContentStore()
+        mock_ops = _SupersedeOps()
+        mock_store = _ConvergenceFailingStore(
+            {DOC_V1: "active"},
+            edge_keys={(DOC_V2, DOC_V1, EdgeType.SUPERSEDES.value)},
+        )
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store)
+
+        assert len(result.warnings) == 1
+        assert result.warnings[0]["reason"] == "lifecycle_transition_failed"
+        assert "document write failed" in result.warnings[0]["detail"]
+        assert content_store.sync_calls == []
+        assert mock_store.state_of(DOC_V1) == "active"
+
+    @pytest.mark.asyncio
+    async def test_ei_049_write_failing_replacement_withholds_its_removals(self):
+        """A removal never commits ahead of a replacement that failed to land.
+
+        The adds run first; a repair group whose Tier-1 supersedes add
+        fails on write keeps its removals, so the chain ends no shorter
+        than it was found. Settlement-time withholding (the refused-add
+        case) already held; this is the write-failure half of the same
+        invariant.
+        """
+        from sage.services.batch_inference import PlannedEdgeRemoval
+
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        OLD_EDGE = "old-edge-id"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(
+                    DOC_V2,
+                    DOC_V1,
+                    EdgeType.SUPERSEDES,
+                    1,
+                    "version_chain",
+                    "v2 > v1",
+                    repair_group="g1",
+                ),
+            ],
+            removals=[
+                PlannedEdgeRemoval(
+                    edge_id=OLD_EDGE,
+                    source_id=DOC_V2,
+                    target_id="aaaaaaa0_doc_v0",
+                    edge_type=EdgeType.SUPERSEDES,
+                    reason="chain_repair: superseded by repair",
+                    repair_group="g1",
+                ),
+            ],
+        )
+
+        class _WriteFailingStore(_SupersedeStore):
+            async def supersede_atomic(self, predecessor_id, predecessor_updates, edge):
+                raise RuntimeError("settlement write failed")
+
+        mock_ops = _SupersedeOps()
+        mock_store = _WriteFailingStore({DOC_V1: "active"})
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert mock_ops.unlinked == [], "the removal must not have committed"
+        assert result.edges_removed == 0
+        reasons = {w["reason"] for w in result.warnings}
+        assert reasons == {"edge_creation_failed", "chain_repair_withheld"}
+
+    @pytest.mark.asyncio
+    async def test_ei_050_race_refused_replacement_withholds_its_removals(self):
+        """An in-lock refusal withholds its group's removals too.
+
+        The third arm of the withholding invariant: settlement-time
+        refusal (CR-005 shape) and write-time failure (EI-049) both
+        withhold, and so must a replacement refused by the in-lock
+        re-validation after a racer moved its target. An implementation
+        that refuses the edge but forgets to withhold would commit the
+        removal and sever the chain the refused add was meant to
+        re-link -- the two halves must travel together.
+        """
+        from sage.services.batch_inference import PlannedEdgeRemoval
+
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(
+                    DOC_V2,
+                    DOC_V1,
+                    EdgeType.SUPERSEDES,
+                    1,
+                    "version_chain",
+                    "v2 > v1",
+                    repair_group="g1",
+                ),
+            ],
+            removals=[
+                PlannedEdgeRemoval(
+                    edge_id="old-edge-id",
+                    source_id=DOC_V2,
+                    target_id="aaaaaaa0_doc_v0",
+                    edge_type=EdgeType.SUPERSEDES,
+                    reason="chain_repair: superseded by repair",
+                    repair_group="g1",
+                ),
+            ],
+        )
+
+        class _RacingStore(_SupersedeStore):
+            """First read (settlement) sees active; later reads see archived."""
+
+            def __init__(self, docs):
+                super().__init__(docs)
+                self.reads = 0
+
+            async def get_document(self, doc_id):
+                self.reads += 1
+                if self.reads > 1:
+                    self._docs[doc_id] = "archived"
+                return await super().get_document(doc_id)
+
+        mock_ops = _SupersedeOps()
+        mock_store = _RacingStore({DOC_V1: "active"})
+        result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert mock_store.reads >= 2, "control: the in-lock re-read must have happened"
+        assert mock_ops.unlinked == [], "the removal must not have committed"
+        assert result.edges_removed == 0
+        reasons = {w["reason"] for w in result.warnings}
+        assert reasons == {"supersede_target_not_transitionable", "chain_repair_withheld"}
 
     def test_ei_029_empty_manifest_empty_plan(self):
         """Empty manifest produces empty edge plan."""

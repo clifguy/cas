@@ -997,6 +997,23 @@ class TransitionTable:
             if any(t.action == action for t in transitions)
         )
 
+    def landing_states(self, action: str) -> set[str]:
+        """Return the states `action` can leave a document in.
+
+        The dual of `states_allowing`: that reports the states an action
+        may be taken from, this reports the states it arrives in. A
+        document already holding one of these has nothing left to
+        transition for that action. Derived from the table rather than
+        enumerated, so a vault that lands an action somewhere other than
+        the base lifecycle's choice is read correctly.
+        """
+        return {
+            t.to_state
+            for transitions in self._table.values()
+            for t in transitions
+            if t.action == action
+        }
+
     def is_known_action(self, action: str) -> bool:
         """True if action appears anywhere in the transition table.
 
