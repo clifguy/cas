@@ -73,6 +73,11 @@ from sage.utils.abstraction_benchmark import (
     select_named_corpus,
 )
 from sage.vault_management import config_path_for_vault
+from scripts.abstraction_prompt_arms import (
+    DEFAULT_CONSTRUCTION,
+    PROMPT_CONSTRUCTIONS,
+    bind_construction,
+)
 
 DEFAULT_OUTPUT_DIR = Path.home() / "sage_benchmarks"
 
@@ -134,21 +139,36 @@ async def _collect_baseline_outputs(services, corpus: list[CatalogEntry]) -> dic
     return baselines
 
 
-def _build_provider(model: str, context_window: int | None = None):
+def _build_provider(
+    model: str,
+    context_window: int | None = None,
+    prompt_construction: str = DEFAULT_CONSTRUCTION,
+):
     """Instantiate the candidate provider. ``stub`` swaps in the stub.
 
     ``context_window`` is forwarded verbatim, None included: None is the
     provider's unconfigured sentinel, so omitting the flag reproduces the
     built-in window exactly and keeps a run comparable with earlier ones.
     The stub carries no window and ignores it.
+
+    A non-default ``prompt_construction`` rebinds the local provider's
+    prompt assembly to that arm. The stub assembles no prompt, so the
+    selection cannot be honoured there and is refused rather than
+    silently ignored -- a stub run reporting an arm it never rendered is
+    the shape of measurement error this flag exists to prevent.
     """
     if model == "stub":
+        if prompt_construction != DEFAULT_CONSTRUCTION:
+            raise ValueError("the stub provider renders no prompt; it cannot carry an arm")
         return StubAbstractionProvider()
     from sage.adapters import abstraction_qwen3
 
-    return abstraction_qwen3.get_qwen3_abstraction_provider(
+    provider = abstraction_qwen3.get_qwen3_abstraction_provider(
         model_id=model, context_window=context_window
     )
+    if prompt_construction != DEFAULT_CONSTRUCTION:
+        bind_construction(provider, PROMPT_CONSTRUCTIONS[prompt_construction])
+    return provider
 
 
 def _record_context_window(result, provider, configured: int | None) -> None:
@@ -184,6 +204,7 @@ def _serialize_result(result, baselines: dict[str, str]) -> dict:
         "configured_context_window": result.configured_context_window,
         "native_context_window": result.native_context_window,
         "effective_context_window": result.effective_context_window,
+        "prompt_construction": result.prompt_construction,
         "context_probe": asdict(result.context_probe) if result.context_probe else None,
         "baselines": baselines,
         "notes": result.notes,
@@ -294,7 +315,9 @@ async def run(args: argparse.Namespace) -> int:
             print(f"  found {len(baselines)} of {len(corpus)} baselines")
 
         print(f"Instantiating provider: {args.model}", flush=True)
-        provider = _build_provider(args.model, args.context_window)
+        provider = _build_provider(args.model, args.context_window, args.prompt_construction)
+        if args.prompt_construction != DEFAULT_CONSTRUCTION:
+            print(f"  prompt construction: {args.prompt_construction}", flush=True)
 
         print(
             f"Running benchmark: {len(corpus)} docs × {args.repeats} repeats "
@@ -310,6 +333,7 @@ async def run(args: argparse.Namespace) -> int:
             candidate_model_id=args.model,
             warmup_calls=args.warmup_calls,
         )
+        result.prompt_construction = args.prompt_construction
         _record_context_window(result, provider, args.context_window)
 
         if args.context_probe:
@@ -410,6 +434,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "sample. Repeatable; order is preserved. When given, "
             "--corpus-size and --corpus-seed are unused, and an id absent "
             "from the vault is an error rather than a shorter corpus."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-construction",
+        choices=sorted(PROMPT_CONSTRUCTIONS),
+        default=DEFAULT_CONSTRUCTION,
+        help=(
+            "Prompt construction to measure under (default: current, the "
+            "one the abstraction path sends). The historical arms exist to "
+            "apportion a regression between the framing sentence's artifact "
+            "noun and the source delimitation, which changed together. Not "
+            "available with --model stub, which renders no prompt."
         ),
     )
     parser.add_argument(

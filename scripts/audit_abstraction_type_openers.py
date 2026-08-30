@@ -6,8 +6,9 @@ deterministic CAS-ADR-020 clause (f) type-restating-opener detector against
 the stored abstract and the document's doc_type. Each finding is reported
 with the document's lifecycle status and doc_type so a reviewer can
 adjudicate it and the detector's real-corpus false-positive rate can be
-measured -- the measurement CAS-ADR-020 requires before this finding class
-could ever be licensed for repair.
+measured -- the measurement CAS-ADR-020 required before this finding class
+could be licensed for repair, and the instrument that re-measures it
+whenever the finding definition or the abstraction provider changes.
 
 The audit only reads: the vault is never modified, no abstract is
 regenerated, and no inference runtime is loaded (services initialize with a
@@ -29,8 +30,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from sage.adapters.abstraction_utils import TypeRestatingOpener, find_type_restating_opener
 from sage.adapters.stubs import StubAbstractionProvider
@@ -72,10 +76,68 @@ def audit_type_opener_entries(entries: Iterable[AuditEntry]) -> list[TypeOpenerA
     return findings
 
 
+def summarize_by_doc_type(findings: Iterable[TypeOpenerAuditFinding]) -> list[tuple[str, int]]:
+    """Finding counts per doc_type, heaviest first, ties broken by name.
+
+    The breach is concentrated by doc_type rather than spread evenly, so
+    the per-type counts are the shape of the measurement rather than a
+    convenience: a flat total hides which classes are elevated, and
+    adjudication proceeds a type at a time.
+    """
+    counts = Counter(finding.doc_type or "" for finding in findings)
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def render_manifest(
+    findings: Iterable[TypeOpenerAuditFinding],
+    *,
+    vault_id: str,
+    total_audited: int,
+    measured_at: str,
+) -> str:
+    """Render the flagged ids as a manifest, one id per line.
+
+    The file is read twice and both readings shape it. A reviewer
+    adjudicating each finding needs its evidence -- lifecycle, type, the
+    frame that matched, and the opening sentence -- beside the id it
+    belongs to; machinery replaying the flagged set needs nothing but the
+    ids to survive. Every line that is not an id is therefore a ``#``
+    comment, which ``scripts.reabstract_deferred --ids-file`` skips.
+
+    Each opener is folded onto one line before it is written. Abstracts
+    are stored prose and may wrap mid-sentence; interpolated raw, the tail
+    of a wrapped opener would leave the comment and be read back as a
+    document id.
+
+    Ordered by doc_type then id, so findings of one type are adjacent for
+    the reviewer and the rendering depends only on the findings -- not on
+    the order the vault happened to enumerate them. A manifest that
+    reordered itself between runs could not be diffed against an earlier
+    one, which is how a narrowing is confirmed to have introduced nothing.
+    """
+    ordered = sorted(findings, key=lambda finding: (finding.doc_type or "", finding.doc_id))
+    lines = [
+        f"# vault: {vault_id}",
+        f"# measured_at: {measured_at}",
+        f"# documents_audited: {total_audited}",
+        f"# documents_with_type_restating_opener: {len(ordered)}",
+    ]
+    for finding in ordered:
+        lines.append("#")
+        lines.append(f"# {finding.doc_id}  [{finding.lifecycle_status}]  ({finding.doc_type})")
+        for opener in finding.findings:
+            lines.append(f"#   {opener.verb!r} -> {opener.surface!r} via {opener.form}")
+            lines.append(f"#   opener: {' '.join(opener.opener.split())}")
+        lines.append(finding.doc_id)
+    return "\n".join(lines) + "\n"
+
+
 def _print_report(findings: list[TypeOpenerAuditFinding], total_audited: int) -> None:
     print()
     print(f"Documents audited:                    {total_audited}")
     print(f"Documents with type-restating opener: {len(findings)}")
+    for doc_type, count in summarize_by_doc_type(findings):
+        print(f"  {doc_type or '(none)':<24} {count}")
     for finding in findings:
         print()
         print(f"{finding.doc_id}  [{finding.lifecycle_status}]  ({finding.doc_type})")
@@ -104,8 +166,21 @@ async def run(args: argparse.Namespace) -> int:
     try:
         print("Enumerating documents with stored abstracts...", flush=True)
         entries = await build_entries(services)
+        if args.lifecycle is not None:
+            entries = [entry for entry in entries if entry.lifecycle_status == args.lifecycle]
         findings = audit_type_opener_entries(entries)
         _print_report(findings, len(entries))
+        if args.manifest is not None:
+            args.manifest.write_text(
+                render_manifest(
+                    findings,
+                    vault_id=args.vault_id,
+                    total_audited=len(entries),
+                    measured_at=datetime.now(UTC).isoformat(),
+                )
+            )
+            print()
+            print(f"Manifest written: {args.manifest}")
     finally:
         await services.graph_store.close()
     return 0
@@ -120,6 +195,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs="?",
         default="cas",
         help="Vault to audit (default: cas)",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Write the flagged document ids here, grouped by doc_type, each "
+            "with its finding as a comment for adjudication. Consumed by "
+            "'scripts.reabstract_deferred --ids-file'."
+        ),
+    )
+    parser.add_argument(
+        "--lifecycle",
+        metavar="STATUS",
+        help=(
+            "Audit only documents in this lifecycle status. Omit to audit "
+            "every class, which is the default because a discovering agent's "
+            "search surfaces archived documents alongside active ones."
+        ),
     )
     return parser.parse_args(argv)
 

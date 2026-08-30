@@ -171,3 +171,21 @@ def test_document_id_flag_accumulates():
 def test_document_id_defaults_to_empty():
     """Absent the flag the run stays on the stratified sampler."""
     assert _parse_args(["cas", "--model", "stub"]).document_id == []
+
+
+def test_the_stub_provider_refuses_a_non_default_prompt_construction():
+    """A stub run cannot claim an arm it never rendered.
+
+    The stub returns canned text without assembling a prompt, so a
+    selection made against it would be silently dropped -- and the run
+    would then write a scorecard naming a construction nothing sent,
+    which is the measurement error the label exists to prevent. Refusing
+    is the only outcome that cannot be mistaken for a measurement.
+    """
+    import pytest
+
+    from scripts.benchmark_abstraction import _build_provider
+
+    assert _build_provider("stub") is not None
+    with pytest.raises(ValueError, match="renders no prompt"):
+        _build_provider("stub", prompt_construction="pre-revision")

@@ -31,6 +31,7 @@ from sage.adapters.abstraction_utils import (
     find_structure_echo,
     find_type_restating_opener,
     find_unattested_acronym_glosses,
+    strip_type_restating_opener,
     trim_to_sentence_boundary,
 )
 from sage.adapters.interfaces import (
@@ -89,11 +90,11 @@ abstraction_timing_logger = logging.getLogger("sage.abstraction.timing")
 # Faithfulness records for the deterministic post-generation checks on the
 # abstraction seam (CAS-ADR-020). Four finding classes share the channel,
 # each in the posture its own measurement licenses: an unattested acronym
-# gloss (clause (e)) is recorded and repaired; a structure echo (clause
-# (k)), a fabricated cardinal (clause (e), a separate finding class), and
-# a type-restating opener (clause (f)) are recorded only, the abstract
-# stored unmodified, while their error rates await adjudicated
-# measurement.
+# gloss (clause (e)) is recorded and repaired; a type-restating opener
+# (clause (f)) is recorded, and repaired where the excision is licensed;
+# a structure echo (clause (k)) and a fabricated cardinal (clause (e), a
+# separate finding class) are recorded only, the abstract stored
+# unmodified, while their error rates await adjudicated measurement.
 abstraction_faithfulness_logger = logging.getLogger("sage.abstraction.faithfulness")
 
 
@@ -1254,9 +1255,11 @@ class IngestionService:
         checks (CAS-ADR-020). An unattested acronym gloss (clause (e)) is
         recorded and then repaired -- the gloss collapses to its bare
         acronym, so the returned abstract carries no unattested claim. A
-        structure echo (clause (k)), a fabricated cardinal (clause (e),
-        a separate finding class), or a type-restating opener (clause
-        (f)) is recorded only.
+        type-restating opener (clause (f)) is recorded, and repaired when
+        its classifying frame stands directly against a relative clause;
+        every other opener shape is left as the model wrote it. A
+        structure echo (clause (k)) or a fabricated cardinal (clause (e),
+        a separate finding class) is recorded only.
 
         Args:
             text: Full projection text of the document.
@@ -1405,35 +1408,52 @@ class IngestionService:
             )
 
         # Deterministic type-restating-opener check (CAS-ADR-020 clause
-        # (f)), recording-only: no adjudicated error-rate measurement, so
-        # the posture the ADR requires before any repair holds here,
-        # gated independently of the other classes. It reads the
-        # post-repair abstract so the record describes the abstract
-        # actually stored -- load-bearing for this check, since a gloss
+        # (f)), now in the mixed posture its own adjudicated measurement
+        # licensed -- gated independently of the other classes, as the
+        # ADR requires. It runs after the clause (e) repair so it reads
+        # the abstract actually stored, load-bearing here because a gloss
         # collapse can rewrite the very opener it inspects. It reads the
         # same doc_type the prompt received: the breach is relative to
-        # that metadata, not to the source text. The absence of an
-        # "action" field is the machine-readable trace of the posture. A
-        # finding is calibration data, not a verdict.
+        # that metadata, not to the source text.
+        #
+        # Repair extends only to the shape whose excision is licensed --
+        # a relative clause standing directly against the type phrase,
+        # where the clause attaches to the document itself. Every other
+        # shape is recorded unrepaired, and the absent "action" field is
+        # the machine-readable trace of that: a relativizer further out
+        # attaches to something the document merely mentions, so excising
+        # to it would assert something false in fluent prose, which no
+        # later reader could tell from a faithful abstract.
+        #
+        # The record describes the inspected abstract rather than the
+        # repaired one, so instruments that measure provider faithfulness
+        # keep their discrimination.
         for opener in find_type_restating_opener(abstract, doc_type):
-            abstraction_faithfulness_logger.info(
-                json.dumps(
-                    {
-                        "layer": "abstraction",
-                        "vault_id": vault_id,
-                        "label": "type_restating_opener",
-                        "provider": type(self._abstraction).__name__,
-                        "document_id": document_id,
-                        "doc_type": opener.doc_type,
-                        "surface": opener.surface,
-                        "verb": opener.verb,
-                        "form": opener.form,
-                        "opener": opener.opener,
-                        "document_chars": len(text),
-                        "abstract_chars": len(abstract),
-                    }
-                )
-            )
+            repaired = strip_type_restating_opener(abstract, doc_type)
+            # A repair that leaves the frame standing is not a repair;
+            # storing it would mutate the corpus for nothing. The guard
+            # is the seam's counterpart to the corpus pass's residual
+            # check, and keeps detection and repair from drifting apart.
+            stripped = repaired != abstract and not find_type_restating_opener(repaired, doc_type)
+            record = {
+                "layer": "abstraction",
+                "vault_id": vault_id,
+                "label": "type_restating_opener",
+                "provider": type(self._abstraction).__name__,
+                "document_id": document_id,
+                "doc_type": opener.doc_type,
+                "surface": opener.surface,
+                "verb": opener.verb,
+                "form": opener.form,
+                "opener": opener.opener,
+                "document_chars": len(text),
+                "abstract_chars": len(abstract),
+            }
+            if stripped:
+                record["action"] = "stripped"
+            abstraction_faithfulness_logger.info(json.dumps(record))
+            if stripped:
+                abstract = repaired
         return abstract
 
     async def _stage3_abstraction(
