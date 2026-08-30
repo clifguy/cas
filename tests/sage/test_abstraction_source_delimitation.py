@@ -13,6 +13,13 @@ that disregarded every word. They are retained as guards against silent removal
 of a directive, which is all CAS-ADR-020 claims for them. The outcome is
 established out of band, by measuring real abstracts against real documents.
 
+``TestSystemPrompt`` accordingly guards the prompt's directives generally, not
+the delimitation ones alone: CAS-ADR-020 clauses (a), (b), (d), (f), (g) and
+(j), together with the output-hygiene sentence. ``TestDocTypeSubstitution``
+sits apart from it because clause (c) is checkable without a model -- whether
+the supplied ``doc_type`` reaches the rendered prompt is a property of the
+code, so those assertions are evidence rather than removal guards.
+
 The local provider is exercised through ``generate_abstract`` so the assertion
 covers the real call path. No MLX is loaded: ``_ensure_loaded`` is stubbed and
 ``_generate_fn`` replaced by a capture function.
@@ -37,6 +44,29 @@ _DIRECTIVE_TAILED_SOURCE = (
     "dimension numbers throughout and integrating the methodological "
     "sections into the current text."
 )
+
+# Each directive is spelled out here rather than derived from the template it
+# guards. A literal computed from ``SYSTEM_PROMPT_TEMPLATE`` would match
+# whatever that template happened to say, including nothing at all, and the
+# guard would be satisfied by the very deletion it exists to catch. Lowercased
+# to match how this module reads the rendered prompt.
+THIRD_PERSON_DIRECTIVE = (
+    'write a description of the document in third person ("this document...", '
+    '"the guideline...", "the text...")'
+)
+VOICE_AND_GENRE_DIRECTIVE = (
+    "do not write in the voice, style, or genre the document discusses -- "
+    "describe the document, do not produce a specimen of it."
+)
+METADATA_RESTRAINT_DIRECTIVE = (
+    "the document's title, tags, and project are already visible to the agent; do not restate them."
+)
+LENGTH_PROPORTIONALITY_DIRECTIVE = (
+    "length should be proportional to the document's complexity: longer for "
+    "dense or multi-topic documents, shorter for simple or narrowly-scoped "
+    "ones."
+)
+OUTPUT_HYGIENE_DIRECTIVE = "output only the description, with no preamble, labels, or commentary."
 
 
 class _ContentSurfacingTokenizer:
@@ -159,6 +189,105 @@ class TestSystemPrompt:
         prompt supplied it.
         """
         assert "triage card" not in _format_system_prompt(None).lower()
+
+    def test_requires_third_person_descriptive_framing(self):
+        """Clause (b): the description is written about the document.
+
+        A removal guard. Whether the model actually writes in third person is
+        not observable here and is carried by the out-of-band behavioral
+        evaluation; this fails only if the sentence leaves the prompt.
+        """
+        prompt = _format_system_prompt(None).lower()
+
+        assert THIRD_PERSON_DIRECTIVE in prompt
+
+    def test_forbids_writing_in_the_documents_voice_or_genre(self):
+        """Clause (d): describe the document, do not become a specimen of it.
+
+        A removal guard on its own sentence, separate from the clause (e)
+        guard that follows it in the same paragraph, so deleting either one
+        alone names which one went.
+        """
+        prompt = _format_system_prompt(None).lower()
+
+        assert VOICE_AND_GENRE_DIRECTIVE in prompt
+
+    def test_instructs_against_restating_the_visible_metadata(self):
+        """Clause (f), the half addressing metadata the agent already sees.
+
+        Rendered with no ``doc_type`` deliberately. Supplying one splices
+        ``type ("...")`` into the middle of this sentence, which would couple
+        the guard to clause (c)'s substitution -- a change to either would
+        then fail both, and neither failure would say which broke. The
+        substitution has its own assertions in ``TestDocTypeSubstitution``.
+
+        A removal guard: the directive was in the prompt throughout the period
+        the opening-restatement breach was measured, so its presence here is
+        not evidence of compliance.
+        """
+        prompt = _format_system_prompt(None).lower()
+
+        assert METADATA_RESTRAINT_DIRECTIVE in prompt
+
+    def test_requires_length_proportional_to_complexity(self):
+        """Clause (g): the density-proportional length behavior from CAS-ADR-011.
+
+        A removal guard. Nothing here measures a generated abstract's length
+        against its source's complexity.
+        """
+        prompt = _format_system_prompt(None).lower()
+
+        assert LENGTH_PROPORTIONALITY_DIRECTIVE in prompt
+
+    def test_forbids_preamble_labels_and_commentary(self):
+        """The output-hygiene sentence closing the prompt.
+
+        A removal guard on the instruction that the abstract is the whole of
+        the output. What the model emits around its description is settled by
+        the out-of-band evaluation, not by this assertion.
+        """
+        prompt = _format_system_prompt(None).lower()
+
+        assert OUTPUT_HYGIENE_DIRECTIVE in prompt
+
+
+class TestDocTypeSubstitution:
+    """Clause (c): the doc_type is a parameterized input, not a fixed string.
+
+    Evidence, unlike the removal guards above: whether the value handed to
+    ``_format_system_prompt`` reaches the rendered prompt is a property of the
+    code and fails when the substitution breaks.
+
+    Asserted directly rather than by comparing two callers of this same
+    function. An equality between a caller and its delegate holds however the
+    substitution behaves, because both sides compute it the same way -- so it
+    cannot see a defect inside the substitution, which is what the three
+    assertions below are for.
+    """
+
+    def test_substitutes_the_doc_type_into_the_metadata_clause(self):
+        """Present in place when supplied, absent when not, carrying the value.
+
+        Each assertion closes a distinct way the substitution can be wrong,
+        and no two of them close the same one:
+
+          * Presence alone is satisfied by a template with the clause written
+            in literally, so absence under ``None`` is what shows the clause
+            is produced by the argument rather than baked in.
+          * Those two together are still satisfied by a substitution keyed to
+            the argument's presence while ignoring its value -- rendering
+            ``adr`` for every document type. The second doc_type is what
+            shows the supplied value is the one that lands.
+          * All three are still satisfied by a clause that renders correctly
+            but lands somewhere other than the sentence it modifies -- the
+            placeholder moved to the end of the prompt reads as a dangling
+            fragment while every substring check still passes. So the first
+            assertion carries the surrounding sentence rather than the clause
+            alone, which is what fixes its position.
+        """
+        assert 'title, type ("adr"), tags, and project' in _format_system_prompt("adr")
+        assert 'type ("adr")' not in _format_system_prompt(None)
+        assert 'type ("ticket")' in _format_system_prompt("ticket")
 
 
 class TestLocalProviderCall:
