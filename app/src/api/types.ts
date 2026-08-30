@@ -334,6 +334,18 @@ export interface IngestProgressEvent {
   error?: string;
 }
 
+// One warning from post-ingest edge resolution (EdgeWarning in both API
+// specs): a dropped edge, a lifecycle side effect that did not fully
+// apply, or a withheld chain repair. `reason` is a machine-readable code
+// from an extensible vocabulary enumerated in the specs.
+export interface EdgeWarning {
+  source: string;
+  target: string;
+  edge_type: string;
+  reason: string;
+  detail: string;
+}
+
 export interface IngestSummaryEvent {
   event_type: 'summary';
   documents_created: { new: number; new_version: number };
@@ -344,6 +356,7 @@ export interface IngestSummaryEvent {
   abstracts_generated: number;
   abstracts_deferred: number;
   error_count: number;
+  edge_warnings?: EdgeWarning[] | null;
 }
 
 // --- Batch ingest upload (SAGE documents:batch) ---
@@ -356,7 +369,7 @@ export interface IngestSummaryEvent {
 // (the server shares no filesystem with the client). Kept distinct from the
 // app-backend Ingest* shapes above so the two endpoints' contracts can evolve
 // independently; BatchSummaryEvent is a superset of IngestSummaryEvent
-// (edges_removed, errors, edge_warnings).
+// (edges_removed, errors).
 
 export interface BatchIngestFileMetadata {
   source_type: string;
@@ -397,7 +410,7 @@ export interface BatchSummaryEvent {
   abstracts_deferred: number;
   error_count: number;
   errors: Array<Record<string, unknown>>;
-  edge_warnings?: Array<Record<string, unknown>> | null;
+  edge_warnings?: EdgeWarning[] | null;
 }
 
 export type BatchIngestEvent = BatchProgressEvent | BatchSummaryEvent;

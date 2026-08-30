@@ -192,6 +192,95 @@ describe('Ingest view — hosted profile', () => {
     expect(screen.getByText('1 supersedes')).toBeInTheDocument();
   });
 
+  it('E6: edge warnings render next to the drop count with reason and endpoints', async () => {
+    const user = userEvent.setup();
+    let captured: ((e: BatchIngestEvent) => void) | null = null;
+    uploadBatchIngestMock.mockImplementation((_vaultId, _items, onEvent) => {
+      captured = onEvent;
+      return new Promise<void>(() => {});
+    });
+
+    render(<TestWrapper vaultId="example_vault" vault={mockVault} />);
+    const input = await screen.findByTestId('upload-file-input');
+    await user.upload(input, [new File(['one'], 'one.md', { type: 'text/markdown' })]);
+    await user.click(await screen.findByRole('button', { name: /upload selected \(1\)/i }));
+    await waitFor(() => expect(captured).not.toBeNull());
+
+    act(() => {
+      captured!({
+        event_type: 'summary',
+        documents_created: { new: 1, new_version: 0 },
+        metadata_pending: 0,
+        edges_created: {},
+        edges_staged: {},
+        edges_removed: 0,
+        edges_dropped: 2,
+        abstracts_generated: 1,
+        abstracts_deferred: 0,
+        error_count: 0,
+        errors: [],
+        edge_warnings: [
+          {
+            source: 'doc_v2',
+            target: 'doc_v1',
+            edge_type: 'supersedes',
+            reason: 'supersede_target_not_transitionable',
+            detail: "observed state 'completed' does not permit supersede",
+          },
+          {
+            source: 'imports/new.md',
+            target: 'imports/old.md',
+            edge_type: 'supersedes',
+            reason: 'ingestion_failed',
+            detail: 'Target file failed ingestion: imports/old.md',
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByText(/\(2 dropped\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Edge warnings \(2\)/)).toBeInTheDocument();
+    expect(screen.getByText(/supersede_target_not_transitionable/)).toBeInTheDocument();
+    expect(screen.getByText(/doc_v2/)).toBeInTheDocument();
+    expect(screen.getByText(/doc_v1/)).toBeInTheDocument();
+    expect(screen.getByText(/ingestion_failed/)).toBeInTheDocument();
+    expect(screen.getByText(/does not permit supersede/)).toBeInTheDocument();
+  });
+
+  it('E7: a summary without edge warnings renders no warnings block', async () => {
+    const user = userEvent.setup();
+    let captured: ((e: BatchIngestEvent) => void) | null = null;
+    uploadBatchIngestMock.mockImplementation((_vaultId, _items, onEvent) => {
+      captured = onEvent;
+      return new Promise<void>(() => {});
+    });
+
+    render(<TestWrapper vaultId="example_vault" vault={mockVault} />);
+    const input = await screen.findByTestId('upload-file-input');
+    await user.upload(input, [new File(['one'], 'one.md', { type: 'text/markdown' })]);
+    await user.click(await screen.findByRole('button', { name: /upload selected \(1\)/i }));
+    await waitFor(() => expect(captured).not.toBeNull());
+
+    act(() => {
+      captured!({
+        event_type: 'summary',
+        documents_created: { new: 1, new_version: 0 },
+        metadata_pending: 0,
+        edges_created: {},
+        edges_staged: {},
+        edges_removed: 0,
+        edges_dropped: 0,
+        abstracts_generated: 1,
+        abstracts_deferred: 0,
+        error_count: 0,
+        errors: [],
+      });
+    });
+
+    expect(screen.getByText('Results Summary')).toBeInTheDocument();
+    expect(screen.queryByText(/Edge warnings/)).not.toBeInTheDocument();
+  });
+
   it('E5: an unsupported file is flagged and excluded from the upload payload', async () => {
     const user = userEvent.setup();
     uploadBatchIngestMock.mockResolvedValue();

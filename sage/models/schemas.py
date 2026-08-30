@@ -4135,6 +4135,53 @@ class ProgressEvent(BaseModel):
     )
 
 
+class EdgeWarning(BaseModel):
+    """A single warning from post-ingest edge resolution.
+
+    An edge that was dropped, an edge whose lifecycle side effects did
+    not fully apply, or a chain repair that was withheld.
+    """
+
+    source: str = Field(
+        description=(
+            "Source document id of the affected edge, or the unresolved "
+            "file reference when reason is `ingestion_failed`."
+        ),
+    )
+    target: str = Field(
+        description=(
+            "Target document id of the affected edge, or the unresolved "
+            "file reference when reason is `ingestion_failed`."
+        ),
+    )
+    edge_type: str = Field(
+        description="Edge type of the affected edge (e.g. supersedes).",
+    )
+    reason: str = Field(
+        description=(
+            "Machine-readable warning reason. One of `ingestion_failed` "
+            "(the source or target file failed to ingest); "
+            "`supersede_target_read_failed` (the supersession target could "
+            "not be read before the edge write); `supersede_target_missing` "
+            "(the supersession target does not exist); "
+            "`supersede_target_not_transitionable` (the target's lifecycle "
+            "state does not permit the supersede transition); "
+            "`chain_repair_withheld` (an edge removal was skipped because a "
+            "related supersession was refused); `edge_removal_failed` (a "
+            "planned edge removal raised); `edge_creation_failed` (the edge "
+            "write raised); `lifecycle_transition_failed` (the edge was "
+            "created but the target's lifecycle write failed); "
+            "`chunk_lifecycle_sync_failed` (the target's lifecycle write "
+            "succeeded but the chunk-store lifecycle sync failed). The "
+            "vocabulary is extensible; consumers should tolerate unknown "
+            "reasons."
+        ),
+    )
+    detail: str = Field(
+        description="Human-readable explanation of the warning.",
+    )
+
+
 class SummaryEvent(BaseModel):
     """SSE ``summary`` event payload.
 
@@ -4168,8 +4215,15 @@ class SummaryEvent(BaseModel):
     )
     edges_dropped: int = Field(
         description=(
-            "Edges in the original plan that were dropped because their "
-            "referenced files failed to ingest."
+            "Planned edges dropped rather than created or staged. Causes: a "
+            "referenced file failed to ingest (`ingestion_failed`); a Tier-1 "
+            "supersession was refused (`supersede_target_read_failed`, "
+            "`supersede_target_missing`, or "
+            "`supersede_target_not_transitionable`); a chain-repair "
+            "replacement add was withheld after a sibling refusal (no "
+            "warning entry records this drop); or the edge write failed "
+            "(`edge_creation_failed`). Drops and edge_warnings entries are "
+            "not 1:1 -- some warnings report failures that drop no edge."
         ),
     )
     abstracts_generated: int = Field(
@@ -4189,11 +4243,13 @@ class SummaryEvent(BaseModel):
     errors: list[dict[str, Any]] = Field(
         description="Per-file error records for files that failed to ingest in this batch.",
     )
-    edge_warnings: list[dict[str, Any]] | None = Field(
+    edge_warnings: list[EdgeWarning] | None = Field(
         default=None,
         description=(
-            "Optional edge-inference warnings (e.g. ambiguous version "
-            "chains). Present only when warnings were produced."
+            "Warnings from post-ingest edge resolution, one entry per "
+            "affected edge; each names the source, target, edge type, a "
+            "machine-readable reason, and a human-readable detail. Present "
+            "only when warnings were produced."
         ),
     )
 

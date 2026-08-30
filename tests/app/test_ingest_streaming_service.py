@@ -14,10 +14,12 @@ The streaming service owns the SSE delivery glue extracted from
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from app.backend.exceptions import EmptyFileListError
 from app.backend.ingest_streaming_service import (
@@ -101,8 +103,51 @@ class TestSummaryEventFrom:
         assert event.edge_warnings is None
 
     def test_summary_event_from_passes_through_nonempty_edge_warnings(self) -> None:
+        warning = {
+            "source": "doc_v2",
+            "target": "doc_v1",
+            "edge_type": "supersedes",
+            "reason": "supersede_target_not_transitionable",
+            "detail": "Cannot supersede document doc_v1: observed state 'completed'",
+        }
+        summary = IngestSummary(edge_warnings=[warning])
+        event = _summary_event_from(summary)
+        assert event.edge_warnings is not None
+        assert [entry.model_dump() for entry in event.edge_warnings] == [warning]
+
+    def test_summary_event_serializes_edge_warnings_unchanged(self) -> None:
+        """The wire payload preserves the producer's warning entries
+        key-for-key and order-for-order, and drops unknown keys instead
+        of raising — a malformed producer entry must degrade, never break
+        the SSE stream."""
+        warning = {
+            "source": "imports/new.md",
+            "target": "imports/old.md",
+            "edge_type": "supersedes",
+            "reason": "ingestion_failed",
+            "detail": "Target file failed ingestion: imports/old.md",
+        }
+        summary = IngestSummary(
+            edges_dropped=1,
+            edge_warnings=[{**warning, "hint": "not part of the wire shape"}],
+        )
+        event = _summary_event_from(summary)
+        payload = json.loads(event.model_dump_json(exclude_none=True))
+        assert payload["edge_warnings"] == [warning]
+        assert list(payload["edge_warnings"][0]) == list(warning)
+
+    def test_summary_event_rejects_warning_entry_missing_required_keys(self) -> None:
+        """Every warning field is required: an entry that lacks the
+        emitter's key set fails validation rather than reaching the wire
+        half-shaped.
+
+        Anti-coincidental-pass: an EdgeWarning whose fields carried
+        defaults would pass the round-trip tests above unchanged; only a
+        rejected under-shaped entry separates required fields from
+        defaulted ones.
+        """
         summary = IngestSummary(
             edge_warnings=[{"edge_type": "supersedes", "warning": "skew"}],
         )
-        event = _summary_event_from(summary)
-        assert event.edge_warnings == [{"edge_type": "supersedes", "warning": "skew"}]
+        with pytest.raises(ValidationError):
+            _summary_event_from(summary)
