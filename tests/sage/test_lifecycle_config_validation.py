@@ -132,8 +132,16 @@ def test_on_disk_config_loads_leniently_with_warning(minimal_vault_config_dict, 
     )
 
 
-def test_base_not_required_allows_replacement_lifecycle(minimal_vault_config_dict):
-    """`base_states_required: false` admits a full replacement lifecycle."""
+def test_replacement_lifecycle_must_declare_a_satisfying_state(minimal_vault_config_dict):
+    """`base_states_required: false` admits a full replacement lifecycle — once
+    it says which of its states satisfies `depends_on`.
+
+    A replacement lifecycle inherits no engine default: none of its states
+    is `active` or `completed`, so leaving the field unset everywhere
+    yields the empty set. The negative half catches that; the positive
+    half excludes an implementation that rejects replacement lifecycles
+    wholesale.
+    """
     mutated = _lifecycle_variant(minimal_vault_config_dict)
     mutated["lifecycle"] = {
         "base_states_required": False,
@@ -144,8 +152,13 @@ def test_base_not_required_allows_replacement_lifecycle(minimal_vault_config_dic
             {"from_state": "(new)", "action": "ingest", "to_state": "sentinel_state"},
         ],
     }
+    with pytest.raises(ValidationError, match="satisfies_dependency"):
+        VaultConfig.model_validate(mutated)
+
+    mutated["lifecycle"]["states"][0]["satisfies_dependency"] = True
     config = VaultConfig.model_validate(mutated)
     assert config.lifecycle.base_states_required is False
+    assert config.lifecycle.dependency_satisfying_states() == frozenset({"sentinel_state"})
 
 
 @pytest.mark.parametrize("base_required", [True, False])
@@ -232,3 +245,144 @@ def test_schema_expresses_the_new_row_invariants(minimal_vault_config_dict):
         if state["value"] == "active":
             state["satisfies_dependency"] = True
     assert _schema_errors(declared) == [], "satisfies_dependency declarations must validate"
+
+
+@pytest.mark.parametrize("endpoint", ["to_state", "from_state"])
+def test_transition_endpoint_must_be_declared_state(minimal_vault_config_dict, endpoint):
+    """Every transition endpoint must name a declared state, not just `(new)`'s.
+
+    Mutates a non-`(new)` row deliberately: the `(new)` row's target was
+    already checked, so a test written there would pass against a
+    validator that never looks past the ingestion row. A typo on any
+    other row strands documents in a state with no valid actions,
+    unrecoverable through the API.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    for transition in mutated["lifecycle"]["transitions"]:
+        if transition["from_state"] == "active" and transition["action"] == "archive":
+            transition[endpoint] = "archved"
+    with pytest.raises(ValidationError, match="archved"):
+        VaultConfig.model_validate(mutated)
+
+
+def test_to_state_may_not_be_the_new_pseudo_state(minimal_vault_config_dict):
+    """`(new)` is sanctioned as a source only, never as a target.
+
+    A transition landing a document in the ingestion pseudo-state would
+    put it in a state the table drops on construction. An implementation
+    that sanctions `(new)` on both endpoints passes the declared-state
+    sweep and fails here.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    for transition in mutated["lifecycle"]["transitions"]:
+        if transition["from_state"] == "active" and transition["action"] == "archive":
+            transition["to_state"] = "(new)"
+    with pytest.raises(ValidationError, match=r"\(new\)"):
+        VaultConfig.model_validate(mutated)
+
+
+def test_endpoint_violation_loads_leniently_with_warning(
+    minimal_vault_config_dict, tmp_path, caplog
+):
+    """An undeclared endpoint already on disk warns rather than dropping the vault.
+
+    Paired assertions, as with the base-action case: the same dict fails
+    direct validation, so an implementation that simply stopped checking
+    fails the first half and one that rejects everywhere fails the second.
+    The surviving transition is asserted too: leniency means loading the
+    file as written, so an implementation that warned and then quietly
+    dropped or rewrote the offending row — leaving the loaded table
+    different from the file the operator is about to repair — passes both
+    halves and fails here.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    for transition in mutated["lifecycle"]["transitions"]:
+        if transition["from_state"] == "active" and transition["action"] == "archive":
+            transition["to_state"] = "archved"
+    with pytest.raises(ValidationError, match="archved"):
+        VaultConfig.model_validate(mutated)
+
+    config_path = tmp_path / "vault_config.yaml"
+    config_path.write_text(yaml.safe_dump(mutated))
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = load_vault_config(config_path)
+
+    assert config.vault.id == mutated["vault"]["id"]
+    assert any(t.to_state == "archved" for t in config.lifecycle.transitions), (
+        "the lenient load must keep the configuration as written, not repair it"
+    )
+    assert any("archved" in record.getMessage() for record in caplog.records), (
+        "the lenient load must still name the offending state"
+    )
+
+
+def test_empty_dependency_satisfying_set_rejected(minimal_vault_config_dict):
+    """A lifecycle where no state satisfies `depends_on` is rejected.
+
+    Every `depends_on` precondition would fail permanently, with nothing
+    naming the configuration as the cause — so the configuration surface
+    is where it is caught.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    for state in mutated["lifecycle"]["states"]:
+        if state["value"] in {"active", "completed"}:
+            state["satisfies_dependency"] = False
+    with pytest.raises(ValidationError, match="satisfies_dependency"):
+        VaultConfig.model_validate(mutated)
+
+
+def test_empty_satisfying_set_loads_leniently_with_warning(
+    minimal_vault_config_dict, tmp_path, caplog
+):
+    """The same configuration on disk warns and loads.
+
+    Same lenient-load posture the other layers take: a vault that cannot
+    satisfy dependencies is still reachable by the surface that repairs it.
+    """
+    mutated = _lifecycle_variant(minimal_vault_config_dict)
+    for state in mutated["lifecycle"]["states"]:
+        if state["value"] in {"active", "completed"}:
+            state["satisfies_dependency"] = False
+
+    config_path = tmp_path / "vault_config.yaml"
+    config_path.write_text(yaml.safe_dump(mutated))
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = load_vault_config(config_path)
+
+    assert config.lifecycle.dependency_satisfying_states() == frozenset()
+    assert any("satisfies_dependency" in record.getMessage() for record in caplog.records), (
+        "the lenient load must still name the cause"
+    )
+
+
+def test_schema_expresses_transition_endpoint_patterns(minimal_vault_config_dict):
+    """The schema carries the endpoint shapes it can express, and no more.
+
+    `to_state` is always a real state identifier and `from_state` is that
+    or the `(new)` literal, both expressible as patterns. Whether an
+    endpoint is *declared* is cross-array referential integrity, which
+    JSON Schema cannot state — the final case pins that division so the
+    two authorities are not read as diverging.
+    """
+    base = _lifecycle_variant(minimal_vault_config_dict)["lifecycle"]
+    assert _schema_errors(base) == []
+
+    landing_in_pseudo_state = copy.deepcopy(base)
+    for transition in landing_in_pseudo_state["transitions"]:
+        if transition["from_state"] == "active" and transition["action"] == "archive":
+            transition["to_state"] = "(new)"
+    assert _schema_errors(landing_in_pseudo_state), "'(new)' as a target must fail the pattern"
+
+    malformed_source = copy.deepcopy(base)
+    for transition in malformed_source["transitions"]:
+        if transition["from_state"] == "active" and transition["action"] == "archive":
+            transition["from_state"] = "Not A State"
+    assert _schema_errors(malformed_source), "a malformed source identifier must fail the pattern"
+
+    undeclared = copy.deepcopy(base)
+    for transition in undeclared["transitions"]:
+        if transition["from_state"] == "active" and transition["action"] == "archive":
+            transition["to_state"] = "archved"
+    assert _schema_errors(undeclared) == [], (
+        "endpoint declaration is a loader-only invariant; the schema cannot express it"
+    )

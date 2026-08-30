@@ -22,7 +22,7 @@ from sage.api.errors import (
     SyncedFromVersionNotInSourceChain,
     TBDPolicyEdgeError,
 )
-from sage.config import VaultConfig
+from sage.config import VaultConfig, render_state_set
 from sage.models.edge_registry import EdgeTypeRegistry
 from sage.models.enums import (
     LIGHT_DEFAULT_THRESHOLD,
@@ -845,7 +845,7 @@ class GraphOpsService:
         # Derived from the vault's declared states (BH-033 through BH-036),
         # so an opted-in domain state or an opted-out base state is honoured.
         satisfying = self._config.lifecycle.dependency_satisfying_states()
-        required = " or ".join(sorted(satisfying)) or "(no state satisfies dependencies)"
+        required = render_state_set(satisfying)
 
         checks: list[PreconditionCheck] = []
         for edge in depends_on_edges:

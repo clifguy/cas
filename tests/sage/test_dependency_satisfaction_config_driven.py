@@ -14,8 +14,8 @@ These tests pin three properties:
   opts it out, unset defers to the engine default (`active` and `completed`);
 - `check_preconditions` enforces the derived set end to end, and its
   `required` payload reports the derived set in every branch;
-- the derived `required` string never goes empty, even for a vault whose
-  states all opt out.
+- the derived `required` string never goes empty: a vault whose states all
+  opt out reports the shared renderer's documented placeholder.
 """
 
 import copy
@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from sage.config import VaultConfig
+from sage.config import EMPTY_STATE_SET_RENDERING, VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, Edge
 from sage.services.graph_ops import GraphOpsService
@@ -216,12 +216,18 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
 async def test_required_string_empty_set_guard(graph_store, minimal_vault_config_dict):
     """A vault whose states all opt out still reports a readable `required`.
 
-    Pathological but expressible; the API must not emit an empty string.
+    Direct validation rejects this configuration, so it is built the way
+    the only vault that can hold it was built: leniently, from disk. The
+    API must not emit an empty string for it.
     """
-    config = _config_with_satisfies(minimal_vault_config_dict, active=False, completed=False)
+    mutated = copy.deepcopy(minimal_vault_config_dict)
+    for state in mutated["lifecycle"]["states"]:
+        if state["value"] in {"active", "completed"}:
+            state["satisfies_dependency"] = False
+    config = VaultConfig.model_validate(mutated, context={"lifecycle_validation": "warn"})
     service = GraphOpsService(graph_store, config)
     function_id = await _seed_dependency(graph_store, "active")
 
     result = await service.check_preconditions(function_id)
     assert result.satisfied is False
-    assert result.checks[0].required == "(no state satisfies dependencies)"
+    assert result.checks[0].required == EMPTY_STATE_SET_RENDERING

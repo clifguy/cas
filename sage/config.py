@@ -5,6 +5,7 @@ transition table used by LifecycleService for state machine validation.
 """
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
@@ -137,7 +138,13 @@ class LifecycleTransition(BaseModel):
             "ingest, supersede, complete, archive, reactivate."
         )
     )
-    to_state: str = Field(description="Target state after the transition.")
+    to_state: str = Field(
+        description=(
+            "Target state after the transition. Always a real state: "
+            "'(new)' is the ingestion pseudo-state and no transition may "
+            "land in it."
+        )
+    )
     semantics: str | None = Field(
         default=None,
         description=(
@@ -166,6 +173,30 @@ DEFAULT_DEPENDENCY_SATISFYING_STATES = frozenset({"active", "completed"})
 #: must keep declared (see `LifecycleConfig`).
 BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived"})
 BASE_LIFECYCLE_ACTIONS = frozenset({"ingest", "supersede", "complete", "archive", "reactivate"})
+
+#: The `(new)` pseudo-state: sanctioned as the source of the ingestion
+#: transition and nowhere else. It is not a state a document occupies, so
+#: no transition may land in it.
+INGESTION_PSEUDO_STATE = "(new)"
+
+#: What `render_state_set` reports when the set is empty. A neutral
+#: placeholder rather than a state name: the empty set means the vault's
+#: configuration permits nothing here, and naming a state the vault may
+#: not permit would misreport the precondition.
+EMPTY_STATE_SET_RENDERING = "(none)"
+
+
+def render_state_set(states: Iterable[str]) -> str:
+    """Render a set of lifecycle states for a caller-facing precondition.
+
+    Every surface that reports "the states this vault permits" -- the
+    dependency-precondition payload and the lifecycle error messages --
+    renders through here, so the ordering, the separator, and the
+    empty-set answer are one decision rather than one per call site.
+    Sorted rather than in declaration order, so the same set always reads
+    the same way.
+    """
+    return " or ".join(sorted(states)) or EMPTY_STATE_SET_RENDERING
 
 
 class LifecycleState(BaseModel):
@@ -252,16 +283,23 @@ class LifecycleConfig(BaseModel):
     def _validate_lifecycle_shape(self, info: ValidationInfo) -> "LifecycleConfig":
         """Reject configurations the lifecycle engine cannot honour.
 
-        Two layers. Unconditionally, the ingestion pseudo-row must be
-        well-formed — exactly one `(new)` row, its action `ingest`, its
-        target a declared state, and `ingest` appearing nowhere else —
-        because the ingest landing state is read from that row and the
-        action must never become user-invocable. When
-        `base_states_required` is true, the base states must be declared
-        and each base action used by at least one transition: the promise
-        the flag's description makes. Action presence, not exact rows, so
-        extensions (extra supersede sources, a non-active landing state)
-        stay legal.
+        Three layers. Unconditionally, the ingestion pseudo-row must be
+        well-formed — exactly one `(new)` row, its action `ingest`, and
+        `ingest` appearing nowhere else — because the ingest landing
+        state is read from that row and the action must never become
+        user-invocable. Also unconditionally, every transition endpoint
+        must name a declared state, with `(new)` sanctioned as a source
+        and never as a target: a transition into an undeclared state
+        strands the document there, absent from the state list and from
+        the dependency-satisfying set, with no valid action out. And no
+        lifecycle may resolve to an empty dependency-satisfying set,
+        which would fail every `depends_on` precondition permanently with
+        nothing naming the configuration as the cause. When
+        `base_states_required` is true, the base states must additionally
+        be declared and each base action used by at least one transition:
+        the promise the flag's description makes. Action presence, not
+        exact rows, so extensions (extra supersede sources, a non-active
+        landing state) stay legal.
 
         Strictness is contextual. Direct validation — the vault-create and
         update-config API paths — rejects a violating configuration, so a
@@ -287,9 +325,21 @@ class LifecycleConfig(BaseModel):
                     "the '(new)' ingestion transition must carry the action "
                     f"'ingest', not '{row.action}'"
                 )
-            if row.to_state not in declared_states:
+        for row in self.transitions:
+            where = f"{row.from_state} -> {row.action} -> {row.to_state}"
+            if row.from_state not in declared_states | {INGESTION_PSEUDO_STATE}:
                 problems.append(
-                    f"the '(new)' ingestion transition lands in '{row.to_state}', "
+                    f"the transition '{where}' leaves '{row.from_state}', "
+                    "which is not a declared lifecycle state"
+                )
+            if row.to_state == INGESTION_PSEUDO_STATE:
+                problems.append(
+                    f"the transition '{where}' lands in '{INGESTION_PSEUDO_STATE}', "
+                    "the ingestion pseudo-state, which no document can occupy"
+                )
+            elif row.to_state not in declared_states:
+                problems.append(
+                    f"the transition '{where}' lands in '{row.to_state}', "
                     "which is not a declared lifecycle state"
                 )
         stray_ingest = sorted(
@@ -316,6 +366,15 @@ class LifecycleConfig(BaseModel):
                     "base_states_required lifecycle has no transition using base "
                     f"action(s): {', '.join(sorted(missing_actions))}"
                 )
+        if not self.dependency_satisfying_states():
+            problems.append(
+                "no declared lifecycle state satisfies depends_on preconditions: "
+                "every state either sets satisfies_dependency: false or leaves it "
+                "unset while not being one the engine defaults to "
+                f"({', '.join(sorted(DEFAULT_DEPENDENCY_SATISFYING_STATES))}). Every "
+                "depends_on precondition would fail permanently; declare "
+                "satisfies_dependency: true on at least one state"
+            )
         if problems:
             mode = (info.context or {}).get("lifecycle_validation", "strict")
             if mode == "warn":

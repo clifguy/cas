@@ -518,7 +518,9 @@ paths:
             the archive → reactivate dance via
             `POST /documents/{id}/lifecycle` before retrying. Detail
             carries `current_state` and the `allowed_states` the table
-            does permit.
+            does permit; a table permitting `supersede` from no state
+            reports an empty `allowed_states` and a `required_state` of
+            `(none)` rather than naming a state the vault does not permit.
 
 
             `identical_content_supersede`: the new file's content hash

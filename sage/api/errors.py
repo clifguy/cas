@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from sage.config import render_state_set
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import ErrorResponse
 
@@ -1156,10 +1157,14 @@ class SupersedeTargetNotActiveError(SAGEError):
     it. Under the base lifecycle that is exactly `["active"]`, which is
     what the error name reflects; a vault that declares supersede from a
     further state reports it here rather than being rejected against a
-    rule it does not hold.
+    rule it does not hold. A vault whose table permits `supersede` from
+    no state at all reports the empty set as such: substituting a state
+    the vault does not permit would misreport the precondition.
 
-    `required_state` renders the same set for humans and remains in the
-    detail payload for callers that key remediation prose off it.
+    `required_state` renders the same set for humans through the shared
+    state-set renderer, so it reads identically to every other
+    config-derived precondition, and remains in the detail payload for
+    callers that key remediation prose off it.
     """
 
     def __init__(
@@ -1168,8 +1173,8 @@ class SupersedeTargetNotActiveError(SAGEError):
         current_state: str,
         allowed_states: list[str] | None = None,
     ) -> None:
-        states = list(allowed_states) if allowed_states else ["active"]
-        required_state = " or ".join(states)
+        states = sorted(allowed_states or [])
+        required_state = render_state_set(states)
         super().__init__(
             "supersede_target_not_active",
             (

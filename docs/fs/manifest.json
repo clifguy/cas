@@ -45,7 +45,7 @@
       "path": "sage/lifecycle.schema.json",
       "title": "SAGE Lifecycle State Machine",
       "status": "draft",
-      "version": "0.2",
+      "version": "0.3",
       "role": "Defines lifecycle states and valid transitions. Base set is always present; domains extend it.",
       "instantiation_checklist_items": [
         3
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.50",
+  "substrate_version": "1.51",
   "revision_history": [
+    {
+      "version": "1.51",
+      "date": "2026-08-30",
+      "summary": "Lifecycle-configuration load validation covers every transition endpoint and the dependency-satisfying set, and one renderer serves every config-derived state-set precondition. (1) sage/lifecycle.schema.json 0.2 -> 0.3: from_state and to_state gain identifier patterns -- to_state is always a real state ('(new)' is the ingestion pseudo-state and no transition may land in it), from_state is that or the '(new)' literal -- and the schema description now states which invariants it carries and which the loader owns alone. (2) The LifecycleConfig validator gains two unconditional rules: every transition endpoint must name a declared state (subsuming the former '(new)'-row-only check), because a transition into an undeclared state strands the document with no valid action out; and no lifecycle may resolve to an empty dependency-satisfying set, which would fail every depends_on precondition permanently with nothing naming the configuration as the cause. Both ride the established strictness split -- the vault-create and update-config paths reject, on-disk configurations warn and load so a vault stays reachable for repair. A lifecycle that replaces the base set entirely must now declare satisfies_dependency on at least one state, since it inherits no engine default. (3) A shared render_state_set renders every caller-facing lifecycle state set: sorted, ' or '-joined, with one documented placeholder '(none)' for the empty set. The check_preconditions payload, the supersede_target_not_active error, and the refused-supersede inference warning all render through it, replacing three divergent inline renderings. The error's ['active'] empty-set fallback is removed: a table permitting supersede from no state now reports an empty allowed_states and a required_state of '(none)' rather than naming a state the vault does not permit. sage_core_api.openapi.yaml, the ingestion router description, and the MCP tool docstring state the empty case in lockstep. Tests: tests/sage/test_lifecycle_config_validation.py, tests/sage/test_state_set_rendering.py, tests/sage/test_dependency_satisfaction_config_driven.py."
+    },
     {
       "version": "1.50",
       "date": "2026-08-30",

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore, NaturalKeyConflict
 from sage.api.errors import SupersedeTargetNotActiveError
+from sage.config import render_state_set
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
@@ -775,7 +776,7 @@ async def resolve_and_execute(
                 source_id,
                 target_id,
                 current_state,
-                ", ".join(allowed_states) or "(none)",
+                render_state_set(allowed_states),
             )
             settled.append(
                 _SettledEdge(
