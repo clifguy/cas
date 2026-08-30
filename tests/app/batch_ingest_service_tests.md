@@ -265,7 +265,10 @@ implement this identically.
 
 **Decision:** After all files are processed, if an edge plan exists, the service
 calls resolve_and_execute() with the edge plan, path_to_id mapping, graph_store,
-and graph_ops_service.
+graph_ops_service, and the vault's lifecycle transition table. The table is the
+one the lifecycle service already built, not a second table built from the same
+config, so the supersede transition cannot diverge between the batch path and
+the explicit lifecycle path.
 
 **Precondition:** Two versioned files forming a supersedes chain.
 

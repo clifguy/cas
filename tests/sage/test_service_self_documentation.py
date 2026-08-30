@@ -464,12 +464,38 @@ def test_batch_ingest_run_docstring_documents_per_file_failure_isolation():
     )
 
 
-def test_batch_ingest_run_docstring_documents_predecessor_auto_archive():
-    """``BatchIngestService.run`` must document predecessor auto-archive."""
-    doc = _docstring(BatchIngestService.run)
-    assert "predecessor auto-archive" in doc.lower(), (
+def test_batch_ingest_run_docstring_documents_predecessor_auto_transition():
+    """``BatchIngestService.run`` must document the predecessor auto-transition.
+
+    This is a removal-guard on the docstring, not evidence about the
+    behaviour: every assertion here is satisfied by prose that *mentions*
+    the right things, and a docstring carrying all three substrings could
+    still misdescribe what ships. The behaviour itself is pinned
+    elsewhere -- that the states are table-derived by the supersede tests
+    in ``tests/sage/test_batch_inference.py``, and that a refused
+    replacement withholds its chain repair by the chain-repair tests in
+    ``tests/app/test_batch_ingest_service.py``. Read a failure here as
+    "the documented contract drifted from the tested one", never as
+    "the contract holds".
+
+    Requiring more than the heading is still worth doing, because the
+    bare-heading form of this check previously passed against a docstring
+    whose heading had already been renamed: a later paragraph still
+    carried a back-reference to the old wording, and one stale phrase
+    anywhere in the docstring was enough to keep it green.
+    """
+    doc = _docstring(BatchIngestService.run).lower()
+    assert "predecessor auto-transition" in doc, (
         "BatchIngestService.run docstring must document ``Predecessor "
-        "auto-archive`` on Tier-1 supersedes inference."
+        "auto-transition`` on Tier-1 supersedes inference."
+    )
+    assert "lifecycle table" in doc, (
+        "The docstring must say the transition's states come from the "
+        "vault's lifecycle table, not from fixed state names."
+    )
+    assert "supersede_target_not_transitionable" in doc, (
+        "The docstring must name the outcome for a target whose state "
+        "forbids supersede: no edge created, and a warning that says so."
     )
 
 

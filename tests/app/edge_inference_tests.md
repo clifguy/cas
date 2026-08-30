@@ -758,24 +758,28 @@ valid outcome, not an error condition.
 
 ## 6. Lifecycle Side Effects
 
-### TEST-APP-EI-031: Supersedes edge transitions target document to "archived"
+### TEST-APP-EI-031: Supersedes edge transitions target to the table's landing state
 
-**Artifact:** Bug fix (2026-04-09)
+**Artifact:** Bug fix (2026-04-09); revised 2026-08-29
 **Category:** orchestration, lifecycle
 
-**Decision:** When `resolve_and_execute` creates a Tier 1 supersedes edge via
-`link()`, it must also transition the target document's `lifecycle_status` to
-`"archived"`. This ensures that bulk ingest supersedes edges produce the same
-lifecycle outcome as the explicit `update_lifecycle(action="supersede")` path.
+**Decision:** When `resolve_and_execute` creates a Tier 1 supersedes edge, it
+must also transition the target document's `lifecycle_status` to the state the
+vault's lifecycle transition table declares for the `supersede` action
+(`"archived"` under the base lifecycle). Both paths therefore read the same
+configuration, so the landing state agrees with the explicit
+`update_lifecycles(action="supersede")` path rather than restating it. The
+paths are not otherwise equivalent: this one writes without a lock and
+without the chunk-store lifecycle sync.
 
 **Precondition:** Edge plan with a Tier 1 supersedes edge. Both source and
-target document IDs are resolved.
+target document IDs are resolved. Target is `"active"`.
 
 **Input:** Edge plan:
 - `doc-v2` supersedes `doc-v1` (Tier 1, version_chain)
 
 **Expected:**
-- Supersedes edge created via `link()`
+- Supersedes edge created
 - Target document `doc-v1` lifecycle_status updated to `"archived"`
 - `updated_at` timestamp refreshed on the target document
 
@@ -783,31 +787,45 @@ target document IDs are resolved.
 transitions the document and creates the edge. The edge inference path creates
 the edge but was missing the lifecycle transition, leaving superseded documents
 in "active" state. This violates the invariant that a document targeted by a
-supersedes edge should have lifecycle_status "archived".
+supersedes edge holds a superseded state.
 
-### TEST-APP-EI-032: Supersedes lifecycle transition skipped when target not active
+### TEST-APP-EI-032: Supersedes edge is not created when the target's state forbids it
 
-**Artifact:** Bug fix (2026-04-09)
+**Artifact:** Bug fix (2026-08-29)
 **Category:** orchestration, lifecycle
 
-**Decision:** If the target document's current lifecycle_status is not "active"
-(e.g., already "archived" from a prior edge), the lifecycle update is skipped.
-This prevents redundant updates to terminal states.
+**Decision:** If the target's current state neither permits `supersede` nor is
+a state a supersession lands in, no edge is created at all: `edges_dropped`
+advances and a `supersede_target_not_transitionable` warning names the observed
+state and the permitted ones. The check runs *before* the edge write, so a
+transition known to be forbidden at check time produces no edge. It is not a
+transaction: a lifecycle write that fails after the edge lands still strands
+the edge, under `lifecycle_transition_failed`.
+
+This supersedes the prior decision, which skipped only the lifecycle update and
+created the edge regardless. That left a successor edge pointing at a
+predecessor that had never been transitioned — the orphan the atomic insert
+closed on the ingest path — with no error and no warning to signal it.
 
 **Precondition:** Edge plan with a Tier 1 supersedes edge. Target document is
-already in "archived" state.
+`"completed"`, a state the base lifecycle neither supersedes from nor lands a
+supersession in.
 
 **Input:** Edge plan:
 - `doc-v3` supersedes `doc-v2` (Tier 1, version_chain)
-- `doc-v2` already has lifecycle_status "archived"
+- `doc-v2` has lifecycle_status `"completed"`
 
 **Expected:**
-- Supersedes edge created via `link()`
-- `doc-v2` lifecycle_status remains "archived" (no update call)
+- No supersedes edge created
+- `edges_dropped == 1`
+- No lifecycle update on `doc-v2`
+- One warning, `reason == "supersede_target_not_transitionable"`, whose detail
+  names both `"completed"` and `"active"`
 
-**Rationale:** In a chain v3 -> v2 -> v1, v2 might already be archived by
-processing order. Redundant updates are harmless but unnecessary; skipping them
-keeps the audit trail clean.
+**Rationale:** The edge asserts that its target has been superseded. Creating it
+against a target that has not been, and cannot be, makes the graph assert
+something false. Dropping the edge is the disposition that keeps the invariant;
+the warning is what makes the dropped supersession visible in the batch summary.
 
 ### TEST-APP-EI-033: Batch ingest with infer_edges=False creates no edges
 
@@ -834,3 +852,142 @@ and `EXAMPLE_PV99_Title_v2.md`) with `infer_edges: false`.
 **Rationale:** Supports the "ingest first, curate later" workflow where an LLM
 agent builds edges post-ingest with semantic understanding, rather than relying
 on deterministic filename-based inference.
+
+### TEST-APP-EI-034: Supersede landing state is read from the transition table
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** The state a superseded target lands in comes from the table's
+`to_state`, not from a literal. A vault declaring `active --supersede--> retired`
+lands its superseded documents in `"retired"`.
+
+**Precondition:** Table declares `("active", "supersede", "retired")`. Target is
+`"active"`.
+
+**Expected:** Edge created; exactly one lifecycle update, to `"retired"`.
+
+**Rationale:** Under the base lifecycle a hardcoded `"archived"` and the
+table-derived value coincide, so only a table with a different `to_state`
+distinguishes a derived implementation from a hardcoded one.
+
+### TEST-APP-EI-035: Supersede is permitted from any state the table declares
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** The precondition is the set of states the table declares a
+`supersede` transition from, not the literal `"active"`. A vault declaring
+`completed --supersede--> archived` supersedes a `"completed"` target.
+
+**Precondition:** Table declares supersede from both `"active"` and
+`"completed"`. Target is `"completed"`.
+
+**Expected:** Edge created; target transitioned to `"archived"`.
+
+**Rationale:** The permissive direction of EI-032's property. A hardcoded
+`== "active"` precondition silently skips a transition the vault declares legal.
+
+### TEST-APP-EI-036: No supersedes edge outlives an unsuperseded target
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** Across a whole batch, every Tier 1 supersedes edge written leaves
+its target holding a superseded state. This is the invariant the pre-flight
+gate exists to hold, and it is asserted over the targets actually linked rather
+than over a count fixed in advance.
+
+**Precondition:** A batch mixing a permitted supersede (`"active"` target), an
+already-superseded one (`"archived"` target), a forbidden one (`"completed"`
+target), and an unrelated Tier 2 `covers` edge.
+
+**Expected:**
+- No linked supersedes target is left outside a superseded state
+- The permitted and already-superseded targets are both linked; the forbidden
+  one is not
+- The Tier 2 edge is still staged (the gate is scoped to Tier 1 supersedes)
+- `edges_dropped == 1`
+
+**Rationale:** The single-edge tests each pin one case; only a mixed batch shows
+that the gate discriminates between them rather than applying one disposition
+to all.
+
+### TEST-APP-EI-037: Supersedes edge dropped when the target document is absent
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** A target that does not resolve to a document has no state to check
+against the table, so the supersession cannot be settled and no edge is created.
+
+**Precondition:** Edge plan with a Tier 1 supersedes edge whose target id is not
+present in the store.
+
+**Expected:** No edge; `edges_dropped == 1`; one `supersede_target_missing`
+warning whose detail names the document id.
+
+**Rationale:** Previously this fell through the same silent branch as a
+non-active target, creating an edge against a document that does not exist. The
+reason is its own rather than `supersede_target_not_transitionable`, which is a
+statement about a document's lifecycle state; an absent document has no state to
+report against the table's permitted set.
+
+### TEST-APP-EI-038: Superseding an already-superseded target needs no write
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** A target already holding a state a supersession lands in gets the
+edge and no lifecycle write, with no warning. The edge is sound — the
+predecessor already holds the state the edge asserts of it — and there is
+nothing left to transition.
+
+**Precondition:** Base table. Target is `"archived"`.
+
+**Expected:** Edge created; `edges_dropped == 0`; no lifecycle update; no
+warnings.
+
+**Rationale:** Chain repair reaches this routinely: inserting an intermediate
+version re-points a supersedes edge at a predecessor archived by the
+supersession the repair replaces. Gating it would break chain repair, and
+warning on it would make every repair noisy.
+
+### TEST-APP-EI-039: Landing-state recognition is table-derived
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** The set of states treated as "already superseded" (EI-038) is
+derived from the table's `supersede` landing states, not from the literal
+`"archived"`.
+
+**Precondition:** Table declares `("active", "supersede", "retired")`. One
+target is `"retired"`, another is `"archived"`.
+
+**Expected:** The `"retired"` target is linked with no write; the `"archived"`
+target — inert under this table — is gated and dropped.
+
+**Rationale:** Under this table `"archived"` is an ordinary non-superseding
+state, so an implementation that hardcodes the landing set fails in both
+directions at once.
+
+### TEST-APP-EI-040: A failed target read refuses the edge under its own reason
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** When the pre-write read of a supersedes target raises, the edge is
+refused under `supersede_target_read_failed` — distinct from
+`lifecycle_transition_failed`, which means the edge landed and only the
+subsequent lifecycle write failed.
+
+**Precondition:** Edge plan with a Tier 1 supersedes edge; the store raises on
+`get_document`.
+
+**Expected:** No edge; `edges_dropped == 1`; one `supersede_target_read_failed`
+warning carrying the underlying error text.
+
+**Rationale:** The two conditions leave the graph in opposite states — no edge
+versus an edge with an untransitioned target — so a caller triaging warnings has
+to be able to tell them apart. Sharing one reason made that impossible.

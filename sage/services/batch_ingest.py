@@ -165,16 +165,46 @@ class BatchIngestService:
         later items are not rolled back. Mirrors the bulk-tool
         atomicity contract used by ``sage_bulk_*`` operations.
 
-        Predecessor auto-archive on Tier-1 supersedes inference:
+        Predecessor auto-transition on Tier-1 supersedes inference:
         When ``infer_edges=True`` and Phase 3 edge resolution
         creates a Tier-1 ``supersedes`` edge via version-chain
-        inference, the target document silently transitions from
-        ``active`` to ``archived`` as part of edge execution — no
-        explicit lifecycle-transition call is required and none
-        surfaces in the summary. Lifecycle transition failures
-        during this phase are collected as warnings in
-        ``IngestSummary.edge_warnings`` only; they do not raise and
-        do not appear in ``IngestSummary.errors``.
+        inference, the target document transitions as part of edge
+        execution — no explicit lifecycle-transition call is
+        required. Both halves of that transition come from the
+        vault's lifecycle table: the states it may be taken from,
+        and the state it lands in (``active -> archived`` under the
+        base lifecycle).
+
+        A target already holding a state a supersession lands in
+        gets the edge and no write — the chain-repair case, where an
+        earlier supersession already moved it. A target in any other
+        state is not superseded at all: the edge is not created,
+        ``edges_dropped`` advances, and a
+        ``supersede_target_not_transitionable`` warning names the
+        observed state and the permitted ones (an absent or unreadable
+        target refuses the edge the same way, under
+        ``supersede_target_missing`` and
+        ``supersede_target_read_failed``). Because the refusal is
+        settled before anything is written, a chain repair whose
+        replacement add is refused withholds its removals as well,
+        under ``chain_repair_withheld``, rather than severing the
+        chain it was repairing. A replacement that settles cleanly
+        and then fails on write is not covered — the removals have
+        committed by then, and the shortened chain is reported as
+        ``edge_creation_failed``.
+
+        The guarantee is bounded: no edge is created when the
+        transition is known-forbidden at the time the check runs. It is
+        not a transaction. The edge insert and the lifecycle write are
+        two calls under no shared lock, so a write that fails after the
+        edge lands leaves the edge in place with a
+        ``lifecycle_transition_failed`` warning as the only signal, and
+        a state change racing the check is not detected. The write also
+        omits the chunk-store lifecycle sync that the explicit
+        lifecycle path performs, so a superseded document's chunks keep
+        their prior lifecycle value until reprojection. All of these
+        surface as warnings in ``IngestSummary.edge_warnings``; no case
+        raises, and none appears in ``IngestSummary.errors``.
 
         Tier-1 provenance-gate downgrade:
         Tier-1 ``supersedes`` adds are gated on provenance: if any
@@ -183,7 +213,7 @@ class BatchIngestService:
         ``manual_review`` edge in the same chain), the entire
         group's Tier-1 adds are silently downgraded to Tier-2
         (deposited in the staging-edge table for review rather than
-        landing as production edges; the predecessor auto-archive
+        landing as production edges; the predecessor auto-transition
         above does NOT fire on a downgraded group). The
         production-vs-staging outcome of a batch is therefore
         rule-dependent on the vault's prior edge graph, not
@@ -274,6 +304,11 @@ class BatchIngestService:
                 path_to_id,
                 vault_services.graph_store,
                 vault_services.graph_ops_service,
+                # The table the lifecycle service already built for this
+                # vault, not a second one built from the same config: one
+                # table means the supersede transition cannot diverge
+                # between the batch path and the explicit lifecycle path.
+                vault_services.lifecycle_service.transition_table,
             )
             summary.edges_created = edge_result.edges_created
             summary.edges_staged = edge_result.edges_staged

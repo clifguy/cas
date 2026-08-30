@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, IngestRequest, UnlinkResponse
 from sage.services.batch_inference import EdgePlan
@@ -29,6 +30,27 @@ from sage.services.batch_ingest import (
     ParsedMetadataInput,
 )
 from sage.services.ingestion import IngestResult
+
+
+def _base_transition_table() -> TransitionTable:
+    """The base vault's lifecycle table: supersede archives an active doc.
+
+    A real table rather than a MagicMock attribute: edge execution reads
+    the supersede transition off it to decide whether an edge may be
+    created and what state its target lands in, so a mock would make both
+    a MagicMock and silently defeat every lifecycle assertion below.
+    """
+    return TransitionTable(
+        [
+            LifecycleTransition(
+                from_state="active",
+                action="supersede",
+                to_state="archived",
+                creates_edge="supersedes",
+            )
+        ]
+    )
+
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -105,6 +127,7 @@ def _make_services(
 ):
     """Create a mock SAGEServices bundle."""
     services = MagicMock()
+    services.lifecycle_service.transition_table = _base_transition_table()
 
     # Config
     services.config.abstraction.enabled = abstraction_enabled
@@ -164,7 +187,17 @@ def _make_services(
     services.graph_ops_service._create_edge_strict = AsyncMock()
     services.graph_ops_service._create_edge = AsyncMock(return_value=(_MM(), True))
     services.graph_store.insert_staging_edge = AsyncMock(return_value=(_MM(), True))
-    services.graph_store.get_document = AsyncMock(return_value=None)
+
+    # Edge execution reads the supersedes target's lifecycle state to
+    # settle the transition before writing the edge. These tests ingest
+    # their targets in the same batch, so the double reports them present
+    # and active rather than absent.
+    async def _get_document(doc_id):
+        doc = _MM()
+        doc.lifecycle_status = "active"
+        return doc
+
+    services.graph_store.get_document = AsyncMock(side_effect=_get_document)
     services.graph_store.update_document = AsyncMock()
 
     return services
@@ -1090,6 +1123,7 @@ def _make_chain_services(
     """Build a SAGEServices mock backed by a _MockGraphState."""
     state = _MockGraphState(docs, edges)
     services = MagicMock()
+    services.lifecycle_service.transition_table = _base_transition_table()
     services.config.abstraction.enabled = abstraction_enabled
     services.graph_store.list_all_documents = AsyncMock(side_effect=state.list_all_documents)
     services.graph_store.query_documents = AsyncMock(side_effect=state.query_documents)
@@ -1534,3 +1568,84 @@ class TestChainRepair:
         assert state.removed_edge_ids == []
         # Repair lands in Tier 2 staging
         assert result.edges_staged.get("supersedes", 0) >= 2
+
+    @pytest.mark.asyncio
+    async def test_cr_005_repair_withheld_when_replacement_add_is_gated(self):
+        """A repair whose replacement add is gated leaves the chain intact.
+
+        Chain repair removes an edge and adds the ones that replace it.
+        When a replacement add cannot be created -- its target holds a state
+        the vault's table neither supersedes from nor lands a supersession
+        in -- executing the removal anyway would sever the chain: the edge
+        that existed is gone, its target is orphaned, and the only signal is
+        a warning. The group is settled as a unit instead, so the batch never
+        leaves the graph holding fewer supersedes edges than it found.
+
+        End-to-end through ``plan_batch_edges`` rather than against
+        ``resolve_and_execute`` directly, because the planner is what
+        produces the removal-plus-gated-add shape the gate has to reason
+        about: ``plan_batch_edges`` admits a non-active document into the
+        candidate set via ``in_repair_scope``, which is what makes a
+        ``completed`` mid-chain predecessor reachable at all.
+        """
+        V1_ID = "cccccccc_v1"
+        V3_ID = "cccccccc_v3"
+        v1 = _make_document(
+            V1_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v1",
+            tags=["PV06"],
+            # Neither supersedable nor a supersede landing state under the
+            # base lifecycle, so the v2->v1 replacement add is gated.
+            lifecycle_status="completed",
+        )
+        v3 = _make_document(
+            V3_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        existing_edge = _make_edge(
+            _E_V3_V1,
+            V3_ID,
+            V1_ID,
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
+            rationale_kind=RationaleKind.VERSION_CHAIN,
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+        svc = BatchIngestService()
+
+        before = {(e.source_id, e.target_id) for e in state.edges.values()}
+
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        after = {(e.source_id, e.target_id) for e in state.edges.values()}
+
+        # The invariant: the repair took nothing away.
+        assert before <= after, f"repair severed edges: {before - after}"
+        assert _E_V3_V1 in state.edges
+        assert state.removed_edge_ids == []
+        assert result.edges_removed == 0
+
+        # The group is settled as a unit, so the sound half of the repair
+        # (v3->v2) is withheld too: keeping v3->v1 and adding v3->v2 would
+        # leave v3 with two outgoing supersedes edges.
+        assert result.edges_created.get("supersedes", 0) == 0
+
+        # Both facts reach the caller: why the add was refused, and that a
+        # removal was withheld as a result.
+        reasons = {w["reason"] for w in result.edge_warnings}
+        assert "supersede_target_not_transitionable" in reasons
+        assert "chain_repair_withheld" in reasons
+
+        # v1 is untouched -- not transitioned, and still linked.
+        assert state.docs[V1_ID].lifecycle_status == "completed"

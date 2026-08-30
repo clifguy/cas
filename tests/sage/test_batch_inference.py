@@ -5,7 +5,7 @@ layer per
 
   - Version chain inference (EI-013 through EI-018)
   - Filename code match inference (EI-019 through EI-024)
-  - Two-phase orchestration (EI-025 through EI-032)
+  - Two-phase orchestration (EI-025 through EI-039)
   - plan_batch_edges batch-context entry point (BI-001 through BI-004)
   - Migration boundary guard (BI-005)
 
@@ -27,6 +27,7 @@ from uuid import uuid4
 
 import pytest
 
+from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, PipelineStatus, RationaleKind, SourceType
 from sage.models.schemas import Document, Edge
 from sage.services.batch_inference import (
@@ -43,6 +44,83 @@ from sage.services.filename_parser import (
     format_version,
     normalize_version,
 )
+
+
+def _table_with(*transitions: tuple[str, str, str]) -> TransitionTable:
+    """Build a TransitionTable from (from_state, action, to_state) triples.
+
+    Each supersede test states its own lifecycle contract inline rather
+    than borrowing the base vault's. That matters here: under the base
+    table (``active --supersede--> archived``) the state literals and the
+    table-derived values coincide, so a test using only that table cannot
+    tell a hardcoded transition from a derived one.
+    """
+    return TransitionTable(
+        [
+            LifecycleTransition(
+                from_state=from_state,
+                action=action,
+                to_state=to_state,
+                creates_edge="supersedes" if action == "supersede" else None,
+            )
+            for from_state, action, to_state in transitions
+        ]
+    )
+
+
+# The base vault lifecycle (tests/sage/conftest.py::minimal_vault_config_dict).
+BASE_TABLE = _table_with(("active", "supersede", "archived"))
+
+
+class _SupersedeOps:
+    """Records the Tier-1 link requests resolve_and_execute issues."""
+
+    def __init__(self):
+        self.linked = []
+
+    async def _create_edge(self, request):
+        self.linked.append(request)
+        from unittest.mock import MagicMock
+
+        return MagicMock(), True
+
+
+class _SupersedeStore:
+    """Graph store seeded with {document_id: lifecycle_status}.
+
+    Records staging inserts and lifecycle writes, and applies those writes
+    to the seeded state, so a test can assert on where documents ended up
+    rather than on a count it fixed in advance. An id absent from the seed
+    reads back as a missing document.
+    """
+
+    def __init__(self, docs: dict[str, str]):
+        self.staged = []
+        self.updated = []
+        self._docs = dict(docs)
+
+    def state_of(self, doc_id: str) -> str | None:
+        return self._docs.get(doc_id)
+
+    async def insert_staging_edge(self, edge, on_conflict="raise"):
+        self.staged.append(edge)
+        return edge, True
+
+    async def get_document(self, doc_id):
+        from unittest.mock import MagicMock
+
+        status = self._docs.get(doc_id)
+        if status is None:
+            return None
+        mock_doc = MagicMock()
+        mock_doc.lifecycle_status = status
+        return mock_doc
+
+    async def update_document(self, doc_id, updates):
+        self.updated.append((doc_id, updates))
+        if "lifecycle_status" in updates:
+            self._docs[doc_id] = updates["lifecycle_status"]
+        return None
 
 
 def _pim_metadata_extraction():
@@ -418,7 +496,7 @@ class TestFilenameCodeMatch:
 
 
 # ---------------------------------------------------------------------------
-# 3. Two-Phase Orchestration (EI-025 through EI-032)
+# 3. Two-Phase Orchestration (EI-025 through EI-039)
 # Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
@@ -489,14 +567,29 @@ class TestTwoPhaseOrchestration:
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
+                self.updated = []
 
             async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
                 return edge, True
 
+            async def get_document(self, doc_id):
+                # These tests exercise id resolution and tier routing, not
+                # the supersede lifecycle gate: every target is supersedable
+                # so the gate lets the planned edges through.
+                from unittest.mock import MagicMock
+
+                mock_doc = MagicMock()
+                mock_doc.lifecycle_status = "active"
+                return mock_doc
+
+            async def update_document(self, doc_id, updates):
+                self.updated.append((doc_id, updates))
+                return None
+
         mock_ops = MockGraphOps()
         mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, path_to_id, mock_store, mock_ops)
+        result = await resolve_and_execute(plan, path_to_id, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
         assert len(mock_ops.linked) == 1
@@ -540,14 +633,29 @@ class TestTwoPhaseOrchestration:
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
+                self.updated = []
 
             async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
                 return edge, True
 
+            async def get_document(self, doc_id):
+                # These tests exercise id resolution and tier routing, not
+                # the supersede lifecycle gate: every target is supersedable
+                # so the gate lets the planned edges through.
+                from unittest.mock import MagicMock
+
+                mock_doc = MagicMock()
+                mock_doc.lifecycle_status = "active"
+                return mock_doc
+
+            async def update_document(self, doc_id, updates):
+                self.updated.append((doc_id, updates))
+                return None
+
         mock_ops = MockGraphOps()
         mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
         assert result.edges_staged == {"covers": 1}
@@ -593,14 +701,29 @@ class TestTwoPhaseOrchestration:
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
+                self.updated = []
 
             async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
                 return edge, True
 
+            async def get_document(self, doc_id):
+                # These tests exercise id resolution and tier routing, not
+                # the supersede lifecycle gate: every target is supersedable
+                # so the gate lets the planned edges through.
+                from unittest.mock import MagicMock
+
+                mock_doc = MagicMock()
+                mock_doc.lifecycle_status = "active"
+                return mock_doc
+
+            async def update_document(self, doc_id, updates):
+                self.updated.append((doc_id, updates))
+                return None
+
         mock_ops = MockGraphOps()
         mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, path_to_id, mock_store, mock_ops)
+        result = await resolve_and_execute(plan, path_to_id, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_dropped == 1
         assert result.edges_created == {"supersedes": 1}
@@ -616,45 +739,9 @@ class TestTwoPhaseOrchestration:
             ]
         )
 
-        class MockGraphOps:
-            def __init__(self):
-                self.linked = []
-
-            async def _create_edge(self, request):
-                self.linked.append(request)
-                from unittest.mock import MagicMock
-
-                return MagicMock(), True
-
-        class MockGraphStore:
-            def __init__(self):
-                self.staged = []
-                self.updated = []
-                self._docs = {
-                    DOC_V1: {"lifecycle_status": "active"},
-                }
-
-            async def insert_staging_edge(self, edge, on_conflict="raise"):
-                self.staged.append(edge)
-                return edge, True
-
-            async def get_document(self, doc_id):
-                from unittest.mock import MagicMock
-
-                info = self._docs.get(doc_id)
-                if info is None:
-                    return None
-                mock_doc = MagicMock()
-                mock_doc.lifecycle_status = info["lifecycle_status"]
-                return mock_doc
-
-            async def update_document(self, doc_id, updates):
-                self.updated.append((doc_id, updates))
-                return None
-
-        mock_ops = MockGraphOps()
-        mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "active"})
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
         assert result.edges_created == {"supersedes": 1}
         # Target document must have been transitioned to "archived"
@@ -665,8 +752,19 @@ class TestTwoPhaseOrchestration:
         assert "updated_at" in updates
 
     @pytest.mark.asyncio
-    async def test_ei_032_supersedes_skips_non_active_target(self):
-        """Supersedes lifecycle transition skipped when target not active."""
+    async def test_ei_032_supersede_gated_when_target_state_forbids_it(self):
+        """A target whose state forbids supersede yields no edge and a warning.
+
+        The edge and the transition are two halves of one supersession. The
+        gate runs before the write, so a forbidden target produces neither
+        half -- asserted on ``linked`` as well as ``edges_created``, since
+        a gate that ran after the write would leave the edge behind while
+        still reporting the warning.
+
+        The target is ``completed``: a state the table neither permits
+        supersede from nor lands a supersession in, so it is distinct from
+        the already-superseded case covered by EI-038.
+        """
         DOC_V3 = "aaaaaaa3_doc_v3"
         DOC_V2 = "aaaaaaa2_doc_v2"
         plan = EdgePlan(
@@ -675,49 +773,267 @@ class TestTwoPhaseOrchestration:
             ]
         )
 
-        class MockGraphOps:
-            def __init__(self):
-                self.linked = []
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V2: "completed"})
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
 
-            async def _create_edge(self, request):
-                self.linked.append(request)
-                from unittest.mock import MagicMock
+        assert result.edges_created == {}
+        assert mock_ops.linked == []
+        assert result.edges_dropped == 1
+        assert len(mock_store.updated) == 0
 
-                return MagicMock(), True
+        assert len(result.warnings) == 1
+        warning = result.warnings[0]
+        # IngestSummary.edge_warnings is typed dict[str, str]; the gated
+        # entry must carry the same keys as every other warning reason.
+        assert set(warning) == {"source", "target", "edge_type", "reason", "detail"}
+        assert all(isinstance(value, str) for value in warning.values())
+        assert warning["reason"] == "supersede_target_not_transitionable"
+        assert warning["source"] == DOC_V3
+        assert warning["target"] == DOC_V2
+        # The detail names the observed state and the permitted ones, both
+        # read off the table rather than restated.
+        assert "completed" in warning["detail"]
+        assert "active" in warning["detail"]
 
-        class MockGraphStore:
-            def __init__(self):
-                self.staged = []
-                self.updated = []
-                self._docs = {
-                    DOC_V2: {"lifecycle_status": "archived"},
-                }
+    @pytest.mark.asyncio
+    async def test_ei_034_supersede_target_state_comes_from_the_table(self):
+        """The state a superseded target lands in is the table's to_state.
 
-            async def insert_staging_edge(self, edge, on_conflict="raise"):
-                self.staged.append(edge)
-                return edge, True
+        The table here declares a to_state that is not ``archived``, so a
+        hardcoded landing state fails rather than coinciding with the
+        derived one as it does under the base lifecycle.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
 
-            async def get_document(self, doc_id):
-                from unittest.mock import MagicMock
-
-                info = self._docs.get(doc_id)
-                if info is None:
-                    return None
-                mock_doc = MagicMock()
-                mock_doc.lifecycle_status = info["lifecycle_status"]
-                return mock_doc
-
-            async def update_document(self, doc_id, updates):
-                self.updated.append((doc_id, updates))
-                return None
-
-        mock_ops = MockGraphOps()
-        mock_store = MockGraphStore()
-        result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "active"})
+        result = await resolve_and_execute(
+            plan,
+            {},
+            mock_store,
+            mock_ops,
+            _table_with(("active", "supersede", "retired")),
+        )
 
         assert result.edges_created == {"supersedes": 1}
-        # No lifecycle update -- target was already archived
+        assert len(mock_store.updated) == 1
+        updated_id, updates = mock_store.updated[0]
+        assert updated_id == DOC_V1
+        assert updates["lifecycle_status"] == "retired"
+        assert "updated_at" in updates
+
+    @pytest.mark.asyncio
+    async def test_ei_035_supersede_permitted_from_a_configured_non_active_state(self):
+        """A vault may declare supersede from a state other than 'active'.
+
+        The permissive direction of the same property: a target in a state
+        the table declares is superseded, where a hardcoded ``active``
+        precondition would skip it.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "completed"})
+        result = await resolve_and_execute(
+            plan,
+            {},
+            mock_store,
+            mock_ops,
+            _table_with(
+                ("active", "supersede", "archived"),
+                ("completed", "supersede", "archived"),
+            ),
+        )
+
+        assert result.edges_created == {"supersedes": 1}
+        assert len(mock_store.updated) == 1
+        updated_id, updates = mock_store.updated[0]
+        assert updated_id == DOC_V1
+        assert updates["lifecycle_status"] == "archived"
+
+    @pytest.mark.asyncio
+    async def test_ei_036_no_supersedes_edge_outlives_an_unsuperseded_target(self):
+        """Every supersedes edge written leaves its target in a superseded state.
+
+        The invariant the gate exists to hold, over a mixed batch: a
+        permitted supersede, a target already superseded, a forbidden one,
+        and an unrelated Tier-2 edge. Asserted over the final states of the
+        targets actually linked -- derived from what the run did rather
+        than from counts fixed in advance, so it keeps its meaning if the
+        batch composition changes, and so it covers the transitioned and
+        already-transitioned cases with one statement.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        DOC_B2 = "bbbbbbb2_doc_b2"
+        DOC_B1 = "bbbbbbb1_doc_b1"
+        DOC_E2 = "eeeeeee2_doc_e2"
+        DOC_E1 = "eeeeeee1_doc_e1"
+        DOC_C = "cccccccc_doc_c"
+        DOC_D = "dddddddd_doc_d"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+                PlannedEdge(DOC_E2, DOC_E1, EdgeType.SUPERSEDES, 1, "version_chain", "e2 > e1"),
+                PlannedEdge(DOC_B2, DOC_B1, EdgeType.SUPERSEDES, 1, "version_chain", "b2 > b1"),
+                PlannedEdge(DOC_C, DOC_D, EdgeType.COVERS, 2, "filename_code_match", "c covers d"),
+            ]
+        )
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore(
+            {
+                DOC_V1: "active",  # permitted: transitions
+                DOC_E1: "archived",  # already superseded: no write needed
+                DOC_B1: "completed",  # forbidden: gated
+            }
+        )
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        superseded = {
+            request.target_id
+            for request in mock_ops.linked
+            if request.edge_type == EdgeType.SUPERSEDES
+        }
+        stranded = {target for target in superseded if mock_store.state_of(target) != "archived"}
+        assert not stranded, f"supersedes edges point at unsuperseded targets: {stranded}"
+        # Both permitted shapes really did land; the forbidden one did not.
+        assert superseded == {DOC_V1, DOC_E1}
+
+        # The gate is scoped to Tier-1 supersedes; Tier-2 is untouched.
+        assert result.edges_staged == {"covers": 1}
+        assert result.edges_dropped == 1
+
+    @pytest.mark.asyncio
+    async def test_ei_040_supersede_target_read_failure_has_its_own_reason(self):
+        """A failed target read refuses the edge under a distinct reason.
+
+        Separate from ``lifecycle_transition_failed``, which means the edge
+        landed and only the transition failed. Here no edge exists at all,
+        so a caller triaging warnings must be able to tell the two apart.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _ExplodingStore(_SupersedeStore):
+            async def get_document(self, doc_id):
+                raise RuntimeError("storage unavailable")
+
+        mock_ops = _SupersedeOps()
+        mock_store = _ExplodingStore({DOC_V1: "active"})
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert result.edges_created == {}
+        assert mock_ops.linked == []
+        assert result.edges_dropped == 1
+        assert len(result.warnings) == 1
+        assert result.warnings[0]["reason"] == "supersede_target_read_failed"
+        assert "storage unavailable" in result.warnings[0]["detail"]
+
+    @pytest.mark.asyncio
+    async def test_ei_038_supersede_of_an_already_superseded_target_needs_no_write(self):
+        """A target already in a supersede landing state is linked, not gated.
+
+        Chain repair reaches this routinely: inserting an intermediate
+        version re-points a supersedes edge at a predecessor the
+        supersession being replaced already archived. The edge is sound --
+        the predecessor holds the state the edge asserts of it -- so it is
+        created, with no lifecycle write and no warning.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "archived"})
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert result.edges_created == {"supersedes": 1}
+        assert result.edges_dropped == 0
+        assert mock_store.updated == []
+        assert result.warnings == []
+
+    @pytest.mark.asyncio
+    async def test_ei_039_landing_state_recognition_is_table_derived(self):
+        """The 'already superseded' state is read off the table, not assumed.
+
+        Same shape as EI-038 against a table that lands supersessions in
+        ``retired``: a target already ``retired`` is linked without a
+        write, while ``archived`` -- inert under this table -- is gated.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        DOC_B2 = "bbbbbbb2_doc_b2"
+        DOC_B1 = "bbbbbbb1_doc_b1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+                PlannedEdge(DOC_B2, DOC_B1, EdgeType.SUPERSEDES, 1, "version_chain", "b2 > b1"),
+            ]
+        )
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({DOC_V1: "retired", DOC_B1: "archived"})
+        result = await resolve_and_execute(
+            plan,
+            {},
+            mock_store,
+            mock_ops,
+            _table_with(("active", "supersede", "retired")),
+        )
+
+        assert result.edges_created == {"supersedes": 1}
+        assert [request.target_id for request in mock_ops.linked] == [DOC_V1]
+        assert mock_store.updated == []
+        assert result.edges_dropped == 1
+        assert result.warnings[0]["target"] == DOC_B1
+
+    @pytest.mark.asyncio
+    async def test_ei_037_supersede_dropped_when_target_document_is_missing(self):
+        """An absent target has no state to check, so no edge is created."""
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        mock_ops = _SupersedeOps()
+        mock_store = _SupersedeStore({})  # DOC_V1 never ingested
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert result.edges_created == {}
+        assert mock_ops.linked == []
+        assert result.edges_dropped == 1
         assert len(mock_store.updated) == 0
+        assert len(result.warnings) == 1
+        # Its own reason, not the not-transitionable one: an absent document
+        # has no state to report against the table's permitted set.
+        assert result.warnings[0]["reason"] == "supersede_target_missing"
+        assert DOC_V1 in result.warnings[0]["detail"]
 
     def test_ei_029_empty_manifest_empty_plan(self):
         """Empty manifest produces empty edge plan."""
