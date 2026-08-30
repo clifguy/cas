@@ -58,6 +58,7 @@ T7 -- Pattern config drives behavior (per-vault configurability).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -210,8 +211,9 @@ def _make_document(
     source_path: str = "synthetic.md",
     pipeline_status: str = "abstraction_complete",
     lifecycle_status: str = "active",
+    updated_at: datetime | None = None,
 ) -> Document:
-    now = datetime.now(timezone.utc)
+    now = updated_at or datetime.now(timezone.utc)
     return Document(
         id=doc_id,
         title=title,
@@ -241,6 +243,7 @@ async def _seed_document(
     tier3_metadata: dict | None = None,
     pipeline_status: str = "abstraction_complete",
     lifecycle_status: str = "active",
+    updated_at: datetime | None = None,
 ) -> str:
     """Insert a target document directly into the graph store (no ingestion).
 
@@ -257,6 +260,7 @@ async def _seed_document(
         tier3_metadata=tier3_metadata,
         pipeline_status=pipeline_status,
         lifecycle_status=lifecycle_status,
+        updated_at=updated_at,
     )
     await svc.graph_store.insert_document(doc)
     return doc_id
@@ -542,6 +546,7 @@ async def test_t4_re_ingest_does_not_duplicate_edge(tmp_path, services):
         edge_inference_config=services.config.edge_inference,
         graph_store=services.graph_store,
         graph_ops_service=services.graph_ops_service,
+        resolution_states=services.config.lifecycle.supersession_surviving_states(),
     )
     assert result.edges_created == 0
     assert result.edges_existing == 1
@@ -1693,3 +1698,184 @@ def test_ts6_plan_reference_reconcile_delete_wrong_keep_manual_create_missing():
     assert to_create == {"right_adr", "new_target"}  # manual_x not duplicated
     assert "manual_x" not in to_delete
     assert "manual_y_dropped" not in to_delete  # manual edges are never deleted
+
+
+# ---------------------------------------------------------------------------
+# Resolution honours the vault's lifecycle configuration, not an `active` literal
+# ---------------------------------------------------------------------------
+
+_LIVE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_RETIRED = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+def _draft_landing_config_dict(tmp_path: Path) -> dict:
+    """A vault config landing ingest in `draft`, which supersede does not leave."""
+    config = copy.deepcopy(_vault_config_dict(tmp_path))
+    config["lifecycle"]["states"].append({"value": "draft", "label": "Draft"})
+    for transition in config["lifecycle"]["transitions"]:
+        if transition["from_state"] == "(new)":
+            transition["to_state"] = "draft"
+    config["lifecycle"]["transitions"].append(
+        {"from_state": "draft", "action": "activate", "to_state": "active"}
+    )
+    return config
+
+
+def test_supersession_retired_states_are_not_preferred(tmp_path):
+    """The preferred pool is the declared states a supersession does not land in.
+
+    Derived rather than enumerated: the base lifecycle yields
+    `{active, completed}` because `supersede` lands in `archived`, and a
+    vault that retires drafts into a state of its own has that state
+    excluded too — neither result is reachable from an `active` literal.
+
+    Anti-coincidental-pass: `superseded_draft` is deliberately left
+    non-terminal, so a derivation from `is_terminal` rather than from
+    the supersede rows would include it here and fail. Terminality and
+    supersession-retirement are orthogonal — a vault may declare a
+    reactivation out of the state a supersession lands in — and with the
+    flag set, that rival produces this same set and survives.
+    """
+    base = VaultConfig.model_validate(_vault_config_dict(tmp_path))
+    assert base.lifecycle.supersession_surviving_states() == frozenset({"active", "completed"})
+
+    variant = _draft_landing_config_dict(tmp_path)
+    variant["lifecycle"]["states"].append(
+        {"value": "superseded_draft", "label": "Superseded Draft"}
+    )
+    variant["lifecycle"]["transitions"].append(
+        {
+            "from_state": "draft",
+            "action": "supersede",
+            "to_state": "superseded_draft",
+            "creates_edge": "supersedes",
+        }
+    )
+    extended = VaultConfig.model_validate(variant)
+    surviving = extended.lifecycle.supersession_surviving_states()
+    assert surviving == frozenset({"active", "completed", "draft"})
+    assert "archived" not in surviving
+    assert "superseded_draft" not in surviving
+
+
+@pytest.mark.asyncio
+async def test_mention_prefers_completed_head_over_newer_archived_predecessor(tmp_path, services):
+    """With no active candidate, a completed head still beats a retired one.
+
+    Reachable under the *base* lifecycle, no configuration change needed:
+    a chain whose head was completed leaves the `active` filter empty, and
+    the fallthrough then ranks the whole match set by recency. A
+    supersession stamps the predecessor after the successor is inserted,
+    so the retired document is the newer one — which is why the archived
+    predecessor here carries the later `updated_at`. An implementation
+    that only widened the preference for non-`active` landing states
+    passes every other test and fails this one.
+    """
+    completed_id = _doc_id("adr_042_completed_head")
+    archived_id = _doc_id("adr_042_archived_predecessor")
+    await _seed_document(
+        services,
+        doc_id=completed_id,
+        title="ADR-042: Completed head",
+        doc_type="adr",
+        tags=["adr"],
+        tier3_metadata={"adr_id": "042"},
+        lifecycle_status="completed",
+        updated_at=_LIVE,
+    )
+    await _seed_document(
+        services,
+        doc_id=archived_id,
+        title="ADR-042: Superseded predecessor",
+        doc_type="adr",
+        tags=["adr"],
+        tier3_metadata={"adr_id": "042"},
+        lifecycle_status="archived",
+        updated_at=_RETIRED,
+    )
+    retired = await services.graph_store.get_document(archived_id)
+    live = await services.graph_store.get_document(completed_id)
+    assert retired.updated_at > live.updated_at, (
+        "the retired document must be the newer one, or the recency tiebreak "
+        "returns the right answer by accident and the test proves nothing"
+    )
+
+    src_path = _write_md(
+        tmp_path,
+        "note_cites_adr_042_completed.md",
+        "# Note\n\nThis cites CAS-ADR-042.\n",
+    )
+    _src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1, (
+        f"expected one edge, got {len(edges)}: {[(e.source_id, e.target_id) for e in edges]}"
+    )
+    assert edges[0].target_id == completed_id, (
+        "resolution fell through to the newer archived predecessor"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mention_resolves_to_fresh_document_under_non_active_landing_state(
+    tmp_path, monkeypatch
+):
+    """A vault landing ingest in `draft` resolves mentions to the fresh document.
+
+    Every freshly ingested document misses an `active` literal here, so
+    the preference empties on every resolution and the fallthrough ranks
+    the draft head against the archived predecessor by recency alone. The
+    predecessor is stamped later for exactly that reason.
+    """
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    config = VaultConfig.model_validate(_draft_landing_config_dict(tmp_path))
+    async with initialize_services_for_test(
+        config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    ) as svc:
+        draft_id = _doc_id("adr_042_draft_head")
+        archived_id = _doc_id("adr_042_archived_under_draft_landing")
+        await _seed_document(
+            svc,
+            doc_id=draft_id,
+            title="ADR-042: Draft head",
+            doc_type="adr",
+            tags=["adr"],
+            tier3_metadata={"adr_id": "042"},
+            lifecycle_status="draft",
+            updated_at=_LIVE,
+        )
+        await _seed_document(
+            svc,
+            doc_id=archived_id,
+            title="ADR-042: Superseded predecessor",
+            doc_type="adr",
+            tags=["adr"],
+            tier3_metadata={"adr_id": "042"},
+            lifecycle_status="archived",
+            updated_at=_RETIRED,
+        )
+        retired = await svc.graph_store.get_document(archived_id)
+        live = await svc.graph_store.get_document(draft_id)
+        assert retired.updated_at > live.updated_at, (
+            "the retired document must be the newer one for this test to discriminate"
+        )
+
+        src_path = _write_md(
+            tmp_path,
+            "note_cites_adr_042_draft.md",
+            "# Note\n\nThis cites CAS-ADR-042.\n",
+        )
+        src_doc_id, edges = await _ingest_and_get_edges(svc, src_path)
+
+        source = await svc.graph_store.get_document(src_doc_id)
+        assert source.lifecycle_status == "draft", (
+            "the vault must actually be landing ingest in draft for this test to bite"
+        )
+        assert len(edges) == 1, (
+            f"expected one edge, got {len(edges)}: {[(e.source_id, e.target_id) for e in edges]}"
+        )
+        assert edges[0].target_id == draft_id, (
+            "resolution fell through to the newer archived predecessor"
+        )
