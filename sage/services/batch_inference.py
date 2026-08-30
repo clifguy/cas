@@ -166,9 +166,11 @@ class _SettledEdge:
     """A planned edge with its ids resolved and its disposition decided.
 
     Settlement is separated from execution because chain repair's removals
-    are only safe once the adds that replace them are known to be
-    creatable; deciding every edge first is what lets the removal pass
-    consult that outcome.
+    must not commit while a replacement add is already known to be
+    refused; deciding every edge first is what lets the removal pass
+    consult that outcome. Settling an add does not make it creatable --
+    the write can still fail -- so this ordering closes the refusal case
+    only.
     """
 
     planned: PlannedEdge
@@ -616,8 +618,8 @@ async def resolve_and_execute(
 
     # Pass 1 -- settle every edge without writing anything. A Tier-1
     # supersedes whose target cannot be superseded has to be known before
-    # the removal pass runs, because chain repair's removals are only safe
-    # once their replacement adds are known to be creatable.
+    # the removal pass runs, so that chain repair does not commit a removal
+    # whose replacement has already been refused.
     settled: list[_SettledEdge] = []
     for planned in edge_plan.edges:
         source_id = path_to_id.get(planned.source_ref, planned.source_ref)
