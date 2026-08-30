@@ -23,6 +23,7 @@ from sage.models.enums import (
     LIGHT_DEFAULT_THRESHOLD,
     TERMINAL_PIPELINE_STATUSES,
     EdgeType,
+    RationaleKind,
     ResolutionPolicy,
     ResponseMode,
 )
@@ -332,15 +333,25 @@ class LifecycleService:
         self,
         predecessor: Document,
         successor_id: str,
+        *,
+        rationale: str | None = None,
+        rationale_kind: RationaleKind = RationaleKind.MANUAL,
     ) -> SupersedeTransition:
         """Validate the supersede transition and build the writes for it
         without committing. Used by IngestionService to bundle the
         predecessor flip and edge insert into the same database transaction
-        as the new document insert (BH-136).
+        as the new document insert (BH-136), and by batch edge inference
+        to commit a planned Tier-1 supersession atomically.
 
         The caller is responsible for ensuring `predecessor` is freshly
         loaded and that the calling context holds whatever lock is
         appropriate.
+
+        `rationale` and `rationale_kind` land on the built edge. An
+        auto-inference caller must stamp its typed provenance here — the
+        chain-repair provenance gate reads the `rationale_kind` column,
+        and an inferred edge left at the default `manual` would downgrade
+        every future repair of its chain to staging review.
 
         Raises:
             SupersedeTargetNotActiveError: `supersede` is not a legal
@@ -373,5 +384,7 @@ class LifecycleService:
             edge_type=EdgeType.SUPERSEDES,
             resolution_policy=ResolutionPolicy.NONE,
             created_at=now,
+            rationale=rationale,
+            rationale_kind=rationale_kind,
         )
         return SupersedeTransition(predecessor_updates=predecessor_updates, edge=edge)

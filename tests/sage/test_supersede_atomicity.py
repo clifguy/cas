@@ -197,3 +197,193 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
     assert pred_after.lifecycle_status == "archived"
     edges_after = await _supersedes_edges(graph_store, v2.document.id, v1.document.id)
     assert len(edges_after) == 1
+
+
+# ---------------------------------------------------------------------------
+# Batch edge inference: the settlement commit shares the same guarantees
+# ---------------------------------------------------------------------------
+
+
+async def test_batch_supersede_settlement_rolls_back_on_edge_failure(
+    graph_store, lifecycle_service, lock_manager, graph_ops_service, monkeypatch
+):
+    """A batch settlement that fails mid-commit leaves neither half behind.
+
+    The batch path commits the predecessor transition and the supersedes
+    edge through the same atomic primitive as the lifecycle surface, so
+    the BH-135 guarantee holds here too: no supersedes edge outlives an
+    untransitioned target. The failing group's chain-repair removal is
+    withheld as well -- the graph ends holding no fewer supersedes edges
+    than it started with. Restoring the store and re-running the same
+    plan converges cleanly, which is the recovery story the atomicity
+    buys.
+    """
+    from sage.models.enums import EdgeType, RationaleKind
+    from sage.models.schemas import Edge
+    from sage.services.batch_inference import (
+        EdgePlan,
+        PlannedEdge,
+        PlannedEdgeRemoval,
+        resolve_and_execute,
+    )
+
+    pred = _make_doc(_id("pred_batch"), lifecycle_status="active")
+    succ = _make_doc(_id("succ_batch"), lifecycle_status="active")
+    old = _make_doc(_id("old_batch"), lifecycle_status="archived")
+    for doc in (pred, succ, old):
+        await graph_store.insert_document(doc)
+    # The edge chain repair wants to remove, in the same repair group as
+    # the add that will fail.
+    old_edge = Edge(
+        id="00000000-0000-4000-8000-00000000e001",
+        source_id=succ.id,
+        target_id=old.id,
+        edge_type=EdgeType.SUPERSEDES,
+        created_at=datetime.now(timezone.utc),
+        rationale_kind=RationaleKind.VERSION_CHAIN,
+    )
+    await graph_store.insert_edge(old_edge)
+
+    plan = EdgePlan(
+        edges=[
+            PlannedEdge(
+                succ.id,
+                pred.id,
+                EdgeType.SUPERSEDES,
+                1,
+                "version_chain",
+                "[version_chain] v2 supersedes v1",
+                repair_group="grp",
+            )
+        ],
+        removals=[
+            PlannedEdgeRemoval(
+                edge_id=old_edge.id,
+                source_id=succ.id,
+                target_id=old.id,
+                edge_type=EdgeType.SUPERSEDES,
+                reason="chain_repair: no longer in desired chain",
+                repair_group="grp",
+            )
+        ],
+    )
+
+    original_exec_insert_edge = graph_store._exec_insert_edge
+    fired = 0
+
+    def failing_exec_insert_edge(conn, edge):
+        nonlocal fired
+        fired += 1
+        raise RuntimeError("simulated edge-insert failure")
+
+    monkeypatch.setattr(graph_store, "_exec_insert_edge", failing_exec_insert_edge)
+
+    result = await resolve_and_execute(
+        plan, {}, graph_store, graph_ops_service, lifecycle_service, lock_manager
+    )
+
+    assert fired > 0, "control: the injected failure never fired"
+    # Neither half landed: target untransitioned, no edge pointing at it.
+    pred_after = await graph_store.get_document(pred.id)
+    assert pred_after.lifecycle_status == "active", (
+        "the lifecycle flip survived a failed edge insert -- "
+        "the transactional rollback did not fire"
+    )
+    assert await _supersedes_edges(graph_store, succ.id, pred.id) == []
+    # The removal was withheld: the chain is no shorter than it was found.
+    assert await _supersedes_edges(graph_store, succ.id, old.id) != []
+    assert result.edges_removed == 0
+    reasons = {w["reason"] for w in result.warnings}
+    assert reasons == {"edge_creation_failed", "chain_repair_withheld"}
+
+    # Restore and re-run: the same plan converges.
+    monkeypatch.setattr(graph_store, "_exec_insert_edge", original_exec_insert_edge)
+    result2 = await resolve_and_execute(
+        plan, {}, graph_store, graph_ops_service, lifecycle_service, lock_manager
+    )
+    assert result2.edges_created == {"supersedes": 1}
+    assert result2.edges_removed == 1
+    pred_after = await graph_store.get_document(pred.id)
+    assert pred_after.lifecycle_status == "archived"
+    assert await graph_store.has_supersedes_successor(pred.id)
+    committed = await _supersedes_edges(graph_store, succ.id, pred.id)
+    assert len(committed) == 1
+    assert committed[0].rationale_kind == RationaleKind.VERSION_CHAIN
+    assert await _supersedes_edges(graph_store, succ.id, old.id) == []
+
+
+async def test_batch_supersede_race_lands_exactly_one_settlement(
+    graph_store, lifecycle_service, lock_manager, graph_ops_service, monkeypatch
+):
+    """Two concurrent settlements of one predecessor: exactly one lands.
+
+    Both callers pass the advisory settlement check against the same
+    still-active predecessor -- a barrier on the first two reads
+    guarantees the overlap -- and the per-predecessor lock plus in-lock
+    re-validation refuses the loser: one lifecycle write, one supersedes
+    edge, and a `supersede_target_not_transitionable` warning for the
+    other caller, instead of a forked chain.
+    """
+    import asyncio
+
+    from sage.models.enums import EdgeType
+    from sage.services.batch_inference import EdgePlan, PlannedEdge, resolve_and_execute
+
+    pred = _make_doc(_id("pred_race"), lifecycle_status="active")
+    succ_a = _make_doc(_id("succ_race_a"), lifecycle_status="active")
+    succ_b = _make_doc(_id("succ_race_b"), lifecycle_status="active")
+    for doc in (pred, succ_a, succ_b):
+        await graph_store.insert_document(doc)
+
+    # Barrier: the first two reads of the predecessor are the two
+    # settlement reads; hold both until both have read, so each caller
+    # passes the advisory check against the still-active state.
+    settlement_reads = 0
+    both_settled = asyncio.Event()
+    real_get_document = graph_store.get_document
+
+    async def synced_get_document(doc_id):
+        nonlocal settlement_reads
+        doc = await real_get_document(doc_id)
+        if doc_id == pred.id:
+            settlement_reads += 1
+            if settlement_reads == 2:
+                both_settled.set()
+            if settlement_reads <= 2:
+                await both_settled.wait()
+        return doc
+
+    monkeypatch.setattr(graph_store, "get_document", synced_get_document)
+
+    def _plan(successor_id: str) -> EdgePlan:
+        return EdgePlan(
+            edges=[
+                PlannedEdge(
+                    successor_id,
+                    pred.id,
+                    EdgeType.SUPERSEDES,
+                    1,
+                    "version_chain",
+                    "[version_chain] race",
+                )
+            ]
+        )
+
+    result_a, result_b = await asyncio.gather(
+        resolve_and_execute(
+            _plan(succ_a.id), {}, graph_store, graph_ops_service, lifecycle_service, lock_manager
+        ),
+        resolve_and_execute(
+            _plan(succ_b.id), {}, graph_store, graph_ops_service, lifecycle_service, lock_manager
+        ),
+    )
+
+    created = [r.edges_created.get("supersedes", 0) for r in (result_a, result_b)]
+    assert sorted(created) == [0, 1], f"expected exactly one settlement, got {created}"
+    all_warnings = result_a.warnings + result_b.warnings
+    assert [w["reason"] for w in all_warnings] == ["supersede_target_not_transitionable"]
+
+    pred_after = await real_get_document(pred.id)
+    assert pred_after.lifecycle_status == "archived"
+    inbound = await graph_store.get_edges_by_target(pred.id, "supersedes")
+    assert len(inbound) == 1, f"the chain forked: {[(e.source_id, e.target_id) for e in inbound]}"

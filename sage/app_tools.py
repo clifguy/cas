@@ -204,19 +204,24 @@ def register_app_tools(
         before anything is written, a chain repair whose replacement add is
         refused withholds its removals as well, under
         ``chain_repair_withheld``, rather than severing the chain it was
-        repairing. A replacement that settles cleanly and then fails on
-        write is not covered — the removals have committed by then, and the
-        shortened chain is reported as ``edge_creation_failed``.
+        repairing. Replacement adds are written before the removals they
+        replace, and a replacement that fails on write
+        (``edge_creation_failed``) withholds its group's removals the same
+        way, so a repair never leaves the graph holding fewer supersedes
+        edges than it found.
 
-        The guarantee is bounded: no edge is created when the transition is
-        known-forbidden at the time the check runs. It is not a
-        transaction — the edge insert and the lifecycle write are two calls
-        under no shared lock, so a write that fails after the edge lands
-        leaves the edge in place with a ``lifecycle_transition_failed``
-        entry as the only signal. The follow-up chunk-store lifecycle sync
-        that mirrors ``update_lifecycles`` is likewise best-effort: a sync
-        failure is reported as a ``chunk_lifecycle_sync_failed`` entry
-        while the document write stands. None of these raise.
+        A transition-carrying supersession commits its edge and its
+        lifecycle write as one database transaction, under the same
+        per-predecessor lock ``update_lifecycles`` and single-document
+        supersede ingest take — a failed commit leaves neither half
+        behind, and a concurrent state change refuses the edge instead of
+        forking the chain. Only the single-row write that converges a
+        pre-existing edge's outstanding transition can still fail with the
+        edge standing, reported as ``lifecycle_transition_failed``. The
+        follow-up chunk-store lifecycle sync that mirrors
+        ``update_lifecycles`` is likewise best-effort: a sync failure is
+        reported as a ``chunk_lifecycle_sync_failed`` entry while the
+        document write stands. None of these raise.
 
         Tier-1 provenance-gate downgrade: Tier-1 ``supersedes`` adds are
         gated on provenance — if any existing edge in a candidate version

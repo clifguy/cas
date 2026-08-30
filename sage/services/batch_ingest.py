@@ -188,19 +188,22 @@ class BatchIngestService:
         settled before anything is written, a chain repair whose
         replacement add is refused withholds its removals as well,
         under ``chain_repair_withheld``, rather than severing the
-        chain it was repairing. A replacement that settles cleanly
-        and then fails on write is not covered — the removals have
-        committed by then, and the shortened chain is reported as
-        ``edge_creation_failed``.
+        chain it was repairing. Replacement adds are written before
+        the removals they replace, and a replacement that fails on
+        write (``edge_creation_failed``) withholds its group's
+        removals the same way, so a repair never leaves the graph
+        holding fewer supersedes edges than it found.
 
-        The guarantee is bounded: no edge is created when the
-        transition is known-forbidden at the time the check runs. It is
-        not a transaction. The edge insert and the lifecycle write are
-        two calls under no shared lock, so a write that fails after the
-        edge lands leaves the edge in place with a
-        ``lifecycle_transition_failed`` warning as the only signal, and
-        a state change racing the check is not detected. A successful
-        write is followed by the chunk-store lifecycle sync the
+        A transition-carrying supersession commits its edge and its
+        lifecycle write as one database transaction, under the same
+        per-predecessor lock the explicit lifecycle and ingest
+        surfaces take, against a fresh in-lock read — a failed commit
+        leaves neither half behind, and a state change racing the
+        check refuses the edge instead of forking the chain. Only the
+        single-row write that converges a pre-existing edge's
+        outstanding transition can still fail with the edge standing,
+        reported as ``lifecycle_transition_failed``. A successful
+        transition is followed by the chunk-store lifecycle sync the
         explicit lifecycle path performs, keeping chunk-level
         pre-filtering aligned with the document's new state; a sync
         failure warns as ``chunk_lifecycle_sync_failed``. All of these
@@ -305,11 +308,15 @@ class BatchIngestService:
                 path_to_id,
                 vault_services.graph_store,
                 vault_services.graph_ops_service,
-                # The table the lifecycle service already built for this
-                # vault, not a second one built from the same config: one
-                # table means the supersede transition cannot diverge
-                # between the batch path and the explicit lifecycle path.
-                vault_services.lifecycle_service.transition_table,
+                # The vault's own lifecycle service and lock manager, not
+                # parallel constructions: the batch path validates against
+                # the same transition table, builds its writes through the
+                # same prepare step, and serializes on the same
+                # per-predecessor locks as the explicit lifecycle and
+                # ingest surfaces, so a supersession cannot behave
+                # differently for arriving through this path.
+                vault_services.lifecycle_service,
+                vault_services.lock_manager,
                 # For the chunk-store lifecycle sync that follows a
                 # supersede's document write.
                 content_store=vault_services.content_store,

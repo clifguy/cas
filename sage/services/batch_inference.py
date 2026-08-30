@@ -24,7 +24,9 @@ Public entry points:
   invokes during Phase 1.
 * ``resolve_and_execute`` -- Phase 2 executor. Resolves file paths to
   document IDs and writes Tier 1 edges via ``GraphOpsService._create_edge``
-  and Tier 2 edges via ``GraphStore.insert_staging_edge``.
+  (or, for a supersession carrying a lifecycle transition,
+  ``GraphStore.supersede_atomic`` under the per-predecessor lock) and
+  Tier 2 edges via ``GraphStore.insert_staging_edge``.
 
 The provenance gate inside ``_chain_repair_plan`` (CAS-ADR-019) is the
 canonical implementation of that decision; relocations must preserve it
@@ -39,15 +41,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sage.adapters.interfaces import ContentStore, GraphStore
-from sage.config import TransitionTable
+from sage.adapters.interfaces import ContentStore, GraphStore, NaturalKeyConflict
+from sage.api.errors import SupersedeTargetNotActiveError
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.services.graph_ops import GraphOpsService
+from sage.storage.locks import DocumentLockManager
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
+    from sage.services.lifecycle import LifecycleService
 
 logger = logging.getLogger(__name__)
 
@@ -84,27 +88,6 @@ _METHOD_TO_RATIONALE_KIND: dict[str, RationaleKind] = {
     "filename_code_match": RationaleKind.FILENAME_CODE_MATCH,
     "identifier_mention": RationaleKind.REFERENCES_MENTION,
 }
-
-
-def _supersede_landing_states(transition_table: TransitionTable) -> set[str]:
-    """The states a `supersede` transition can leave a document in.
-
-    A target already in one of these has nothing left to transition: an
-    earlier supersession put it there. Chain repair reaches that case
-    routinely -- inserting an intermediate version re-points a
-    `supersedes` edge at a predecessor archived by the supersession the
-    repair is replacing -- and such an edge is sound, because the
-    predecessor already holds the state the edge asserts of it.
-
-    Derived from the table rather than enumerated, so a vault that lands
-    supersessions somewhere other than `archived` is read correctly.
-    """
-    landings: set[str] = set()
-    for from_state in transition_table.states_allowing("supersede"):
-        result = transition_table.validate_transition(from_state, "supersede")
-        if result is not None:
-            landings.add(result[0])
-    return landings
 
 
 @dataclass
@@ -550,7 +533,8 @@ async def resolve_and_execute(
     path_to_id: dict[str, str],
     graph_store: GraphStore,
     graph_ops_service: GraphOpsService,
-    transition_table: TransitionTable,
+    lifecycle_service: LifecycleService,
+    lock_manager: DocumentLockManager,
     content_store: ContentStore | None = None,
 ) -> EdgeResult:
     """Phase 2: resolve file paths to document IDs and execute edges.
@@ -560,7 +544,10 @@ async def resolve_and_execute(
     table before anything is written, in three cases:
 
     * the target's state permits ``supersede`` -- the edge is created and
-      the target moves to the state the table names;
+      the target moves to the state the table names, committed as one
+      database transaction under the same per-predecessor lock every
+      other supersede surface takes (CAS-ADR-038), against a fresh
+      in-lock read of the target;
     * the target already holds a state a supersession lands in -- the edge
       is created and nothing is written, the chain-repair case where an
       earlier supersession already moved it;
@@ -572,13 +559,16 @@ async def resolve_and_execute(
       the three are distinct because only the first is a statement about
       a document's lifecycle state.
 
-    What that guarantees is bounded and worth stating exactly: no edge is
-    created when the transition is known-forbidden at the time the gate
-    runs. It is not a transaction. The edge insert and the lifecycle write
-    remain two calls under no shared lock, so a write that fails after the
-    edge lands leaves the edge in place with an
-    ``lifecycle_transition_failed`` warning as the only signal, and a state
-    change racing the gate is not detected. A successful write is followed
+    The atomic commit closes both halves of the first case at once: a
+    failed commit leaves neither the edge nor the transition behind
+    (reported as ``edge_creation_failed``), and a state change racing the
+    settlement read is caught by the in-lock re-validation, which refuses
+    the edge rather than forking a chain another successor just claimed.
+    A commit that finds the edge already present -- the state a
+    pre-transactional failure stranded, or a re-ingest of an existing
+    pair -- converges the transition alone; only that single-row
+    convergence write can still fail with the edge standing, reported as
+    ``lifecycle_transition_failed``. A successful transition is followed
     by the same chunk-store lifecycle sync the explicit lifecycle path
     performs, so the target's chunks land in the same state the document
     does; the sync is best-effort, and a failure warns as
@@ -591,36 +581,78 @@ async def resolve_and_execute(
     is refused, that group's removals are withheld and its remaining adds
     are dropped -- committing the removal would sever a chain the refused
     add was meant to re-link, and creating the surviving adds alongside the
-    edge that was kept would branch it.
+    edge that was kept would branch it. The adds are written before the
+    removals they replace, and a group whose add fails at write time joins
+    the withheld set, so a removal never commits ahead of a replacement
+    that does not exist: an interrupted repair leaves extra edges, never a
+    severed chain.
 
-    That covers adds refused during settlement, which is where a target's
-    state is read. It does not cover an add that settles cleanly and then
-    fails when it is written: the removals have already been committed by
-    then, so a replacement whose ``_create_edge`` raises still leaves the
-    chain shorter, reported as ``edge_creation_failed``. Closing that one
-    needs the removals and the adds to share a transaction, which this
-    path does not have.
+    The residuals, stated exactly: the chunk sync is best-effort; the
+    already-landed case links against the advisory settlement read with
+    no lock; the convergence write is a single unguarded call; and a
+    partially landed repair group keeps both its old and its new edges
+    until a rerun converges it.
 
     Args:
         edge_plan: The pre-ingest edge plan.
         path_to_id: Mapping from file_path to SAGE document_id for
             successfully ingested files.
-        graph_store: For staging edge insertion.
+        graph_store: For staging edge insertion and the atomic supersede
+            commit.
         graph_ops_service: For Tier 1 link() and unlink() calls.
-        transition_table: The vault's lifecycle transition table. Supplies
-            both halves of the ``supersede`` transition -- the states it may
-            be taken from and the state it lands in -- so this path reads
-            the same configuration every other supersede surface reads.
+        lifecycle_service: The vault's lifecycle service. Supplies the
+            transition table the settlement reads and builds each
+            supersession's writes, so this path validates and commits
+            through the same machinery as every other supersede surface.
+        lock_manager: The vault's per-document lock manager -- the same
+            instance the lifecycle and ingest surfaces lock predecessors
+            through, so concurrent supersessions of one target serialize
+            across all three.
         content_store: The vault's content store, for syncing a superseded
             target's chunk-level ``lifecycle_status`` after the document
             write. ``None`` skips the sync (legacy wiring).
     """
     result = EdgeResult()
+    transition_table = lifecycle_service.transition_table
+
+    async def _sync_chunk_lifecycle(
+        source_id: str, target_id: str, edge_type_value: str, to_state: str
+    ) -> None:
+        # Mirror the transition onto the target's chunks, as every other
+        # lifecycle-writing surface does after its document write:
+        # pre-filter pushdown reads lifecycle_status off the chunk row,
+        # so without the sync a superseded document's chunks keep
+        # answering active-filtered searches. Best-effort: a failure
+        # warns and the batch continues.
+        if content_store is None:
+            return
+        try:
+            await content_store.update_chunk_metadata(target_id, {"lifecycle_status": to_state})
+        except Exception as exc:
+            logger.warning(
+                "Target %s transitioned to '%s' but chunk-store sync failed: %s",
+                target_id,
+                to_state,
+                exc,
+            )
+            result.warnings.append(
+                {
+                    "source": source_id,
+                    "target": target_id,
+                    "edge_type": edge_type_value,
+                    "reason": "chunk_lifecycle_sync_failed",
+                    "detail": str(exc),
+                }
+            )
 
     # Loop-invariant: the table does not change across the batch, and the
-    # landing-state set sits on the routine chain-repair branch below.
+    # landing-state set sits on the routine chain-repair branch below. A
+    # target already in a landing state has nothing left to transition:
+    # an earlier supersession put it there, and chain repair reaches that
+    # case routinely when it re-points an edge at an already-archived
+    # predecessor.
     allowed_states = transition_table.states_allowing("supersede")
-    landing_states = _supersede_landing_states(transition_table)
+    landing_states = transition_table.landing_states("supersede")
 
     # Pass 1 -- settle every edge without writing anything. A Tier-1
     # supersedes whose target cannot be superseded has to be known before
@@ -756,11 +788,13 @@ async def resolve_and_execute(
                         "target": target_id,
                         "edge_type": planned.edge_type.value,
                         "reason": "supersede_target_not_transitionable",
-                        "detail": (
-                            f"Cannot supersede document {target_id}: current state "
-                            f"'{current_state}', required "
-                            f"'{' or '.join(allowed_states) if allowed_states else '(none)'}'"
-                        ),
+                        # The error type every other supersede surface
+                        # raises for this condition formats the detail, so
+                        # the precondition reads identically wherever it
+                        # is reported.
+                        "detail": SupersedeTargetNotActiveError(
+                            target_id, current_state, allowed_states
+                        ).message,
                     },
                 )
             )
@@ -778,59 +812,15 @@ async def resolve_and_execute(
         and s.planned.edge_type == EdgeType.SUPERSEDES
     }
 
-    # Pass 3 -- removals. Chain repair drops superseded predecessor edges
-    # before the adds that replace them, except where the replacement was
-    # refused above.
-    for removal in edge_plan.removals:
-        if removal.repair_group in withheld_groups:
-            logger.warning(
-                "Chain-repair removal of edge %s (%s -> %s) withheld: a replacement "
-                "supersedes edge in the same repair could not be created",
-                removal.edge_id,
-                removal.source_id,
-                removal.target_id,
-            )
-            result.warnings.append(
-                {
-                    "source": removal.source_id,
-                    "target": removal.target_id,
-                    "edge_type": removal.edge_type.value,
-                    "reason": "chain_repair_withheld",
-                    "detail": (
-                        f"Existing edge {removal.source_id} -> {removal.target_id} kept: "
-                        "a replacement supersedes edge in the same repair was refused, "
-                        "and removing this one would leave the chain shorter than it "
-                        "was found"
-                    ),
-                }
-            )
-            continue
-        try:
-            await graph_ops_service.unlink(removal.edge_id)
-            result.edges_removed += 1
-        except Exception as exc:
-            logger.exception(
-                "Failed to remove edge %s (%s -> %s)",
-                removal.edge_id,
-                removal.source_id,
-                removal.target_id,
-            )
-            result.warnings.append(
-                {
-                    "source": removal.source_id,
-                    "target": removal.target_id,
-                    "edge_type": removal.edge_type.value,
-                    "reason": "edge_removal_failed",
-                    "detail": str(exc),
-                }
-            )
-
-    # Pass 4 -- adds.
+    # Pass 3 -- adds, written before the removals they replace. A repair
+    # group whose replacement fails at write time joins the withheld set
+    # below, so the removal pass never commits a removal whose
+    # replacement does not exist; an interruption between the passes
+    # leaves extra edges, never a severed chain.
     for entry in settled:
         planned = entry.planned
         source_id = entry.source_id
         target_id = entry.target_id
-        supersede_to_state = entry.supersede_to_state
 
         if entry.disposition is _REFUSED:
             result.edges_dropped += 1
@@ -849,6 +839,157 @@ async def resolve_and_execute(
         # from that prefix so the LinkRequest and StagingEdge land with
         # the correct rationale_kind without re-encoding the mapping.
         rationale_kind = _METHOD_TO_RATIONALE_KIND.get(planned.method, RationaleKind.MANUAL)
+
+        if (
+            planned.tier == 1
+            and planned.edge_type == EdgeType.SUPERSEDES
+            and entry.supersede_to_state is not None
+        ):
+            # A supersession with a transition to write commits both
+            # halves in one transaction, under the per-predecessor lock
+            # the lifecycle and ingest surfaces also take (CAS-ADR-038),
+            # against a fresh read of the target. The settlement read
+            # above is advisory -- it exists so the withheld-group
+            # computation can run before anything is written -- and the
+            # lock plus re-read is what makes the decision authoritative.
+            async with lock_manager.lock(target_id):
+                try:
+                    fresh_target = await graph_store.get_document(target_id)
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to re-read supersedes target %s; edge not created",
+                        target_id,
+                    )
+                    result.edges_dropped += 1
+                    result.warnings.append(
+                        {
+                            "source": source_id,
+                            "target": target_id,
+                            "edge_type": planned.edge_type.value,
+                            "reason": "supersede_target_read_failed",
+                            "detail": str(exc),
+                        }
+                    )
+                    if planned.repair_group in groups_with_removals:
+                        withheld_groups.add(planned.repair_group)
+                    continue
+                if fresh_target is None:
+                    result.edges_dropped += 1
+                    result.warnings.append(
+                        {
+                            "source": source_id,
+                            "target": target_id,
+                            "edge_type": planned.edge_type.value,
+                            "reason": "supersede_target_missing",
+                            "detail": (f"Cannot supersede document {target_id}: no such document"),
+                        }
+                    )
+                    if planned.repair_group in groups_with_removals:
+                        withheld_groups.add(planned.repair_group)
+                    continue
+                try:
+                    transition = lifecycle_service.prepare_supersede(
+                        fresh_target,
+                        source_id,
+                        rationale=planned.evidence,
+                        rationale_kind=rationale_kind,
+                    )
+                except SupersedeTargetNotActiveError as exc:
+                    # The fresh state no longer permits the transition the
+                    # settlement approved: a racer moved the target in
+                    # between. That includes a move into a landing state --
+                    # accepted at settlement time only because the *plan*
+                    # put the target there; reached here it means another
+                    # successor just claimed this predecessor, and creating
+                    # the edge anyway would fork the chain.
+                    logger.warning(
+                        "Supersedes edge %s -> %s not created: %s",
+                        source_id,
+                        target_id,
+                        exc.message,
+                    )
+                    result.edges_dropped += 1
+                    result.warnings.append(
+                        {
+                            "source": source_id,
+                            "target": target_id,
+                            "edge_type": planned.edge_type.value,
+                            "reason": "supersede_target_not_transitionable",
+                            "detail": exc.message,
+                        }
+                    )
+                    if planned.repair_group in groups_with_removals:
+                        withheld_groups.add(planned.repair_group)
+                    continue
+
+                to_state = transition.predecessor_updates["lifecycle_status"]
+                try:
+                    await graph_store.supersede_atomic(
+                        target_id, transition.predecessor_updates, transition.edge
+                    )
+                except NaturalKeyConflict:
+                    # The edge already exists but the target still needs
+                    # the transition -- the state a pre-transactional
+                    # failure stranded, or a re-ingest of a pair the
+                    # planner could not resolve against existing edges.
+                    # Converge the transition alone. No warning and no
+                    # counter: the strand was reported when it was
+                    # created, and the edge is not newly minted.
+                    logger.warning(
+                        "Supersedes edge %s -> %s already exists; converging the "
+                        "target's outstanding transition to '%s'",
+                        source_id,
+                        target_id,
+                        to_state,
+                    )
+                    try:
+                        await graph_store.update_document(target_id, transition.predecessor_updates)
+                    except Exception as exc:
+                        logger.warning(
+                            "Supersedes edge exists but converging target %s to '%s' failed: %s",
+                            target_id,
+                            to_state,
+                            exc,
+                        )
+                        result.warnings.append(
+                            {
+                                "source": source_id,
+                                "target": target_id,
+                                "edge_type": planned.edge_type.value,
+                                "reason": "lifecycle_transition_failed",
+                                "detail": str(exc),
+                            }
+                        )
+                        continue
+                    await _sync_chunk_lifecycle(
+                        source_id, target_id, planned.edge_type.value, to_state
+                    )
+                    continue
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to settle supersedes edge %s -> %s",
+                        source_id,
+                        target_id,
+                    )
+                    result.edges_dropped += 1
+                    result.warnings.append(
+                        {
+                            "source": source_id,
+                            "target": target_id,
+                            "edge_type": planned.edge_type.value,
+                            "reason": "edge_creation_failed",
+                            "detail": str(exc),
+                        }
+                    )
+                    if planned.repair_group in groups_with_removals:
+                        withheld_groups.add(planned.repair_group)
+                    continue
+
+                key = planned.edge_type.value
+                result.edges_created[key] = result.edges_created.get(key, 0) + 1
+                await _sync_chunk_lifecycle(source_id, target_id, planned.edge_type.value, to_state)
+            continue
+
         try:
             if planned.tier == 1:
                 # Link_idempotent makes auto-inferred edges
@@ -912,66 +1053,60 @@ async def resolve_and_execute(
                     "detail": str(exc),
                 }
             )
+            if (
+                planned.tier == 1
+                and planned.edge_type == EdgeType.SUPERSEDES
+                and planned.repair_group in groups_with_removals
+            ):
+                withheld_groups.add(planned.repair_group)
             continue
 
-        # Lifecycle side effect: land the target in the state the vault's
-        # table declares for `supersede`. The precondition and the state
-        # itself were both settled by the pre-flight gate above, so this
-        # is the write alone.
-        if supersede_to_state is not None:
-            try:
-                now = datetime.now(timezone.utc).isoformat()
-                await graph_store.update_document(
-                    target_id,
-                    {"lifecycle_status": supersede_to_state, "updated_at": now},
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Supersedes edge created but failed to transition target %s to '%s': %s",
-                    target_id,
-                    supersede_to_state,
-                    exc,
-                )
-                result.warnings.append(
-                    {
-                        "source": source_id,
-                        "target": target_id,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "lifecycle_transition_failed",
-                        "detail": str(exc),
-                    }
-                )
-                continue
-
-            # Mirror the transition onto the target's chunks, as every
-            # other lifecycle-writing surface does after its document
-            # write: pre-filter pushdown reads lifecycle_status off the
-            # chunk row, so without the sync a superseded document's
-            # chunks keep answering active-filtered searches. Reached
-            # only after a successful document write -- a failed write
-            # leaves the chunks agreeing with the document as it stands.
-            # Best-effort like the write above: a failure warns and the
-            # batch continues.
-            if content_store is not None:
-                try:
-                    await content_store.update_chunk_metadata(
-                        target_id, {"lifecycle_status": supersede_to_state}
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Target %s transitioned to '%s' but chunk-store sync failed: %s",
-                        target_id,
-                        supersede_to_state,
-                        exc,
-                    )
-                    result.warnings.append(
-                        {
-                            "source": source_id,
-                            "target": target_id,
-                            "edge_type": planned.edge_type.value,
-                            "reason": "chunk_lifecycle_sync_failed",
-                            "detail": str(exc),
-                        }
-                    )
+    # Pass 4 -- removals, after every replacement add has landed. Chain
+    # repair drops superseded predecessor edges only once the edges that
+    # replace them exist, except where the replacement was refused or
+    # failed to land above.
+    for removal in edge_plan.removals:
+        if removal.repair_group in withheld_groups:
+            logger.warning(
+                "Chain-repair removal of edge %s (%s -> %s) withheld: a replacement "
+                "supersedes edge in the same repair could not be created",
+                removal.edge_id,
+                removal.source_id,
+                removal.target_id,
+            )
+            result.warnings.append(
+                {
+                    "source": removal.source_id,
+                    "target": removal.target_id,
+                    "edge_type": removal.edge_type.value,
+                    "reason": "chain_repair_withheld",
+                    "detail": (
+                        f"Existing edge {removal.source_id} -> {removal.target_id} kept: "
+                        "a replacement supersedes edge in the same repair was refused "
+                        "or failed to land, and removing this one would leave the "
+                        "chain shorter than it was found"
+                    ),
+                }
+            )
+            continue
+        try:
+            await graph_ops_service.unlink(removal.edge_id)
+            result.edges_removed += 1
+        except Exception as exc:
+            logger.exception(
+                "Failed to remove edge %s (%s -> %s)",
+                removal.edge_id,
+                removal.source_id,
+                removal.target_id,
+            )
+            result.warnings.append(
+                {
+                    "source": removal.source_id,
+                    "target": removal.target_id,
+                    "edge_type": removal.edge_type.value,
+                    "reason": "edge_removal_failed",
+                    "detail": str(exc),
+                }
+            )
 
     return result

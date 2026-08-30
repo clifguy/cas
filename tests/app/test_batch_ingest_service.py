@@ -21,11 +21,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sage.adapters.interfaces import Chunk
+from sage.adapters.interfaces import Chunk, NaturalKeyConflict
 from sage.adapters.stubs import StubContentStore
 from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, SourceType
-from sage.models.schemas import Document, IngestRequest, UnlinkResponse
+from sage.models.schemas import Document, Edge, IngestRequest, UnlinkResponse
 from sage.services.batch_inference import EdgePlan
 from sage.services.batch_ingest import (
     BatchIngestService,
@@ -34,6 +34,8 @@ from sage.services.batch_ingest import (
     ParsedMetadataInput,
 )
 from sage.services.ingestion import IngestResult
+from sage.services.lifecycle import LifecycleService
+from sage.storage.locks import DocumentLockManager
 
 
 def _base_transition_table() -> TransitionTable:
@@ -131,7 +133,17 @@ def _make_services(
 ):
     """Create a mock SAGEServices bundle."""
     services = MagicMock()
-    services.lifecycle_service.transition_table = _base_transition_table()
+    # A real lifecycle double and lock manager rather than MagicMock
+    # attributes: edge execution validates and builds each supersession
+    # through ``prepare_supersede`` and serializes on the lock manager,
+    # so mocks would hand the atomic commit a MagicMock edge and defeat
+    # every lifecycle assertion below. ``prepare_supersede`` and the
+    # ``transition_table`` property touch only ``_table``, so bypassing
+    # ``__init__`` gives the real logic without a store or config.
+    lifecycle = LifecycleService.__new__(LifecycleService)
+    lifecycle._table = _base_transition_table()
+    services.lifecycle_service = lifecycle
+    services.lock_manager = DocumentLockManager()
 
     # Config
     services.config.abstraction.enabled = abstraction_enabled
@@ -198,11 +210,13 @@ def _make_services(
     # and active rather than absent.
     async def _get_document(doc_id):
         doc = _MM()
+        doc.id = doc_id
         doc.lifecycle_status = "active"
         return doc
 
     services.graph_store.get_document = AsyncMock(side_effect=_get_document)
     services.graph_store.update_document = AsyncMock()
+    services.graph_store.supersede_atomic = AsyncMock(return_value=_MM())
 
     return services
 
@@ -960,7 +974,6 @@ class TestCallerIntegration:
 
 from sage.models.enums import RationaleKind  # noqa: E402
 from sage.models.schemas import (  # noqa: E402 -- grouped with the version-chain test section below
-    Edge,
     LinkRequest,
 )
 
@@ -1022,6 +1035,7 @@ class _MockGraphState:
         self.edges: dict[str, Edge] = {e.id: e for e in edges}
         self.removed_edge_ids: list[str] = []
         self.added_link_requests: list[LinkRequest] = []
+        self.superseded_commits: list[tuple[str, dict, Edge]] = []
         self._next_edge_seq = 1
 
     async def list_all_documents(self) -> list[Document]:
@@ -1117,6 +1131,24 @@ class _MockGraphState:
             del self.edges[edge_id]
         return UnlinkResponse(deleted=True, edge_id=edge_id)
 
+    async def supersede_atomic(
+        self, predecessor_id: str, predecessor_updates: dict, edge: Edge
+    ) -> Document | None:
+        # Mirrors the production contract the tests rely on:
+        # all-or-nothing, and NaturalKeyConflict on a duplicate natural
+        # key raised before anything is applied.
+        for existing in self.edges.values():
+            if (
+                existing.source_id == edge.source_id
+                and existing.target_id == edge.target_id
+                and existing.edge_type == edge.edge_type
+            ):
+                raise NaturalKeyConflict(edge.source_id, edge.target_id, edge.edge_type.value)
+        await self.update_document(predecessor_id, predecessor_updates)
+        self.edges[edge.id] = edge
+        self.superseded_commits.append((predecessor_id, predecessor_updates, edge))
+        return self.docs.get(predecessor_id)
+
 
 def _make_chain_services(
     docs: list[Document],
@@ -1133,7 +1165,14 @@ def _make_chain_services(
     # which the best-effort sync would swallow into a spurious
     # ``chunk_lifecycle_sync_failed`` warning in every test here.
     services.content_store = StubContentStore()
-    services.lifecycle_service.transition_table = _base_transition_table()
+    # A real lifecycle double and lock manager for the same reason (see
+    # ``_make_services``): the atomic supersede path validates and builds
+    # its writes through ``prepare_supersede`` and serializes on the lock
+    # manager.
+    lifecycle = LifecycleService.__new__(LifecycleService)
+    lifecycle._table = _base_transition_table()
+    services.lifecycle_service = lifecycle
+    services.lock_manager = DocumentLockManager()
     services.config.abstraction.enabled = abstraction_enabled
     services.graph_store.list_all_documents = AsyncMock(side_effect=state.list_all_documents)
     services.graph_store.query_documents = AsyncMock(side_effect=state.query_documents)
@@ -1142,6 +1181,7 @@ def _make_chain_services(
     services.graph_store.get_edge = AsyncMock(side_effect=state.get_edge)
     services.graph_store.get_document = AsyncMock(side_effect=state.get_document)
     services.graph_store.update_document = AsyncMock(side_effect=state.update_document)
+    services.graph_store.supersede_atomic = AsyncMock(side_effect=state.supersede_atomic)
     services.graph_store.insert_staging_edge = AsyncMock(side_effect=state.insert_staging_edge)
     services.graph_ops_service._create_edge_strict = AsyncMock(
         side_effect=state._create_edge_strict
@@ -1659,6 +1699,84 @@ class TestChainRepair:
 
         # v1 is untouched -- not transitioned, and still linked.
         assert state.docs[V1_ID].lifecycle_status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_cr_006_repair_withheld_when_replacement_add_fails_on_write(self):
+        """A repair whose replacement fails at write time leaves the chain intact.
+
+        The settlement-refusal half of this invariant is CR-005. This is
+        the other half: an add that settles cleanly -- its target is
+        active and supersedable -- and then fails when the commit runs.
+        The adds are written before the removals they replace, and the
+        failing group's removals are withheld, so the graph ends holding
+        no fewer supersedes edges than it started with.
+        """
+        V1_ID = "cccccccc_v1"
+        V3_ID = "cccccccc_v3"
+        v1 = _make_document(
+            V1_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v1",
+            tags=["PV06"],
+            # Active and supersedable: the v2->v1 replacement settles
+            # cleanly, unlike CR-005's gated target. Only the write fails.
+            lifecycle_status="active",
+        )
+        v3 = _make_document(
+            V3_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        existing_edge = _make_edge(
+            _E_V3_V1,
+            V3_ID,
+            V1_ID,
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
+            rationale_kind=RationaleKind.VERSION_CHAIN,
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+
+        real_atomic = state.supersede_atomic
+
+        async def _failing_atomic(predecessor_id, predecessor_updates, edge):
+            if predecessor_id == V1_ID:
+                raise RuntimeError("edge write failed")
+            return await real_atomic(predecessor_id, predecessor_updates, edge)
+
+        services.graph_store.supersede_atomic = AsyncMock(side_effect=_failing_atomic)
+        svc = BatchIngestService()
+
+        before = {(e.source_id, e.target_id) for e in state.edges.values()}
+
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        after = {(e.source_id, e.target_id) for e in state.edges.values()}
+
+        # The invariant: the repair took nothing away.
+        assert before <= after, f"repair severed edges: {before - after}"
+        assert _E_V3_V1 in state.edges
+        assert state.removed_edge_ids == []
+        assert result.edges_removed == 0
+
+        # Both facts reach the caller: the write failure itself, and that
+        # a removal was withheld as a result. The first is also the
+        # control that the injected failure actually fired.
+        reasons = {w["reason"] for w in result.edge_warnings}
+        assert "edge_creation_failed" in reasons
+        assert "chain_repair_withheld" in reasons
+
+        # v1 keeps its state: the failed commit landed neither half.
+        assert state.docs[V1_ID].lifecycle_status == "active"
 
 
 class TestChunkLifecycleSync:
