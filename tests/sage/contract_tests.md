@@ -34,7 +34,7 @@ lifecycle:
     - from_state: "(new)"
       action: ingest
       to_state: active
-  base_states_required: true
+  base_states_required: false
 metadata_extraction:
   review_required: false
 edge_inference:
@@ -47,6 +47,9 @@ edge_inference:
 
 **Expected:** PASS
 **Rationale:** Establishes the minimal valid baseline for vault configuration.
+A single-state lifecycle is a replacement lifecycle, so it declares
+`base_states_required: false`; with the flag true the loader requires the
+full base state set and base actions.
 
 ### TEST-SAGE-VC-002: Valid full vault config with optional fields
 
@@ -81,7 +84,7 @@ lifecycle:
     - from_state: "(new)"
       action: ingest
       to_state: active
-  base_states_required: true
+  base_states_required: false
 adapter_defaults:
   docx:
     heading_style_map:
@@ -466,6 +469,73 @@ base_states_required: true
 
 **Expected:** FAIL -- additional property not allowed
 **Rationale:** Display properties belong elsewhere; schema is structural.
+
+### TEST-SAGE-LC-008: Duplicate ingestion transitions
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** invalid
+**Constraint:** `transitions` allows exactly one `(new)` row (`maxContains: 1`)
+
+**Input:** Two transitions with `from_state: "(new)"`, both `action: ingest`,
+landing in different states.
+
+**Expected:** FAIL -- too many items match the `(new)` contains schema
+**Rationale:** The ingest landing state is read from the single `(new)` row;
+two rows would make it ambiguous.
+
+### TEST-SAGE-LC-009: Missing ingestion transition
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** invalid
+**Constraint:** `transitions` requires one `(new)` row (`minContains: 1`)
+
+**Input:** Transitions carrying only `active -> archive -> archived`, no
+`(new)` row.
+
+**Expected:** FAIL -- no item matches the `(new)` contains schema
+**Rationale:** Without the `(new)` row the ingest landing state is undefined;
+the engine refuses to guess one.
+
+### TEST-SAGE-LC-010: Ingest action outside the ingestion transition
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** invalid
+**Constraint:** `action: ingest` is reserved for the `(new)` row (item conditional)
+
+**Input:**
+```yaml
+states:
+  - value: active
+    label: "Active"
+  - value: archived
+    label: "Archived"
+    is_terminal: true
+transitions:
+  - from_state: "(new)"
+    action: ingest
+    to_state: active
+  - from_state: archived
+    action: ingest
+    to_state: active
+base_states_required: false
+```
+
+**Expected:** FAIL -- `from_state` must be `(new)` where `action` is `ingest`
+**Rationale:** A user-invocable `ingest` row would let callers re-run the
+ingestion transition on existing documents.
+
+### TEST-SAGE-LC-011: Dependency-satisfaction declaration accepted
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** valid
+**Constraint:** `states[].satisfies_dependency` accepts true, false, and null
+
+**Input:** The LC-001 lifecycle with `satisfies_dependency: true` on `filed`,
+`satisfies_dependency: false` on `completed`, and the field omitted elsewhere.
+
+**Expected:** PASS
+**Rationale:** The declaration drives the depends_on satisfaction set; omitted
+or null defers to the engine default.
 
 ---
 

@@ -108,7 +108,11 @@ def _config_dict_with_ticket_schema(tmp_vault_dir: Path) -> dict:
             ]
         },
         "lifecycle": {
-            "base_states_required": True,
+            # A deliberately partial lifecycle (no supersede/archive/
+            # reactivate rows): declared as a replacement, not a base
+            # extension, so the base-required load validation stays out
+            # of these tests' way.
+            "base_states_required": False,
             "states": [
                 {"value": "active", "label": "Active"},
                 {"value": "completed", "label": "Completed"},

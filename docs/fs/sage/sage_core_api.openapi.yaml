@@ -948,8 +948,11 @@ paths:
       summary: Verify that all depends_on targets exist and are in valid state.
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
-        target, verifies lifecycle status is `active` or `completed`
-        (not `archived`) and that `pipeline_status` is terminal.
+        target, verifies the lifecycle status is one the vault's
+        configuration declares dependency-satisfying (`active` or
+        `completed` under the base lifecycle) and that
+        `pipeline_status` is not `failed` — a target still
+        mid-pipeline is not rejected.
         Returns a `satisfied` boolean plus a per-edge breakdown of
         failing reasons (e.g. predecessor still in projection, target
         archived) so the caller can act on the gap rather than
@@ -2733,8 +2736,9 @@ components:
       enum: [active, completed, archived]
       description: >-
         Base lifecycle states. Vaults may define additional domain-specific
-        states (e.g., "filed" in Example Portfolio). The base set is always
-        present.
+        states (e.g., "filed" in Example Portfolio). The base set is
+        declared by every vault whose lifecycle keeps
+        `base_states_required` true (the default).
 
     LifecycleAction:
       type: string
@@ -3699,12 +3703,13 @@ components:
             version that supersedes the named predecessor. After
             successful ingestion, SAGE applies the `supersede` lifecycle
             transition on the predecessor: creates a `supersedes` edge
-            from the new document to the predecessor and sets the
-            predecessor's lifecycle_status to `archived`. Predecessor
-            validation (exists + the vault's transition table permits
-            `supersede` from its current state + different content hash)
-            runs before projection; failures return 404/409 before any
-            pipeline work begins.
+            from the new document to the predecessor and moves the
+            predecessor to the state the vault's transition table lands
+            `supersede` in (`archived` under the base lifecycle).
+            Predecessor validation (exists + the vault's transition
+            table permits `supersede` from its current state + different
+            content hash) runs before projection; failures return
+            404/409 before any pipeline work begins.
         expected_head_version:
           type: string
           nullable: true
@@ -5318,8 +5323,10 @@ components:
         required:
           type: string
           description: >-
-            Required condition (e.g., "exists and lifecycle_status
-            in [active, completed]").
+            Required condition, derived from the vault's lifecycle
+            configuration: the states whose satisfies_dependency setting
+            resolves true (e.g., "active or completed" under the base
+            lifecycle).
         actual:
           type: string
           description: Actual state found (e.g., "active", "not found").

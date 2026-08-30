@@ -418,7 +418,8 @@ async def test_bh041_retrieval_assertions_from_yaml(
         },
         "document_types": {"doc_types": [{"value": "note", "label": "Note"}]},
         "lifecycle": {
-            "base_states_required": True,
+            # Deliberately partial replacement lifecycle; not base-extending.
+            "base_states_required": False,
             "states": [
                 {"value": "active", "label": "Active"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
@@ -521,7 +522,8 @@ async def test_bh042_missing_assertions_file(
         },
         "document_types": {"doc_types": [{"value": "note", "label": "Note"}]},
         "lifecycle": {
-            "base_states_required": True,
+            # Deliberately partial replacement lifecycle; not base-extending.
+            "base_states_required": False,
             "states": [{"value": "active", "label": "Active"}],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
@@ -576,7 +578,8 @@ async def test_bh042_malformed_assertions_file(
         },
         "document_types": {"doc_types": [{"value": "note", "label": "Note"}]},
         "lifecycle": {
-            "base_states_required": True,
+            # Deliberately partial replacement lifecycle; not base-extending.
+            "base_states_required": False,
             "states": [{"value": "active", "label": "Active"}],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},

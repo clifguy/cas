@@ -955,7 +955,7 @@ class IngestionService:
                 title=resolved_title,
                 source_type=request.source_type,
                 source_path=vault_relative,
-                lifecycle_status="active",
+                lifecycle_status=self._transition_table.ingest_landing_state(),
                 source_content_hash=canonical_hash,
                 adapter_version=projection.adapter_version,
                 created_by=created_by,

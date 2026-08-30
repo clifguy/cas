@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cas.local/fs/sage/lifecycle.schema.json",
   "title": "SAGE Lifecycle State Machine Configuration",
-  "description": "Defines lifecycle states and valid transitions for documents in a vault. The base state machine (active, completed, archived) is always present. Vaults may define additional states and transitions. See SAGE Architecture Reference Section 4.8.",
+  "description": "Defines lifecycle states and valid transitions for documents in a vault. When base_states_required is true (the default) the base state machine (active, completed, archived) must be declared; vaults may define additional states and transitions. The base-required and lands-in-a-declared-state checks are enforced by the configuration loader; this schema expresses the structural subset (exactly one '(new)' ingestion transition, with 'ingest' reserved to it). See SAGE Architecture Reference Section 4.8.",
   "type": "object",
   "required": ["states", "transitions"],
   "additionalProperties": false,
@@ -34,6 +34,11 @@
             "type": "boolean",
             "default": false,
             "description": "Whether this state represents an end state from which no further transitions are expected under normal operation. Archived is terminal by default but reactivation is permitted as an exceptional case."
+          },
+          "satisfies_dependency": {
+            "type": ["boolean", "null"],
+            "default": null,
+            "description": "Whether documents in this state satisfy inbound depends_on preconditions. Omitted or null defers to the engine default: active and completed satisfy, every other state does not. Set true to let a domain-specific state satisfy dependencies, or false to exclude a base state."
           }
         }
       }
@@ -42,10 +47,57 @@
       "type": "array",
       "description": "Valid state transitions. SAGE enforces transition validity; the orchestration layer determines when to trigger transitions.",
       "minItems": 1,
+      "contains": {
+        "type": "object",
+        "properties": {
+          "from_state": {
+            "const": "(new)"
+          }
+        },
+        "required": ["from_state"]
+      },
+      "minContains": 1,
+      "maxContains": 1,
       "items": {
         "type": "object",
         "required": ["from_state", "action", "to_state"],
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "from_state": {
+                  "const": "(new)"
+                }
+              },
+              "required": ["from_state"]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "const": "ingest"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "const": "ingest"
+                }
+              },
+              "required": ["action"]
+            },
+            "then": {
+              "properties": {
+                "from_state": {
+                  "const": "(new)"
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "from_state": {
             "type": "string",
@@ -73,9 +125,8 @@
     },
     "base_states_required": {
       "type": "boolean",
-      "const": true,
       "default": true,
-      "description": "The base state set (active, completed, archived) and base transitions (ingest, supersede, complete, archive, reactivate) are always present. Domain-specific states and transitions extend this base; they do not replace it."
+      "description": "When true (the default), the configuration must declare the base states (active, completed, archived) and use each base action (ingest, supersede, complete, archive, reactivate) in at least one transition; a configuration missing any of them fails validation. An existing on-disk configuration loads with a warning instead, so the vault stays reachable for repair. Domain-specific states and transitions extend this base. Set false only for a configuration that replaces the base lifecycle entirely."
     }
   }
 }

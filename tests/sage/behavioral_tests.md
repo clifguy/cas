@@ -368,7 +368,7 @@ edges in the graph.
 **Input:** `set_lifecycle` on doc_old with `action: "supersede", successor_id: doc_new.id`
 
 **Expected:**
-- doc_old transitions to `archived`
+- doc_old transitions to the supersede landing state (`archived` under the base lifecycle)
 - A `supersedes` edge exists with `source_id: doc_new.id`, `target_id: doc_old.id`
 - The edge has an auto-generated `id` field
 
@@ -682,7 +682,7 @@ future edge-level operations (update, annotate).
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
 **Category:** graph, lifecycle_interaction
-**Decision:** Only active and completed satisfy depends_on checks.
+**Decision:** Active and completed satisfy depends_on checks by default; a state's `satisfies_dependency` setting may extend or restrict the set.
 
 **Precondition:** doc_function depends_on doc_dep. doc_dep is `active`.
 
@@ -727,8 +727,10 @@ superseded or simply retired). Callers should depend on the active replacement.
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
 **Category:** graph, lifecycle_interaction
-**Decision:** Only base states (active, completed) satisfy dependencies. Domain-specific
-states are not known to SAGE's precondition checker.
+**Decision:** By default only base states (active, completed) satisfy dependencies.
+A domain-specific state satisfies only when the vault declares it with
+`satisfies_dependency: true`; without the declaration the precondition checker
+does not know it.
 
 **Precondition:** Example Portfolio vault. doc_function depends_on doc_patent. doc_patent
 is `filed`.
@@ -2727,14 +2729,15 @@ bytes.
 **Rationale:** Silent empty bytes would let agents believe they are editing a
 valid file. A loud failure surfaces the underlying vault inconsistency.
 
-### TEST-SAGE-BH-120: ingest with predecessor_id links new version and archives predecessor
+### TEST-SAGE-BH-120: ingest with predecessor_id links new version and supersedes predecessor
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
 **Category:** ingestion
 **Decision:** When `predecessor_id` is provided and ingestion succeeds,
 SAGE atomically applies the `supersede` lifecycle transition on the
-predecessor: creates a `supersedes` edge from new to old, sets the
-predecessor's `lifecycle_status` to `archived`.
+predecessor: creates a `supersedes` edge from new to old and moves the
+predecessor to the state the vault's transition table lands `supersede`
+in (`archived` under the base lifecycle).
 
 **Precondition:** Document A active, pipeline terminal.
 

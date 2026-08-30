@@ -155,6 +155,12 @@ def _config_dict_with_tier3(tmp_vault_dir: Path) -> dict:
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
+                {
+                    "from_state": "active",
+                    "action": "supersede",
+                    "to_state": "archived",
+                    "creates_edge": "supersedes",
+                },
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},

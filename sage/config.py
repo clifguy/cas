@@ -10,7 +10,7 @@ from typing import Literal
 
 import jsonschema
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, model_validator
 
 from sage.instrumentation.timing import TimingConfig
 from sage.models.enums import SourceType
@@ -156,6 +156,18 @@ class LifecycleTransition(BaseModel):
     )
 
 
+#: Lifecycle states that satisfy depends_on preconditions when a state
+#: leaves `satisfies_dependency` unset (BH-033, BH-034). Domain-specific
+#: states are excluded by default (BH-036); a vault opts one in by
+#: declaring `satisfies_dependency: true` on the state.
+DEFAULT_DEPENDENCY_SATISFYING_STATES = frozenset({"active", "completed"})
+
+#: The base lifecycle vocabulary a `base_states_required` configuration
+#: must keep declared (see `LifecycleConfig`).
+BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived"})
+BASE_LIFECYCLE_ACTIONS = frozenset({"ingest", "supersede", "complete", "archive", "reactivate"})
+
+
 class LifecycleState(BaseModel):
     value: str = Field(description="Machine identifier for the lifecycle state.")
     label: str = Field(description="Human-readable display name.")
@@ -177,6 +189,16 @@ class LifecycleState(BaseModel):
             "as an exceptional case."
         ),
     )
+    satisfies_dependency: bool | None = Field(
+        default=None,
+        description=(
+            "Whether documents in this state satisfy inbound depends_on "
+            "preconditions. Omitted or null defers to the engine default: "
+            "active and completed satisfy, every other state does not. Set "
+            "true to let a domain-specific state satisfy dependencies, or "
+            "false to exclude a base state."
+        ),
+    )
 
 
 class LifecycleConfig(BaseModel):
@@ -195,12 +217,117 @@ class LifecycleConfig(BaseModel):
     base_states_required: bool = Field(
         default=True,
         description=(
-            "The base state set (active, completed, archived) and base "
-            "transitions (ingest, supersede, complete, archive, reactivate) "
-            "are always present. Domain-specific states and transitions "
-            "extend this base; they do not replace it."
+            "When true (the default), the configuration must declare the "
+            "base states (active, completed, archived) and use each base "
+            "action (ingest, supersede, complete, archive, reactivate) in "
+            "at least one transition; a configuration missing any of them "
+            "fails validation. An existing on-disk configuration loads with "
+            "a warning instead, so the vault stays reachable for repair. "
+            "Domain-specific states and transitions extend this base. Set "
+            "false only for a configuration that replaces the base "
+            "lifecycle entirely."
         ),
     )
+
+    def dependency_satisfying_states(self) -> frozenset[str]:
+        """The states whose documents satisfy depends_on preconditions.
+
+        A state joins the set when it declares `satisfies_dependency: true`,
+        or when it leaves the field unset and the engine default includes
+        it. Derived from the declared states rather than restated as a
+        literal, so a vault that opts a domain state in — or a base state
+        out — is read correctly.
+        """
+        return frozenset(
+            state.value
+            for state in self.states
+            if state.satisfies_dependency is True
+            or (
+                state.satisfies_dependency is None
+                and state.value in DEFAULT_DEPENDENCY_SATISFYING_STATES
+            )
+        )
+
+    @model_validator(mode="after")
+    def _validate_lifecycle_shape(self, info: ValidationInfo) -> "LifecycleConfig":
+        """Reject configurations the lifecycle engine cannot honour.
+
+        Two layers. Unconditionally, the ingestion pseudo-row must be
+        well-formed — exactly one `(new)` row, its action `ingest`, its
+        target a declared state, and `ingest` appearing nowhere else —
+        because the ingest landing state is read from that row and the
+        action must never become user-invocable. When
+        `base_states_required` is true, the base states must be declared
+        and each base action used by at least one transition: the promise
+        the flag's description makes. Action presence, not exact rows, so
+        extensions (extra supersede sources, a non-active landing state)
+        stay legal.
+
+        Strictness is contextual. Direct validation — the vault-create and
+        update-config API paths — rejects a violating configuration, so a
+        bad edit gets an interactive error while the vault keeps its
+        previous configuration. A validation context of
+        ``{"lifecycle_validation": "warn"}`` (passed by
+        ``load_vault_config`` for configurations already on disk) logs
+        each problem and loads anyway: rejecting an existing file would
+        drop the vault from the registry, unreachable by the very
+        surfaces that could repair it (see the retired-sections handling
+        below for the same lenient-load posture, per CAS-ADR-046).
+        """
+        problems: list[str] = []
+        declared_states = {state.value for state in self.states}
+        new_rows = [t for t in self.transitions if t.from_state == "(new)"]
+        if len(new_rows) != 1:
+            problems.append(
+                f"exactly one '(new)' ingestion transition must be declared; found {len(new_rows)}"
+            )
+        for row in new_rows:
+            if row.action != "ingest":
+                problems.append(
+                    "the '(new)' ingestion transition must carry the action "
+                    f"'ingest', not '{row.action}'"
+                )
+            if row.to_state not in declared_states:
+                problems.append(
+                    f"the '(new)' ingestion transition lands in '{row.to_state}', "
+                    "which is not a declared lifecycle state"
+                )
+        stray_ingest = sorted(
+            t.from_state
+            for t in self.transitions
+            if t.action == "ingest" and t.from_state != "(new)"
+        )
+        if stray_ingest:
+            problems.append(
+                "the action 'ingest' is reserved for the '(new)' ingestion "
+                f"transition; found it on from_state(s): {', '.join(stray_ingest)}"
+            )
+        if self.base_states_required:
+            missing_states = BASE_LIFECYCLE_STATES - declared_states
+            if missing_states:
+                problems.append(
+                    "base_states_required lifecycle is missing base state(s): "
+                    f"{', '.join(sorted(missing_states))}"
+                )
+            used_actions = {t.action for t in self.transitions}
+            missing_actions = BASE_LIFECYCLE_ACTIONS - used_actions
+            if missing_actions:
+                problems.append(
+                    "base_states_required lifecycle has no transition using base "
+                    f"action(s): {', '.join(sorted(missing_actions))}"
+                )
+        if problems:
+            mode = (info.context or {}).get("lifecycle_validation", "strict")
+            if mode == "warn":
+                for problem in problems:
+                    logger.warning(
+                        "lifecycle configuration loaded leniently: %s "
+                        "(repair via update_vault_config)",
+                        problem,
+                    )
+            else:
+                raise ValueError("; ".join(problems))
+        return self
 
 
 class VaultAbstractionConfig(BaseModel):
@@ -963,9 +1090,16 @@ class TransitionTable:
         # {from_state: [(action, to_state, creates_edge),...]}
         self._table: dict[str, list[LifecycleTransition]] = {}
         self._all_actions: set[str] = set()
+        self._ingest_landing: str | None = None
         for t in transitions:
             if t.from_state == "(new)":
-                continue  # ingestion transition, not user-invocable
+                # Ingestion transition: not user-invocable, so it stays out
+                # of the table and the action roster — but its target is
+                # the landing state ingestion must honour. First row wins;
+                # a validated config declares at most one.
+                if t.action == "ingest" and self._ingest_landing is None:
+                    self._ingest_landing = t.to_state
+                continue
             self._table.setdefault(t.from_state, []).append(t)
             self._all_actions.add(t.action)
 
@@ -1020,6 +1154,25 @@ class TransitionTable:
         Unknown actions get 400; known-but-invalid-from-state get 409.
         """
         return action in self._all_actions
+
+    def ingest_landing_state(self) -> str:
+        """The state a newly ingested document lands in.
+
+        Read from the configured `(new) -> ingest` row, so a vault that
+        declares a non-active landing state gets it. Reading the row does
+        not make it invocable: `ingest` stays outside `is_known_action`
+        and `(new)` outside `states_allowing`. A validated configuration
+        always carries exactly one such row; a table built without one
+        has no defined landing state, and silently substituting one could
+        strand documents in a state the vault never declared, so the
+        error surfaces here rather than in the stored data.
+        """
+        if self._ingest_landing is None:
+            raise ValueError(
+                "the lifecycle declares no '(new)' ingest transition, so the "
+                "ingest landing state is undefined; repair via update_vault_config"
+            )
+        return self._ingest_landing
 
 
 #: Sections a vault configuration may still carry from before the model
@@ -1078,7 +1231,12 @@ def load_vault_config(config_path: Path) -> VaultConfig:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
     warn_on_retired_sections(raw)
-    return VaultConfig.model_validate(raw)
+    # An on-disk configuration is a fact, not a request: lifecycle-shape
+    # violations load with a warning instead of rejecting, because a
+    # rejected file drops its vault from the registry — unreachable by the
+    # very surfaces (update_vault_config, the settings editor) that could
+    # repair it. Direct validation on the create/update paths stays strict.
+    return VaultConfig.model_validate(raw, context={"lifecycle_validation": "warn"})
 
 
 def build_transition_table(config: VaultConfig) -> TransitionTable:

@@ -840,10 +840,11 @@ class IngestRequest(BaseModel):
             "version that supersedes the named predecessor. After successful "
             "ingestion, SAGE applies the `supersede` lifecycle transition on "
             "the predecessor: creates a `supersedes` edge from the new "
-            "document to the predecessor and sets the predecessor's "
-            "lifecycle_status to `archived`. Predecessor validation (exists "
-            "+ the vault's transition table permits `supersede` from its "
-            "current state + different content hash) runs before "
+            "document to the predecessor and moves the predecessor to the "
+            "state the vault's transition table lands `supersede` in "
+            "(`archived` under the base lifecycle). Predecessor validation "
+            "(exists + the vault's transition table permits `supersede` from "
+            "its current state + different content hash) runs before "
             "projection; failures return 404/409 before any pipeline work "
             "begins."
         ),
@@ -2607,7 +2608,10 @@ class PreconditionCheck(BaseModel):
     target_id: DocumentIdStr = Field(description="Document ID of the dependency target.")
     required: str = Field(
         description=(
-            'Required condition (e.g., "exists and lifecycle_status in [active, completed]").'
+            "Required condition, derived from the vault's lifecycle "
+            "configuration: the states whose satisfies_dependency setting "
+            'resolves true (e.g., "active or completed" under the base '
+            "lifecycle)."
         )
     )
     actual: str = Field(description='Actual state found (e.g., "active", "not found").')
