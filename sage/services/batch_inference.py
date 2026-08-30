@@ -586,8 +586,15 @@ async def resolve_and_execute(
     is refused, that group's removals are withheld and its remaining adds
     are dropped -- committing the removal would sever a chain the refused
     add was meant to re-link, and creating the surviving adds alongside the
-    edge that was kept would branch it. The batch therefore never leaves
-    the graph holding fewer ``supersedes`` edges than it found.
+    edge that was kept would branch it.
+
+    That covers adds refused during settlement, which is where a target's
+    state is read. It does not cover an add that settles cleanly and then
+    fails when it is written: the removals have already been committed by
+    then, so a replacement whose ``_create_edge`` raises still leaves the
+    chain shorter, reported as ``edge_creation_failed``. Closing that one
+    needs the removals and the adds to share a transaction, which this
+    path does not have.
 
     Args:
         edge_plan: The pre-ingest edge plan.

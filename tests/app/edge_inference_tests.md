@@ -766,10 +766,11 @@ valid outcome, not an error condition.
 **Decision:** When `resolve_and_execute` creates a Tier 1 supersedes edge, it
 must also transition the target document's `lifecycle_status` to the state the
 vault's lifecycle transition table declares for the `supersede` action
-(`"archived"` under the base lifecycle). This ensures that bulk ingest
-supersedes edges produce the same lifecycle outcome as the explicit
-`update_lifecycles(action="supersede")` path, by construction rather than by
-coincidence.
+(`"archived"` under the base lifecycle). Both paths therefore read the same
+configuration, so the landing state agrees with the explicit
+`update_lifecycles(action="supersede")` path rather than restating it. The
+paths are not otherwise equivalent: this one writes without a lock and
+without the chunk-store lifecycle sync.
 
 **Precondition:** Edge plan with a Tier 1 supersedes edge. Both source and
 target document IDs are resolved. Target is `"active"`.
@@ -796,8 +797,10 @@ supersedes edge holds a superseded state.
 **Decision:** If the target's current state neither permits `supersede` nor is
 a state a supersession lands in, no edge is created at all: `edges_dropped`
 advances and a `supersede_target_not_transitionable` warning names the observed
-state and the permitted ones. The check runs *before* the edge write, so the
-edge and its lifecycle transition are all-or-nothing.
+state and the permitted ones. The check runs *before* the edge write, so a
+transition known to be forbidden at check time produces no edge. It is not a
+transaction: a lifecycle write that fails after the edge lands still strands
+the edge, under `lifecycle_transition_failed`.
 
 This supersedes the prior decision, which skipped only the lifecycle update and
 created the edge regardless. That left a successor edge pointing at a

@@ -203,8 +203,10 @@ def register_app_tools(
         ``supersede_target_read_failed``). Because the refusal is settled
         before anything is written, a chain repair whose replacement add is
         refused withholds its removals as well, under
-        ``chain_repair_withheld``, so a batch does not leave the graph
-        holding fewer ``supersedes`` edges than it found.
+        ``chain_repair_withheld``, rather than severing the chain it was
+        repairing. A replacement that settles cleanly and then fails on
+        write is not covered — the removals have committed by then, and the
+        shortened chain is reported as ``edge_creation_failed``.
 
         The guarantee is bounded: no edge is created when the transition is
         known-forbidden at the time the check runs. It is not a
