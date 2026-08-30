@@ -921,11 +921,14 @@ against the table, so the supersession cannot be settled and no edge is created.
 **Precondition:** Edge plan with a Tier 1 supersedes edge whose target id is not
 present in the store.
 
-**Expected:** No edge; `edges_dropped == 1`; one
-`supersede_target_not_transitionable` warning.
+**Expected:** No edge; `edges_dropped == 1`; one `supersede_target_missing`
+warning whose detail names the document id.
 
 **Rationale:** Previously this fell through the same silent branch as a
-non-active target, creating an edge against a document that does not exist.
+non-active target, creating an edge against a document that does not exist. The
+reason is its own rather than `supersede_target_not_transitionable`, which is a
+statement about a document's lifecycle state; an absent document has no state to
+report against the table's permitted set.
 
 ### TEST-APP-EI-038: Superseding an already-superseded target needs no write
 
@@ -965,3 +968,23 @@ target — inert under this table — is gated and dropped.
 **Rationale:** Under this table `"archived"` is an ordinary non-superseding
 state, so an implementation that hardcodes the landing set fails in both
 directions at once.
+
+### TEST-APP-EI-040: A failed target read refuses the edge under its own reason
+
+**Artifact:** Bug fix (2026-08-29)
+**Category:** orchestration, lifecycle
+
+**Decision:** When the pre-write read of a supersedes target raises, the edge is
+refused under `supersede_target_read_failed` — distinct from
+`lifecycle_transition_failed`, which means the edge landed and only the
+subsequent lifecycle write failed.
+
+**Precondition:** Edge plan with a Tier 1 supersedes edge; the store raises on
+`get_document`.
+
+**Expected:** No edge; `edges_dropped == 1`; one `supersede_target_read_failed`
+warning carrying the underlying error text.
+
+**Rationale:** The two conditions leave the graph in opposite states — no edge
+versus an edge with an untransitioned target — so a caller triaging warnings has
+to be able to tell them apart. Sharing one reason made that impossible.

@@ -918,6 +918,37 @@ class TestTwoPhaseOrchestration:
         assert result.edges_dropped == 1
 
     @pytest.mark.asyncio
+    async def test_ei_040_supersede_target_read_failure_has_its_own_reason(self):
+        """A failed target read refuses the edge under a distinct reason.
+
+        Separate from ``lifecycle_transition_failed``, which means the edge
+        landed and only the transition failed. Here no edge exists at all,
+        so a caller triaging warnings must be able to tell the two apart.
+        """
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
+
+        class _ExplodingStore(_SupersedeStore):
+            async def get_document(self, doc_id):
+                raise RuntimeError("storage unavailable")
+
+        mock_ops = _SupersedeOps()
+        mock_store = _ExplodingStore({DOC_V1: "active"})
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops, BASE_TABLE)
+
+        assert result.edges_created == {}
+        assert mock_ops.linked == []
+        assert result.edges_dropped == 1
+        assert len(result.warnings) == 1
+        assert result.warnings[0]["reason"] == "supersede_target_read_failed"
+        assert "storage unavailable" in result.warnings[0]["detail"]
+
+    @pytest.mark.asyncio
     async def test_ei_038_supersede_of_an_already_superseded_target_needs_no_write(self):
         """A target already in a supersede landing state is linked, not gated.
 
@@ -999,7 +1030,10 @@ class TestTwoPhaseOrchestration:
         assert result.edges_dropped == 1
         assert len(mock_store.updated) == 0
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "supersede_target_not_transitionable"
+        # Its own reason, not the not-transitionable one: an absent document
+        # has no state to report against the table's permitted set.
+        assert result.warnings[0]["reason"] == "supersede_target_missing"
+        assert DOC_V1 in result.warnings[0]["detail"]
 
     def test_ei_029_empty_manifest_empty_plan(self):
         """Empty manifest produces empty edge plan."""

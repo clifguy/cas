@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.19",
+  "manifest_version": "0.9.20",
   "manifest_date": "2026-08-29",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -146,9 +146,9 @@
         "docs/fs/sage/edge_inference.schema.json",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 40,
+      "test_count": 41,
       "decision_date": "2026-04-08",
-      "notes": "Filename parser (12 tests: segment recognition, date/version/code detection, doc_type resolution via keyword_to_doc_type and code_to_doc_type), version_chain inference (8 tests: normalization, linear chain, grouping by title/project/doc_type, doc_type-mismatch isolation, existing vault documents, null version handling), filename_code_match inference (6 tests: workflow-to-content direction, workflow-to-workflow exclusion, cross-batch matching, multi-code edges), two-phase orchestration (6 tests: pre-ingest edge plan, post-ingest resolution, tier-based creation, failed ingestion handling), lifecycle side effects (8 tests: the supersede transition derived from the vault's lifecycle table in both halves, the pre-flight gate that drops an edge whose target's state forbids supersede, the already-superseded target that is linked without a write, and the batch-wide invariant that no supersedes edge outlives an unsuperseded target). EI-033 covers infer_edges=False short-circuit."
+      "notes": "Filename parser (12 tests: segment recognition, date/version/code detection, doc_type resolution via keyword_to_doc_type and code_to_doc_type), version_chain inference (8 tests: normalization, linear chain, grouping by title/project/doc_type, doc_type-mismatch isolation, existing vault documents, null version handling), filename_code_match inference (6 tests: workflow-to-content direction, workflow-to-workflow exclusion, cross-batch matching, multi-code edges), two-phase orchestration (6 tests: pre-ingest edge plan, post-ingest resolution, tier-based creation, failed ingestion handling), lifecycle side effects (9 tests: the supersede transition derived from the vault's lifecycle table in both halves, the pre-flight gate that drops an edge whose target's state forbids supersede, the already-superseded target that is linked without a write, and the batch-wide invariant that no supersedes edge outlives an unsuperseded target, and the distinct refusal reasons for a target that is absent versus one whose read failed). EI-033 covers infer_edges=False short-circuit."
     },
     {
       "path": "tests/sage/metadata_extraction_tests.md",
@@ -367,6 +367,11 @@
       "version": "0.9.19",
       "date": "2026-08-29",
       "summary": "Lifecycle side-effects section rewritten in tests/app/edge_inference_tests.md for the table-derived supersede transition. EI-031 and EI-032 previously specified the transition with the state literals \"active\" and \"archived\"; EI-032 in particular specified that a non-active target has its lifecycle update skipped while the supersedes edge is created anyway, which left a successor edge pointing at a predecessor that was never transitioned. Both were rewritten against the vault's lifecycle transition table, and EI-032's disposition changed from skip-the-update to drop-the-edge-and-warn. Six new specifications were added for the properties that distinguish a table-derived implementation from a hardcoded one, which coincide under the base lifecycle: EI-034 (landing state read from the table), EI-035 (supersede permitted from any state the table declares), EI-036 (batch-wide invariant, asserted over the targets actually linked), EI-037 (absent target), EI-038 (already-superseded target linked without a write -- the chain-repair case), and EI-039 (landing-state recognition itself table-derived). Edge inference test count: 34 -> 40. The new ids start at EI-034 because EI-033 was already allocated to the infer_edges=False short-circuit."
+    },
+    {
+      "version": "0.9.20",
+      "date": "2026-08-29",
+      "summary": "Review follow-up on the table-derived supersede transition. EI-037's expected warning reason changed from supersede_target_not_transitionable to supersede_target_missing, and EI-040 was added for supersede_target_read_failed: one reason had been carrying three conditions that leave the graph in different states (no edge because the target's state forbids supersede, no edge because the target does not exist, and no edge because the read raised), which a caller triaging warnings cannot separate. Edge inference test count: 40 -> 41. Not specified here: TEST-BIS-CR-005, which pins that a chain repair whose replacement add is refused withholds its removals rather than severing the chain -- the chain-repair tests CR-001..005 live in pytest without markdown specifications, a pre-existing gap this change did not widen."
     }
   ]
 }

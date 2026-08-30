@@ -181,13 +181,27 @@ class BatchIngestService:
         state is not superseded at all: the edge is not created,
         ``edges_dropped`` advances, and a
         ``supersede_target_not_transitionable`` warning names the
-        observed state and the permitted ones. The edge and the
-        transition are all-or-nothing, so the batch never leaves a
-        ``supersedes`` edge pointing at a predecessor that does not
-        hold a superseded state. Lifecycle-transition failures after
-        the edge lands are collected as warnings in
-        ``IngestSummary.edge_warnings``; no case raises, and none
-        appears in ``IngestSummary.errors``.
+        observed state and the permitted ones (an absent or unreadable
+        target refuses the edge the same way, under
+        ``supersede_target_missing`` and
+        ``supersede_target_read_failed``). Because the refusal is
+        settled before anything is written, a chain repair whose
+        replacement add is refused withholds its removals as well,
+        under ``chain_repair_withheld``, so the batch does not leave
+        the graph holding fewer ``supersedes`` edges than it found.
+
+        The guarantee is bounded: no edge is created when the
+        transition is known-forbidden at the time the check runs. It is
+        not a transaction. The edge insert and the lifecycle write are
+        two calls under no shared lock, so a write that fails after the
+        edge lands leaves the edge in place with a
+        ``lifecycle_transition_failed`` warning as the only signal, and
+        a state change racing the check is not detected. The write also
+        omits the chunk-store lifecycle sync that the explicit
+        lifecycle path performs, so a superseded document's chunks keep
+        their prior lifecycle value until reprojection. All of these
+        surface as warnings in ``IngestSummary.edge_warnings``; no case
+        raises, and none appears in ``IngestSummary.errors``.
 
         Tier-1 provenance-gate downgrade:
         Tier-1 ``supersedes`` adds are gated on provenance: if any
@@ -196,7 +210,7 @@ class BatchIngestService:
         ``manual_review`` edge in the same chain), the entire
         group's Tier-1 adds are silently downgraded to Tier-2
         (deposited in the staging-edge table for review rather than
-        landing as production edges; the predecessor auto-archive
+        landing as production edges; the predecessor auto-transition
         above does NOT fire on a downgraded group). The
         production-vs-staging outcome of a batch is therefore
         rule-dependent on the vault's prior edge graph, not

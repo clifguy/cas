@@ -130,6 +130,13 @@ class PlannedEdge:
     # SUPERSEDES via version_chain).
     source_valid_from_version: str | None = None
     target_valid_from_version: str | None = None
+    # Chain-repair unit this edge belongs to. A repair removes edges and
+    # adds the ones that replace them; both halves carry the same key so
+    # the executor can settle them together rather than committing the
+    # removal before it knows whether the replacement can be created.
+    # None for edges that replace nothing (code match, identifier mention,
+    # and version-chain adds in a group that emitted no removals).
+    repair_group: str | None = None
 
 
 @dataclass
@@ -139,12 +146,42 @@ class PlannedEdgeRemoval:
     target_id: str
     edge_type: EdgeType
     reason: str
+    # See PlannedEdge.repair_group.
+    repair_group: str | None = None
 
 
 @dataclass
 class EdgePlan:
     edges: list[PlannedEdge] = field(default_factory=list)
     removals: list[PlannedEdgeRemoval] = field(default_factory=list)
+
+
+# Dispositions a planned edge can carry out of the settlement pass.
+_PROCEED = "proceed"
+_REFUSED = "refused"
+
+
+@dataclass
+class _SettledEdge:
+    """A planned edge with its ids resolved and its disposition decided.
+
+    Settlement is separated from execution because chain repair's removals
+    are only safe once the adds that replace them are known to be
+    creatable; deciding every edge first is what lets the removal pass
+    consult that outcome.
+    """
+
+    planned: PlannedEdge
+    source_id: str
+    target_id: str
+    disposition: str
+    # The state the target should land in, when the edge is a Tier-1
+    # supersedes whose target's state permits the transition. None both for
+    # edges that are not supersedes and for a target already holding a
+    # landing state, neither of which needs a write.
+    supersede_to_state: str | None = None
+    # Emitted only if the edge is refused; carries the reason and detail.
+    warning: dict[str, str] | None = None
 
 
 @dataclass
@@ -235,6 +272,9 @@ class EdgeInferenceEngine:
         removed: list[PlannedEdgeRemoval] = []
 
         for _key, group in groups.items():
+            # Stable identity for this chain's repair unit, carried on both
+            # the removals and the adds that replace them.
+            group_key = "|".join("" if part is None else str(part) for part in _key)
             if not any(not it.is_existing for it in group):
                 continue  # nothing new -- skip
             versioned = [it for it in group if it.parsed.version is not None]
@@ -283,6 +323,7 @@ class EdgeInferenceEngine:
                                 f"chain_repair: {e.source_id} -> {e.target_id} "
                                 "no longer in desired chain"
                             ),
+                            repair_group=group_key,
                         )
                     )
 
@@ -308,6 +349,7 @@ class EdgeInferenceEngine:
                             f"{older_label} "
                             f"(title: {newer.parsed.title})"
                         ),
+                        repair_group=group_key,
                     )
                 )
 
@@ -510,12 +552,9 @@ async def resolve_and_execute(
 ) -> EdgeResult:
     """Phase 2: resolve file paths to document IDs and execute edges.
 
-    Removals run first so chain-repair leaves no transient invalid state
-    visible to the lifecycle side effects fired during the add pass.
-
     A Tier-1 ``supersedes`` add carries a lifecycle side effect on its
-    target, settled against the vault's transition table *before* the edge
-    is written so the two never come apart. Three cases:
+    target. Which effect applies is settled against the vault's transition
+    table before anything is written, in three cases:
 
     * the target's state permits ``supersede`` -- the edge is created and
       the target moves to the state the table names;
@@ -524,10 +563,31 @@ async def resolve_and_execute(
       earlier supersession already moved it;
     * neither -- no edge is created, ``edges_dropped`` advances, and a
       ``supersede_target_not_transitionable`` warning names the observed
-      and permitted states.
+      state and the permitted ones. A target that does not resolve, or
+      whose read fails, is refused the same way under
+      ``supersede_target_missing`` and ``supersede_target_read_failed``;
+      the three are distinct because only the first is a statement about
+      a document's lifecycle state.
 
-    The invariant across all three: no ``supersedes`` edge is left pointing
-    at a predecessor that does not hold a superseded state.
+    What that guarantees is bounded and worth stating exactly: no edge is
+    created when the transition is known-forbidden at the time the gate
+    runs. It is not a transaction. The edge insert and the lifecycle write
+    remain two calls under no shared lock, so a write that fails after the
+    edge lands leaves the edge in place with an
+    ``lifecycle_transition_failed`` warning as the only signal, and a state
+    change racing the gate is not detected. The write also does not carry
+    the chunk-store lifecycle sync that the explicit lifecycle path
+    performs, so a superseded document's chunks keep their prior lifecycle
+    value until the next reprojection.
+
+    Because the settlement runs first, it also constrains the removal pass.
+    Chain repair emits removals and the adds that replace them; both carry
+    the same ``repair_group``. If any Tier-1 ``supersedes`` add in a group
+    is refused, that group's removals are withheld and its remaining adds
+    are dropped -- committing the removal would sever a chain the refused
+    add was meant to re-link, and creating the surviving adds alongside the
+    edge that was kept would branch it. The batch therefore never leaves
+    the graph holding fewer ``supersedes`` edges than it found.
 
     Args:
         edge_plan: The pre-ingest edge plan.
@@ -537,14 +597,199 @@ async def resolve_and_execute(
         graph_ops_service: For Tier 1 link() and unlink() calls.
         transition_table: The vault's lifecycle transition table. Supplies
             both halves of the ``supersede`` transition -- the states it may
-            be taken from and the state it lands in -- so this path agrees
-            with every other supersede surface by construction.
+            be taken from and the state it lands in -- so this path reads
+            the same configuration every other supersede surface reads.
     """
     result = EdgeResult()
 
-    # Removals first (chain-repair: drop incorrect predecessor edges before
-    # adding correct ones).
+    # Loop-invariant: the table does not change across the batch, and the
+    # landing-state set sits on the routine chain-repair branch below.
+    allowed_states = transition_table.states_allowing("supersede")
+    landing_states = _supersede_landing_states(transition_table)
+
+    # Pass 1 -- settle every edge without writing anything. A Tier-1
+    # supersedes whose target cannot be superseded has to be known before
+    # the removal pass runs, because chain repair's removals are only safe
+    # once their replacement adds are known to be creatable.
+    settled: list[_SettledEdge] = []
+    for planned in edge_plan.edges:
+        source_id = path_to_id.get(planned.source_ref, planned.source_ref)
+        target_id = path_to_id.get(planned.target_ref, planned.target_ref)
+
+        # If either ref is still a file path (not resolved), it failed ingestion
+        if source_id == planned.source_ref and "/" in planned.source_ref:
+            settled.append(
+                _SettledEdge(
+                    planned,
+                    source_id,
+                    target_id,
+                    _REFUSED,
+                    warning={
+                        "source": planned.source_ref,
+                        "target": planned.target_ref,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "ingestion_failed",
+                        "detail": f"Source file failed ingestion: {planned.source_ref}",
+                    },
+                )
+            )
+            continue
+        if target_id == planned.target_ref and "/" in planned.target_ref:
+            settled.append(
+                _SettledEdge(
+                    planned,
+                    source_id,
+                    target_id,
+                    _REFUSED,
+                    warning={
+                        "source": planned.source_ref,
+                        "target": planned.target_ref,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "ingestion_failed",
+                        "detail": f"Target file failed ingestion: {planned.target_ref}",
+                    },
+                )
+            )
+            continue
+
+        if not (planned.tier == 1 and planned.edge_type == EdgeType.SUPERSEDES):
+            settled.append(_SettledEdge(planned, source_id, target_id, _PROCEED))
+            continue
+
+        try:
+            target_doc = await graph_store.get_document(target_id)
+        except Exception as exc:
+            logger.exception(
+                "Failed to read supersedes target %s; edge not created",
+                target_id,
+            )
+            settled.append(
+                _SettledEdge(
+                    planned,
+                    source_id,
+                    target_id,
+                    _REFUSED,
+                    warning={
+                        "source": source_id,
+                        "target": target_id,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "supersede_target_read_failed",
+                        "detail": str(exc),
+                    },
+                )
+            )
+            continue
+
+        if target_doc is None:
+            logger.warning(
+                "Supersedes edge %s -> %s not created: target document not found",
+                source_id,
+                target_id,
+            )
+            settled.append(
+                _SettledEdge(
+                    planned,
+                    source_id,
+                    target_id,
+                    _REFUSED,
+                    warning={
+                        "source": source_id,
+                        "target": target_id,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "supersede_target_missing",
+                        "detail": f"Cannot supersede document {target_id}: no such document",
+                    },
+                )
+            )
+            continue
+
+        current_state = target_doc.lifecycle_status
+        transition = transition_table.validate_transition(current_state, "supersede")
+        if transition is not None:
+            settled.append(
+                _SettledEdge(
+                    planned, source_id, target_id, _PROCEED, supersede_to_state=transition[0]
+                )
+            )
+        elif current_state in landing_states:
+            # Already where a supersession leaves a document. The edge is
+            # sound and there is nothing to write -- the ordinary
+            # chain-repair case, not an anomaly, so it is not warned.
+            logger.debug(
+                "Supersedes target %s already in state '%s'; no transition needed",
+                target_id,
+                current_state,
+            )
+            settled.append(_SettledEdge(planned, source_id, target_id, _PROCEED))
+        else:
+            logger.warning(
+                "Supersedes edge %s -> %s not created: target state '%s' does not "
+                "permit supersede (permitted from: %s)",
+                source_id,
+                target_id,
+                current_state,
+                ", ".join(allowed_states) or "(none)",
+            )
+            settled.append(
+                _SettledEdge(
+                    planned,
+                    source_id,
+                    target_id,
+                    _REFUSED,
+                    warning={
+                        "source": source_id,
+                        "target": target_id,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "supersede_target_not_transitionable",
+                        "detail": (
+                            f"Cannot supersede document {target_id}: current state "
+                            f"'{current_state}', required "
+                            f"'{' or '.join(allowed_states) if allowed_states else '(none)'}'"
+                        ),
+                    },
+                )
+            )
+
+    # Pass 2 -- a repair group with a refused Tier-1 supersedes add is
+    # withheld whole. Only groups that actually carry removals: elsewhere a
+    # refused add is simply dropped, which takes nothing away.
+    groups_with_removals = {r.repair_group for r in edge_plan.removals if r.repair_group}
+    withheld_groups = {
+        s.planned.repair_group
+        for s in settled
+        if s.disposition is _REFUSED
+        and s.planned.repair_group in groups_with_removals
+        and s.planned.tier == 1
+        and s.planned.edge_type == EdgeType.SUPERSEDES
+    }
+
+    # Pass 3 -- removals. Chain repair drops superseded predecessor edges
+    # before the adds that replace them, except where the replacement was
+    # refused above.
     for removal in edge_plan.removals:
+        if removal.repair_group in withheld_groups:
+            logger.warning(
+                "Chain-repair removal of edge %s (%s -> %s) withheld: a replacement "
+                "supersedes edge in the same repair could not be created",
+                removal.edge_id,
+                removal.source_id,
+                removal.target_id,
+            )
+            result.warnings.append(
+                {
+                    "source": removal.source_id,
+                    "target": removal.target_id,
+                    "edge_type": removal.edge_type.value,
+                    "reason": "chain_repair_withheld",
+                    "detail": (
+                        f"Existing edge {removal.source_id} -> {removal.target_id} kept: "
+                        "a replacement supersedes edge in the same repair was refused, "
+                        "and removing this one would leave the chain shorter than it "
+                        "was found"
+                    ),
+                }
+            )
+            continue
         try:
             await graph_ops_service.unlink(removal.edge_id)
             result.edges_removed += 1
@@ -565,106 +810,24 @@ async def resolve_and_execute(
                 }
             )
 
-    for planned in edge_plan.edges:
-        source_id = path_to_id.get(planned.source_ref, planned.source_ref)
-        target_id = path_to_id.get(planned.target_ref, planned.target_ref)
+    # Pass 4 -- adds.
+    for entry in settled:
+        planned = entry.planned
+        source_id = entry.source_id
+        target_id = entry.target_id
+        supersede_to_state = entry.supersede_to_state
 
-        # If either ref is still a file path (not resolved), it failed ingestion
-        if source_id == planned.source_ref and "/" in planned.source_ref:
+        if entry.disposition is _REFUSED:
             result.edges_dropped += 1
-            result.warnings.append(
-                {
-                    "source": planned.source_ref,
-                    "target": planned.target_ref,
-                    "edge_type": planned.edge_type.value,
-                    "reason": "ingestion_failed",
-                    "detail": f"Source file failed ingestion: {planned.source_ref}",
-                }
-            )
-            continue
-        if target_id == planned.target_ref and "/" in planned.target_ref:
-            result.edges_dropped += 1
-            result.warnings.append(
-                {
-                    "source": planned.source_ref,
-                    "target": planned.target_ref,
-                    "edge_type": planned.edge_type.value,
-                    "reason": "ingestion_failed",
-                    "detail": f"Target file failed ingestion: {planned.target_ref}",
-                }
-            )
+            if entry.warning is not None:
+                result.warnings.append(entry.warning)
             continue
 
-        # A Tier-1 supersedes carries a lifecycle transition on its target.
-        # Settle that transition against the vault's table before writing
-        # the edge, not after: the edge and the transition are two halves
-        # of one supersession, and creating the edge first means a target
-        # whose state does not declare `supersede` is left as a successor
-        # edge pointing at an untransitioned predecessor. Gating here makes
-        # the pair all-or-nothing on this path.
-        supersede_to_state: str | None = None
-        if planned.tier == 1 and planned.edge_type == EdgeType.SUPERSEDES:
-            try:
-                target_doc = await graph_store.get_document(target_id)
-            except Exception as exc:
-                logger.exception(
-                    "Failed to read supersedes target %s; edge not created",
-                    target_id,
-                )
-                result.edges_dropped += 1
-                result.warnings.append(
-                    {
-                        "source": source_id,
-                        "target": target_id,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "lifecycle_transition_failed",
-                        "detail": str(exc),
-                    }
-                )
-                continue
-            current_state = target_doc.lifecycle_status if target_doc else None
-            transition = (
-                transition_table.validate_transition(current_state, "supersede")
-                if current_state is not None
-                else None
-            )
-            if transition is not None:
-                supersede_to_state = transition[0]
-            elif current_state in _supersede_landing_states(transition_table):
-                # Already where a supersession leaves a document. The edge
-                # is sound and there is nothing to write -- the ordinary
-                # chain-repair case, not an anomaly, so it is not warned.
-                logger.debug(
-                    "Supersedes target %s already in state '%s'; no transition needed",
-                    target_id,
-                    current_state,
-                )
-            else:
-                allowed = transition_table.states_allowing("supersede")
-                observed = current_state if current_state is not None else "(document absent)"
-                logger.warning(
-                    "Supersedes edge %s -> %s not created: target state '%s' does not "
-                    "permit supersede (permitted from: %s)",
-                    source_id,
-                    target_id,
-                    observed,
-                    ", ".join(allowed) or "(none)",
-                )
-                result.edges_dropped += 1
-                result.warnings.append(
-                    {
-                        "source": source_id,
-                        "target": target_id,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "supersede_target_not_transitionable",
-                        "detail": (
-                            f"Cannot supersede document {target_id}: current state "
-                            f"'{observed}', required "
-                            f"'{' or '.join(allowed) if allowed else '(none)'}'"
-                        ),
-                    }
-                )
-                continue
+        if planned.repair_group in withheld_groups:
+            # Sound on its own, but its repair group was withheld; creating
+            # it alongside the edge that was kept would branch the chain.
+            result.edges_dropped += 1
+            continue
 
         # Every auto-inference method stamps its provenance prefix
         # on the evidence string above; derive the typed discriminator

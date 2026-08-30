@@ -1568,3 +1568,84 @@ class TestChainRepair:
         assert state.removed_edge_ids == []
         # Repair lands in Tier 2 staging
         assert result.edges_staged.get("supersedes", 0) >= 2
+
+    @pytest.mark.asyncio
+    async def test_cr_005_repair_withheld_when_replacement_add_is_gated(self):
+        """A repair whose replacement add is gated leaves the chain intact.
+
+        Chain repair removes an edge and adds the ones that replace it.
+        When a replacement add cannot be created -- its target holds a state
+        the vault's table neither supersedes from nor lands a supersession
+        in -- executing the removal anyway would sever the chain: the edge
+        that existed is gone, its target is orphaned, and the only signal is
+        a warning. The group is settled as a unit instead, so the batch never
+        leaves the graph holding fewer supersedes edges than it found.
+
+        End-to-end through ``plan_batch_edges`` rather than against
+        ``resolve_and_execute`` directly, because the planner is what
+        produces the removal-plus-gated-add shape the gate has to reason
+        about: ``plan_batch_edges`` admits a non-active document into the
+        candidate set via ``in_repair_scope``, which is what makes a
+        ``completed`` mid-chain predecessor reachable at all.
+        """
+        V1_ID = "cccccccc_v1"
+        V3_ID = "cccccccc_v3"
+        v1 = _make_document(
+            V1_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v1",
+            tags=["PV06"],
+            # Neither supersedable nor a supersede landing state under the
+            # base lifecycle, so the v2->v1 replacement add is gated.
+            lifecycle_status="completed",
+        )
+        v3 = _make_document(
+            V3_ID,
+            title="Claim-Set",
+            project="EXAMPLE",
+            doc_type="design_spec",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        existing_edge = _make_edge(
+            _E_V3_V1,
+            V3_ID,
+            V1_ID,
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
+            rationale_kind=RationaleKind.VERSION_CHAIN,
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+        svc = BatchIngestService()
+
+        before = {(e.source_id, e.target_id) for e in state.edges.values()}
+
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        after = {(e.source_id, e.target_id) for e in state.edges.values()}
+
+        # The invariant: the repair took nothing away.
+        assert before <= after, f"repair severed edges: {before - after}"
+        assert _E_V3_V1 in state.edges
+        assert state.removed_edge_ids == []
+        assert result.edges_removed == 0
+
+        # The group is settled as a unit, so the sound half of the repair
+        # (v3->v2) is withheld too: keeping v3->v1 and adding v3->v2 would
+        # leave v3 with two outgoing supersedes edges.
+        assert result.edges_created.get("supersedes", 0) == 0
+
+        # Both facts reach the caller: why the add was refused, and that a
+        # removal was withheld as a result.
+        reasons = {w["reason"] for w in result.edge_warnings}
+        assert "supersede_target_not_transitionable" in reasons
+        assert "chain_repair_withheld" in reasons
+
+        # v1 is untouched -- not transitioned, and still linked.
+        assert state.docs[V1_ID].lifecycle_status == "completed"

@@ -197,15 +197,31 @@ def register_app_tools(
         A target in any other state is not superseded at all: no edge is
         created, ``edges_dropped`` advances, and a
         ``supersede_target_not_transitionable`` entry in
-        ``summary.edge_warnings`` names the observed and permitted states.
-        Neither that case nor a post-edge transition failure raises.
+        ``summary.edge_warnings`` names the observed and permitted states
+        (an absent or unreadable target refuses the edge the same way,
+        under ``supersede_target_missing`` and
+        ``supersede_target_read_failed``). Because the refusal is settled
+        before anything is written, a chain repair whose replacement add is
+        refused withholds its removals as well, under
+        ``chain_repair_withheld``, so a batch does not leave the graph
+        holding fewer ``supersedes`` edges than it found.
+
+        The guarantee is bounded: no edge is created when the transition is
+        known-forbidden at the time the check runs. It is not a
+        transaction — the edge insert and the lifecycle write are two calls
+        under no shared lock, so a write that fails after the edge lands
+        leaves the edge in place with a ``lifecycle_transition_failed``
+        entry as the only signal, and the write omits the chunk-store
+        lifecycle sync that ``update_lifecycles`` performs, so a superseded
+        document's chunks keep their prior lifecycle value until
+        reprojection. None of these raise.
 
         Tier-1 provenance-gate downgrade: Tier-1 ``supersedes`` adds are
         gated on provenance — if any existing edge in a candidate version
         chain has a non-``version_chain`` rationale (e.g. a human-curated
         edge in the same chain), the entire group's Tier-1 adds are silently
         downgraded to Tier-2 (staged for review rather than landing as
-        production edges; the predecessor auto-archive above does NOT fire on
+        production edges; the predecessor auto-transition above does NOT fire on
         a downgraded group). A batch's production-vs-staging outcome is
         therefore rule-dependent on the vault's prior edge graph, not
         deterministic from the input files alone.
