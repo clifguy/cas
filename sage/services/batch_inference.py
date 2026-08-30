@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sage.adapters.interfaces import GraphStore
+from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.config import TransitionTable
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
@@ -551,6 +551,7 @@ async def resolve_and_execute(
     graph_store: GraphStore,
     graph_ops_service: GraphOpsService,
     transition_table: TransitionTable,
+    content_store: ContentStore | None = None,
 ) -> EdgeResult:
     """Phase 2: resolve file paths to document IDs and execute edges.
 
@@ -577,10 +578,12 @@ async def resolve_and_execute(
     remain two calls under no shared lock, so a write that fails after the
     edge lands leaves the edge in place with an
     ``lifecycle_transition_failed`` warning as the only signal, and a state
-    change racing the gate is not detected. The write also does not carry
-    the chunk-store lifecycle sync that the explicit lifecycle path
-    performs, so a superseded document's chunks keep their prior lifecycle
-    value until the next reprojection.
+    change racing the gate is not detected. A successful write is followed
+    by the same chunk-store lifecycle sync the explicit lifecycle path
+    performs, so the target's chunks land in the same state the document
+    does; the sync is best-effort, and a failure warns as
+    ``chunk_lifecycle_sync_failed`` with the document and chunk stores left
+    disagreeing until the next reprojection.
 
     Because the settlement runs first, it also constrains the removal pass.
     Chain repair emits removals and the adds that replace them; both carry
@@ -608,6 +611,9 @@ async def resolve_and_execute(
             both halves of the ``supersede`` transition -- the states it may
             be taken from and the state it lands in -- so this path reads
             the same configuration every other supersede surface reads.
+        content_store: The vault's content store, for syncing a superseded
+            target's chunk-level ``lifecycle_status`` after the document
+            write. ``None`` skips the sync (legacy wiring).
     """
     result = EdgeResult()
 
@@ -935,5 +941,37 @@ async def resolve_and_execute(
                         "detail": str(exc),
                     }
                 )
+                continue
+
+            # Mirror the transition onto the target's chunks, as every
+            # other lifecycle-writing surface does after its document
+            # write: pre-filter pushdown reads lifecycle_status off the
+            # chunk row, so without the sync a superseded document's
+            # chunks keep answering active-filtered searches. Reached
+            # only after a successful document write -- a failed write
+            # leaves the chunks agreeing with the document as it stands.
+            # Best-effort like the write above: a failure warns and the
+            # batch continues.
+            if content_store is not None:
+                try:
+                    await content_store.update_chunk_metadata(
+                        target_id, {"lifecycle_status": supersede_to_state}
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Target %s transitioned to '%s' but chunk-store sync failed: %s",
+                        target_id,
+                        supersede_to_state,
+                        exc,
+                    )
+                    result.warnings.append(
+                        {
+                            "source": source_id,
+                            "target": target_id,
+                            "edge_type": planned.edge_type.value,
+                            "reason": "chunk_lifecycle_sync_failed",
+                            "detail": str(exc),
+                        }
+                    )
 
     return result
