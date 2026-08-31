@@ -248,6 +248,25 @@ async def test_malformed_sha256_returns_invalid_sha256_400(client):
     assert body["detail"]["sha256"] == "deadbeef", body
 
 
+async def test_malformed_document_ids_filter_returns_invalid_document_id_400(client):
+    """A malformed entry in the discover body's document_ids filter returns the
+    structured invalid_document_id (400) on the HTTP surface.
+
+    The MCP surface returns the same envelope under a different key -- ``error``
+    there, ``code`` here -- so a single-transport test would leave the other
+    unestablished. The status also pins that the typed-alias family translates
+    the body-binding rejection into a SAGE 400 rather than FastAPI's native 422.
+    """
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "catalog", "filters": {"document_ids": ["not-a-doc-id"]}},
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_document_id", body
+    assert body["detail"]["document_id"] == "not-a-doc-id", body
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle transition
 # ---------------------------------------------------------------------------

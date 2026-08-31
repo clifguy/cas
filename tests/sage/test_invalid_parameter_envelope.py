@@ -151,9 +151,39 @@ def test_filter_scoped_code_wins_over_the_generic_one_when_nested():
     error one level down in `filters` is exactly what `invalid_filter_shape`
     exists to report, and it keeps reporting it.
     """
-    err = validation_error_envelope(_discover_error(query="x", filters={"document_ids": ["ok", 5]}))
+    # The id entry must be well-formed. ``document_ids`` carries the
+    # document-id alias on its element type, so a malformed *value* raises
+    # ``invalid_document_id`` ahead of the shape branch -- a different rule
+    # than the one under test here.
+    err = validation_error_envelope(
+        _discover_error(query="x", filters={"document_ids": ["deadbeef_ok", 5]})
+    )
 
     assert err.code == "invalid_filter_shape"
+
+
+def test_malformed_element_type_and_value_take_different_branches():
+    """A bad element *type* reports the filter shape; a bad element *value*
+    reports the id grammar.
+
+    Both failures sit at the same nested location. The type failure is raised
+    by Pydantic before the element's AfterValidator ever runs, so it keeps the
+    container-shaped envelope; the value failure comes from the validator and
+    names the offending id. Stating the split makes the translator's branch
+    ordering deliberate rather than emergent.
+    """
+    shape = validation_error_envelope(
+        _discover_error(mode="catalog", filters={"document_ids": [42]})
+    )
+    assert shape.code == "invalid_filter_shape"
+    assert shape.detail["field"] == "document_ids"
+    assert shape.detail["received_type"] == "int"
+
+    value = validation_error_envelope(
+        _discover_error(mode="catalog", filters={"document_ids": ["not-a-doc-id"]})
+    )
+    assert value.code == "invalid_document_id"
+    assert value.detail["document_id"] == "not-a-doc-id"
 
 
 # ---------------------------------------------------------------------------

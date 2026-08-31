@@ -61,10 +61,24 @@ added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
 and the edge-creation MCP tool as ``str | None`` with hash-format
 validation deferred to; retyped those three sites to
 ``Sha256Str``-shaped validation and cleared the three allowlist
-entries. All three ``KNOWN_*_VIOLATIONS`` dicts are once again empty.
-The MCP side rides Pattern 3 rather than Pattern 2: the bulk
+entries. The MCP side rides Pattern 3 rather than Pattern 2: the bulk
 edge-creation tool takes an ``items`` list and validates each entry
 through ``BulkLinkItem.model_validate``, whose fields carry the alias.
+Widened the registry to the plural forms of its suffix patterns and
+taught the annotation walk to descend into sequence element types,
+which surfaced the collection-shaped sites the ``endswith`` rules had
+never enumerated.
+
+What remains allowlisted is exceptions rather than debt:
+``KNOWN_FASTAPI_VIOLATIONS`` is empty; ``KNOWN_VIOLATIONS`` holds
+foreign identifiers that are not SAGE ids; ``KNOWN_FASTMCP_VIOLATIONS``
+holds published-but-unconsumed tripwire parameters. Every entry carries
+its justification inline.
+
+Collection sites carry the alias on the element type -- ``list[<Alias>]``
+on a ``BaseModel`` field, and a module-scope
+``TypeAdapter(list[<Alias>])`` for the Pattern 2 form. The container
+itself is never aliased.
 """
 
 from __future__ import annotations
@@ -126,6 +140,13 @@ _SCOPED_MODULES: Final[tuple] = (schemas_mod, router_mod, models_mod, config_mod
 #
 # Specific-name keys (no leading ``*``) win over ``*_suffix`` patterns
 # at lookup time.
+#
+# Suffix patterns match by ``endswith``, so a plural name is a distinct
+# pattern rather than a form the singular already covers: ``document_ids``
+# does not end in ``_id``, nor ``hashes`` in ``_hash``. Each suffix therefore
+# carries its plural, and a collection site is expected to apply the alias to
+# its *element* type. The plural of a bare stem is an exact key, as ``hashes``
+# is below.
 # ---------------------------------------------------------------------------
 
 SHAPE_REGISTRY: Final[dict[str, type]] = {
@@ -133,10 +154,25 @@ SHAPE_REGISTRY: Final[dict[str, type]] = {
     "edge_id": EdgeIdStr,  # exact match — wins over *_id
     "vault_id": VaultIdStr,  # exact match — wins over *_id
     "function_id": FunctionIdStr,  # exact match — wins over *_id
+    "hashes": Sha256Str,  # exact match — the bare-stem plural
     "*_id": DocumentIdStr,
     "*_hash": Sha256Str,
     "*_date": DocumentDateStr,
+    "*_ids": DocumentIdStr,
+    "*_hashes": Sha256Str,
+    # No site matches ``*_dates`` today. It is declared so the plural rule
+    # covers the whole suffix set rather than the subset that happened to have
+    # an escapee when the gap was found.
+    "*_dates": DocumentDateStr,
 }
+
+
+# Container origins the annotation walk and the adapter-binding walk descend
+# into. A sequence holds its shape on the element type; a mapping does not,
+# and descending into one would treat a ``dict[str, ...]`` key as a
+# shape-bearing arm.
+_SEQUENCE_ORIGINS: Final[frozenset] = frozenset({list, set, tuple, frozenset})
+_SEQUENCE_NAMES: Final[frozenset[str]] = frozenset({"list", "set", "tuple", "frozenset"})
 
 
 # Validators that count as typed-alias coverage. A field whose Pydantic
@@ -240,6 +276,13 @@ def _walk_annotation(annotation) -> tuple[bool, bool]:
     ``str`` arm exists at all, so callers can exclude e.g.
     ``datetime | None`` fields whose names happen to match a registry
     suffix.
+
+    A sequence carries its shape on the element type -- ``list[DocumentIdStr]``,
+    never ``DocumentIdStr`` on the container -- so the walk descends into
+    sequence arguments. Descent is deliberately limited to sequence
+    containers: a mapping's ``str`` key is not a shape-bearing arm, and
+    descending into every generic would report a ``str`` arm for any
+    ``dict[str, ...]`` field whose name matched a registry pattern.
     """
     has_str = False
     has_typed = False
@@ -254,6 +297,9 @@ def _walk_annotation(annotation) -> tuple[bool, bool]:
             continue
         origin = typing.get_origin(node)
         if origin is typing.Union or origin is UnionType:
+            stack.extend(typing.get_args(node))
+            continue
+        if origin in _SEQUENCE_ORIGINS:
             stack.extend(typing.get_args(node))
             continue
         if node is str:
@@ -498,6 +544,17 @@ KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
         "the same edge-filter pair as search.source_id above, published and "
         "left unvalidated for the same reason."
     ),
+    (
+        "sage.sage_api_tools.search",
+        "document_ids",
+    ): (
+        "Tripwire parameter, not a functional argument: the collection-shaped "
+        "member of the same published-filter-key set as search.source_id "
+        "above, left unvalidated for the same reason. The functional site is "
+        "RetrievalFilters.document_ids, which carries the alias on its element "
+        "type and rejects a malformed entry at the nested level the caller "
+        "should have used."
+    ),
 }
 
 
@@ -519,10 +576,16 @@ def _module_typeadapter_bindings(module: ModuleType) -> dict[str, type]:
 
         <NAME>: TypeAdapter[...] = TypeAdapter(<AliasName>)
         <NAME> = TypeAdapter(<AliasName>)
+        <NAME>: TypeAdapter[...] = TypeAdapter(list[<AliasName>])
 
     where ``<AliasName>`` resolves to one of the typed aliases. Only
     module-scope bindings count — adapters constructed inside function
     bodies are not discoverable here.
+
+    The third form is the collection shape. A sequence adapter binds to its
+    *element* alias: the shape contract belongs to the element, and the
+    binding is what lets the Pattern 2 detector credit a
+    ``validate_python(<collection_param>)`` call.
     """
     cached = _TYPEADAPTER_BINDINGS_CACHE.get(id(module))
     if cached is not None:
@@ -559,6 +622,14 @@ def _module_typeadapter_bindings(module: ModuleType) -> dict[str, type]:
         if not value.args:
             continue
         arg = value.args[0]
+        # ``TypeAdapter(list[Alias])`` parses as a Subscript, not a Name.
+        # Unwrap one sequence layer to the element alias.
+        if (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Name)
+            and arg.value.id in _SEQUENCE_NAMES
+        ):
+            arg = arg.slice
         if not isinstance(arg, ast.Name):
             continue
         alias_cls = getattr(module, arg.id, None)
@@ -1073,3 +1144,101 @@ def test_typed_alias_validator_raises_structured_custom_error(
     assert ctx["argument"] == argument, ctx
     assert ctx["value"] == bad_value, ctx
     assert ctx["expected"], ctx
+
+
+# ---------------------------------------------------------------------------
+# Collection-shaped sites
+#
+# The suffix patterns match by ``endswith``, so a plural name such as
+# ``document_ids`` or ``hashes`` matched nothing and its site escaped all
+# three gates. Two mechanisms had to move together: the registry has to name
+# the plural forms, and the annotation walker has to descend into a
+# collection's element type -- a ``list[str]`` field reports no ``str`` arm
+# under a walker that stops at the container, so a registry edit alone leaves
+# the discovery sets unchanged. These tests pin both, and pin the boundary
+# that keeps the widening from overshooting onto boolean flags.
+# ---------------------------------------------------------------------------
+
+
+def test_walk_annotation_descends_into_collection_element_types():
+    """A collection carries its shape on the element type, not the container."""
+    assert _walk_annotation(list[str] | None) == (True, False)
+    assert _walk_annotation(list[DocumentIdStr]) == (True, True)
+    # Descent is scoped to sequence containers. A mapping's ``str`` key is not
+    # a shape-bearing arm, and treating it as one would flag every ``dict[str,
+    # ...]`` field whose name happens to match a plural registry pattern.
+    assert _walk_annotation(dict[str, int]) == (False, False)
+    # The overshoot boundary: a boolean flag has no ``str`` arm at any depth.
+    assert _walk_annotation(bool) == (False, False)
+
+
+def test_registry_enumerates_plural_collection_sites():
+    """The widened registry surfaces every collection-shaped site.
+
+    Without this the widening is unobservable: a registry edit that matched
+    nothing would leave every other test in this file green, because each one
+    is parametrized off the discovery sets it would have emptied.
+    """
+    model_sites = {(cls.__name__, name) for cls, name, _ in _shape_bearing_fields()}
+    for site in (
+        ("RetrievalFilters", "document_ids"),
+        ("HashCheckRequest", "hashes"),
+        ("SetEditorsRequest", "user_ids"),
+        ("Tier3UniquenessCollision", "document_ids"),
+    ):
+        assert site in model_sites, f"{site} escaped the BaseModel gate; got {sorted(model_sites)}"
+
+    tool_sites = {
+        (f"{fn.__module__}.{fn.__name__}", name) for fn, name, _ in _discover_fastmcp_tool_params()
+    }
+    for site in (
+        ("sage.sage_api_tools.verify_hash", "hashes"),
+        ("sage.sage_api_tools.search", "document_ids"),
+    ):
+        assert site in tool_sites, f"{site} escaped the FastMCP gate"
+
+
+def test_boolean_flag_ending_in_a_shape_word_is_not_enumerated():
+    """A boolean flag whose name ends in a shape word stays out of the gate.
+
+    Asserted through the mechanism rather than by absence alone. Absence on
+    its own would also hold for a registry that matched nothing, which is the
+    failure this widening exists to fix. The name *does* match a registry
+    pattern; the ``str``-arm filter is what excludes it.
+
+    Anti-coincidental-pass: excludes a registry narrowed back to its singular
+    patterns (the first assertion goes red) and a walker that reports a
+    ``str`` arm for ``bool`` (the second does). It does **not** exclude a
+    walker widened to descend into every generic rather than sequences only:
+    ``bool`` has no origin, so that overshoot leaves this flag untouched and
+    every assertion here still passes. The guard for that rival is the
+    ``dict[str, int]`` case in
+    ``test_walk_annotation_descends_into_collection_element_types``, which is
+    where a mapping's ``str`` key would start counting as a shape-bearing arm.
+    """
+    assert _expected_alias("check_hashes") is not None, (
+        "expected the widened registry to match the name, with the str-arm "
+        "filter -- not the name rule -- doing the exclusion"
+    )
+    assert _walk_annotation(bool) == (False, False)
+
+    tool_sites = {
+        (f"{fn.__module__}.{fn.__name__}", name) for fn, name, _ in _discover_fastmcp_tool_params()
+    }
+    assert ("sage.sage_api_tools.verify_vault_source_files", "check_hashes") not in tool_sites
+
+
+def test_module_typeadapter_bindings_resolve_collection_adapters():
+    """A collection adapter is discoverable as a Pattern 2 binding.
+
+    ``TypeAdapter(list[Sha256Str])`` is an ``ast.Subscript``, not the
+    ``ast.Name`` the scalar form produces. Left unresolved, the Pattern 2
+    detector cannot see the adapter and the tool fails the gate despite
+    validating its parameter correctly.
+    """
+    from sage import sage_api_tools
+
+    bindings = _module_typeadapter_bindings(sage_api_tools)
+    assert bindings.get("_SHA256_LIST_ADAPTER") is Sha256Str, sorted(bindings)
+    # The scalar bindings are unaffected.
+    assert bindings.get("_DOCUMENT_ID_ADAPTER") is DocumentIdStr, sorted(bindings)

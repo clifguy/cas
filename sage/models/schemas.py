@@ -2696,9 +2696,19 @@ class RetrievalFilters(BaseModel):
         default=None,
         description="Filter by tags (documents must have all specified tags).",
     )
-    document_ids: list[str] | None = Field(
+    # Typed on the element, matching the same field name on
+    # Tier3UniquenessCollision. Storage resolves this filter by SQL equality
+    # against minted ids, so a malformed entry matched nothing and returned a
+    # successful empty result the caller could not tell apart from a
+    # well-formed id with no matches. Rejection is whole-request: one unusable
+    # entry fails the call rather than being silently dropped from the set.
+    document_ids: list[DocumentIdStr] | None = Field(
         default=None,
-        description='Restrict to a specific set of documents. Used with scope "specific".',
+        description=(
+            'Restrict to a specific set of documents. Used with scope "specific". '
+            "A malformed id rejects the request with invalid_document_id (400) "
+            "rather than resolving to no match."
+        ),
     )
     pipeline_status: str | None = Field(
         default=None,
