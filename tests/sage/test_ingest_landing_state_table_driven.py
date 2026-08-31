@@ -10,7 +10,8 @@ ignored is a defect.
 These tests pin three properties:
 
 - `TransitionTable.ingest_landing_state` reports the configured `(new)`
-  row's target, falling back to `active` for a table built without one;
+  row's target, and raises for a table built without one rather than
+  substituting a state the vault never declared;
 - reading the row does not make it invocable: `ingest` stays unknown to
   the user-facing action surface;
 - `IngestionService.ingest` lands new documents in the configured state

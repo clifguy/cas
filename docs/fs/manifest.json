@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-08-30",
+  "manifest_date": "2026-08-31",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.53",
+  "substrate_version": "1.54",
   "revision_history": [
+    {
+      "version": "1.54",
+      "date": "2026-08-31",
+      "summary": "Reconcile Document.lifecycle_status with the substrate that already declares it required. sage_core_api.openapi.yaml lists lifecycle_status in Document.required and declares no default; the Pydantic field carried default=\"active\", an unbacked divergence from the schema the model is derived from (Principle 8), and the one remaining place a construction path could inherit `active` instead of the vault's configured ingest landing state. CAS-ADR-047 is the governing decision: lifecycle preconditions derive from vault configuration, and engine literals survive only as the defaults an unset declaration resolves to -- which a model-level default is not, being reachable with no declaration at all. sage/models/schemas.py drops the default; DocumentWithContent inherits the change. No schema file moves: the YAML and the TypeScript mirror in app/src/api/types.ts were already correct, so this closes a model-side divergence rather than introducing a contract change. DocumentSummary.lifecycle_status was already required and is unchanged. tests/sage/test_lifecycle_status_default_guard.py adds the behavioural half (construction without a state raises, asserted under a vault whose configured landing state is not `active`) and a structural gate holding the property for every non-nullable lifecycle_status field in sage.models.schemas, with nullability separating a state a record asserts from a filter whose absence means `any`. The gate does not reach model_construct, which bypasses validation by design where a repair workflow must read values the request-side validators reject."
+    },
     {
       "version": "1.53",
       "date": "2026-08-30",

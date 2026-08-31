@@ -240,6 +240,7 @@ async def test_read_projection_no_projection(utilities_service, graph_store):
         title="No Chunks",
         source_type="markdown",
         source_path="test/no_chunks.md",
+        lifecycle_status="active",
         source_content_hash=_sha("fake"),
         adapter_version="1.0",
         created_by="test",

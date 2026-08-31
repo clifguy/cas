@@ -383,6 +383,7 @@ async def test_read_section_no_projection(multi_section_service, graph_store):
         title="Empty Doc",
         source_type="markdown",
         source_path="test/empty.md",
+        lifecycle_status="active",
         source_content_hash=_sha("fake"),
         adapter_version="1.0",
         created_by="test",
