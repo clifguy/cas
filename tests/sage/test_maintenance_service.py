@@ -436,11 +436,16 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
     both fields as it is built, the entry would render two identical hashes as
     the evidence of the difference.
 
-    Both sides are covered, because both are read from raw rows and a fix
-    applied to only one of them would still pass a test that varied only the
-    other. The uppercase spellings are applied after construction on purpose:
-    `Edge` and `Document` both normalize during validation, so a fixture
-    passing them to a constructor could not express the legacy rows at all.
+    Two dimensions vary independently, and a rival exists for each. Both sides
+    are read from raw rows, so a fix applied to only one of them still passes a
+    test that varies only the other. And a fix that lowercases without
+    normalizing the algorithm prefix handles every case-only difference while
+    still failing a bare-hex row -- the form `hexdigest()` produces, and so the
+    likeliest spelling for a row predating the alias.
+
+    All the non-canonical spellings are applied after construction on purpose:
+    `Edge` and `Document` both normalize during validation, so a fixture passing
+    them to a constructor could not express these legacy rows at all.
     """
     gs = graph_store
     maintenance = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
@@ -460,6 +465,7 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
     assert other_target.source_content_hash != other_head_hash
     await gs.insert_document(other_target)
     await gs.insert_document(_drift_doc("cccccccc_c", _hash("3")))
+    await gs.insert_document(_drift_doc("dddddddd_d", _hash("4")))
 
     spelling_only = _drift_edge(
         "66666666-6666-4666-8666-666666666666",
@@ -485,6 +491,21 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
     )
     await gs.insert_edge(head_side_only)
 
+    # The prefix dimension: a bare-hex recorded hash against a prefixed head.
+    # Lowercasing both sides without normalizing the prefix leaves this one
+    # comparing 64 characters against 71, so it reports drift and this test
+    # goes red.
+    prefix_only = _drift_edge(
+        "99999999-9999-4999-8999-999999999999",
+        source_id="dddddddd_d",
+        target_id="cafebabe_t2",
+        synced_from_version="cafebabe_t2",
+        synced_from_content_hash=head_hash,
+    )
+    prefix_only.synced_from_content_hash = head_hash.removeprefix("sha256:")
+    assert not prefix_only.synced_from_content_hash.startswith("sha256:")
+    await gs.insert_edge(prefix_only)
+
     # Positive control: a genuinely different hash on the same target. Absence
     # alone cannot distinguish "judged current" from "never evaluated" -- this
     # edge proves the classifier reached this target and still reports drift.
@@ -509,6 +530,10 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
     assert "88888888-8888-4888-8888-888888888888" not in edge_ids, (
         "a non-canonical stored head hash must not read as content drift either "
         "-- canonicalizing only the recorded side would fail here"
+    )
+    assert "99999999-9999-4999-8999-999999999999" not in edge_ids, (
+        "a bare-hex recorded hash must not read as content drift -- lowercasing "
+        "without normalizing the algorithm prefix would fail here"
     )
 
 
