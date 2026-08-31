@@ -147,15 +147,20 @@ let the caller present a meaningful message.
 **Decision:** `verify_hash(vault_id, hashes)` accepts a list of hash strings
 and returns a JSON object mapping each hash to its match result.
 
-**Precondition:** Vault with one document having `source_content_hash` = "sha256:abc123".
+**Precondition:** Vault with one document having `source_content_hash` = "sha256:0000000000000000000000000000000000000000000000000000000000000000".
 
-**Input:** Call `verify_hash("test_vault", ["sha256:abc123", "sha256:unknown"])`.
+**Input:** Call `verify_hash("test_vault", ["sha256:0000000000000000000000000000000000000000000000000000000000000000", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"])`.
 
 **Expected:**
 - Returns valid JSON string
 - Parsed result maps:
-  - `"sha256:abc123"`: `{ "exists": true, "document_id": "<doc-id>" }`
-  - `"sha256:unknown"`: `{ "exists": false }`
+  - `"sha256:0000000000000000000000000000000000000000000000000000000000000000"`: `{ "exists": true, "document_id": "<doc-id>" }`
+  - `"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`: `{ "exists": false }`
+
+**Note:** Both example hashes are well-formed 64-hex digests on purpose. Hashes
+are normalized and validated at the request boundary, so a malformed stand-in
+for "absent" (e.g. `"sha256:unknown"`) rejects the whole call with
+`invalid_sha256` rather than reporting `exists: false` for that entry.
 
 **Rationale:** MCP clients performing scan-like operations need the same hash
 check capability as the application backend.

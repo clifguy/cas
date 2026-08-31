@@ -757,8 +757,8 @@ async def test_mcp_tool_malformed_document_date_yields_invalid_document_date(
 async def test_mcp_tool_malformed_sha256_yields_invalid_sha256(vault_services):
     """create_edges parses items up front (BulkLinkItem.model_validate); a
     malformed synced_from_content_hash surfaces the structured invalid_sha256
-    (400). This is the caller-reachable MCP sha256 surface -- verify_hash
-    intentionally skips Sha256Str validation."""
+    (400). One of two caller-reachable MCP sha256 surfaces -- verify_hashes
+    validates through HashCheckRequest and rejects the same way."""
     item = {
         "source_id": "deadbeef_a",
         "target_id": "deadbeef_b",

@@ -146,10 +146,17 @@ class VaultConfigService:
         if not body.hashes:
             return {}
 
-        matches = await self._store.find_documents_by_hashes(body.hashes)
+        # Deduplicate before the lookup. Normalization collapses variant
+        # spellings of one digest to a single string -- a case the contract
+        # above advertises -- and each element becomes its own bind parameter
+        # in the store's `IN (...)` list, so without this a caller passing two
+        # spellings pays for two. Insertion order is preserved.
+        unique_hashes = list(dict.fromkeys(body.hashes))
+
+        matches = await self._store.find_documents_by_hashes(unique_hashes)
 
         result: dict[str, HashCheckMatch] = {}
-        for h in body.hashes:
+        for h in unique_hashes:
             if h in matches:
                 result[h] = HashCheckMatch(exists=True, document_id=matches[h])
             else:

@@ -92,6 +92,7 @@ from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, SourceType
+from sage.models.schemas import canonicalize_sha256
 from sage.vault_management import bound_vault_root, config_path_for_vault
 
 
@@ -224,14 +225,18 @@ async def reproject_vault_with_services(
             projection = await adapter.project(src_path)
 
             # Hash drift guard: source file changed since original ingest.
-            # Per the canonical-hash convention, doc.source_content_hash is
-            # `sha256:<hex>` and projection.content_hash is raw hex; compare
-            # the hex parts.
+            # `doc.source_content_hash` is canonical (it crossed the typed
+            # alias); `projection.content_hash` is raw adapter output whose
+            # spelling nothing upstream constrains, so both are canonicalized
+            # before comparison. Comparing raw would report drift for a file
+            # whose digest matches but is spelled differently, skipping a
+            # document that needs no skipping.
             stored_hex = (doc.source_content_hash or "").removeprefix("sha256:")
             if (
-                stored_hex
+                doc.source_content_hash
                 and projection.content_hash
-                and projection.content_hash != stored_hex
+                and canonicalize_sha256(projection.content_hash)
+                != canonicalize_sha256(doc.source_content_hash)
                 and not allow_hash_drift
             ):
                 n_hash_drift_skipped += 1

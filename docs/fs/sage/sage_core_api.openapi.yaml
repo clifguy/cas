@@ -3216,7 +3216,9 @@ components:
             the moment this edge was asserted. Optional companion to
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
-            (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
+            (in-place edits). Always the canonical
+            `sha256:` + 64 lowercase hex form; request schemas accept
+            wider spellings and normalize to it;
             unset = explicit null.
 
     User:
@@ -3923,13 +3925,16 @@ components:
         synced_from_content_hash:
           type: string
           nullable: true
-          pattern: "^sha256:[0-9a-f]{64}$"
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             The source document's `source_content_hash` captured at
             the moment this edge was asserted. Optional companion to
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
-            (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
+            (in-place edits). Accepted as `sha256:<hex>` or bare
+            hex, digest in either case; normalized to
+            `sha256:` + 64 lowercase hex on the way in, and always
+            returned in that form;
             unset = explicit null.
         dry_run:
           type: boolean
@@ -4582,7 +4587,7 @@ components:
         synced_from_content_hash:
           type: string
           nullable: true
-          pattern: "^sha256:[0-9a-f]{64}$"
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             Provenance field. Same semantics as
             `LinkRequest.synced_from_content_hash`.

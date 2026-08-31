@@ -86,6 +86,22 @@ EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id)]
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+def canonicalize_sha256(v: str) -> str:
+    """Return the canonical `sha256:` + lowercase-hex spelling of a digest.
+
+    Shape is not checked: this only rewrites spelling, so a malformed value
+    comes back malformed. Callers that need the shape enforced annotate with
+    `Sha256Str`, which applies this and then validates.
+
+    Exported for the two places that must canonicalize *outside* a model:
+    values read from a raw storage row, which never crossed the alias, and
+    values compared before model construction. Comparing either raw would
+    read a non-canonical spelling as a difference.
+    """
+    candidate = v if v.startswith("sha256:") else f"sha256:{v}"
+    return "sha256:" + candidate[len("sha256:") :].lower()
+
+
 def _validate_sha256(v: str) -> str:
     """Normalize a content hash to `sha256:` + 64 lowercase hex digits.
 
@@ -101,8 +117,7 @@ def _validate_sha256(v: str) -> str:
     algorithm prefix, a whitespace-padded value, a wrong-length digest, and
     a non-hex digest all still reject. Flavor: normalize.
     """
-    candidate = v if v.startswith("sha256:") else f"sha256:{v}"
-    candidate = "sha256:" + candidate[len("sha256:") :].lower()
+    candidate = canonicalize_sha256(v)
     if not _SHA256_RE.fullmatch(candidate):
         raise PydanticCustomError(
             "invalid_sha256",
@@ -755,7 +770,9 @@ class Edge(BaseModel):
             "the moment this edge was asserted. Optional companion to "
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
-            "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
+            "(in-place edits). Always the canonical `sha256:` + 64 "
+            "lowercase hex form; request schemas accept wider "
+            "spellings and normalize to it; "
             "unset = explicit null."
         ),
     )
@@ -2073,7 +2090,10 @@ class LinkRequest(BaseModel):
             "the moment this edge was asserted. Optional companion to "
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
-            "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
+            "(in-place edits). Accepted as `sha256:<hex>` or bare "
+            "hex, digest in either case; normalized to `sha256:` + 64 "
+            "lowercase hex on the way in, and always returned in that "
+            "form; "
             "unset = explicit null."
         ),
     )

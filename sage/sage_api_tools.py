@@ -2077,8 +2077,8 @@ def register_sage_tools(
 
         For each input hash, returns whether an existing document in the
         vault carries that content hash and, if so, the matching document's
-        id and source_path. Used by the scan-and-batch-ingest flow to
-        identify already-ingested files without re-hashing on the SAGE side.
+        id. Used by the scan-and-batch-ingest flow to identify
+        already-ingested files without re-hashing on the SAGE side.
 
         Hash format: every hash is normalized to the canonical
         ``sha256:<64 lowercase hex>`` before lookup, so the canonical form,

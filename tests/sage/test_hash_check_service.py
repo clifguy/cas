@@ -14,9 +14,13 @@ requests directly.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
-from sage.models.schemas import HashCheckRequest
+from sage.adapters.stubs import StubGraphStore
+from sage.models.enums import SourceType
+from sage.models.schemas import Document, HashCheckRequest
 from sage.services.vault_config import VaultConfigService
 
 pytestmark = pytest.mark.asyncio
@@ -26,28 +30,53 @@ _CANONICAL = f"sha256:{_DIGEST}"
 _STORED_DOC_ID = "15d2cc75_a_stored_document"
 
 
-class _RecordingGraphStore:
-    """Only ``find_documents_by_hashes`` is exercised by ``hash_check``.
+class _RecordingGraphStore(StubGraphStore):
+    """``StubGraphStore`` plus a record of what each hash lookup was asked for.
 
-    Records every call so a test can assert the store was *not* consulted, which
-    ``{}``-returning assertions alone cannot distinguish from a consulted-and-empty
-    lookup.
+    Subclasses rather than reimplements so the lookup keeps the stub's real
+    matching semantics; the base already records ``close_calls`` for the same
+    kind of assertion. The record is what lets a test distinguish "the store was
+    never consulted" from "the store was consulted and returned nothing", which
+    a ``{}`` result alone cannot.
     """
 
-    def __init__(self, stored: dict[str, str] | None = None) -> None:
-        self._stored = dict(stored or {})
+    def __init__(self) -> None:
+        super().__init__()
         self.calls: list[list[str]] = []
 
     async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
         self.calls.append(list(hashes))
-        # Exact-string match, exactly as the Postgres `IN (...)` lookup behaves.
-        return {h: self._stored[h] for h in hashes if h in self._stored}
+        return await super().find_documents_by_hashes(hashes)
 
 
-def _service(
-    stored: dict[str, str] | None = None,
+def _document(doc_id: str, content_hash: str) -> Document:
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title="Stored document",
+        source_type=SourceType.MARKDOWN,
+        source_path="stored.md",
+        source_content_hash=content_hash,
+        adapter_version="1.0",
+        created_by="test",
+        created_at=now,
+        last_modified_by="test",
+        updated_at=now,
+    )
+
+
+async def _service(
+    stored_hash: str | None = None,
 ) -> tuple[VaultConfigService, _RecordingGraphStore]:
-    store = _RecordingGraphStore(stored)
+    """Build the service over a stub holding at most one document.
+
+    ``stored_hash`` is written through ``Document``, so the stub holds whatever
+    spelling ``Sha256Str`` produced rather than a hand-written fixture key --
+    the lookup is therefore matched against a real post-alias value.
+    """
+    store = _RecordingGraphStore()
+    if stored_hash is not None:
+        await store.insert_document(_document(_STORED_DOC_ID, stored_hash))
     # content_store / config / registry_service are unused on the hash_check path.
     return VaultConfigService(store, None, None, None), store
 
@@ -58,8 +87,11 @@ async def test_bare_hex_resolves_to_a_document_stored_under_the_canonical_form()
     The store holds only the canonical spelling -- asserted here, so the test cannot
     pass by the fixture happening to store the bare form.
     """
-    service, store = _service({_CANONICAL: _STORED_DOC_ID})
-    assert _DIGEST not in store._stored
+    service, store = await _service(_CANONICAL)
+    # The stored spelling is canonical, so a bare-hex hit cannot come from the
+    # fixture happening to hold the bare form.
+    assert await store.get_document(_STORED_DOC_ID) is not None
+    assert (await store.get_document(_STORED_DOC_ID)).source_content_hash == _CANONICAL
 
     result = await service.hash_check(HashCheckRequest(hashes=[_DIGEST]))
 
@@ -70,7 +102,7 @@ async def test_bare_hex_resolves_to_a_document_stored_under_the_canonical_form()
 
 
 async def test_uppercase_hex_resolves_to_the_same_document():
-    service, _ = _service({_CANONICAL: _STORED_DOC_ID})
+    service, _ = await _service(_CANONICAL)
 
     result = await service.hash_check(HashCheckRequest(hashes=[_DIGEST.upper()]))
 
@@ -80,7 +112,7 @@ async def test_uppercase_hex_resolves_to_the_same_document():
 
 async def test_variant_spellings_of_one_digest_collapse_to_a_single_entry():
     """Keys are canonical, so two spellings cannot produce two disagreeing rows."""
-    service, _ = _service({_CANONICAL: _STORED_DOC_ID})
+    service, _ = await _service(_CANONICAL)
 
     result = await service.hash_check(
         HashCheckRequest(hashes=[_DIGEST, _CANONICAL, _DIGEST.upper()])
@@ -94,7 +126,7 @@ async def test_variant_spellings_of_one_digest_collapse_to_a_single_entry():
 async def test_unmatched_hash_is_present_with_exists_false_not_omitted():
     """An absent hash gets an entry; nothing is dropped from the result."""
     absent = "sha256:" + "b" * 64
-    service, _ = _service({_CANONICAL: _STORED_DOC_ID})
+    service, _ = await _service(_CANONICAL)
 
     result = await service.hash_check(HashCheckRequest(hashes=[_CANONICAL, absent]))
 
@@ -108,7 +140,7 @@ async def test_all_unknown_returns_a_full_dict_not_an_empty_one():
     """The distinction the docstrings used to deny: all-unknown is not empty."""
     a = "sha256:" + "a" * 64
     b = "sha256:" + "b" * 64
-    service, _ = _service()
+    service, _ = await _service()
 
     result = await service.hash_check(HashCheckRequest(hashes=[a, b]))
 
@@ -118,7 +150,7 @@ async def test_all_unknown_returns_a_full_dict_not_an_empty_one():
 
 
 async def test_empty_list_short_circuits_without_consulting_the_store():
-    service, store = _service({_CANONICAL: _STORED_DOC_ID})
+    service, store = await _service(_CANONICAL)
 
     result = await service.hash_check(HashCheckRequest(hashes=[]))
 
@@ -131,21 +163,23 @@ async def test_empty_list_short_circuits_without_consulting_the_store():
 # ---------------------------------------------------------------------------
 # The verify_hashes MCP wrapper.
 #
-# These cover the wrapper's own request construction. Without them, restoring
-# the historical `HashCheckRequest.model_construct(...)` validation bypass
-# breaks no test at all -- the service tests above build their requests
-# directly and so never exercise the tool's construction site.
+# These cover the wrapper's own request construction, which the service tests
+# above never reach: they build their requests directly. They are also the only
+# Postgres-free coverage of that construction site -- the app-surface tests that
+# also catch a restored `HashCheckRequest.model_construct(...)` bypass need a
+# live DSN, so without these a bypass regression is invisible to any run that
+# lacks one.
 # ---------------------------------------------------------------------------
 
 
-def _verify_hashes_tool(stored: dict[str, str] | None = None):
+async def _verify_hashes_tool(stored_hash: str | None = None):
     """Register the real tool against a fake vault, no Postgres involved."""
     from mcp.server.fastmcp import FastMCP
 
     from sage.mcp_server import _error_response, _serialize
     from sage.sage_api_tools import register_sage_tools
 
-    service, store = _service(stored)
+    service, store = await _service(stored_hash)
 
     class _Services:
         vault_config_service = service
@@ -165,9 +199,9 @@ async def test_tool_normalizes_bare_hex_before_the_lookup():
     """Guards the removal of the model_construct validation bypass.
 
     With the bypass restored the raw bare-hex string reaches the store, misses,
-    and the caller silently gets exists=false -- the defect this ticket fixes.
+    and the caller silently gets exists=false -- the defect this change fixes.
     """
-    tool, store = _verify_hashes_tool({_CANONICAL: _STORED_DOC_ID})
+    tool, store = await _verify_hashes_tool(_CANONICAL)
 
     result = await tool(vault_id="test_vault", hashes=[_DIGEST])
 
@@ -178,7 +212,7 @@ async def test_tool_normalizes_bare_hex_before_the_lookup():
 
 async def test_tool_rejects_malformed_hash_with_the_invalid_sha256_envelope():
     """Malformed input must reject loudly rather than surface as exists=false."""
-    tool, store = _verify_hashes_tool()
+    tool, store = await _verify_hashes_tool()
 
     result = await tool(vault_id="test_vault", hashes=["deadbeef"])
 
