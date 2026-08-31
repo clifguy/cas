@@ -151,9 +151,51 @@ def test_filter_scoped_code_wins_over_the_generic_one_when_nested():
     error one level down in `filters` is exactly what `invalid_filter_shape`
     exists to report, and it keeps reporting it.
     """
-    err = validation_error_envelope(_discover_error(query="x", filters={"document_ids": ["ok", 5]}))
+    # The id entry must be well-formed. ``document_ids`` carries the
+    # document-id alias on its element type, so a malformed *value* raises
+    # ``invalid_document_id`` ahead of the shape branch -- a different rule
+    # than the one under test here.
+    err = validation_error_envelope(
+        _discover_error(query="x", filters={"document_ids": ["deadbeef_ok", 5]})
+    )
 
     assert err.code == "invalid_filter_shape"
+
+
+def test_malformed_element_type_and_value_take_different_branches():
+    """A bad element *type* reports the filter shape; a bad element *value*
+    reports the id grammar.
+
+    Both failures sit at the same nested location. The type failure is raised
+    by Pydantic before the element's AfterValidator ever runs, so it keeps the
+    container-shaped envelope; the value failure comes from the validator and
+    names the offending id. Stating the split makes the translator's branch
+    ordering deliberate rather than emergent.
+
+    ``expected_type`` is asserted alongside ``received_type`` because the two
+    branches have to agree on what a well-formed value is. The shape envelope
+    names a remedy; if the remedy were ``list[str]``, a caller who followed it
+    exactly could still be refused by the value branch, and the pair of
+    messages would contradict each other. Asserting only ``received_type``
+    leaves that contradiction unpinned.
+    """
+    shape = validation_error_envelope(
+        _discover_error(mode="catalog", filters={"document_ids": [42]})
+    )
+    assert shape.code == "invalid_filter_shape"
+    assert shape.detail["field"] == "document_ids"
+    assert shape.detail["received_type"] == "int"
+    assert shape.detail["expected_type"] == "list[DocumentIdStr]"
+
+    value = validation_error_envelope(
+        _discover_error(mode="catalog", filters={"document_ids": ["not-a-doc-id"]})
+    )
+    assert value.code == "invalid_document_id"
+    assert value.detail["document_id"] == "not-a-doc-id"
+    # The index is not carried into the envelope on either transport; the
+    # offending value alone identifies the entry. Pinned so the collection
+    # form's documented contract and the envelope cannot drift apart.
+    assert "index" not in value.detail, value.detail
 
 
 # ---------------------------------------------------------------------------

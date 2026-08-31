@@ -1640,6 +1640,52 @@ async def test_discover_invalid_filter_shape(vault_services):
     assert "int" in result["detail"]["received_type"]
 
 
+async def test_discover_malformed_document_ids_filter_rejected(vault_services):
+    """A malformed entry in the document_ids filter is refused, not emptied.
+
+    The filter resolves by SQL equality against stored ids, which are minted
+    against the id grammar, so a malformed entry matched zero rows and the
+    caller got a successful empty result indistinguishable from a well-formed
+    id with no matches. The filter is passed at its correct nested level, so
+    the misplaced_filters guard is not what produces this envelope.
+    """
+    result = _parse(
+        await search("test_vault", mode="catalog", filters={"document_ids": ["not-a-doc-id"]})
+    )
+    assert result["error"] == "invalid_document_id", f"got: {result!r}"
+    assert result["detail"]["document_id"] == "not-a-doc-id", f"got: {result!r}"
+    assert "not-a-doc-id" in result["message"], f"got: {result!r}"
+
+
+async def test_discover_well_formed_absent_document_id_still_returns_empty(vault_services):
+    """A well-formed id that matches nothing stays a successful empty result.
+
+    The discriminator for the test above: the boundary rejects malformed
+    *syntax*, and a genuine zero-match is a data condition, not a client
+    error. Without this control, a validator that refused every id would
+    satisfy the rejection test.
+
+    Anti-coincidental-pass: the vault is seeded first, and the unfiltered
+    count is asserted alongside the filtered one. Against an empty vault the
+    filtered emptiness is worth nothing -- it holds whether the constraint is
+    applied or dropped on the floor. The pair (one document present, zero
+    returned under the filter) is reachable only by applying it.
+    """
+    await ingest_document("test_vault", "test/sample.md", "markdown")
+
+    result = _parse(
+        await search("test_vault", mode="catalog", filters={"document_ids": ["deadbeef_absent"]})
+    )
+    assert "error" not in result, f"a well-formed absent id must not error; got: {result!r}"
+    assert result["total_available"] == 0, f"got: {result!r}"
+
+    unfiltered = _parse(await search("test_vault", mode="catalog", limit=50))
+    assert unfiltered["total_available"] == 1, (
+        f"the seed must be visible unfiltered, or the filtered emptiness above "
+        f"proves nothing; got: {unfiltered!r}"
+    )
+
+
 async def test_discover_accepts_source_type_filter_key(vault_services):
     """source_type is an accepted document filter key.
 

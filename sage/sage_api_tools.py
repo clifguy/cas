@@ -52,6 +52,7 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestRequest,
     RetrievalFilters,
+    Sha256Str,
     TraverseRequest,
     UpdateVaultConfigRequest,
     VaultIdStr,
@@ -70,6 +71,10 @@ _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _FUNCTION_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(FunctionIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
+# Collection parameters carry the alias on the element type, so the adapter
+# wraps the sequence rather than the alias. Validation is whole-argument: one
+# unusable entry fails the call rather than being dropped from the batch.
+_SHA256_LIST_ADAPTER: TypeAdapter[list[str]] = TypeAdapter(list[Sha256Str])
 
 
 def _check_legacy_patch_form(field: str, value: object) -> None:
@@ -1511,6 +1516,11 @@ def register_sage_tools(
           wrong type for its field (e.g., ``{"tags": 42}`` where
           ``list[str]`` was expected). Detail carries ``field``,
           ``expected_type``, ``received_type``.
+        - ``invalid_document_id`` (400): an entry in the ``document_ids``
+          filter is not a well-formed document id. The whole call is
+          rejected and the envelope names the offending entry. A
+          well-formed id that matches no document is not an error --
+          it is a successful empty result, as it has always been.
         - ``mode_parameter_mismatch`` (400): a parameter is set that is
           not valid for the chosen mode (e.g., ``heading_path`` outside
           deterministic mode, ``query`` in deterministic mode). Detail
@@ -2112,6 +2122,7 @@ def register_sage_tools(
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            hashes = _SHA256_LIST_ADAPTER.validate_python(hashes)
             services = get_vault(vault_id)
             body = HashCheckRequest(hashes=hashes)
             matches = await services.vault_config_service.hash_check(body)

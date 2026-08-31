@@ -14,6 +14,7 @@ under either the ``document_date`` or filename-parser-keyed ``date``
 slot).
 """
 
+import typing
 import uuid
 
 import pytest
@@ -29,6 +30,7 @@ from sage.models.schemas import (
     RetrievalFilters,
     SetLifecycleRequest,
     Tier3Patch,
+    Tier3UniquenessCollision,
     TraverseRequest,
     UpdateMetadataRequest,
 )
@@ -463,3 +465,72 @@ def test_update_metadata_request_rejects_extra_field():
     """model_config={'extra': 'forbid'} catches typos in field names."""
     with pytest.raises(ValidationError):
         UpdateMetadataRequest(titel="oops")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# RetrievalFilters.document_ids — collection-typed boundary
+#
+# The filter is resolved by SQL equality against stored ids, so a malformed
+# entry matched nothing and returned a successful empty result: a caller
+# could not tell it apart from a well-formed id with no matches. The alias
+# on the element type turns that silent miss into a structured rejection.
+# ---------------------------------------------------------------------------
+
+
+def test_retrieval_filters_rejects_malformed_document_id():
+    """A malformed entry rejects the filter rather than resolving to no match."""
+    with pytest.raises(ValidationError) as excinfo:
+        RetrievalFilters(document_ids=["not-a-doc-id"])
+    err = excinfo.value.errors()[0]
+    assert err["type"] == "invalid_document_id", err
+    # The index is load-bearing: it names which entry failed.
+    assert err["loc"] == ("document_ids", 0), err
+    assert err["ctx"]["document_id"] == "not-a-doc-id", err
+
+
+def test_retrieval_filters_reports_the_offending_entry_not_the_first():
+    """A well-formed entry ahead of a malformed one does not mask the failure."""
+    with pytest.raises(ValidationError) as excinfo:
+        RetrievalFilters(document_ids=[_DOC_A, "BAD-ID"])
+    err = excinfo.value.errors()[0]
+    assert err["loc"] == ("document_ids", 1), err
+    assert err["ctx"]["document_id"] == "BAD-ID", err
+
+
+def test_retrieval_filters_accepts_well_formed_document_ids():
+    """Legitimate filtering is untouched: shaped ids pass through verbatim."""
+    filt = RetrievalFilters(document_ids=[_DOC_A, _DOC_B])
+    assert filt.document_ids == [_DOC_A, _DOC_B]
+
+
+def test_retrieval_filters_document_ids_agrees_with_tier3_collision():
+    """Both models spell the same field name with the same shape contract.
+
+    The two carried contradictory annotations -- one bare ``list[str]``, one
+    ``list[DocumentIdStr]`` -- for a field of identical meaning. Comparing the
+    resolved validators pins the agreement as a property rather than as a
+    coincidence of two independent edits.
+    """
+    from pydantic import AfterValidator
+
+    from sage.models import schemas as schemas_mod
+
+    def _element_validators(cls, name):
+        """AfterValidator funcs reachable anywhere in the field annotation."""
+        found = set()
+        stack = [cls.model_fields[name].annotation]
+        while stack:
+            node = stack.pop()
+            if hasattr(node, "__metadata__"):
+                for m in node.__metadata__:
+                    if isinstance(m, AfterValidator):
+                        found.add(m.func)
+                stack.append(node.__origin__)
+                continue
+            stack.extend(typing.get_args(node))
+        return found
+
+    filters_validators = _element_validators(RetrievalFilters, "document_ids")
+    collision_validators = _element_validators(Tier3UniquenessCollision, "document_ids")
+    assert schemas_mod._validate_document_id in filters_validators, filters_validators
+    assert schemas_mod._validate_document_id in collision_validators, collision_validators
