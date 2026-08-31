@@ -52,7 +52,6 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestRequest,
     RetrievalFilters,
-    Sha256Str,
     TraverseRequest,
     UpdateVaultConfigRequest,
     VaultIdStr,
@@ -71,7 +70,6 @@ _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _FUNCTION_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(FunctionIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
-_SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 
 def _check_legacy_patch_form(field: str, value: object) -> None:

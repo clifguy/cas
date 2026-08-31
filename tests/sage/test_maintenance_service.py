@@ -436,21 +436,30 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
     both fields as it is built, the entry would render two identical hashes as
     the evidence of the difference.
 
-    The uppercase spelling is applied after construction on purpose: `Edge`
-    normalizes it during validation, so a fixture passing it to the constructor
-    could not express the legacy row this guards against.
+    Both sides are covered, because both are read from raw rows and a fix
+    applied to only one of them would still pass a test that varied only the
+    other. The uppercase spellings are applied after construction on purpose:
+    `Edge` and `Document` both normalize during validation, so a fixture
+    passing them to a constructor could not express the legacy rows at all.
     """
     gs = graph_store
     maintenance = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
 
-    # A letter-only digest: digits have no case, so a digit digest could not
-    # express an uppercase spelling and the test would pass vacuously.
-    # A letter-only digest: digits have no case, so a digit digest could not
+    # Letter-only digests: digits have no case, so a digit digest could not
     # express an uppercase spelling and the test would pass vacuously.
     head_hash = _hash("e")
     await gs.insert_document(_drift_doc("cafebabe_t2", head_hash, "v2"))
     await gs.insert_document(_drift_doc("aaaaaaaa_a", _hash("1")))
     await gs.insert_document(_drift_doc("bbbbbbbb_b", _hash("2")))
+
+    # A second target whose *stored* hash is the non-canonical one, so the
+    # head side of the comparison is the side that varies.
+    other_head_hash = _hash("d")
+    other_target = _drift_doc("deadbeef_t3", other_head_hash, "v1")
+    other_target.source_content_hash = "sha256:" + other_head_hash.removeprefix("sha256:").upper()
+    assert other_target.source_content_hash != other_head_hash
+    await gs.insert_document(other_target)
+    await gs.insert_document(_drift_doc("cccccccc_c", _hash("3")))
 
     spelling_only = _drift_edge(
         "66666666-6666-4666-8666-666666666666",
@@ -463,6 +472,18 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
     spelling_only.synced_from_content_hash = "sha256:" + head_hash.removeprefix("sha256:").upper()
     assert spelling_only.synced_from_content_hash != head_hash
     await gs.insert_edge(spelling_only)
+
+    # The mirror case: a canonical recorded hash against a non-canonical stored
+    # head. Canonicalizing only the recorded side leaves this one comparing
+    # lowercase against uppercase, so it reports drift and this test goes red.
+    head_side_only = _drift_edge(
+        "88888888-8888-4888-8888-888888888888",
+        source_id="cccccccc_c",
+        target_id="deadbeef_t3",
+        synced_from_version="deadbeef_t3",
+        synced_from_content_hash=other_head_hash,
+    )
+    await gs.insert_edge(head_side_only)
 
     # Positive control: a genuinely different hash on the same target. Absence
     # alone cannot distinguish "judged current" from "never evaluated" -- this
@@ -483,7 +504,11 @@ async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, s
         "positive control: a genuinely different hash must still report drift"
     )
     assert "66666666-6666-4666-8666-666666666666" not in edge_ids, (
-        "a hash differing only in spelling must not read as content drift"
+        "a non-canonical recorded hash must not read as content drift"
+    )
+    assert "88888888-8888-4888-8888-888888888888" not in edge_ids, (
+        "a non-canonical stored head hash must not read as content drift either "
+        "-- canonicalizing only the recorded side would fail here"
     )
 
 
