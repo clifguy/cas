@@ -368,10 +368,46 @@ class TestSageHashCheck:
         doc_hash = doc_result["source_content_hash"]
         await asyncio.sleep(0.1)
 
-        result = _parse(await verify_hash("test_vault", [doc_hash, "sha256:unknown"]))
+        # Well-formed but absent. A malformed stand-in (e.g. "sha256:unknown")
+        # no longer reports exists=false -- it rejects the request outright;
+        # see test_mcp_006c.
+        absent = "sha256:" + "0" * 64
+
+        result = _parse(await verify_hash("test_vault", [doc_hash, absent]))
         assert result[doc_hash]["exists"] is True
         assert result[doc_hash]["document_id"] == doc_result["id"]
-        assert result["sha256:unknown"]["exists"] is False
+        assert result[absent]["exists"] is False
+
+    async def test_mcp_006b_bare_hex_resolves_to_the_same_document(self, single_vault):
+        """A digest submitted without the algorithm prefix still matches.
+
+        The result is keyed by the canonical form, not by the spelling supplied.
+        """
+        doc_result = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        doc_hash = doc_result["source_content_hash"]
+        await asyncio.sleep(0.1)
+        bare = doc_hash.removeprefix("sha256:")
+
+        result = _parse(await verify_hash("test_vault", [bare]))
+        assert result[doc_hash]["exists"] is True
+        assert result[doc_hash]["document_id"] == doc_result["id"]
+        assert bare not in result
+
+    async def test_mcp_006c_malformed_hash_rejects_the_request(self, single_vault):
+        """A malformed entry rejects the whole call rather than reporting a miss.
+
+        Batch validation is all-or-nothing, matching the REST body-validation
+        surface: one unusable hash is a caller error, not a data condition.
+
+        The input is bare on purpose. A prefixed malformed value such as
+        "sha256:unknown" canonicalizes to itself, so asserting on it could not
+        separate an envelope reporting the caller's string from one reporting
+        the normalization attempt; "unknown" and "sha256:unknown" differ, so
+        the detail assertion below discriminates the two.
+        """
+        result = _parse(await verify_hash("test_vault", ["unknown"]))
+        assert result["error"] == "invalid_sha256"
+        assert result["detail"]["sha256"] == "unknown"
 
     async def test_mcp_007_empty_list(self, single_vault):
         """verify_hash with empty list returns empty object."""

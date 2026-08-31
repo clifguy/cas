@@ -58,12 +58,13 @@ typed the four shape-bearing fields the extension surfaced;
 extended the gate to FastAPI route parameters and FastMCP tool entry
 points and typed every shape-bearing parameter at those boundaries.
 added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
-and the ``create_edge`` MCP tool as ``str | None`` with hash-format
+and the edge-creation MCP tool as ``str | None`` with hash-format
 validation deferred to; retyped those three sites to
-``Sha256Str``-shaped validation (Pattern 1 on the Pydantic models,
-Pattern 2 via ``_SHA256_ADAPTER`` in ``create_edge``) and cleared the
-three allowlist entries. All three ``KNOWN_*_VIOLATIONS`` dicts are
-once again empty.
+``Sha256Str``-shaped validation and cleared the three allowlist
+entries. All three ``KNOWN_*_VIOLATIONS`` dicts are once again empty.
+The MCP side rides Pattern 3 rather than Pattern 2: the bulk
+edge-creation tool takes an ``items`` list and validates each entry
+through ``BulkLinkItem.model_validate``, whose fields carry the alias.
 """
 
 from __future__ import annotations

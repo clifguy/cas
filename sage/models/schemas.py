@@ -86,18 +86,51 @@ EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id)]
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+def canonicalize_sha256(v: str) -> str:
+    """Return the canonical `sha256:` + lowercase-hex spelling of a digest.
+
+    Shape is not checked: this only rewrites spelling, so a malformed value
+    comes back malformed. Callers that need the shape enforced annotate with
+    `Sha256Str`, which applies this and then validates.
+
+    Exported for the two places that must canonicalize *outside* a model:
+    values read from a raw storage row, which never crossed the alias, and
+    values compared before model construction. Comparing either raw would
+    read a non-canonical spelling as a difference.
+    """
+    candidate = v if v.startswith("sha256:") else f"sha256:{v}"
+    return "sha256:" + candidate[len("sha256:") :].lower()
+
+
 def _validate_sha256(v: str) -> str:
-    if not _SHA256_RE.fullmatch(v):
+    """Normalize a content hash to `sha256:` + 64 lowercase hex digits.
+
+    Digests reach the boundary in several equivalent spellings: the
+    canonical prefixed form, bare hex (what `hashlib.sha256().hexdigest()`
+    returns), and either of those with the digest uppercased. Hex is
+    case-insensitive and the prefix is implied, so all four denote the same
+    digest; storage resolves hashes by SQL equality against the canonical
+    form, so a non-canonical spelling would silently match nothing. This
+    validator accepts them all and returns the single canonical form.
+
+    Only the digest is lowercased and nothing is stripped, so an uppercase
+    algorithm prefix, a whitespace-padded value, a wrong-length digest, and
+    a non-hex digest all still reject. Flavor: normalize.
+    """
+    candidate = canonicalize_sha256(v)
+    if not _SHA256_RE.fullmatch(candidate):
         raise PydanticCustomError(
             "invalid_sha256",
             "sha256 {value} is not a well-formed content hash (expected {expected})",
             {
                 "argument": "sha256",
+                # The caller's own string, not the normalization attempt --
+                # CAS-ADR-040 requires the error to name the offending value.
                 "value": v,
                 "expected": "'sha256:' followed by 64 lowercase hex characters",
             },
         )
-    return v
+    return candidate
 
 
 Sha256Str = Annotated[str, AfterValidator(_validate_sha256)]
@@ -737,7 +770,9 @@ class Edge(BaseModel):
             "the moment this edge was asserted. Optional companion to "
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
-            "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
+            "(in-place edits). Always the canonical `sha256:` + 64 "
+            "lowercase hex form; request schemas accept wider "
+            "spellings and normalize to it; "
             "unset = explicit null."
         ),
     )
@@ -2055,7 +2090,10 @@ class LinkRequest(BaseModel):
             "the moment this edge was asserted. Optional companion to "
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
-            "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
+            "(in-place edits). Accepted as `sha256:<hex>` or bare "
+            "hex, digest in either case; normalized to `sha256:` + 64 "
+            "lowercase hex on the way in, and always returned in that "
+            "form; "
             "unset = explicit null."
         ),
     )

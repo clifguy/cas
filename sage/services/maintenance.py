@@ -38,6 +38,7 @@ from sage.models.schemas import (
     SourceFileIntegrityReport,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
+    canonicalize_sha256,
 )
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
@@ -64,6 +65,17 @@ _POLL_INTERVAL_SECONDS = 0.05
 # Name reported in MigrationReport.backfills_applied when the migration
 # repaired documents whose pipeline_error outlived the failure it described.
 BACKFILL_STALE_PIPELINE_ERROR = "clear_pipeline_error_on_successful_terminal_status"
+
+
+def _canonical_or_none(content_hash: str | None) -> str | None:
+    """Canonicalize a content hash, preserving null.
+
+    Drift comparison reads hashes straight from edge and document rows, which
+    never crossed the `Sha256Str` alias and so may carry a spelling predating
+    it. Null stays null so an absent hash keeps comparing unequal to a present
+    one rather than collapsing into a canonical string.
+    """
+    return canonicalize_sha256(content_hash) if content_hash is not None else None
 
 
 class MaintenanceService:
@@ -405,9 +417,16 @@ class MaintenanceService:
         else:
             recorded_doc_hash = None
 
+        # Both sides are compared canonically. `recorded_hash` is read from a
+        # raw edge row rather than through a model, so it never crossed the
+        # `Sha256Str` alias and may carry a non-canonical spelling predating
+        # it. Comparing raw would report drift for a hash that differs only in
+        # spelling -- and because `DriftEntry` canonicalizes both fields when
+        # it is built, the resulting entry would render two identical hashes
+        # as evidence of a difference.
         if recorded_hash is not None:
             # Hash-authoritative path.
-            if recorded_hash != head_hash:
+            if _canonical_or_none(recorded_hash) != _canonical_or_none(head_hash):
                 basis = StalenessBasis.CONTENT_DRIFT
             elif recorded_version is not None and recorded_version != head_id:
                 basis = StalenessBasis.CHAIN_ADVANCED_NO_CONTENT_CHANGE
@@ -415,7 +434,9 @@ class MaintenanceService:
                 return None  # current — recorded matches head
         else:
             # Only version recorded; dereference its hash to compare.
-            if recorded_doc_hash is None or recorded_doc_hash != head_hash:
+            if recorded_doc_hash is None or _canonical_or_none(
+                recorded_doc_hash
+            ) != _canonical_or_none(head_hash):
                 basis = StalenessBasis.CONTENT_DRIFT
             elif recorded_version != head_id:
                 basis = StalenessBasis.CHAIN_ADVANCED_NO_CONTENT_CHANGE

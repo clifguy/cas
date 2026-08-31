@@ -195,9 +195,28 @@ def test_hash_check_request_accepts_valid_sha256():
     assert req.hashes == [valid_hash]
 
 
-def test_hash_check_request_rejects_missing_prefix():
+def test_hash_check_request_normalizes_missing_prefix():
+    """Bare hex is accepted and canonicalized (Sha256Str is normalize-flavor)."""
+    req = HashCheckRequest(hashes=["a" * 64])
+    assert req.hashes == ["sha256:" + "a" * 64]
+
+
+def test_hash_check_request_normalizes_uppercase_hex():
+    """Uppercase digests canonicalize to lowercase, bare or prefixed."""
+    req = HashCheckRequest(hashes=["A" * 64, "sha256:" + "B" * 64])
+    assert req.hashes == ["sha256:" + "a" * 64, "sha256:" + "b" * 64]
+
+
+def test_hash_check_request_rejects_uppercase_prefix():
+    """Only the digest is lowercased; the algorithm prefix stays strict."""
     with pytest.raises(ValidationError):
-        HashCheckRequest(hashes=["a" * 64])
+        HashCheckRequest(hashes=["SHA256:" + "a" * 64])
+
+
+def test_hash_check_request_rejects_whitespace_padding():
+    """Normalization does not strip; a padded digest is still malformed."""
+    with pytest.raises(ValidationError):
+        HashCheckRequest(hashes=["sha256:" + "a" * 64 + "\n"])
 
 
 def test_hash_check_request_rejects_wrong_length():
@@ -249,26 +268,26 @@ def test_link_request_synced_from_content_hash_rejects_short_digest():
     assert "synced_from_content_hash" in str(excinfo.value)
 
 
-def test_link_request_synced_from_content_hash_rejects_uppercase_hex():
-    with pytest.raises(ValidationError) as excinfo:
-        LinkRequest(
-            source_id=_DOC_A,
-            target_id=_DOC_B,
-            edge_type=EdgeType.DERIVED_FROM,
-            synced_from_content_hash="sha256:" + "A" * 64,
-        )
-    assert "synced_from_content_hash" in str(excinfo.value)
+def test_link_request_synced_from_content_hash_normalizes_uppercase_hex():
+    """Normalize flavor reaches every Sha256Str site, not just hash-check."""
+    req = LinkRequest(
+        source_id=_DOC_A,
+        target_id=_DOC_B,
+        edge_type=EdgeType.DERIVED_FROM,
+        synced_from_content_hash="sha256:" + "A" * 64,
+    )
+    assert req.synced_from_content_hash == "sha256:" + "a" * 64
 
 
-def test_link_request_synced_from_content_hash_rejects_missing_prefix():
-    with pytest.raises(ValidationError) as excinfo:
-        LinkRequest(
-            source_id=_DOC_A,
-            target_id=_DOC_B,
-            edge_type=EdgeType.DERIVED_FROM,
-            synced_from_content_hash="a" * 64,
-        )
-    assert "synced_from_content_hash" in str(excinfo.value)
+def test_link_request_synced_from_content_hash_normalizes_missing_prefix():
+    """Bare hex canonicalizes here too; this is the global-scope discriminator."""
+    req = LinkRequest(
+        source_id=_DOC_A,
+        target_id=_DOC_B,
+        edge_type=EdgeType.DERIVED_FROM,
+        synced_from_content_hash="a" * 64,
+    )
+    assert req.synced_from_content_hash == "sha256:" + "a" * 64
 
 
 def test_link_request_synced_from_content_hash_rejects_empty_string():

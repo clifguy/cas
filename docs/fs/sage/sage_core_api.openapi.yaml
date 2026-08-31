@@ -1526,13 +1526,24 @@ paths:
         showing per-file ingestion decisions to the user.
 
 
-        Response is a dict keyed by the input hash; missing hashes are
-        simply absent from the result. The canonical request form is
-        the prefixed `sha256:<hex>` (matching `ContentHashStr`). The
-        REST endpoint may also accept bare hex strings (the form
-        `POST /documents` emits in its response payload) without
-        rewriting them, so callers can round-trip ingest results
-        directly. Output document records carry the prefixed form.
+        Every hash is normalized to the canonical
+        `sha256:<64 lowercase hex>` (the `Sha256Str` shape) before
+        lookup, so the canonical form, bare hex, and either with the
+        digest uppercased all resolve to the same stored document. An
+        uppercase algorithm prefix, a whitespace-padded value, a
+        wrong-length digest, and a non-hex digest are rejected with
+        `invalid_sha256` (400) naming the offending value as supplied.
+
+
+        Response is a dict keyed by the *canonical* hash, one entry per
+        distinct key. No input is omitted: an unmatched hash is present
+        with `exists: false`. Two spellings of one digest in a single
+        request therefore collapse to a single entry, and a caller that
+        submitted bare hex reads its result back under the canonical
+        key. An empty `hashes` array returns an empty object without
+        consulting the graph store; since every non-empty request
+        yields at least one entry, an empty response means the request
+        was empty, not that nothing matched.
       tags: [Vault Management]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -3205,7 +3216,9 @@ components:
             the moment this edge was asserted. Optional companion to
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
-            (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
+            (in-place edits). Always the canonical
+            `sha256:` + 64 lowercase hex form; request schemas accept
+            wider spellings and normalize to it;
             unset = explicit null.
 
     User:
@@ -3912,13 +3925,16 @@ components:
         synced_from_content_hash:
           type: string
           nullable: true
-          pattern: "^sha256:[0-9a-f]{64}$"
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             The source document's `source_content_hash` captured at
             the moment this edge was asserted. Optional companion to
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
-            (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
+            (in-place edits). Accepted as `sha256:<hex>` or bare
+            hex, digest in either case; normalized to
+            `sha256:` + 64 lowercase hex on the way in, and always
+            returned in that form;
             unset = explicit null.
         dry_run:
           type: boolean
@@ -4571,7 +4587,7 @@ components:
         synced_from_content_hash:
           type: string
           nullable: true
-          pattern: "^sha256:[0-9a-f]{64}$"
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             Provenance field. Same semantics as
             `LinkRequest.synced_from_content_hash`.

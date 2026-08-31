@@ -172,16 +172,20 @@ without side effects.
 ```json
 POST /sage_vaults/example_vault/hash-check
 {
-  "hashes": ["sha256:abc123def456", "sha256:unknown", "sha256:design456"]
+  "hashes": ["sha256:0000000000000000000000000000000000000000000000000000000000000000", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]
 }
 ```
 
 **Expected:**
 - 200 response
 - Body is an object mapping hashes to results:
-  - `"sha256:abc123def456"`: `{ "exists": true, "document_id": "doc-001" }`
-  - `"sha256:unknown"`: `{ "exists": false }`
-  - `"sha256:design456"`: `{ "exists": true, "document_id": "doc-003" }`
+  - `"sha256:0000000000000000000000000000000000000000000000000000000000000000"`: `{ "exists": true, "document_id": "doc-001" }`
+  - `"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`: `{ "exists": false }`
+  - `"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"`: `{ "exists": true, "document_id": "doc-003" }`
+
+Example hashes are well-formed 64-hex digests on purpose: hashes are normalized
+and validated at the request boundary, so a malformed entry rejects the whole
+request with `invalid_sha256` (400) rather than reporting a per-entry miss.
 
 **Rationale:** Bulk hash check in a single request avoids N+1 queries during
 directory scan. The endpoint is read-only (no side effects).

@@ -71,6 +71,7 @@ from sage.models.schemas import (
     IngestRequest,
     ParseFilenameResponse,
     SetLifecycleRequest,
+    canonicalize_sha256,
 )
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
@@ -778,14 +779,16 @@ class IngestionService:
             caller_title or (parsed.title if parsed and parsed.title else None) or projection.title
         )
 
-        # Canonicalize the adapter-computed content hash to the
-        # Document.source_content_hash shape (`sha256:` + 64 lowercase hex)
-        # before crossing the typed-alias boundary. Adapters emit
-        # raw hex from hashlib.sha256(...).hexdigest(); the canonical-form
-        # validator requires the explicit `sha256:` algorithm prefix.
-        # Idempotent: an already-prefixed hash passes through unchanged.
-        raw_hash = projection.content_hash
-        canonical_hash = raw_hash if raw_hash.startswith("sha256:") else f"sha256:{raw_hash}"
+        # Canonicalize the adapter-computed content hash before it is used.
+        # Adapters emit raw hex from hashlib.sha256(...).hexdigest(), and
+        # ProjectionResult.content_hash is a plain str, so nothing upstream
+        # constrains its spelling. The identical-content comparison and the
+        # dedup lookup below are exact-string matches against canonically
+        # stored values, and both run before this value crosses the
+        # typed-alias boundary -- so a non-canonical spelling here would miss
+        # silently (a duplicate document) rather than raise.
+        # Idempotent: an already-canonical hash passes through unchanged.
+        canonical_hash = canonicalize_sha256(projection.content_hash)
 
         # Supersede identical-content check (BH-123). Fires before the
         # generic duplicate-detection path so the caller gets a distinct

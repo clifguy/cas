@@ -426,6 +426,117 @@ async def test_detect_drift_multi_basket(graph_store, minimal_config, stub_conte
     assert report.summary["chain_nonlinear"] == 0
 
 
+async def test_detect_drift_ignores_hash_spelling(graph_store, minimal_config, stub_content_store):
+    """A recorded hash differing from the head only in case is not drift.
+
+    Drift reads `synced_from_content_hash` from a raw edge row, which never
+    crosses the `Sha256Str` alias, so a row written before the alias may carry
+    a non-canonical spelling. Compared raw, such a row reports content_drift
+    against a hash it actually equals -- and because `DriftEntry` canonicalizes
+    both fields as it is built, the entry would render two identical hashes as
+    the evidence of the difference.
+
+    Two dimensions vary independently, and a rival exists for each. Both sides
+    are read from raw rows, so a fix applied to only one of them still passes a
+    test that varies only the other. And a fix that lowercases without
+    normalizing the algorithm prefix handles every case-only difference while
+    still failing a bare-hex row -- the form `hexdigest()` produces, and so the
+    likeliest spelling for a row predating the alias.
+
+    All the non-canonical spellings are applied after construction on purpose:
+    `Edge` and `Document` both normalize during validation, so a fixture passing
+    them to a constructor could not express these legacy rows at all.
+    """
+    gs = graph_store
+    maintenance = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    # Letter-only digests: digits have no case, so a digit digest could not
+    # express an uppercase spelling and the test would pass vacuously.
+    head_hash = _hash("e")
+    await gs.insert_document(_drift_doc("cafebabe_t2", head_hash, "v2"))
+    await gs.insert_document(_drift_doc("aaaaaaaa_a", _hash("1")))
+    await gs.insert_document(_drift_doc("bbbbbbbb_b", _hash("2")))
+
+    # A second target whose *stored* hash is the non-canonical one, so the
+    # head side of the comparison is the side that varies.
+    other_head_hash = _hash("d")
+    other_target = _drift_doc("deadbeef_t3", other_head_hash, "v1")
+    other_target.source_content_hash = "sha256:" + other_head_hash.removeprefix("sha256:").upper()
+    assert other_target.source_content_hash != other_head_hash
+    await gs.insert_document(other_target)
+    await gs.insert_document(_drift_doc("cccccccc_c", _hash("3")))
+    await gs.insert_document(_drift_doc("dddddddd_d", _hash("4")))
+
+    spelling_only = _drift_edge(
+        "66666666-6666-4666-8666-666666666666",
+        source_id="aaaaaaaa_a",
+        target_id="cafebabe_t2",
+        synced_from_version="cafebabe_t2",
+        synced_from_content_hash=head_hash,
+    )
+    # Simulate a row predating the alias: same digest, uppercased hex.
+    spelling_only.synced_from_content_hash = "sha256:" + head_hash.removeprefix("sha256:").upper()
+    assert spelling_only.synced_from_content_hash != head_hash
+    await gs.insert_edge(spelling_only)
+
+    # The mirror case: a canonical recorded hash against a non-canonical stored
+    # head. Canonicalizing only the recorded side leaves this one comparing
+    # lowercase against uppercase, so it reports drift and this test goes red.
+    head_side_only = _drift_edge(
+        "88888888-8888-4888-8888-888888888888",
+        source_id="cccccccc_c",
+        target_id="deadbeef_t3",
+        synced_from_version="deadbeef_t3",
+        synced_from_content_hash=other_head_hash,
+    )
+    await gs.insert_edge(head_side_only)
+
+    # The prefix dimension: a bare-hex recorded hash against a prefixed head.
+    # Lowercasing both sides without normalizing the prefix leaves this one
+    # comparing 64 characters against 71, so it reports drift and this test
+    # goes red.
+    prefix_only = _drift_edge(
+        "99999999-9999-4999-8999-999999999999",
+        source_id="dddddddd_d",
+        target_id="cafebabe_t2",
+        synced_from_version="cafebabe_t2",
+        synced_from_content_hash=head_hash,
+    )
+    prefix_only.synced_from_content_hash = head_hash.removeprefix("sha256:")
+    assert not prefix_only.synced_from_content_hash.startswith("sha256:")
+    await gs.insert_edge(prefix_only)
+
+    # Positive control: a genuinely different hash on the same target. Absence
+    # alone cannot distinguish "judged current" from "never evaluated" -- this
+    # edge proves the classifier reached this target and still reports drift.
+    genuinely_drifted = _drift_edge(
+        "77777777-7777-4777-8777-777777777777",
+        source_id="bbbbbbbb_b",
+        target_id="cafebabe_t2",
+        synced_from_version="cafebabe_t2",
+        synced_from_content_hash=_hash("f"),
+    )
+    await gs.insert_edge(genuinely_drifted)
+
+    report = await maintenance.detect_drift()
+
+    edge_ids = {e.edge_id for e in report.entries}
+    assert "77777777-7777-4777-8777-777777777777" in edge_ids, (
+        "positive control: a genuinely different hash must still report drift"
+    )
+    assert "66666666-6666-4666-8666-666666666666" not in edge_ids, (
+        "a non-canonical recorded hash must not read as content drift"
+    )
+    assert "88888888-8888-4888-8888-888888888888" not in edge_ids, (
+        "a non-canonical stored head hash must not read as content drift either "
+        "-- canonicalizing only the recorded side would fail here"
+    )
+    assert "99999999-9999-4999-8999-999999999999" not in edge_ids, (
+        "a bare-hex recorded hash must not read as content drift -- lowercasing "
+        "without normalizing the algorithm prefix would fail here"
+    )
+
+
 async def test_detect_drift_nonlinear_chain(graph_store, minimal_config, stub_content_store):
     """T-DD-nonlinear: target with a forked chain (two heads) is reported
     with staleness_basis=chain_nonlinear; head fields are null and

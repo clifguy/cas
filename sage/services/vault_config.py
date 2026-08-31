@@ -114,36 +114,49 @@ class VaultConfigService:
     async def hash_check(self, body: HashCheckRequest) -> dict[str, HashCheckMatch]:
         """Bulk hash existence check against the graph store.
 
-        Returns a dict keyed by each input hash, carrying a
+        Returns a dict keyed by each hash in ``body.hashes``, carrying a
         ``HashCheckMatch`` envelope with ``exists`` and (when matched)
-        the ``document_id`` of the storing document.
+        the ``document_id`` of the storing document. One entry per
+        distinct key; an unmatched hash is present with ``exists=False``
+        rather than omitted.
+
+        Canonical keys:
+        ``HashCheckRequest.hashes`` carries the normalize-flavor
+        ``Sha256Str`` alias, so every hash arriving here is already the
+        canonical ``sha256:<64 lowercase hex>`` — the form
+        ``find_documents_by_hashes`` matches on, and the form the result
+        is keyed by. A caller that submitted bare or uppercase hex reads
+        its result back under the canonical key, and two spellings of one
+        digest collapse to a single entry.
 
         Empty-list short-circuit:
         ``body.hashes == []`` short-circuits to an empty result dict
         without consulting the graph store (the early return below).
-        The empty response is indistinguishable from "every queried
-        hash is unknown" without inspecting the request; callers that
-        branch on result emptiness should also branch on input
-        emptiness.
+        Every non-empty input yields at least one entry, so an empty
+        result means the input was empty. It is not the "nothing matched"
+        case, which returns a full dict of ``exists=False`` entries.
 
         Malformed hashes:
-        This service does NOT validate the format of input hash
-        strings. The ``verify_hash`` MCP wrapper constructs
-        ``HashCheckRequest`` via ``model_construct`` to round-trip
-        the bare-hex form ``ingest_document`` emits, so malformed entries
-        (truncated hex, non-hex characters, wrong length) reach
-        ``find_documents_by_hashes`` as-is, miss every row, and
-        surface in the result with ``exists=False`` indistinguishable
-        from well-formed-but-unknown hashes. Callers that need a
-        "valid format" precondition must enforce it before calling.
+        Rejected at the request boundary by the alias, not here. A value
+        that cannot be normalized fails with ``invalid_sha256`` (400) on
+        both transports before this method is entered, so no malformed
+        value reaches the store to masquerade as a miss. ``exists=False``
+        therefore means exactly one thing: well-formed and absent.
         """
         if not body.hashes:
             return {}
 
-        matches = await self._store.find_documents_by_hashes(body.hashes)
+        # Deduplicate before the lookup. Normalization collapses variant
+        # spellings of one digest to a single string -- a case the contract
+        # above advertises -- and each element becomes its own bind parameter
+        # in the store's `IN (...)` list, so without this a caller passing two
+        # spellings pays for two. Insertion order is preserved.
+        unique_hashes = list(dict.fromkeys(body.hashes))
+
+        matches = await self._store.find_documents_by_hashes(unique_hashes)
 
         result: dict[str, HashCheckMatch] = {}
-        for h in body.hashes:
+        for h in unique_hashes:
             if h in matches:
                 result[h] = HashCheckMatch(exists=True, document_id=matches[h])
             else:
