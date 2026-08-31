@@ -17,11 +17,15 @@ This module holds the field-level counterpart.
 
 Two properties are pinned:
 
-* **Behaviour** — a `Document` constructed without `lifecycle_status`
-  raises rather than resolving to a state of the model's choosing, and
-  it does so under a vault whose configured landing state is not the
-  one the removed default named. That second half is what separates
-  this from a test that merely notices a field moved.
+* **Behaviour** — a `Document` neither invents a state when none is
+  given (construction raises) nor overrides one that is (a supplied
+  non-`active` state survives verbatim). Together those leave the
+  configured landing state the sole determinant of where a freshly
+  ingested document rests. Neither half consults a vault, because
+  `Document` takes none; that a real ingest routes through the
+  configured state is verified in
+  `test_ingest_lands_in_configured_state_end_to_end`, where a vault
+  actually is consulted.
 
 * **Structure** — no non-nullable `lifecycle_status` field anywhere in
   `sage.models.schemas` carries a default. Stated over the whole module
@@ -43,17 +47,16 @@ reject — so the gate raises the cost of omitting the state, it does not
 make it impossible.
 """
 
-import copy
 import hashlib
 import inspect
 import typing
+from collections.abc import Mapping, Set
 from datetime import datetime, timezone
 from typing import Final
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-from sage.config import VaultConfig, build_transition_table
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 
@@ -61,12 +64,17 @@ from sage.models.schemas import Document
 # (class name, field name), valued with the reason the field keeps a
 # default. Empty: no non-nullable lifecycle_status field carries one.
 #
-# Allowlist contract, uniform with the repo's other structural gates:
-# - a new defaulted non-nullable field without an entry fails the suite;
-# - removing an entry without remediating fails the suite;
-# - making an entry's field required without removing the entry fails
-#   the suite (stale-allowlist);
-# - an entry naming no discovered field fails the suite (phantom-entry).
+# Allowlist contract, uniform with the repo's other structural gates.
+# Three clauses, computed by `_contract_violations`:
+# - `unpinned_default`: a defaulted non-nullable field with no entry.
+#   This is also what fires when an entry is removed while the default
+#   it pinned remains, so it carries two of the four stated behaviours.
+# - `stale_entry`: an entry whose field is required after all.
+# - `phantom_entry`: an entry naming no discovered field.
+# With this dict empty only the first can fire against real data, so
+# all three are exercised against synthetic input in
+# `test_allowlist_contract_clauses_fire_on_synthetic_input` — a clause
+# that never executes pins nothing, however carefully it is worded.
 KNOWN_LIFECYCLE_STATUS_DEFAULTS: Final[dict[tuple[str, str], str]] = {}
 
 _FIELD: Final[str] = "lifecycle_status"
@@ -113,23 +121,6 @@ def _document_kwargs_without_lifecycle_status(name: str = "guard") -> dict:
     )
 
 
-def _config_landing_ingest_in(config_dict: dict, state: str) -> VaultConfig:
-    """Return a config whose `(new)` row lands ingest in `state`.
-
-    Declares the state, rewrites the `(new)` row's target, and adds a
-    transition out of it so the state is not a dead end.
-    """
-    mutated = copy.deepcopy(config_dict)
-    mutated["lifecycle"]["states"].append({"value": state, "label": state.title()})
-    for transition in mutated["lifecycle"]["transitions"]:
-        if transition["from_state"] == "(new)":
-            transition["to_state"] = state
-    mutated["lifecycle"]["transitions"].append(
-        {"from_state": state, "action": "activate", "to_state": "active"}
-    )
-    return VaultConfig.model_validate(mutated)
-
-
 # ---------------------------------------------------------------------------
 # Structural discovery
 # ---------------------------------------------------------------------------
@@ -174,6 +165,28 @@ def _carries_a_default(cls: type[BaseModel], field_name: str) -> bool:
     return not cls.model_fields[field_name].is_required()
 
 
+def _contract_violations(
+    discovered: Set[tuple[str, str]],
+    defaulted: Set[tuple[str, str]],
+    allowlist: Mapping[tuple[str, str], str],
+) -> dict[str, list[tuple[str, str]]]:
+    """The allowlist contract's three clauses, over supplied sets.
+
+    Takes its inputs as parameters rather than reading module state so
+    every clause is reachable from a test. Against the real data the
+    allowlist is empty, which makes `allowlisted` uniformly false and
+    leaves the stale and phantom clauses unexecuted — worded but inert.
+    Passing synthetic sets is what gives them teeth before an entry
+    ever exists to exercise them for real.
+    """
+    pinned = set(allowlist)
+    return {
+        "unpinned_default": sorted(defaulted - pinned),
+        "stale_entry": sorted(pinned & (discovered - defaulted)),
+        "phantom_entry": sorted(pinned - discovered),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Behaviour
 # ---------------------------------------------------------------------------
@@ -199,44 +212,47 @@ def test_document_construction_requires_lifecycle_status():
     )
 
 
-def test_omitted_state_cannot_substitute_one_the_vault_never_routes_ingest_to(
-    minimal_vault_config_dict,
-):
-    """The hazard itself: a vault landing ingest outside `active`.
+def test_a_non_active_state_is_preserved_verbatim():
+    """The model does not coerce a supplied state toward `active`.
 
-    Under a vault whose `(new)` row lands ingest in `draft`, a document
-    constructed without a state must not come to rest in `active` — a
-    declared state, but not one this vault's ingest ever produces, and
-    so one no subsequent precondition would flag as wrong.
+    The pair this completes: `test_document_construction_requires_lifecycle_status`
+    excludes a model that *substitutes* a state when none is given; this
+    one excludes a model that *overrides* the state it was given. Only a
+    model doing neither leaves the configured landing state as the sole
+    determinant of where a freshly ingested document rests.
 
-    Anti-coincidental-pass: the landing state is read back from the
-    configured table and asserted to differ from the state the removed
-    default named, so the test cannot pass by the vault happening to
-    land in `active`. Both halves fail independently — a config that
-    stopped being read fails the first assertion, a model that resumed
-    substituting fails the second.
+    Anti-coincidental-pass: the asserted state is deliberately not
+    `active`, so a model that coerced every value to `active` — or that
+    kept the removed default and ignored the argument — fails the
+    round-trip. Its rival is a coercing model, not a defaulting one:
+    supplying a value satisfies a default too, so this test alone does
+    not detect the default's return. That is the other half's job.
 
-    What this does not exclude: a model that requires the field while
-    ingestion hardcodes a state of its own. Only omission is asserted
-    here, not that a supplied state is the configured one; that is
-    `test_ingest_lands_in_configured_state_end_to_end`, which drives a
-    real ingest under a divergent lifecycle and must stay untouched by
-    any change to this field for the pair to keep its meaning.
+    No vault config appears here, and that is deliberate. `Document`
+    takes no vault, so nothing about a configured landing state can be
+    in this assertion's causal path; an earlier revision built a
+    divergent vault and read its landing state back, and the test passed
+    unchanged when the whole config block was replaced by a string
+    literal. Config machinery that cannot discriminate reads as a
+    control while being decoration. The property that a real ingest
+    routes through the configured state is verified where a vault is
+    actually consulted, in
+    `test_ingest_lands_in_configured_state_end_to_end`, which must stay
+    untouched by any change to this field.
     """
-    config = _config_landing_ingest_in(minimal_vault_config_dict, "draft")
-    landing_state = build_transition_table(config).ingest_landing_state()
+    state = "draft"
+    assert state != "active", "the asserted state must differ from the removed default"
 
-    assert landing_state == "draft", (
-        "the configured (new) row is not being read, so the divergence "
-        "this test depends on does not exist"
-    )
-    assert landing_state != "active", (
-        "the landing state coincides with the state the removed default "
-        "named; the test would pass without exercising the hazard"
+    doc = Document(
+        lifecycle_status=state,
+        **_document_kwargs_without_lifecycle_status("supplied"),
     )
 
-    with pytest.raises(ValidationError):
-        Document(**_document_kwargs_without_lifecycle_status("landing"))
+    assert doc.lifecycle_status == state, (
+        f"the model resolved {state!r} to {doc.lifecycle_status!r}; a supplied "
+        "state must survive construction unchanged, or a document can rest "
+        "somewhere the vault never selected"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -263,16 +279,16 @@ def test_non_nullable_lifecycle_status_fields_are_required(cls: type[BaseModel],
     case here passes whatever the module declares.
     """
     key = (cls.__name__, field_name)
-    defaulted = _carries_a_default(cls, field_name)
-    allowlisted = key in KNOWN_LIFECYCLE_STATUS_DEFAULTS
+    defaulted = {key} if _carries_a_default(cls, field_name) else set()
+    violations = _contract_violations({key}, defaulted, KNOWN_LIFECYCLE_STATUS_DEFAULTS)
 
-    if not defaulted and allowlisted:
+    if violations["stale_entry"]:
         pytest.fail(
             f"{cls.__name__}.{field_name} is required AND is pinned in "
             f"KNOWN_LIFECYCLE_STATUS_DEFAULTS. Remove the stale entry "
             f"({KNOWN_LIFECYCLE_STATUS_DEFAULTS[key]!r})."
         )
-    if defaulted and not allowlisted:
+    if violations["unpinned_default"]:
         default = cls.model_fields[field_name].get_default(call_default_factory=False)
         pytest.fail(
             f"{cls.__name__}.{field_name} is non-nullable and defaults to "
@@ -364,10 +380,46 @@ def test_known_lifecycle_status_defaults_reference_real_fields():
     nothing.
     """
     discovered = {(cls.__name__, name) for cls, name in _state_carrying_fields()}
-    phantom = sorted(set(KNOWN_LIFECYCLE_STATUS_DEFAULTS) - discovered)
+    defaulted = {
+        (cls.__name__, name)
+        for cls, name in _state_carrying_fields()
+        if _carries_a_default(cls, name)
+    }
+    phantom = _contract_violations(discovered, defaulted, KNOWN_LIFECYCLE_STATUS_DEFAULTS)[
+        "phantom_entry"
+    ]
     assert not phantom, (
         f"KNOWN_LIFECYCLE_STATUS_DEFAULTS pins entries that match no "
         f"non-nullable lifecycle_status field in sage.models.schemas: "
         f"{phantom}. Did the class get renamed or the field made "
         f"nullable? Remove the stale entry."
     )
+
+
+def test_allowlist_contract_clauses_fire_on_synthetic_input():
+    """All three clauses have teeth before a real entry exists.
+
+    Trap, and the reason this test exists: `KNOWN_LIFECYCLE_STATUS_DEFAULTS`
+    is empty, so against real data `pinned` is empty and both the stale
+    and phantom clauses subtract from nothing. They would read as
+    enforced while never executing, and would stay that way until the
+    first entry is added — which is exactly when a reviewer would rely
+    on them. Synthetic sets exercise each clause now.
+    """
+    real = ("Real", _FIELD)
+    ghost = ("Ghost", _FIELD)
+
+    # A defaulted field nobody pinned.
+    assert _contract_violations({real}, {real}, {})["unpinned_default"] == [real]
+    # ... and pinning it clears exactly that clause.
+    assert _contract_violations({real}, {real}, {real: "why"})["unpinned_default"] == []
+
+    # A pinned field that turned out to be required.
+    assert _contract_violations({real}, set(), {real: "why"})["stale_entry"] == [real]
+    # ... and an unpinned required field is not stale.
+    assert _contract_violations({real}, set(), {})["stale_entry"] == []
+
+    # A pin naming nothing the discovery found.
+    assert _contract_violations({real}, {real}, {ghost: "why"})["phantom_entry"] == [ghost]
+    # ... and a pin on a discovered field is not phantom.
+    assert _contract_violations({real}, {real}, {real: "why"})["phantom_entry"] == []
