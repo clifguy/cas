@@ -1724,12 +1724,17 @@ _ENUM_TYPED_FILTER_FIELDS: dict[str, type[StrEnum]] = {
 # (``typing.Optional[str]`` or ``Union[str, None]`` depending on Python form).
 # Enum-typed keys are absent: a bad value on those raises ``enum`` rather
 # than a ``*_type`` shape error, so it never reaches this table.
+#
+# A key whose field carries a typed alias names the alias, not the bare type
+# it refines. Naming the bare type would make the envelope's own remedy
+# unreachable: a caller told to supply ``list[str]`` who then supplies one
+# with an off-shape entry gets a second, different 400 from the alias.
 _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
     "doc_type": "str",
     "project": "str",
     "lifecycle_status": "str",
     "tags": "list[str]",
-    "document_ids": "list[str]",
+    "document_ids": "list[DocumentIdStr]",
     "pipeline_status": "str",
     "tier3_metadata": "dict",
 }

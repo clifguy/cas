@@ -171,6 +171,13 @@ def test_malformed_element_type_and_value_take_different_branches():
     container-shaped envelope; the value failure comes from the validator and
     names the offending id. Stating the split makes the translator's branch
     ordering deliberate rather than emergent.
+
+    ``expected_type`` is asserted alongside ``received_type`` because the two
+    branches have to agree on what a well-formed value is. The shape envelope
+    names a remedy; if the remedy were ``list[str]``, a caller who followed it
+    exactly could still be refused by the value branch, and the pair of
+    messages would contradict each other. Asserting only ``received_type``
+    leaves that contradiction unpinned.
     """
     shape = validation_error_envelope(
         _discover_error(mode="catalog", filters={"document_ids": [42]})
@@ -178,12 +185,17 @@ def test_malformed_element_type_and_value_take_different_branches():
     assert shape.code == "invalid_filter_shape"
     assert shape.detail["field"] == "document_ids"
     assert shape.detail["received_type"] == "int"
+    assert shape.detail["expected_type"] == "list[DocumentIdStr]"
 
     value = validation_error_envelope(
         _discover_error(mode="catalog", filters={"document_ids": ["not-a-doc-id"]})
     )
     assert value.code == "invalid_document_id"
     assert value.detail["document_id"] == "not-a-doc-id"
+    # The index is not carried into the envelope on either transport; the
+    # offending value alone identifies the entry. Pinned so the collection
+    # form's documented contract and the envelope cannot drift apart.
+    assert "index" not in value.detail, value.detail
 
 
 # ---------------------------------------------------------------------------

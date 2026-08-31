@@ -155,14 +155,20 @@ SHAPE_REGISTRY: Final[dict[str, type]] = {
     "vault_id": VaultIdStr,  # exact match — wins over *_id
     "function_id": FunctionIdStr,  # exact match — wins over *_id
     "hashes": Sha256Str,  # exact match — the bare-stem plural
+    "user_ids": UserIdStr,  # exact match — wins over *_ids
     "*_id": DocumentIdStr,
     "*_hash": Sha256Str,
     "*_date": DocumentDateStr,
     "*_ids": DocumentIdStr,
+    # Load-bearing despite having no *collection* site: ``check_hashes`` is a
+    # boolean flag that matches this pattern and is excluded by the str-arm
+    # filter, which is the overshoot boundary a test pins. Removing this entry
+    # reds that test.
     "*_hashes": Sha256Str,
-    # No site matches ``*_dates`` today. It is declared so the plural rule
-    # covers the whole suffix set rather than the subset that happened to have
-    # an escapee when the gap was found.
+    # Unlike ``*_hashes`` above, nothing matches ``*_dates`` today — not even
+    # a filtered-out non-``str`` site. It is declared so the plural rule covers
+    # the whole suffix set rather than the subset that happened to have an
+    # escapee when the gap was found.
     "*_dates": DocumentDateStr,
 }
 
@@ -1161,13 +1167,25 @@ def test_typed_alias_validator_raises_structured_custom_error(
 
 
 def test_walk_annotation_descends_into_collection_element_types():
-    """A collection carries its shape on the element type, not the container."""
+    """A collection carries its shape on the element type, not the container.
+
+    Both edges of the descent rule are pinned. ``list`` is the only sequence
+    with a live site today, so the other three in ``_SEQUENCE_ORIGINS`` would
+    otherwise be unfalsifiable breadth -- narrowing the set to ``{list}`` alone
+    would leave the suite green while the declared rule quietly shrank.
+    """
     assert _walk_annotation(list[str] | None) == (True, False)
     assert _walk_annotation(list[DocumentIdStr]) == (True, True)
-    # Descent is scoped to sequence containers. A mapping's ``str`` key is not
-    # a shape-bearing arm, and treating it as one would flag every ``dict[str,
-    # ...]`` field whose name happens to match a plural registry pattern.
+    # Inclusion breadth: every declared sequence origin descends, not just the
+    # one that happens to have a site.
+    assert _walk_annotation(tuple[DocumentIdStr, ...]) == (True, True)
+    assert _walk_annotation(set[DocumentIdStr]) == (True, True)
+    assert _walk_annotation(frozenset[DocumentIdStr]) == (True, True)
+    # Exclusion boundary: descent is scoped to sequence containers. A mapping's
+    # ``str`` key is not a shape-bearing arm, and treating it as one would flag
+    # every ``dict[str, ...]`` field whose name matches a plural pattern.
     assert _walk_annotation(dict[str, int]) == (False, False)
+    assert _walk_annotation(dict[str, DocumentIdStr]) == (False, False)
     # The overshoot boundary: a boolean flag has no ``str`` arm at any depth.
     assert _walk_annotation(bool) == (False, False)
 
@@ -1242,3 +1260,34 @@ def test_module_typeadapter_bindings_resolve_collection_adapters():
     assert bindings.get("_SHA256_LIST_ADAPTER") is Sha256Str, sorted(bindings)
     # The scalar bindings are unaffected.
     assert bindings.get("_DOCUMENT_ID_ADAPTER") is DocumentIdStr, sorted(bindings)
+
+
+def test_module_typeadapter_bindings_unwrap_only_declared_sequences(tmp_path) -> None:
+    """Only a subscript whose container is a declared sequence unwraps.
+
+    Exercised against a synthesized module because no production module
+    declares a non-sequence adapter subscript, which is exactly what leaves
+    the container check unfalsifiable in place. Without it the rule degrades
+    to "unwrap any single-argument subscript", and the gate would credit an
+    adapter whose element position it has not reasoned about as though it
+    validated the element.
+    """
+    import importlib.util
+
+    probe = tmp_path / "adapter_binding_probe.py"
+    probe.write_text(
+        "from typing import Optional\n\n"
+        "from pydantic import TypeAdapter\n\n"
+        "from sage.models.schemas import DocumentIdStr\n\n"
+        "SEQ_ADAPTER: TypeAdapter[list[str]] = TypeAdapter(list[DocumentIdStr])\n"
+        "NON_SEQ_ADAPTER: TypeAdapter[str] = TypeAdapter(Optional[DocumentIdStr])\n"
+    )
+    spec = importlib.util.spec_from_file_location("adapter_binding_probe", probe)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    bindings = _module_typeadapter_bindings(module)
+    assert bindings.get("SEQ_ADAPTER") is DocumentIdStr, sorted(bindings)
+    assert "NON_SEQ_ADAPTER" not in bindings, (
+        f"a non-sequence subscript must not unwrap to its argument; got {sorted(bindings)}"
+    )
