@@ -511,3 +511,60 @@ def test_stk_018_opener_constraint_false_against_anthropic_is_accepted(monkeypat
 
     cfg = _stack_config(provider="anthropic", model="claude-haiku-4-5", opener_constraint=False)
     assert isinstance(build_stack_abstraction_provider(cfg), AnthropicAbstractionProvider)
+
+
+def test_stk_019_committed_config_enables_the_opener_constraint():
+    """The shipped stack config turns the clause (f) decoding constraint on.
+
+    The constraint is pinned here rather than shipped as the schema default
+    because it is rejected against a non-local provider: a `true` default
+    would make the container (`stub`) and cloud (`anthropic`) stacks fail
+    at startup. The committed file is the one stack that names `local-mlx`,
+    so it is the only place the decision can be recorded.
+
+    Anti-coincidental-pass: STK-015 proves an arbitrary configured value is
+    forwarded and STK-016 proves an absent one is forwarded as False, but
+    both build their config in-test, so neither notices the shipped file
+    reverting to unset. This asserts the loaded value, and STK-020 carries
+    it through the dispatch.
+    """
+    cfg = _committed_stack_config()
+
+    assert cfg.abstraction.provider == "local-mlx", (
+        "the committed config no longer names the local provider; the "
+        "opener constraint is rejected against every other one"
+    )
+    assert cfg.abstraction.opener_constraint is True, (
+        "the committed sage/config.yaml leaves opener_constraint unset; "
+        "generation would run unconstrained against CAS-ADR-020 clause (f)"
+    )
+
+
+def test_stk_020_committed_opener_constraint_reaches_the_local_factory(monkeypatch):
+    """The pin the committed config carries survives the dispatch.
+
+    Anti-coincidental-pass: asserting the config value alone (STK-019) would
+    pass for a dispatch that read the field and dropped it, which is exactly
+    the failure the rejection guard cannot catch -- a dropped `true` looks
+    identical to a stack that never enabled it. Equality against the loaded
+    value, rather than a hardcoded True, keeps the pair honest if the pin is
+    ever deliberately reverted.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return StubAbstractionProvider()
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    cfg = _committed_stack_config()
+    build_stack_abstraction_provider(cfg)
+
+    assert len(calls) == 1
+    assert calls[0]["opener_constraint"] == cfg.abstraction.opener_constraint

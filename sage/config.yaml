@@ -88,6 +88,30 @@ abstraction:
   # clamped to that native window.
   context_window: 262144
 
+  # Constrain decoding against the CAS-ADR-020 clause (f) type-restating
+  # opener: suppress the tokens that would complete a classifying frame
+  # ("This document is a <doc_type>...") at exactly the positions the
+  # post-generation check flags. Consumed only by the local MLX provider --
+  # the constraint masks logits inside the sampling loop, which a hosted
+  # provider does not expose -- so enabling it while `provider` is anything
+  # other than `local-mlx` fails at startup rather than being ignored. That
+  # is why it is pinned here rather than shipped as the schema default: a
+  # stack that has not chosen a provider must stay loadable.
+  #
+  # Measured on this hardware against the 41 stored clause (f) findings in
+  # the development vault, both arms under the same greedy decoding: the
+  # per-document clause (f) count falls from 16 to 0 (the stored findings
+  # were written by an earlier model, and this one reproduces the breach on
+  # 16 of them), determinism holds at 0 drift on both arms, and the gloss,
+  # structure-echo and cardinal counts are unchanged. Decode throughput
+  # costs about 11% (46.1 -> 40.9 tokens/s), with no change in peak memory.
+  #
+  # What it does not reach: the model's next-best token is usually a synonym
+  # of the same classifying noun ("steering guide" for "steering document"),
+  # which no registry-keyed check detects. The verbatim restatement is
+  # prevented; opening by classification largely persists.
+  opener_constraint: true
+
 # Postgres storage-engine connection parameters (CAS-ADR-042). Both deployment
 # targets externalize durable graph + content state to Postgres -- a local unix
 # socket here, a managed endpoint in the cloud. Non-secret values only: the
