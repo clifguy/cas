@@ -166,16 +166,28 @@ EDGE_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
 
 SHA256_VALID = st.text(alphabet=_HEX, min_size=64, max_size=64).map(lambda h: f"sha256:{h}")
 
+# Sha256Str is normalize-flavor: these forms are accepted and canonicalized to
+# `sha256:` + 64 lowercase hex, the single form storage keys on.
+SHA256_NORMALIZE_FROM: dict[str, st.SearchStrategy[str]] = {
+    "bare_hex": st.text(alphabet=_HEX, min_size=64, max_size=64),
+    "bare_uppercase_hex": st.text(alphabet=_HEX_UPPER, min_size=64, max_size=64).filter(
+        lambda s: any(c.isupper() for c in s)
+    ),
+    "prefixed_uppercase_hex": st.text(alphabet=_HEX_UPPER, min_size=64, max_size=64)
+    .filter(lambda s: any(c.isupper() for c in s))
+    .map(lambda h: f"sha256:{h}"),
+}
+
 SHA256_INVALID: dict[str, st.SearchStrategy[str]] = {
+    # The empty prefix is deliberately absent: bare hex is a normalize case
+    # above, not a rejection. Only the digest is lowercased, so an uppercase
+    # algorithm prefix stays malformed.
     "wrong_prefix": st.tuples(
-        st.sampled_from(["md5:", "SHA256:", "sha512:", "sha256-", "sha256", ""]),
+        st.sampled_from(["md5:", "SHA256:", "sha512:", "sha256-", "sha256"]),
         st.text(alphabet=_HEX, min_size=64, max_size=64),
     ).map(lambda t: f"{t[0]}{t[1]}"),
     "body_too_short": st.text(alphabet=_HEX, min_size=0, max_size=63).map(lambda h: f"sha256:{h}"),
     "body_too_long": st.text(alphabet=_HEX, min_size=65, max_size=130).map(lambda h: f"sha256:{h}"),
-    "body_uppercase_hex": st.text(alphabet=_HEX_UPPER, min_size=64, max_size=64)
-    .filter(lambda s: any(c.isupper() for c in s))
-    .map(lambda h: f"sha256:{h}"),
     "body_non_hex": st.lists(
         st.one_of(st.sampled_from(_HEX), st.sampled_from(_NON_HEX_ALPHA)),
         min_size=64,
@@ -414,6 +426,32 @@ def test_edge_id_non_canonical_inputs_normalized_to_canonical(label: str) -> Non
     def inner(value: str) -> None:
         result = adapter.validate_python(value)
         assert result == str(uuid.UUID(value))
+        assert adapter.validate_python(result) == result
+
+    inner()
+
+
+@pytest.mark.parametrize(
+    "label",
+    list(SHA256_NORMALIZE_FROM.keys()),
+    ids=list(SHA256_NORMALIZE_FROM.keys()),
+)
+def test_sha256_non_canonical_inputs_normalized_to_canonical(label: str) -> None:
+    """Non-canonical digest forms validate, but the result is canonical."""
+    adapter = TypeAdapter(Sha256Str)
+    strategy = SHA256_NORMALIZE_FROM[label]
+
+    @given(strategy)
+    @ALIAS_SETTINGS
+    def inner(value: str) -> None:
+        result = adapter.validate_python(value)
+        # Canonical shape, and the digest is the input's digest lowercased.
+        assert result == "sha256:" + value.removeprefix("sha256:").lower()
+        digest = result.removeprefix("sha256:")
+        assert result.startswith("sha256:")
+        assert len(digest) == 64
+        assert all(c in _HEX for c in digest)
+        # Idempotent: revalidating the canonical form is a no-op.
         assert adapter.validate_python(result) == result
 
     inner()

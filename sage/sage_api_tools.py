@@ -2079,42 +2079,43 @@ def register_sage_tools(
         vault carries that content hash and, if so, the matching document's
         id and source_path. Used by the scan-and-batch-ingest flow to
         identify already-ingested files without re-hashing on the SAGE side.
-        The response is a dict keyed by input hash; missing hashes are simply
-        absent (see *Malformed hashes* for why absent-vs-present is
-        load-bearing).
 
-        Hash format: the canonical form is the prefixed ``sha256:<hex>``. The
-        MCP transport also accepts bare hex (the form ``ingest_document``
-        emits) without rewriting, so ingest results round-trip directly.
-        Output records carry the prefixed form.
+        Hash format: every hash is normalized to the canonical
+        ``sha256:<64 lowercase hex>`` before lookup, so the canonical form,
+        bare hex, and either with the digest uppercased all resolve to the
+        same stored document. An uppercase algorithm prefix, a
+        whitespace-padded value, a wrong-length digest, and a non-hex digest
+        are rejected rather than normalized.
 
-        Empty-list short-circuit: ``hashes=[]`` returns an empty result dict
-        without consulting the graph store — indistinguishable from "every
-        queried hash is unknown", so callers that branch on result emptiness
-        should also branch on input emptiness.
+        Result shape: one entry per distinct *canonical* hash, carrying
+        ``exists`` and, when matched, ``document_id``. No input is omitted —
+        an unmatched hash is present with ``exists=false``. Because keys are
+        canonical, two spellings of one digest in a single request collapse
+        to a single entry, and a caller that submitted bare hex must read the
+        result back under the canonical key.
 
-        Malformed hashes: hash strings bypass validation so the bare-hex form
-        can round-trip. Malformed inputs (truncated, non-hex, wrong length)
-        are NOT rejected — they reach the lookup as-is, miss every row, and
-        surface as ``exists=False`` entries indistinguishable from
-        well-formed-but-unknown hashes. Callers relying on "valid format
-        implies in-store" must pre-validate input shape themselves.
+        Empty-list short-circuit: ``hashes=[]`` returns ``{}`` without
+        consulting the graph store. Since every non-empty input yields at
+        least one entry, an empty result means the input was empty; it never
+        means "nothing matched".
+
+        Error modes:
+        - ``invalid_sha256`` (400): a hash could not be normalized to the
+          canonical form. The envelope names the offending value as the
+          caller supplied it.
+        - ``invalid_vault_id`` (400): malformed ``vault_id``.
+        - ``unknown_vault`` (404): no vault with that id.
 
         Args:
             vault_id: Target vault identifier.
-            hashes: List of content hash strings (``sha256:<hex>`` or bare
-                hex). An empty list short-circuits; malformed entries
-                silently surface as ``exists=False`` (see above).
+            hashes: Content hashes, canonical or bare, digest in either case.
+                An empty list short-circuits; a hash that cannot be
+                normalized rejects the whole call with ``invalid_sha256``.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
-            # Skip Sha256Str validation: the MCP transport historically
-            # accepts bare-hex hashes (the form ingest_document emits in its
-            # response) in addition to the prefixed form the REST request
-            # schema requires. Normalizing the two storage formats is a
-            # separate concern from.
-            body = HashCheckRequest.model_construct(hashes=hashes)
+            body = HashCheckRequest(hashes=hashes)
             matches = await services.vault_config_service.hash_check(body)
             return {h: m.model_dump(exclude_none=True) for h, m in matches.items()}
         except (SAGEError, ValueError) as e:
