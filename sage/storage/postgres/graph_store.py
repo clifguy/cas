@@ -279,13 +279,14 @@ class PostgresGraphStore(GraphStore):
             """INSERT INTO documents (
                 id, title, source_type, source_path, lifecycle_status,
                 version_label, project, tags, authority_scope, doc_type,
-                source_content_hash, adapter_version, created_by, created_at,
+                source_content_hash, stored_content_hash, adapter_version,
+                created_by, created_at,
                 last_modified_by, updated_at, projected_at, indexed_at,
                 source_modified_at, document_date,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
                 metadata_confirmed
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -298,6 +299,7 @@ class PostgresGraphStore(GraphStore):
                 doc.authority_scope,
                 doc.doc_type,
                 doc.source_content_hash,
+                doc.stored_content_hash,
                 doc.adapter_version,
                 doc.created_by,
                 doc.created_at.isoformat(),
@@ -1640,6 +1642,10 @@ class PostgresGraphStore(GraphStore):
             authority_scope=row["authority_scope"],
             doc_type=row["doc_type"],
             source_content_hash=row["source_content_hash"],
+            # ``.get`` rather than ``[]``: a row selected before the additive
+            # column reached this vault's schema carries no such key, and a
+            # document predating the column is null there by definition.
+            stored_content_hash=row.get("stored_content_hash"),
             adapter_version=row["adapter_version"],
             created_by=row["created_by"],
             created_at=datetime.fromisoformat(row["created_at"]),

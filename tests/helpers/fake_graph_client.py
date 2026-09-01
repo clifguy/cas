@@ -9,11 +9,21 @@ per-call store constructions the stack resolver performs.
 """
 
 import hashlib
+import io
+import zipfile
 from collections.abc import Iterator
 
 # Chunk size for the fake's streamed reads. Small enough that modest test
 # payloads exercise multi-chunk delivery.
 STREAM_CHUNK_BYTES = 8192
+
+# Office package extensions the backing document store rewrites at rest. An
+# upload of one of these is stored as a *stamped* copy, not verbatim: the
+# service mints fresh per-upload identifiers into added ``customXml`` parts, so
+# the same bytes uploaded twice yield two different stored digests. Reproducing
+# that here is what gives the provenance assertions teeth -- a fake that stored
+# every upload verbatim would report the delivered digest by accident.
+STAMPED_SUFFIXES = (".docx", ".dotx", ".xlsx", ".pptx")
 
 
 class FakeGraphClient:
@@ -34,6 +44,10 @@ class FakeGraphClient:
         self.source_reads = 0
         self.source_stats = 0
         self.source_streams: list[tuple[str, str]] = []
+        # Count of uploads the store rewrote on the way in (see
+        # STAMPED_SUFFIXES), so a test can prove the divergence it asserts
+        # against was actually produced rather than assumed.
+        self.stamped_uploads = 0
 
     def list_vault_ids(self) -> list[str]:
         return sorted(self.store)
@@ -77,7 +91,39 @@ class FakeGraphClient:
 
     def upload_source(self, vault_id: str, source_path: str, data: bytes) -> None:
         self.source_uploads += 1
-        self.sources[source_path] = data
+        self.sources[source_path] = self._store_form(source_path, data)
+
+    def _store_form(self, source_path: str, data: bytes) -> bytes:
+        """The bytes the store retains for an upload of ``data``.
+
+        Verbatim for every format the store leaves alone. For an Office package
+        (STAMPED_SUFFIXES) the package is reopened and a fresh
+        ``customXml/itemProps<N>.xml`` part is added carrying a per-upload
+        identifier, mirroring the item GUIDs the real service mints on each
+        upload event: the added part is structurally inert (nothing references
+        it, so the package still opens), the authored parts are copied through
+        byte-for-byte, and the resulting digest differs from the delivered one
+        *and* from the digest of any previous upload of the same bytes.
+        """
+        lowered = source_path.lower()
+        if not lowered.endswith(STAMPED_SUFFIXES):
+            return data
+        self.stamped_uploads += 1
+        marker = f"fake-item-{self.stamped_uploads:08d}"
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as incoming:
+            taken = set(incoming.namelist())
+            index = 1
+            while f"customXml/itemProps{index}.xml" in taken:
+                index += 1
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as stamped:
+                for item in incoming.infolist():
+                    stamped.writestr(item, incoming.read(item.filename))
+                stamped.writestr(
+                    f"customXml/itemProps{index}.xml",
+                    f'<ds:datastoreItem ds:itemID="{{{marker}}}"/>',
+                )
+        return buffer.getvalue()
 
     def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
         return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()

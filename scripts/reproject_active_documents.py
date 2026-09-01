@@ -225,18 +225,27 @@ async def reproject_vault_with_services(
             projection = await adapter.project(src_path)
 
             # Hash drift guard: source file changed since original ingest.
-            # `doc.source_content_hash` is canonical (it crossed the typed
-            # alias); `projection.content_hash` is raw adapter output whose
-            # spelling nothing upstream constrains, so both are canonicalized
-            # before comparison. Comparing raw would report drift for a file
-            # whose digest matches but is spelled differently, skipping a
-            # document that needs no skipping.
-            stored_hex = (doc.source_content_hash or "").removeprefix("sha256:")
+            # Compared against the digest recorded for the *retained* copy --
+            # `stored_content_hash`, falling back to `source_content_hash` when
+            # that is null -- because the projection above hashed that copy. A
+            # store may retain bytes that are not byte-identical to what the
+            # caller delivered (CAS-ADR-043); comparing a re-read against the
+            # provenance digest would report every such document as drifted and
+            # push the operator toward --allow-hash-drift, which disables the
+            # guard wholesale.
+            # The recorded digests are canonical (they crossed the typed alias);
+            # `projection.content_hash` is raw adapter output whose spelling
+            # nothing upstream constrains, so both are canonicalized before
+            # comparison. Comparing raw would report drift for a file whose
+            # digest matches but is spelled differently, skipping a document
+            # that needs no skipping.
+            expected_hash = doc.stored_content_hash or doc.source_content_hash
+            stored_hex = (expected_hash or "").removeprefix("sha256:")
             if (
-                doc.source_content_hash
+                expected_hash
                 and projection.content_hash
                 and canonicalize_sha256(projection.content_hash)
-                != canonicalize_sha256(doc.source_content_hash)
+                != canonicalize_sha256(expected_hash)
                 and not allow_hash_drift
             ):
                 n_hash_drift_skipped += 1

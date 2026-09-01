@@ -358,7 +358,26 @@ class Document(BaseModel):
         ),
     )
     source_content_hash: Sha256Str = Field(
-        description="Hash of source file content at last ingestion (provenance)."
+        description=(
+            "Hash of source file content at last ingestion (provenance). The "
+            "SHA-256 of the bytes the caller delivered, so a caller holding the "
+            "original can match it and duplicate detection is keyed to content "
+            "identity rather than to how any store chose to retain it."
+        )
+    )
+    stored_content_hash: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 of the source bytes as retained by the vault-source store. "
+            "Equal to `source_content_hash` when the store keeps the delivered "
+            "bytes verbatim, and different when the binding rewrites the copy at "
+            "rest (CAS-ADR-043). The source-file integrity audit compares the "
+            "retained copy against this value, falling back to "
+            "`source_content_hash` when it is null. Null identifies a document "
+            "ingested before the two hashes were recorded separately; for those "
+            "the provenance hash is the as-stored hash and the delivered-byte "
+            "hash is unrecoverable."
+        ),
     )
     adapter_version: str = Field(
         description="Version of the source adapter used at last ingestion."
@@ -3981,7 +4000,12 @@ class SourceFileIntegrityEntry(BaseModel):
         )
     )
     expected_content_hash: Sha256Str = Field(
-        description="The source_content_hash recorded on the document."
+        description=(
+            "The digest the audit compared the retained copy against: the "
+            "document's stored_content_hash, or its source_content_hash when "
+            "that is null. This is what the stored bytes were expected to hash "
+            "to, which is not always the document's provenance hash."
+        )
     )
     observed_content_hash: Sha256Str | None = Field(
         default=None,
