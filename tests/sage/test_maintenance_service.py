@@ -1311,10 +1311,15 @@ async def test_restore_source_file_pre_split_pin_writes_but_does_not_launder_the
     on_disk.write_bytes(b"drifted")
 
     wrong = b"not this document's bytes at all"
-    await maint.restore_vault_source_file(
+    report = await maint.restore_vault_source_file(
         _delivered(tmp_path, "wrong.md", wrong), document_id="deadbeef_presplit"
     )
 
+    assert report.provenance_verified is False, (
+        "nothing on a pre-split record can confirm the delivered file, and the "
+        "report must say so rather than let the caller assume a check that did not run"
+    )
+    assert report.record_refreshed is False
     assert on_disk.read_bytes() == wrong, "the pre-split exemption must let the write through"
     doc = await gs.get_document("deadbeef_presplit")
     assert doc.stored_content_hash is None, (
@@ -1324,6 +1329,48 @@ async def test_restore_source_file_pre_split_pin_writes_but_does_not_launder_the
     assert report.summary["hash_mismatch"] == 1, (
         "the mismatch must stay visible so the operator sees the repair did not take"
     )
+
+
+async def test_restore_source_file_pin_accepts_correct_bytes_on_a_diverged_record(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A pin whose delivered bytes *are* the document's provenance is accepted,
+    on a record whose stored digest differs from that provenance.
+
+    Anti-coincidental-pass: the positive control the guard lacked. Every other
+    succeeding pinned restore in this module has a null stored digest, so it
+    takes the pre-split exemption and never reaches the comparison at all. Two
+    rivals pass the whole suite without this case: a guard that refuses any pin
+    once ``stored_content_hash`` is set, and one that compares the delivered
+    digest against the *stored* digest instead of provenance — which under a
+    store that rewrites at rest would refuse every legitimate pinned restore of
+    the original bytes. The fixture separates the two digests precisely so the
+    comparison has a wrong answer available to give.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_pinok.md"
+    delivered = b"the bytes the caller originally handed over"
+    retained = b"the bytes the store chose to keep"
+    on_disk = _write_source(minimal_config, sp, retained)
+    doc = _src_doc(
+        "deadbeef_pinok",
+        _sha256_of(delivered),
+        source_path=sp,
+        stored_content_hash=_sha256_of(retained),
+    )
+    assert doc.source_content_hash != doc.stored_content_hash
+    await gs.insert_document(doc)
+    on_disk.write_bytes(b"drifted")
+
+    report = await maint.restore_vault_source_file(
+        _delivered(tmp_path, "orig.md", delivered), document_id="deadbeef_pinok"
+    )
+
+    assert report.status == "restored"
+    assert report.provenance_verified is True
+    assert on_disk.read_bytes() == delivered
 
 
 async def test_restore_source_file_rejects_a_non_absolute_source(

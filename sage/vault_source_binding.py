@@ -710,7 +710,6 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # apart, since anything reasoning about placement without retaining
         # reads the latter.
         dest = storage_root / self.planned_source_path(vault_id, storage_root, source_path)
-        _assert_not_symlinked(dest)
         if dest.exists():
             # The caller's digest when it has one, so the delivered bytes are
             # hashed once across the whole ingest rather than once here and once
@@ -723,6 +722,21 @@ class FilesystemVaultSourceStore(VaultSourceStore):
             # Different content: disambiguate with the 8-char content hash.
             token = _disambiguation_token(content_hash)
             dest = imports_dir / f"{source_path.stem}_{token}{source_path.suffix}"
+
+        # Guarded here rather than where ``dest`` was first computed, because
+        # this is the path actually about to be written and the collision branch
+        # above may have chosen a different one. Checking only the planned path
+        # leaves the disambiguated write unguarded at a name derivable from the
+        # delivered bytes, and refuses a link at the planned path that the
+        # collision branch was never going to write through anyway.
+        _assert_not_symlinked(dest)
+        # Containment resolves the whole path, so a symlinked *ancestor* --
+        # ``imports/`` itself, say -- cannot land the copy outside the tree while
+        # the returned vault-relative path claims it is inside. Asserted rather
+        # than substituted: the copy goes to the path as named, and the returned
+        # vault-relative form is computed against ``storage_root`` as given, so a
+        # storage root that is itself reached through a link keeps working.
+        resolve_and_assert_within_root(dest, storage_root)
 
         shutil.copy2(source_path, dest)
         # Strip UI-layer invisibility markers that shutil.copy2 may have

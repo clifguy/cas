@@ -18,7 +18,11 @@ from pathlib import Path
 
 import pytest
 
-from sage.api.errors import ContentFileMissingError, SourceFileNotFoundError
+from sage.api.errors import (
+    ContentFileMissingError,
+    SourceFileNotFoundError,
+    VaultSourcePathRefusedError,
+)
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.documents import DocumentsService
@@ -206,6 +210,39 @@ async def test_vsbb_031_collision_retain_still_digests_the_delivered_file_once(
     assert external.resolve() not in reads, (
         "the delivered file must never be loaded whole to take a digest the caller already computed"
     )
+
+
+async def test_vsbb_041_ingest_surfaces_a_refused_write_path_as_a_typed_error(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A destination the binding refuses surfaces as a typed API error on the
+    ingest path, not as a bare ``ValueError``.
+
+    Anti-coincidental-pass: the assertion is on the exception *class*, because
+    that is the whole claim. The binding raises its own ``ValueError`` subclass —
+    it sits below the API layer and may not import it — and an untranslated
+    refusal reaches an MCP caller as a generic internal error and an HTTP caller
+    as a bare 500, neither of which the spec declares. ``pytest.raises(Exception)``
+    would pass against exactly the defect this guards.
+
+    The restore path was given this translation in an earlier pass; the guards
+    that made retention able to refuse then created the same exposure on the far
+    more reachable ingest path.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+    (storage_root / "imports" / "refused.md").symlink_to(tmp_path / "nowhere.md")
+
+    external = tmp_path / "refused.md"
+    external.write_text("# body\n")
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.code == "vault_source_path_refused"
 
 
 # --------------------------------------------------------------------------- #
@@ -508,6 +545,39 @@ class _BackendOnlyStore(FilesystemVaultSourceStore):
 
     def retain_source(self, vault_id, storage_root, source_path, delivered_hash=None):
         raise AssertionError("retain_source must not run for an already-retained relative source")
+
+
+async def test_vsbb_042_backend_resident_source_path_is_normalized(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """The one branch that records the caller's relative string stores a plain
+    path, and refuses one that walks out of the tree.
+
+    This is the only ingest branch that does not derive its recorded
+    ``source_path`` from a resolved location, so a `.` or `..` segment reaches
+    the record verbatim. The two sides then disagree: existence, hashing, and
+    the integrity audit all resolve such a path happily, while the write-time
+    guard refuses it -- leaving a record naming a location its own bytes could
+    never be restored to.
+
+    Anti-coincidental-pass: both halves are asserted, because either alone is
+    satisfiable by the wrong implementation. Normalizing without refusing lets
+    ``imports/../../escape.md`` through as ``../escape.md``; refusing without
+    normalizing leaves ``./imports/x.md`` on the record. The accepted case
+    asserts the *stored* value rather than merely that the call succeeded, so an
+    implementation that validated and then recorded the raw string still fails.
+    """
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="./imports/resident.md", source_type=SourceType.MARKDOWN)
+    )
+    assert result.document.source_path == "imports/resident.md"
+
+    with pytest.raises(VaultSourcePathRefusedError):
+        await ingestion_service.ingest(
+            IngestRequest(source="imports/../../escape.md", source_type=SourceType.MARKDOWN)
+        )
 
 
 class _AbsentBackendStore(FilesystemVaultSourceStore):

@@ -296,21 +296,24 @@ def test_vsbb_034_write_source_refuses_to_escape_the_storage_root(store, storage
 
 
 def test_vsbb_035_write_source_refuses_an_absolute_path(store, storage_root, tmp_path):
-    """A caller-named path that is absolute names somewhere outside the vault's
-    tree outright and is refused.
+    """A caller-named path that is absolute is refused on shape, even when it
+    points inside the vault's own tree.
 
-    Distinct from VSBB-034's ``..`` walk: an absolute path never reaches the
-    ``storage_root / source_path`` join as a relative segment at all -- pathlib
-    discards the left operand -- so a containment guard placed after that join
-    would be resolving the wrong thing entirely.
+    Anti-coincidental-pass: the path must be *inside* ``storage_root`` for this
+    test to mean anything. ``storage_root / "/abs/outside"`` discards the left
+    operand, so an absolute path pointing elsewhere is already refused by the
+    pre-existing realpath containment check and the test would pass with the
+    shape check deleted -- proving nothing about it. An absolute path inside the
+    root resolves within it, so containment accepts and only the shape check
+    refuses. The trailing assertion is that no file appeared at the target.
     """
-    outside = tmp_path / "absolute_escape.md"
-    assert not outside.exists()
+    inside_absolute = storage_root / "imports" / "abs.md"
+    assert not inside_absolute.exists()
 
     with pytest.raises(VaultRootEscapeError):
-        store.write_source(VID, storage_root, str(outside), b"data")
+        store.write_source(VID, storage_root, str(inside_absolute), b"data")
 
-    assert not outside.exists()
+    assert not inside_absolute.exists()
 
 
 def test_vsbb_037_retain_source_refuses_a_dangling_symlinked_destination(
@@ -346,6 +349,94 @@ def test_vsbb_037_retain_source_refuses_a_dangling_symlinked_destination(
         store.retain_source(VID, storage_root, ext)
 
     assert not outside.exists(), "no file may be created outside the storage root"
+
+
+def test_vsbb_038_retain_source_refuses_a_link_at_the_disambiguated_path(
+    store, storage_root, tmp_path
+):
+    """Retention guards the path it actually writes, not merely the one it planned.
+
+    Anti-coincidental-pass: the fixture forces an *ordinary collision* first, so
+    retention takes the branch that re-derives its destination. VSBB-037's
+    fixture has no collision, so the planned path is the written path there and
+    it cannot see this branch at all -- which is exactly how a guard placed on
+    the planned path alone passed that test while leaving this write open.
+
+    The disambiguated name is derivable: the token is a deterministic function
+    of the delivered bytes, so the link's location is not a guess.
+
+    The link points at a path *inside* the storage root, and that is deliberate:
+    an outside target is refused by the containment resolve (VSBB-039's guard),
+    so the symlink check would never be the discriminator and this test would
+    pass with it deleted. An in-root target resolves within the root, so
+    containment accepts and only the symlink check refuses. The assertion is
+    that the bytes did not appear at the link's target — a redirected write, not
+    an escaped one, which is the narrower hazard the check alone covers.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    (imports / "note.md").write_bytes(b"AN ORDINARY COLLISION")
+
+    delivered = b"DELIVERED BYTES"
+    token = hashlib.sha256(delivered).hexdigest()[:8]
+    redirected = imports / "someone_elses_copy.md"
+    (imports / f"note_{token}.md").symlink_to(redirected)
+    assert not redirected.exists()
+
+    ext = _external(tmp_path, "note.md", delivered)
+
+    with pytest.raises(VaultRootEscapeError):
+        store.retain_source(VID, storage_root, ext)
+
+    assert not redirected.exists(), "the write must not be redirected through the link"
+
+
+def test_vsbb_039_retain_source_refuses_a_symlinked_ancestor(store, storage_root, tmp_path):
+    """A symlinked ``imports/`` lands the copy outside the tree; containment on
+    the final destination catches it.
+
+    Anti-coincidental-pass: the leaf here is an ordinary name, so a symlink check
+    that inspects only the destination itself passes and the copy still escapes.
+    Only resolving the whole path discriminates. Asserted on the escaped
+    location, which is where the bytes would otherwise appear while the returned
+    vault-relative path claims they are inside the vault.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (storage_root / "imports").symlink_to(elsewhere)
+    ext = _external(tmp_path, "n.md", b"data")
+
+    with pytest.raises(VaultRootEscapeError):
+        store.retain_source(VID, storage_root, ext)
+
+    assert not (elsewhere / "n.md").exists()
+
+
+def test_vsbb_040_retain_source_still_disambiguates_around_an_in_tree_link(
+    store, storage_root, tmp_path
+):
+    """A link at the *planned* path whose target is a real in-tree file still
+    collision-handles, exactly as before the guards landed.
+
+    The guards must not narrow this. Retention never writes through the link on
+    this branch -- it disambiguates to a fresh name -- so refusing here would
+    reject a safe, long-standing path for no gain. This is the regression test
+    for that over-refusal: it fails against a guard placed on the planned path
+    rather than on the written one.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    real = imports / "real.md"
+    real.write_bytes(b"ALPHA")
+    (imports / "doc.md").symlink_to(real)
+
+    ext = _external(tmp_path, "doc.md", b"BRAVO")
+    rel = store.retain_source(VID, storage_root, ext)
+
+    expected = hashlib.sha256(b"BRAVO").hexdigest()[:8]
+    assert rel == f"imports/doc_{expected}.md"
+    assert (storage_root / rel).read_bytes() == b"BRAVO"
+    assert real.read_bytes() == b"ALPHA", "the link's target must be untouched"
 
 
 def test_vsbb_036_write_source_refuses_a_symlinked_destination(store, storage_root, tmp_path):

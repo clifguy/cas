@@ -19,7 +19,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -60,6 +60,7 @@ from sage.api.errors import (
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
     Tier3UniqueConstraintViolation,
+    VaultSourcePathRefusedError,
 )
 from sage.config import VaultConfig, build_transition_table
 from sage.models.enums import (
@@ -109,6 +110,49 @@ class IngestResult:
 
     document: Document
     is_new: bool
+
+
+@contextlib.contextmanager
+def _translate_vault_source_refusal(source: str) -> Iterator[None]:
+    """Surface a binding's refusal to write at a path as a typed API error.
+
+    The vault-source bindings refuse a write target for several distinct
+    reasons, and raise their own ``ValueError`` subclass to say so -- they sit
+    below the API layer and may not import its error hierarchy. Left to
+    propagate, that reaches an MCP caller as a generic internal error and an
+    HTTP caller as a bare 500 against a spec declaring neither, which describes
+    a server fault rather than the refused input it actually is.
+
+    The binding's message travels with the translation. Only the binding knows
+    which of its causes fired, and a fixed message here could describe at most
+    one of them.
+    """
+    from sage.vault_source_binding import VaultRootEscapeError
+
+    try:
+        yield
+    except VaultRootEscapeError as exc:
+        raise VaultSourcePathRefusedError(source, str(exc)) from exc
+
+
+def _normalize_vault_relative(source_path: str) -> str:
+    """Collapse a vault-relative path to its plain form, refusing an escape.
+
+    ``.`` and ``..`` segments are accepted by the read side -- existence, hash,
+    and the integrity audit all resolve them -- but refused by the write-time
+    guard, so a record that stored one verbatim would name a path its own bytes
+    could never be written back to. Normalizing at the point the path enters the
+    record keeps the two sides agreeing on what a source_path is.
+    """
+    candidate = PurePosixPath(source_path)
+    normalized = PurePosixPath(*(p for p in candidate.parts if p != "."))
+    if ".." in normalized.parts or normalized.is_absolute():
+        raise VaultSourcePathRefusedError(
+            source_path,
+            f"refusing {source_path!r}: a vault-relative source path may not be "
+            f"absolute or walk out of the vault's source tree.",
+        )
+    return str(normalized)
 
 
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
@@ -725,9 +769,10 @@ class IngestionService:
                 raise SourceFileNotFoundError(request.source)
             source_path = source_input.resolve()
             delivered_hash = hash_file(source_path)
-            vault_relative, retained = await self._retain_or_reuse(
-                vault_source_store, storage_root, source_path, delivered_hash
-            )
+            with _translate_vault_source_refusal(request.source):
+                vault_relative, retained = await self._retain_or_reuse(
+                    vault_source_store, storage_root, source_path, delivered_hash
+                )
         else:
             # Relative source: a vault-relative path into the store. When the
             # bytes are present on the local tree, retain in place / upload as
@@ -747,14 +792,20 @@ class IngestionService:
                 # force-reingest guard exists to raise. The binding is already
                 # the cheap answer here: a source inside the vault is retained in
                 # place, with no copy to avoid.
-                vault_relative = vault_source_store.retain_source(
-                    self._config.vault.id, storage_root, source_path, delivered_hash
-                )
+                with _translate_vault_source_refusal(request.source):
+                    vault_relative = vault_source_store.retain_source(
+                        self._config.vault.id, storage_root, source_path, delivered_hash
+                    )
                 retained = True
             elif vault_source_store.source_exists(
                 self._config.vault.id, storage_root, request.source
             ):
-                vault_relative = request.source
+                # Normalized rather than stored as given: this is the one
+                # branch that records the caller's string verbatim, and a path
+                # carrying ``.`` or ``..`` segments would be accepted by the
+                # read side while the write-time guard refuses it -- a record
+                # whose own source_path cannot be written back to.
+                vault_relative = _normalize_vault_relative(request.source)
                 # Nothing was delivered this call -- the bytes were already on
                 # the store and are only being re-projected. The provenance of
                 # this path was established at the ingest that put them there,

@@ -4124,6 +4124,27 @@ class SourceFileRestoreReport(BaseModel):
             "recorded digest and the store was left untouched."
         )
     )
+    provenance_verified: bool = Field(
+        description=(
+            "Whether the delivered bytes were confirmed to be the target "
+            "document's. True whenever the target was resolved from their "
+            "digest, and whenever a document_id pin was checked against the "
+            "record's provenance. False only for a pinned restore of a document "
+            "carrying no stored digest: its recorded provenance describes its "
+            "stored copy rather than the delivered bytes, so nothing on the "
+            "record can confirm the file handed over is the right one."
+        )
+    )
+    record_refreshed: bool = Field(
+        description=(
+            "Whether stored_content_hash was updated on the document record. "
+            "True only where the store demonstrably rewrote the bytes it was "
+            "given, which is the sole reason the recorded digest may move. "
+            "False leaves any recorded mismatch reported rather than adopted — "
+            "so a restore can report `restored` with this false, meaning the "
+            "bytes were written but the record still describes a different copy."
+        )
+    )
     expected_content_hash: Sha256Str = Field(
         description=(
             "The digest the retained copy was required to reproduce before the "
@@ -4141,10 +4162,11 @@ class SourceFileRestoreReport(BaseModel):
     stored_content_hash: Sha256Str = Field(
         description=(
             "SHA-256 of the retained copy as it stands after the call. Differs "
-            "from expected_content_hash only under a binding that rewrites its "
-            "copy at rest, where writing the same bytes back yields a fresh "
-            "stored digest; the document record is updated to match, licensed "
-            "by the write having actually happened."
+            "from expected_content_hash under a binding that rewrites its copy "
+            "at rest, where writing the same bytes back yields a fresh stored "
+            "digest. Whether the document record was updated to match is "
+            "reported separately by record_refreshed — this field describes the "
+            "store, not the record."
         )
     )
 

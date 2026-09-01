@@ -397,7 +397,7 @@ altered out of band, and the audit asserted red.
 
 **Input:** `restore_vault_source_file` with the original source file.
 
-**Expected:** `restored=true`, the same `source_path` as the record already
+**Expected:** `status: restored`, the same `source_path` as the record already
 held, and the audit clean afterwards. Provenance is unchanged on both legs. On
 the document-store leg the upload counter has moved and the record's
 `stored_content_hash` equals a fresh re-read of the stored copy; on the

@@ -972,6 +972,31 @@ class RestoreProvenanceMismatchError(SAGEError):
         )
 
 
+class VaultSourcePathRefusedError(SAGEError):
+    """400: the vault-source store refused to write at the path it was given.
+
+    Carries the binding's own reason rather than restating one. A binding
+    refuses a write target for several distinct causes -- the path is absolute,
+    it walks out of the vault's source tree, a symlink sits at the destination,
+    or it resolves outside the source root through an ancestor -- and a fixed
+    message can only describe one of them, leaving the other three reported as
+    something that did not happen.
+
+    Exists because the binding raises a plain ``ValueError`` subclass: it sits
+    below the API layer and may not import it, so without a translation at the
+    service boundary the refusal reaches an MCP caller as a generic internal
+    error and an HTTP caller as a bare 500 against a spec that declares neither.
+    """
+
+    def __init__(self, source_path: str, reason: str) -> None:
+        super().__init__(
+            "vault_source_path_refused",
+            reason,
+            400,
+            {"source_path": source_path},
+        )
+
+
 class RestoreSourceNotAbsoluteError(SAGEError):
     """400: the restore source path is not absolute.
 

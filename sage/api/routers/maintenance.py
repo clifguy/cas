@@ -183,7 +183,7 @@ async def maint_verify_vault_source_files(
                 "`restore_provenance_mismatch`: the pinned document was not "
                 "ingested from the delivered bytes. "
                 "`restore_source_not_absolute`: the source path is not absolute. "
-                "`path_traversal_denied`: the document's source_path cannot be "
+                "`vault_source_path_refused`: the document's source_path cannot be "
                 "written at the path it names."
             ),
         },
