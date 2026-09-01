@@ -476,6 +476,10 @@ paths:
             for `source_type`.
 
 
+            `vault_source_path_refused`: the vault-source store refused
+            the destination it would have retained the source at.
+
+
             `expected_head_version_requires_predecessor`:
             `expected_head_version` was supplied without
             `predecessor_id`. The token is bound to the chain head

@@ -339,9 +339,12 @@ class MaintenanceService:
         that rewrites at rest, churning the recorded digest for no repair.
 
         Where a write does happen, the copy is re-read afterwards and the
-        record's ``stored_content_hash`` set to what it now holds. That refresh
-        is licensed by the same rule the ingest path applies: only an actual
-        write may update the as-stored digest. It matters under a binding that
+        record's ``stored_content_hash`` follows it only where the store
+        demonstrably rewrote the bytes. That is narrower than "an actual write
+        happened": a store returning what it was handed licenses no update, so
+        bytes that are not this document's leave the recorded mismatch reported
+        rather than adopted. ``record_refreshed`` on the report says which
+        happened. It matters under a binding that
         rewrites at rest, where writing the original bytes back produces a
         stored copy that is correct but freshly stamped, and so hashes to
         neither the delivered digest nor the previous stored one. The

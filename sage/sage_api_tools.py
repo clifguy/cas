@@ -289,6 +289,9 @@ def register_sage_tools(
           ``source_type``.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
+        - ``vault_source_path_refused`` (400): the vault-source store refused
+          the destination it would have retained the source at -- a symlink
+          sitting there, or a path resolving out of the vault's source tree.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied; they are mutually exclusive.
         - ``missing_ingest_source`` (400): neither ``source`` nor
@@ -2674,10 +2677,20 @@ def register_sage_tools(
 
         Writes nothing when the retained copy already hashes to its recorded
         digest, returning ``status: already_intact``. Where a write does happen
-        the copy is re-read and the record's ``stored_content_hash`` set to what
-        it now holds -- which matters under a store that rewrites its copy at
-        rest, where writing the original bytes back yields a correct but freshly
-        rewritten copy. The provenance digest is never touched.
+        the copy is re-read, and the record's ``stored_content_hash`` follows it
+        only where the store demonstrably rewrote the bytes -- which is what
+        happens under a store that rewrites its copy at rest, where writing the
+        original bytes back yields a correct but freshly rewritten copy. The
+        provenance digest is never touched.
+
+        Two report fields say what the call could and did not establish.
+        ``provenance_verified`` is false only for a pinned restore of a document
+        carrying no stored digest, whose recorded provenance describes its
+        stored copy rather than the delivered bytes, so nothing on the record
+        can confirm the file handed over. ``record_refreshed`` is false where
+        the recorded digest was deliberately left alone -- so a call can report
+        ``status: restored`` with the record still describing a different copy,
+        and the mismatch still reported by the audit.
 
         Nothing else repairs the copy: this is deliberately not something an
         ingest does, because an ingest that silently repaired would erase the
@@ -2707,7 +2720,7 @@ def register_sage_tools(
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied.
         - ``missing_ingest_source`` (400): neither was supplied.
-        - ``path_traversal_denied`` (400): the document's recorded source_path
+        - ``vault_source_path_refused`` (400): the document's recorded source_path
           cannot be written at the path it names.
 
         Args:

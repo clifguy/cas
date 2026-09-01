@@ -90,10 +90,14 @@ def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
     ``storage_root`` / ``brain_root`` / config path come from its
     (operator- or typo-authorable) configuration, so before any recursive delete
     each is resolved through symlinks and asserted to live *strictly under* the
-    bound vault root (CAS-ADR-043's ``get_vault_root``). A path that resolves
-    outside the root -- or to the root itself, since removing the root would
-    destroy every vault -- raises :class:`VaultRootEscapeError` and nothing is
-    deleted. Returns the resolved path on success so the caller removes the
+    root it is checked against -- the bound vault root for a teardown
+    (CAS-ADR-043's ``get_vault_root``), the vault's source root for a retained
+    copy. A path that resolves outside that root -- or to the root itself, since
+    removing it would destroy everything beneath -- raises
+    :class:`VaultRootEscapeError` and nothing is written or deleted. The message
+    names the root that was checked, because it reaches callers verbatim through
+    the API layer's translation and a fixed one would misdescribe every use but
+    the first. Returns the resolved path on success so the caller removes the
     canonical (symlink-free) target. ``path`` need not exist: an already-absent
     target still resolves, keeping the teardown idempotent.
     """
@@ -102,7 +106,7 @@ def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
     if resolved == root or root not in resolved.parents:
         raise VaultRootEscapeError(
             f"refusing to operate on {path} (resolved {resolved}): it is not a "
-            f"strict descendant of the bound vault root {root}."
+            f"strict descendant of {root}."
         )
     return resolved
 
@@ -717,7 +721,18 @@ class FilesystemVaultSourceStore(VaultSourceStore):
             content_hash = delivered_hash or hash_file(source_path)
             existing_hash = hash_file(dest)
             if content_hash == existing_hash:
-                # Identical content already imported -- reuse existing path.
+                # Identical content already imported -- reuse existing path,
+                # once it is established that the path is one the document can
+                # live at. A link here would otherwise become the record's
+                # ``source_path``: every read would follow it wherever its owner
+                # points, and a later repair would refuse the very path the
+                # record names, leaving a document that cannot be restored where
+                # it claims to live. Guarded on this exit rather than on entry to
+                # the branch, because the disambiguating exit below writes
+                # elsewhere and must keep working (a link it never touches is
+                # not its problem to refuse).
+                _assert_not_symlinked(dest)
+                resolve_and_assert_within_root(dest, storage_root)
                 return str(dest.relative_to(storage_root))
             # Different content: disambiguate with the 8-char content hash.
             token = _disambiguation_token(content_hash)
@@ -727,8 +742,10 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # this is the path actually about to be written and the collision branch
         # above may have chosen a different one. Checking only the planned path
         # leaves the disambiguated write unguarded at a name derivable from the
-        # delivered bytes, and refuses a link at the planned path that the
-        # collision branch was never going to write through anyway.
+        # delivered bytes, while refusing a link the *disambiguating* exit was
+        # never going to write through. Each of the method's three exits is
+        # guarded where it lands: this one and the reuse exit above, plus the
+        # internal short-circuit, which returns a path already inside the tree.
         _assert_not_symlinked(dest)
         # Containment resolves the whole path, so a symlinked *ancestor* --
         # ``imports/`` itself, say -- cannot land the copy outside the tree while

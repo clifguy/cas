@@ -769,10 +769,9 @@ class IngestionService:
                 raise SourceFileNotFoundError(request.source)
             source_path = source_input.resolve()
             delivered_hash = hash_file(source_path)
-            with _translate_vault_source_refusal(request.source):
-                vault_relative, retained = await self._retain_or_reuse(
-                    vault_source_store, storage_root, source_path, delivered_hash
-                )
+            vault_relative, retained = await self._retain_or_reuse(
+                vault_source_store, storage_root, source_path, delivered_hash
+            )
         else:
             # Relative source: a vault-relative path into the store. When the
             # bytes are present on the local tree, retain in place / upload as
@@ -792,10 +791,9 @@ class IngestionService:
                 # force-reingest guard exists to raise. The binding is already
                 # the cheap answer here: a source inside the vault is retained in
                 # place, with no copy to avoid.
-                with _translate_vault_source_refusal(request.source):
-                    vault_relative = vault_source_store.retain_source(
-                        self._config.vault.id, storage_root, source_path, delivered_hash
-                    )
+                vault_relative = self._retain_translated(
+                    vault_source_store, storage_root, source_path, delivered_hash
+                )
                 retained = True
             elif vault_source_store.source_exists(
                 self._config.vault.id, storage_root, request.source
@@ -819,9 +817,17 @@ class IngestionService:
                 # Absent a record (bytes on the store that were never ingested)
                 # there is no prior provenance to inherit, and the stored digest
                 # stands in, as it does for any first sight of a file.
-                delivered_hash = (
-                    await self._store.find_documents_by_source_paths([vault_relative])
-                ).get(vault_relative)
+                #
+                # Looked up under both spellings: a record written before the
+                # normalization above stored the caller's string verbatim, so a
+                # dotted path that still resolves on the store would miss its own
+                # provenance under the normalized form alone -- and a miss here
+                # is not an error, it silently falls back to the stored digest
+                # and lands a second document on the same stored file.
+                by_path = await self._store.find_documents_by_source_paths(
+                    [vault_relative, request.source]
+                )
+                delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
             else:
                 raise SourceFileNotFoundError(request.source)
 
@@ -1922,7 +1928,30 @@ class IngestionService:
                 vault_id, storage_root, existing.source_path
             ):
                 return existing.source_path, False
-        return store.retain_source(vault_id, storage_root, source_path, delivered_hash), True
+        return self._retain_translated(store, storage_root, source_path, delivered_hash), True
+
+    def _retain_translated(
+        self,
+        store: "VaultSourceStore",
+        storage_root: Path,
+        source_path: Path,
+        delivered_hash: str | None,
+    ) -> str:
+        """Retain through the port, surfacing a refused destination as a typed error.
+
+        The single retain call site for the whole ingest path. The bindings
+        refuse a destination they cannot write at -- a symlink sitting there, a
+        path resolving out of the source tree -- and say so with their own
+        ``ValueError`` subclass, since they sit below the API layer and may not
+        import its hierarchy. Routed through one place rather than wrapped at
+        each caller so the translation cannot be present on one branch and
+        absent on another; the branches differ in how they *reach* a retain, not
+        in what a refusal means to the caller.
+        """
+        with _translate_vault_source_refusal(str(source_path)):
+            return store.retain_source(
+                self._config.vault.id, storage_root, source_path, delivered_hash
+            )
 
     @contextlib.contextmanager
     def _project_source(

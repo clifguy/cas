@@ -1370,6 +1370,10 @@ async def test_restore_source_file_pin_accepts_correct_bytes_on_a_diverged_recor
 
     assert report.status == "restored"
     assert report.provenance_verified is True
+    assert report.record_refreshed is False, (
+        "the filesystem binding returns what it was handed, so nothing licensed "
+        "a digest refresh even though a write happened"
+    )
     assert on_disk.read_bytes() == delivered
 
 

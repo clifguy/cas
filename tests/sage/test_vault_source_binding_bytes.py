@@ -321,34 +321,32 @@ def test_vsbb_037_retain_source_refuses_a_dangling_symlinked_destination(
 ):
     """Retention refuses to copy through a symlink sitting at the path it chose.
 
-    Anti-coincidental-pass: the link is *dangling*, and that is the whole design
-    of the fixture. A link to an existing file reports present, so retention
-    takes its collision branch and either reuses or writes to a disambiguated
-    path — the link is never followed and the test would prove nothing. A
-    dangling link reports absent, so the collision branch is skipped entirely
-    and ``shutil.copy2`` creates the target: the bytes land wherever the link
-    points while the returned vault-relative path claims they are inside the
-    vault. The assertion is therefore on a file *outside the storage root*, not
-    on the exception type — a guard that raised after copying would satisfy a
+    Anti-coincidental-pass: two properties of the fixture do the work. The link
+    is *dangling*, so it reports absent and the collision branch is skipped
+    entirely — retention falls through to the write, which is the only path on
+    which ``copy2`` would follow it. And its target is *inside* the storage root,
+    so the containment resolve accepts and only ``_assert_not_symlinked``
+    refuses; an outside target would be caught by containment and leave the
+    symlink check unexercised, which is what this test's first version did. The
+    assertion is that no file appeared at the link's target, not that an
+    exception was raised — a guard that raised after copying would pass a
     raises-only check.
 
-    The sibling of VSBB-036 on the ingest path. Both write through
-    ``_assert_not_symlinked`` so the two cannot drift apart; that they are
-    separate methods with separate reasons for choosing a destination is exactly
-    why hardening one and not the other was reachable.
+    The no-collision sibling of VSBB-038, which reaches the same guard through
+    the disambiguating branch.
     """
     imports = storage_root / "imports"
     imports.mkdir()
-    outside = tmp_path / "outside_the_vault.txt"
-    (imports / "note.md").symlink_to(outside)
-    assert not outside.exists(), "the link must dangle for this to be the uncollided path"
+    redirected = imports / "someone_elses_copy.md"
+    (imports / "note.md").symlink_to(redirected)
+    assert not redirected.exists(), "the link must dangle for this to be the uncollided path"
 
     ext = _external(tmp_path, "note.md", b"ATTACKER BYTES")
 
     with pytest.raises(VaultRootEscapeError):
         store.retain_source(VID, storage_root, ext)
 
-    assert not outside.exists(), "no file may be created outside the storage root"
+    assert not redirected.exists(), "the write must not be redirected through the link"
 
 
 def test_vsbb_038_retain_source_refuses_a_link_at_the_disambiguated_path(
@@ -437,6 +435,42 @@ def test_vsbb_040_retain_source_still_disambiguates_around_an_in_tree_link(
     assert rel == f"imports/doc_{expected}.md"
     assert (storage_root / rel).read_bytes() == b"BRAVO"
     assert real.read_bytes() == b"ALPHA", "the link's target must be untouched"
+
+
+def test_vsbb_043_retain_source_refuses_to_reuse_a_symlinked_path(store, storage_root, tmp_path):
+    """Retention will not hand back a symlink as a document's retained path.
+
+    The third exit of the method, and the one no other fixture enters. The link
+    is *live* and its target already holds the bytes being ingested, so the
+    collision comparison matches and retention takes its reuse branch — which
+    returns without writing anything, and so reaches neither the write-site
+    symlink check nor the containment resolve.
+
+    Anti-coincidental-pass: the target must hold the *identical* bytes, or the
+    disambiguating branch runs instead and VSBB-040's behaviour is what gets
+    exercised. Nothing is written on this path, so a byte-level assertion cannot
+    discriminate; what the test asserts instead is that no path was returned at
+    all. The defect it excludes is a returned ``imports/note.md`` that is a
+    symlink resolving out of the tree: every read would follow it wherever its
+    owner points, and a later repair would refuse the very path the record
+    names, leaving a document that cannot be restored where it claims to live.
+    The link is asserted intact afterwards, since refusing must not mutate the
+    tree either.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    body = b"THE BYTES BEING INGESTED"
+    outside = tmp_path / "outside_target.md"
+    outside.write_bytes(body)
+    (imports / "note.md").symlink_to(outside)
+
+    ext = _external(tmp_path, "note.md", body)
+
+    with pytest.raises(VaultRootEscapeError):
+        store.retain_source(VID, storage_root, ext)
+
+    assert (imports / "note.md").is_symlink(), "a refusal must not disturb the tree"
+    assert outside.read_bytes() == body
 
 
 def test_vsbb_036_write_source_refuses_a_symlinked_destination(store, storage_root, tmp_path):

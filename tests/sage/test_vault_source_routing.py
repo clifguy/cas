@@ -20,6 +20,7 @@ import pytest
 
 from sage.api.errors import (
     ContentFileMissingError,
+    ForceReingestPathMismatchError,
     SourceFileNotFoundError,
     VaultSourcePathRefusedError,
 )
@@ -578,6 +579,48 @@ async def test_vsbb_042_backend_resident_source_path_is_normalized(
         await ingestion_service.ingest(
             IngestRequest(source="imports/../../escape.md", source_type=SourceType.MARKDOWN)
         )
+
+
+async def test_vsbb_044_legacy_dotted_record_is_found_not_duplicated(
+    ingestion_service, graph_store, tmp_vault_dir, monkeypatch
+):
+    """A record whose stored source_path predates normalization is still found,
+    so re-projecting it fails loudly instead of landing a second document.
+
+    Normalizing the recorded path made it diverge from what pre-normalization
+    records hold, and the provenance lookup runs on the normalized form. Looking
+    up only that spelling misses such a record, and a miss here raises nothing:
+    provenance falls back to the stored digest, the re-projection acquires a
+    different identity from the document it is re-projecting, and duplicate
+    detection lands a *second* document on the same stored file.
+
+    Anti-coincidental-pass: the assertion is the document count together with the
+    error type, because the defective path succeeds. A `pytest.raises` alone
+    would pass against neither implementation cleanly and a success assertion
+    would pass against the defect, which silently returns a new document. The
+    raised error is the cross-document path-mismatch guard doing its job on a
+    record whose stored path genuinely no longer matches the computed one --
+    which is as far as a lookup fix can get. Making such a record
+    *re-projectable* needs the stored paths normalized once, which is tracked
+    separately.
+    """
+    first = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "imports/legacy.md", "# Legacy\n\nBody."
+    )
+    # The pre-normalization spelling of the record's own path.
+    await graph_store.update_document(first.id, {"source_path": "./imports/legacy.md"})
+    (tmp_vault_dir / "sources" / "imports" / "legacy.md").unlink()
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    with pytest.raises(ForceReingestPathMismatchError):
+        await ingestion_service.ingest(
+            IngestRequest(source="./imports/legacy.md", source_type=SourceType.MARKDOWN, force=True)
+        )
+
+    assert len(await graph_store.list_all_documents()) == 1, (
+        "a missed provenance lookup inserts a second document on the same stored "
+        "file, which is the outcome the raw-string fallback exists to prevent"
+    )
 
 
 class _AbsentBackendStore(FilesystemVaultSourceStore):
