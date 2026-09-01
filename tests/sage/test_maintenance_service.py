@@ -674,9 +674,16 @@ def _src_doc(
     source_path: str,
     lifecycle_status: str = "active",
     version_label: str | None = None,
+    stored_content_hash: str | None = None,
 ) -> Document:
     """A Document for source-file-audit tests, parameterized on the fields
-    the audit reads: source_path, lifecycle_status, source_content_hash."""
+    the audit reads: source_path, lifecycle_status, source_content_hash,
+    stored_content_hash.
+
+    ``stored_content_hash`` defaults to None, which is the shape of a document
+    ingested before the two digests were recorded separately -- so every
+    pre-existing test in this module keeps exercising the fallback comparator.
+    """
     now = datetime.now(timezone.utc)
     return Document(
         id=doc_id,
@@ -685,6 +692,7 @@ def _src_doc(
         source_path=source_path,
         lifecycle_status=lifecycle_status,
         source_content_hash=content_hash,
+        stored_content_hash=stored_content_hash,
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,
@@ -856,6 +864,119 @@ async def test_verify_source_files_hash_mode_clean_when_matching(
 
     assert report.entries == []
     assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_verify_source_files_healthy_when_stored_copy_diverges_from_provenance(
+    graph_store, minimal_config, stub_content_store
+):
+    """A document whose retained copy is not byte-identical to what the caller
+    delivered audits healthy while that copy is intact.
+
+    The shape a binding that rewrites its copy at rest produces: provenance
+    records the delivered bytes, the stored digest records the retained ones, and
+    the audit re-reads the retained ones.
+
+    Anti-coincidental-pass: the two recorded digests genuinely differ (asserted),
+    so an audit still comparing against ``source_content_hash`` reports this
+    document as corrupt. A fixture where they happened to agree would pass under
+    either comparator and prove nothing.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_office.md"
+    delivered = b"the bytes the caller handed over"
+    retained = b"the bytes the store chose to keep"
+    _write_source(minimal_config, sp, retained)
+    doc = _src_doc(
+        "deadbeef_office",
+        _sha256_of(delivered),
+        source_path=sp,
+        stored_content_hash=_sha256_of(retained),
+    )
+    assert doc.source_content_hash != doc.stored_content_hash
+    await gs.insert_document(doc)
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.entries == []
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_verify_source_files_detects_corruption_of_a_diverged_stored_copy(
+    graph_store, minimal_config, stub_content_store
+):
+    """Corruption of the retained copy is still caught for a document whose
+    provenance and stored digests differ, and the report names the digest the
+    audit actually compared against.
+
+    Anti-coincidental-pass: the reported ``expected_content_hash`` is asserted to
+    be the *stored* digest and explicitly not the provenance one. Without that,
+    an implementation could compare correctly and then report a hash it never
+    used -- leaving an operator to chase a mismatch against the wrong baseline.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_office.md"
+    delivered = b"the bytes the caller handed over"
+    retained = b"the bytes the store chose to keep"
+    corrupted = b"bytes nobody asked for"
+    _write_source(minimal_config, sp, corrupted)
+    await gs.insert_document(
+        _src_doc(
+            "deadbeef_office",
+            _sha256_of(delivered),
+            source_path=sp,
+            stored_content_hash=_sha256_of(retained),
+        )
+    )
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 1}
+    entry = report.entries[0]
+    assert entry.integrity_status == "hash_mismatch"
+    assert entry.expected_content_hash == _sha256_of(retained)
+    assert entry.expected_content_hash != _sha256_of(delivered)
+    assert entry.observed_content_hash == _sha256_of(corrupted)
+
+
+async def test_verify_source_files_falls_back_for_a_document_with_no_stored_hash(
+    graph_store, minimal_config, stub_content_store
+):
+    """A document ingested before the two digests were recorded separately --
+    null ``stored_content_hash`` -- audits against ``source_content_hash``, in
+    both directions.
+
+    Pins the policy for those records: corruption detection is unaffected by
+    their age. Anti-coincidental-pass: both directions are asserted in one test,
+    so a comparator that reported every null-stored-hash document as healthy
+    (skipping the check rather than falling back) fails on the second half.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    intact = b"legacy body"
+    _write_source(minimal_config, "imports/legacy_ok.md", intact)
+    await gs.insert_document(
+        _src_doc("aaaaaaaa_ok", _sha256_of(intact), source_path="imports/legacy_ok.md")
+    )
+    _write_source(minimal_config, "imports/legacy_bad.md", b"body as it is now")
+    await gs.insert_document(
+        _src_doc(
+            "bbbbbbbb_bad",
+            _sha256_of(b"body as it was ingested"),
+            source_path="imports/legacy_bad.md",
+        )
+    )
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 1}
+    entry = report.entries[0]
+    assert entry.document_id == "bbbbbbbb_bad"
+    assert entry.expected_content_hash == _sha256_of(b"body as it was ingested")
 
 
 async def test_verify_source_files_hash_mode_missing_stays_missing(

@@ -2246,9 +2246,16 @@ paths:
         storage root. Returns a SourceFileIntegrityReport whose
         ``entries`` enumerate documents whose source file is missing
         (``missing``) or, when ``check_hashes`` is set, present but no
-        longer hashing to the recorded ``source_content_hash``
-        (``hash_mismatch``). Documents with an intact source file are
+        longer hashing to the digest recorded for the retained copy --
+        ``stored_content_hash``, or ``source_content_hash`` when that is
+        null (``hash_mismatch``). Documents with an intact source file are
         absent from the report. Read-only.
+
+
+        An integrity check on the stored copy, not a provenance check: a
+        store may retain a copy that is not byte-identical to what the
+        caller delivered, in which case only the stored digest describes
+        the bytes on the store.
 
 
         Audits the vault-local source files (the ``imports/`` copies that
@@ -2922,7 +2929,25 @@ components:
             defined in the vault's document_types configuration.
         source_content_hash:
           type: string
-          description: Hash of source file content at last ingestion (provenance).
+          description: >-
+            Hash of source file content at last ingestion (provenance). The
+            SHA-256 of the bytes the caller delivered, so a caller holding the
+            original can match it and duplicate detection is keyed to content
+            identity rather than to how any store chose to retain it.
+        stored_content_hash:
+          type: string
+          nullable: true
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: >-
+            SHA-256 of the source bytes as retained by the vault-source store.
+            Equal to `source_content_hash` when the store keeps the delivered
+            bytes verbatim, and different when the binding rewrites the copy at
+            rest (CAS-ADR-043). The source-file integrity audit compares the
+            retained copy against this value, falling back to
+            `source_content_hash` when it is null. Null identifies a document
+            ingested before the two hashes were recorded separately; for those
+            the provenance hash is the as-stored hash and the delivered-byte
+            hash is unrecoverable.
         adapter_version:
           type: string
           description: Version of the source adapter used at last ingestion.
@@ -6486,7 +6511,7 @@ components:
         Per-document entry in a SourceFileIntegrityReport. Surfaced when a
         document's backing source file is absent under the vault storage
         root (`missing`) or, when hash verification is enabled, present
-        but no longer hashing to the recorded source_content_hash
+        but no longer hashing to the digest recorded for the retained copy
         (`hash_mismatch`).
       properties:
         document_id:
@@ -6515,7 +6540,11 @@ components:
             when check_hashes=True).
         expected_content_hash:
           type: string
-          description: The source_content_hash recorded on the document.
+          description: >-
+            The digest the audit compared the retained copy against: the
+            document's stored_content_hash, or its source_content_hash when
+            that is null. This is what the stored bytes were expected to hash
+            to, which is not always the document's provenance hash.
         observed_content_hash:
           type: string
           nullable: true

@@ -20,17 +20,37 @@ from sage.storage.postgres import schema as pgschema
 # ---------------------------------------------------------------------------
 
 
-def test_every_create_statement_is_idempotent():
-    """Every CREATE statement the bootstrap runs carries IF NOT EXISTS.
+def test_every_ddl_statement_is_idempotent():
+    """Every DDL statement the bootstrap runs carries IF NOT EXISTS.
 
-    Anti-coincidental-pass: there ARE create statements (positive control), and
-    each must be idempotent. Dropping an IF NOT EXISTS would make a re-run raise.
+    Anti-coincidental-pass: there ARE both CREATE and ALTER statements (two
+    positive controls), and each must be idempotent. Dropping an IF NOT EXISTS
+    would make a re-run raise -- and the bootstrap re-runs on every vault open,
+    so a non-idempotent statement breaks every existing vault, not just a
+    migration. The ALTER control matters on its own: a filter that looked only
+    at CREATE statements would wave additive column DDL straight through.
     """
     stmts = pgschema.schema_statements(schema="sage_test_x", extensions=["vector", "pgstattuple"])
     creates = [s for s in stmts if s.strip().upper().startswith("CREATE ")]
+    alters = [s for s in stmts if s.strip().upper().startswith("ALTER ")]
     assert creates, "expected CREATE statements in the bootstrap"
-    for stmt in creates:
+    assert alters, "expected ALTER statements in the bootstrap (additive column DDL)"
+    for stmt in [*creates, *alters]:
         assert "IF NOT EXISTS" in stmt, f"non-idempotent statement: {stmt!r}"
+
+
+def test_no_bootstrap_statement_is_destructive():
+    """The bootstrap contains no DROP or TRUNCATE.
+
+    It runs on every vault open against live vaults, so a destructive statement
+    reaching this list would empty a vault on the next process start rather than
+    on any deliberate teardown call.
+    """
+    stmts = pgschema.schema_statements(schema="sage_test_x", extensions=["vector"])
+    for stmt in stmts:
+        upper = stmt.upper()
+        assert "DROP " not in upper, f"destructive statement in the bootstrap: {stmt!r}"
+        assert "TRUNCATE" not in upper, f"destructive statement in the bootstrap: {stmt!r}"
 
 
 def test_schema_statements_creates_extensions_by_default():
@@ -227,6 +247,59 @@ async def test_bootstrap_is_idempotent(pg_dsn):
                 (schema,),
             )
             assert (await cur.fetchone())[0] == len(_EXPECTED_TABLES)
+        finally:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
+
+
+async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(pg_dsn):
+    """A vault provisioned before an additive column existed gains it on the next
+    bootstrap -- i.e. on its next open, with no operator step.
+
+    Stands in for a deployed vault by creating ``documents`` from the table DDL
+    with the column stripped out, exactly as an older release would have left it,
+    then running the current bootstrap over it.
+
+    Anti-coincidental-pass: the column's *absence* is asserted first. ``CREATE
+    TABLE IF NOT EXISTS`` is a no-op against an existing table, so without the
+    additive ALTER the second assertion fails -- and if the pre-state assertion
+    were dropped, a run where the table was created fresh (with the column) would
+    pass while proving nothing about migration.
+    """
+    import psycopg
+
+    from sage.storage.postgres import schema as pg
+    from sage.storage.postgres.schema import (
+        assert_disposable_target,
+        bootstrap_schema,
+    )
+
+    schema = assert_disposable_target("sage_test_addcol_" + os.urandom(3).hex())
+    legacy_documents = pg.DOCUMENTS_TABLE.replace("    stored_content_hash text,\n", "")
+    assert "stored_content_hash" not in legacy_documents
+
+    async def _columns(conn) -> set[str]:
+        cur = await conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = 'documents'",
+            (schema,),
+        )
+        return {r[0] for r in await cur.fetchall()}
+
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        try:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')  # noqa: S608
+            await conn.execute(f'SET search_path TO "{schema}", public')  # noqa: S608
+            await conn.execute(legacy_documents)
+
+            before = await _columns(conn)
+            assert "source_content_hash" in before, "the stand-in table must exist"
+            assert "stored_content_hash" not in before, (
+                "pre-state must lack the column, or this proves nothing about migration"
+            )
+
+            await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+
+            assert "stored_content_hash" in await _columns(conn)
         finally:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
 

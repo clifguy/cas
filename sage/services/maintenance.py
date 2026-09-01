@@ -78,6 +78,25 @@ def _canonical_or_none(content_hash: str | None) -> str | None:
     return canonicalize_sha256(content_hash) if content_hash is not None else None
 
 
+def _expected_stored_hash(doc: Document) -> str:
+    """The digest a re-read of this document's retained source must reproduce.
+
+    ``stored_content_hash`` when the document carries one: a binding may rewrite
+    its copy at rest (CAS-ADR-043), and it is that copy the audit re-reads, so
+    the provenance hash -- the digest of what the caller delivered -- is the
+    wrong comparator and would report every such document as corrupt.
+
+    ``source_content_hash`` otherwise. A null means the document was ingested
+    before the two digests were recorded separately, and back then the recorded
+    provenance hash *was* the as-stored digest -- so it remains the correct
+    comparator for those records, and corruption detection is unaffected by
+    their age. What such a record cannot support is the other direction: its
+    delivered-byte digest is not recoverable, so a caller re-delivering the
+    original bytes will not match it.
+    """
+    return doc.stored_content_hash or doc.source_content_hash
+
+
 class MaintenanceService:
     """Pilot of the maintenance/admin API surface (CAS-ADR-029)."""
 
@@ -248,7 +267,8 @@ class MaintenanceService:
         (CAS-ADR-043), the same store ``get_document`` delivers through, so
         the audit observes exactly what delivery would. When ``check_hashes``
         is set, a present source is additionally hashed and compared against
-        the recorded ``source_content_hash``. A missing source is always
+        the digest recorded for the *stored* copy (see
+        :func:`_expected_stored_hash`). A missing source is always
         classified ``missing`` regardless of ``check_hashes`` (it is never
         a hash error).
         """
@@ -257,7 +277,7 @@ class MaintenanceService:
 
         if check_hashes:
             observed = store.hash_source(self._vault_id, storage_root, doc.source_path)
-            if observed != doc.source_content_hash:
+            if observed != _expected_stored_hash(doc):
                 return self._integrity_entry(doc, "hash_mismatch", observed=observed)
 
         return None
@@ -276,7 +296,7 @@ class MaintenanceService:
             lifecycle_status=doc.lifecycle_status,
             version_label=doc.version_label,
             integrity_status=integrity_status,
-            expected_content_hash=doc.source_content_hash,
+            expected_content_hash=_expected_stored_hash(doc),
             observed_content_hash=observed,
         )
 

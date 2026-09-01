@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.12",
+      "version": "0.13",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.55",
+  "substrate_version": "1.56",
   "revision_history": [
+    {
+      "version": "1.56",
+      "date": "2026-08-31",
+      "summary": "Split source provenance from stored-copy integrity on Document. sage/sage_core_api.openapi.yaml bumped v0.12->v0.13: Document gains stored_content_hash (nullable, sha256:<hex> pattern), the SHA-256 of the source bytes as the vault-source store retained them, and source_content_hash's description now states what it had always been read as but did not always hold -- the SHA-256 of the bytes the caller delivered. The two differ only under a binding that rewrites its copy at rest: the document-store binding (CAS-ADR-043) uploads to a document library that restamps Office packages, and because projection reads the retained copy back through the port, the recorded provenance hash described the rewritten copy rather than the caller's file. The rewrite is not reproducible, so every hash-keyed behavior failed for docx/xlsx/pptx on a cloud vault: duplicate detection never fired, re-ingest-if-changed always reported a change, and a caller's hash of its own original never matched. Code (not in this spec): sage/services/ingestion.py hashes the delivered file before retention and records that as source_content_hash, keeping the projection-derived digest as stored_content_hash, so dedup and the supersede identical-content check key on content identity; sage/vault_source_binding.py gains hash_file and the VaultSourceStore port gains planned_source_path (where a binding would home a source, no side effects), which lets the ingestion service skip a retain whose bytes are already recorded at that path -- the identical-content reuse a binding whose stored copy is not byte-identical to its input cannot decide for itself; sage/services/maintenance.py audits the retained copy against stored_content_hash, falling back to source_content_hash so records predating the split still detect corruption; sage/storage/postgres/schema.py adds the column plus an ADDITIVE_COLUMNS 'ADD COLUMN IF NOT EXISTS' statement in ddl_statements, so a vault provisioned before the column gains it on its next open. Policy for pre-split records: a null stored_content_hash means the provenance hash is the as-stored digest and the delivered-byte digest is unrecoverable -- no backfill is possible, and re-delivering the original bytes creates a new document rather than deduplicating, remediable by superseding. Tests: MPI-008/009/010 (provenance equals the delivered hash under either binding, byte-identical re-ingest dedups with no second stored copy, identical bytes under a new name still dedup) with the shared fake Graph client now restamping Office uploads so the divergence is reproduced rather than assumed; VSBB-025/026 and VSB-DS-048/049 (planned_source_path on both bindings); source-file audit coverage for a diverged-but-intact copy, corruption of a diverged copy, and the null-stored-hash fallback; additive-column migration over an already-provisioned schema; the bootstrap idempotency gate widened from CREATE to all DDL; the verbatim-description, YAML<->Pydantic parity, router-conformance, MCP-tool-conformance, typed-alias, seam, and public-posture gates pass."
+    },
     {
       "version": "1.55",
       "date": "2026-08-31",

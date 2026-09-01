@@ -206,3 +206,97 @@ client holding one vault config; `_initialize_vault` faked.
 
 **Anti-coincidental-pass:** discovery regressed to a filesystem-rooted config
 walk would not find the fake-backed vault at all.
+
+## MPI-009: the recorded provenance hash is the hash of the delivered bytes
+
+**Artifact:** `sage/services/ingestion.py` (delivered-hash capture),
+`sage/vault_source_binding.py` (`hash_file`)
+**Category:** mcp_tool, profile_invariance, import, provenance
+
+**Precondition:** One registered vault; a fresh `.docx` at a caller-local
+absolute `tmp_path` (outside `storage_root`). An Office package, not markdown,
+because that is the format a document store rewrites at rest — the divergence
+under test does not exist for a format the store keeps verbatim.
+
+**Input:** `ingest_document(vault_id, source=<absolute path>, source_type="docx")`.
+
+**Expected:**
+- `source_content_hash == sha256(<the caller's file bytes>)` on **both** legs.
+- Filesystem leg: `stored_content_hash == source_content_hash` (this binding
+  keeps what it was given; the regression guard that its behavior did not move).
+- Document-store leg: `stored_content_hash != source_content_hash`, and it
+  equals the digest of the bytes the fake actually holds.
+
+**Anti-coincidental-pass:** the document-store leg asserts
+`fake.stamped_uploads >= 1` — the store must have genuinely rewritten the
+upload. Without that, the headline equality is satisfied by a store that
+happened to retain the bytes verbatim, which is exactly the condition under
+which this defect stayed invisible: the shared fake stored every upload
+unchanged, so no existing test could observe it. The rewrite in
+`tests/helpers/fake_graph_client.py` (a fresh `customXml/itemProps<N>.xml` part
+per upload, mirroring the item GUIDs the real service mints) is what gives every
+test in this group teeth.
+
+## MPI-010: byte-identical re-ingest dedups and leaves no second stored copy
+
+**Artifact:** `sage/services/ingestion.py` (`_retain_or_reuse`, duplicate
+detection), `sage/vault_source_binding.py` (`planned_source_path`)
+**Category:** mcp_tool, profile_invariance, import, dedup
+
+**Precondition:** MPI-009's state — one `.docx` already ingested from a
+caller-local absolute path.
+
+**Input:** `ingest_document` again, same absolute path, same name.
+
+**Expected:**
+- `duplicate_content` envelope naming the first document's id.
+- Exactly one document in the vault.
+- Document-store leg: `fake.source_uploads` unchanged across the second call,
+  and no new key in `fake.sources`.
+
+**Anti-coincidental-pass:** the duplicate envelope alone does not prove the
+second defect is fixed. Retention runs *before* duplicate detection, so a
+binding that re-uploaded would still return the right error while leaving a
+disambiguated `imports/<stem>_<hash8>.<ext>` copy behind. The upload counter is
+the assertion with teeth; the error code is not.
+
+## MPI-011: identical bytes under a different filename still dedup
+
+**Artifact:** `sage/services/ingestion.py` (duplicate detection)
+**Category:** mcp_tool, profile_invariance, import, dedup
+
+**Precondition:** MPI-009's state; a byte-identical copy of the `.docx` at a
+second caller-local name.
+
+**Input:** `ingest_document(vault_id, source=<the renamed copy>, source_type="docx")`.
+
+**Expected:** `duplicate_content` on both legs — detection is hash-keyed, not
+name-keyed — with exactly one document in the vault.
+
+**Anti-coincidental-pass:** the envelope's `source_content_hash` is asserted to
+equal the *delivered* digest. Detection keyed to the as-stored digest could not
+match here at all, since the store mints a fresh copy per upload; pinning the
+reported value is what identifies which digest the rejection was keyed to.
+
+## MPI-012: reuse trusts the record when the stored copy was altered out of band
+
+**Artifact:** `sage/services/ingestion.py` (`_retain_or_reuse`)
+**Category:** mcp_tool, profile_invariance, import, dedup
+
+**Precondition:** MPI-009's state; the retained copy then altered by something
+other than SAGE (the fake's `sources[path]` mutated directly; on the filesystem
+leg, the `imports/` file rewritten).
+
+**Input:** `ingest_document` again with the original bytes, `force=True`.
+
+**Expected:** the document keeps its existing `source_path` — the altered copy
+is reused in place — and no second stored copy appears.
+
+**Anti-coincidental-pass:** the alteration is asserted to have taken effect, so
+this is the branch under test rather than the ordinary identical-copy path.
+Pins a deliberate trade rather than an accident: the reuse decision reads the
+recorded provenance instead of re-reading the retained bytes, because confirming
+would cost a whole-file read (a network round-trip for a remote store) on every
+ingest, to defend against a mutation the binding contract already excludes and
+the source-file integrity audit already reports. An implementation that re-read
+the bytes to confirm would disambiguate to a second path and fail here.

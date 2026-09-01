@@ -82,6 +82,50 @@ def test_vsbb_002_retain_internal_returns_relative_without_copy(store, storage_r
     assert not (storage_root / "imports").exists()
 
 
+def test_vsbb_025_planned_source_path_reports_the_home_without_retaining(
+    store, storage_root, tmp_path
+):
+    """``planned_source_path`` names where a source would be retained, and
+    retains nothing.
+
+    Anti-coincidental-pass: the internal case asserts the source's own
+    *subdirectory* path, which an implementation returning ``imports/<name>`` for
+    everything would fail -- a name-only assertion would not distinguish the two.
+    The external case asserts nothing was written, so an implementation that
+    answered the question by performing the retain is caught as well.
+    """
+    internal = storage_root / "reports" / "x.md"
+    internal.parent.mkdir(parents=True)
+    internal.write_bytes(b"data")
+    assert store.planned_source_path(VID, storage_root, internal) == "reports/x.md"
+
+    external = _external(tmp_path, "x.md", b"data")
+    assert store.planned_source_path(VID, storage_root, external) == "imports/x.md"
+
+    assert not (storage_root / "imports").exists(), "planning must not retain anything"
+
+
+def test_vsbb_026_planned_source_path_matches_what_retain_returns(store, storage_root, tmp_path):
+    """For a first, uncontested retain the planned path is the path
+    ``retain_source`` actually returns, in both the internal and external cases.
+
+    The two must not drift: a caller that skips a redundant retain acts on the
+    planned path, so a planned path the binding would not have chosen would
+    silently re-home the document.
+    """
+    internal = storage_root / "reports" / "y.md"
+    internal.parent.mkdir(parents=True)
+    internal.write_bytes(b"data")
+    assert store.planned_source_path(VID, storage_root, internal) == store.retain_source(
+        VID, storage_root, internal
+    )
+
+    external = _external(tmp_path, "z.md", b"body")
+    assert store.planned_source_path(VID, storage_root, external) == store.retain_source(
+        VID, storage_root, external
+    )
+
+
 def test_vsbb_003_retain_collision_identical_content_reuses(store, storage_root, tmp_path):
     """Retaining the same external bytes under the same basename twice reuses the
     first copy (no suffix), because the content hash matches."""

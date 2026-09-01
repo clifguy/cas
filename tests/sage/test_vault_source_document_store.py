@@ -163,6 +163,52 @@ def test_vsb_ds_030_retain_external_uploads_and_returns_vault_relative(tmp_path)
     assert fake.sources["imports/report.md"] == b"# Report\n\nbody"
 
 
+def test_vsb_ds_048_planned_source_path_always_re_homes_under_imports(tmp_path):
+    """This binding homes every source at ``imports/<name>``, whether or not the
+    caller's path happens to sit under the (unused) storage root.
+
+    Anti-coincidental-pass: the second case passes a path *inside* ``tmp_path``,
+    which is exactly the shape the filesystem binding treats as already-internal
+    and returns unchanged. Asserting it still re-homes here is what proves the
+    binding answers for itself rather than inheriting the other binding's rule.
+    Nothing is uploaded, so planning is confirmed side-effect-free.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+
+    external = tmp_path / "elsewhere" / "report.md"
+    assert store.planned_source_path("v", tmp_path, external) == "imports/report.md"
+
+    inside_root = tmp_path / "reports" / "report.md"
+    assert store.planned_source_path("v", tmp_path, inside_root) == "imports/report.md"
+
+    assert fake.source_uploads == 0
+    assert fake.sources == {}
+
+
+def test_vsb_ds_049_retain_lands_at_the_planned_path(tmp_path):
+    """An uncontested retain puts the bytes where ``planned_source_path`` said it
+    would, so a caller that skips a redundant retain names the path the binding
+    would actually have written to.
+
+    Asserts the bytes landed at the planned key, not merely that the two calls
+    return equal strings: ``retain_source`` computes its target *through*
+    ``planned_source_path``, so a returned-value comparison alone is nearly
+    tautological and would survive a binding that returned one path while
+    uploading to another.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+    external = tmp_path / "report.md"
+    external.write_bytes(b"# Report\n\nbody")
+
+    planned = store.planned_source_path("v", tmp_path, external)
+    rel = store.retain_source("v", tmp_path, external)
+
+    assert rel == planned
+    assert fake.sources[planned] == b"# Report\n\nbody"
+
+
 def test_vsb_ds_031_retain_collision_identical_content_reuses(tmp_path):
     """A name collision whose content is identical reuses the existing path and
     does not re-upload.

@@ -105,6 +105,22 @@ def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
     return resolved
 
 
+def hash_file(path: Path) -> str:
+    """SHA-256 of a local file in canonical ``sha256:<hex>`` form.
+
+    Streamed at ``_HASH_CHUNK_BYTES`` so a large file is never loaded whole into
+    memory. The one implementation behind both the filesystem binding's
+    ``hash_source`` and the ingestion path's at-receipt hash of a caller's file,
+    so the digest a caller can compute locally and the digest SAGE records are
+    produced the same way.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
 @dataclass(frozen=True)
 class DiscoveredVault:
     """A vault located by discovery, before its configuration is loaded.
@@ -177,6 +193,20 @@ class VaultSourceStore(ABC):
     # than by path. A binding uses whichever of the two its addressing model
     # needs and ignores the other, mirroring how the dispatch contract treats
     # ``vault_root`` and ``managed_identity``.
+
+    @abstractmethod
+    def planned_source_path(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        """The vault-relative path :meth:`retain_source` would retain ``source_path`` at.
+
+        The naming rule alone, with no collision handling and no side effects:
+        where this binding *homes* a source, before any question of what is
+        already there. A caller that can establish from its own records that the
+        bytes at this path are the ones it is about to deliver can skip the
+        retain entirely, which is the only way an identical-content reuse can be
+        decided for a binding whose stored copy is not byte-identical to what it
+        was given (CAS-ADR-043). Collision disambiguation stays inside
+        ``retain_source``: this is the un-disambiguated target.
+        """
 
     @abstractmethod
     def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
@@ -537,13 +567,27 @@ class FilesystemVaultSourceStore(VaultSourceStore):
     def delete_config(self, vault_id: str) -> None:
         self.config_locator(vault_id).unlink(missing_ok=True)
 
-    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
-        # A source already under the vault root is internal: return its
-        # vault-relative path with no copy.
+    @staticmethod
+    def _internal_relative(storage_root: Path, source_path: Path) -> str | None:
+        """The source's vault-relative path when it already lives under the vault
+        root, else ``None`` for an external file."""
         try:
             return str(source_path.relative_to(storage_root))
         except ValueError:
-            pass  # external file -- fall through to import
+            return None
+
+    def planned_source_path(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        # An internal source is homed where it already sits; anything else lands
+        # in ``imports/`` under its own name.
+        internal = self._internal_relative(storage_root, source_path)
+        return internal if internal is not None else f"imports/{source_path.name}"
+
+    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        # A source already under the vault root is internal: return its
+        # vault-relative path with no copy.
+        internal = self._internal_relative(storage_root, source_path)
+        if internal is not None:
+            return internal
 
         imports_dir = storage_root / "imports"
         imports_dir.mkdir(parents=True, exist_ok=True)
@@ -578,11 +622,7 @@ class FilesystemVaultSourceStore(VaultSourceStore):
             yield from iter(lambda: f.read(_SOURCE_CHUNK_BYTES), b"")
 
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
-        digest = hashlib.sha256()
-        with (storage_root / source_path).open("rb") as f:
-            for chunk in iter(lambda: f.read(_HASH_CHUNK_BYTES), b""):
-                digest.update(chunk)
-        return f"sha256:{digest.hexdigest()}"
+        return hash_file(storage_root / source_path)
 
     def delete_source_tree(self, vault_id: str, storage_root: Path | None) -> None:
         # Guard the (config-authorable) storage_root against escaping the bound
@@ -696,6 +736,13 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         client = self._get_client()
         client.delete_config(vault_id)  # type: ignore[attr-defined]
 
+    def planned_source_path(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        # Every source is re-homed under ``imports/``: this binding has no
+        # filesystem locator, so there is no "already inside the tree" case to
+        # preserve. ``storage_root`` is unused, as it is for every other source
+        # operation here.
+        return f"imports/{source_path.name}"
+
     def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
         # Every retain uploads to the document store: under this binding the
         # local tree is ephemeral, so the filesystem binding's "already-internal,
@@ -707,7 +754,7 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         data = source_path.read_bytes()
         content_hash = hashlib.sha256(data).hexdigest()[:8]
         client = self._get_client()
-        rel = f"imports/{source_path.name}"
+        rel = self.planned_source_path(vault_id, storage_root, source_path)
         if client.source_item(vault_id, rel) is not None:  # type: ignore[attr-defined]
             existing_hash = hashlib.sha256(
                 client.read_source_bytes(vault_id, rel)  # type: ignore[attr-defined]
@@ -716,6 +763,15 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
                 # Identical content already retained -- reuse the existing path.
                 return rel
             # Different content under the same name: disambiguate with the hash.
+            #
+            # Note the limit of the comparison above: it weighs the *incoming*
+            # bytes against the bytes read back from the store. For a format the
+            # store rewrites at rest those can never be equal, so re-delivering
+            # such a source reaches this line and lands a second copy. The
+            # binding cannot do better -- it holds no record of what the stored
+            # copy was made from -- so the reuse decision for those formats is
+            # taken by the caller, which does hold that record, before it ever
+            # calls this method (see ``planned_source_path``).
             rel = f"imports/{source_path.stem}_{content_hash}{source_path.suffix}"
         client.upload_source(vault_id, rel, data)  # type: ignore[attr-defined]
         return rel

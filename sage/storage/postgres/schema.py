@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS documents (
     authority_scope text,
     doc_type text,
     source_content_hash text NOT NULL,
+    stored_content_hash text,
     adapter_version text NOT NULL,
     created_by text NOT NULL,
     created_at text NOT NULL,
@@ -259,6 +260,18 @@ _TABLES: tuple[str, ...] = (
     CHUNKS_TABLE,
 )
 
+# Columns added to a table after its first release. ``CREATE TABLE IF NOT
+# EXISTS`` is a no-op against an already-provisioned vault, so a column added to
+# a table definition above reaches a new vault and no existing one; the matching
+# ``ADD COLUMN IF NOT EXISTS`` here is what carries it to a vault provisioned
+# before the column existed. The bootstrap runs on every vault open, so an
+# existing vault picks the column up on its next open with no operator step, and
+# a vault that already has it is unaffected. Every statement must be idempotent,
+# like the table and index DDL it runs alongside.
+ADDITIVE_COLUMNS: tuple[str, ...] = (
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS stored_content_hash text;",
+)
+
 
 # ---------------------------------------------------------------------------
 # Statement assembly + bootstrap
@@ -283,8 +296,19 @@ def _ordered_extensions(extensions: Iterable[str]) -> list[str]:
 
 
 def ddl_statements() -> list[str]:
-    """The schema-internal table and index DDL, in dependency order."""
-    return [*_TABLES, *GRAPH_INDEXES, *UNIQUE_NATURAL_KEY_INDEXES, *CONTENT_INDEXES]
+    """The schema-internal table and index DDL, in dependency order.
+
+    Additive column DDL follows the table creates and precedes the indexes, so a
+    vault provisioned before a column existed gains it before any index that
+    might reference it is built.
+    """
+    return [
+        *_TABLES,
+        *ADDITIVE_COLUMNS,
+        *GRAPH_INDEXES,
+        *UNIQUE_NATURAL_KEY_INDEXES,
+        *CONTENT_INDEXES,
+    ]
 
 
 def schema_statements(

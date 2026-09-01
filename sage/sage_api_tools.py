@@ -2113,6 +2113,13 @@ def register_sage_tools(
         id. Used by the scan-and-batch-ingest flow to identify
         already-ingested files without re-hashing on the SAGE side.
 
+        Matches on provenance: a document's ``source_content_hash`` is the
+        SHA-256 of the bytes that were delivered at ingest, so the digest a
+        caller computes over its own local file is the right thing to send
+        here. That holds however the vault retains its copy -- a store that
+        rewrites what it keeps records the rewritten digest separately, and
+        this lookup does not consult it.
+
         Hash format: every hash is normalized to the canonical
         ``sha256:<64 lowercase hex>`` before lookup, so the canonical form,
         bare hex, and either with the digest uppercased all resolve to the
@@ -2595,10 +2602,21 @@ def register_sage_tools(
         mutates nothing.
 
         When ``check_hashes`` is true, each present file's SHA-256 is
-        recomputed and compared against the recorded
-        ``source_content_hash``; a divergent file surfaces as a
-        ``hash_mismatch`` entry (a full file read per document). Default
-        false performs an existence check only.
+        recomputed and compared against the digest recorded for the
+        *retained* copy -- ``stored_content_hash``, or
+        ``source_content_hash`` when that is null; a divergent file
+        surfaces as a ``hash_mismatch`` entry (a full file read per
+        document). Default false performs an existence check only.
+
+        This is an integrity check on the stored copy, not a provenance
+        check. A store may retain a copy that is not byte-identical to
+        what the caller delivered, in which case the two recorded digests
+        differ by design and only the stored one describes the bytes on
+        the store. A document whose ``stored_content_hash`` is null was
+        ingested before the two were recorded separately: its provenance
+        digest is the as-stored one, so this audit stays correct for it,
+        but its delivered-byte digest is unrecoverable -- re-delivering
+        the original bytes creates a new document instead of matching it.
 
         Note: this audits the vault-local source files (the ``imports/``
         copies that ``get_document`` delivers), distinct from the content

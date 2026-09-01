@@ -192,6 +192,7 @@ def test_pg_row_to_document_populates_every_field():
         "authority_scope": "scope",
         "doc_type": "ticket",
         "source_content_hash": "sha256:" + "ab" * 32,
+        "stored_content_hash": "sha256:" + "cd" * 32,
         "adapter_version": "1",
         "created_by": "t",
         "created_at": now_iso,
@@ -216,6 +217,54 @@ def test_pg_row_to_document_populates_every_field():
         assert getattr(doc, field_name) is not None, (
             f"Document.{field_name} not populated by _row_to_document"
         )
+    assert doc.source_content_hash != doc.stored_content_hash, (
+        "the two hashes are distinct columns; the fixture must not let one stand in for the other"
+    )
+
+
+def test_pg_row_to_document_tolerates_a_row_without_the_stored_hash_column():
+    """A row selected before the additive column reached a vault's schema maps to
+    a null ``stored_content_hash`` rather than raising.
+
+    Anti-coincidental-pass: the key is absent from the row entirely (not present
+    and null), which is what a ``SELECT *`` against a not-yet-migrated schema
+    returns. A ``row["stored_content_hash"]`` lookup raises KeyError here, so
+    this fails loudly if the read path stops tolerating the pre-migration shape.
+    """
+    now_iso = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat()
+    row = {
+        "id": "00000001_doc_1",
+        "title": "T",
+        "source_type": SourceType.MARKDOWN.value,
+        "source_path": "/x/1.md",
+        "lifecycle_status": "active",
+        "version_label": None,
+        "project": None,
+        "tags": None,
+        "authority_scope": None,
+        "doc_type": None,
+        "source_content_hash": "sha256:" + "ab" * 32,
+        "adapter_version": "1",
+        "created_by": "t",
+        "created_at": now_iso,
+        "last_modified_by": "t",
+        "updated_at": now_iso,
+        "projected_at": None,
+        "indexed_at": None,
+        "source_modified_at": None,
+        "document_date": None,
+        "semantic_abstract": None,
+        "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
+        "pipeline_error": None,
+        "tier3_metadata": None,
+        "metadata_confirmed": False,
+    }
+    assert "stored_content_hash" not in row
+
+    doc = PostgresGraphStore._row_to_document(row)
+
+    assert doc.stored_content_hash is None
+    assert doc.source_content_hash == "sha256:" + "ab" * 32
 
 
 def test_pg_row_to_user_populates_every_field():

@@ -693,8 +693,21 @@ class IngestionService:
         source_input = Path(request.source)
 
         from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+        from sage.vault_source_binding import hash_file
 
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+
+        # Hash of the bytes the caller delivered, taken from the local file
+        # before it is retained. This is the document's provenance hash: it
+        # identifies the content the caller handed over, so a caller holding the
+        # original can match it and duplicate detection is keyed to content
+        # identity. It cannot be read back off the store instead -- a binding may
+        # rewrite its copy at rest (CAS-ADR-043), and such a rewrite is not
+        # reproducible, so the delivered digest is recoverable only here, while
+        # the caller's file is still in hand. None when there is no delivered
+        # file: a source already resident in the backing store is re-projected,
+        # not re-delivered.
+        delivered_hash: str | None = None
 
         if source_input.is_absolute():
             # External file import: copy the caller's file into the vault,
@@ -703,8 +716,9 @@ class IngestionService:
             if not source_input.exists():
                 raise SourceFileNotFoundError(request.source)
             source_path = source_input.resolve()
-            vault_relative = vault_source_store.retain_source(
-                self._config.vault.id, storage_root, source_path
+            delivered_hash = hash_file(source_path)
+            vault_relative = await self._retain_or_reuse(
+                vault_source_store, storage_root, source_path, delivered_hash
             )
         else:
             # Relative source: a vault-relative path into the store. When the
@@ -714,8 +728,10 @@ class IngestionService:
             # projected rather than rejected as missing.
             source_path = storage_root / request.source
             if source_path.exists():
-                vault_relative = vault_source_store.retain_source(
-                    self._config.vault.id, storage_root, source_path.resolve()
+                source_path = source_path.resolve()
+                delivered_hash = hash_file(source_path)
+                vault_relative = await self._retain_or_reuse(
+                    vault_source_store, storage_root, source_path, delivered_hash
                 )
             elif vault_source_store.source_exists(
                 self._config.vault.id, storage_root, request.source
@@ -788,18 +804,29 @@ class IngestionService:
         # typed-alias boundary -- so a non-canonical spelling here would miss
         # silently (a duplicate document) rather than raise.
         # Idempotent: an already-canonical hash passes through unchanged.
-        canonical_hash = canonicalize_sha256(projection.content_hash)
+        #
+        # Two hashes, two jobs. The adapter hashed whatever bytes it was handed,
+        # and projection reads through the vault-source port -- so this is the
+        # *retained* copy's digest, which is what the integrity audit must later
+        # compare a re-read against. Provenance is the digest of what the caller
+        # delivered, captured before retention; the two differ only where a
+        # binding rewrites its copy at rest (CAS-ADR-043). With nothing delivered
+        # this ingest -- a source already resident in the store, re-projected --
+        # there is no separate provenance to record and the retained digest
+        # stands for both.
+        stored_hash = canonicalize_sha256(projection.content_hash)
+        provenance_hash = delivered_hash or stored_hash
 
         # Supersede identical-content check (BH-123). Fires before the
         # generic duplicate-detection path so the caller gets a distinct
         # error code signalling "no-op edit" rather than "already ingested
         # somewhere in the vault". Only applies when a supersede target
         # was provided and its hash matches the new file's hash.
-        if predecessor is not None and (predecessor.source_content_hash == canonical_hash):
-            raise IdenticalContentSupersedeError(predecessor.id, canonical_hash)
+        if predecessor is not None and (predecessor.source_content_hash == provenance_hash):
+            raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
 
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
-        hash_matches = await self._store.find_documents_by_hashes([canonical_hash])
+        hash_matches = await self._store.find_documents_by_hashes([provenance_hash])
 
         now = datetime.now(timezone.utc)
 
@@ -811,7 +838,7 @@ class IngestionService:
         if hash_matches and not request.force:
             # Hash-only check: identical content already in vault (BH-066)
             existing_id = next(iter(hash_matches.values()))
-            raise DuplicateContentError(existing_id, canonical_hash)
+            raise DuplicateContentError(existing_id, provenance_hash)
 
         # Branch detection: force-reingest reuses an existing record;
         # otherwise this is a new-doc insert (with or without predecessor).
@@ -845,7 +872,7 @@ class IngestionService:
                     resolved_id=existing_doc.id,
                     resolved_source_path=existing_doc.source_path,
                     incoming_source_path=vault_relative,
-                    content_hash=canonical_hash,
+                    content_hash=provenance_hash,
                 )
 
         # Compute the merged metadata in memory before any insert/update
@@ -881,6 +908,12 @@ class IngestionService:
                 "semantic_abstract": None,
                 "indexed_at": None,
                 "source_modified_at": source_modified_at_str,
+                # The record is reused because the delivered bytes matched, so
+                # source_content_hash is unchanged by definition -- but the
+                # retained copy may have been rewritten fresh on the way in, so
+                # the as-stored digest is re-read from this projection rather
+                # than left describing the previous copy.
+                "stored_content_hash": stored_hash,
             }
             updates.update(field_updates)
             # Tier3 metadata override (caller authority on force-reingest,
@@ -959,7 +992,8 @@ class IngestionService:
                 source_type=request.source_type,
                 source_path=vault_relative,
                 lifecycle_status=self._transition_table.ingest_landing_state(),
-                source_content_hash=canonical_hash,
+                source_content_hash=provenance_hash,
+                stored_content_hash=stored_hash,
                 adapter_version=projection.adapter_version,
                 created_by=created_by,
                 created_at=now,
@@ -1719,6 +1753,51 @@ class IngestionService:
         )
         await self._content_store.remove_document(document_id)
         return projection
+
+    async def _retain_or_reuse(
+        self,
+        store,
+        storage_root: Path,
+        source_path: Path,
+        delivered_hash: str,
+    ) -> str:
+        """Retain a delivered source, or reuse the copy already holding those bytes.
+
+        Asks the binding where it would home this source, then asks the graph
+        store which delivered bytes the document at that path was made from. When
+        those are the bytes now in hand and the store still holds the copy, the
+        retain is skipped: re-delivering an unchanged source leaves the store
+        exactly as it was.
+
+        This is the filesystem binding's own identical-content rule -- same
+        destination, same content, reuse -- resolved against recorded provenance
+        instead of against the retained bytes. The two agree wherever a binding
+        keeps what it was given, and only recorded provenance can answer the
+        question for a binding that rewrites its copy at rest (CAS-ADR-043),
+        where the retained bytes no longer hash to what produced them.
+
+        Falls through to ``retain_source`` whenever the answer is not certain --
+        no record at that path, a different hash, or a record whose stored copy
+        has since gone missing -- so the binding's own handling remains the
+        default and this only ever removes redundant writes.
+
+        The reuse takes the record's word for what the stored copy holds, rather
+        than re-reading the copy to confirm. That is deliberate: confirming would
+        cost a full read of the retained bytes on every ingest, which for a
+        remote store is a network round-trip of the whole file, to defend against
+        a store mutated by something other than SAGE -- which the binding
+        contract already excludes, and which the source-file integrity audit
+        exists to detect. The visible consequence, should it happen anyway, is
+        that re-delivering the original bytes reuses the altered copy in place
+        instead of writing a second, disambiguated one alongside it; the audit
+        still reports the copy as mismatched either way.
+        """
+        vault_id = self._config.vault.id
+        planned = store.planned_source_path(vault_id, storage_root, source_path)
+        recorded = (await self._store.find_documents_by_source_paths([planned])).get(planned)
+        if recorded == delivered_hash and store.source_exists(vault_id, storage_root, planned):
+            return planned
+        return store.retain_source(vault_id, storage_root, source_path)
 
     @contextlib.contextmanager
     def _project_source(self, store, storage_root: Path, source_path: str) -> Iterator[Path]:
