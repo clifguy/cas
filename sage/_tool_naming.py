@@ -56,9 +56,15 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
         # only). `optimize` joins the precedent of `reload`/`migrate`:
         # maintenance operations on substrate state whose intent does not fit
         # the read-spine / mutation / derivation / validation taxonomy.
+        # `restore` follows them: returning a retained source file to a state
+        # it previously held is not a partial record update (`update`), a
+        # re-derivation from inputs the substrate still holds (`recompute`),
+        # or a read-only assertion about state (`verify`) -- the bytes come
+        # from outside and overwrite what the store currently has.
         "reload",
         "migrate",
         "optimize",
+        "restore",
     }
 )
 
@@ -156,6 +162,7 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "maint_update_vault_config": "sage_maint",
     "maint_verify_vault_drift": "sage_maint",
     "maint_verify_vault_source_files": "sage_maint",
+    "maint_restore_vault_source_file": "sage_maint",
     "maint_migrate_vault": "sage_maint",
     "maint_recompute_views": "sage_maint",
     "maint_recompute_deferred_vault_abstracts": "sage_maint",

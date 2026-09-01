@@ -8,6 +8,7 @@ three-layer service + router + MCP-tool shape.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
-from sage.api.errors import ReabstractAlreadyInFlightError
+from sage.api.errors import (
+    DocumentNotFoundError,
+    ReabstractAlreadyInFlightError,
+    RestoreProvenanceMismatchError,
+    RestoreSourceNotAbsoluteError,
+    RestoreTargetUnresolvedError,
+    SourceFileNotFoundError,
+    VaultSourcePathRefusedError,
+)
 from sage.config import VaultConfig
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
@@ -36,6 +45,7 @@ from sage.models.schemas import (
     ReabstractSummaryEvent,
     SourceFileIntegrityEntry,
     SourceFileIntegrityReport,
+    SourceFileRestoreReport,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
     canonicalize_sha256,
@@ -301,6 +311,175 @@ class MaintenanceService:
             expected_content_hash=_expected_stored_hash(doc),
             observed_content_hash=observed,
         )
+
+    async def restore_vault_source_file(
+        self, source: str, document_id: str | None = None
+    ) -> SourceFileRestoreReport:
+        """Write delivered bytes back over a document's retained source file.
+
+        The repair counterpart of :meth:`verify_vault_source_files`. That audit
+        reports a retained copy that changed outside SAGE but cannot fix one: a
+        re-ingest offers bytes to ``retain_source``, which sees only that they
+        differ from what sits at its target -- indistinguishable from a name
+        collision -- and homes the document at a second path rather than
+        restoring the first. This writes to the path the record already names,
+        through the port's ``write_source``, so the document does not move.
+
+        SAGE keeps no pristine second copy of a source, so the caller supplies
+        the bytes. The target is resolved from their digest against recorded
+        provenance, which is what makes ``document_id`` unnecessary in the
+        ordinary case: the bytes identify the document that was made from them.
+        ``document_id`` pins the target when that resolution is ambiguous (two
+        documents share a provenance hash) or unavailable (a record predating
+        the delivered/stored digest split, whose provenance hash describes the
+        stored copy rather than the delivered bytes).
+
+        Writes nothing when the retained copy already hashes to its recorded
+        digest: an unconditional rewrite would re-stamp the copy under a binding
+        that rewrites at rest, churning the recorded digest for no repair.
+
+        Where a write does happen, the copy is re-read afterwards and the
+        record's ``stored_content_hash`` follows it only where the store
+        demonstrably rewrote the bytes. That is narrower than "an actual write
+        happened": a store returning what it was handed licenses no update, so
+        bytes that are not this document's leave the recorded mismatch reported
+        rather than adopted. ``record_refreshed`` on the report says which
+        happened. It matters under a binding that
+        rewrites at rest, where writing the original bytes back produces a
+        stored copy that is correct but freshly stamped, and so hashes to
+        neither the delivered digest nor the previous stored one. The
+        provenance hash is never touched -- the bytes the document was made
+        from have not changed.
+        """
+        delivered = Path(source)
+        if not delivered.is_absolute():
+            raise RestoreSourceNotAbsoluteError(source)
+        if not delivered.is_file():
+            raise SourceFileNotFoundError(source)
+        data = delivered.read_bytes()
+        # Digested from the bytes already in hand rather than by re-reading the
+        # file: the write needs them anyway, so a streamed digest of the same
+        # path would be a second pass over the same content.
+        delivered_hash = canonicalize_sha256(hashlib.sha256(data).hexdigest())
+
+        doc, provenance_verified = await self._resolve_restore_target(delivered_hash, document_id)
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+        from sage.vault_source_binding import VaultRootEscapeError
+
+        store = resolve_stack_vault_source_store(get_stack_config())
+
+        expected = _expected_stored_hash(doc)
+        observed: str | None = None
+        if store.source_exists(self._vault_id, storage_root, doc.source_path):
+            observed = store.hash_source(self._vault_id, storage_root, doc.source_path)
+
+        if observed == expected:
+            return SourceFileRestoreReport(
+                vault_id=self._vault_id,
+                document_id=doc.id,
+                source_path=doc.source_path,
+                status="already_intact",
+                provenance_verified=provenance_verified,
+                record_refreshed=False,
+                expected_content_hash=expected,
+                observed_content_hash=observed,
+                stored_content_hash=observed,
+            )
+
+        try:
+            store.write_source(self._vault_id, storage_root, doc.source_path, data)
+        except VaultRootEscapeError as exc:
+            # The binding refuses a destination it cannot write at the named
+            # path. Translated here rather than left to propagate: it is a
+            # ``ValueError``, not a ``SAGEError``, so the HTTP surface would
+            # return a bare 500 with no error code against a spec that declares
+            # none. The binding's own message travels with it -- it has four
+            # distinct causes and only it knows which one fired.
+            raise VaultSourcePathRefusedError(doc.source_path, str(exc)) from exc
+        restored_hash = store.hash_source(self._vault_id, storage_root, doc.source_path)
+        record_refreshed = restored_hash != expected and restored_hash != delivered_hash
+        if record_refreshed:
+            # Refreshed only when the *store* changed the bytes -- the sole
+            # reason the recorded digest may legitimately move. A store that
+            # returns what it was handed yields ``restored_hash ==
+            # delivered_hash``; if that still differs from what the record
+            # expected, the delivered bytes were not this document's, and
+            # adopting their digest would take the integrity audit green over a
+            # copy that is now simply wrong. Leaving the record alone keeps the
+            # mismatch reported, which is the outcome to want: the operator sees
+            # the repair did not take rather than losing the evidence.
+            #
+            # The rule cannot separate restamped-*right* from restamped-*wrong*:
+            # once a store rewrites what it was handed, the resulting digest
+            # differs from both comparators either way. That residue is reachable
+            # only through an unverifiable pin, which is why the report carries
+            # ``provenance_verified`` rather than leaving the caller to assume a
+            # check that did not happen.
+            await self._graph_store.update_document(doc.id, {"stored_content_hash": restored_hash})
+
+        return SourceFileRestoreReport(
+            vault_id=self._vault_id,
+            document_id=doc.id,
+            source_path=doc.source_path,
+            status="restored",
+            provenance_verified=provenance_verified,
+            record_refreshed=record_refreshed,
+            expected_content_hash=expected,
+            observed_content_hash=observed,
+            stored_content_hash=restored_hash,
+        )
+
+    async def _resolve_restore_target(
+        self, delivered_hash: str, document_id: str | None
+    ) -> tuple[Document, bool]:
+        """The target document, and whether the delivered bytes were verified as its.
+
+        The second value is false only on the pre-split pin below, where nothing
+        on the record can confirm the delivered file is the right one. It travels
+        to the caller so a restore never reports more assurance than it had.
+
+        A pin is a primary-key read. Without one the search is enumerated rather
+        than looked up by hash: the hash lookup collapses several documents
+        sharing a provenance digest to one arbitrary row, and a restore silently
+        picking among them could overwrite an intact document's copy. Scanning is
+        affordable there -- this is an operator-invoked repair, and the audit
+        that sends callers to it already walks every document.
+
+        A pin says *which* copy to write over. It does not license writing
+        arbitrary bytes there, so the delivered digest is still checked against
+        the pinned document's provenance: without that, delivering the wrong file
+        under a pin overwrites the retained copy and the caller's own refresh
+        then re-describes the record to match, taking the integrity audit green
+        over a document whose stored bytes are now something else.
+
+        The check is skipped for a record carrying no stored digest. Such a
+        record predates the delivered/stored split, so its provenance hash
+        describes the stored copy and a caller re-delivering the original cannot
+        match it -- the case the pin exists to serve, and the only genuinely
+        unverifiable one. What keeps that exemption from laundering is the
+        caller's refresh rule, which moves the recorded digest only when the
+        store demonstrably rewrote the bytes.
+        """
+        if document_id is not None:
+            pinned = await self._graph_store.get_document(document_id)
+            if pinned is None:
+                raise DocumentNotFoundError(document_id)
+            if (
+                pinned.stored_content_hash is not None
+                and delivered_hash != pinned.source_content_hash
+            ):
+                raise RestoreProvenanceMismatchError(
+                    document_id, delivered_hash, pinned.source_content_hash
+                )
+            return pinned, pinned.stored_content_hash is not None
+
+        all_docs = await self._graph_store.list_all_documents()
+        matches = [d for d in all_docs if d.source_content_hash == delivered_hash]
+        if len(matches) != 1:
+            raise RestoreTargetUnresolvedError(delivered_hash, [d.id for d in matches])
+        return matches[0], True
 
     async def optimize_content_store(
         self,

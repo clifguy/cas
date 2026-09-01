@@ -316,11 +316,13 @@ recorded `stored_content_hash`.
 The rival this excludes — refreshing the as-stored digest unconditionally on the
 force branch — leaves the audit green while changing nothing else observable,
 so without this assertion it is invisible. Note what this test does *not* claim:
-a forced re-ingest does not repair the drift. Writing bytes back to a chosen
-path is not expressible through the port, and a forced re-ingest cannot stand in
-for it — the binding sees only that the bytes at its target differ from the ones
-offered, which is indistinguishable from a name collision, so it disambiguates
-rather than overwrites.
+a forced re-ingest does not repair the drift, and is not meant to. Repair is a
+separate operation the operator invokes on purpose (MPI-017); keeping it off the
+ingest path is deliberate, since an ingest that silently restored would erase
+the operator's evidence that something else wrote to the store. A forced
+re-ingest could not stand in for it in any case — retention sees only that the
+bytes at its target differ from the ones offered, which is indistinguishable
+from a name collision, so it disambiguates rather than overwrites.
 
 ## MPI-014: re-delivering a collision-disambiguated document leaves its copy intact
 
@@ -383,3 +385,30 @@ Mutating the guard away leaves no copy at the returned path and fails the final
 presence assertion. This is the third fall-through condition in
 `_retain_or_reuse`; the other two (no document with these bytes, and a stored
 copy whose digest differs) are covered by MPI-009 and MPI-014.
+
+## MPI-017: an explicit restore repairs a drifted copy under either binding
+
+**Artifact:** `sage/vault_source_binding.py` (`write_source` on both bindings),
+`sage/services/maintenance.py` (`restore_vault_source_file`)
+**Category:** mcp_tool, profile_invariance, integrity, repair
+
+**Precondition:** as MPI-012 — a document ingested, its retained copy then
+altered out of band, and the audit asserted red.
+
+**Input:** `restore_vault_source_file` with the original source file.
+
+**Expected:** `status: restored`, the same `source_path` as the record already
+held, and the audit clean afterwards. Provenance is unchanged on both legs. On
+the document-store leg the upload counter has moved and the record's
+`stored_content_hash` equals a fresh re-read of the stored copy; on the
+filesystem leg the bytes at the retained path equal the delivered file's.
+
+**Anti-coincidental-pass:** the drift is asserted real (audit red) before the
+restore, so the green verdict afterwards cannot come from an unaltered copy. The
+rival that leaves the audit equally green while repairing nothing — adopting the
+drifted digest as the expected state — is excluded by asserting the *bytes*
+rather than the verdict: the retained copy is re-read and required to hash to
+what the record now expects. The upload-counter assertion on the document-store
+leg keeps "restored" from being satisfied by a binding that stored nothing, and
+the `source_path` assertion distinguishes a write-in-place from the
+collision-disambiguated second copy `retain_source` would have produced.

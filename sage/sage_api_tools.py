@@ -29,6 +29,7 @@ from sage.api.errors import (
     MisplacedMetadataError,
     MissingDocumentIdentifierError,
     MissingIngestSourceError,
+    RestoreSourceNotAbsoluteError,
     SAGEError,
     translate_validation_error,
 )
@@ -288,6 +289,9 @@ def register_sage_tools(
           ``source_type``.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
+        - ``vault_source_path_refused`` (400): the vault-source store refused
+          the destination it would have retained the source at -- a symlink
+          sitting there, or a path resolving out of the vault's source tree.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied; they are mutually exclusive.
         - ``missing_ingest_source`` (400): neither ``source`` nor
@@ -2645,6 +2649,139 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    @mcp.tool(name="maint_restore_vault_source_file", annotations=WRITE_DESTRUCTIVE)
+    async def restore_vault_source_file(
+        vault_id: str,
+        source: str | None = None,
+        document_id: str | None = None,
+        transfer_token: str | None = None,
+    ) -> dict:
+        """Repair a document's retained source file by writing delivered bytes back over it.
+
+        The repair counterpart of ``maint_verify_vault_source_files``. That
+        audit reports a retained copy that changed outside SAGE but cannot fix
+        one, and re-ingesting cannot stand in: retention sees only that the
+        offered bytes differ from what sits at its target -- indistinguishable
+        from a name collision -- so it homes the document at a second path and
+        leaves the damaged copy in place. This writes to the path the document
+        record already names, so the document does not move.
+
+        SAGE keeps no pristine second copy of a source, so ``source`` supplies
+        the bytes. The target document is resolved from their digest against
+        recorded provenance: the bytes identify the document that was made from
+        them, which is why ``document_id`` is normally unnecessary. Supply
+        ``document_id`` when that resolution is ambiguous (several documents
+        share a provenance digest) or unavailable (a document ingested before
+        delivered and stored digests were recorded separately, whose provenance
+        digest describes the stored copy rather than the delivered bytes).
+
+        Writes nothing when the retained copy already hashes to its recorded
+        digest, returning ``status: already_intact``. Where a write does happen
+        the copy is re-read, and the record's ``stored_content_hash`` follows it
+        only where the store demonstrably rewrote the bytes -- which is what
+        happens under a store that rewrites its copy at rest, where writing the
+        original bytes back yields a correct but freshly rewritten copy. The
+        provenance digest is never touched.
+
+        Two report fields say what the call could and did not establish.
+        ``provenance_verified`` is false only for a pinned restore of a document
+        carrying no stored digest, whose recorded provenance describes its
+        stored copy rather than the delivered bytes, so nothing on the record
+        can confirm the file handed over. ``record_refreshed`` is false where
+        the recorded digest was deliberately left alone -- so a call can report
+        ``status: restored`` with the record still describing a different copy,
+        and the mismatch still reported by the audit.
+
+        Nothing else repairs the copy: this is deliberately not something an
+        ingest does, because an ingest that silently repaired would erase the
+        operator's only evidence that something other than SAGE wrote to the
+        store.
+
+        Two-phase when the server cannot read the caller's filesystem: an
+        absolute ``source`` returns an upload recipe (``status:
+        upload_required``), the caller's environment delivers the bytes, and the
+        call is repeated with the returned ``transfer_token``.
+
+        A pin says which copy to write over; it does not license writing
+        arbitrary bytes there. The delivered digest is checked against the
+        pinned document's provenance, so delivering the wrong file under a pin
+        is refused rather than overwriting the copy and re-describing the record
+        to match.
+
+        Error modes:
+        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``restore_target_unresolved`` (404): no document, or more than one,
+          claims the delivered bytes; ``detail.candidate_ids`` names them.
+        - ``document_not_found`` (404): the supplied document_id names no document.
+        - ``source_file_not_found`` (404): no readable file at ``source``.
+        - ``restore_provenance_mismatch`` (400): the pinned document was not
+          ingested from the delivered bytes.
+        - ``restore_source_not_absolute`` (400): ``source`` is not an absolute path.
+        - ``ambiguous_ingest_source`` (400): both ``source`` and
+          ``transfer_token`` were supplied.
+        - ``missing_ingest_source`` (400): neither was supplied.
+        - ``vault_source_path_refused`` (400): the document's recorded source_path
+          cannot be written at the path it names.
+
+        Args:
+            vault_id: Target vault identifier.
+            source: Absolute path to a file holding the originally-ingested
+                bytes. Exactly one of ``source`` or ``transfer_token``.
+            document_id: Optional pin naming the document to restore.
+            transfer_token: Completion handle from a prior ``upload_required``
+                recipe; supply instead of ``source``.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            v = get_vault(vault_id)
+            if v.maintenance_service is None:
+                raise RuntimeError(
+                    f"Vault {vault_id!r} was initialized without a "
+                    "registry_service; maintenance_service is unavailable."
+                )
+            # Exactly one of the two delivery shapes, matching
+            # ``ingest_document``'s contract verbatim: a caller generalizing
+            # that tool's completion shape must not find this one narrower, and
+            # supplying both must not silently resolve to one of them.
+            if source is not None and transfer_token is not None:
+                raise AmbiguousIngestSourceError()
+            if source is None and transfer_token is None:
+                raise MissingIngestSourceError()
+
+            if transfer_token is not None:
+                entry = get_transfer_store().consume_upload(transfer_token, vault_id)
+                try:
+                    report = await v.maintenance_service.restore_vault_source_file(
+                        source=str(entry.staged_path), document_id=document_id
+                    )
+                finally:
+                    entry.cleanup()
+                return serialize(report)
+
+            # Absoluteness is settled before the delivery gate, not after, so
+            # both profiles refuse a relative path the same way. Unlike an
+            # ingest, a non-absolute path has no fallback meaning here -- there
+            # is no vault-relative reading of "the bytes to restore" -- and
+            # deciding it below the gate would mint an upload recipe for a path
+            # the caller's environment cannot resolve either.
+            if not Path(source).is_absolute():
+                raise RestoreSourceNotAbsoluteError(source)
+
+            # Same caller-local gate the ingest tool applies: the path names a
+            # file on the *caller's* machine, readable by the server only when
+            # co-located.
+            if not sage.mcp_init.caller_local_filesystem_reachable():
+                return serialize(mint_upload_recipe(vault_id, [source]))
+
+            report = await v.maintenance_service.restore_vault_source_file(
+                source=source, document_id=document_id
+            )
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     @mcp.tool(name="maint_recompute_deferred_vault_abstracts", annotations=WRITE_ADDITIVE)
     async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
@@ -2902,6 +3039,7 @@ def register_sage_tools(
         "maint_migrate_vault": migrate_vault,
         "maint_verify_vault_drift": verify_vault_drift,
         "maint_verify_vault_source_files": verify_vault_source_files,
+        "maint_restore_vault_source_file": restore_vault_source_file,
         "maint_recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
         "maint_optimize_vault_content_store": optimize_vault_content_store,
         "maint_reload_vault": reload_vault,

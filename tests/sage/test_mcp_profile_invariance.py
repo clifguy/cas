@@ -1,4 +1,4 @@
-"""MCP profile-invariance tests (MPI-001 through MPI-016).
+"""MCP profile-invariance tests (MPI-001 through MPI-017).
 
 Prove the MCP document import/export byte channel behaves identically
 whether the vault's source store is bound to the local filesystem or to a
@@ -390,6 +390,24 @@ async def _audit(services, config):
     ).verify_vault_source_files(check_hashes=True)
 
 
+async def _restore(services, config, source: str):
+    """Run the real source-file restore over this vault.
+
+    Built the same way as :func:`_audit`, and for the same reason: the
+    profile-invariance vault carries no maintenance service of its own, and
+    exercising the production repair is the point.
+    """
+    from sage.services.maintenance import MaintenanceService
+
+    return await MaintenanceService(
+        vault_id=config.vault.id,
+        graph_store=services.graph_store,
+        config=config,
+        registry_service=None,
+        content_store=StubContentStore(),
+    ).restore_vault_source_file(source=source)
+
+
 def _alter_retained_copy(config, handle, retained_path: str) -> bytes:
     """Alter a retained copy out of band and return what it held before.
 
@@ -463,11 +481,14 @@ async def test_mpi_013_forced_redelivery_does_not_launder_a_drifted_copy(mpi_vau
     so a reuse leaves the recorded digest describing the copy that was last
     written and the mismatch stays visible.
 
-    Restoring a drifted copy in place is a capability this seam does not offer:
-    writing bytes back to a chosen path is not expressible through the port, and
-    a forced re-ingest cannot stand in for it -- the binding sees only that the
-    bytes at its target differ from the ones offered, which is indistinguishable
-    from a name collision, so it would disambiguate rather than overwrite.
+    Repairing the drift is a separate operation the operator invokes on purpose
+    (``maint_restore_vault_source_file``, MPI-017), not something any ingest
+    does. A forced re-ingest still cannot stand in for it: retention sees only
+    that the bytes at its target differ from the ones offered, which is
+    indistinguishable from a name collision, so it disambiguates rather than
+    overwrites. Keeping repair off the ingest path is deliberate -- an ingest
+    that silently restored would erase the operator's evidence that something
+    other than SAGE wrote to the store, for every caller who never asked.
 
     Anti-coincidental-pass: the audit is run and asserted *red*, which is the
     whole claim; and the drift is asserted to have taken effect first, so the
@@ -495,6 +516,68 @@ async def test_mpi_013_forced_redelivery_does_not_launder_a_drifted_copy(mpi_vau
     )
     entry = report.entries[0]
     assert entry.expected_content_hash == second["stored_content_hash"]
+
+
+@requires_docx
+async def test_mpi_017_restore_repairs_a_drifted_copy_under_either_binding(mpi_vault, tmp_path):
+    """MPI-017: the explicit restore repairs a copy that drifted out of band,
+    identically over the filesystem and the document store.
+
+    The repair a re-delivery deliberately withholds (MPI-012, MPI-013). It is
+    expressed entirely through the vault-source port's ``write_source``, so the
+    same call works under a binding with a local tree and one addressing bytes
+    by vault id over a network.
+
+    The document-store leg additionally exercises the case that motivates
+    refreshing the as-stored digest: that store rewrites Office packages at
+    rest, so writing the original bytes back produces a copy that is correct but
+    freshly rewritten, hashing to neither the delivered digest nor the previous
+    stored one. The record follows the copy it now holds, licensed by the write
+    having actually happened -- while provenance, which describes bytes that did
+    not change, is asserted untouched on both legs.
+
+    Anti-coincidental-pass: the drift is asserted real before the restore (via
+    the audit, red), so the green verdict afterwards cannot come from an
+    unaltered copy. The rival that leaves the audit equally green while
+    repairing nothing -- adopting the drifted digest as the expected state -- is
+    excluded by asserting the *bytes*: the retained copy is re-read and required
+    to hash to what the record now expects. On the document-store leg the upload
+    counter is asserted to have moved, so "restored" cannot be satisfied by a
+    binding that stored nothing at all.
+    """
+    services, config, handle = mpi_vault
+    src = _write_office_file(tmp_path, "probe_alpha.docx", "Alpha")
+    first = _parse(await ingest_document(_VAULT_ID, str(src), "docx"))
+    assert "error" not in first, first
+    retained_path = first["source_path"]
+    provenance_before = first["source_content_hash"]
+
+    _alter_retained_copy(config, handle, retained_path)
+    before = await _audit(services, config)
+    assert before.summary["hash_mismatch"] == 1, "the drift must be real before the repair"
+    uploads_before = handle.fake_client.source_uploads if handle.fake_client else None
+
+    report = await _restore(services, config, str(src))
+
+    assert report.status == "restored"
+    assert report.source_path == retained_path, "a restore must not re-home the document"
+
+    after = await _audit(services, config)
+    assert after.summary["hash_mismatch"] == 0
+
+    doc = await services.graph_store.get_document(first["id"])
+    assert doc.source_content_hash == provenance_before, (
+        "the bytes the document was made from did not change, so provenance must not"
+    )
+    if handle.fake_client is not None:
+        assert handle.fake_client.source_uploads > uploads_before, (
+            "the document-store leg must actually have written the bytes back"
+        )
+        assert doc.stored_content_hash == handle.fake_client.hash_source_bytes(
+            _VAULT_ID, retained_path
+        ), "a store that rewrites at rest leaves a fresh stored digest the record must follow"
+    else:
+        assert (Path(config.vault.storage_root) / retained_path).read_bytes() == src.read_bytes()
 
 
 @requires_docx

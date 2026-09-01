@@ -43,6 +43,7 @@ class FakeGraphClient:
         self.source_uploads = 0
         self.source_reads = 0
         self.source_stats = 0
+        self.source_hashes = 0
         self.source_streams: list[tuple[str, str]] = []
         # Count of uploads the store rewrote on the way in (see
         # STAMPED_SUFFIXES), so a test can prove the divergence it asserts
@@ -126,6 +127,10 @@ class FakeGraphClient:
         return buffer.getvalue()
 
     def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
+        # Counted like every other source-byte operation: a caller that swaps a
+        # whole-file read for a streamed digest is only proved to have done so by
+        # a test that can see this call happen while source_reads stays at zero.
+        self.source_hashes += 1
         return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()
 
     def stream_source_bytes(self, vault_id: str, source_path: str) -> Iterator[bytes]:

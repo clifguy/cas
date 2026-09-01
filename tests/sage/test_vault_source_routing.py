@@ -18,12 +18,17 @@ from pathlib import Path
 
 import pytest
 
-from sage.api.errors import ContentFileMissingError, SourceFileNotFoundError
+from sage.api.errors import (
+    ContentFileMissingError,
+    ForceReingestPathMismatchError,
+    SourceFileNotFoundError,
+    VaultSourcePathRefusedError,
+)
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.documents import DocumentsService
 from sage.services.maintenance import MaintenanceService
-from sage.vault_source_binding import FilesystemVaultSourceStore
+from sage.vault_source_binding import FilesystemVaultSourceStore, hash_file
 
 _UNUSED_ROOT = Path("/unused/vault_root")
 
@@ -55,7 +60,7 @@ async def _ingest_internal(ingestion_service, tmp_vault_dir, rel: str, body: str
 class _SentinelRetainStore(FilesystemVaultSourceStore):
     SENTINEL = "imports/SENTINEL.md"
 
-    def retain_source(self, vault_id, storage_root, source_path):
+    def retain_source(self, vault_id, storage_root, source_path, delivered_hash=None):
         # Materialize the retained file so the post-retain projection can read
         # it, but return a sentinel relative path the real binding never would.
         dest = storage_root / "imports" / "SENTINEL.md"
@@ -80,6 +85,165 @@ async def test_vsbb_013_ingest_uses_port_retain(
     )
 
     assert result.document.source_path == _SentinelRetainStore.SENTINEL
+
+
+# --------------------------------------------------------------------------- #
+# VSBB-030 / VSBB-031: one digest of the delivered file per ingest
+# --------------------------------------------------------------------------- #
+
+
+def _count_hashed_paths(monkeypatch) -> list[Path]:
+    """Record every path ``hash_file`` is asked to digest during an ingest.
+
+    Per-path rather than a bare call count: an ingest legitimately hashes more
+    than one file (a name collision also digests the copy already retained), and
+    the claim under test is about the *delivered* file specifically.
+    """
+    import sage.vault_source_binding as binding
+
+    real = binding.hash_file
+    seen: list[Path] = []
+
+    def counting(path: Path) -> str:
+        seen.append(Path(path))
+        return real(path)
+
+    monkeypatch.setattr(binding, "hash_file", counting)
+    return seen
+
+
+def _count_whole_file_reads(monkeypatch) -> list[Path]:
+    """Record every path loaded whole into memory via ``Path.read_bytes``.
+
+    Distinct from :func:`_count_hashed_paths`, and not redundant with it. A
+    digest taken through ``hash_file`` streams; one taken by hashing
+    ``read_bytes()`` output does not, and does not pass through ``hash_file``
+    either -- so an implementation that recomputes the delivered digest inline
+    is invisible to the ``hash_file`` counter while still paying the whole-file
+    read the threaded digest exists to remove. ``shutil.copy2`` does not route
+    through ``read_bytes``, so the retain's own copy is not counted.
+    """
+    real = Path.read_bytes
+    seen: list[Path] = []
+
+    def counting(self: Path) -> bytes:
+        seen.append(Path(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    return seen
+
+
+async def test_vsbb_030_ingest_digests_the_delivered_file_once(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """An external ingest takes exactly one digest of the caller's file.
+
+    The service must hash before retaining -- content identity decides whether
+    these bytes are already known -- so the digest it already holds is threaded
+    into ``retain_source`` instead of being taken again there.
+
+    A **regression guard, not a discriminator**, and labelled as one because the
+    difference matters: on the uncontested filesystem path there was never a
+    second digest to remove, so this test passes against the implementation both
+    before and after the change (verified by probe). What it pins is that the
+    property stays true as retention grows. The tests that actually fail when the
+    threaded digest is ignored are VSBB-031 (the collision branch, the one place
+    the filesystem binding did re-hash) and VSB-DS-067 (the document-store
+    binding, which re-hashed unconditionally).
+
+    The count is asserted ``== 1`` rather than ``<= 1`` so an implementation that
+    bypassed ``hash_file`` entirely fails too, and the recorded provenance digest
+    is asserted so the single call is confirmed to be the one whose value the
+    document carries.
+    """
+    seen = _count_hashed_paths(monkeypatch)
+    external = tmp_path / "external.md"
+    external.write_text("# External\n\nBody.")
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+    )
+
+    assert seen.count(external.resolve()) == 1
+    assert result.document.source_content_hash == hash_file(external)
+
+
+async def test_vsbb_031_collision_retain_still_digests_the_delivered_file_once(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """The name-collision branch of retention consumes the threaded digest rather
+    than taking its own of the delivered file.
+
+    Anti-coincidental-pass: this is the branch that actually re-hashed before the
+    change, so it is the one that discriminates. The retained path is asserted to
+    carry the disambiguation suffix, which proves the collision branch ran at all
+    -- without it, a count of 1 would be satisfied by an ingest that never
+    reached the branch. The copy already sitting at the target *is* expected to
+    be hashed (it is a different file, and the comparison needs its digest), so
+    the digest assertion is on the delivered path alone.
+
+    The whole-file-read assertion closes a rival the digest counter alone cannot
+    see: an implementation that consumes the threaded digest for the
+    disambiguation *suffix* but recomputes one inline for the *comparison*. It
+    produces the right suffix and never calls ``hash_file`` a second time, so it
+    passes every other assertion here and in VSBB-029 -- while still loading the
+    delivered file whole into memory, which is the cost the threading exists to
+    remove.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    squatter = storage_root / "imports" / "external.md"
+    squatter.parent.mkdir(parents=True, exist_ok=True)
+    squatter.write_text("# Someone else's external.md\n")
+
+    seen = _count_hashed_paths(monkeypatch)
+    reads = _count_whole_file_reads(monkeypatch)
+    external = tmp_path / "external.md"
+    external.write_text("# External\n\nBody.")
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+    )
+
+    assert result.document.source_path.startswith("imports/external_")
+    assert seen.count(external.resolve()) == 1
+    assert squatter.resolve() in seen
+    assert external.resolve() not in reads, (
+        "the delivered file must never be loaded whole to take a digest the caller already computed"
+    )
+
+
+async def test_vsbb_041_ingest_surfaces_a_refused_write_path_as_a_typed_error(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A destination the binding refuses surfaces as a typed API error on the
+    ingest path, not as a bare ``ValueError``.
+
+    Anti-coincidental-pass: the assertion is on the exception *class*, because
+    that is the whole claim. The binding raises its own ``ValueError`` subclass —
+    it sits below the API layer and may not import it — and an untranslated
+    refusal reaches an MCP caller as a generic internal error and an HTTP caller
+    as a bare 500, neither of which the spec declares. ``pytest.raises(Exception)``
+    would pass against exactly the defect this guards.
+
+    The restore path was given this translation in an earlier pass; the guards
+    that made retention able to refuse then created the same exposure on the far
+    more reachable ingest path.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+    (storage_root / "imports" / "refused.md").symlink_to(tmp_path / "nowhere.md")
+
+    external = tmp_path / "refused.md"
+    external.write_text("# body\n")
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.code == "vault_source_path_refused"
 
 
 # --------------------------------------------------------------------------- #
@@ -269,7 +433,7 @@ class _SentinelProjectStore(FilesystemVaultSourceStore):
     SENTINEL_BYTES = b"# PROJECT-SENTINEL\n\nRouted through the port.\n"
     RETAINED = "imports/sentinel.md"
 
-    def retain_source(self, vault_id, storage_root, source_path):
+    def retain_source(self, vault_id, storage_root, source_path, delivered_hash=None):
         return self.RETAINED
 
     def source_exists(self, vault_id, storage_root, source_path):
@@ -380,8 +544,83 @@ class _BackendOnlyStore(FilesystemVaultSourceStore):
     def read_source(self, vault_id, storage_root, source_path):
         return self.SENTINEL_BYTES
 
-    def retain_source(self, vault_id, storage_root, source_path):
+    def retain_source(self, vault_id, storage_root, source_path, delivered_hash=None):
         raise AssertionError("retain_source must not run for an already-retained relative source")
+
+
+async def test_vsbb_042_backend_resident_source_path_is_normalized(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """The one branch that records the caller's relative string stores a plain
+    path, and refuses one that walks out of the tree.
+
+    This is the only ingest branch that does not derive its recorded
+    ``source_path`` from a resolved location, so a `.` or `..` segment reaches
+    the record verbatim. The two sides then disagree: existence, hashing, and
+    the integrity audit all resolve such a path happily, while the write-time
+    guard refuses it -- leaving a record naming a location its own bytes could
+    never be restored to.
+
+    Anti-coincidental-pass: both halves are asserted, because either alone is
+    satisfiable by the wrong implementation. Normalizing without refusing lets
+    ``imports/../../escape.md`` through as ``../escape.md``; refusing without
+    normalizing leaves ``./imports/x.md`` on the record. The accepted case
+    asserts the *stored* value rather than merely that the call succeeded, so an
+    implementation that validated and then recorded the raw string still fails.
+    """
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="./imports/resident.md", source_type=SourceType.MARKDOWN)
+    )
+    assert result.document.source_path == "imports/resident.md"
+
+    with pytest.raises(VaultSourcePathRefusedError):
+        await ingestion_service.ingest(
+            IngestRequest(source="imports/../../escape.md", source_type=SourceType.MARKDOWN)
+        )
+
+
+async def test_vsbb_044_legacy_dotted_record_is_found_not_duplicated(
+    ingestion_service, graph_store, tmp_vault_dir, monkeypatch
+):
+    """A record whose stored source_path predates normalization is still found,
+    so re-projecting it fails loudly instead of landing a second document.
+
+    Normalizing the recorded path made it diverge from what pre-normalization
+    records hold, and the provenance lookup runs on the normalized form. Looking
+    up only that spelling misses such a record, and a miss here raises nothing:
+    provenance falls back to the stored digest, the re-projection acquires a
+    different identity from the document it is re-projecting, and duplicate
+    detection lands a *second* document on the same stored file.
+
+    Anti-coincidental-pass: the assertion is the document count together with the
+    error type, because the defective path succeeds. A `pytest.raises` alone
+    would pass against neither implementation cleanly and a success assertion
+    would pass against the defect, which silently returns a new document. The
+    raised error is the cross-document path-mismatch guard doing its job on a
+    record whose stored path genuinely no longer matches the computed one --
+    which is as far as a lookup fix can get. Making such a record
+    *re-projectable* needs the stored paths normalized once, which is tracked
+    separately.
+    """
+    first = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "imports/legacy.md", "# Legacy\n\nBody."
+    )
+    # The pre-normalization spelling of the record's own path.
+    await graph_store.update_document(first.id, {"source_path": "./imports/legacy.md"})
+    (tmp_vault_dir / "sources" / "imports" / "legacy.md").unlink()
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    with pytest.raises(ForceReingestPathMismatchError):
+        await ingestion_service.ingest(
+            IngestRequest(source="./imports/legacy.md", source_type=SourceType.MARKDOWN, force=True)
+        )
+
+    assert len(await graph_store.list_all_documents()) == 1, (
+        "a missed provenance lookup inserts a second document on the same stored "
+        "file, which is the outcome the raw-string fallback exists to prevent"
+    )
 
 
 class _AbsentBackendStore(FilesystemVaultSourceStore):

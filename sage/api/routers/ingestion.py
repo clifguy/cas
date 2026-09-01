@@ -33,6 +33,8 @@ router = APIRouter(tags=["Ingestion"])
             "description": (
                 "`adapter_not_found`: no source adapter is registered for "
                 "`source_type`.\n\n"
+                "`vault_source_path_refused`: the vault-source store refused "
+                "the destination it would have retained the source at.\n\n"
                 "`expected_head_version_requires_predecessor`: "
                 "`expected_head_version` was supplied without "
                 "`predecessor_id`. The token is bound to the chain head "

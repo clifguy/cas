@@ -40,15 +40,18 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.config import SageCoreConfig, VaultConfig
+from sage.mcp_init import initialize_services
 from sage.mcp_server import (
     bulk_ingest_document,
     get_document,
     ingest_document,
     list_directory,
     read_projection,
+    restore_vault_source_file,
 )
 from sage.profiles import caller_local_filesystem_available
 from sage.services.transfer import get_transfer_store, reset_transfer_store
+from sage.services.vault_registry import VaultRegistryService
 from tests.sage.conftest import initialize_services_for_test
 
 _VAULT_ID = "test_vault"
@@ -106,6 +109,10 @@ async def confined_vault(minimal_vault_config_dict, vault_source_backend):
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
+        # Wired so the maintenance surface is reachable: the source-file restore
+        # reads bytes from the caller's filesystem like an ingest does, so it is
+        # subject to the same confinement gate and belongs in this suite.
+        registry_service=VaultRegistryService(_mcp._vaults, initialize_services),
     ) as services:
         _mcp._vaults[_VAULT_ID] = services
         try:
@@ -487,3 +494,78 @@ async def test_l_local_profile_allows_path_forms(confined_vault, tmp_path):
     assert "status" not in ingest or ingest.get("status") != "upload_required"
     assert ingest["source_path"] == "imports/local_ok.md"
     assert set(listing) == {"files", "warnings", "truncated"}, listing
+
+
+async def test_b7_restore_source_file_recipe_and_completion(confined_vault, tmp_path):
+    """B7: the source-file restore carries the same two-phase caller-local
+    contract as ingest -- an absolute source under the cloud profile mints a
+    recipe, and the recipe's token completes the repair.
+
+    Without this, the restore tool's claim to apply "the same caller-local gate
+    the ingest tool applies" rested on a comment. The tool is the only write
+    surface besides ingest that reads bytes from the caller's filesystem, so a
+    gate that silently did not fire here would read the operator's server-side
+    filesystem instead.
+
+    Anti-coincidental-pass: the drift is real before the completion leg and the
+    retained bytes are asserted afterwards, so a completion that staged nothing
+    (or restored the wrong file) fails on content rather than on status. The
+    recipe leg asserts no repair happened, so a gate that minted a recipe *and*
+    wrote would fail too.
+    """
+    _services, config, handle = confined_vault
+    body = b"# B7\n\nThe original bytes.\n"
+    src = tmp_path / "caller_inbox" / "b7_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("local"):
+        ingested = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+    assert "error" not in ingested, ingested
+    retained_path = ingested["source_path"]
+
+    drifted = b"something else wrote here"
+    handle.write_retained_bytes(config.vault.storage_root, retained_path, drifted)
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(await restore_vault_source_file(_VAULT_ID, source=str(src)))
+
+        assert recipe["status"] == "upload_required"
+        assert recipe["uploads"][0]["source"] == str(src)
+        assert handle.retained_bytes(config.vault.storage_root, retained_path) == drifted, (
+            "minting a recipe must not itself repair anything"
+        )
+
+        token = recipe["uploads"][0]["token"]
+        _stage_upload(token, body)
+        result = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+
+    assert "error" not in result, result
+    assert result["status"] == "restored"
+    assert result["source_path"] == retained_path
+    assert handle.retained_bytes(config.vault.storage_root, retained_path) == body
+
+
+async def test_b7b_restore_source_file_exactly_one_delivery_shape(confined_vault, tmp_path):
+    """B7b: the restore takes exactly one of ``source`` or ``transfer_token``,
+    matching ingest's contract rather than silently preferring one.
+
+    A caller generalizing ingest's completion shape must not find this tool
+    narrower, and supplying both must not resolve to whichever the
+    implementation happens to check first.
+    """
+    _services, _config, _handle = confined_vault
+    src = tmp_path / "caller_inbox" / "b7b_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# B7b\n")
+
+    with _profile("local"):
+        both = _parse(
+            await restore_vault_source_file(_VAULT_ID, source=str(src), transfer_token="whatever")
+        )
+        neither = _parse(await restore_vault_source_file(_VAULT_ID))
+        relative = _parse(await restore_vault_source_file(_VAULT_ID, source="relative/x.md"))
+
+    assert both["error"] == "ambiguous_ingest_source", both
+    assert neither["error"] == "missing_ingest_source", neither
+    assert relative["error"] == "restore_source_not_absolute", relative

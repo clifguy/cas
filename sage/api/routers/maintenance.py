@@ -24,6 +24,8 @@ from sage.models.schemas import (
     ReabstractRequest,
     SourceFileIntegrityReport,
     SourceFileIntegrityRequest,
+    SourceFileRestoreReport,
+    SourceFileRestoreRequest,
     VaultIdStr,
 )
 from sage.services.maintenance import MaintenanceService, ReabstractEvent
@@ -169,3 +171,37 @@ async def maint_verify_vault_source_files(
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> SourceFileIntegrityReport:
     return await service.verify_vault_source_files(check_hashes=body.check_hashes)
+
+
+@router.post(
+    "/admin/restore-source-file",
+    response_model=SourceFileRestoreReport,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`restore_provenance_mismatch`: the pinned document was not "
+                "ingested from the delivered bytes. "
+                "`restore_source_not_absolute`: the source path is not absolute. "
+                "`vault_source_path_refused`: the document's source_path cannot be "
+                "written at the path it names."
+            ),
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_not_found`: no vault registered with that id. "
+                "`restore_target_unresolved`: no single document claims the "
+                "delivered bytes as its provenance. "
+                "`document_not_found`: the supplied document_id names no document. "
+                "`source_file_not_found`: the delivered source path does not exist."
+            ),
+        },
+    },
+)
+async def maint_restore_vault_source_file(
+    body: SourceFileRestoreRequest,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: MaintenanceService = Depends(get_maintenance_service),
+) -> SourceFileRestoreReport:
+    return await service.restore_vault_source_file(source=body.source, document_id=body.document_id)

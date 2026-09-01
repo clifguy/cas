@@ -41,7 +41,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol, runtime_checkable
 
 from sage.config import (
@@ -72,12 +72,14 @@ _VALID_BACKENDS = ("filesystem", "document_store")
 
 
 class VaultRootEscapeError(ValueError):
-    """A filesystem teardown target resolved outside the process-bound vault root.
+    """A filesystem target resolved outside the root it was required to stay under.
 
-    Raised by :func:`resolve_and_assert_within_root` when a path a destructive
-    operation is about to remove does not realpath-resolve to a strict descendant
-    of the bound vault root. A ``ValueError`` subclass so an existing
-    ``except ValueError`` handler routes it like any other shape failure.
+    Raised by :func:`resolve_and_assert_within_root` when a path a destructive or
+    overwriting operation is about to act on does not realpath-resolve to a
+    strict descendant of the root it was checked against -- the bound vault root
+    for a teardown, the vault's source root for a caller-named write. A
+    ``ValueError`` subclass so an existing ``except ValueError`` handler routes
+    it like any other shape failure.
     """
 
 
@@ -88,10 +90,14 @@ def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
     ``storage_root`` / ``brain_root`` / config path come from its
     (operator- or typo-authorable) configuration, so before any recursive delete
     each is resolved through symlinks and asserted to live *strictly under* the
-    bound vault root (CAS-ADR-043's ``get_vault_root``). A path that resolves
-    outside the root -- or to the root itself, since removing the root would
-    destroy every vault -- raises :class:`VaultRootEscapeError` and nothing is
-    deleted. Returns the resolved path on success so the caller removes the
+    root it is checked against -- the bound vault root for a teardown
+    (CAS-ADR-043's ``get_vault_root``), the vault's source root for a retained
+    copy. A path that resolves outside that root -- or to the root itself, since
+    removing it would destroy everything beneath -- raises
+    :class:`VaultRootEscapeError` and nothing is written or deleted. The message
+    names the root that was checked, because it reaches callers verbatim through
+    the API layer's translation and a fixed one would misdescribe every use but
+    the first. Returns the resolved path on success so the caller removes the
     canonical (symlink-free) target. ``path`` need not exist: an already-absent
     target still resolves, keeping the teardown idempotent.
     """
@@ -100,7 +106,7 @@ def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
     if resolved == root or root not in resolved.parents:
         raise VaultRootEscapeError(
             f"refusing to operate on {path} (resolved {resolved}): it is not a "
-            f"strict descendant of the bound vault root {root}."
+            f"strict descendant of {root}."
         )
     return resolved
 
@@ -119,6 +125,69 @@ def hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _assert_plain_vault_relative(source_path: str) -> None:
+    """Require ``source_path`` to be a plain relative path inside the vault.
+
+    The shape check every binding owes :meth:`VaultSourceStore.write_source`,
+    which takes its destination from the caller rather than deriving one. An
+    absolute path names somewhere outside the vault's tree outright; a ``..``
+    component walks out of it. Neither is expressible as a retained source's
+    path, so both are refused before any binding-specific handling.
+
+    Shared rather than left to each binding because only one of them has a local
+    tree to resolve against: the document-store binding addresses sources by
+    vault id and would otherwise hand the segments to a URL builder that joins
+    them verbatim, giving the port's containment promise no implementation at
+    all on that side.
+    """
+    candidate = PurePosixPath(source_path)
+    if candidate.is_absolute() or Path(source_path).is_absolute():
+        raise VaultRootEscapeError(
+            f"refusing to write {source_path!r}: a retained source's path is "
+            f"vault-relative, and this one is absolute."
+        )
+    if ".." in candidate.parts:
+        raise VaultRootEscapeError(
+            f"refusing to write {source_path!r}: the path walks out of the vault's source tree."
+        )
+
+
+def _assert_not_symlinked(dest: Path) -> None:
+    """Refuse a destination that is a symlink rather than writing through it.
+
+    Every write the filesystem binding performs lands at a path it chose or was
+    handed, and in both cases a link sitting there redirects the bytes somewhere
+    the binding did not intend: to a second document's retained copy when the
+    target is inside the tree, or -- for a *dangling* link, which reports as
+    absent so no collision handling engages -- to a file created wherever the
+    link points, outside the vault entirely, while the returned vault-relative
+    path claims the bytes are inside it.
+
+    Realpath containment does not cover this on its own. A link into the tree
+    resolves within the root and passes; a dangling one has nothing to resolve
+    against yet. Shared by both write paths so the two cannot drift apart: the
+    hazard is a property of writing at a filesystem path, not of either method's
+    particular reason for choosing one.
+    """
+    if dest.is_symlink():
+        raise VaultRootEscapeError(
+            f"refusing to write {dest}: the destination is a symlink, so the write "
+            f"would land on its target rather than at the path named."
+        )
+
+
+def _disambiguation_token(canonical_hash: str) -> str:
+    """The 8-hex token that names a content-disambiguated retained copy.
+
+    The one normalization boundary between the two spellings a digest travels
+    in: callers hold the canonical ``sha256:<hex>`` form :func:`hash_file`
+    produces, while the collision-suffix naming rule
+    (``imports/<stem>_<token><ext>``) predates it and is bare truncated hex.
+    Both bindings derive the suffix here so the rule cannot drift between them.
+    """
+    return canonical_hash.removeprefix("sha256:")[:8]
 
 
 @dataclass(frozen=True)
@@ -209,7 +278,13 @@ class VaultSourceStore(ABC):
         """
 
     @abstractmethod
-    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+    def retain_source(
+        self,
+        vault_id: str,
+        storage_root: Path,
+        source_path: Path,
+        delivered_hash: str | None = None,
+    ) -> str:
         """Retain an ingest source on the store; return its vault-relative path.
 
         A source already inside the store is retained in place and its
@@ -218,6 +293,42 @@ class VaultSourceStore(ABC):
         identical-content copy is reused, and differing content is disambiguated
         with a content-hash suffix. UI-layer invisibility markers are stripped
         from the retained copy (CAS-ADR-016).
+
+        ``delivered_hash`` is the canonical ``sha256:<hex>`` digest of
+        ``source_path``'s bytes, when the caller already holds one. A caller
+        that must hash before retaining -- an ingest resolves content identity
+        first, so it always does -- passes it here rather than leaving the
+        binding to take a second digest of the same file. The value is
+        *trusted*: it decides both the identical-content reuse and the
+        disambiguation suffix, so a caller supplying a digest that does not
+        describe these bytes gets a copy homed under the wrong name. Optional,
+        and defaulting to computing it, so the port stays satisfiable by its
+        weakest binding and no caller is obliged to hash first.
+        """
+
+    @abstractmethod
+    def write_source(
+        self, vault_id: str, storage_root: Path, source_path: str, data: bytes
+    ) -> None:
+        """Write ``data`` to the vault-relative path the *caller* named.
+
+        The complement of :meth:`retain_source`, and deliberately not a mode of
+        it. ``retain_source`` answers "find a home for this source" and owns the
+        placement decision, so bytes that differ from what already sits at its
+        target read as a name collision and are disambiguated to a second path.
+        This method answers "put these bytes here": create-or-replace at exactly
+        the given path, no naming rule, no collision handling, no
+        disambiguation.
+
+        The operation behind repairing a retained copy that changed outside
+        SAGE. Such a copy is detected by the source-file integrity audit but
+        cannot be repaired by re-delivering the source, precisely because
+        ``retain_source`` would read the difference as a collision and move the
+        document rather than restore it (CAS-ADR-043).
+
+        Overwrites unconditionally: the caller establishes that these bytes
+        belong at this path before calling. Missing parent directories are
+        created. A path that resolves outside the vault's source root is refused.
         """
 
     @abstractmethod
@@ -582,7 +693,13 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         internal = self._internal_relative(storage_root, source_path)
         return internal if internal is not None else f"imports/{source_path.name}"
 
-    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+    def retain_source(
+        self,
+        vault_id: str,
+        storage_root: Path,
+        source_path: Path,
+        delivered_hash: str | None = None,
+    ) -> str:
         # A source already under the vault root is internal: return its
         # vault-relative path with no copy.
         internal = self._internal_relative(storage_root, source_path)
@@ -598,19 +715,69 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # reads the latter.
         dest = storage_root / self.planned_source_path(vault_id, storage_root, source_path)
         if dest.exists():
-            content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()[:8]
-            existing_hash = hashlib.sha256(dest.read_bytes()).hexdigest()[:8]
+            # The caller's digest when it has one, so the delivered bytes are
+            # hashed once across the whole ingest rather than once here and once
+            # by whoever had to establish content identity first.
+            content_hash = delivered_hash or hash_file(source_path)
+            existing_hash = hash_file(dest)
             if content_hash == existing_hash:
-                # Identical content already imported -- reuse existing path.
+                # Identical content already imported -- reuse existing path,
+                # once it is established that the path is one the document can
+                # live at. A link here would otherwise become the record's
+                # ``source_path``: every read would follow it wherever its owner
+                # points, and a later repair would refuse the very path the
+                # record names, leaving a document that cannot be restored where
+                # it claims to live. Guarded on this exit rather than on entry to
+                # the branch, because the disambiguating exit below writes
+                # elsewhere and must keep working (a link it never touches is
+                # not its problem to refuse).
+                _assert_not_symlinked(dest)
+                resolve_and_assert_within_root(dest, storage_root)
                 return str(dest.relative_to(storage_root))
             # Different content: disambiguate with the 8-char content hash.
-            dest = imports_dir / f"{source_path.stem}_{content_hash}{source_path.suffix}"
+            token = _disambiguation_token(content_hash)
+            dest = imports_dir / f"{source_path.stem}_{token}{source_path.suffix}"
+
+        # Guarded here rather than where ``dest`` was first computed, because
+        # this is the path actually about to be written and the collision branch
+        # above may have chosen a different one. Checking only the planned path
+        # leaves the disambiguated write unguarded at a name derivable from the
+        # delivered bytes, while refusing a link the *disambiguating* exit was
+        # never going to write through. Each of the method's three exits is
+        # guarded where it lands: this one and the reuse exit above, plus the
+        # internal short-circuit, which returns a path already inside the tree.
+        _assert_not_symlinked(dest)
+        # Containment resolves the whole path, so a symlinked *ancestor* --
+        # ``imports/`` itself, say -- cannot land the copy outside the tree while
+        # the returned vault-relative path claims it is inside. Asserted rather
+        # than substituted: the copy goes to the path as named, and the returned
+        # vault-relative form is computed against ``storage_root`` as given, so a
+        # storage root that is itself reached through a link keeps working.
+        resolve_and_assert_within_root(dest, storage_root)
 
         shutil.copy2(source_path, dest)
         # Strip UI-layer invisibility markers that shutil.copy2 may have
         # propagated from an agent's temp source (CAS-ADR-016).
         _strip_ui_invisibility(dest)
         return str(dest.relative_to(storage_root))
+
+    def write_source(
+        self, vault_id: str, storage_root: Path, source_path: str, data: bytes
+    ) -> None:
+        _assert_plain_vault_relative(source_path)
+        dest = storage_root / source_path
+        # This operation's precondition is that something other than SAGE wrote
+        # to the store, so a planted link is squarely in scope here.
+        _assert_not_symlinked(dest)
+        # Containment is checked against the *source root*, not the bound vault
+        # root: the caller names a vault-relative path, and the guarantee owed is
+        # that it stays inside the tree this vault's sources live in.
+        dest = resolve_and_assert_within_root(dest, storage_root)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        # Same CAS-ADR-016 sanitization ``retain_source`` applies: a restored
+        # copy must be no more UI-visible-or-hidden than a freshly retained one.
+        _strip_ui_invisibility(dest)
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
         return (storage_root / source_path).exists()
@@ -747,7 +914,13 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # operation here.
         return f"imports/{source_path.name}"
 
-    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+    def retain_source(
+        self,
+        vault_id: str,
+        storage_root: Path,
+        source_path: Path,
+        delivered_hash: str | None = None,
+    ) -> str:
         # Every retain uploads to the document store: under this binding the
         # local tree is ephemeral, so the filesystem binding's "already-internal,
         # no copy" optimization is meaningless here. ``storage_root`` is unused --
@@ -756,29 +929,49 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # stripping is a macOS-filesystem concern; a Graph upload of raw bytes
         # carries no xattr/chflag, so there is nothing to strip.
         data = source_path.read_bytes()
-        content_hash = hashlib.sha256(data).hexdigest()[:8]
+        # The caller's digest when it has one. The bytes are already in hand for
+        # the upload body, so what is saved here is the digest pass, not the read.
+        content_hash = delivered_hash or f"sha256:{hashlib.sha256(data).hexdigest()}"
         client = self._get_client()
         rel = self.planned_source_path(vault_id, storage_root, source_path)
         if client.source_item(vault_id, rel) is not None:  # type: ignore[attr-defined]
-            existing_hash = hashlib.sha256(
-                client.read_source_bytes(vault_id, rel)  # type: ignore[attr-defined]
-            ).hexdigest()[:8]
+            # Hashed at the store, streamed, rather than pulled down and hashed
+            # here: the comparison needs a digest, and materializing the whole
+            # stored copy to obtain one costs a full network round-trip of a file
+            # this method is about to overwrite or walk past either way.
+            existing_hash = client.hash_source_bytes(vault_id, rel)  # type: ignore[attr-defined]
             if existing_hash == content_hash:
                 # Identical content already retained -- reuse the existing path.
                 return rel
             # Different content under the same name: disambiguate with the hash.
             #
             # Note the limit of the comparison above: it weighs the *incoming*
-            # bytes against the bytes read back from the store. For a format the
-            # store rewrites at rest those can never be equal, so re-delivering
-            # such a source reaches this line and lands a second copy. The
-            # binding cannot do better -- it holds no record of what the stored
-            # copy was made from -- so the reuse decision for those formats is
-            # taken by the caller, which does hold that record, before it ever
-            # calls this method (see ``planned_source_path``).
-            rel = f"imports/{source_path.stem}_{content_hash}{source_path.suffix}"
+            # bytes against the bytes the store holds. For a format the store
+            # rewrites at rest those can never be equal, so re-delivering such a
+            # source reaches this line and lands a second copy. The binding
+            # cannot do better -- it holds no record of what the stored copy was
+            # made from -- so the reuse decision for those formats is taken by
+            # the caller, which does hold that record, before it ever calls this
+            # method (see ``planned_source_path``).
+            token = _disambiguation_token(content_hash)
+            rel = f"imports/{source_path.stem}_{token}{source_path.suffix}"
         client.upload_source(vault_id, rel, data)  # type: ignore[attr-defined]
         return rel
+
+    def write_source(
+        self, vault_id: str, storage_root: Path, source_path: str, data: bytes
+    ) -> None:
+        # A direct upload to the named key. The store's own create-or-replace on
+        # a path is the whole primitive here; ``storage_root`` is unused, as it
+        # is for every other source operation under this binding.
+        #
+        # The shape check is not redundant with the filesystem binding's: there
+        # is no local tree here for a resolver to catch an escape against, and
+        # the client's URL builder joins path segments verbatim -- so without it
+        # the port's containment promise would have no implementation at all on
+        # this side.
+        _assert_plain_vault_relative(source_path)
+        self._get_client().upload_source(vault_id, source_path, data)  # type: ignore[attr-defined]
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
         return self._get_client().source_item(vault_id, source_path) is not None  # type: ignore[attr-defined]

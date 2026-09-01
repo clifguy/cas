@@ -225,6 +225,18 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
             "tags",
         }
     ),
+    # ``transfer_token`` on the source-file restore is the same two-phase
+    # completion handle as on ``ingest_document`` above, and is there for
+    # the same reason: the restore takes bytes from the caller's own
+    # filesystem, so a server that cannot read it returns an upload recipe
+    # and is called back with the recipe's token. The REST surface has no
+    # counterpart on the JSON ``SourceFileRestoreRequest``, for the same
+    # reason ``IngestRequest`` has none: the two-phase handshake is an
+    # MCP-transport affordance, and an HTTP caller either reaches the
+    # server's filesystem or does not. Surface parity with ingest rather
+    # than a gap -- a permanent MCP-side divergence by design, not pending
+    # remediation.
+    ("sage_core", "maint_restore_vault_source_file"): frozenset({"transfer_token"}),
     # The eleven filter keys are tripwires, not functional arguments, on
     # the same mechanism as the ingest metadata keys above. Scope
     # constraints belong nested under ``filters``; these spellings are
@@ -1094,6 +1106,10 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
     # Tears down and replaces live service objects, disrupting any
     # in-flight work against the vault.
     "maint_reload_vault": (False, True, False),
+    # Overwrites a retained source file in place. The copy it replaces is
+    # the drifted one an operator asked to have repaired, but the bytes it
+    # writes over are unrecoverable, so this is not additive.
+    "maint_restore_vault_source_file": (False, True, False),
 }
 
 

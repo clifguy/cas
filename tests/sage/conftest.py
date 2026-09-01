@@ -464,6 +464,22 @@ class VaultSourceBackendHandle:
             return self.fake_client.sources[rel]
         return (Path(storage_root) / rel).read_bytes()
 
+    def write_retained_bytes(self, storage_root: Path, rel: str, data: bytes) -> None:
+        """Overwrite a retained copy *out of band*, as something other than SAGE.
+
+        The setup half of ``retained_bytes``, for tests whose precondition is a
+        store SAGE did not author -- the drift the integrity audit exists to
+        surface and the restore exists to repair. Deliberately bypasses the
+        document-store leg's upload path so no rewrite-at-rest stamping is
+        applied: an external writer leaves exactly the bytes it wrote, which is
+        what makes the resulting mismatch a real one rather than a stamping
+        artifact.
+        """
+        if self.fake_client is not None:
+            self.fake_client.sources[rel] = data
+        else:
+            (Path(storage_root) / rel).write_bytes(data)
+
 
 @pytest.fixture(params=["filesystem", "document_store"])
 def vault_source_backend(request, monkeypatch):

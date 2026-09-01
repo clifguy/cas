@@ -19,7 +19,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -60,6 +60,7 @@ from sage.api.errors import (
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
     Tier3UniqueConstraintViolation,
+    VaultSourcePathRefusedError,
 )
 from sage.config import VaultConfig, build_transition_table
 from sage.models.enums import (
@@ -109,6 +110,49 @@ class IngestResult:
 
     document: Document
     is_new: bool
+
+
+@contextlib.contextmanager
+def _translate_vault_source_refusal(source: str) -> Iterator[None]:
+    """Surface a binding's refusal to write at a path as a typed API error.
+
+    The vault-source bindings refuse a write target for several distinct
+    reasons, and raise their own ``ValueError`` subclass to say so -- they sit
+    below the API layer and may not import its error hierarchy. Left to
+    propagate, that reaches an MCP caller as a generic internal error and an
+    HTTP caller as a bare 500 against a spec declaring neither, which describes
+    a server fault rather than the refused input it actually is.
+
+    The binding's message travels with the translation. Only the binding knows
+    which of its causes fired, and a fixed message here could describe at most
+    one of them.
+    """
+    from sage.vault_source_binding import VaultRootEscapeError
+
+    try:
+        yield
+    except VaultRootEscapeError as exc:
+        raise VaultSourcePathRefusedError(source, str(exc)) from exc
+
+
+def _normalize_vault_relative(source_path: str) -> str:
+    """Collapse a vault-relative path to its plain form, refusing an escape.
+
+    ``.`` and ``..`` segments are accepted by the read side -- existence, hash,
+    and the integrity audit all resolve them -- but refused by the write-time
+    guard, so a record that stored one verbatim would name a path its own bytes
+    could never be written back to. Normalizing at the point the path enters the
+    record keeps the two sides agreeing on what a source_path is.
+    """
+    candidate = PurePosixPath(source_path)
+    normalized = PurePosixPath(*(p for p in candidate.parts if p != "."))
+    if ".." in normalized.parts or normalized.is_absolute():
+        raise VaultSourcePathRefusedError(
+            source_path,
+            f"refusing {source_path!r}: a vault-relative source path may not be "
+            f"absolute or walk out of the vault's source tree.",
+        )
+    return str(normalized)
 
 
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
@@ -747,14 +791,19 @@ class IngestionService:
                 # force-reingest guard exists to raise. The binding is already
                 # the cheap answer here: a source inside the vault is retained in
                 # place, with no copy to avoid.
-                vault_relative = vault_source_store.retain_source(
-                    self._config.vault.id, storage_root, source_path
+                vault_relative = self._retain_translated(
+                    vault_source_store, storage_root, source_path, delivered_hash
                 )
                 retained = True
             elif vault_source_store.source_exists(
                 self._config.vault.id, storage_root, request.source
             ):
-                vault_relative = request.source
+                # Normalized rather than stored as given: this is the one
+                # branch that records the caller's string verbatim, and a path
+                # carrying ``.`` or ``..`` segments would be accepted by the
+                # read side while the write-time guard refuses it -- a record
+                # whose own source_path cannot be written back to.
+                vault_relative = _normalize_vault_relative(request.source)
                 # Nothing was delivered this call -- the bytes were already on
                 # the store and are only being re-projected. The provenance of
                 # this path was established at the ingest that put them there,
@@ -768,9 +817,17 @@ class IngestionService:
                 # Absent a record (bytes on the store that were never ingested)
                 # there is no prior provenance to inherit, and the stored digest
                 # stands in, as it does for any first sight of a file.
-                delivered_hash = (
-                    await self._store.find_documents_by_source_paths([vault_relative])
-                ).get(vault_relative)
+                #
+                # Looked up under both spellings: a record written before the
+                # normalization above stored the caller's string verbatim, so a
+                # dotted path that still resolves on the store would miss its own
+                # provenance under the normalized form alone -- and a miss here
+                # is not an error, it silently falls back to the stored digest
+                # and lands a second document on the same stored file.
+                by_path = await self._store.find_documents_by_source_paths(
+                    [vault_relative, request.source]
+                )
+                delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
             else:
                 raise SourceFileNotFoundError(request.source)
 
@@ -1849,13 +1906,17 @@ class IngestionService:
         source-file integrity audit detects. Should it happen anyway, the
         re-delivery leaves the altered copy alone and the audit goes on reporting
         it mismatched, which is the outcome to want: the operator's evidence that
-        something else wrote to the store is not quietly erased. A re-delivery is
-        therefore not a repair. Restoring a drifted copy in place is a capability
-        this seam does not offer -- writing bytes back to a *chosen* path is not
-        something the port can express today, and a forced re-ingest cannot
-        stand in for it: the binding sees only that the bytes at its target
-        differ from the ones offered, which is indistinguishable from a name
-        collision, so it disambiguates rather than overwrites.
+        something else wrote to the store is not quietly erased.
+
+        A re-delivery is therefore not a repair, and deliberately remains one:
+        neither an unforced nor a forced ingest may restore a drifted copy, since
+        an ingest that silently repaired would erase that evidence for every
+        caller who never asked. Repair is a separate operation the operator
+        invokes on purpose, against the copy the integrity audit named -- it
+        writes the bytes back at the path the record already holds, through the
+        port's ``write_source``, rather than offering them to ``retain_source``,
+        which sees only that the bytes at its target differ from the ones offered
+        and disambiguates to a second path rather than overwriting.
         """
         vault_id = self._config.vault.id
         existing_id = (await self._store.find_documents_by_hashes([delivered_hash])).get(
@@ -1867,7 +1928,30 @@ class IngestionService:
                 vault_id, storage_root, existing.source_path
             ):
                 return existing.source_path, False
-        return store.retain_source(vault_id, storage_root, source_path), True
+        return self._retain_translated(store, storage_root, source_path, delivered_hash), True
+
+    def _retain_translated(
+        self,
+        store: "VaultSourceStore",
+        storage_root: Path,
+        source_path: Path,
+        delivered_hash: str | None,
+    ) -> str:
+        """Retain through the port, surfacing a refused destination as a typed error.
+
+        The single retain call site for the whole ingest path. The bindings
+        refuse a destination they cannot write at -- a symlink sitting there, a
+        path resolving out of the source tree -- and say so with their own
+        ``ValueError`` subclass, since they sit below the API layer and may not
+        import its hierarchy. Routed through one place rather than wrapped at
+        each caller so the translation cannot be present on one branch and
+        absent on another; the branches differ in how they *reach* a retain, not
+        in what a refusal means to the caller.
+        """
+        with _translate_vault_source_refusal(str(source_path)):
+            return store.retain_source(
+                self._config.vault.id, storage_root, source_path, delivered_hash
+            )
 
     @contextlib.contextmanager
     def _project_source(

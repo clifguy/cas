@@ -476,6 +476,10 @@ paths:
             for `source_type`.
 
 
+            `vault_source_path_refused`: the vault-source store refused
+            the destination it would have retained the source at.
+
+
             `expected_head_version_requires_predecessor`:
             `expected_head_version` was supplied without
             `predecessor_id`. The token is bound to the chain head
@@ -2279,6 +2283,72 @@ paths:
                 $ref: "#/components/schemas/SourceFileIntegrityReport"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/admin/restore-source-file:
+    post:
+      operationId: maint_restore_vault_source_file
+      summary: Repair a document's retained source file by writing delivered bytes back over it.
+      description: >-
+        The repair counterpart of ``maint_verify_vault_source_files``.
+        That audit reports a retained copy that changed outside SAGE but
+        cannot fix one, and re-ingesting cannot stand in: retention sees
+        only that the offered bytes differ from what sits at its target --
+        indistinguishable from a name collision -- so it homes the
+        document at a second path and leaves the damaged copy in place.
+        This writes to the path the document record already names, so the
+        document does not move.
+
+
+        SAGE keeps no pristine second copy of a source, so ``source``
+        supplies the bytes. The target document is resolved from their
+        digest against recorded provenance, which is why ``document_id``
+        is normally unnecessary; supply it when that resolution is
+        ambiguous or unavailable.
+
+
+        Writes nothing when the retained copy already hashes to its
+        recorded digest, returning ``status: already_intact``. Where a
+        write does happen the copy is re-read and the record's
+        ``stored_content_hash`` set to what it now holds; the provenance
+        digest is never touched.
+      tags: [Maintenance]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SourceFileRestoreRequest"
+      responses:
+        "200":
+          description: Source-file restore report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceFileRestoreReport"
+        "400":
+          description: >-
+            `restore_provenance_mismatch`: the pinned document was not
+            ingested from the delivered bytes.
+            `restore_source_not_absolute`: the source path is not absolute.
+            `vault_source_path_refused`: the document's source_path cannot be
+            written at the path it names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: >-
+            `vault_not_found`: no vault registered with that id.
+            `restore_target_unresolved`: no single document claims the
+            delivered bytes as its provenance.
+            `document_not_found`: the supplied document_id names no document.
+            `source_file_not_found`: the delivered source path does not exist.
           content:
             application/json:
               schema:
@@ -6591,6 +6661,118 @@ components:
           description: >-
             Per-document rows; one per document whose source file is
             missing or hash-mismatched.
+
+    SourceFileRestoreRequest:
+      type: object
+      required: [source]
+      description: Request body for the restore-source-file maintenance operation.
+      properties:
+        source:
+          type: string
+          description: >-
+            Absolute path to a file holding the bytes that were originally
+            ingested. SAGE retains no pristine second copy of a source, so
+            the caller supplies the bytes to restore. The target document
+            is resolved from their digest, which is why the bytes must be
+            the originals rather than a corrected or re-exported version.
+        document_id:
+          type: string
+          nullable: true
+          description: >-
+            Optional pin naming the document to restore. Not required: the
+            target is normally resolved from the delivered bytes' digest.
+            Supply it when that resolution is ambiguous (several documents
+            share a provenance hash) or impossible (a document ingested
+            before delivered and stored digests were recorded separately,
+            whose provenance hash describes the stored copy rather than
+            the delivered bytes).
+
+    SourceFileRestoreReport:
+      type: object
+      required:
+        [
+          vault_id,
+          document_id,
+          source_path,
+          status,
+          provenance_verified,
+          record_refreshed,
+          expected_content_hash,
+          stored_content_hash,
+        ]
+      description: >-
+        Result of a restore_vault_source_file call. Repairs one document's
+        retained source file by writing the delivered bytes back at the
+        vault-relative path the document record already names. The
+        counterpart to verify_vault_source_files, which reports a retained
+        copy that changed outside SAGE but cannot repair it: a re-ingest
+        would read the difference as a name collision and home the document
+        at a second path instead of restoring the first.
+      properties:
+        vault_id:
+          type: string
+          description: Identifier of the vault whose source file was restored.
+        document_id:
+          type: string
+          description: >-
+            Identifier of the document whose retained source file was the
+            target.
+        source_path:
+          type: string
+          description: >-
+            The document's vault-relative source_path — the path the bytes
+            were written to. Unchanged by the restore, which never re-homes
+            a document.
+        status:
+          type: string
+          enum: [restored, already_intact]
+          description: >-
+            Whether bytes were written. `restored` — the retained copy was
+            missing or mismatched and the delivered bytes were written over
+            it. `already_intact` — the retained copy already hashed to its
+            recorded digest and the store was left untouched.
+        provenance_verified:
+          type: boolean
+          description: >-
+            Whether the delivered bytes were confirmed to be the target
+            document's. True whenever the target was resolved from their
+            digest, and whenever a document_id pin was checked against the
+            record's provenance. False only for a pinned restore of a
+            document carrying no stored digest: its recorded provenance
+            describes its stored copy rather than the delivered bytes, so
+            nothing on the record can confirm the file handed over is the
+            right one.
+        record_refreshed:
+          type: boolean
+          description: >-
+            Whether stored_content_hash was updated on the document record.
+            True only where the store demonstrably rewrote the bytes it was
+            given, which is the sole reason the recorded digest may move.
+            False leaves any recorded mismatch reported rather than adopted
+            — so a restore can report `restored` with this false, meaning
+            the bytes were written but the record still describes a
+            different copy.
+        expected_content_hash:
+          type: string
+          description: >-
+            The digest the retained copy was required to reproduce before
+            the restore: the document's stored_content_hash, or its
+            source_content_hash when that is null.
+        observed_content_hash:
+          type: string
+          nullable: true
+          description: >-
+            SHA-256 of the retained copy as found before the restore; null
+            when no copy was present to hash.
+        stored_content_hash:
+          type: string
+          description: >-
+            SHA-256 of the retained copy as it stands after the call.
+            Differs from expected_content_hash under a binding that rewrites
+            its copy at rest, where writing the same bytes back yields a
+            fresh stored digest. Whether the document record was updated to
+            match is reported separately by record_refreshed — this field
+            describes the store, not the record.
 
     ReabstractReport:
       type: object

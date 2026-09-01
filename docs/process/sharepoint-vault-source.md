@@ -237,6 +237,14 @@ through the port and confirms they are byte-identical; `source_audit` runs
 the bytes never reached the library or came back altered — stop and investigate
 before restarting.
 
+Where the investigation finds a retained copy that something other than SAGE
+overwrote, `maint_restore_vault_source_file` (`POST
+.../admin/restore-source-file`) writes the original bytes back at the path the
+document record already names. It needs those bytes from you — SAGE keeps no
+second copy — and it refuses rather than repairing if the file handed to it is
+not the one the document was ingested from. Re-ingesting is not a substitute: it
+homes the document at a second path and leaves the damaged copy in place.
+
 ### 6.3 Restart the SAGE container
 
 Roll a new revision so the next phase runs against a freshly-started container

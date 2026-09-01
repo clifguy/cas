@@ -905,6 +905,120 @@ class SourceFileNotFoundError(SAGEError):
         )
 
 
+class RestoreTargetUnresolvedError(SAGEError):
+    """404: no single document claims the delivered bytes as its provenance.
+
+    A restore names its target by content: the bytes handed over must be the
+    ones some document was ingested from. Nothing matched, or more than one
+    document did, so there is no unambiguous copy to write over -- and writing
+    to a guessed path would corrupt a document that was intact. The caller
+    resolves it by supplying ``document_id``.
+    """
+
+    def __init__(self, content_hash: str, candidate_ids: list[str]) -> None:
+        if candidate_ids:
+            message = (
+                f"{len(candidate_ids)} documents share the delivered bytes' digest "
+                f"{content_hash}; supply document_id to name the one to restore."
+            )
+        else:
+            message = (
+                f"No document was ingested from the delivered bytes (digest "
+                f"{content_hash}). Deliver the original source bytes, or supply "
+                f"document_id to name the target explicitly."
+            )
+        super().__init__(
+            "restore_target_unresolved",
+            message,
+            404,
+            {"content_hash": content_hash, "candidate_ids": candidate_ids},
+        )
+
+
+class RestoreProvenanceMismatchError(SAGEError):
+    """400: the pinned document was not ingested from the delivered bytes.
+
+    ``document_id`` names which copy to write over; it does not license writing
+    *arbitrary* bytes there. Without this check a pin turns the repair into its
+    opposite: the delivered file overwrites the retained copy and the record is
+    refreshed to describe it, so the integrity audit goes green over a document
+    whose stored bytes are now something else entirely -- erasing the very
+    evidence the audit exists to preserve.
+
+    Not raised for a record whose ``stored_content_hash`` is null. Such a record
+    predates the delivered/stored digest split and its provenance hash describes
+    the stored copy rather than the delivered bytes, so a caller re-delivering
+    the original cannot match it -- which is the case the pin exists to serve.
+    The refresh rule in ``restore_vault_source_file`` is what keeps that
+    exemption from laundering: a store that returns what it was handed licenses
+    no digest update.
+    """
+
+    def __init__(self, document_id: str, delivered_hash: str, recorded_hash: str) -> None:
+        super().__init__(
+            "restore_provenance_mismatch",
+            (
+                f"Document {document_id} was not ingested from the delivered bytes "
+                f"(delivered {delivered_hash}, recorded {recorded_hash}). Deliver "
+                f"that document's original source bytes, or drop document_id to "
+                f"resolve the target from the bytes themselves."
+            ),
+            400,
+            {
+                "document_id": document_id,
+                "delivered_content_hash": delivered_hash,
+                "recorded_content_hash": recorded_hash,
+            },
+        )
+
+
+class VaultSourcePathRefusedError(SAGEError):
+    """400: the vault-source store refused to write at the path it was given.
+
+    Carries the binding's own reason rather than restating one. A binding
+    refuses a write target for several distinct causes -- the path is absolute,
+    it walks out of the vault's source tree, a symlink sits at the destination,
+    or it resolves outside the source root through an ancestor -- and a fixed
+    message can only describe one of them, leaving the other three reported as
+    something that did not happen.
+
+    Exists because the binding raises a plain ``ValueError`` subclass: it sits
+    below the API layer and may not import it, so without a translation at the
+    service boundary the refusal reaches an MCP caller as a generic internal
+    error and an HTTP caller as a bare 500 against a spec that declares neither.
+    """
+
+    def __init__(self, source_path: str, reason: str) -> None:
+        super().__init__(
+            "vault_source_path_refused",
+            reason,
+            400,
+            {"source_path": source_path},
+        )
+
+
+class RestoreSourceNotAbsoluteError(SAGEError):
+    """400: the restore source path is not absolute.
+
+    A restore reads bytes from the *caller's* filesystem, so the path names a
+    file there and must say so unambiguously. A relative path has no defined
+    meaning on this operation -- unlike an ingest, where it addresses a source
+    already inside the vault -- and would otherwise resolve against the server
+    process's working directory, which on a deployed profile is the container's,
+    not the caller's. Refusing it also keeps the caller-local delivery gate
+    honest: that gate triggers on an absolute path, so a relative one would slip
+    past it and be read server-side instead of prompting an upload.
+    """
+
+    def __init__(self, source: str) -> None:
+        super().__init__(
+            "restore_source_not_absolute",
+            f"Restore source must be an absolute path: {source}",
+            400,
+            {"source": source},
+        )
+
+
 class PathTraversalDeniedError(SAGEError):
     """400: output_path resolves outside vault storage_root (BH-038, BH-040)."""
 

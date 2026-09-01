@@ -4068,6 +4068,109 @@ class SourceFileIntegrityReport(BaseModel):
     )
 
 
+class SourceFileRestoreRequest(BaseModel):
+    source: str = Field(
+        description=(
+            "Absolute path to a file holding the bytes that were originally "
+            "ingested. SAGE retains no pristine second copy of a source, so "
+            "the caller supplies the bytes to restore. The target document is "
+            "resolved from their digest, which is why the bytes must be the "
+            "originals rather than a corrected or re-exported version."
+        )
+    )
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Optional pin naming the document to restore. Not required: the "
+            "target is normally resolved from the delivered bytes' digest. "
+            "Supply it when that resolution is ambiguous (several documents "
+            "share a provenance hash) or impossible (a document ingested "
+            "before delivered and stored digests were recorded separately, "
+            "whose provenance hash describes the stored copy rather than the "
+            "delivered bytes)."
+        ),
+    )
+
+
+class SourceFileRestoreReport(BaseModel):
+    """Result of a `restore_vault_source_file` call.
+
+    Repairs one document's retained source file by writing the delivered
+    bytes back at the vault-relative path the document record already
+    names. The counterpart to `verify_vault_source_files`, which reports a
+    retained copy that changed outside SAGE but cannot repair it: a
+    re-ingest would read the difference as a name collision and home the
+    document at a second path instead of restoring the first.
+    """
+
+    vault_id: VaultIdStr = Field(
+        description="Identifier of the vault whose source file was restored."
+    )
+    document_id: DocumentIdStr = Field(
+        description="Identifier of the document whose retained source file was the target."
+    )
+    source_path: str = Field(
+        description=(
+            "The document's vault-relative source_path — the path the bytes "
+            "were written to. Unchanged by the restore, which never re-homes a "
+            "document."
+        )
+    )
+    status: Literal["restored", "already_intact"] = Field(
+        description=(
+            "Whether bytes were written. `restored` — the retained copy was "
+            "missing or mismatched and the delivered bytes were written over "
+            "it. `already_intact` — the retained copy already hashed to its "
+            "recorded digest and the store was left untouched."
+        )
+    )
+    provenance_verified: bool = Field(
+        description=(
+            "Whether the delivered bytes were confirmed to be the target "
+            "document's. True whenever the target was resolved from their "
+            "digest, and whenever a document_id pin was checked against the "
+            "record's provenance. False only for a pinned restore of a document "
+            "carrying no stored digest: its recorded provenance describes its "
+            "stored copy rather than the delivered bytes, so nothing on the "
+            "record can confirm the file handed over is the right one."
+        )
+    )
+    record_refreshed: bool = Field(
+        description=(
+            "Whether stored_content_hash was updated on the document record. "
+            "True only where the store demonstrably rewrote the bytes it was "
+            "given, which is the sole reason the recorded digest may move. "
+            "False leaves any recorded mismatch reported rather than adopted — "
+            "so a restore can report `restored` with this false, meaning the "
+            "bytes were written but the record still describes a different copy."
+        )
+    )
+    expected_content_hash: Sha256Str = Field(
+        description=(
+            "The digest the retained copy was required to reproduce before the "
+            "restore: the document's stored_content_hash, or its "
+            "source_content_hash when that is null."
+        )
+    )
+    observed_content_hash: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 of the retained copy as found before the restore; null "
+            "when no copy was present to hash."
+        ),
+    )
+    stored_content_hash: Sha256Str = Field(
+        description=(
+            "SHA-256 of the retained copy as it stands after the call. Differs "
+            "from expected_content_hash under a binding that rewrites its copy "
+            "at rest, where writing the same bytes back yields a fresh stored "
+            "digest. Whether the document record was updated to match is "
+            "reported separately by record_refreshed — this field describes the "
+            "store, not the record."
+        )
+    )
+
+
 class ReabstractProgressEvent(BaseModel):
     """SSE `progress` event payload for reabstract-deferred.
 
