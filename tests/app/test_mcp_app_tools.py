@@ -1167,9 +1167,76 @@ class TestSageDiscoverCatalog:
         assert result["mode"] == "catalog"
         assert result["target"] == "facets"
         assert result["total_available"] == 2
-        by_field = {r["field"]: r["values"] for r in result["results"]}
-        assert by_field["doc_type"] == {"note": 2}
-        assert by_field["tags"] == {"alpha": 1}
+        by_field = {r["field"]: r for r in result["results"]}
+        assert by_field["doc_type"]["values"] == {"note": 2}
+        assert by_field["doc_type"]["total_distinct"] == 1
+        assert by_field["tags"]["values"] == {"alpha": 1}
+        assert by_field["tags"]["total_distinct"] == 1
+
+    async def test_default_facets_response_bounded_at_scale(self, single_vault):
+        """The default facets call stays under a fixed size bound on a
+        vault whose tag vocabulary dwarfs its declared vocabularies.
+
+        The regression this pins: an unbounded tag facet once grew with
+        the corpus until the orientation call -- the recommended FIRST
+        call against an unfamiliar vault -- exceeded the calling
+        client's tool-result ceiling. The fixture makes the trap
+        structural rather than statistical: 240 distinct ~88-char tags
+        mean the uncapped payload necessarily exceeds the bound (the
+        in-test arithmetic guard asserts so), so the size assertion
+        cannot pass while the default cap is broken.
+        """
+        from sage.models.schemas import Document
+
+        services, _ = single_vault
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+
+        n_docs, tags_per_doc, tag_width = 120, 2, 88
+        for i in range(n_docs):
+            doc_id = _id(f"widetag_{i:04d}")
+            tags = [
+                f"tag-{i * tags_per_doc + j:04d}-".ljust(tag_width, "x")
+                for j in range(tags_per_doc)
+            ]
+            await gs.insert_document(
+                Document(
+                    id=doc_id,
+                    title=f"Wide-tag doc {i:04d}",
+                    source_type=SourceType.MARKDOWN,
+                    source_path=f"test/widetag_{i:04d}.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha(doc_id),
+                    adapter_version="0.1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    doc_type="note",
+                    tags=tags,
+                )
+            )
+
+        size_bound = 16 * 1024
+        vocabulary = n_docs * tags_per_doc
+        # Arithmetic guard: the uncapped tag payload alone must exceed
+        # the bound, so a short-tag fixture cannot make the size
+        # assertion pass by luck while the cap is broken.
+        assert vocabulary * tag_width > size_bound
+
+        raw = await search(vault_id="test_vault", mode="catalog", target="facets")
+        result = _parse(raw)
+
+        tags_row = next(r for r in result["results"] if r["field"] == "tags")
+        assert len(tags_row["values"]) == 50
+        assert tags_row["total_distinct"] == vocabulary
+        serialized = raw if isinstance(raw, str) else json.dumps(raw)
+        assert len(serialized.encode()) < size_bound, (
+            f"default facets response must stay bounded; got "
+            f"{len(serialized.encode())} bytes against {size_bound}"
+        )
 
     async def _seed_portfolio(self, services, n: int):
         """Seed ``n`` ticket-shaped docs through the graph store."""

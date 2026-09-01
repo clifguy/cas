@@ -1302,6 +1302,8 @@ def register_sage_tools(
         response_mode: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        facet_fields: list | None = None,
+        facet_value_limit: int | None = None,
         # Tripwires, not functional arguments. These are the ``filters``
         # keys; they are published here only so a wrong-level spelling
         # reaches the guard instead of being stripped client-side. The
@@ -1359,18 +1361,26 @@ def register_sage_tools(
             When ``target="facets"`` (only valid with ``mode="catalog"``),
             results are one row per facet field -- doc_type,
             lifecycle_status, source_type, pipeline_status, tags -- each
-            carrying that field's distinct values with matching-document
-            counts. This is the bounded way to ask what exists in a
-            vault: response size is set by vocabulary sizes, never by
-            document count, so no pagination applies (non-default
-            ``limit``, ``offset``, ``sort_by``, ``sort_order``, and
-            ``response_mode`` are rejected via
-            ``mode_parameter_mismatch``). Document-target filter keys
-            narrow the slice being faceted; ``total_available`` is the
-            count of documents matching the filters. Documents with a
-            null field are excluded from that field's values but still
-            counted in ``total_available``; tag counts may sum above it
-            (multi-tag documents) or below it (untagged documents).
+            carrying that field's top distinct values with
+            matching-document counts plus ``total_distinct``, the true
+            distinct-value count for the slice. This is the bounded way
+            to ask what exists in a vault: each row's value map is
+            capped (50 values by default; ``facet_value_limit`` sets
+            the cap explicitly), so response size never grows with
+            document count or tagging density, and no pagination
+            applies (non-default ``limit``, ``offset``, ``sort_by``,
+            ``sort_order``, and ``response_mode`` are rejected via
+            ``mode_parameter_mismatch``). A row was truncated exactly
+            when its ``total_distinct`` exceeds its value count; to
+            read a full vocabulary, re-call with ``facet_value_limit``
+            set to the reported ``total_distinct``. ``facet_fields``
+            selects a subset of the facet fields. Document-target
+            filter keys narrow the slice being faceted;
+            ``total_available`` is the count of documents matching the
+            filters. Documents with a null field are excluded from that
+            field's values but still counted in ``total_available``;
+            tag counts may sum above it (multi-tag documents) or below
+            it (untagged documents).
 
             Example::
 
@@ -1481,6 +1491,19 @@ def register_sage_tools(
                 of: "asc", "desc". Ignored by semantic, keyword, and
                 deterministic modes. Default: unset -- ascending when
                 ``sort_by`` is specified.
+            facet_fields: Facet fields to aggregate when
+                ``target="facets"``. Any subset of: doc_type,
+                lifecycle_status, source_type, pipeline_status, tags.
+                Default: unset -- all five. Rows return in that fixed
+                field order regardless of the order given here.
+                Rejected for other targets.
+            facet_value_limit: Per-field cap on returned facet values
+                when ``target="facets"``, keeping the top values by
+                descending count then value. Minimum 1; default: unset
+                -- the built-in cap of 50 applies. Every row's
+                ``total_distinct`` reports the true distinct count
+                regardless of the cap, so truncation is always
+                detectable. Rejected for other targets.
 
         Catalog budget hint:
             Catalog responses include a ``hints`` field carrying
@@ -1585,6 +1608,8 @@ def register_sage_tools(
                 min_relevance=min_relevance,
                 sort_by=sort_by,
                 sort_order=sort_order,
+                facet_fields=facet_fields,
+                facet_value_limit=facet_value_limit,
             )
             response = await v.retrieval_service.discover(request)
             return serialize(response)

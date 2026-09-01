@@ -183,16 +183,33 @@ class RetrievalTarget(StrEnum):
     the dispatch to first-class edge enumeration: results are ``EdgeHit``
     rows carrying ``edge_id``, endpoints, edge_type, anchor versions,
     rationale, and retraction state. `facets` switches to vocabulary
-    aggregation: results are ``FacetHit`` rows carrying distinct values
-    with counts for a fixed set of document metadata fields, bounded by
-    vocabulary size rather than document count. `edges` and `facets` are
-    only valid in combination with ``mode="catalog"``; other modes are
-    rejected at request validation.
+    aggregation: results are ``FacetHit`` rows carrying a fixed set of
+    document metadata fields' top distinct values with counts, each row
+    capped to a per-field value limit and carrying the field's true
+    distinct-value total, so the response stays bounded at any corpus
+    size and tagging density. `edges` and `facets` are only valid in
+    combination with ``mode="catalog"``; other modes are rejected at
+    request validation.
     """
 
     DOCUMENTS = "documents"
     EDGES = "edges"
     FACETS = "facets"
+
+
+class FacetField(StrEnum):
+    """The document metadata fields exposed for facet aggregation.
+
+    The closed vocabulary of the ``facet_fields`` request parameter:
+    ``search`` with ``target="facets"`` aggregates any subset of these,
+    defaulting to all of them.
+    """
+
+    DOC_TYPE = "doc_type"
+    LIFECYCLE_STATUS = "lifecycle_status"
+    SOURCE_TYPE = "source_type"
+    PIPELINE_STATUS = "pipeline_status"
+    TAGS = "tags"
 
 
 class ResponseMode(StrEnum):

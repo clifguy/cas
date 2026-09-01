@@ -10,9 +10,10 @@ port depends only on the models leaf, never on a concrete store module.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
@@ -374,6 +375,18 @@ DOCUMENT_FACET_FIELDS: tuple[str, ...] = (
 )
 
 
+class FacetFieldCounts(NamedTuple):
+    """One facet field's aggregation: its (possibly capped) value counts
+    plus the true distinct-value total for the filter slice.
+
+    ``total_distinct`` is computed before any value cap is applied, so
+    truncation is always detectable as ``len(values) < total_distinct``.
+    """
+
+    values: dict[str, int]
+    total_distinct: int
+
+
 class GraphStore(ABC):
     """Interface for the document/edge/user graph store (Postgres in production).
 
@@ -441,15 +454,24 @@ class GraphStore(ABC):
     async def query_document_facets(
         self,
         filters: dict[str, object] | None = None,
-    ) -> tuple[dict[str, dict[str, int]], int]:
+        *,
+        fields: Sequence[str] | None = None,
+        value_limit: int | None = None,
+    ) -> tuple[dict[str, FacetFieldCounts], int]:
         """Distinct-value counts per facet field within a filter slice.
 
-        Returns a mapping keyed by every ``DOCUMENT_FACET_FIELDS`` entry --
-        each value a dict of distinct non-null field values to matching-
-        document counts, ordered by descending count then value -- plus the
-        total count of documents matching the filters. Fields with no
-        matching values map to an empty dict. Applies no default
-        failed-pipeline exclusion, matching catalog enumeration.
+        Returns a mapping keyed by the requested ``fields`` (every
+        ``DOCUMENT_FACET_FIELDS`` entry when None) -- each value a
+        ``FacetFieldCounts`` whose ``values`` maps distinct non-null
+        field values to matching-document counts, ordered by descending
+        count then value, and whose ``total_distinct`` is the true
+        distinct-value count for the slice -- plus the total count of
+        documents matching the filters. ``value_limit`` caps each
+        field's ``values`` to the top entries in that ordering (None =
+        uncapped); ``total_distinct`` is unaffected by the cap.
+        Unrequested fields are not aggregated. Fields with no matching
+        values map to ``({}, 0)``. Applies no default failed-pipeline
+        exclusion, matching catalog enumeration.
         """
 
     @abstractmethod

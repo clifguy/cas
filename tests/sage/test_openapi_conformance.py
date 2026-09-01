@@ -98,6 +98,7 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     # as BaseModel classes.
     "CatalogSortBy",
     "EdgeType",
+    "FacetField",
     "PipelineStatus",
     "RationaleKind",
     "ReabstractOutcome",

@@ -15,6 +15,7 @@ from pydantic_core import PydanticCustomError
 from sage.models.enums import (
     CatalogSortBy,
     EdgeType,
+    FacetField,
     PipelineStatus,
     RationaleKind,
     ReabstractOutcome,
@@ -2941,6 +2942,31 @@ class DiscoverRequest(BaseModel):
             "returns chunk content."
         ),
     )
+    facet_fields: list[FacetField] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Facet fields to aggregate for the facets target. Any "
+            "subset of: doc_type, lifecycle_status, source_type, "
+            "pipeline_status, tags. Null (default) aggregates all "
+            "five. Rows return in that fixed field order regardless of "
+            "the order given here. Not valid for other targets."
+        ),
+    )
+    facet_value_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Per-field cap on the number of facet values returned for "
+            "the facets target, keeping the top values by descending "
+            "count then value. Minimum 1. Null (default) applies the "
+            "built-in cap of 50. Each row's total_distinct reports the "
+            "true distinct-value count regardless of the cap, so "
+            "truncation is always detectable; to read a full "
+            "vocabulary, re-call with facet_value_limit set to the "
+            "reported total_distinct. Not valid for other targets."
+        ),
+    )
 
     @model_validator(mode="after")
     def _reject_mode_parameter_mismatch(self) -> "DiscoverRequest":
@@ -3035,6 +3061,26 @@ class DiscoverRequest(BaseModel):
                             "forbidden_param": f"filters.{key}",
                             "allowed_modes": [RetrievalMode.CATALOG.value],
                             "key": key,
+                        },
+                    )
+
+        # Facet-only request parameters have no semantics for the
+        # document and edge targets; explicitly non-null values are
+        # rejected rather than silently ignored, so a mis-targeted call
+        # cannot return an unconstrained result unannounced.
+        if self.target != RetrievalTarget.FACETS:
+            for name, value in (
+                ("facet_fields", self.facet_fields),
+                ("facet_value_limit", self.facet_value_limit),
+            ):
+                if value is not None:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        ("Parameter '{forbidden_param}' is valid only for target 'facets'."),
+                        {
+                            "mode": self.mode.value,
+                            "forbidden_param": name,
+                            "allowed_modes": [RetrievalMode.CATALOG.value],
                         },
                     )
 
@@ -3285,12 +3331,12 @@ class EdgeHit(BaseModel):
 class FacetHit(BaseModel):
     """A single facet aggregation result.
 
-    Returned by ``search`` when ``target="facets"``: one row per faceted
-    document metadata field, carrying that field's distinct values with
-    matching-document counts. The row count is fixed by the facet field
-    set and each value map is bounded by the field's vocabulary size, so
-    the response stays small regardless of how many documents the vault
-    holds.
+    Returned by ``search`` when ``target="facets"``: one row per
+    requested facet field, carrying the field's top distinct values
+    with matching-document counts plus the true distinct-value total.
+    The row count is fixed by the facet field set and each value map is
+    capped, so the response stays bounded regardless of how many
+    documents the vault holds or how densely they are tagged.
     """
 
     field: str = Field(
@@ -3304,11 +3350,23 @@ class FacetHit(BaseModel):
         description=(
             "Distinct non-null values of the field mapped to the count "
             "of matching documents, ordered by descending count and then "
-            "by value. Documents where the field is null are excluded "
-            "from the value counts but still counted in the response's "
-            "total_available; tag counts may sum above it (multi-tag "
-            "documents) or below it (untagged documents). Empty when no "
-            "matching document carries the field."
+            "by value, capped to the top facet_value_limit entries (50 "
+            "when unset). Fewer entries than total_distinct means the "
+            "enumeration was truncated. Documents where the field is "
+            "null are excluded from the value counts but still counted "
+            "in the response's total_available; tag counts may sum above "
+            "it (multi-tag documents) or below it (untagged documents). "
+            "Empty when no matching document carries the field."
+        )
+    )
+    total_distinct: int = Field(
+        description=(
+            "True count of the field's distinct non-null values within "
+            "the filter slice, computed before the value cap is applied. "
+            "Truncation occurred exactly when this exceeds the entry "
+            "count of values. Counts distinct values, unlike the "
+            "response's total_available, which counts matching "
+            "documents."
         )
     )
 

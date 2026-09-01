@@ -676,6 +676,15 @@ def test_discover_facet_block_documents_facet_field_vocabulary():
             f"the Facet enumeration block must name facet field {field!r} "
             "(inside the block, not merely elsewhere in the docstring)."
         )
+    # The truncation contract lives in the same block: the cap parameter
+    # and the truncation-visibility field must be documented where the
+    # facet caller reads, so a future doc edit cannot silently drop the
+    # bounded-by-default promise.
+    for term in ("facet_value_limit", "total_distinct"):
+        assert term in facet_block, (
+            f"the Facet enumeration block must document {term!r} -- the "
+            "value cap and its visibility are part of the facet contract."
+        )
 
 
 # ---------------------------------------------------------------------------
