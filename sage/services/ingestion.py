@@ -748,7 +748,7 @@ class IngestionService:
                 # the cheap answer here: a source inside the vault is retained in
                 # place, with no copy to avoid.
                 vault_relative = vault_source_store.retain_source(
-                    self._config.vault.id, storage_root, source_path
+                    self._config.vault.id, storage_root, source_path, delivered_hash
                 )
                 retained = True
             elif vault_source_store.source_exists(
@@ -1849,13 +1849,17 @@ class IngestionService:
         source-file integrity audit detects. Should it happen anyway, the
         re-delivery leaves the altered copy alone and the audit goes on reporting
         it mismatched, which is the outcome to want: the operator's evidence that
-        something else wrote to the store is not quietly erased. A re-delivery is
-        therefore not a repair. Restoring a drifted copy in place is a capability
-        this seam does not offer -- writing bytes back to a *chosen* path is not
-        something the port can express today, and a forced re-ingest cannot
-        stand in for it: the binding sees only that the bytes at its target
-        differ from the ones offered, which is indistinguishable from a name
-        collision, so it disambiguates rather than overwrites.
+        something else wrote to the store is not quietly erased.
+
+        A re-delivery is therefore not a repair, and deliberately remains one:
+        neither an unforced nor a forced ingest may restore a drifted copy, since
+        an ingest that silently repaired would erase that evidence for every
+        caller who never asked. Repair is a separate operation the operator
+        invokes on purpose, against the copy the integrity audit named -- it
+        writes the bytes back at the path the record already holds, through the
+        port's ``write_source``, rather than offering them to ``retain_source``,
+        which sees only that the bytes at its target differ from the ones offered
+        and disambiguates to a second path rather than overwriting.
         """
         vault_id = self._config.vault.id
         existing_id = (await self._store.find_documents_by_hashes([delivered_hash])).get(
@@ -1867,7 +1871,7 @@ class IngestionService:
                 vault_id, storage_root, existing.source_path
             ):
                 return existing.source_path, False
-        return store.retain_source(vault_id, storage_root, source_path), True
+        return store.retain_source(vault_id, storage_root, source_path, delivered_hash), True
 
     @contextlib.contextmanager
     def _project_source(

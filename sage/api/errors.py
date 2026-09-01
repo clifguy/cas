@@ -905,6 +905,36 @@ class SourceFileNotFoundError(SAGEError):
         )
 
 
+class RestoreTargetUnresolvedError(SAGEError):
+    """404: no single document claims the delivered bytes as its provenance.
+
+    A restore names its target by content: the bytes handed over must be the
+    ones some document was ingested from. Nothing matched, or more than one
+    document did, so there is no unambiguous copy to write over -- and writing
+    to a guessed path would corrupt a document that was intact. The caller
+    resolves it by supplying ``document_id``.
+    """
+
+    def __init__(self, content_hash: str, candidate_ids: list[str]) -> None:
+        if candidate_ids:
+            message = (
+                f"{len(candidate_ids)} documents share the delivered bytes' digest "
+                f"{content_hash}; supply document_id to name the one to restore."
+            )
+        else:
+            message = (
+                f"No document was ingested from the delivered bytes (digest "
+                f"{content_hash}). Deliver the original source bytes, or supply "
+                f"document_id to name the target explicitly."
+            )
+        super().__init__(
+            "restore_target_unresolved",
+            message,
+            404,
+            {"content_hash": content_hash, "candidate_ids": candidate_ids},
+        )
+
+
 class PathTraversalDeniedError(SAGEError):
     """400: output_path resolves outside vault storage_root (BH-038, BH-040)."""
 

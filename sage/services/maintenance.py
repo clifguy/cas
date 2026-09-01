@@ -8,6 +8,7 @@ three-layer service + router + MCP-tool shape.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
-from sage.api.errors import ReabstractAlreadyInFlightError
+from sage.api.errors import (
+    DocumentNotFoundError,
+    ReabstractAlreadyInFlightError,
+    RestoreTargetUnresolvedError,
+    SourceFileNotFoundError,
+)
 from sage.config import VaultConfig
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
@@ -36,6 +42,7 @@ from sage.models.schemas import (
     ReabstractSummaryEvent,
     SourceFileIntegrityEntry,
     SourceFileIntegrityReport,
+    SourceFileRestoreReport,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
     canonicalize_sha256,
@@ -301,6 +308,115 @@ class MaintenanceService:
             expected_content_hash=_expected_stored_hash(doc),
             observed_content_hash=observed,
         )
+
+    async def restore_vault_source_file(
+        self, source: str, document_id: str | None = None
+    ) -> SourceFileRestoreReport:
+        """Write delivered bytes back over a document's retained source file.
+
+        The repair counterpart of :meth:`verify_vault_source_files`. That audit
+        reports a retained copy that changed outside SAGE but cannot fix one: a
+        re-ingest offers bytes to ``retain_source``, which sees only that they
+        differ from what sits at its target -- indistinguishable from a name
+        collision -- and homes the document at a second path rather than
+        restoring the first. This writes to the path the record already names,
+        through the port's ``write_source``, so the document does not move.
+
+        SAGE keeps no pristine second copy of a source, so the caller supplies
+        the bytes. The target is resolved from their digest against recorded
+        provenance, which is what makes ``document_id`` unnecessary in the
+        ordinary case: the bytes identify the document that was made from them.
+        ``document_id`` pins the target when that resolution is ambiguous (two
+        documents share a provenance hash) or unavailable (a record predating
+        the delivered/stored digest split, whose provenance hash describes the
+        stored copy rather than the delivered bytes).
+
+        Writes nothing when the retained copy already hashes to its recorded
+        digest: an unconditional rewrite would re-stamp the copy under a binding
+        that rewrites at rest, churning the recorded digest for no repair.
+
+        Where a write does happen, the copy is re-read afterwards and the
+        record's ``stored_content_hash`` set to what it now holds. That refresh
+        is licensed by the same rule the ingest path applies: only an actual
+        write may update the as-stored digest. It matters under a binding that
+        rewrites at rest, where writing the original bytes back produces a
+        stored copy that is correct but freshly stamped, and so hashes to
+        neither the delivered digest nor the previous stored one. The
+        provenance hash is never touched -- the bytes the document was made
+        from have not changed.
+        """
+        delivered = Path(source).expanduser()
+        if not delivered.is_file():
+            raise SourceFileNotFoundError(source)
+        data = delivered.read_bytes()
+        # Digested from the bytes already in hand rather than by re-reading the
+        # file: the write needs them anyway, so a streamed digest of the same
+        # path would be a second pass over the same content.
+        delivered_hash = canonicalize_sha256(hashlib.sha256(data).hexdigest())
+
+        doc = await self._resolve_restore_target(delivered_hash, document_id)
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        store = resolve_stack_vault_source_store(get_stack_config())
+
+        expected = _expected_stored_hash(doc)
+        observed: str | None = None
+        if store.source_exists(self._vault_id, storage_root, doc.source_path):
+            observed = store.hash_source(self._vault_id, storage_root, doc.source_path)
+
+        if observed == expected:
+            return SourceFileRestoreReport(
+                vault_id=self._vault_id,
+                document_id=doc.id,
+                source_path=doc.source_path,
+                restored=False,
+                status="already_intact",
+                expected_content_hash=expected,
+                observed_content_hash=observed,
+                stored_content_hash=observed,
+            )
+
+        store.write_source(self._vault_id, storage_root, doc.source_path, data)
+        restored_hash = store.hash_source(self._vault_id, storage_root, doc.source_path)
+        if restored_hash != expected:
+            await self._graph_store.update_document(doc.id, {"stored_content_hash": restored_hash})
+
+        return SourceFileRestoreReport(
+            vault_id=self._vault_id,
+            document_id=doc.id,
+            source_path=doc.source_path,
+            restored=True,
+            status="restored",
+            expected_content_hash=expected,
+            observed_content_hash=observed,
+            stored_content_hash=restored_hash,
+        )
+
+    async def _resolve_restore_target(
+        self, delivered_hash: str, document_id: str | None
+    ) -> Document:
+        """The single document whose retained copy the delivered bytes belong to.
+
+        Enumerated rather than looked up by hash: the hash lookup collapses
+        several documents sharing a provenance digest to one arbitrary row, and
+        a restore silently picking among them could overwrite an intact
+        document's copy. Scanning is affordable here -- this is an operator-
+        invoked repair, and the audit that sends callers to it already walks
+        every document.
+        """
+        all_docs = await self._graph_store.list_all_documents()
+        if document_id is not None:
+            pinned = next((d for d in all_docs if d.id == document_id), None)
+            if pinned is None:
+                raise DocumentNotFoundError(document_id)
+            return pinned
+
+        matches = [d for d in all_docs if d.source_content_hash == delivered_hash]
+        if len(matches) != 1:
+            raise RestoreTargetUnresolvedError(delivered_hash, [d.id for d in matches])
+        return matches[0]
 
     async def optimize_content_store(
         self,

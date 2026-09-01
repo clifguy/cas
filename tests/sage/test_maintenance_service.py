@@ -30,6 +30,7 @@ import pytest
 
 from sage.adapters.interfaces import ContentStoreOptimizeSnapshot
 from sage.adapters.stubs import StubContentStore, StubGraphStore
+from sage.api.errors import RestoreTargetUnresolvedError, SourceFileNotFoundError
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, StalenessBasis
 from sage.models.schemas import (
@@ -998,6 +999,325 @@ async def test_verify_source_files_hash_mode_missing_stays_missing(
     entry = report.entries[0]
     assert entry.integrity_status == "missing"
     assert entry.observed_content_hash is None
+
+
+# ---------------------------------------------------------------------------
+# MaintenanceService.restore_vault_source_file
+# ---------------------------------------------------------------------------
+
+
+def _delivered(tmp_path: Path, name: str, body: bytes) -> str:
+    """A caller-side file holding the bytes to restore, outside the vault."""
+    p = tmp_path / "operator_copy" / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(body)
+    return str(p)
+
+
+async def test_restore_source_file_repairs_a_drifted_copy(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A retained copy that changed out of band is repaired by writing the
+    original bytes back, and the audit goes clean afterwards.
+
+    Anti-coincidental-pass: the rival this must exclude is the one that leaves
+    the audit equally clean while fixing nothing -- refreshing the recorded
+    digest over the drifted bytes. Two assertions exclude it. The recorded
+    digest is asserted *unchanged*, so an implementation that adopted the
+    drifted one fails; and the bytes now on disk are asserted equal to the
+    original, so an implementation that touched only the record fails. A green
+    audit on its own is satisfied by both rivals and is therefore not the claim.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_drift.md"
+    original = b"the bytes the caller delivered"
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(_src_doc("deadbeef_drift", _sha256_of(original), source_path=sp))
+
+    on_disk.write_bytes(b"something else wrote here")
+    pre = await maint.verify_vault_source_files(check_hashes=True)
+    assert pre.summary["hash_mismatch"] == 1, "the drift must be real before the repair"
+
+    report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", original))
+
+    assert report.restored is True
+    assert report.status == "restored"
+    assert report.source_path == sp
+    assert report.observed_content_hash == _sha256_of(b"something else wrote here")
+    assert on_disk.read_bytes() == original
+
+    doc = await gs.get_document("deadbeef_drift")
+    assert doc.source_content_hash == _sha256_of(original)
+    assert doc.stored_content_hash is None, (
+        "the filesystem binding keeps what it was handed, so nothing licensed a "
+        "digest refresh; a record rewritten here would be laundering, not repair"
+    )
+
+    post = await maint.verify_vault_source_files(check_hashes=True)
+    assert post.summary["hash_mismatch"] == 0
+
+
+async def test_restore_source_file_leaves_an_intact_copy_alone(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """Restoring over a copy that already matches its recorded digest writes
+    nothing.
+
+    Anti-coincidental-pass: an unconditional rewrite satisfies every
+    audit-is-clean assertion, so the claim is pinned on the file's modification
+    time and on ``restored is False``. Under a binding that rewrites at rest an
+    unconditional write would also re-stamp the copy and churn the recorded
+    digest for no repair, which is the cost this branch exists to avoid.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_intact.md"
+    body = b"undisturbed content"
+    on_disk = _write_source(minimal_config, sp, body)
+    await gs.insert_document(_src_doc("deadbeef_intact", _sha256_of(body), source_path=sp))
+    mtime_before = on_disk.stat().st_mtime_ns
+
+    report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", body))
+
+    assert report.restored is False
+    assert report.status == "already_intact"
+    assert report.observed_content_hash == report.expected_content_hash
+    assert on_disk.stat().st_mtime_ns == mtime_before, "an intact copy must not be rewritten"
+
+
+async def test_restore_source_file_leaves_an_intact_diverged_copy_alone(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A retained copy that is intact but *not* byte-identical to what the caller
+    delivered is still left alone.
+
+    The shape a store that rewrites its copy at rest produces: provenance
+    records the delivered bytes, the stored digest records the retained ones.
+
+    Anti-coincidental-pass: the rival is an intact-check that compares the
+    retained copy against ``source_content_hash`` instead of the stored digest.
+    It is indistinguishable from the correct implementation wherever the two
+    digests coincide -- which is every other test in this group, since the
+    filesystem binding retains what it was handed -- and here it declares an
+    intact copy drifted and rewrites it, re-stamping the copy and churning the
+    recorded digest on every call. The two recorded digests are asserted to
+    genuinely differ, so a fixture where they happened to agree cannot make this
+    pass by accident.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_diverged.md"
+    delivered = b"the bytes the caller handed over"
+    retained = b"the bytes the store chose to keep"
+    on_disk = _write_source(minimal_config, sp, retained)
+    doc = _src_doc(
+        "deadbeef_diverged",
+        _sha256_of(delivered),
+        source_path=sp,
+        stored_content_hash=_sha256_of(retained),
+    )
+    assert doc.source_content_hash != doc.stored_content_hash
+    await gs.insert_document(doc)
+    mtime_before = on_disk.stat().st_mtime_ns
+
+    report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", delivered))
+
+    assert report.restored is False
+    assert report.status == "already_intact"
+    assert on_disk.stat().st_mtime_ns == mtime_before
+    assert on_disk.read_bytes() == retained
+
+
+async def test_restore_source_file_lands_on_a_disambiguated_path(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A document a name collision moved aside is restored at *its* path, not at
+    the path its basename would otherwise have been homed to.
+
+    Covers the collision-disambiguated shape rather than a rival no other test
+    excludes. The rival -- routing the delivered file through the binding's
+    naming rule instead of reading the record's ``source_path`` -- is already
+    caught by the drifted-copy test above, whose delivered basename differs from
+    its recorded path. What is uncovered without this test is the *scenario*:
+    the plain name is held by a **different, intact document**, so a restore
+    that homed by basename would repair nothing and corrupt a bystander. That
+    consequence, not the mechanism, is what the second assertion pins, and it is
+    the reason this case is worth its own fixture: the same misroute that merely
+    writes to a stray path elsewhere destroys real content here.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    squatter_bytes = b"a different document that got the plain name first"
+    squatter = _write_source(minimal_config, "imports/deadbeef_twin.md", squatter_bytes)
+
+    original = b"the bytes of the document that was moved aside"
+    sp = "imports/deadbeef_twin_aabbccdd.md"
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(_src_doc("deadbeef_moved", _sha256_of(original), source_path=sp))
+    on_disk.write_bytes(b"drifted")
+
+    report = await maint.restore_vault_source_file(
+        _delivered(tmp_path, "deadbeef_twin.md", original)
+    )
+
+    assert report.source_path == sp
+    assert on_disk.read_bytes() == original
+    assert squatter.read_bytes() == squatter_bytes, (
+        "restoring a disambiguated document must not touch the file at its planned path"
+    )
+
+
+async def test_restore_source_file_replaces_a_missing_copy(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A retained copy that vanished is put back, not merely reported."""
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_gone.md"
+    body = b"deleted out of band"
+    on_disk = _write_source(minimal_config, sp, body)
+    await gs.insert_document(_src_doc("deadbeef_gone", _sha256_of(body), source_path=sp))
+    on_disk.unlink()
+
+    pre = await maint.verify_vault_source_files(check_hashes=True)
+    assert pre.summary["missing"] == 1
+
+    report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", body))
+
+    assert report.restored is True
+    assert report.observed_content_hash is None
+    assert on_disk.read_bytes() == body
+
+    post = await maint.verify_vault_source_files(check_hashes=True)
+    assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_restore_source_file_refuses_bytes_no_document_claims(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """Bytes matching no document's provenance are refused, and nothing is
+    written.
+
+    Anti-coincidental-pass: the assertion is that the *existing* copy is
+    untouched, not merely that an error was raised. An implementation that
+    guessed a target and wrote to it would raise nothing and quietly corrupt an
+    intact document -- the worst available failure -- and only a filesystem
+    assertion catches it.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_bystander.md"
+    body = b"an intact document"
+    on_disk = _write_source(minimal_config, sp, body)
+    await gs.insert_document(_src_doc("deadbeef_bystander", _sha256_of(body), source_path=sp))
+
+    with pytest.raises(RestoreTargetUnresolvedError):
+        await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", b"unknown bytes"))
+
+    assert on_disk.read_bytes() == body
+    post = await maint.verify_vault_source_files(check_hashes=True)
+    assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_restore_source_file_missing_delivered_source_raises_the_documented_error(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A ``source`` that names no readable file fails as the documented
+    ``source_file_not_found``, not as a bare OSError.
+
+    Anti-coincidental-pass: the error *type* is the claim. Reading the path
+    without a guard also fails, but as a ``FileNotFoundError`` that the MCP
+    boundary's ``except (SAGEError, ValueError)`` does not catch -- so the tool
+    would raise through its envelope while both its docstring and the OpenAPI
+    404 promise this code. Asserting ``pytest.raises(Exception)`` would pass
+    under either, which is exactly why the assertion names the class.
+    """
+    maint = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    with pytest.raises(SourceFileNotFoundError):
+        await maint.restore_vault_source_file(str(tmp_path / "never_written.md"))
+
+
+async def test_restore_source_file_refuses_an_ambiguous_match_without_a_pin(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """Two documents sharing a provenance digest cannot be told apart from the
+    bytes alone, so the restore refuses until named -- and the pin then restores
+    exactly one of them.
+
+    Anti-coincidental-pass: the second half is what gives the first half
+    meaning. Refusing is only correct if the pin works; a service that refused
+    unconditionally would pass a raises-only test. The untouched sibling is
+    asserted too, so the pin is shown to select rather than to restore both.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    body = b"content two documents were made from"
+    first = _write_source(minimal_config, "imports/deadbeef_twin_a.md", body)
+    second = _write_source(minimal_config, "imports/deadbeef_twin_b.md", body)
+    for doc_id, sp in (
+        ("deadbeef_twin_a", "imports/deadbeef_twin_a.md"),
+        ("deadbeef_twin_b", "imports/deadbeef_twin_b.md"),
+    ):
+        await gs.insert_document(_src_doc(doc_id, _sha256_of(body), source_path=sp))
+
+    first.write_bytes(b"drifted")
+    second.write_bytes(b"drifted")
+    delivered = _delivered(tmp_path, "x.md", body)
+
+    with pytest.raises(RestoreTargetUnresolvedError) as excinfo:
+        await maint.restore_vault_source_file(delivered)
+    assert sorted(excinfo.value.detail["candidate_ids"]) == [
+        "deadbeef_twin_a",
+        "deadbeef_twin_b",
+    ]
+
+    report = await maint.restore_vault_source_file(delivered, document_id="deadbeef_twin_a")
+
+    assert report.document_id == "deadbeef_twin_a"
+    assert first.read_bytes() == body
+    assert second.read_bytes() == b"drifted", "the pin must select one, not restore both"
+
+
+async def test_restore_source_file_lands_at_the_recorded_path(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """The bytes go to the path the record already names; no second copy appears
+    alongside it.
+
+    Anti-coincidental-pass: this is the whole reason the restore does not route
+    through ``retain_source``. That method would see bytes differing from what
+    sits at its target, read it as a name collision, and land the content at
+    ``imports/<stem>_<hash8>.md`` -- leaving the drifted copy in place and the
+    audit still red. Asserting the *absence of a sibling* is what distinguishes
+    a write-in-place from a collision-handled retain; asserting the bytes alone
+    would pass under both.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_place.md"
+    body = b"original bytes"
+    on_disk = _write_source(minimal_config, sp, body)
+    await gs.insert_document(_src_doc("deadbeef_place", _sha256_of(body), source_path=sp))
+    on_disk.write_bytes(b"drifted")
+
+    report = await maint.restore_vault_source_file(_delivered(tmp_path, "place.md", body))
+
+    imports = Path(minimal_config.vault.storage_root) / "imports"
+    assert report.source_path == sp
+    assert sorted(p.name for p in imports.glob("deadbeef_place*.md")) == ["deadbeef_place.md"]
+
+    doc = await gs.get_document("deadbeef_place")
+    assert doc.source_path == sp, "a restore must never re-home the document"
 
 
 # ============================================================================

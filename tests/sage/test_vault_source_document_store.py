@@ -216,6 +216,13 @@ def test_vsb_ds_031_retain_collision_identical_content_reuses(tmp_path):
     Boundary: dedup. Anti-coincidental-pass: assert the upload counter stays at
     zero — a binding that always re-uploaded would still return the right path
     but bump the counter.
+
+    The read counter carries a second, independent claim: the collision decision
+    is taken from a streamed digest of the stored copy, never by pulling that
+    copy down to hash it locally. ``source_reads == 0`` is the discriminator (an
+    implementation that downloads the copy makes it 1), and ``source_hashes ==
+    1`` is its positive control — without that, "no reads" would also be
+    satisfied by a binding that consulted the stored copy not at all.
     """
     fake = _FakeGraphClient()
     fake.sources["imports/x.md"] = b"same-bytes"
@@ -227,6 +234,8 @@ def test_vsb_ds_031_retain_collision_identical_content_reuses(tmp_path):
 
     assert rel == "imports/x.md"
     assert fake.source_uploads == 0  # reused, no upload
+    assert fake.source_reads == 0  # the stored copy was never materialized
+    assert fake.source_hashes == 1  # ...but it was consulted, by streamed digest
 
 
 def test_vsb_ds_032_retain_collision_different_content_suffixes(tmp_path):
@@ -235,7 +244,9 @@ def test_vsb_ds_032_retain_collision_different_content_suffixes(tmp_path):
 
     Boundary: disambiguation. Anti-coincidental-pass: assert the returned path
     carries the 8-char hash suffix, the new bytes land there, and the original
-    path's bytes are unchanged.
+    path's bytes are unchanged. As in VSB-DS-031, the read/hash counters pin
+    *how* the differing content was detected: by streamed digest, not by pulling
+    the stored copy down.
     """
     fake = _FakeGraphClient()
     fake.sources["imports/x.md"] = b"original"
@@ -249,6 +260,51 @@ def test_vsb_ds_032_retain_collision_different_content_suffixes(tmp_path):
     assert rel == f"imports/x_{expected_suffix}.md"
     assert fake.sources[rel] == b"different"
     assert fake.sources["imports/x.md"] == b"original"  # original untouched
+    assert fake.source_reads == 0
+    assert fake.source_hashes == 1
+
+
+def test_vsb_ds_067_retain_consumes_the_supplied_digest_rather_than_recomputing(tmp_path):
+    """``retain_source`` uses the digest its caller already computed for the
+    delivered bytes instead of taking a second one.
+
+    Anti-coincidental-pass: the supplied digest is deliberately wrong, so the
+    disambiguation suffix can only carry it if the parameter was actually read —
+    a binding that accepted the argument and silently recomputed would produce
+    the suffix of the real digest and fail. The default-to-computing path stays
+    covered by VSB-DS-030/031/032, none of which pass a digest.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/x.md"] = b"original"
+    store = _binding(fake)
+    external = tmp_path / "x.md"
+    external.write_bytes(b"different")
+
+    rel = store.retain_source("v", tmp_path, external, delivered_hash=f"sha256:{'0' * 64}")
+
+    assert rel == "imports/x_00000000.md"
+    assert rel != f"imports/x_{hashlib.sha256(b'different').hexdigest()[:8]}.md"
+    assert fake.sources[rel] == b"different"
+
+
+def test_vsb_ds_070_write_source_replaces_bytes_at_the_named_path(tmp_path):
+    """``write_source`` uploads the caller's bytes to the path the caller named,
+    replacing whatever the store held there.
+
+    Anti-coincidental-pass: assert the store still holds exactly one ``x``-keyed
+    entry. An implementation that delegated to ``retain_source`` would upload the
+    right bytes to a *disambiguated* key and leave the drifted copy at the named
+    path — the failure mode this primitive exists to avoid.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/x.md"] = b"drifted out of band"
+    store = _binding(fake)
+
+    store.write_source("v", tmp_path, "imports/x.md", b"original")
+
+    assert fake.source_uploads == 1
+    assert fake.sources["imports/x.md"] == b"original"
+    assert [k for k in fake.sources if k.startswith("imports/x")] == ["imports/x.md"]
 
 
 def test_vsb_ds_033_source_exists_true_and_false():

@@ -20,7 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from sage.vault_source_binding import _SOURCE_CHUNK_BYTES, FilesystemVaultSourceStore
+from sage.vault_source_binding import (
+    _SOURCE_CHUNK_BYTES,
+    FilesystemVaultSourceStore,
+    VaultRootEscapeError,
+)
 
 VID = "vault_x"  # ignored by the filesystem binding; present for signature parity.
 
@@ -164,6 +168,131 @@ def test_vsbb_005_retain_creates_missing_imports_dir(store, storage_root, tmp_pa
 
     assert (storage_root / "imports").is_dir()
     assert (storage_root / rel).read_bytes() == b"hi"
+
+
+# --------------------------------------------------------------------------- #
+# retain_source: caller-supplied delivered digest
+# --------------------------------------------------------------------------- #
+
+
+def test_vsbb_027_retain_with_supplied_digest_matches_the_computed_result(
+    store, storage_root, tmp_path
+):
+    """Handing ``retain_source`` the digest of the delivered bytes produces exactly
+    the placement it would have computed for itself.
+
+    The caller has already hashed the file (an ingest needs the digest before it
+    can ask whether these bytes are known), so the digest is threaded down rather
+    than taken a second time. Threading it must change nothing observable: same
+    disambiguation suffix, same bytes at the same path as VSBB-004.
+    """
+    a = _external(tmp_path, "doc.md", b"alpha")
+    store.retain_source(VID, storage_root, a)
+
+    b = _external(tmp_path / "other", "doc.md", b"bravo")
+    rel_b = store.retain_source(
+        VID, storage_root, b, delivered_hash=f"sha256:{hashlib.sha256(b'bravo').hexdigest()}"
+    )
+
+    assert rel_b == f"imports/doc_{hashlib.sha256(b'bravo').hexdigest()[:8]}.md"
+    assert (storage_root / rel_b).read_bytes() == b"bravo"
+
+
+def test_vsbb_028_retain_with_supplied_digest_still_reuses_identical_content(
+    store, storage_root, tmp_path
+):
+    """A supplied digest does not defeat the identical-content reuse rule: the
+    second retain of the same bytes returns the first copy's path and writes
+    nothing new."""
+    first = _external(tmp_path, "dup.md", b"same")
+    digest = f"sha256:{hashlib.sha256(b'same').hexdigest()}"
+    rel1 = store.retain_source(VID, storage_root, first, delivered_hash=digest)
+
+    second = _external(tmp_path / "again", "dup.md", b"same")
+    rel2 = store.retain_source(VID, storage_root, second, delivered_hash=digest)
+
+    assert rel1 == rel2 == "imports/dup.md"
+    assert list((storage_root / "imports").glob("dup*.md")) == [storage_root / "imports" / "dup.md"]
+
+
+def test_vsbb_029_retain_consumes_the_supplied_digest_rather_than_recomputing(
+    store, storage_root, tmp_path
+):
+    """The supplied digest is the one the collision decision uses -- the binding
+    trusts its caller and does not re-derive a digest from the bytes.
+
+    Anti-coincidental-pass: this is the only assertion that proves the parameter
+    is load-bearing. VSBB-027 passes a *correct* digest, so an implementation
+    that accepted the argument and silently recomputed would satisfy it. Here the
+    digest is deliberately wrong, so the disambiguation suffix can only carry the
+    supplied value if the supplied value was actually read. The
+    default-to-computing path stays covered by VSBB-001 through VSBB-005, none of
+    which pass a digest at all.
+    """
+    a = _external(tmp_path, "doc.md", b"alpha")
+    store.retain_source(VID, storage_root, a)
+
+    b = _external(tmp_path / "other", "doc.md", b"bravo")
+    wrong = f"sha256:{'0' * 64}"
+    rel_b = store.retain_source(VID, storage_root, b, delivered_hash=wrong)
+
+    assert rel_b == "imports/doc_00000000.md"
+    assert rel_b != f"imports/doc_{hashlib.sha256(b'bravo').hexdigest()[:8]}.md"
+    assert (storage_root / rel_b).read_bytes() == b"bravo"
+
+
+# --------------------------------------------------------------------------- #
+# write_source: bytes at a caller-named path
+# --------------------------------------------------------------------------- #
+
+
+def test_vsbb_032_write_source_replaces_bytes_at_the_named_path(store, storage_root, tmp_path):
+    """``write_source`` puts the caller's bytes at the path the caller named,
+    replacing whatever sat there.
+
+    Anti-coincidental-pass: the sibling-glob assertion is the whole claim. An
+    implementation that delegated to ``retain_source`` would also leave the right
+    bytes somewhere -- at ``imports/x_<hash8>.md``, disambiguated away from the
+    path the caller asked for, with the wrong bytes still at the target. Only
+    asserting that no sibling exists distinguishes a write-in-place from a
+    collision-handled retain.
+    """
+    ext = _external(tmp_path, "x.md", b"original")
+    rel = store.retain_source(VID, storage_root, ext)
+    (storage_root / rel).write_bytes(b"drifted out of band")
+
+    store.write_source(VID, storage_root, rel, b"original")
+
+    assert (storage_root / rel).read_bytes() == b"original"
+    assert list((storage_root / "imports").glob("x*.md")) == [storage_root / "imports" / "x.md"]
+
+
+def test_vsbb_033_write_source_creates_missing_parents(store, storage_root):
+    """A named path whose parent directory does not exist yet is written anyway --
+    the restore of a copy whose whole tree went missing must not fail on the
+    directory."""
+    assert not (storage_root / "imports").exists()
+
+    store.write_source(VID, storage_root, "imports/new.md", b"data")
+
+    assert (storage_root / "imports" / "new.md").read_bytes() == b"data"
+
+
+def test_vsbb_034_write_source_refuses_to_escape_the_storage_root(store, storage_root, tmp_path):
+    """A caller-named path that traverses out of the storage root is refused.
+
+    Anti-coincidental-pass: the assertion is on the *filesystem outside the root*,
+    not merely on the exception type. A guard that resolved the path but never
+    compared it would raise nothing and write the file; a guard that raised after
+    writing would satisfy a ``pytest.raises`` check alone.
+    """
+    outside = storage_root.parent / "escape.md"
+    assert not outside.exists()
+
+    with pytest.raises(VaultRootEscapeError):
+        store.write_source(VID, storage_root, "../escape.md", b"data")
+
+    assert not outside.exists()
 
 
 # --------------------------------------------------------------------------- #
