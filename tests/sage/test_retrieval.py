@@ -4992,11 +4992,14 @@ async def test_catalog_facets_total_distinct_on_small_and_empty_vaults(
     """total_distinct is always populated: equal to the value count when
     nothing was truncated, zero on the empty vault. Trap coverage: an
     implementation that populates the total only when truncating (or
-    models it nullable and drops it) fails on the untruncated rows.
+    models it nullable and drops it) fails on the untruncated rows; one
+    that returns zero facet rows on an empty vault fails the field-set
+    guard, without which the all() below is vacuously true.
     """
     empty = await retrieval_service.discover(
         DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
     )
+    assert [hit.field for hit in empty.results] == list(_FACET_FIELDS)
     assert all(hit.values == {} and hit.total_distinct == 0 for hit in empty.results)
 
     await _seed_facet_docs(graph_store)

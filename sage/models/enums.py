@@ -183,11 +183,11 @@ class RetrievalTarget(StrEnum):
     the dispatch to first-class edge enumeration: results are ``EdgeHit``
     rows carrying ``edge_id``, endpoints, edge_type, anchor versions,
     rationale, and retraction state. `facets` switches to vocabulary
-    aggregation: results are ``FacetHit`` rows carrying a fixed set of
-    document metadata fields' top distinct values with counts, each row
-    capped to a per-field value limit and carrying the field's true
-    distinct-value total, so the response stays bounded at any corpus
-    size and tagging density. `edges` and `facets` are only valid in
+    aggregation: results are ``FacetHit`` rows carrying the requested
+    facet fields' top distinct values with counts (every facet field
+    when none are selected), each row capped to a per-field value limit
+    and carrying the field's true distinct-value total, so the response
+    stays bounded at any corpus size and tagging density. `edges` and `facets` are only valid in
     combination with ``mode="catalog"``; other modes are rejected at
     request validation.
     """

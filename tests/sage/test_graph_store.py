@@ -1075,22 +1075,33 @@ async def test_query_document_facets_total_distinct_uncapped_and_boundary(graph_
 
 
 async def test_query_document_facets_fields_subset_skips_unrequested(graph_store):
-    """A fields subset returns exactly the requested facet keys.
+    """A fields subset returns exactly the requested facet keys, and
+    only the requested aggregations run.
 
     Trap coverage: an implementation that always returns all five keys
-    fails the exact-key-set assertion. Scope: the returned key set is
-    the contract this test pins; that the unrequested aggregation
-    queries are skipped (not run and filtered) follows from the same
-    loop iterating the requested subset, and is not observable at this
-    seam.
+    fails the exact-key-set assertion; one that aggregates all five and
+    filters post hoc fails the query count -- exactly two per-field
+    aggregation queries may run for a two-field subset.
     """
     await _seed_wide_tag_fixture(graph_store)
 
-    facets, total = await graph_store.query_document_facets(fields=["doc_type", "tags"])
+    aggregation_queries = []
+    original_fetch = graph_store._fetch_tuples
+
+    async def counting_fetch(sql, params):
+        aggregation_queries.append(sql)
+        return await original_fetch(sql, params)
+
+    graph_store._fetch_tuples = counting_fetch
+    try:
+        facets, total = await graph_store.query_document_facets(fields=["doc_type", "tags"])
+    finally:
+        graph_store._fetch_tuples = original_fetch
 
     assert set(facets.keys()) == {"doc_type", "tags"}
     assert total == 4
     assert facets["tags"].total_distinct == 8
+    assert len(aggregation_queries) == 2, "unrequested facet fields must not be aggregated"
 
 
 async def test_query_document_facets_value_limit_composes_with_filters(graph_store):

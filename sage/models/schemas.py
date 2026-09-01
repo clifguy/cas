@@ -3145,7 +3145,8 @@ class DiscoverRequest(BaseModel):
 
         # Target=facets rejects every parameter without facet semantics,
         # including the pagination and payload-shape knobs: a facets
-        # response is one fixed row per facet field, so limit, offset,
+        # response carries at most one row per facet field, bounded by
+        # the facet field set rather than the corpus, so limit, offset,
         # sort, and response_mode have nothing to act on. Only
         # explicitly non-default values are flagged so callers can
         # leave the other knobs alone without triggering this branch.
@@ -3387,7 +3388,7 @@ class DiscoverResponse(BaseModel):
             "Retrieval hits, ordered by descending relevance "
             "(semantic/keyword) or by sort_by (catalog) for documents; "
             "ordered by edge created_at DESC for edges; one FacetHit "
-            "row per faceted field for facets. Row type is "
+            "row per requested facet field for facets. Row type is "
             "discriminated by `target`."
         )
     )
