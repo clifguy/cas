@@ -29,6 +29,7 @@ from sage.api.errors import (
     MisplacedMetadataError,
     MissingDocumentIdentifierError,
     MissingIngestSourceError,
+    RestoreSourceNotAbsoluteError,
     SAGEError,
     translate_validation_error,
 )
@@ -2648,7 +2649,7 @@ def register_sage_tools(
     @mcp.tool(name="maint_restore_vault_source_file", annotations=WRITE_DESTRUCTIVE)
     async def restore_vault_source_file(
         vault_id: str,
-        source: str,
+        source: str | None = None,
         document_id: str | None = None,
         transfer_token: str | None = None,
     ) -> dict:
@@ -2688,19 +2689,34 @@ def register_sage_tools(
         upload_required``), the caller's environment delivers the bytes, and the
         call is repeated with the returned ``transfer_token``.
 
+        A pin says which copy to write over; it does not license writing
+        arbitrary bytes there. The delivered digest is checked against the
+        pinned document's provenance, so delivering the wrong file under a pin
+        is refused rather than overwriting the copy and re-describing the record
+        to match.
+
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``restore_target_unresolved`` (404): no document, or more than one,
           claims the delivered bytes; ``detail.candidate_ids`` names them.
         - ``document_not_found`` (404): the supplied document_id names no document.
         - ``source_file_not_found`` (404): no readable file at ``source``.
+        - ``restore_provenance_mismatch`` (400): the pinned document was not
+          ingested from the delivered bytes.
+        - ``restore_source_not_absolute`` (400): ``source`` is not an absolute path.
+        - ``ambiguous_ingest_source`` (400): both ``source`` and
+          ``transfer_token`` were supplied.
+        - ``missing_ingest_source`` (400): neither was supplied.
+        - ``path_traversal_denied`` (400): the document's recorded source_path
+          cannot be written at the path it names.
 
         Args:
             vault_id: Target vault identifier.
-            source: Absolute path to a file holding the originally-ingested bytes.
+            source: Absolute path to a file holding the originally-ingested
+                bytes. Exactly one of ``source`` or ``transfer_token``.
             document_id: Optional pin naming the document to restore.
             transfer_token: Completion handle from a prior ``upload_required``
-                recipe; supply instead of re-resolving ``source``.
+                recipe; supply instead of ``source``.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2712,6 +2728,15 @@ def register_sage_tools(
                     f"Vault {vault_id!r} was initialized without a "
                     "registry_service; maintenance_service is unavailable."
                 )
+            # Exactly one of the two delivery shapes, matching
+            # ``ingest_document``'s contract verbatim: a caller generalizing
+            # that tool's completion shape must not find this one narrower, and
+            # supplying both must not silently resolve to one of them.
+            if source is not None and transfer_token is not None:
+                raise AmbiguousIngestSourceError()
+            if source is None and transfer_token is None:
+                raise MissingIngestSourceError()
+
             if transfer_token is not None:
                 entry = get_transfer_store().consume_upload(transfer_token, vault_id)
                 try:
@@ -2722,10 +2747,19 @@ def register_sage_tools(
                     entry.cleanup()
                 return serialize(report)
 
-            # Same caller-local gate the ingest tool applies: an absolute path
-            # names a file on the *caller's* machine, readable by the server
-            # only when co-located.
-            if Path(source).is_absolute() and not sage.mcp_init.caller_local_filesystem_reachable():
+            # Absoluteness is settled before the delivery gate, not after, so
+            # both profiles refuse a relative path the same way. Unlike an
+            # ingest, a non-absolute path has no fallback meaning here -- there
+            # is no vault-relative reading of "the bytes to restore" -- and
+            # deciding it below the gate would mint an upload recipe for a path
+            # the caller's environment cannot resolve either.
+            if not Path(source).is_absolute():
+                raise RestoreSourceNotAbsoluteError(source)
+
+            # Same caller-local gate the ingest tool applies: the path names a
+            # file on the *caller's* machine, readable by the server only when
+            # co-located.
+            if not sage.mcp_init.caller_local_filesystem_reachable():
                 return serialize(mint_upload_recipe(vault_id, [source]))
 
             report = await v.maintenance_service.restore_vault_source_file(

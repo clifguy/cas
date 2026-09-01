@@ -559,7 +559,7 @@ async def test_mpi_017_restore_repairs_a_drifted_copy_under_either_binding(mpi_v
 
     report = await _restore(services, config, str(src))
 
-    assert report.restored is True
+    assert report.status == "restored"
     assert report.source_path == retained_path, "a restore must not re-home the document"
 
     after = await _audit(services, config)

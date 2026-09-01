@@ -295,6 +295,84 @@ def test_vsbb_034_write_source_refuses_to_escape_the_storage_root(store, storage
     assert not outside.exists()
 
 
+def test_vsbb_035_write_source_refuses_an_absolute_path(store, storage_root, tmp_path):
+    """A caller-named path that is absolute names somewhere outside the vault's
+    tree outright and is refused.
+
+    Distinct from VSBB-034's ``..`` walk: an absolute path never reaches the
+    ``storage_root / source_path`` join as a relative segment at all -- pathlib
+    discards the left operand -- so a containment guard placed after that join
+    would be resolving the wrong thing entirely.
+    """
+    outside = tmp_path / "absolute_escape.md"
+    assert not outside.exists()
+
+    with pytest.raises(VaultRootEscapeError):
+        store.write_source(VID, storage_root, str(outside), b"data")
+
+    assert not outside.exists()
+
+
+def test_vsbb_037_retain_source_refuses_a_dangling_symlinked_destination(
+    store, storage_root, tmp_path
+):
+    """Retention refuses to copy through a symlink sitting at the path it chose.
+
+    Anti-coincidental-pass: the link is *dangling*, and that is the whole design
+    of the fixture. A link to an existing file reports present, so retention
+    takes its collision branch and either reuses or writes to a disambiguated
+    path — the link is never followed and the test would prove nothing. A
+    dangling link reports absent, so the collision branch is skipped entirely
+    and ``shutil.copy2`` creates the target: the bytes land wherever the link
+    points while the returned vault-relative path claims they are inside the
+    vault. The assertion is therefore on a file *outside the storage root*, not
+    on the exception type — a guard that raised after copying would satisfy a
+    raises-only check.
+
+    The sibling of VSBB-036 on the ingest path. Both write through
+    ``_assert_not_symlinked`` so the two cannot drift apart; that they are
+    separate methods with separate reasons for choosing a destination is exactly
+    why hardening one and not the other was reachable.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    outside = tmp_path / "outside_the_vault.txt"
+    (imports / "note.md").symlink_to(outside)
+    assert not outside.exists(), "the link must dangle for this to be the uncollided path"
+
+    ext = _external(tmp_path, "note.md", b"ATTACKER BYTES")
+
+    with pytest.raises(VaultRootEscapeError):
+        store.retain_source(VID, storage_root, ext)
+
+    assert not outside.exists(), "no file may be created outside the storage root"
+
+
+def test_vsbb_036_write_source_refuses_a_symlinked_destination(store, storage_root, tmp_path):
+    """A symlink at the named path is refused rather than followed.
+
+    Anti-coincidental-pass: containment alone does not catch this, and asserting
+    only that an exception was raised would not show why. The link's target sits
+    *inside* the source root, so it passes the realpath containment check that
+    VSBB-034 exercises; the write would land on the target while the named path
+    stayed drifted, silently overwriting a second document's retained copy. The
+    victim's bytes are the assertion. The operation's precondition is that
+    something other than SAGE wrote to the store, so a planted link is in scope.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    victim = imports / "victim.md"
+    victim.write_bytes(b"VICTIM ORIGINAL")
+    link = imports / "link.md"
+    link.symlink_to(victim)
+
+    with pytest.raises(VaultRootEscapeError):
+        store.write_source(VID, storage_root, "imports/link.md", b"ATTACKER BYTES")
+
+    assert victim.read_bytes() == b"VICTIM ORIGINAL", "the link's target must be untouched"
+    assert link.is_symlink()
+
+
 # --------------------------------------------------------------------------- #
 # read-back: exists / size / read / hash
 # --------------------------------------------------------------------------- #

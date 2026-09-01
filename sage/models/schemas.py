@@ -4116,18 +4116,12 @@ class SourceFileRestoreReport(BaseModel):
             "document."
         )
     )
-    restored: bool = Field(
-        description=(
-            "Whether bytes were actually written. False when the retained copy "
-            "already matched its recorded digest and nothing needed repair."
-        )
-    )
     status: Literal["restored", "already_intact"] = Field(
         description=(
-            "`restored` — the retained copy was missing or mismatched and the "
-            "delivered bytes were written over it. `already_intact` — the "
-            "retained copy already hashed to its recorded digest and the store "
-            "was left untouched."
+            "Whether bytes were written. `restored` — the retained copy was "
+            "missing or mismatched and the delivered bytes were written over "
+            "it. `already_intact` — the retained copy already hashed to its "
+            "recorded digest and the store was left untouched."
         )
     )
     expected_content_hash: Sha256Str = Field(

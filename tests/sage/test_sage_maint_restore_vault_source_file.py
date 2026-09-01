@@ -62,7 +62,6 @@ async def test_restore_vault_source_file_returns_report_dict(minimal_vault_confi
             assert report.vault_id == vault_id
             assert report.document_id == ingested["id"]
             assert report.source_path == ingested["source_path"]
-            assert report.restored is True
             assert report.status == "restored"
             assert retained.read_bytes() == original
         finally:

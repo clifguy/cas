@@ -2327,6 +2327,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SourceFileRestoreReport"
+        "400":
+          description: >-
+            `restore_provenance_mismatch`: the pinned document was not
+            ingested from the delivered bytes.
+            `restore_source_not_absolute`: the source path is not absolute.
+            `path_traversal_denied`: the document's source_path cannot be
+            written at the path it names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `vault_not_found`: no vault registered with that id.
@@ -6679,7 +6690,6 @@ components:
           vault_id,
           document_id,
           source_path,
-          restored,
           status,
           expected_content_hash,
           stored_content_hash,
@@ -6707,20 +6717,14 @@ components:
             The document's vault-relative source_path — the path the bytes
             were written to. Unchanged by the restore, which never re-homes
             a document.
-        restored:
-          type: boolean
-          description: >-
-            Whether bytes were actually written. False when the retained
-            copy already matched its recorded digest and nothing needed
-            repair.
         status:
           type: string
           enum: [restored, already_intact]
           description: >-
-            `restored` — the retained copy was missing or mismatched and
-            the delivered bytes were written over it. `already_intact` —
-            the retained copy already hashed to its recorded digest and the
-            store was left untouched.
+            Whether bytes were written. `restored` — the retained copy was
+            missing or mismatched and the delivered bytes were written over
+            it. `already_intact` — the retained copy already hashed to its
+            recorded digest and the store was left untouched.
         expected_content_hash:
           type: string
           description: >-

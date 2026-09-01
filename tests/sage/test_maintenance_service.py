@@ -30,7 +30,12 @@ import pytest
 
 from sage.adapters.interfaces import ContentStoreOptimizeSnapshot
 from sage.adapters.stubs import StubContentStore, StubGraphStore
-from sage.api.errors import RestoreTargetUnresolvedError, SourceFileNotFoundError
+from sage.api.errors import (
+    RestoreProvenanceMismatchError,
+    RestoreSourceNotAbsoluteError,
+    RestoreTargetUnresolvedError,
+    SourceFileNotFoundError,
+)
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, StalenessBasis
 from sage.models.schemas import (
@@ -1042,7 +1047,6 @@ async def test_restore_source_file_repairs_a_drifted_copy(
 
     report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", original))
 
-    assert report.restored is True
     assert report.status == "restored"
     assert report.source_path == sp
     assert report.observed_content_hash == _sha256_of(b"something else wrote here")
@@ -1067,7 +1071,7 @@ async def test_restore_source_file_leaves_an_intact_copy_alone(
 
     Anti-coincidental-pass: an unconditional rewrite satisfies every
     audit-is-clean assertion, so the claim is pinned on the file's modification
-    time and on ``restored is False``. Under a binding that rewrites at rest an
+    time and on the reported ``status``. Under a binding that rewrites at rest an
     unconditional write would also re-stamp the copy and churn the recorded
     digest for no repair, which is the cost this branch exists to avoid.
     """
@@ -1082,7 +1086,6 @@ async def test_restore_source_file_leaves_an_intact_copy_alone(
 
     report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", body))
 
-    assert report.restored is False
     assert report.status == "already_intact"
     assert report.observed_content_hash == report.expected_content_hash
     assert on_disk.stat().st_mtime_ns == mtime_before, "an intact copy must not be rewritten"
@@ -1126,7 +1129,6 @@ async def test_restore_source_file_leaves_an_intact_diverged_copy_alone(
 
     report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", delivered))
 
-    assert report.restored is False
     assert report.status == "already_intact"
     assert on_disk.stat().st_mtime_ns == mtime_before
     assert on_disk.read_bytes() == retained
@@ -1190,7 +1192,7 @@ async def test_restore_source_file_replaces_a_missing_copy(
 
     report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", body))
 
-    assert report.restored is True
+    assert report.status == "restored"
     assert report.observed_content_hash is None
     assert on_disk.read_bytes() == body
 
@@ -1224,6 +1226,122 @@ async def test_restore_source_file_refuses_bytes_no_document_claims(
     assert on_disk.read_bytes() == body
     post = await maint.verify_vault_source_files(check_hashes=True)
     assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_restore_source_file_pin_refuses_bytes_the_document_was_not_made_from(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A pin names which copy to write over; it does not license writing
+    arbitrary bytes there.
+
+    Without the provenance check on the pinned branch, this call overwrites the
+    drifted copy with an unrelated file *and* the post-write refresh
+    re-describes the record to match, so the integrity audit reports the
+    document healthy while its stored bytes are something else entirely — the
+    exact outcome every docstring on this path says repair must never produce,
+    reached through a documented, encouraged input.
+
+    Anti-coincidental-pass: the audit is run and asserted *red* afterwards, and
+    the on-disk bytes are asserted to be the drifted ones. Raising alone is not
+    the claim — an implementation that refused after writing, or that refused
+    but left a laundered record behind, satisfies a `pytest.raises` check and
+    fails these.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_pinned.md"
+    original = b"the bytes this document was ingested from"
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(
+        _src_doc(
+            "deadbeef_pinned",
+            _sha256_of(original),
+            source_path=sp,
+            stored_content_hash=_sha256_of(original),
+        )
+    )
+    drifted = b"something else wrote here"
+    on_disk.write_bytes(drifted)
+
+    with pytest.raises(RestoreProvenanceMismatchError):
+        await maint.restore_vault_source_file(
+            _delivered(tmp_path, "unrelated.md", b"COMPLETELY UNRELATED CONTENT"),
+            document_id="deadbeef_pinned",
+        )
+
+    assert on_disk.read_bytes() == drifted, "the drifted copy must not be overwritten"
+    doc = await gs.get_document("deadbeef_pinned")
+    assert doc.stored_content_hash == _sha256_of(original), "the record must not move"
+    report = await maint.verify_vault_source_files(check_hashes=True)
+    assert report.summary["hash_mismatch"] == 1, (
+        "the drift must stay reported; going green here is the laundering this guard exists to stop"
+    )
+
+
+async def test_restore_source_file_pre_split_pin_writes_but_does_not_launder_the_record(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """The pre-split exemption lets a pin through unverified, and the refresh
+    rule is what stops that from laundering the record.
+
+    A document ingested before delivered and stored digests were recorded
+    separately carries a null ``stored_content_hash``, and its provenance hash
+    describes the stored copy rather than the delivered bytes — so a caller
+    re-delivering the original cannot match it, which is the case the pin exists
+    to serve. The provenance check must therefore be skipped, leaving the write
+    unguarded.
+
+    Anti-coincidental-pass: this test isolates the *second* guard. The write is
+    asserted to have happened (so the pre-split exemption is genuinely
+    exercised, not short-circuited by the first guard), and the record is
+    asserted unchanged with the audit still red — which only holds if the
+    refresh is withheld when the store returns exactly what it was handed. An
+    implementation carrying the first guard alone passes the mismatch test above
+    and fails this one.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_presplit.md"
+    recorded = b"what the record's provenance hash describes"
+    on_disk = _write_source(minimal_config, sp, recorded)
+    await gs.insert_document(_src_doc("deadbeef_presplit", _sha256_of(recorded), source_path=sp))
+    assert (await gs.get_document("deadbeef_presplit")).stored_content_hash is None
+    on_disk.write_bytes(b"drifted")
+
+    wrong = b"not this document's bytes at all"
+    await maint.restore_vault_source_file(
+        _delivered(tmp_path, "wrong.md", wrong), document_id="deadbeef_presplit"
+    )
+
+    assert on_disk.read_bytes() == wrong, "the pre-split exemption must let the write through"
+    doc = await gs.get_document("deadbeef_presplit")
+    assert doc.stored_content_hash is None, (
+        "a store that returned what it was handed licenses no digest refresh"
+    )
+    report = await maint.verify_vault_source_files(check_hashes=True)
+    assert report.summary["hash_mismatch"] == 1, (
+        "the mismatch must stay visible so the operator sees the repair did not take"
+    )
+
+
+async def test_restore_source_file_rejects_a_non_absolute_source(
+    graph_store, minimal_config, stub_content_store
+):
+    """A relative source has no defined meaning on this operation and is refused
+    rather than resolved against the server's working directory.
+
+    On a deployed profile that directory is the container's, not the caller's,
+    so a relative path silently reads a server-side file — and it slips past the
+    caller-local delivery gate, which triggers on an absolute path.
+    """
+    maint = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    with pytest.raises(RestoreSourceNotAbsoluteError):
+        await maint.restore_vault_source_file("relative/path.md")
+    with pytest.raises(RestoreSourceNotAbsoluteError):
+        await maint.restore_vault_source_file("~/originals/x.md")
 
 
 async def test_restore_source_file_missing_delivered_source_raises_the_documented_error(

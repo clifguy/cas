@@ -177,6 +177,16 @@ async def maint_verify_vault_source_files(
     "/admin/restore-source-file",
     response_model=SourceFileRestoreReport,
     responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`restore_provenance_mismatch`: the pinned document was not "
+                "ingested from the delivered bytes. "
+                "`restore_source_not_absolute`: the source path is not absolute. "
+                "`path_traversal_denied`: the document's source_path cannot be "
+                "written at the path it names."
+            ),
+        },
         404: {
             "model": ErrorResponse,
             "description": (

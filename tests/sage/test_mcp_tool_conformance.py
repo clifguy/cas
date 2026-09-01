@@ -230,9 +230,11 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # the same reason: the restore takes bytes from the caller's own
     # filesystem, so a server that cannot read it returns an upload recipe
     # and is called back with the recipe's token. The REST surface has no
-    # counterpart on the JSON ``SourceFileRestoreRequest`` -- an HTTP caller
-    # delivering bytes uses the discrete multipart upload endpoint -- so
-    # this is a permanent MCP-side divergence by design, not pending
+    # counterpart on the JSON ``SourceFileRestoreRequest``, for the same
+    # reason ``IngestRequest`` has none: the two-phase handshake is an
+    # MCP-transport affordance, and an HTTP caller either reaches the
+    # server's filesystem or does not. Surface parity with ingest rather
+    # than a gap -- a permanent MCP-side divergence by design, not pending
     # remediation.
     ("sage_core", "maint_restore_vault_source_file"): frozenset({"transfer_token"}),
     # The eleven filter keys are tripwires, not functional arguments, on

@@ -26,7 +26,11 @@ import httpx
 import pytest
 
 from sage.config import StackDocumentStoreConfig, VaultConfig
-from sage.vault_source_binding import DiscoveredVault, DocumentStoreVaultSourceStore
+from sage.vault_source_binding import (
+    DiscoveredVault,
+    DocumentStoreVaultSourceStore,
+    VaultRootEscapeError,
+)
 from sage.vault_source_document_store import (
     SharePointGraphClient,
     build_sharepoint_graph_client,
@@ -305,6 +309,28 @@ def test_vsb_ds_070_write_source_replaces_bytes_at_the_named_path(tmp_path):
     assert fake.source_uploads == 1
     assert fake.sources["imports/x.md"] == b"original"
     assert [k for k in fake.sources if k.startswith("imports/x")] == ["imports/x.md"]
+
+
+def test_vsb_ds_071_write_source_refuses_paths_that_leave_the_vault_tree(tmp_path):
+    """``write_source`` refuses an absolute path or one walking out of the tree,
+    on this binding too.
+
+    Anti-coincidental-pass: the port's contract promises this refusal, and until
+    now only the filesystem binding delivered it — a containment check written as
+    a realpath comparison has nothing to compare against here, since this binding
+    has no local tree. The segments would otherwise be handed to a URL builder
+    that joins them verbatim. The upload counter is asserted at zero, so a
+    binding that refused *after* uploading fails as well.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+
+    for bad in ("../escape.md", "imports/../../escape.md", "/etc/passwd"):
+        with pytest.raises(VaultRootEscapeError):
+            store.write_source("v", tmp_path, bad, b"data")
+
+    assert fake.source_uploads == 0
+    assert fake.sources == {}
 
 
 def test_vsb_ds_033_source_exists_true_and_false():

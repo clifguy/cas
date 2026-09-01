@@ -41,7 +41,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol, runtime_checkable
 
 from sage.config import (
@@ -121,6 +121,57 @@ def hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _assert_plain_vault_relative(source_path: str) -> None:
+    """Require ``source_path`` to be a plain relative path inside the vault.
+
+    The shape check every binding owes :meth:`VaultSourceStore.write_source`,
+    which takes its destination from the caller rather than deriving one. An
+    absolute path names somewhere outside the vault's tree outright; a ``..``
+    component walks out of it. Neither is expressible as a retained source's
+    path, so both are refused before any binding-specific handling.
+
+    Shared rather than left to each binding because only one of them has a local
+    tree to resolve against: the document-store binding addresses sources by
+    vault id and would otherwise hand the segments to a URL builder that joins
+    them verbatim, giving the port's containment promise no implementation at
+    all on that side.
+    """
+    candidate = PurePosixPath(source_path)
+    if candidate.is_absolute() or Path(source_path).is_absolute():
+        raise VaultRootEscapeError(
+            f"refusing to write {source_path!r}: a retained source's path is "
+            f"vault-relative, and this one is absolute."
+        )
+    if ".." in candidate.parts:
+        raise VaultRootEscapeError(
+            f"refusing to write {source_path!r}: the path walks out of the vault's source tree."
+        )
+
+
+def _assert_not_symlinked(dest: Path) -> None:
+    """Refuse a destination that is a symlink rather than writing through it.
+
+    Every write the filesystem binding performs lands at a path it chose or was
+    handed, and in both cases a link sitting there redirects the bytes somewhere
+    the binding did not intend: to a second document's retained copy when the
+    target is inside the tree, or -- for a *dangling* link, which reports as
+    absent so no collision handling engages -- to a file created wherever the
+    link points, outside the vault entirely, while the returned vault-relative
+    path claims the bytes are inside it.
+
+    Realpath containment does not cover this on its own. A link into the tree
+    resolves within the root and passes; a dangling one has nothing to resolve
+    against yet. Shared by both write paths so the two cannot drift apart: the
+    hazard is a property of writing at a filesystem path, not of either method's
+    particular reason for choosing one.
+    """
+    if dest.is_symlink():
+        raise VaultRootEscapeError(
+            f"refusing to write {dest}: the destination is a symlink, so the write "
+            f"would land on its target rather than at the path named."
+        )
 
 
 def _disambiguation_token(canonical_hash: str) -> str:
@@ -659,6 +710,7 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # apart, since anything reasoning about placement without retaining
         # reads the latter.
         dest = storage_root / self.planned_source_path(vault_id, storage_root, source_path)
+        _assert_not_symlinked(dest)
         if dest.exists():
             # The caller's digest when it has one, so the delivered bytes are
             # hashed once across the whole ingest rather than once here and once
@@ -681,10 +733,15 @@ class FilesystemVaultSourceStore(VaultSourceStore):
     def write_source(
         self, vault_id: str, storage_root: Path, source_path: str, data: bytes
     ) -> None:
+        _assert_plain_vault_relative(source_path)
+        dest = storage_root / source_path
+        # This operation's precondition is that something other than SAGE wrote
+        # to the store, so a planted link is squarely in scope here.
+        _assert_not_symlinked(dest)
         # Containment is checked against the *source root*, not the bound vault
         # root: the caller names a vault-relative path, and the guarantee owed is
         # that it stays inside the tree this vault's sources live in.
-        dest = resolve_and_assert_within_root(storage_root / source_path, storage_root)
+        dest = resolve_and_assert_within_root(dest, storage_root)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         # Same CAS-ADR-016 sanitization ``retain_source`` applies: a restored
@@ -875,8 +932,14 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
     ) -> None:
         # A direct upload to the named key. The store's own create-or-replace on
         # a path is the whole primitive here; ``storage_root`` is unused, as it
-        # is for every other source operation under this binding, and there is no
-        # local tree for a path to escape.
+        # is for every other source operation under this binding.
+        #
+        # The shape check is not redundant with the filesystem binding's: there
+        # is no local tree here for a resolver to catch an escape against, and
+        # the client's URL builder joins path segments verbatim -- so without it
+        # the port's containment promise would have no implementation at all on
+        # this side.
+        _assert_plain_vault_relative(source_path)
         self._get_client().upload_source(vault_id, source_path, data)  # type: ignore[attr-defined]
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
