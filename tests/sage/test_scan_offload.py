@@ -192,10 +192,10 @@ async def test_scan_truncates_at_file_cap(minimal_config, tmp_path, monkeypatch)
     _make_tree(scan_dir, 7)
 
     hash_calls = []
-    real_hash = scan_module._compute_file_hash
+    real_hash = scan_module.hash_file
     monkeypatch.setattr(
         scan_module,
-        "_compute_file_hash",
+        "hash_file",
         lambda path: (hash_calls.append(path), real_hash(path))[1],
     )
 
@@ -227,10 +227,10 @@ async def test_scan_truncates_at_byte_cap(minimal_config, tmp_path, monkeypatch)
     _make_tree(scan_dir, 3, content="x" * 100)
 
     hash_calls = []
-    real_hash = scan_module._compute_file_hash
+    real_hash = scan_module.hash_file
     monkeypatch.setattr(
         scan_module,
-        "_compute_file_hash",
+        "hash_file",
         lambda path: (hash_calls.append(path), real_hash(path))[1],
     )
 

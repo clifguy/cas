@@ -214,7 +214,9 @@ class MaintenanceService:
         checks that its ``source_path`` resolves to an existing file
         under the vault storage root. When ``check_hashes`` is true, each
         present file's SHA-256 is recomputed and compared against the
-        recorded ``source_content_hash``. Read-only; mutates nothing.
+        digest recorded for the retained copy -- ``stored_content_hash``,
+        or ``source_content_hash`` when that is null (see
+        :func:`_expected_stored_hash`). Read-only; mutates nothing.
 
         Audits the vault-local source files (the ``imports/`` copies that
         ``get_document`` delivers), distinct from the content store

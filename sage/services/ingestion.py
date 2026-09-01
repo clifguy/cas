@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import jsonschema
@@ -80,6 +81,9 @@ from sage.services.metadata import _wire_version
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
+
+if TYPE_CHECKING:
+    from sage.vault_source_binding import VaultSourceStore
 
 logger = logging.getLogger(__name__)
 
@@ -708,6 +712,10 @@ class IngestionService:
         # file: a source already resident in the backing store is re-projected,
         # not re-delivered.
         delivered_hash: str | None = None
+        # Whether this call actually wrote the source to the store. Only a write
+        # can have changed the retained copy, so only a write licenses refreshing
+        # the as-stored digest below.
+        retained = False
 
         if source_input.is_absolute():
             # External file import: copy the caller's file into the vault,
@@ -717,7 +725,7 @@ class IngestionService:
                 raise SourceFileNotFoundError(request.source)
             source_path = source_input.resolve()
             delivered_hash = hash_file(source_path)
-            vault_relative = await self._retain_or_reuse(
+            vault_relative, retained = await self._retain_or_reuse(
                 vault_source_store, storage_root, source_path, delivered_hash
             )
         else:
@@ -730,13 +738,39 @@ class IngestionService:
             if source_path.exists():
                 source_path = source_path.resolve()
                 delivered_hash = hash_file(source_path)
-                vault_relative = await self._retain_or_reuse(
-                    vault_source_store, storage_root, source_path, delivered_hash
+                # Retained without consulting the reuse short-circuit. A relative
+                # source names a location the caller chose, not merely bytes to
+                # get in, so reusing some other path holding the same content
+                # would override that choice -- silently refusing the re-home a
+                # caller performs by re-ingesting a moved file from its new path
+                # (BH-067), and hiding the different-path collision the
+                # force-reingest guard exists to raise. The binding is already
+                # the cheap answer here: a source inside the vault is retained in
+                # place, with no copy to avoid.
+                vault_relative = vault_source_store.retain_source(
+                    self._config.vault.id, storage_root, source_path
                 )
+                retained = True
             elif vault_source_store.source_exists(
                 self._config.vault.id, storage_root, request.source
             ):
                 vault_relative = request.source
+                # Nothing was delivered this call -- the bytes were already on
+                # the store and are only being re-projected. The provenance of
+                # this path was established at the ingest that put them there,
+                # so it is read back from that record rather than re-derived
+                # from the stored copy: a binding that rewrote its copy at rest
+                # holds bytes that no longer hash to what produced them, and
+                # taking the stored digest as provenance here would silently
+                # give the re-projection a different identity from the document
+                # it is re-projecting -- which duplicate detection would then
+                # miss, landing a second document on the same stored file.
+                # Absent a record (bytes on the store that were never ingested)
+                # there is no prior provenance to inherit, and the stored digest
+                # stands in, as it does for any first sight of a file.
+                delivered_hash = (
+                    await self._store.find_documents_by_source_paths([vault_relative])
+                ).get(vault_relative)
             else:
                 raise SourceFileNotFoundError(request.source)
 
@@ -908,13 +942,18 @@ class IngestionService:
                 "semantic_abstract": None,
                 "indexed_at": None,
                 "source_modified_at": source_modified_at_str,
-                # The record is reused because the delivered bytes matched, so
-                # source_content_hash is unchanged by definition -- but the
-                # retained copy may have been rewritten fresh on the way in, so
-                # the as-stored digest is re-read from this projection rather
-                # than left describing the previous copy.
-                "stored_content_hash": stored_hash,
             }
+            if retained:
+                # The record is reused because the delivered bytes matched, so
+                # source_content_hash is unchanged by definition -- but this call
+                # wrote the source again, and a binding that rewrites its copy at
+                # rest produced a fresh one, so the as-stored digest is re-read
+                # from this projection rather than left describing the previous
+                # copy. Skipped when nothing was written: the stored bytes are
+                # then whatever they already were, and re-recording a digest for
+                # them would silently adopt an out-of-band change as the expected
+                # state -- exactly the drift the integrity audit exists to report.
+                updates["stored_content_hash"] = stored_hash
             updates.update(field_updates)
             # Tier3 metadata override (caller authority on force-reingest,
             # CAS-ADR-021). Pre-validated above against the resolved
@@ -1756,51 +1795,84 @@ class IngestionService:
 
     async def _retain_or_reuse(
         self,
-        store,
+        store: "VaultSourceStore",
         storage_root: Path,
         source_path: Path,
         delivered_hash: str,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Retain a delivered source, or reuse the copy already holding those bytes.
 
-        Asks the binding where it would home this source, then asks the graph
-        store which delivered bytes the document at that path was made from. When
-        those are the bytes now in hand and the store still holds the copy, the
-        retain is skipped: re-delivering an unchanged source leaves the store
-        exactly as it was.
+        Asks the graph store whether any document was made from the bytes now in
+        hand. If one was, and the store still holds its copy, that document's
+        retained path is reused and the retain is skipped: re-delivering an
+        unchanged source leaves the store exactly as it was.
+
+        Keyed on the delivered digest rather than on where this source would
+        land, because the two answer different questions. A path-keyed check sees
+        only the un-disambiguated destination, so it misses a document that a
+        name collision moved aside -- and re-delivering *that* document's bytes
+        would fall through to a retain that rewrites its copy while duplicate
+        detection then declines the ingest, leaving the record describing a copy
+        that no longer exists. Content identity has no such blind spot: it finds
+        the document wherever its bytes were actually put.
 
         This is the filesystem binding's own identical-content rule -- same
-        destination, same content, reuse -- resolved against recorded provenance
-        instead of against the retained bytes. The two agree wherever a binding
-        keeps what it was given, and only recorded provenance can answer the
-        question for a binding that rewrites its copy at rest (CAS-ADR-043),
-        where the retained bytes no longer hash to what produced them.
+        content, reuse -- resolved against recorded provenance instead of against
+        the retained bytes. Only recorded provenance can answer it for a binding
+        that rewrites its copy at rest (CAS-ADR-043), where the retained bytes no
+        longer hash to what produced them.
 
-        Falls through to ``retain_source`` whenever the answer is not certain --
-        no record at that path, a different hash, or a record whose stored copy
-        has since gone missing -- so the binding's own handling remains the
-        default and this only ever removes redundant writes.
+        Falls through to ``retain_source`` whenever reuse is not certain -- no
+        document with these bytes, or one whose stored copy has since gone
+        missing -- so the binding's own handling remains the default and this
+        only ever removes redundant writes.
 
-        The reuse takes the record's word for what the stored copy holds, rather
-        than re-reading the copy to confirm. That is deliberate: confirming would
-        cost a full read of the retained bytes on every ingest, which for a
-        remote store is a network round-trip of the whole file, to defend against
-        a store mutated by something other than SAGE -- which the binding
-        contract already excludes, and which the source-file integrity audit
-        exists to detect. The visible consequence, should it happen anyway, is
-        that re-delivering the original bytes reuses the altered copy in place
-        instead of writing a second, disambiguated one alongside it; the audit
-        still reports the copy as mismatched either way.
+        Reserved for an *external* source, where the caller is delivering bytes
+        and has expressed no opinion about where they land. A caller naming a
+        vault-relative path has chosen a location, and reusing a different path
+        holding the same content would override that choice rather than save a
+        write.
+
+        Returns the vault-relative path together with whether a retain actually
+        ran. The caller needs that second value: the as-stored digest it records
+        describes bytes only a retain can have changed, so refreshing that digest
+        after a reuse would attribute the stored copy's current contents to a
+        write that never happened -- and where the copy had drifted, that is
+        precisely what would launder the drift into the record and take the
+        integrity audit green over it.
+
+        The reuse takes the record's word for what the stored copy holds rather
+        than re-reading it to confirm. Confirming would cost a full read of the
+        retained bytes on every ingest -- for a remote store, a network
+        round-trip of the whole file -- to defend against a store mutated by
+        something other than SAGE, which the binding contract excludes and the
+        source-file integrity audit detects. Should it happen anyway, the
+        re-delivery leaves the altered copy alone and the audit goes on reporting
+        it mismatched, which is the outcome to want: the operator's evidence that
+        something else wrote to the store is not quietly erased. A re-delivery is
+        therefore not a repair. Restoring a drifted copy in place is a capability
+        this seam does not offer -- writing bytes back to a *chosen* path is not
+        something the port can express today, and a forced re-ingest cannot
+        stand in for it: the binding sees only that the bytes at its target
+        differ from the ones offered, which is indistinguishable from a name
+        collision, so it disambiguates rather than overwrites.
         """
         vault_id = self._config.vault.id
-        planned = store.planned_source_path(vault_id, storage_root, source_path)
-        recorded = (await self._store.find_documents_by_source_paths([planned])).get(planned)
-        if recorded == delivered_hash and store.source_exists(vault_id, storage_root, planned):
-            return planned
-        return store.retain_source(vault_id, storage_root, source_path)
+        existing_id = (await self._store.find_documents_by_hashes([delivered_hash])).get(
+            delivered_hash
+        )
+        if existing_id is not None:
+            existing = await self._store.get_document(existing_id)
+            if existing is not None and store.source_exists(
+                vault_id, storage_root, existing.source_path
+            ):
+                return existing.source_path, False
+        return store.retain_source(vault_id, storage_root, source_path), True
 
     @contextlib.contextmanager
-    def _project_source(self, store, storage_root: Path, source_path: str) -> Iterator[Path]:
+    def _project_source(
+        self, store: "VaultSourceStore", storage_root: Path, source_path: str
+    ) -> Iterator[Path]:
         """Yield a local filesystem path to project a retained source from.
 
         A retained source the active binding keeps on the local tree (the

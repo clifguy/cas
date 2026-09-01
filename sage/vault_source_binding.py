@@ -200,12 +200,12 @@ class VaultSourceStore(ABC):
 
         The naming rule alone, with no collision handling and no side effects:
         where this binding *homes* a source, before any question of what is
-        already there. A caller that can establish from its own records that the
-        bytes at this path are the ones it is about to deliver can skip the
-        retain entirely, which is the only way an identical-content reuse can be
-        decided for a binding whose stored copy is not byte-identical to what it
-        was given (CAS-ADR-043). Collision disambiguation stays inside
-        ``retain_source``: this is the un-disambiguated target.
+        already there. Each binding's ``retain_source`` derives its own target
+        from this method rather than restating the rule, so the answer given to
+        a caller reasoning about placement and the path retention actually picks
+        cannot drift apart. Collision disambiguation stays inside
+        ``retain_source``: this is the un-disambiguated target, so it names where
+        a source lands only when nothing else already sits there.
         """
 
     @abstractmethod
@@ -592,7 +592,11 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         imports_dir = storage_root / "imports"
         imports_dir.mkdir(parents=True, exist_ok=True)
 
-        dest = imports_dir / source_path.name
+        # Derived from the naming rule rather than restating it: this path and
+        # the one ``planned_source_path`` reports must not be able to drift
+        # apart, since anything reasoning about placement without retaining
+        # reads the latter.
+        dest = storage_root / self.planned_source_path(vault_id, storage_root, source_path)
         if dest.exists():
             content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()[:8]
             existing_hash = hashlib.sha256(dest.read_bytes()).hexdigest()[:8]

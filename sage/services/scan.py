@@ -22,7 +22,6 @@ directory-walk discovery affordance is local-profile only.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -34,6 +33,7 @@ from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.source_adapters.base import SourceAdapter
+from sage.vault_source_binding import hash_file
 
 logger = logging.getLogger(__name__)
 
@@ -84,15 +84,6 @@ class ScanResult:
     def to_dict(self) -> dict:
         d = asdict(self)
         return d
-
-
-def _compute_file_hash(path: Path) -> str:
-    """Compute SHA-256 hash of file content with sha256: prefix."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return f"sha256:{h.hexdigest()}"
 
 
 def _get_mtime_iso(path: Path) -> str:
@@ -225,7 +216,7 @@ def _scan_files_sync(
             )
             break
         adapter = _detect_adapter(path, extension_map)
-        file_hash = _compute_file_hash(path)
+        file_hash = hash_file(path)
         bytes_hashed += path.stat().st_size
         mtime = _get_mtime_iso(path)
         vault_relative = _vault_relative_path(path, storage_root) if adapter is not None else None
