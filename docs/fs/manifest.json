@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-08-30",
+  "manifest_date": "2026-08-31",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.53",
+  "substrate_version": "1.54",
   "revision_history": [
+    {
+      "version": "1.54",
+      "date": "2026-08-31",
+      "summary": "Require Document.lifecycle_status rather than letting a model default shadow the configured ingest landing state. CAS-ADR-047 is the governing decision: lifecycle preconditions derive from vault configuration, and engine literals survive only as the defaults an unset declaration resolves to. A model-level default is not such a literal -- it is reachable with no declaration at all, so any construction path that omitted the field inherited `active` whatever the vault declared, and nothing raised: the document simply came to rest in a declared state that this vault's ingest never produces, which no subsequent precondition flags as wrong. sage/models/schemas.py drops default=\"active\"; DocumentWithContent inherits the change. The removal is not justified as a substrate-conformance fix: sage_core_api.openapi.yaml does list lifecycle_status in Document.required, but per the rationale recorded at tests/sage/test_openapi_conformance.py the two notions of required do not map -- OpenAPI's means the property always appears in the serialized JSON, which a defaulted field satisfies -- so the prior default was not a divergence from the YAML, and the same reading applies to the non-optional field in app/src/api/types.ts. No schema file moves. DocumentSummary.lifecycle_status was already required and is unchanged. tests/sage/test_lifecycle_status_default_guard.py pins the behavioural pair (a model that neither invents a state when none is given nor overrides one that is) and a structural gate holding the no-default property for every non-nullable lifecycle_status field in sage.models.schemas, nullability separating a state a record asserts from a filter whose absence means `any`. The gate does not reach model_construct, which bypasses validation by design where a repair workflow must read values the request-side validators reject."
+    },
     {
       "version": "1.53",
       "date": "2026-08-30",

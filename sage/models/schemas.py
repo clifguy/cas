@@ -328,7 +328,6 @@ class Document(BaseModel):
         description="Location of the original artifact (local file path or URI)."
     )
     lifecycle_status: str = Field(
-        default="active",
         description=(
             "Current lifecycle state. Uses the base LifecycleStatus "
             "enum plus any vault-defined extensions."

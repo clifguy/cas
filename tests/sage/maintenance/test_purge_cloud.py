@@ -46,6 +46,7 @@ def _doc(name: str) -> Document:
         title=f"Doc {name}",
         source_type=SourceType.MARKDOWN,
         source_path=f"/x/{name}.md",
+        lifecycle_status="active",
         source_content_hash="sha256:" + hashlib.sha256(name.encode()).hexdigest(),
         adapter_version="1",
         created_by="t",

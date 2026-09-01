@@ -31,6 +31,7 @@ def _harness_doc() -> Document:
         title="Harness isolation probe",
         source_type=SourceType.MARKDOWN,
         source_path="/x/harness.md",
+        lifecycle_status="active",
         source_content_hash=f"sha256:{1:064x}",
         adapter_version="1",
         created_by="t",

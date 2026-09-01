@@ -69,6 +69,7 @@ def _make_skipped_doc(
             title=doc.title,
             source_type=source_type,
             source_path=f"test/{doc_id}.{source_type.value}",
+            lifecycle_status="active",
             source_content_hash=doc.source_content_hash,
             adapter_version=doc.adapter_version,
             created_by=doc.created_by,

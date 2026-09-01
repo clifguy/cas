@@ -110,6 +110,7 @@ def _make_document(doc_id: str, title: str = "Test", **kwargs) -> Document:
         title=title,
         source_type=SourceType.MARKDOWN,
         source_path="test.md",
+        lifecycle_status="active",
         source_content_hash=_sha("abc"),
         adapter_version="1.0",
         created_by="test",
