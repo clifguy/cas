@@ -925,20 +925,22 @@ async def test_query_document_facets_full_vault_counts(graph_store):
 
     assert set(facets.keys()) == set(_FACET_FIELDS)
     assert total == 6
-    assert facets["doc_type"] == {"adr": 3, "ticket": 2}
-    assert facets["lifecycle_status"] == {"active": 5, "archived": 1}
-    assert facets["source_type"] == {"markdown": 5, "docx": 1}
-    assert facets["pipeline_status"] == {"abstraction_complete": 5, "failed": 1}
-    assert facets["tags"] == {"alpha": 2, "beta": 2}
-    assert sum(facets["tags"].values()) != total
+    assert facets["doc_type"].values == {"adr": 3, "ticket": 2}
+    assert facets["lifecycle_status"].values == {"active": 5, "archived": 1}
+    assert facets["source_type"].values == {"markdown": 5, "docx": 1}
+    assert facets["pipeline_status"].values == {"abstraction_complete": 5, "failed": 1}
+    assert facets["tags"].values == {"alpha": 2, "beta": 2}
+    assert sum(facets["tags"].values.values()) != total
+    # Uncapped, the distinct total always equals the returned value count.
+    assert all(f.total_distinct == len(f.values) for f in facets.values())
     # Deterministic value ordering: count DESC, then value ASC. The
     # source_type facet is the discriminating case -- its higher-count
     # value ("markdown") sorts alphabetically AFTER "docx", so a pure
     # value-ASC ordering fails here while passing the other two. The
     # tags facet (a 2/2 count tie) pins the value-ASC tiebreak.
-    assert list(facets["source_type"].keys()) == ["markdown", "docx"]
-    assert list(facets["doc_type"].keys()) == ["adr", "ticket"]
-    assert list(facets["tags"].keys()) == ["alpha", "beta"]
+    assert list(facets["source_type"].values.keys()) == ["markdown", "docx"]
+    assert list(facets["doc_type"].values.keys()) == ["adr", "ticket"]
+    assert list(facets["tags"].values.keys()) == ["alpha", "beta"]
 
 
 async def test_query_document_facets_respects_filters(graph_store):
@@ -948,10 +950,10 @@ async def test_query_document_facets_respects_filters(graph_store):
     facets, total = await graph_store.query_document_facets({"doc_type": "adr"})
 
     assert total == 3
-    assert facets["doc_type"] == {"adr": 3}
-    assert facets["lifecycle_status"] == {"active": 2, "archived": 1}
-    assert facets["source_type"] == {"markdown": 2, "docx": 1}
-    assert facets["tags"] == {"alpha": 2, "beta": 1}
+    assert facets["doc_type"].values == {"adr": 3}
+    assert facets["lifecycle_status"].values == {"active": 2, "archived": 1}
+    assert facets["source_type"].values == {"markdown": 2, "docx": 1}
+    assert facets["tags"].values == {"alpha": 2, "beta": 1}
 
 
 async def test_query_document_facets_composes_with_tags_filter(graph_store):
@@ -966,8 +968,8 @@ async def test_query_document_facets_composes_with_tags_filter(graph_store):
     facets, total = await graph_store.query_document_facets({"tags": ["alpha"]})
 
     assert total == 2
-    assert facets["tags"] == {"alpha": 2, "beta": 1}
-    assert facets["doc_type"] == {"adr": 2}
+    assert facets["tags"].values == {"alpha": 2, "beta": 1}
+    assert facets["doc_type"].values == {"adr": 2}
 
 
 async def test_query_document_facets_composes_with_tier3_filter(graph_store):
@@ -979,8 +981,8 @@ async def test_query_document_facets_composes_with_tier3_filter(graph_store):
     )
 
     assert total == 1
-    assert facets["doc_type"] == {"ticket": 1}
-    assert facets["tags"] == {"beta": 1}
+    assert facets["doc_type"].values == {"ticket": 1}
+    assert facets["tags"].values == {"beta": 1}
 
 
 async def test_query_document_facets_includes_failed_pipeline_documents(graph_store):
@@ -994,16 +996,128 @@ async def test_query_document_facets_includes_failed_pipeline_documents(graph_st
 
     facets, total = await graph_store.query_document_facets()
 
-    assert facets["pipeline_status"].get("failed") == 1
+    assert facets["pipeline_status"].values.get("failed") == 1
     assert total == 6
 
 
 async def test_query_document_facets_empty_vault(graph_store):
-    """Empty vault: every field present with empty values, zero total."""
+    """Empty vault: every field present with empty values, zero totals.
+
+    Tuple equality pins the per-field shape (values, total_distinct)
+    without importing the implementation's named type: a total_distinct
+    that goes missing or nonzero on the empty vault fails here.
+    """
     facets, total = await graph_store.query_document_facets()
 
-    assert facets == {f: {} for f in _FACET_FIELDS}
+    assert facets == {f: ({}, 0) for f in _FACET_FIELDS}
     assert total == 0
+
+
+async def _seed_wide_tag_fixture(graph_store) -> None:
+    """Four documents whose tag vocabulary (8) exceeds a small value cap.
+
+    Tag counts: w0 on all four documents, w1 on three, w2 and w3 tied at
+    two, w4-w7 on one each. The w2/w3 tie sits exactly at the cut line
+    for value_limit=3, so the value-ASC tiebreak is exercised *under*
+    the cap. Each document also carries a distinct doc_type (dta-dtd,
+    all count 1) so the scalar branch has more distinct values than the
+    cap and its own all-tied value-ASC ordering.
+    """
+    seeds = [
+        ("wt_1", {"doc_type": "dta", "tags": ["w0", "w1", "w2", "w3", "w4"]}),
+        ("wt_2", {"doc_type": "dtb", "tags": ["w0", "w1", "w2", "w3", "w5"]}),
+        ("wt_3", {"doc_type": "dtc", "tags": ["w0", "w1", "w6"]}),
+        ("wt_4", {"doc_type": "dtd", "tags": ["w0", "w7"]}),
+    ]
+    for name, overrides in seeds:
+        doc = _make_doc(_id(name)).model_copy(update=overrides)
+        await graph_store.insert_document(doc)
+
+
+async def test_query_document_facets_value_limit_caps_every_field(graph_store):
+    """value_limit caps values uniformly while totals stay true.
+
+    Trap coverage: a tags-only cap fails the doc_type assertions; a
+    LIMIT applied without the count-DESC/value-ASC ordering returns an
+    arbitrary subset and fails the exact-prefix assertion (the w2/w3
+    tie pins the ASC tiebreak at the cut line); a total_distinct
+    computed from the capped rows fails the == 8 / == 4 assertions.
+    """
+    await _seed_wide_tag_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets(value_limit=3)
+
+    assert total == 4
+    assert facets["tags"].values == {"w0": 4, "w1": 3, "w2": 2}
+    assert list(facets["tags"].values.keys()) == ["w0", "w1", "w2"]
+    assert facets["tags"].total_distinct == 8
+    assert facets["doc_type"].values == {"dta": 1, "dtb": 1, "dtc": 1}
+    assert facets["doc_type"].total_distinct == 4
+
+
+async def test_query_document_facets_total_distinct_uncapped_and_boundary(graph_store):
+    """No cap and cap == distinct count both return the full vocabulary.
+
+    Trap coverage: an off-by-one LIMIT drops a value at the boundary; a
+    distinct total computed after the LIMIT reads 3 in the capped test
+    and masks here; a cap defaulting on at this layer (policy leaking
+    into storage) fails the uncapped assertion.
+    """
+    await _seed_wide_tag_fixture(graph_store)
+
+    uncapped, _ = await graph_store.query_document_facets()
+    at_boundary, _ = await graph_store.query_document_facets(value_limit=8)
+
+    assert len(uncapped["tags"].values) == 8
+    assert uncapped["tags"].total_distinct == 8
+    assert at_boundary["tags"].values == uncapped["tags"].values
+    assert at_boundary["tags"].total_distinct == 8
+
+
+async def test_query_document_facets_fields_subset_skips_unrequested(graph_store):
+    """A fields subset returns exactly the requested facet keys, and
+    only the requested aggregations run.
+
+    Trap coverage: an implementation that always returns all five keys
+    fails the exact-key-set assertion; one that aggregates all five and
+    filters post hoc fails the query count -- exactly two per-field
+    aggregation queries may run for a two-field subset.
+    """
+    await _seed_wide_tag_fixture(graph_store)
+
+    aggregation_queries = []
+    original_fetch = graph_store._fetch_tuples
+
+    async def counting_fetch(sql, params):
+        aggregation_queries.append(sql)
+        return await original_fetch(sql, params)
+
+    graph_store._fetch_tuples = counting_fetch
+    try:
+        facets, total = await graph_store.query_document_facets(fields=["doc_type", "tags"])
+    finally:
+        graph_store._fetch_tuples = original_fetch
+
+    assert set(facets.keys()) == {"doc_type", "tags"}
+    assert total == 4
+    assert facets["tags"].total_distinct == 8
+    assert len(aggregation_queries) == 2, "unrequested facet fields must not be aggregated"
+
+
+async def test_query_document_facets_value_limit_composes_with_filters(graph_store):
+    """The correlated tag-filter EXISTS survives the capped query shape.
+
+    Trap coverage: re-arms the alias regression for the new subquery --
+    wrapping the tags aggregation while aliasing the outer ``documents``
+    table breaks the EXISTS correlation (wrong counts or a SQL error).
+    """
+    await _seed_wide_tag_fixture(graph_store)
+
+    facets, total = await graph_store.query_document_facets({"tags": ["w1"]}, value_limit=2)
+
+    assert total == 3
+    assert facets["tags"].values == {"w0": 3, "w1": 3}
+    assert facets["tags"].total_distinct == 7
 
 
 async def test_stub_graph_store_facets_unsupported():

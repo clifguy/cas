@@ -4902,6 +4902,114 @@ async def test_catalog_facets_never_emits_budget_hint(graph_store, retrieval_ser
     assert resp.hints is None or "recommended_limit" not in resp.hints
 
 
+async def _seed_many_tag_docs(graph_store, count: int, offset: int = 0) -> None:
+    """One document per unique tag, ``count`` of them, all counts 1.
+
+    Uniform counts make the top-of-ordering prefix purely value-ASC,
+    so a capped enumeration has exactly one correct answer.
+    """
+    for i in range(offset, offset + count):
+        await graph_store.insert_document(
+            _make_doc(_id(f"cap_{i:03d}"), doc_type="note", tags=[f"tag-{i:03d}"])
+        )
+
+
+async def test_catalog_facets_default_cap_applied_without_opt_in(graph_store, retrieval_service):
+    """A default facets call caps tags at 50 values with the true total.
+
+    The acceptance-criterion core: the caller least equipped to set an
+    option -- an agent's first call against an unfamiliar vault -- gets
+    the bounded shape without asking. Trap coverage: an opt-in cap
+    (None passed through as uncapped) returns 55 values; a cap applied
+    by slicing an unordered dict fails the exact-prefix assertion; a
+    total computed after capping fails the == 55.
+    """
+    await _seed_many_tag_docs(graph_store, 55)
+
+    req = DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    resp = await retrieval_service.discover(req)
+
+    tags = next(hit for hit in resp.results if hit.field == "tags")
+    assert len(tags.values) == 50
+    assert tags.total_distinct == 55
+    assert list(tags.values.keys()) == [f"tag-{i:03d}" for i in range(50)]
+
+
+async def test_catalog_facets_field_selection_returns_only_selected_rows(
+    graph_store, retrieval_service
+):
+    """facet_fields returns exactly the selected rows in canonical order.
+
+    The request deliberately reverses the canonical order; honoring
+    caller order (or returning all five rows with empties) fails.
+    """
+    await _seed_facet_docs(graph_store)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        facet_fields=["tags", "doc_type"],
+    )
+    resp = await retrieval_service.discover(req)
+
+    assert [hit.field for hit in resp.results] == ["doc_type", "tags"]
+    by_field = {hit.field: hit.values for hit in resp.results}
+    assert by_field["tags"] == {"alpha": 2, "beta": 1}
+
+
+async def test_catalog_facets_explicit_limit_reaches_full_vocabulary(
+    graph_store, retrieval_service
+):
+    """The documented two-step opt reads a full vocabulary: a default
+    call reports the true total, and a re-call with facet_value_limit
+    set to it returns every value. Trap coverage: an upper bound on
+    facet_value_limit below the vocabulary size, or an off-by-one in
+    the storage LIMIT, breaks the second step.
+    """
+    await _seed_many_tag_docs(graph_store, 55)
+
+    first = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+    reported = next(hit for hit in first.results if hit.field == "tags").total_distinct
+
+    second = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            facet_value_limit=reported,
+        )
+    )
+    tags = next(hit for hit in second.results if hit.field == "tags")
+    assert reported == 55
+    assert len(tags.values) == 55
+    assert tags.total_distinct == 55
+
+
+async def test_catalog_facets_total_distinct_on_small_and_empty_vaults(
+    graph_store, retrieval_service
+):
+    """total_distinct is always populated: equal to the value count when
+    nothing was truncated, zero on the empty vault. Trap coverage: an
+    implementation that populates the total only when truncating (or
+    models it nullable and drops it) fails on the untruncated rows; one
+    that returns zero facet rows on an empty vault fails the field-set
+    guard, without which the all() below is vacuously true.
+    """
+    empty = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+    assert [hit.field for hit in empty.results] == list(_FACET_FIELDS)
+    assert all(hit.values == {} and hit.total_distinct == 0 for hit in empty.results)
+
+    await _seed_facet_docs(graph_store)
+    small = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+    assert all(hit.total_distinct == len(hit.values) for hit in small.results)
+    assert next(h for h in small.results if h.field == "tags").total_distinct == 2
+
+
 # ---------------------------------------------------------------------------
 # DiscoverRequest validator: target="facets" combinations
 # ---------------------------------------------------------------------------
@@ -5008,6 +5116,82 @@ def test_target_facets_accepts_document_filters_with_default_parameters():
         ),
     )
     assert req.target.value == "facets"
+
+
+def test_facet_params_accepted_with_target_facets():
+    """facet_fields and facet_value_limit construct under target=facets.
+
+    Guards against the new parameters landing in the facet-forbidden
+    list by accident, which would reject the only target they exist for.
+    """
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target="facets",
+        facet_fields=["tags", "doc_type"],
+        facet_value_limit=200,
+    )
+    assert [f.value for f in req.facet_fields] == ["tags", "doc_type"]
+    assert req.facet_value_limit == 200
+
+    # No upper bound: full-vocabulary reachability requires that a
+    # caller can always set the limit to the reported total_distinct,
+    # however large the corpus has grown. A hidden ceiling below a real
+    # vocabulary size would strand the documented two-step opt.
+    huge = DiscoverRequest(mode=RetrievalMode.CATALOG, target="facets", facet_value_limit=1_000_000)
+    assert huge.facet_value_limit == 1_000_000
+
+
+@pytest.mark.parametrize("target", ["documents", "edges"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("facet_fields", ["tags"]),
+        ("facet_value_limit", 5),
+    ],
+)
+def test_facet_params_rejected_for_non_facet_targets(target, field, value):
+    """Facet-only parameters are rejected for the document and edge
+    targets rather than silently ignored.
+
+    Asserting ctx["forbidden_param"] (not just the error type) keeps a
+    different validator branch from passing this test for the wrong
+    reason.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=target, **{field: value})
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == field
+
+
+def test_facet_fields_unknown_name_and_empty_list_rejected():
+    """facet_fields is a closed vocabulary and may not be empty.
+
+    An untyped list[str] annotation would accept the bogus name and
+    fail here; the typed enum makes the valid set part of the error.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target="facets", facet_fields=["bogus"])
+    err = info.value.errors()[0]
+    assert err["type"] == "enum"
+    assert err["loc"][0] == "facet_fields"
+
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target="facets", facet_fields=[])
+    assert info.value.errors()[0]["type"] == "too_short"
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_facet_value_limit_below_one_rejected(value):
+    """facet_value_limit has no zero-or-negative meaning: there is no
+    unlimited sentinel (a plausible misreading of 0 as give me
+    everything would reproduce the unbounded-response failure the cap
+    exists to prevent). Full vocabularies are reached by re-calling
+    with the reported total_distinct instead.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target="facets", facet_value_limit=value)
+    assert info.value.errors()[0]["type"] == "greater_than_equal"
 
 
 # ---------------------------------------------------------------------------

@@ -2788,11 +2788,22 @@ components:
         first-class edge enumeration: results are EdgeHit rows carrying
         edge_id, endpoints, edge_type, anchor versions, rationale, and
         retraction state. "facets" switches to vocabulary aggregation:
-        results are FacetHit rows carrying distinct values with counts
-        for a fixed set of document metadata fields, bounded by
-        vocabulary size rather than document count. "edges" and "facets"
-        are valid only with mode="catalog"; other modes are rejected at
-        request validation.
+        results are FacetHit rows carrying the requested facet fields'
+        top distinct values with counts (every facet field when none
+        are selected), each row capped to a per-field value limit and
+        carrying the field's true distinct-value total, so the response
+        stays bounded at any corpus size and tagging density. "edges" and "facets" are valid
+        only with mode="catalog"; other modes are rejected at request
+        validation.
+
+    FacetField:
+      type: string
+      enum: [doc_type, lifecycle_status, source_type, pipeline_status, tags]
+      description: >-
+        A document metadata field exposed for facet aggregation. The
+        closed vocabulary of the facet_fields request parameter: search
+        with target="facets" aggregates any subset of these, defaulting
+        to all of them.
 
     ResponseMode:
       type: string
@@ -3380,6 +3391,31 @@ components:
             `light` suppresses chunk_content; `full` includes it.
             (documents+deterministic) ignored; deterministic always
             returns chunk content.
+        facet_fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FacetField"
+          minItems: 1
+          nullable: true
+          description: >-
+            Facet fields to aggregate for the facets target. Any subset
+            of: doc_type, lifecycle_status, source_type,
+            pipeline_status, tags. Null (default) aggregates all five.
+            Rows return in that fixed field order regardless of the
+            order given here. Not valid for other targets.
+        facet_value_limit:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: >-
+            Per-field cap on the number of facet values returned for
+            the facets target, keeping the top values by descending
+            count then value. Minimum 1. Null (default) applies the
+            built-in cap of 50. Each row's total_distinct reports the
+            true distinct-value count regardless of the cap, so
+            truncation is always detectable; to read a full vocabulary,
+            re-call with facet_value_limit set to the reported
+            total_distinct. Not valid for other targets.
 
     RetrievalFilters:
       type: object
@@ -4091,8 +4127,8 @@ components:
             Retrieval hits, ordered by descending relevance
             (semantic/keyword) or by sort_by (catalog) for documents;
             ordered by edge created_at DESC for edges; one FacetHit row
-            per faceted field for facets. Row type is discriminated by
-            `target`.
+            per requested facet field for facets. Row type is
+            discriminated by `target`.
         total_available:
           type: integer
           description: >-
@@ -4247,15 +4283,15 @@ components:
 
     FacetHit:
       type: object
-      required: [field, values]
+      required: [field, values, total_distinct]
       description: >-
         A single facet aggregation result. Returned by search when
-        target="facets": one row per faceted document metadata field,
-        carrying that field's distinct values with matching-document
-        counts. The row count is fixed by the facet field set and each
-        value map is bounded by the field's vocabulary size, so the
-        response stays small regardless of how many documents the vault
-        holds.
+        target="facets": one row per requested facet field, carrying
+        the field's top distinct values with matching-document counts
+        plus the true distinct-value total. The row count is fixed by
+        the facet field set and each value map is capped, so the
+        response stays bounded regardless of how many documents the
+        vault holds or how densely they are tagged.
       properties:
         field:
           type: string
@@ -4270,11 +4306,22 @@ components:
           description: >-
             Distinct non-null values of the field mapped to the count
             of matching documents, ordered by descending count and then
-            by value. Documents where the field is null are excluded
-            from the value counts but still counted in the response's
-            total_available; tag counts may sum above it (multi-tag
-            documents) or below it (untagged documents). Empty when no
-            matching document carries the field.
+            by value, capped to the top facet_value_limit entries (50
+            when unset). Fewer entries than total_distinct means the
+            enumeration was truncated. Documents where the field is
+            null are excluded from the value counts but still counted
+            in the response's total_available; tag counts may sum above
+            it (multi-tag documents) or below it (untagged documents).
+            Empty when no matching document carries the field.
+        total_distinct:
+          type: integer
+          description: >-
+            True count of the field's distinct non-null values within
+            the filter slice, computed before the value cap is applied.
+            Truncation occurred exactly when this exceeds the entry
+            count of values. Counts distinct values, unlike the
+            response's total_available, which counts matching
+            documents.
 
     FieldChange:
       type: object

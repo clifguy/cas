@@ -4,6 +4,7 @@ These return predictable results and require no external services.
 """
 
 import math
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sage.adapters.interfaces import (
@@ -13,6 +14,7 @@ from sage.adapters.interfaces import (
     ContentStore,
     ContentStoreOptimizeSnapshot,
     EmbeddingProvider,
+    FacetFieldCounts,
     GraphStore,
     SearchResult,
 )
@@ -342,7 +344,10 @@ class StubGraphStore(GraphStore):
     async def query_document_facets(
         self,
         filters: dict[str, object] | None = None,
-    ) -> tuple[dict[str, dict[str, int]], int]:
+        *,
+        fields: Sequence[str] | None = None,
+        value_limit: int | None = None,
+    ) -> tuple[dict[str, FacetFieldCounts], int]:
         raise self._unsupported("query_document_facets")
 
     async def find_documents_by_title(self, title: str) -> list[Document]:

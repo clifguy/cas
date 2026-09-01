@@ -549,6 +549,24 @@ async def test_discover_facets_200(client):
         "pipeline_status",
         "tags",
     ]
+    # total_distinct is required on every row: a response_model that
+    # dropped or mis-declared it would fail re-serialization above, and
+    # this pins its presence explicitly.
+    assert all("total_distinct" in row for row in body["results"])
+
+    resp3 = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={
+            "mode": "catalog",
+            "target": "facets",
+            "facet_fields": ["tags"],
+            "facet_value_limit": 1,
+        },
+    )
+    assert resp3.status_code == 200
+    rows = resp3.json()["results"]
+    assert [row["field"] for row in rows] == ["tags"]
+    assert len(rows[0]["values"]) <= 1
     by_field = {row["field"]: row["values"] for row in body["results"]}
     assert by_field["source_type"].get("markdown", 0) >= 1
 

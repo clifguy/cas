@@ -2852,8 +2852,11 @@ async def test_sage_discover_facets_happy_path(vault_services):
     returns a serialized envelope with one facet row per field.
 
     The wire-shape assertion (each row carries exactly {"field",
-    "values"}) also pins that serialize()'s exclude_none=True drops only
-    None -- a zero-count field must keep its empty values object.
+    "values", "total_distinct"}) also pins that serialize()'s
+    exclude_none=True drops only None -- a zero-count field must keep
+    its empty values object AND its zero total_distinct, so the shape
+    survives an int-or-None modeling regression that would drop the
+    zero case.
     """
     await ingest_document("test_vault", "test/sample.md", "markdown")
     await ingest_document("test_vault", "test/second.md", "markdown")
@@ -2873,15 +2876,59 @@ async def test_sage_discover_facets_happy_path(vault_services):
         "tags",
     ]
     for r in rows:
-        assert set(r.keys()) == {"field", "values"}, (
-            f"facet rows on the wire must carry exactly field+values, got {set(r.keys())}"
+        assert set(r.keys()) == {"field", "values", "total_distinct"}, (
+            f"facet rows on the wire must carry exactly "
+            f"field+values+total_distinct, got {set(r.keys())}"
         )
-    by_field = {r["field"]: r["values"] for r in rows}
-    assert by_field["source_type"] == {"markdown": 2}
-    assert by_field["lifecycle_status"] == {"active": 2}
+    by_field = {r["field"]: r for r in rows}
+    assert by_field["source_type"]["values"] == {"markdown": 2}
+    assert by_field["source_type"]["total_distinct"] == 1
+    assert by_field["lifecycle_status"]["values"] == {"active": 2}
     # No tags were ingested: the zero-count field keeps an explicit
-    # empty object on the wire rather than being dropped.
-    assert by_field["tags"] == {}
+    # empty object and a zero total on the wire rather than being
+    # dropped.
+    assert by_field["tags"]["values"] == {}
+    assert by_field["tags"]["total_distinct"] == 0
+
+
+async def test_sage_discover_facet_params_roundtrip(vault_services):
+    """facet_fields and facet_value_limit reach the retrieval service
+    through the MCP signature.
+
+    The plumbing trap: publishing the parameters on the tool signature
+    without forwarding them into DiscoverRequest would silently ignore
+    them -- every lower layer passes while the tool no-ops. Each
+    parameter needs its own discriminating observable: the row list
+    catches an unforwarded facet_fields (five rows instead of one), and
+    the two-tag fixture catches an unforwarded facet_value_limit (the
+    default cap of 50 would return both tags instead of one).
+    """
+    await ingest_document(
+        "test_vault", "test/sample.md", "markdown", metadata={"tags": ["za", "zb"]}
+    )
+    await ingest_document("test_vault", "test/second.md", "markdown", metadata={"tags": ["za"]})
+    await asyncio.sleep(0.3)
+
+    result = _parse(
+        await search(
+            "test_vault",
+            mode="catalog",
+            target="facets",
+            facet_fields=["tags"],
+            facet_value_limit=1,
+        )
+    )
+
+    rows = result["results"]
+    assert [r["field"] for r in rows] == ["tags"], (
+        "facet_fields must select rows -- all five rows means the "
+        "parameter never reached the service"
+    )
+    assert rows[0]["values"] == {"za": 2}, (
+        "facet_value_limit=1 must cap the row to the top value -- both "
+        "tags present means the parameter never reached the service"
+    )
+    assert rows[0]["total_distinct"] == 2
 
 
 async def test_sage_discover_facets_with_semantic_returns_error(vault_services):

@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.11",
+      "version": "0.12",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.54",
+  "substrate_version": "1.55",
   "revision_history": [
+    {
+      "version": "1.55",
+      "date": "2026-08-31",
+      "summary": "Bound the facets target of search so the default orientation call stays within a fixed size envelope at any corpus size and tagging density (sage_core_api.openapi.yaml 0.11 -> 0.12). The tags facet is free text, so its vocabulary grows with the corpus; unbounded, a densely tagged vault made the recommended first call against an unfamiliar deployment exceed the calling client's tool-result ceiling. Four co-shipped substrate changes: (1) New DiscoverRequest.facet_fields (array of the new FacetField enum component; minItems 1, nullable) selects a subset of the five facet fields; rows always return in the fixed field order regardless of the order requested, and the storage layer skips unrequested aggregations rather than filtering them post hoc. (2) New DiscoverRequest.facet_value_limit (integer, minimum 1, nullable) caps each row's values to the top entries by count-DESC/value-ASC; null applies the built-in default cap of 50 (DEFAULT_FACET_VALUE_LIMIT in sage/services/retrieval.py). Deliberately no unlimited sentinel: a zero-means-everything misreading would reproduce the unbounded-response failure the cap exists to prevent, so full vocabularies are reached by re-calling with the limit set to the reported true total. (3) FacetHit gains required total_distinct (integer): the field's true distinct-value count computed before the cap, so truncation is detectable exactly as total_distinct exceeding the entry count of values; typed non-nullable so the zero survives exclude_none serialization on empty facets. (4) FacetHit, RetrievalTarget, and the search docstring's Facet enumeration block rewritten so the bounded-response claim holds for the default call shape by construction (vocabulary fields by vocabulary size, tags by the cap). Storage port: GraphStore.query_document_facets gains fields/value_limit keywords and returns FacetFieldCounts (values + total_distinct) per field, via a wrapped per-field GROUP BY subquery whose COUNT(*) OVER () is computed before the outer ORDER BY/LIMIT; storage stays policy-free (None = uncapped, all fields) with the default-cap policy in the retrieval service; the correlated-EXISTS tag-filter composition is preserved by keeping the documents table unaliased inside the subquery. Request validator: the two facet parameters are rejected for non-facets targets via mode_parameter_mismatch rather than silently ignored; unknown facet_fields members fail as typed enum errors surfacing the invalid_parameter envelope on both the MCP and HTTP seams. Gates: YAML_ONLY_FORWARD_DECLARATIONS gains FacetField under the existing StrEnum grouping; the self-documentation facet-block gate now also requires facet_value_limit and total_distinct inside the regex-isolated block. New coverage: storage cap/boundary/subset/filter-composition tests with a tie pinned at the cut line (tests/sage/test_graph_store.py), validator interaction matrix and no-sentinel pin (tests/sage/test_retrieval.py), default-cap-without-opt-in and two-step full-vocabulary reachability at the service layer, MCP parameter-forwarding roundtrip (tests/sage/test_mcp_server.py), envelope parity on both seams (tests/sage/test_validation_envelope_parity.py), HTTP response_model re-validation (tests/sage/test_api_integration.py), and a fixed-size-bound regression on a 240-tag vault whose in-test arithmetic guard proves the uncapped payload necessarily exceeds the bound (tests/app/test_mcp_app_tools.py)."
+    },
     {
       "version": "1.54",
       "date": "2026-08-31",

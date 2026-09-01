@@ -28,6 +28,7 @@ rule.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -37,6 +38,7 @@ from psycopg.types.json import Jsonb
 
 from sage.adapters.interfaces import (
     DOCUMENT_FACET_FIELDS,
+    FacetFieldCounts,
     GraphStore,
     NaturalKeyConflict,
     StorageQueryError,
@@ -1179,7 +1181,10 @@ class PostgresGraphStore(GraphStore):
     async def query_document_facets(
         self,
         filters: dict[str, object] | None = None,
-    ) -> tuple[dict[str, dict[str, int]], int]:
+        *,
+        fields: Sequence[str] | None = None,
+        value_limit: int | None = None,
+    ) -> tuple[dict[str, FacetFieldCounts], int]:
         with self._query_timer.measure("query_document_facets"):
             # Facets are an enumeration surface: no default failed-pipeline
             # exclusion, matching catalog document enumeration.
@@ -1189,42 +1194,65 @@ class PostgresGraphStore(GraphStore):
             # predicates are what can make the backend refuse, and the
             # driver's wording is not the caller's to receive.
             try:
-                return await self._collect_document_facets(where_sql, params)
+                return await self._collect_document_facets(where_sql, params, fields, value_limit)
             except pg_errors.Error as exc:
                 raise StorageQueryError("query_document_facets", str(exc)) from exc
 
     async def _collect_document_facets(
-        self, where_sql: str, params: list[object]
-    ) -> tuple[dict[str, dict[str, int]], int]:
-        """Run the per-field facet counts and the total for one WHERE clause."""
-        facets: dict[str, dict[str, int]] = {}
-        for field in DOCUMENT_FACET_FIELDS:
+        self,
+        where_sql: str,
+        params: list[object],
+        fields: Sequence[str] | None,
+        value_limit: int | None,
+    ) -> tuple[dict[str, FacetFieldCounts], int]:
+        """Run the per-field facet counts and the total for one WHERE clause.
+
+        Each per-field aggregation is wrapped as a subquery so a single
+        ``COUNT(*) OVER ()`` yields the true distinct-value total: the
+        window is computed over every group before the outer ``ORDER BY``
+        and ``LIMIT`` apply, so the total is cap-independent. ``LIMIT
+        NULL`` is Postgres for "no limit", so one statement shape serves
+        the capped and uncapped calls.
+        """
+        requested = (
+            DOCUMENT_FACET_FIELDS
+            if fields is None
+            else tuple(f for f in DOCUMENT_FACET_FIELDS if f in set(fields))
+        )
+        facets: dict[str, FacetFieldCounts] = {}
+        for field in requested:
             if field == "tags":
                 # The tag filter predicate inside ``where_sql`` is a
                 # correlated EXISTS subquery qualified as
-                # ``documents.id``; the outer ``documents`` table must
-                # stay unaliased for that correlation to resolve. The
-                # join against ``document_tags`` (one row per
-                # (document, tag) primary key) makes COUNT(*) the
+                # ``documents.id``; the ``documents`` table inside this
+                # subquery must stay unaliased for that correlation to
+                # resolve. The join against ``document_tags`` (one row
+                # per (document, tag) primary key) makes COUNT(*) the
                 # per-tag distinct-document count.
-                rows = await self._fetch_tuples(
-                    "SELECT document_tags.tag, COUNT(*) "  # noqa: S608 -- builder-trusted; values are %s
+                inner_sql = (
+                    "SELECT document_tags.tag AS value, COUNT(*) AS doc_count "  # noqa: S608 -- builder-trusted; values are %s
                     "FROM document_tags JOIN documents "
                     "ON documents.id = document_tags.document_id "
                     f"WHERE {where_sql} "
-                    "GROUP BY document_tags.tag "
-                    "ORDER BY COUNT(*) DESC, document_tags.tag ASC",
-                    params,
+                    "GROUP BY document_tags.tag"
                 )
             else:
-                rows = await self._fetch_tuples(
-                    f"SELECT {field}, COUNT(*) FROM documents "  # noqa: S608 -- field from DOCUMENT_FACET_FIELDS
+                inner_sql = (
+                    f"SELECT {field} AS value, COUNT(*) AS doc_count "  # noqa: S608 -- field from DOCUMENT_FACET_FIELDS
+                    "FROM documents "
                     f"WHERE ({where_sql}) AND {field} IS NOT NULL "
-                    f"GROUP BY {field} "
-                    f"ORDER BY COUNT(*) DESC, {field} ASC",
-                    params,
+                    f"GROUP BY {field}"
                 )
-            facets[field] = {row[0]: row[1] for row in rows}
+            rows = await self._fetch_tuples(
+                f"SELECT value, doc_count, COUNT(*) OVER () FROM ({inner_sql}) AS facet_rows "  # noqa: S608 -- composed from builder-trusted parts
+                "ORDER BY doc_count DESC, value ASC "
+                "LIMIT %s",
+                [*params, value_limit],
+            )
+            facets[field] = FacetFieldCounts(
+                values={row[0]: row[1] for row in rows},
+                total_distinct=rows[0][2] if rows else 0,
+            )
 
         total = await self._fetch_scalar(
             f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- builder-trusted; values are %s

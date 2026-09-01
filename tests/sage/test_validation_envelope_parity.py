@@ -159,6 +159,35 @@ async def test_mcp_non_search_tool_wrong_typed_field_returns_envelope(vault_serv
 # ---------------------------------------------------------------------------
 
 
+async def test_mcp_search_facet_value_limit_zero_returns_envelope(vault_services):
+    """``facet_value_limit=0`` returns the typed envelope naming the bound.
+
+    Zero is rejected, not treated as an unlimited sentinel; the failure
+    happens at the request-model seam (the tool signature accepts any
+    int), so this exercises the same choke point as the limit-cap test.
+    """
+    envelope = await _call_search(mode="catalog", target="facets", facet_value_limit=0)
+
+    assert envelope["error"] != "internal_error"
+    assert envelope["error"] == "invalid_parameter"
+    assert envelope["detail"]["parameter"] == "facet_value_limit"
+    assert envelope["detail"]["value"] == 0
+
+
+async def test_mcp_search_unknown_facet_field_returns_envelope(vault_services):
+    """An unknown facet_fields member returns the typed envelope.
+
+    The closed FacetField vocabulary turns a bogus name into a request-
+    model enum failure rather than an internal error or a silently
+    ignored selection.
+    """
+    envelope = await _call_search(mode="catalog", target="facets", facet_fields=["bogus"])
+
+    assert envelope["error"] != "internal_error"
+    assert envelope["error"] == "invalid_parameter"
+    assert "facet_fields" in envelope["detail"]["parameter"]
+
+
 async def test_mcp_search_wrong_typed_tool_argument_returns_envelope(vault_services):
     """A coercion failure at the argument model returns the envelope.
 
@@ -225,6 +254,21 @@ async def test_http_discover_limit_over_cap_returns_envelope(http_client):
     assert isinstance(body["detail"], dict), "must not be FastAPI's native error list"
     assert body["detail"]["parameter"] == "limit"
     assert "offset" in body["detail"]["hint"]
+
+
+async def test_http_discover_facet_value_limit_zero_returns_envelope(http_client):
+    """The Core API mirror of the facet_value_limit bound: same envelope,
+    same parameter naming, through the request-body path.
+    """
+    resp = await http_client.post(
+        f"/sage_vaults/{VAULT_ID}/discover",
+        json={"mode": "catalog", "target": "facets", "facet_value_limit": 0},
+    )
+
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_parameter"
+    assert body["detail"]["parameter"] == "facet_value_limit"
 
 
 async def test_envelope_shape_parity_between_surfaces(vault_services, http_client):

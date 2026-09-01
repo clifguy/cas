@@ -30,6 +30,7 @@ from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
+    FacetFieldCounts,
     GraphStore,
     SearchResult,
     StorageQueryError,
@@ -101,6 +102,15 @@ DEFAULT_MCP_INLINE_BUDGET_BYTES = 24576
 # re-paged response stays comfortably under budget. The hint itself adds
 # bytes the first measurement does not see; a 5% margin absorbs that.
 _BUDGET_RECOMMEND_SAFETY_FACTOR = 0.95
+
+# Per-field value cap applied to facet aggregation when the request
+# carries no explicit ``facet_value_limit``. Declared vocabularies sit
+# far below this, so the cap only ever bites free-text tags -- the one
+# facet whose vocabulary grows with the corpus. The default keeps the
+# no-options orientation call bounded at any corpus size; each row's
+# ``total_distinct`` makes the truncation visible and names the limit
+# that reaches the full vocabulary.
+DEFAULT_FACET_VALUE_LIMIT = 50
 
 
 def _resolve_mcp_inline_budget_bytes() -> int:
@@ -425,7 +435,8 @@ class RetrievalService:
 
             # Facet aggregation likewise bypasses the document-target
             # post-processing pipeline. No budget hint: the response is
-            # bounded by vocabulary size by construction, and the hint's
+            # bounded by construction -- vocabulary fields by vocabulary
+            # size, tags by the per-field value cap -- and the hint's
             # recommended_limit would name a parameter the facets
             # validator rejects.
             if request.target == RetrievalTarget.FACETS:
@@ -611,18 +622,35 @@ class RetrievalService:
         """Vocabulary aggregation via GROUP BY on the graph store.
 
         Builds the same filter dict as document catalog enumeration,
-        calls ``GraphStore.query_document_facets``, and wraps each facet
-        field's value counts in a ``FacetHit`` row. The response carries
-        one row per facet field regardless of vault size;
-        ``total_available`` is the count of documents matching the
-        filters (the facet denominator).
+        calls ``GraphStore.query_document_facets``, and wraps each
+        requested facet field's counts in a ``FacetHit`` row --
+        ``facet_fields`` selects a subset (all fields when unset), in
+        the fixed field order regardless of the order requested. Each
+        row's values are capped to ``facet_value_limit`` entries
+        (``DEFAULT_FACET_VALUE_LIMIT`` when unset) and carry the true
+        distinct total, so the response is bounded regardless of vault
+        size or tagging density. ``total_available`` is the count of
+        documents matching the filters (the facet denominator).
         """
         sql_filters = self._build_catalog_sql_filters(request)
+        requested = (
+            DOCUMENT_FACET_FIELDS
+            if request.facet_fields is None
+            else tuple(f for f in DOCUMENT_FACET_FIELDS if f in set(request.facet_fields))
+        )
+        value_limit = request.facet_value_limit or DEFAULT_FACET_VALUE_LIMIT
 
         with phases.phase("query_document_facets"):
-            facets, total_count = await self._graph.query_document_facets(sql_filters)
+            facets, total_count = await self._graph.query_document_facets(
+                sql_filters, fields=requested, value_limit=value_limit
+            )
 
-        hits = [FacetHit(field=f, values=facets.get(f, {})) for f in DOCUMENT_FACET_FIELDS]
+        hits = []
+        for f in requested:
+            counts = facets.get(f, FacetFieldCounts({}, 0))
+            hits.append(
+                FacetHit(field=f, values=counts.values, total_distinct=counts.total_distinct)
+            )
 
         return DiscoverResponse(
             mode=RetrievalMode.CATALOG,
