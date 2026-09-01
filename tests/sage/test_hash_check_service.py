@@ -56,6 +56,7 @@ def _document(doc_id: str, content_hash: str) -> Document:
         title="Stored document",
         source_type=SourceType.MARKDOWN,
         source_path="stored.md",
+        lifecycle_status="active",
         source_content_hash=content_hash,
         adapter_version="1.0",
         created_by="test",

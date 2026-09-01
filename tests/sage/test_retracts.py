@@ -59,6 +59,7 @@ def _make_doc(doc_id: str) -> Document:
         title=f"Doc {doc_id}",
         source_type=SourceType.MARKDOWN,
         source_path=f"test/{doc_id}.md",
+        lifecycle_status="active",
         source_content_hash=_sha(doc_id),
         adapter_version="0.1.0",
         created_by="testuser",

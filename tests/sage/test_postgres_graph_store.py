@@ -49,6 +49,7 @@ def _doc(i: int, *, tier3: dict | None = None, doc_type: str = "ticket") -> Docu
         title=f"Doc {i}",
         source_type=SourceType.MARKDOWN,
         source_path=f"/x/{i}.md",
+        lifecycle_status="active",
         source_content_hash=f"sha256:{i:064x}",
         adapter_version="1",
         created_by="t",

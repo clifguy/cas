@@ -721,6 +721,7 @@ async def _persist_document(
         title=doc_id,
         source_type=source_type,
         source_path=source_path,
+        lifecycle_status="active",
         source_content_hash=f"sha256:{hashlib.sha256(doc_id.encode()).hexdigest()}",
         adapter_version="1.0",
         created_by="test",
