@@ -27,7 +27,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
 from sage.mcp_server import get_document, ingest_document, read_projection
-from sage.services.transfer import reset_transfer_store
+from sage.services.transfer import get_transfer_store, reset_transfer_store
 
 _VAULT_ID = "test_vault"
 _BASE = "https://sage.test.example"
@@ -149,6 +149,53 @@ async def test_upload_round_trip(client, tmp_path):
     assert "error" not in done, done
     assert done["source_path"] == "imports/round_trip.md"
     assert done["source_content_hash"] == "sha256:" + hashlib.sha256(body).hexdigest()
+
+
+async def test_vsbb_047_refused_upload_reports_the_callers_path_not_the_staging_one(
+    client, tmp_path, tmp_vault_dir
+):
+    """A retention refusal on the completion leg names the file the caller sent,
+    not the server-side staging path the token redeemed to.
+
+    The two-phase completion substitutes the staged path for the caller's, so
+    everything downstream of the redemption sees a location inside the server's
+    own temp tree. A refusal reported from there hands a hosted caller a path it
+    never named and cannot act on -- the one shape of this detail that is worse
+    than useless, since the caller's own file is what it would have to fix.
+
+    Anti-coincidental-pass: the staged file keeps the caller's basename, so an
+    ``endswith`` or basename assertion passes against the defect. Equality
+    against the caller's absolute path is the only form that fails without the
+    declared source carried on the transfer entry -- and the fixture asserts the
+    two paths differ before relying on that.
+    """
+    body = b"# refused upload\n"
+    # Dangling, so retention reaches its write exit and refuses the link there.
+    imports = tmp_vault_dir / "sources" / "imports"
+    imports.mkdir(parents=True, exist_ok=True)
+    (imports / "refused_upload.md").symlink_to(tmp_path / "nowhere.md")
+
+    supplied = str(tmp_path / "caller_inbox" / "refused_upload.md")
+
+    with _profile("cloud"):
+        item = await _mint_upload(tmp_path, "refused_upload.md", body)
+        resp = await client.put("/upload", content=body, headers={"X-Upload-Token": item["token"]})
+        assert resp.status_code == 201, resp.text
+
+        # Read before redemption consumes the entry. This is the control the
+        # assertion below rests on: the two paths must actually differ, or
+        # reporting either one would satisfy it and the test would discriminate
+        # nothing.
+        staged = str(get_transfer_store()._entries[item["transfer_id"]].staged_path)
+        assert staged != supplied
+
+        done = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=item["token"])
+        )
+
+    assert done["error"] == "vault_source_path_refused", done
+    assert done["detail"] == {"source_path": supplied}
+    assert done["detail"]["source_path"] != staged
 
 
 async def test_download_round_trip_source(client, tmp_path):

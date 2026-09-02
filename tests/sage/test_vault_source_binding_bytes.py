@@ -440,29 +440,32 @@ def test_vsbb_040_retain_source_still_disambiguates_around_an_in_tree_link(
 def test_vsbb_043_retain_source_refuses_to_reuse_a_symlinked_path(store, storage_root, tmp_path):
     """Retention will not hand back a symlink as a document's retained path.
 
-    The third exit of the method, and the one no other fixture enters. The link
-    is *live* and its target already holds the bytes being ingested, so the
-    collision comparison matches and retention takes its reuse branch — which
-    returns without writing anything, and so reaches neither the write-site
-    symlink check nor the containment resolve.
+    The reuse exit, and the one no other fixture enters. The link is *live* and
+    its target already holds the bytes being ingested, so the collision
+    comparison matches and retention reuses the path rather than writing.
 
-    Anti-coincidental-pass: the target must hold the *identical* bytes, or the
-    disambiguating branch runs instead and VSBB-040's behaviour is what gets
-    exercised. Nothing is written on this path, so a byte-level assertion cannot
-    discriminate; what the test asserts instead is that no path was returned at
-    all. The defect it excludes is a returned ``imports/note.md`` that is a
-    symlink resolving out of the tree: every read would follow it wherever its
-    owner points, and a later repair would refuse the very path the record
-    names, leaving a document that cannot be restored where it claims to live.
-    The link is asserted intact afterwards, since refusing must not mutate the
-    tree either.
+    Anti-coincidental-pass: two properties of the fixture do the work. The
+    target must hold the *identical* bytes, or the disambiguating branch runs
+    instead and VSBB-040's behaviour is what gets exercised. And the target sits
+    *inside* the storage root, so the containment resolve accepts and only
+    ``_assert_not_symlinked`` refuses; an outside target would be caught by
+    containment and leave the symlink check unexercised — which is what this
+    test's first version did, exactly as VSBB-037's did before it.
+
+    The in-tree case is also the consequential one. The defect excluded is a
+    returned ``imports/note.md`` that is a symlink onto a *second document's*
+    retained copy: every read of this record would land on that document's
+    bytes, and a later repair would write over them at a path this record
+    claims as its own. Nothing is written on this exit, so the assertions are
+    that no path came back, that the link survives, and that the copy it points
+    at is untouched.
     """
     imports = storage_root / "imports"
     imports.mkdir()
     body = b"THE BYTES BEING INGESTED"
-    outside = tmp_path / "outside_target.md"
-    outside.write_bytes(body)
-    (imports / "note.md").symlink_to(outside)
+    someone_elses_copy = imports / "someone_elses_copy.md"
+    someone_elses_copy.write_bytes(body)
+    (imports / "note.md").symlink_to(someone_elses_copy)
 
     ext = _external(tmp_path, "note.md", body)
 
@@ -470,7 +473,7 @@ def test_vsbb_043_retain_source_refuses_to_reuse_a_symlinked_path(store, storage
         store.retain_source(VID, storage_root, ext)
 
     assert (imports / "note.md").is_symlink(), "a refusal must not disturb the tree"
-    assert outside.read_bytes() == body
+    assert someone_elses_copy.read_bytes() == body
 
 
 def test_vsbb_036_write_source_refuses_a_symlinked_destination(store, storage_root, tmp_path):

@@ -591,8 +591,23 @@ class IngestionService:
         self,
         request: IngestRequest,
         wait_for_pipeline: bool = True,
+        caller_source: str | None = None,
     ) -> IngestResult:
         """Execute Stage 1 synchronously and run Stages 2-3 sync or async.
+
+        ``caller_source`` is the path the *caller* named, for a caller that put
+        something else in ``request.source``. Only one does: a delivery that
+        moves the bytes to the server first substitutes the server-side location
+        they were staged at, which is a path the caller never saw and cannot act
+        on. It reaches only the messages that report a refused source path back,
+        so those name something the caller recognizes; it does not affect where
+        anything is read from or written to. Left unset, ``request.source``
+        stands, which is what every caller that names its own file wants.
+
+        Deliberately a parameter rather than a request field: it describes how
+        this call was made, not what to ingest, and a caller supplying it
+        alongside a different ``source`` on the request contract would be
+        expressing a disagreement the contract has no answer for.
 
         When `wait_for_pipeline` is True (default), Stages 2-3 (embedding,
         abstraction) are awaited inline; memory use is bounded to one
@@ -760,6 +775,10 @@ class IngestionService:
         # can have changed the retained copy, so only a write licenses refreshing
         # the as-stored digest below.
         retained = False
+        # What a refusal names back at the caller. Every path below this point
+        # is a location the service resolved or was staged at; this is the one
+        # spelling the caller would recognize as its own.
+        reported_source = caller_source or request.source
 
         if source_input.is_absolute():
             # External file import: copy the caller's file into the vault,
@@ -770,7 +789,7 @@ class IngestionService:
             source_path = source_input.resolve()
             delivered_hash = hash_file(source_path)
             vault_relative, retained = await self._retain_or_reuse(
-                vault_source_store, storage_root, source_path, delivered_hash
+                vault_source_store, storage_root, source_path, delivered_hash, reported_source
             )
         else:
             # Relative source: a vault-relative path into the store. When the
@@ -792,7 +811,7 @@ class IngestionService:
                 # the cheap answer here: a source inside the vault is retained in
                 # place, with no copy to avoid.
                 vault_relative = self._retain_translated(
-                    vault_source_store, storage_root, source_path, delivered_hash
+                    vault_source_store, storage_root, source_path, delivered_hash, reported_source
                 )
                 retained = True
             elif vault_source_store.source_exists(
@@ -1856,6 +1875,7 @@ class IngestionService:
         storage_root: Path,
         source_path: Path,
         delivered_hash: str,
+        reported_source: str,
     ) -> tuple[str, bool]:
         """Retain a delivered source, or reuse the copy already holding those bytes.
 
@@ -1928,7 +1948,12 @@ class IngestionService:
                 vault_id, storage_root, existing.source_path
             ):
                 return existing.source_path, False
-        return self._retain_translated(store, storage_root, source_path, delivered_hash), True
+        return (
+            self._retain_translated(
+                store, storage_root, source_path, delivered_hash, reported_source
+            ),
+            True,
+        )
 
     def _retain_translated(
         self,
@@ -1936,6 +1961,7 @@ class IngestionService:
         storage_root: Path,
         source_path: Path,
         delivered_hash: str | None,
+        reported_source: str,
     ) -> str:
         """Retain through the port, surfacing a refused destination as a typed error.
 
@@ -1947,8 +1973,17 @@ class IngestionService:
         each caller so the translation cannot be present on one branch and
         absent on another; the branches differ in how they *reach* a retain, not
         in what a refusal means to the caller.
+
+        ``reported_source`` is what the refusal names, and it is not
+        ``source_path``. By here the source has been resolved -- joined onto the
+        storage root for a vault-relative input, realpath'd for an external one,
+        or replaced outright by a staging location for a two-phase delivery --
+        so reporting it would answer with a path the caller never sent, cannot
+        match against what it did send, and in a hosted deployment has no
+        business seeing. Retention still acts on ``source_path``; only the
+        message changes.
         """
-        with _translate_vault_source_refusal(str(source_path)):
+        with _translate_vault_source_refusal(reported_source):
             return store.retain_source(
                 self._config.vault.id, storage_root, source_path, delivered_hash
             )

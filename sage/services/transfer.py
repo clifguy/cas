@@ -116,6 +116,11 @@ class PendingTransfer:
     expires_at: datetime
     staging_dir: Path
     filename: str = ""
+    #: The path the caller named when this upload was minted. Redemption
+    #: substitutes the staged path for it everywhere downstream, so it is kept
+    #: here for the one thing that must not report a server-side location: a
+    #: message naming a refused source back to the caller.
+    declared_source: str = ""
     state: Literal["pending_bytes", "streaming", "bytes_staged"] = "pending_bytes"
     staged_size: int | None = None
     staged_sha256: str | None = None
@@ -158,8 +163,20 @@ class TransferStore:
 
     # -- minting ---------------------------------------------------------
 
-    def mint_upload(self, vault_id: str, filename: str, ttl_seconds: int) -> MintedTransfer:
-        """Mint an upload token bound to one vault and one staged filename."""
+    def mint_upload(
+        self,
+        vault_id: str,
+        filename: str,
+        ttl_seconds: int,
+        declared_source: str = "",
+    ) -> MintedTransfer:
+        """Mint an upload token bound to one vault and one staged filename.
+
+        ``declared_source`` is the path the caller named, recorded because
+        ``filename`` is reduced to a safe basename and the staging location is
+        the server's own. Optional: an entry without one simply has no
+        caller-facing spelling to report.
+        """
         safe_name = staging_name(filename, "transfer_source")
         with self._lock:
             self._sweep_locked()
@@ -167,6 +184,7 @@ class TransferStore:
                 direction="upload", vault_id=vault_id, ttl_seconds=ttl_seconds
             )
             entry.filename = safe_name
+            entry.declared_source = declared_source
         return minted
 
     def mint_download_source(
@@ -403,7 +421,7 @@ def mint_upload_recipe(vault_id: str, sources: list[str]):
     items: list[UploadRecipeItem] = []
     expires_at = None
     for source in sources:
-        minted = store.mint_upload(vault_id, Path(source).name, ttl_seconds)
+        minted = store.mint_upload(vault_id, Path(source).name, ttl_seconds, declared_source=source)
         expires_at = minted.expires_at
         items.append(
             UploadRecipeItem(

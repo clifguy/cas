@@ -714,6 +714,7 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # apart, since anything reasoning about placement without retaining
         # reads the latter.
         dest = storage_root / self.planned_source_path(vault_id, storage_root, source_path)
+        reuse = False
         if dest.exists():
             # The caller's digest when it has one, so the delivered bytes are
             # hashed once across the whole ingest rather than once here and once
@@ -721,31 +722,30 @@ class FilesystemVaultSourceStore(VaultSourceStore):
             content_hash = delivered_hash or hash_file(source_path)
             existing_hash = hash_file(dest)
             if content_hash == existing_hash:
-                # Identical content already imported -- reuse existing path,
-                # once it is established that the path is one the document can
-                # live at. A link here would otherwise become the record's
-                # ``source_path``: every read would follow it wherever its owner
-                # points, and a later repair would refuse the very path the
-                # record names, leaving a document that cannot be restored where
-                # it claims to live. Guarded on this exit rather than on entry to
-                # the branch, because the disambiguating exit below writes
-                # elsewhere and must keep working (a link it never touches is
-                # not its problem to refuse).
-                _assert_not_symlinked(dest)
-                resolve_and_assert_within_root(dest, storage_root)
-                return str(dest.relative_to(storage_root))
-            # Different content: disambiguate with the 8-char content hash.
-            token = _disambiguation_token(content_hash)
-            dest = imports_dir / f"{source_path.stem}_{token}{source_path.suffix}"
+                # Identical content already imported: this path is the answer,
+                # with no copy to make.
+                reuse = True
+            else:
+                # Different content: disambiguate with the 8-char content hash.
+                token = _disambiguation_token(content_hash)
+                dest = imports_dir / f"{source_path.stem}_{token}{source_path.suffix}"
 
-        # Guarded here rather than where ``dest`` was first computed, because
-        # this is the path actually about to be written and the collision branch
-        # above may have chosen a different one. Checking only the planned path
-        # leaves the disambiguated write unguarded at a name derivable from the
-        # delivered bytes, while refusing a link the *disambiguating* exit was
-        # never going to write through. Each of the method's three exits is
-        # guarded where it lands: this one and the reuse exit above, plus the
-        # internal short-circuit, which returns a path already inside the tree.
+        # The destination is settled, so it is guarded once. Both remaining
+        # outcomes need the same assurance about the same path and differ only
+        # in what they then do with it: the reuse below returns it as the
+        # record's ``source_path``, the copy lands bytes at it. Deciding first
+        # and guarding after is what keeps that true -- a guard placed on a
+        # candidate destination is only ever correct for the branch that happens
+        # to keep it, which is how a check on the planned path left the
+        # disambiguated write open while refusing a link the disambiguating
+        # branch was never going to write through. The one exit that does not
+        # arrive here is the internal short-circuit above, which returns a path
+        # already inside the tree without choosing one.
+        #
+        # A link at the destination would otherwise redirect a copy onto its
+        # target, or become a record's ``source_path`` -- every read following
+        # it wherever its owner points, and a later repair refusing the very
+        # path the record names.
         _assert_not_symlinked(dest)
         # Containment resolves the whole path, so a symlinked *ancestor* --
         # ``imports/`` itself, say -- cannot land the copy outside the tree while
@@ -754,6 +754,9 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # vault-relative form is computed against ``storage_root`` as given, so a
         # storage root that is itself reached through a link keeps working.
         resolve_and_assert_within_root(dest, storage_root)
+
+        if reuse:
+            return str(dest.relative_to(storage_root))
 
         shutil.copy2(source_path, dest)
         # Strip UI-layer invisibility markers that shutil.copy2 may have
