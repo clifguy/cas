@@ -6,6 +6,10 @@ surface and the one table that decides where each tool registers:
 - ``CANONICAL_VERBS`` — the verb categories that every SAGE MCP tool
   name must begin with (after stripping any compound prefix). Anchored
   to CAS-ADR-033. Consumed by the conformance gates only.
+- ``MAINT_ONLY_VERBS`` — the closed class of outlier verbs whose tools
+  register on the maintenance surface only. Anchored to CAS-ADR-033. The
+  restriction is carried by ``SERVER_ASSIGNMENT`` and enforced by the
+  import-time invariants below, not by any tool-name prefix.
 - ``COMPOUND_PREFIXES`` — prefixes that compose with the verb taxonomy
   (currently ``bulk_`` and ``maint_``). Anchored to CAS-ADR-029.
   Consumed by the conformance gates only.
@@ -56,19 +60,27 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
         "ingest",
         "recompute",
         "verify",
-        # Maintenance-only outlier verbs (accepted on the sage_maint surface
-        # only): maintenance operations on substrate state whose intent does
-        # not fit the read-spine / mutation / derivation / validation taxonomy.
-        # This is the set the gate enforces; the argument admitting each member
-        # lives in the *SAGE MCP Tool Surface* steering document, which holds
-        # the population of every partition CAS-ADR-033 establishes -- the same
-        # document the server registration map below transcribes.
+        # Maintenance-only outlier verbs; see MAINT_ONLY_VERBS below.
         "reload",
         "migrate",
         "optimize",
         "restore",
     }
 )
+
+
+#: The maintenance-only outlier verbs (CAS-ADR-033): maintenance operations
+#: on substrate state whose intent does not fit the read-spine / mutation /
+#: derivation / validation taxonomy. Each is accepted as a member of a
+#: closed class rather than promoted to a category of its own. A tool
+#: carrying one of these verbs registers on the maintenance surface only --
+#: a restriction ``SERVER_ASSIGNMENT`` carries and ``_check_table_invariants``
+#: enforces at import, not a property of the verb taxonomy or of any
+#: tool-name prefix. The argument admitting each member lives in the *SAGE
+#: MCP Tool Surface* steering document, which holds the population of every
+#: partition CAS-ADR-033 establishes -- the same document the server
+#: registration map below transcribes.
+MAINT_ONLY_VERBS: Final[frozenset[str]] = frozenset({"reload", "migrate", "optimize", "restore"})
 
 
 #: Prefixes that compose with the verb taxonomy. After stripping a
@@ -279,6 +291,24 @@ def _check_table_invariants(
     alias_collisions = set(aliases) & set(assignment)
     assert alias_collisions == set(), (  # noqa: S101
         f"alias name(s) collide with registered tool names: {alias_collisions}"
+    )
+
+    # The maintenance-only outlier verbs are scoped by this table: a tool
+    # whose verb is one of them registers on the maintenance surface and
+    # nowhere else. The verb taxonomy states the class; the table places
+    # its members, and no tool-name prefix is consulted.
+    assert MAINT_ONLY_VERBS <= CANONICAL_VERBS, (  # noqa: S101
+        f"MAINT_ONLY_VERBS is not a subset of CANONICAL_VERBS: "
+        f"{sorted(MAINT_ONLY_VERBS - CANONICAL_VERBS)}"
+    )
+    misplaced = {
+        name: extract_verb(name)
+        for name, server in assignment.items()
+        if extract_verb(name) in MAINT_ONLY_VERBS and server != "sage_maint"
+    }
+    assert misplaced == {}, (  # noqa: S101
+        "tool(s) carrying a maintenance-only verb registered off the "
+        f"maintenance surface (tool: verb): {misplaced}"
     )
 
 

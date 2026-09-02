@@ -9,7 +9,7 @@ Gates over the live FastMCP catalog and the naming taxonomy:
   begins with a verb in ``CANONICAL_VERBS`` (after stripping any
   member of ``COMPOUND_PREFIXES``). Anchored to CAS-ADR-033.
 - ``test_live_catalog_matches_expected_set`` — the live catalog equals
-  the roster transcribed in ``SERVER_ASSIGNMENT``.
+  the hand-maintained roster pin in ``tests/sage/mcp_surface_pin.py``.
 - ``test_rename_target_invocable`` — a representative tool per class
   dispatches end-to-end (a wrong registration key surfaces as
   tool-not-found).
@@ -43,6 +43,7 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from tests.sage.conftest import initialize_services_for_test
+from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -364,37 +365,34 @@ async def test_settings_local_permissions_match_live_catalog() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Live catalog matches the SERVER_ASSIGNMENT roster
+# Live catalog matches the pinned roster
 # ---------------------------------------------------------------------------
 
 
-# Derived from SERVER_ASSIGNMENT in sage/_tool_naming.py — the target
-# catalog after CAS-ADR-029. Sourcing from SERVER_ASSIGNMENT (rather than
-# a hand-typed literal) closes the misclassification re-entry trap: a
-# v6 → v7 amendment that updates SERVER_ASSIGNMENT automatically
-# propagates here, and any drift between the table and the live catalog
-# surfaces on either side as the same diff.
+# The hand-maintained pin in tests/sage/mcp_surface_pin.py, not
+# SERVER_ASSIGNMENT: the table is what registration reads, so a catalog
+# compared to it can only confirm that registration honoured the table.
+# Compared to a literal the table does not feed, the same check also
+# catches a tool that reached the table without a deliberate decision.
 
-_EXPECTED_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
+_EXPECTED_CATALOG: frozenset[str] = frozenset(EXPECTED_SURFACE)
 
 
 async def test_live_catalog_matches_expected_set() -> None:
-    """The live MCP catalog equals the target set defined in
-    SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + surface-prefix pass.
+    """The live MCP catalog equals the hand-maintained roster pin.
 
-    Anti-coincidental check: the expected set is sourced from the
-    SERVER_ASSIGNMENT table in ``sage/_tool_naming.py`` rather than from
-    a hand-typed literal. A v6 → v7 misclassification re-entry (e.g.,
-    re-adding `list_vaults` as unprefixed) would surface as the SAME diff
-    on both sides — the live catalog and the table — which is the desired
-    auditable failure mode.
+    Anti-coincidental check: the expected set is the literal in
+    ``tests/sage/mcp_surface_pin.py``, which no production code reads. A
+    tool registered without a pin entry, or a pin entry for a tool no longer
+    registered, surfaces here as the same diff the partition gates report,
+    so the two failure modes are auditable from either file.
     """
     live = await _live_tool_names()
     expected = set(_EXPECTED_CATALOG)
     missing = expected - live
     extra = live - expected
     assert not missing and not extra, (
-        f"Live MCP catalog differs from the CAS-ADR-029 target set. "
+        "Live MCP catalog differs from the pinned roster. "
         f"Missing from live: {sorted(missing)}; "
-        f"Extra in live (not in SERVER_ASSIGNMENT): {sorted(extra)}."
+        f"Extra in live (not pinned): {sorted(extra)}."
     )

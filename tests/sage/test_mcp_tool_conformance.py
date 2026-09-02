@@ -1140,17 +1140,19 @@ def test_registered_tool_enumeration_is_nonempty():
     Anti-vacuity control. If ``_registered_tools`` returned an empty (or
     merely partial) mapping, every assertion in the two annotation gates
     below would pass over nothing at all and the gate would be silently
-    disarmed. Reconciling against ``SERVER_ASSIGNMENT`` -- the table
-    registration reads, which names every tool on either surface -- makes
-    both the empty and the partial case fail loudly.
+    disarmed. Reconciling against the hand-maintained roster pin in
+    ``tests/sage/mcp_surface_pin.py`` -- a literal registration does not
+    read, naming every tool on either surface -- makes both the empty and
+    the partial case fail loudly without echoing the table registration
+    consumes.
     """
-    from sage._tool_naming import SERVER_ASSIGNMENT
+    from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
     names = set(_all_registered_tools())
-    assert names == set(SERVER_ASSIGNMENT), (
+    assert names == set(EXPECTED_SURFACE), (
         "annotation gates do not enumerate the full tool roster: "
-        f"missing {sorted(set(SERVER_ASSIGNMENT) - names)}, "
-        f"extra {sorted(names - set(SERVER_ASSIGNMENT))}"
+        f"missing {sorted(set(EXPECTED_SURFACE) - names)}, "
+        f"extra {sorted(names - set(EXPECTED_SURFACE))}"
     )
 
 
