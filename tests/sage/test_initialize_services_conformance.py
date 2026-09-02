@@ -90,6 +90,9 @@ class _FakeGraphStore:
     async def list_all_documents(self) -> list:
         return []
 
+    async def get_total_document_count(self) -> int:
+        return 0
+
 
 class _FakeUserService:
     async def bootstrap_owner(self) -> None:

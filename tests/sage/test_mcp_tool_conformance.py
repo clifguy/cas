@@ -1025,8 +1025,10 @@ def _annotation_resolves_to(annotation: Any, target: type) -> bool:
 # `EXPECTED_ANNOTATIONS` is a hand-maintained oracle transcribed from
 # each tool's implementation, NOT derived from the registered
 # annotations. Deriving it would make the split test a tautology that
-# passes for any classification, including an inverted one -- the same
-# discipline `sage/_tool_naming.py` states for `SERVER_ASSIGNMENT`.
+# passes for any classification, including an inverted one. (Unlike
+# `SERVER_ASSIGNMENT` in `sage/_tool_naming.py`, which registration now
+# consumes, this table has no production reader; its independence is
+# what makes the annotation gates a check rather than an echo.)
 #
 # Two gates:
 #   - A1 asserts exhaustiveness in both directions. A newly registered
@@ -1138,9 +1140,9 @@ def test_registered_tool_enumeration_is_nonempty():
     Anti-vacuity control. If ``_registered_tools`` returned an empty (or
     merely partial) mapping, every assertion in the two annotation gates
     below would pass over nothing at all and the gate would be silently
-    disarmed. Reconciling against ``SERVER_ASSIGNMENT`` -- the
-    independent steering-document transcription -- makes both the empty
-    and the partial case fail loudly.
+    disarmed. Reconciling against ``SERVER_ASSIGNMENT`` -- the table
+    registration reads, which names every tool on either surface -- makes
+    both the empty and the partial case fail loudly.
     """
     from sage._tool_naming import SERVER_ASSIGNMENT
 

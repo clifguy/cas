@@ -1877,7 +1877,15 @@ def register_sage_tools(
     @mcp.tool(name="maint_list_vaults", annotations=READ_ONLY)
     async def list_vaults() -> dict:
         """Enumerate all configured vaults. No vault_id parameter -- operates
-        across all registered vaults.
+        across all registered vaults, so this is the tool to call first when
+        choosing which vault a ``vault_id`` argument should name.
+
+        Each entry carries ``id``, ``name``, ``description``, and
+        ``document_count``. The count spans every lifecycle state, including
+        archived predecessors -- it says how much a vault holds, not how much
+        of it is current; ``maint_get_vault_stats`` gives the per-state
+        breakdown for one vault. A plausible-looking vault with a count of
+        zero is empty and not worth a further call.
         """
         try:
             summaries = await get_vault_registry_service().list_vaults()
@@ -1887,7 +1895,7 @@ def register_sage_tools(
                         "id": s.id,
                         "name": s.name,
                         "description": s.description,
-                        "storage_root": s.storage_root,
+                        "document_count": s.document_count,
                     }
                     for s in summaries
                 ],
@@ -1958,7 +1966,7 @@ def register_sage_tools(
             return {
                 "vault_id": summary.id,
                 "name": summary.name,
-                "storage_root": summary.storage_root,
+                "storage_root": config["vault"]["storage_root"],
                 "config": config,
             }
         except (SAGEError, ValueError) as e:

@@ -175,7 +175,7 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
 
     Realizes the CAS-ADR-034 ordinary/maintenance partition over the
     Streamable HTTP transport: ``/mcp`` carries the ``sage`` (ordinary)
-    roster and ``/mcp_maint`` the ``sage_maint`` (``maint_*``) roster,
+    roster and ``/mcp_maint`` the ``sage_maint`` (maintenance) roster,
     with ``/mcp_admin`` serving the maintenance roster as the surface's
     pre-rename alias path. Every mount is built by
     ``build_partitioned_server`` and runs in this one uvicorn process,

@@ -63,7 +63,7 @@ const mockVault: VaultSummary = {
   id: 'test_vault',
   name: 'Test Vault',
   description: null,
-  storage_root: '/tmp/test',
+  document_count: 0,
   doc_types: [{ value: 'design_spec', label: 'Design Spec' }],
   lifecycle_states: [{ value: 'active', label: 'Active', is_terminal: false }],
   adapters: [],

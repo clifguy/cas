@@ -1281,10 +1281,10 @@ paths:
       summary: List all vaults registered with the running SAGE instance.
       description: >-
         Returns a VaultSummary for every vault in the in-memory registry.
-        Each summary includes the vault's identity, storage root,
-        configured doc types, lifecycle states, registered source
-        adapters, and the set of distinct project identifiers observed
-        in the vault's documents.
+        Each summary includes the vault's identity, its document count
+        across every lifecycle state, configured doc types, lifecycle
+        states, registered source adapters, and the set of distinct
+        project identifiers observed in the vault's documents.
 
 
         Used by the CAS Application to populate the vault selector and
@@ -5604,8 +5604,8 @@ components:
 
     VaultSummary:
       type: object
-      required: [id, name, storage_root]
-      description: Compact vault description used in vault-listing responses; carries identity, configured doc types and lifecycle states, and adapter info.
+      required: [id, name, document_count]
+      description: Compact vault description used in vault-listing responses; carries identity, a document count, configured doc types and lifecycle states, and adapter info.
       properties:
         id:
           type: string
@@ -5617,9 +5617,12 @@ components:
           type: string
           nullable: true
           description: Vault-config description text; null when no description was authored.
-        storage_root:
-          type: string
-          description: Path to the vault's source-file storage root.
+        document_count:
+          type: integer
+          description: >-
+            Number of documents in the vault across every lifecycle state,
+            including archived predecessors; the vault-stats read gives the
+            per-state breakdown.
         doc_types:
           type: array
           items:

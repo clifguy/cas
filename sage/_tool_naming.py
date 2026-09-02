@@ -1,24 +1,28 @@
-"""SAGE MCP tool naming: verb taxonomy and server-assignment oracle.
+"""SAGE MCP tool naming: verb taxonomy, surface assignment, and aliases.
 
 This module holds the durable naming invariants of the SAGE MCP tool
-surface. Apart from the alias mapping, none of it is consumed by
-production dispatch; the conformance gates consume it to cross-check
-the live catalog:
+surface and the one table that decides where each tool registers:
 
 - ``CANONICAL_VERBS`` — the verb categories that every SAGE MCP tool
   name must begin with (after stripping any compound prefix). Anchored
-  to CAS-ADR-033.
+  to CAS-ADR-033. Consumed by the conformance gates only.
 - ``COMPOUND_PREFIXES`` — prefixes that compose with the verb taxonomy
-  (currently ``bulk_`` and ``admin_``). Anchored to CAS-ADR-029.
+  (currently ``bulk_`` and ``maint_``). Anchored to CAS-ADR-029.
+  Consumed by the conformance gates only.
 - ``extract_verb`` — helper returning a tool name's canonical verb
   segment after stripping any compound prefix.
 - ``SERVER_ASSIGNMENT`` — tool name → MCP server name (``sage`` or
-  ``sage_maint``). The in-code transcription of the two-server split
-  per CAS-ADR-034; the partition tests cross-check it against the
-  prefix-derived registration.
+  ``sage_maint``). The registration authority for the two-server split
+  per CAS-ADR-034: ``build_partitioned_server`` reads it to decide which
+  tools each surface carries, and a registered tool with no row here
+  fails registration rather than landing on a default surface.
+- ``PREFIX_SURFACE_DIVERGENCES`` — the tools whose surface deliberately
+  differs from what their name prefix would suggest. The ``maint_``
+  prefix is a naming convention (CAS-ADR-029), not a registration rule;
+  this set records every place the two are allowed to disagree so the
+  partition gates can hold them to exactly that.
 - ``MAINT_ALIAS_MAPPING`` — pre-rename ``admin_*`` name → canonical
-  ``maint_*`` name. The one exception to "none of it is consumed by
-  production dispatch": the alias middleware consults it on every
+  ``maint_*`` name. The alias middleware consults it on every
   ``call_tool`` invocation so pre-rename callers keep working.
 """
 
@@ -71,8 +75,8 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
 #: compound prefix from the beginning of a tool name, the remainder
 #: must begin with a canonical verb. ``bulk`` is retained for the
 #: ``bulk_ingest_document`` tool whose rename to ``ingest_documents``
-#: is deferred to a follow-on revision. ``maint`` is the prefix-
-#: encodes-surface marker per CAS-ADR-029 v4 (the surface's pre-rename
+#: is deferred to a follow-on revision. ``maint`` is the naming marker
+#: for maintenance tools per CAS-ADR-029 (the surface's pre-rename
 #: ``admin`` prefix survives only in the dispatch-level alias mapping
 #: below, never in a registered name, so it composes with nothing).
 COMPOUND_PREFIXES: Final[frozenset[str]] = frozenset(
@@ -108,26 +112,33 @@ def extract_verb(tool_name: str) -> str:
 # Server assignment (anchored to CAS-ADR-034)
 # ----------------------------------------------------------------------
 
-#: New tool name → MCP server name. The ``sage`` server hosts the
-#: ordinary surface (read spine + mutation spine + record-collection
-#: queries + per-document recomputes); the ``sage_maint`` server hosts
-#: the maintenance surface (vault-state reads and writes + stack-state
-#: reads + substrate maintenance). Server assignment is derivable from
-#: the tool's prefix per CAS-ADR-029 v4's prefix-encodes-surface rule
-#: (``maint_*`` → ``sage_maint``; everything else → ``sage``), but
-#: codifying it here avoids re-deriving the partition at every
-#: registration site and gives downstream consumers a single canonical
-#: source.
+#: Tool name → MCP server name. The ``sage`` server hosts the ordinary
+#: surface (read spine + mutation spine + record-collection queries +
+#: per-document recomputes, plus the one tool that enumerates the vaults
+#: every other ordinary tool is addressed to); the ``sage_maint`` server
+#: hosts the maintenance surface (vault-state reads and writes +
+#: stack-state reads + substrate maintenance).
 #:
-#: The two-surface registration split (CAS-ADR-034) is live: the ``sage``
-#: and ``sage_maint`` surfaces register their tools by deriving the surface
-#: from each tool name's first segment (``sage.mcp_server._surface_of``), so
-#: this table is **not** consumed by registration. It serves as the
-#: conformance oracle — the in-code transcription of the *SAGE MCP Tool
-#: Surface* steering document's server registration map — against which the
-#: partition tests cross-check the prefix-derived split.
+#: This table is the registration authority for the two-surface split
+#: (CAS-ADR-034): ``sage.mcp_server.build_partitioned_server`` keeps, on
+#: each surface, exactly the tools this table assigns to it, and refuses
+#: to build a surface when a registered tool has no row here. It is the
+#: in-code transcription of the *SAGE MCP Tool Surface* steering
+#: document's server registration map; moving a tool between surfaces
+#: is an edit to this row and to that map, never a rename.
+#:
+#: The ``maint_`` prefix is the naming convention for maintenance tools
+#: (CAS-ADR-029); it does not decide registration. The partition gates
+#: cross-check the two, holding their disagreements to exactly
+#: ``PREFIX_SURFACE_DIVERGENCES`` below.
 SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     # sage server (ordinary surface)
+    # Vault enumeration: the ordinary surface is vault-addressed, so it
+    # carries the one tool that lists the values its ``vault_id``
+    # arguments range over. The name keeps its maintenance prefix -- the
+    # move and any rename are decisions on independent cadences -- and
+    # the divergence is recorded in PREFIX_SURFACE_DIVERGENCES.
+    "maint_list_vaults": "sage",
     "search": "sage",
     "get_document": "sage",
     "read_section": "sage",
@@ -151,7 +162,6 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "recompute_abstract": "sage",
     "recompute_pipeline": "sage",
     # sage_maint server (maintenance surface)
-    "maint_list_vaults": "sage_maint",
     "maint_get_vault_config": "sage_maint",
     "maint_get_vault_stats": "sage_maint",
     "maint_get_stack_config": "sage_maint",
@@ -166,6 +176,23 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "maint_recompute_deferred_vault_abstracts": "sage_maint",
     "maint_optimize_vault_content_store": "sage_maint",
 }
+
+
+#: Tools whose assigned surface differs from the one their name prefix
+#: suggests (``maint_*`` → ``sage_maint``; everything else → ``sage``).
+#:
+#: Written out by hand, not derived from ``SERVER_ASSIGNMENT``: the
+#: partition gates compare the prefix convention against the table and
+#: require their disagreements to equal this set exactly, in both
+#: directions, and pin its population. A tool joins this set only by a
+#: recorded decision, so it cannot quietly grow into an allowlist.
+#:
+#: Vault enumeration is the one member: it carries the maintenance prefix
+#: because it reads the SAGE process's vault registry rather than records
+#: within a vault, and it registers on the ordinary surface because that
+#: surface is vault-addressed and otherwise cannot enumerate the vaults
+#: its own ``vault_id`` arguments range over.
+PREFIX_SURFACE_DIVERGENCES: Final[frozenset[str]] = frozenset({"maint_list_vaults"})
 
 
 # ----------------------------------------------------------------------
@@ -186,7 +213,11 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
 #: The table is written out rather than derived from
 #: ``SERVER_ASSIGNMENT`` on purpose: it covers exactly the tools that
 #: existed under the old prefix. A maintenance tool added after the
-#: rename gets no fabricated ``admin_*`` alias.
+#: rename gets no fabricated ``admin_*`` alias, and a tool that has since
+#: moved to the ordinary surface keeps the alias it already had -- the
+#: alias follows the name, and resolves on whichever surface registers
+#: the target (CAS-ADR-034: an alias grants nothing the canonical name
+#: does not).
 MAINT_ALIAS_MAPPING: Final[dict[str, str]] = {
     "admin_list_vaults": "maint_list_vaults",
     "admin_get_vault_config": "maint_get_vault_config",
@@ -208,27 +239,47 @@ MAINT_ALIAS_MAPPING: Final[dict[str, str]] = {
 # Module-level invariants (checked at import time)
 # ----------------------------------------------------------------------
 
-# This assertion is an init-time table-consistency guard; it fires at
+# These assertions are an init-time table-consistency guard; they fire at
 # import so the failure mode is impossible to miss. Production code paths
 # do not rely on assertion truth values, so the ruff S101 ban on
 # `assert` does not apply.
 
-# SERVER_ASSIGNMENT values must be one of the two allowed server names.
-_unknown_servers = set(SERVER_ASSIGNMENT.values()) - {"sage", "sage_maint"}
-assert _unknown_servers == set(), (  # noqa: S101
-    f"SERVER_ASSIGNMENT values must be 'sage' or 'sage_maint': {_unknown_servers}"
-)
 
-# Every alias must target a registered maintenance-surface name, and no
-# alias may collide with a registered name (a collision would shadow a
-# live tool behind the rewrite).
-_orphan_aliases = {
-    old for old, new in MAINT_ALIAS_MAPPING.items() if SERVER_ASSIGNMENT.get(new) != "sage_maint"
-}
-assert _orphan_aliases == set(), (  # noqa: S101
-    f"alias target(s) not on the maintenance surface: {_orphan_aliases}"
-)
-_alias_collisions = set(MAINT_ALIAS_MAPPING) & set(SERVER_ASSIGNMENT)
-assert _alias_collisions == set(), (  # noqa: S101
-    f"alias name(s) collide with registered tool names: {_alias_collisions}"
-)
+def _check_table_invariants(
+    assignment: dict[str, str],
+    aliases: dict[str, str],
+    divergences: frozenset[str],
+) -> None:
+    """Assert the cross-table invariants; called once at import.
+
+    Factored so a test can exercise the checks against a deliberately
+    broken copy without re-importing the module.
+    """
+    # SERVER_ASSIGNMENT values must be one of the two allowed server names.
+    unknown_servers = set(assignment.values()) - {"sage", "sage_maint"}
+    assert unknown_servers == set(), (  # noqa: S101
+        f"SERVER_ASSIGNMENT values must be 'sage' or 'sage_maint': {unknown_servers}"
+    )
+
+    # Every declared divergence must name a registered tool; a typo or a
+    # stale entry would otherwise import cleanly and surface only in tests.
+    unknown_divergences = divergences - set(assignment)
+    assert unknown_divergences == set(), (  # noqa: S101
+        f"PREFIX_SURFACE_DIVERGENCES names unregistered tool(s): {unknown_divergences}"
+    )
+
+    # Every alias must target a registered name (on either surface -- the
+    # alias follows the name, not the surface), and no alias may collide
+    # with a registered name (a collision would shadow a live tool behind
+    # the rewrite).
+    orphan_aliases = {old for old, new in aliases.items() if new not in assignment}
+    assert orphan_aliases == set(), (  # noqa: S101
+        f"alias(es) whose target is not a registered tool: {orphan_aliases}"
+    )
+    alias_collisions = set(aliases) & set(assignment)
+    assert alias_collisions == set(), (  # noqa: S101
+        f"alias name(s) collide with registered tool names: {alias_collisions}"
+    )
+
+
+_check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)

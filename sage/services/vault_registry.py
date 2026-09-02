@@ -150,7 +150,14 @@ class VaultRegistryService:
                         "project"
                     )
                     projects = sorted(project_counts.keys())
-                    results.append(self._build_vault_summary(services.config, services, projects))
+                    # The total, not a sum over the project counts: those
+                    # omit documents with no project value.
+                    document_count = await services.graph_store.get_total_document_count()
+                    results.append(
+                        self._build_vault_summary(
+                            services.config, services, projects, document_count=document_count
+                        )
+                    )
                     continue
                 logger.error("Skipping vault %s from the listing: durable backing absent", vault_id)
             except Exception:
@@ -292,7 +299,11 @@ class VaultRegistryService:
                 )
             raise
 
-        return self._build_vault_summary(config, services)
+        # Read the count rather than assume zero: creation checks only the
+        # in-memory registry, so an id re-created over a schema that survived
+        # an eviction may already hold documents.
+        document_count = await services.graph_store.get_total_document_count()
+        return self._build_vault_summary(config, services, document_count=document_count)
 
     async def reload(self, vault_id: str, new_config: VaultConfig) -> "SAGEServices":
         """Close old services for a vault and reinitialize from a new config.
@@ -312,6 +323,8 @@ class VaultRegistryService:
         config: VaultConfig,
         services: Any,
         projects: list[str] | None = None,
+        *,
+        document_count: int,
     ) -> VaultSummary:
         """Build a VaultSummary from a config and services instance.
 
@@ -325,6 +338,12 @@ class VaultRegistryService:
         this factory; the test exercises the sub-models transitively on the
         first element of each sub-collection rather than splitting closure
         pairs onto each sub-model individually.
+
+        ``document_count`` is caller-supplied because the store query that
+        produces it belongs inside the listing's per-vault error guard. It
+        is required rather than defaulted: a summary carrying a confident
+        zero for a populated vault steers callers away from it, so the
+        create path states its zero explicitly.
         """
         vault = config.vault
         doc_types = [
@@ -346,7 +365,7 @@ class VaultRegistryService:
             id=vault.id,
             name=vault.name,
             description=getattr(vault, "description", None),
-            storage_root=vault.storage_root,
+            document_count=document_count,
             doc_types=doc_types,
             lifecycle_states=lifecycle_states,
             adapters=adapters,

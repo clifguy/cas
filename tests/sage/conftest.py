@@ -11,9 +11,11 @@ import asyncio
 import contextlib
 import dataclasses
 import os
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 
 import sage.adapters.abstraction_qwen3 as _abstraction_qwen3
 from sage.adapters.stubs import (
@@ -49,6 +51,56 @@ def _reset_generation_lock():
     _abstraction_qwen3._generation_lock = asyncio.Lock()
     yield
     _abstraction_qwen3._generation_lock = asyncio.Lock()
+
+
+@pytest.fixture
+async def app_with_one_vault(minimal_config: VaultConfig) -> AsyncIterator[FastAPI]:
+    """A SAGE app with ``minimal_config``'s vault initialized and registered.
+
+    Yields the FastAPI app whose MCP mounts (``app.state.mcp_mounts``) share
+    the app-populated vault registry. ``app.state.vault_registry`` is the
+    process-global MCP registry, so teardown touches only the vaults this
+    fixture added: each is closed through ``close_storage()`` (the contract
+    ``initialize_services_for_test`` sets) and popped, and anything another
+    test left registered is neither closed under it nor evicted.
+    """
+    from sage import mcp_server
+    from sage.app import _initialize_services, create_app
+
+    app = create_app(config=minimal_config)
+    registry = mcp_server._vaults  # what app.state.vault_registry is bound to
+    before = set(registry)
+    await _initialize_services(
+        app,
+        minimal_config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
+    try:
+        yield app
+    finally:
+        for vault_id in set(registry) - before:
+            services = registry.pop(vault_id)
+            services.close_timing()
+            await services.close_storage()
+
+
+@pytest.fixture
+def tool_payload() -> Callable[[object], dict]:
+    """Decoder for the JSON body FastMCP wraps a tool's dict return into.
+
+    ``call_tool`` returns ``[TextContent(text=<json>)]`` for a dict-returning
+    tool; tests that need to inspect the payload rather than substring-match
+    its ``str()`` (an error envelope also names the ids it failed on) decode
+    it through this.
+    """
+    import json
+
+    def decode(result: object) -> dict:
+        return json.loads(result[0].text)  # type: ignore[index]
+
+    return decode
 
 
 @contextlib.asynccontextmanager

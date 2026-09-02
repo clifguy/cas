@@ -41,8 +41,7 @@ export default function Dashboard() {
     <div>
       {/* Vault Identity */}
       <h1 style={{ margin: '0 0 4px' }}>{vault.name}</h1>
-      <p style={{ margin: '0 0 4px', color: '#666' }}>{vault.description}</p>
-      <p style={{ margin: '0 0 24px', color: '#999', fontSize: 12 }}>{vault.storage_root}</p>
+      <p style={{ margin: '0 0 24px', color: '#666' }}>{vault.description}</p>
 
       {/* Statistics */}
       <Section title="Statistics">

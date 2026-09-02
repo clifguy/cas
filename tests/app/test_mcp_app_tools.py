@@ -239,17 +239,31 @@ async def empty_registry():
 
 
 class TestSageListVaults:
-    async def test_mcp_001_returns_all_vaults(self, two_vaults):
-        """list_vaults returns all registered vaults in envelope."""
+    async def test_mcp_001_returns_all_vaults(self, two_vaults, monkeypatch):
+        """list_vaults returns all registered vaults in envelope.
+
+        The entry key set is pinned exactly: the response carries a per-vault
+        document count and no server-side layout (``storage_root``), and a
+        renamed rather than removed field fails the equality. One vault's
+        store reports a non-zero total so the count is proven to come from
+        that vault's store rather than from a default.
+        """
+        s1, _s2 = two_vaults
+
+        async def seven() -> int:
+            return 7
+
+        monkeypatch.setattr(s1.graph_store, "get_total_document_count", seven)
+
         result = _parse(await list_vaults())
         assert result["count"] == 2
         assert isinstance(result["vaults"], list)
-        ids = {v["id"] for v in result["vaults"]}
-        assert ids == {"test_vault", "second_vault"}
+        by_id = {v["id"]: v for v in result["vaults"]}
+        assert set(by_id) == {"test_vault", "second_vault"}
         for v in result["vaults"]:
-            assert "id" in v
-            assert "name" in v
-            assert "storage_root" in v
+            assert set(v) == {"id", "name", "description", "document_count"}
+        assert by_id["test_vault"]["document_count"] == 7
+        assert by_id["second_vault"]["document_count"] == 0
 
     async def test_mcp_002_empty_returns_envelope(self, empty_registry):
         """list_vaults with no vaults returns envelope with empty list."""

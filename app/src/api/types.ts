@@ -6,7 +6,7 @@ export interface VaultSummary {
   id: string;
   name: string;
   description: string | null;
-  storage_root: string;
+  document_count: number;
   doc_types: DocTypeEntry[];
   lifecycle_states: LifecycleState[];
   adapters: AdapterInfo[];

@@ -4534,7 +4534,13 @@ class VaultSummary(BaseModel):
         default=None,
         description="Vault-config description text; null when no description was authored.",
     )
-    storage_root: str = Field(description="Path to the vault's source-file storage root.")
+    document_count: int = Field(
+        description=(
+            "Number of documents in the vault across every lifecycle state, "
+            "including archived predecessors; the vault-stats read gives the "
+            "per-state breakdown."
+        )
+    )
     doc_types: list[VaultDocTypeEntry] = Field(
         default_factory=list,
         description="Doc-type vocabulary configured for this vault.",

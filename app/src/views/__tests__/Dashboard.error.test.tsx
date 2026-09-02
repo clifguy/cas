@@ -21,7 +21,7 @@ const mockVault: VaultSummary = {
   id: 'v1',
   name: 'V1',
   description: null,
-  storage_root: '/tmp/v1',
+  document_count: 0,
   doc_types: [],
   lifecycle_states: [],
   adapters: [],
