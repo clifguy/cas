@@ -7,8 +7,10 @@ when no server is configured.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
+import time
 from datetime import timedelta
 
 import pytest
@@ -97,6 +99,46 @@ async def _churn(store: PostgresContentStore, doc_id: str = "bloat"):
     so the 200 prior rows become dead MVCC tuples awaiting reclamation."""
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=200))
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=5))
+
+
+async def _await_no_foreign_snapshots(pg_pool, timeout: float = 15.0) -> None:
+    """Wait until no other backend in this database holds a snapshot.
+
+    VACUUM FULL keeps every dead tuple a concurrent snapshot in the same
+    database could still see -- an autovacuum ANALYZE worker is enough -- so a
+    reclaim assertion made while one is live fails for reasons unrelated to
+    the store. Bounded; on timeout the holders are named.
+
+    ``pg_stat_activity`` shows other roles' ``backend_xmin`` only to a
+    superuser or a member of ``pg_read_all_stats``, and autovacuum workers run
+    as the bootstrap superuser; without that visibility the wait would be a
+    silent no-op, so the precondition is checked first and fails loudly."""
+    async with pg_pool.connection() as conn:
+        privilege = await (
+            await conn.execute(
+                "SELECT rolsuper OR pg_has_role(current_user, 'pg_read_all_stats', 'member') "
+                "FROM pg_roles WHERE rolname = current_user"
+            )
+        ).fetchone()
+    assert privilege and privilege[0], (
+        "cannot see other backends' snapshots: run the suite as a superuser "
+        "or GRANT pg_read_all_stats TO the test role"
+    )
+    deadline = time.monotonic() + timeout
+    while True:
+        async with pg_pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT pid, backend_type, state, left(query, 80) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND backend_xmin IS NOT NULL "
+                    "AND pid <> pg_backend_pid()"
+                )
+            ).fetchall()
+        if not rows:
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError(f"backends still holding snapshots in this database: {rows}")
+        await asyncio.sleep(0.2)
 
 
 async def _disable_autovacuum(pg_pool) -> None:
@@ -448,6 +490,7 @@ async def test_optimize_reclaims_versions_and_bytes(store, pg_pool):
     await _disable_autovacuum(pg_pool)
     await _churn(store)
     pre_bytes = await store.measured_byte_size()
+    await _await_no_foreign_snapshots(pg_pool)
     snap = await store.optimize(timedelta(0))
     assert snap["pre_versions"] > 0
     assert snap["post_versions"] == 0
@@ -461,6 +504,7 @@ async def test_optimize_accepts_nonzero_threshold(store, pg_pool):
     """cleanup_older_than is accepted but irrelevant on Postgres: full reclaim."""
     await _disable_autovacuum(pg_pool)
     await _churn(store)
+    await _await_no_foreign_snapshots(pg_pool)
     snap = await store.optimize(timedelta(days=7))
     assert snap["post_versions"] == 0
 

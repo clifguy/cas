@@ -3,9 +3,12 @@
 Production adapter tests for nomic-embed-text EmbeddingProvider, Qwen3
 AbstractionProvider (with lazy loading), and Markdown source adapter
 provenance. Embedding tests require nomic-embed-text (~270MB download on
-first run). Abstraction tests require mlx-lm and Qwen3 model weights
-(~16GB download on first run). Markdown adapter tests have no external
-dependencies. Content-store adapter tests live in
+first run). Abstraction tests require mlx-lm and the weights of the model
+``sage/config.yaml`` ships (several GB on first run); they form the opt-in
+real-model tier, skipped unless ``SAGE_TEST_REAL_MODELS=1`` (see
+``tests/helpers/real_models.py``), which keeps the default run fast and
+light. Markdown adapter tests have no external dependencies. Content-store
+adapter tests live in
 tests/sage/test_content_store_postgres.py.
 
 Tests are organized in implementation dependency order: embedding provider
@@ -13,8 +16,18 @@ first, then abstraction provider, then markdown adapter.
 """
 
 import math
+from collections.abc import Awaitable, Callable, Iterator
+from pathlib import Path
 
 import pytest
+
+from sage.config import load_sage_core_config
+from tests.helpers.real_models import (
+    loaded_provider,
+    real_model_lock,
+    release_provider,
+    requires_real_models,
+)
 
 # ── Skip if dependencies unavailable ────────────────────────────────
 
@@ -188,7 +201,34 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 # 3. Qwen3 AbstractionProvider
 # ══════════════════════════════════════════════════════════════════════
 
-QWEN3_MODEL_ID = "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit"
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def committed_qwen3_model_id() -> str:
+    """The abstraction model the stack config ships, through the validated loader.
+
+    Read lazily so a config problem surfaces in the real-model tier rather
+    than failing this whole module at collection, and checked to be an MLX
+    model so a committed switch to a hosted provider cannot hand its model id
+    to MLX.
+    """
+    config = load_sage_core_config(_PROJECT_ROOT / "sage" / "config.yaml")
+    if config.abstraction.provider != "local-mlx":
+        raise RuntimeError(
+            f"stack abstraction provider is {config.abstraction.provider!r}, not "
+            "'local-mlx'; the committed model id is not an MLX model"
+        )
+    if not config.abstraction.model:
+        raise RuntimeError("stack config declares no abstraction.model")
+    return config.abstraction.model
+
+
+def _assert_released(provider: Qwen3AbstractionProvider) -> None:
+    """Fail the class at teardown if its provider still holds model state."""
+    assert provider._model is None, "provider still holds a model after release"
+    assert provider._tokenizer is None, "provider still holds a tokenizer after release"
+    assert provider._executor is None, "provider still holds its executor after release"
+
 
 SAMPLE_TEXT = (
     "The document describes a method for synchronizing patient health records "
@@ -201,23 +241,59 @@ SAMPLE_TEXT = (
 )
 
 
-@pytest.fixture(scope="module")
-def qwen3_provider():
-    """Module-scoped abstraction provider. With lazy loading, construction
-    is cheap (no model allocated). The first generate_abstract() call in
-    the test suite triggers the actual model load."""
+@pytest.fixture(scope="class")
+def qwen3_provider() -> Iterator[Qwen3AbstractionProvider]:
+    """Class-scoped abstraction provider. With lazy loading, construction is
+    cheap (no model allocated); the first generate_abstract() call loads the
+    model. Held under the machine-wide real-model lock, and unloaded when the
+    class finishes so the weights do not stay resident for the rest of the
+    run; the teardown asserts the release actually happened."""
     if not _HAS_QWEN3:
         pytest.skip("mlx-lm or Qwen3 model not available")
-    return Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+    with loaded_provider(
+        lambda: Qwen3AbstractionProvider(model_id=committed_qwen3_model_id())
+    ) as provider:
+        yield provider
+    _assert_released(provider)
 
 
+@pytest.fixture(scope="class")
+def qwen3_provider_factory() -> Iterator[Callable[..., Awaitable[Qwen3AbstractionProvider]]]:
+    """Builds providers on demand for the lazy-loading tests, under the same
+    lock. Only one provider is ever loaded at a time: building a new one first
+    unloads the earlier ones, and every provider built is unloaded again when
+    the class finishes, which the teardown asserts."""
+    if not _HAS_QWEN3:
+        pytest.skip("mlx-lm or Qwen3 model not available")
+    created: list[Qwen3AbstractionProvider] = []
+
+    async def make(model_id: str | None = None) -> Qwen3AbstractionProvider:
+        for earlier in created:
+            await earlier.unload()
+        provider = Qwen3AbstractionProvider(
+            model_id=committed_qwen3_model_id() if model_id is None else model_id
+        )
+        created.append(provider)
+        return provider
+
+    with real_model_lock():
+        try:
+            yield make
+        finally:
+            for provider in created:
+                release_provider(provider)
+    for provider in created:
+        _assert_released(provider)
+
+
+@requires_real_models
 @requires_qwen3
 class TestQwen3AbstractionProvider:
     """Tests AD-026 through AD-033."""
 
     def test_ad_026_init_defers_loading(self):
         """AD-026: Provider constructor succeeds without loading model."""
-        provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+        provider = Qwen3AbstractionProvider(model_id=committed_qwen3_model_id())
         assert provider._model is None
         assert provider._tokenizer is None
 
@@ -302,13 +378,14 @@ class TestQwen3AbstractionProvider:
             await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
 
 
+@requires_real_models
 @requires_qwen3
 class TestQwen3LazyLoading:
     """Tests AD-095 through AD-097: lazy model loading behavior."""
 
-    async def test_ad_095_defers_load_to_first_call(self):
+    async def test_ad_095_defers_load_to_first_call(self, qwen3_provider_factory):
         """AD-095: Constructor does not load model; first call triggers load."""
-        provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+        provider = await qwen3_provider_factory()
         assert provider._model is None
 
         result = await provider.generate_abstract(SAMPLE_TEXT, 200, None)
@@ -316,9 +393,9 @@ class TestQwen3LazyLoading:
         assert isinstance(result, str)
         assert len(result.strip()) > 0
 
-    async def test_ad_096_second_call_reuses_model(self):
+    async def test_ad_096_second_call_reuses_model(self, qwen3_provider_factory):
         """AD-096: Second generate_abstract() reuses the loaded model."""
-        provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+        provider = await qwen3_provider_factory()
 
         await provider.generate_abstract(SAMPLE_TEXT, 200, None)
         model_after_first = provider._model
@@ -327,10 +404,10 @@ class TestQwen3LazyLoading:
         await provider.generate_abstract("Different input text.", 200, None)
         assert provider._model is model_after_first  # Same object identity
 
-    async def test_ad_097_load_failure_raises_and_stays_unloaded(self):
+    async def test_ad_097_load_failure_raises_and_stays_unloaded(self, qwen3_provider_factory):
         """AD-097: Model load failure raises RuntimeError; provider
         remains in unloaded state for potential retry."""
-        provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
+        provider = await qwen3_provider_factory("nonexistent-model-xyz")
 
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
             await provider.generate_abstract(SAMPLE_TEXT, 200, None)

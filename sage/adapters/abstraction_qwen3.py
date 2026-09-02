@@ -1,7 +1,7 @@
 """Qwen3 AbstractionProvider implementation via MLX.
 
-Uses mlx-lm to load Qwen3-30B-A3B-Instruct-2507 (or compatible model)
-and generate density-proportional semantic abstracts on Apple Silicon.
+Uses mlx-lm to load the configured Qwen3-family model and generate
+density-proportional semantic abstracts on Apple Silicon.
 """
 
 import asyncio

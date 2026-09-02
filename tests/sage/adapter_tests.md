@@ -193,16 +193,16 @@ is covered there by `test_has_chunks`.
 
 ## 3. Qwen3 AbstractionProvider
 
-Tests for the production abstraction provider: Qwen3-30B-A3B-Instruct-2507 via
-MLX on Apple Silicon. The provider implements the single-method
+Tests for the production abstraction provider: the committed default
+abstraction model in `sage/config.yaml` via MLX on Apple Silicon. The provider implements the single-method
 `AbstractionProvider` interface (`generate_abstract(text, max_tokens) -> str`).
 
 These tests validate local LLM inference behavior. They are slower than the
 embedding and content store tests (model load + generation latency) and should
 be marked accordingly in the test runner.
 
-Test environment: requires MLX and the Qwen3-30B-A3B-Instruct-2507 model
-weights available locally. Tests that validate model output quality use
+Test environment: requires MLX and the weights of the committed default
+abstraction model (`sage/config.yaml`) available locally. Tests that validate model output quality use
 conservative assertions (non-empty, bounded length, semantic relevance smoke
 test) rather than exact string matching, since LLM output is inherently
 variable across model versions.
@@ -216,7 +216,7 @@ stores configuration only; no weights are loaded. The model loads on the first
 `generate_abstract()` call, with a probe validation at that point. This caps
 baseline memory when abstraction has not yet been needed.
 
-**Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
+**Precondition:** the committed default abstraction model's weights (`sage/config.yaml`) available locally.
 
 **Input:** Construct a Qwen3AbstractionProvider with valid model ID.
 
@@ -2106,7 +2106,7 @@ range AD-035..AD-094 after backfilling docx/xlsx specs.
 **Decision:** Constructor stores configuration only. The `_ensure_loaded()` guard
 in `generate_abstract()` triggers model load on first invocation.
 
-**Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
+**Precondition:** the committed default abstraction model's weights (`sage/config.yaml`) available locally.
 
 **Input:**
 1. Construct provider with valid model ID.

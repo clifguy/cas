@@ -17,7 +17,10 @@ databases). Identifier safety reuses ``validate_schema_name`` from that module.
 
 from __future__ import annotations
 
+import math
 import os
+import re
+import time
 from dataclasses import dataclass
 
 import psycopg
@@ -32,6 +35,17 @@ from sage.storage.postgres.schema import (
 # Per-process throwaway databases carry this prefix; the guard refuses to create
 # or drop anything without it, and the orphan sweep matches on it.
 DISPOSABLE_DATABASE_PREFIX = "sage_test_db_"
+
+# A throwaway younger than this is never swept: a sibling pytest process holds
+# no connection to its database between creating it and its first storage
+# test, so liveness alone cannot tell a fresh sibling from a crashed run's
+# leftover. Longer than any run of the suite; short enough that orphans are
+# reclaimed by the next day's first run.
+ORPHAN_MIN_AGE_SECONDS = 3600.0
+
+# Names embed their creation epoch: ``sage_test_db_<10-digit epoch>_<hex>``.
+# Names without the epoch segment predate it and read as infinitely old.
+_EPOCH_NAME_RE = re.compile(rf"^{DISPOSABLE_DATABASE_PREFIX}(\d{{10}})_[0-9a-f]{{8}}$")
 
 # Databases the guard refuses outright regardless of the caller-supplied
 # maintenance name -- the cluster template databases and the default working db.
@@ -63,9 +77,29 @@ def assert_disposable_database(name: str, *, maintenance_db: str | None = None) 
     return name
 
 
-def derive_throwaway_dbname() -> str:
-    """A fresh per-process throwaway database name (``sage_test_db_<hex>``)."""
-    return f"{DISPOSABLE_DATABASE_PREFIX}{os.urandom(4).hex()}"
+def derive_throwaway_dbname(now: float | None = None) -> str:
+    """A fresh per-process throwaway database name, stamped with its epoch.
+
+    ``now`` overrides the embedded creation time (tests craft old names with
+    it); the random suffix keeps concurrent processes from colliding.
+    """
+    epoch = int(time.time() if now is None else now)
+    return f"{DISPOSABLE_DATABASE_PREFIX}{epoch:010d}_{os.urandom(4).hex()}"
+
+
+def database_age_seconds(name: str, now: float | None = None) -> float:
+    """Seconds since the throwaway ``name`` was created, from its embedded epoch.
+
+    A disposable name without an epoch segment is from before names carried
+    one; it is reported as infinitely old so the sweep still reclaims it.
+    Raises ``ValueError`` for a name that is not disposable at all.
+    """
+    assert_disposable_database(name)
+    match = _EPOCH_NAME_RE.match(name)
+    if match is None:
+        return math.inf
+    current = time.time() if now is None else now
+    return current - int(match.group(1))
 
 
 def rewrite_dsn_dbname(dsn: str, dbname: str) -> str:
@@ -120,16 +154,20 @@ def drop_database(
         conn.execute(f'DROP DATABASE IF EXISTS "{dbname}"{suffix}')  # noqa: S608 -- guarded
 
 
-def sweep_orphan_databases(maintenance_dsn: str) -> list[str]:
-    """Drop idle ``sage_test_db_*`` databases left by crashed prior runs.
+def sweep_orphan_databases(
+    maintenance_dsn: str, *, min_age_seconds: float = ORPHAN_MIN_AGE_SECONDS
+) -> list[str]:
+    """Drop idle, old ``sage_test_db_*`` databases left by crashed prior runs.
 
-    Cross-process-safe by construction: only databases with **zero** backends in
-    ``pg_stat_activity`` are dropped, and the drop is a plain
-    ``DROP DATABASE IF EXISTS`` with no ``FORCE`` -- so a concurrent process's
-    live throwaway (which holds pool connections) is left untouched. The
-    maintenance database itself never matches the prefix guard. Per-database
-    errors are swallowed (another process may drop the same orphan first);
-    returns the names actually dropped.
+    Two conditions guard a concurrent process's throwaway. Liveness: only
+    databases with **zero** backends in ``pg_stat_activity`` are candidates, and
+    the drop is a plain ``DROP DATABASE IF EXISTS`` with no ``FORCE``, so a
+    sibling holding pool connections is untouched. Age: a candidate younger
+    than ``min_age_seconds`` is skipped, because a sibling that has just
+    created its database holds no connection to it until its first storage
+    test -- liveness alone would drop it. The maintenance database itself never
+    matches the prefix guard. Per-database errors are swallowed (another
+    process may drop the same orphan first); returns the names actually dropped.
     """
     maintenance_db = dbname_of(maintenance_dsn)
     dropped: list[str] = []
@@ -146,6 +184,8 @@ def sweep_orphan_databases(maintenance_dsn: str) -> list[str]:
             try:
                 assert_disposable_database(name, maintenance_db=maintenance_db)
             except ValueError:
+                continue
+            if database_age_seconds(name) < min_age_seconds:
                 continue
             try:
                 conn.execute(f'DROP DATABASE IF EXISTS "{name}"')  # noqa: S608 -- guarded
@@ -178,10 +218,15 @@ class IsolatedTestDB:
 
     ``maintenance_dsn`` names the server + the working database the harness
     connects to for ``CREATE``/``DROP DATABASE``; ``throwaway_dsn`` is that DSN
-    retargeted at this process's private database.
+    retargeted at this process's private database, which the provisioner keeps
+    a connection open to for the whole session.
     """
 
     maintenance_dsn: str
     maintenance_dbname: str | None
     throwaway_dsn: str
     throwaway_dbname: str
+    #: Backend pid of the connection the provisioner holds on the throwaway for
+    #: the whole session, so the database is never backend-less; ``None`` when
+    #: the provisioner did not open one.
+    keepalive_backend_pid: int | None = None

@@ -25,17 +25,43 @@ from tests.helpers.timing_leaks import (
     alive_timing_thread_idents,
     check_and_reap_timing_leaks,
 )
+from tests.helpers.workers import worker_budget
 
 # Default to stub providers on every pytest invocation. Stubs both the
 # embedding provider (Avoids accidental ~270 MB nomic loads) and the
-# abstraction provider (Prevents Qwen3 ~16GB MLX/Metal loads in tests
+# abstraction provider (Prevents multi-GB Qwen3 MLX/Metal loads in tests
 # alongside a running MCP server, which is the trigger profile documented in
 # F-8). setdefault preserves explicit overrides, including per-test
-# monkeypatch.delenv calls (see test_di_005).
+# monkeypatch.delenv calls (see test_di_005). The tests that deliberately
+# load the real Qwen3 model form a separate opt-in tier behind
+# SAGE_TEST_REAL_MODELS=1 (tests/helpers/real_models.py).
 os.environ.setdefault("SAGE_TEST_STUB_PROVIDERS", "1")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """Size ``-n auto`` from the CPU count and the Postgres connection ceiling.
+
+    Each worker holds its own storage pool, so the server's ``max_connections``
+    binds before the cores do on a workstation; without a configured server
+    the CPU count stands alone. Runs on the controller before the session
+    provisioner rewrites ``SAGE_TEST_PG_DSN``, so it asks the maintenance
+    database. See ``tests/helpers/workers.py`` for the derivation.
+    """
+    max_connections: int | None = None
+    dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if dsn:
+        import psycopg
+
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
+                row = conn.execute("SHOW max_connections").fetchone()
+                max_connections = int(row[0]) if row else None
+        except psycopg.Error:
+            max_connections = None
+    return worker_budget(os.cpu_count(), max_connections)
 
 
 @pytest.fixture(scope="session")
@@ -116,6 +142,17 @@ def _provision_isolated_test_database():
     create_database(maintenance_dsn, throwaway_dbname, maintenance_db=maintenance_db)
     create_extensions(throwaway_dsn)
 
+    # Hold a connection for the whole session so the throwaway always has a
+    # backend attached. A sibling process's orphan sweep treats a database
+    # with no backend as a crashed run's leftover, and nothing else connects
+    # to this one until its first storage test; the sweep's age gate is the
+    # second layer behind this one.
+    import psycopg
+
+    keepalive = psycopg.connect(throwaway_dsn, autocommit=True)
+    keepalive_row = keepalive.execute("SELECT pg_backend_pid()").fetchone()
+    keepalive_pid = int(keepalive_row[0]) if keepalive_row else None
+
     os.environ["SAGE_TEST_PG_DSN"] = throwaway_dsn
     try:
         yield IsolatedTestDB(
@@ -123,9 +160,11 @@ def _provision_isolated_test_database():
             maintenance_dbname=maintenance_db,
             throwaway_dsn=throwaway_dsn,
             throwaway_dbname=throwaway_dbname,
+            keepalive_backend_pid=keepalive_pid,
         )
     finally:
         os.environ["SAGE_TEST_PG_DSN"] = maintenance_dsn
+        keepalive.close()
         drop_database(maintenance_dsn, throwaway_dbname, force=True, maintenance_db=maintenance_db)
 
 

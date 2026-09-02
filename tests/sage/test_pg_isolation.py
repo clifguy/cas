@@ -14,13 +14,19 @@ server. The rest require ``SAGE_TEST_PG_DSN`` and skip without it.
 
 from __future__ import annotations
 
+import math
+import re
+import time
+
 import psycopg
 import pytest
 from psycopg.conninfo import conninfo_to_dict
 
 from tests.helpers.pg_isolation import (
     DISPOSABLE_DATABASE_PREFIX,
+    ORPHAN_MIN_AGE_SECONDS,
     assert_disposable_database,
+    database_age_seconds,
     derive_throwaway_dbname,
     rewrite_dsn_dbname,
     sweep_orphan_databases,
@@ -74,6 +80,33 @@ def test_derive_throwaway_dbname_is_prefixed_and_disposable():
 
 def test_derive_throwaway_dbname_varies():
     assert derive_throwaway_dbname() != derive_throwaway_dbname()
+
+
+def test_derive_throwaway_dbname_embeds_its_creation_epoch():
+    """PGI-a: the name carries a creation timestamp so the orphan sweep can
+    tell a crashed run's leftover from a sibling process's fresh database."""
+    before = int(time.time())
+    name = derive_throwaway_dbname()
+    match = re.fullmatch(r"sage_test_db_(\d{10})_[0-9a-f]{8}", name)
+    assert match, name
+    assert abs(int(match.group(1)) - before) <= 5
+
+
+@pytest.mark.parametrize(
+    ("name", "now", "expected"),
+    [
+        ("sage_test_db_1700000100_deadbeef", 1700000200, 100),
+        ("sage_test_db_deadbeef", 1700000200, math.inf),  # legacy: no epoch, always sweepable
+    ],
+)
+def test_database_age_seconds(name, now, expected):
+    """PGI-b: age from the embedded epoch; legacy names read as infinitely old."""
+    assert database_age_seconds(name, now=now) == expected
+
+
+def test_database_age_seconds_rejects_non_disposable_names():
+    with pytest.raises(ValueError):
+        database_age_seconds("postgres", now=0)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +172,18 @@ def test_stack_config_binds_to_the_throwaway_database(isolated_db):
     assert cfg.postgres.database != isolated_db.maintenance_dbname
 
 
+def test_provisioner_holds_a_backend_on_the_throwaway(isolated_db):
+    """PGI-e: the throwaway has a backend attached from the moment it is
+    created, so the liveness rule alone spares it from a sibling's sweep for
+    its whole life; the sweep's age gate is the second layer."""
+    pid = isolated_db.keepalive_backend_pid
+    assert pid is not None
+    with psycopg.connect(isolated_db.maintenance_dsn, autocommit=True) as conn:
+        row = conn.execute("SELECT datname FROM pg_stat_activity WHERE pid = %s", (pid,)).fetchone()
+    assert row is not None, "keep-alive backend is not attached"
+    assert row[0] == isolated_db.throwaway_dbname
+
+
 # ---------------------------------------------------------------------------
 # D. Orphan-sweep safety
 # ---------------------------------------------------------------------------
@@ -149,8 +194,10 @@ def test_sweep_drops_idle_orphan_but_spares_a_live_sibling(isolated_db):
     with a live backend (a concurrent process's throwaway) must survive -- the
     whole point of the cross-process fix."""
     maintenance = isolated_db.maintenance_dsn
-    idle = derive_throwaway_dbname()
-    live = derive_throwaway_dbname()
+    # Both old enough to be sweep candidates, so liveness alone spares `live`.
+    old = time.time() - 2 * ORPHAN_MIN_AGE_SECONDS
+    idle = derive_throwaway_dbname(now=old)
+    live = derive_throwaway_dbname(now=old)
 
     admin = psycopg.connect(maintenance, autocommit=True)
     try:
@@ -171,6 +218,32 @@ def test_sweep_drops_idle_orphan_but_spares_a_live_sibling(isolated_db):
         live_conn.close()
         _force_drop(maintenance, live)
         _force_drop(maintenance, idle)  # no-op if the sweep already dropped it
+
+
+def test_sweep_spares_a_young_idle_sibling(isolated_db):
+    """PGI-c: a freshly created database has no backend yet (the provisioner
+    connects lazily), so a sibling pytest process's sweep must not drop it.
+    Age, not liveness, is what protects it; an old idle one is still reclaimed."""
+    maintenance = isolated_db.maintenance_dsn
+    young = derive_throwaway_dbname()
+    old = derive_throwaway_dbname(now=time.time() - 2 * ORPHAN_MIN_AGE_SECONDS)
+
+    admin = psycopg.connect(maintenance, autocommit=True)
+    try:
+        admin.execute(f'CREATE DATABASE "{young}"')
+        admin.execute(f'CREATE DATABASE "{old}"')
+    finally:
+        admin.close()
+
+    try:
+        dropped = sweep_orphan_databases(maintenance)
+        assert old in dropped
+        assert young not in dropped
+        assert _database_exists(maintenance, young)
+        assert not _database_exists(maintenance, old)
+    finally:
+        _force_drop(maintenance, young)
+        _force_drop(maintenance, old)
 
 
 # ---------------------------------------------------------------------------

@@ -125,7 +125,7 @@ class TestQwen3Singleton:
     mlx-lm import guard.
     """
 
-    MODEL_ID = "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit"
+    MODEL_ID = "mlx-community/example-abstraction-model-4bit"  # never loaded; identity only
 
     def test_factory_returns_same_instance_on_repeated_calls(self):
         first = get_qwen3_abstraction_provider(model_id=self.MODEL_ID)

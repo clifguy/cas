@@ -20,10 +20,10 @@ local fast-path compile is provided here, skipped when the CLI is absent.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Final
 
@@ -166,22 +166,22 @@ def test_template_documents_out_of_band_inputs() -> None:
 )
 def test_template_compiles(tmp_path: Path) -> None:
     """The template compiles against the orchestrator with no error (local fast
-    check). Built through a sibling ``.bicepparam`` copy so the ``using``
-    relative path resolves and the CLI accepts the extension.
+    check). Built from a copy under ``tmp_path`` whose ``using`` line is
+    re-pointed at the orchestrator (relatively -- Bicep rejects absolute
+    paths), so nothing transient lands in the tracked ``infra/`` tree, where a
+    concurrent scan of ``*.bicepparam`` would find it.
     """
-    handle, raw = tempfile.mkstemp(dir=str(INFRA_DIR), suffix=".bicepparam")
-    tmp = Path(raw)
-    import os
-
-    os.close(handle)
-    try:
-        tmp.write_text(_template_text(), encoding="utf-8")
-        outfile = tmp_path / "params.json"
-        if shutil.which("bicep") is not None:
-            cmd = ["bicep", "build-params", str(tmp), "--outfile", str(outfile)]
-        else:
-            cmd = ["az", "bicep", "build-params", "--file", str(tmp), "--outfile", str(outfile)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        assert proc.returncode == 0, f"bicep build-params failed:\n{proc.stderr}\n{proc.stdout}"
-    finally:
-        tmp.unlink(missing_ok=True)
+    from_tmp = os.path.relpath(MAIN_BICEP, tmp_path)
+    text, substitutions = re.subn(
+        r"^using\s+'\./main\.bicep'", f"using '{from_tmp}'", _template_text(), count=1, flags=re.M
+    )
+    assert substitutions == 1, "template must reference the orchestrator with a relative using line"
+    tmp = tmp_path / "main.bicepparam"
+    tmp.write_text(text, encoding="utf-8")
+    outfile = tmp_path / "params.json"
+    if shutil.which("bicep") is not None:
+        cmd = ["bicep", "build-params", str(tmp), "--outfile", str(outfile)]
+    else:
+        cmd = ["az", "bicep", "build-params", "--file", str(tmp), "--outfile", str(outfile)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, f"bicep build-params failed:\n{proc.stderr}\n{proc.stdout}"
