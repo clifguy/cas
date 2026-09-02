@@ -226,7 +226,8 @@ without a manual hand-grant.
 ## Container images and the ACR push
 
 The [`CI`](../../.github/workflows/ci.yml) workflow builds the SAGE and CAS BFF
-images and runs the container smoke tests on every push and pull request, via the
+images and runs the container smoke tests on every pull request, merge-group entry,
+and push to `main` (see [branch protection](branch_protection.md)), via the
 shared reusable [`build-images`](../../.github/workflows/build-images.yml)
 workflow with the push **disabled** — CI is the regression gate, not a publisher.
 The push to a registry happens in the deploy pipeline, because each tenant has

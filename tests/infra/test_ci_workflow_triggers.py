@@ -10,29 +10,30 @@ below guards a failure that reports green:
   workflow twice. Restricting ``push`` to the default branch and adding
   ``merge_group`` gives one run per push, one run per queue entry, and one run
   per landing.
-* **No trigger is path-filtered.** A ``paths`` key leaves the event set and the
-  branch list identical, so it survives every other trigger assertion untouched
-  while stopping CI on most pushes. The repo-wide gates read Markdown and the git
-  tree, so a documentation-only change can legitimately fail them and must run.
-* **Cancellation reaches only a superseded pull-request run.** Two independent
-  ways to break that. A ``cancel-in-progress`` keyed on ``github.ref`` evaluates
-  true for the queue's temporary ``gh-readonly-queue/...`` ref, so a later entry
-  can cancel the run the merge is waiting on. And a concurrency ``group`` that
-  drops ``github.ref`` collapses every pull request into one group, so a
-  correct-looking event-gated cancellation reaches across pull requests. Both are
-  asserted, because either alone passes while the other is breached.
-* **Path filtering sees the merge group's base.** ``dorny/paths-filter`` reads
-  the merge-group base and head commits from the webhook payload but does not
-  fetch them. Under the default depth-1 checkout that base object is absent, the
-  filter mis-reports, and the frontend lint job that depends on it is skipped --
-  which the forge counts as a *satisfied* required check. The gate would be
-  bypassed on every queued landing with nothing red to show for it, so the
-  requirement is a full-history checkout in any job that runs the filter.
-* **The secret scan has an arm per event.** The scan branches on the event name
-  to build a commit range. An event with no arm of its own falls to the default,
-  which scans the whole working tree instead of the range -- a mode no pull
-  request ever exercises, and one that can fail on content already on the default
-  branch.
+* **No trigger carries a filter it is not entitled to.** ``push`` is
+  branch-restricted by design; the other two must be unconditional. Every
+  narrowing key -- ``paths``, ``types``, ``branches`` -- leaves the event set and
+  the push branch list exactly as a correct workflow's, so it survives every
+  other assertion here untouched while silently deciding CI does not run. A
+  ``types: [opened]`` on ``pull_request`` stops CI on every later push to a
+  branch; a ``paths`` key stops the repo-wide gates, which read Markdown and the
+  git tree and can legitimately fail on a documentation-only change.
+* **Cancellation reaches only an ephemeral run.** Two independent ways to break
+  that, so both are asserted. A ``cancel-in-progress`` that consults
+  ``github.ref``, or that carries a literal ``true`` operand, cancels beyond the
+  events it names. And a concurrency ``group`` that keys a push by ref rather
+  than by commit puts every landing in one group, where the forge holds one
+  running and one pending run and drops the pending one when a third arrives --
+  taking away the ``main`` push run whose existence the branch-protection
+  document justifies.
+* **The secret scan has an arm per event, and each ranged arm scans something.**
+  The scan branches on the event name to build a commit range. An event with no
+  arm of its own falls to the default, which scans the full commit history of
+  every branch rather than what this event introduced -- so it can fail on a
+  secret that has sat on the default branch for months, which no pull request
+  ever exercises. And a range that resolves to no commits is not a scan at all:
+  the scanner exits zero on an empty range and on an invalid one alike, so a
+  required check can report success having examined nothing.
 
 Two further checks reconcile the captured ruleset in
 ``docs/process/branch_protection.md``. Every required status-check context must
@@ -68,21 +69,32 @@ BRANCH_PROTECTION_DOC: Final[Path] = REPO_ROOT / "docs" / "process" / "branch_pr
 EXPECTED_TRIGGERS: Final[frozenset[str]] = frozenset({"pull_request", "merge_group", "push"})
 EXPECTED_PUSH_BRANCHES: Final[tuple[str, ...]] = ("main",)
 
-# Action name fragments. Matched as substrings of a step's ``uses``, so a
-# version bump (``@v4`` to ``@v5``) does not silently drop a job from the scan.
-_PATHS_FILTER_ACTION: Final[str] = "dorny/paths-filter"
-_CHECKOUT_ACTION: Final[str] = "actions/checkout"
+# Filter keys each trigger may carry. ``push`` is branch-restricted by design;
+# the other two must be unconditional, because any narrowing key on them leaves
+# every other assertion in this file satisfied while deciding CI does not run.
+_ALLOWED_TRIGGER_FILTERS: Final[dict[str, frozenset[str]]] = {
+    "push": frozenset({"branches"}),
+    "pull_request": frozenset(),
+    "merge_group": frozenset(),
+}
 
-# The only ``fetch-depth`` that leaves a merge-group base commit resolvable.
-_FULL_HISTORY: Final[int] = 0
+# The events whose runs may be cancelled when superseded: a pull-request run, and
+# a queue run orphaned by a dequeue-and-requeue on an unchanged base. A ``main``
+# push run is never cancellable.
+CANCELLABLE_EVENTS: Final[frozenset[str]] = frozenset({"pull_request", "merge_group"})
 
-# A ``cancel-in-progress`` expression gated on the triggering event being a pull
-# request. The whitespace is elastic because the expression is hand-written YAML,
-# but the operands are not: an expression that also consults ``github.ref`` is
-# rejected outright below, since that is the form which cancels queue runs.
-_EVENT_GATED_CANCEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"github\.event_name\s*==\s*'pull_request'"
+# An event-name equality test inside a workflow expression. Whitespace is elastic
+# because the expression is hand-written YAML; the operands are not.
+_CANCEL_EVENT_RE: Final[re.Pattern[str]] = re.compile(r"github\.event_name\s*==\s*'(\w+)'")
+
+# A bare boolean operand. ``... || true`` names the right events and then cancels
+# everything regardless, which reads as correct to anyone checking the event list.
+_LITERAL_OPERAND_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w.])(?:true|false)(?![\w.])", re.IGNORECASE
 )
+
+# A ``push``-conditional inside the concurrency group expression.
+_GROUP_PUSH_ARM_RE: Final[re.Pattern[str]] = re.compile(r"github\.event_name\s*==\s*'push'")
 
 # A ``case`` arm label on a line of its own -- ``pull_request)``, ``push)``,
 # ``*)``. Anchored to the whole line so a subshell or a glob inside an arm body
@@ -145,23 +157,25 @@ def _push_branches(workflow: dict) -> list[str]:
     return list(push.get("branches") or [])
 
 
-def _path_filtered_triggers(workflow: dict) -> dict[str, list[str]]:
-    """``{event: [filter keys]}`` for each trigger carrying a path filter.
+def _disallowed_trigger_filters(workflow: dict) -> dict[str, list[str]]:
+    """``{event: [keys]}`` for each trigger carrying a filter it may not carry.
 
-    Workflow-level path filtering is a different thing from the job-level
-    filtering that gates the frontend jobs, and it is not wanted here: the
-    public-posture and collection-integrity gates read Markdown and the git tree,
-    so a documentation-only change can legitimately fail them and must still run.
-    A ``paths`` key also survives every branch and event assertion untouched,
-    which is why it needs its own check.
+    Generic rather than a list of known-bad keys, because the failure is the
+    *category*: every narrowing key leaves the event set and the push branch list
+    exactly as a correct workflow's, so it passes every other assertion in this
+    file while deciding CI does not run. ``types: [opened]`` on ``pull_request``
+    stops CI on every later push to a branch; ``paths`` stops the repo-wide gates,
+    which read Markdown and the git tree and can legitimately fail on a
+    documentation-only change.
     """
     filtered: dict[str, list[str]] = {}
     for event, spec in _on_block(workflow).items():
         if not isinstance(spec, dict):
             continue
-        keys = [k for k in ("paths", "paths-ignore") if k in spec]
-        if keys:
-            filtered[str(event)] = keys
+        allowed = _ALLOWED_TRIGGER_FILTERS.get(str(event), frozenset())
+        extra = sorted(str(k) for k in spec if k not in allowed)
+        if extra:
+            filtered[str(event)] = extra
     return filtered
 
 
@@ -176,21 +190,41 @@ def _cancel_in_progress(workflow: dict) -> str:
     return str(concurrency.get("cancel-in-progress", ""))
 
 
-def _cancels_only_pull_requests(expression: str) -> bool:
-    """True when the expression can only ever cancel a pull-request run.
+def _cancellable_events(expression: str) -> set[str]:
+    """The event names a ``cancel-in-progress`` expression tests for."""
+    return set(_CANCEL_EVENT_RE.findall(expression))
 
-    Both halves matter. The event-name test is what limits cancellation to pull
-    requests; the ``github.ref`` exclusion is what rejects the ref-keyed form,
-    which evaluates true for the queue's temporary ref and so leaves a
-    merge-group run cancellable.
+
+def _cancels_exactly(expression: str, events: frozenset[str]) -> bool:
+    """True when the expression cancels those events and nothing else.
+
+    Three independent ways to fail, all of which leave a plausible-looking
+    expression. Naming the wrong set of events. Consulting ``github.ref``, which
+    is the pre-queue form: it evaluates true for the queue's temporary ref and
+    for every branch, so it reaches runs the event list says it does not.
+    Carrying a literal ``true`` or ``false`` operand, which short-circuits the
+    whole condition while leaving the event names in place to reassure a reader.
     """
-    return bool(_EVENT_GATED_CANCEL_RE.search(expression)) and "github.ref" not in expression
+    return (
+        _cancellable_events(expression) == set(events)
+        and "github.ref" not in expression
+        and not _LITERAL_OPERAND_RE.search(expression)
+    )
 
 
-def _iter_workflow_files() -> list[Path]:
-    """Every committed workflow definition under ``.github/workflows/``."""
-    return sorted(
-        p for p in WORKFLOWS_DIR.iterdir() if p.is_file() and p.suffix in (".yml", ".yaml")
+def _group_keys_push_by_commit(expression: str) -> bool:
+    """True when the concurrency group distinguishes pushes by commit, not by ref.
+
+    A per-ref group on the default branch holds one running and one pending run,
+    so a third landing inside the test job's window drops the second one's
+    pending run entirely. Both stated reasons for running on the default branch
+    at all -- an admin-bypass push, and a coverage artifact belonging to a
+    default-branch commit -- die with that dropped run.
+    """
+    return (
+        "github.sha" in expression
+        and "github.ref" in expression
+        and bool(_GROUP_PUSH_ARM_RE.search(expression))
     )
 
 
@@ -200,44 +234,17 @@ def _steps(job: object) -> list[dict]:
     return [s for s in (job.get("steps") or []) if isinstance(s, dict)]
 
 
-def _runs_paths_filter(job: object) -> bool:
-    return any(_PATHS_FILTER_ACTION in str(s.get("uses", "")) for s in _steps(job))
-
-
-def _paths_filter_job_labels(workflow: dict, label: str) -> set[str]:
-    """``{"<label>:<job>"}`` for each job that runs the path-filter action."""
-    return {
-        f"{label}:{name}"
-        for name, job in (workflow.get("jobs") or {}).items()
-        if _runs_paths_filter(job)
-    }
-
-
-def _shallow_paths_filter_offenders(workflow: dict, label: str) -> dict[str, str]:
-    """``{"<label>:<job>": reason}`` for each path-filter job that checks out
-    shallowly.
-
-    A job qualifies only if it runs the filter; the checkout depth of every other
-    job is none of this detector's business.
-    """
-    offenders: dict[str, str] = {}
-    for name, job in (workflow.get("jobs") or {}).items():
-        if not _runs_paths_filter(job):
-            continue
-        depths = [
-            (s.get("with") or {}).get("fetch-depth")
-            for s in _steps(job)
-            if _CHECKOUT_ACTION in str(s.get("uses", ""))
-        ]
-        if _FULL_HISTORY not in [d for d in depths if d is not None]:
-            reason = f"checkout fetch-depth {depths}" if depths else "no checkout step"
-            offenders[f"{label}:{name}"] = reason
-    return offenders
-
-
 def _job_run_text(job: dict) -> str:
     """All ``run:`` script of a job, joined in step order."""
     return "\n".join(s.get("run", "") for s in _steps(job))
+
+
+def _uncommented_run_text(job: dict) -> str:
+    """``_job_run_text`` with shell ``#`` comment lines removed, so a flag named
+    only in a comment explaining its absence is not read as a live argument."""
+    return "\n".join(
+        line for line in _job_run_text(job).splitlines() if not line.lstrip().startswith("#")
+    )
 
 
 def _case_arm_labels(run: str) -> set[str]:
@@ -338,86 +345,55 @@ def test_ci_triggers_are_pull_request_merge_group_and_push_to_main() -> None:
         "An unrestricted push trigger fires alongside pull_request on the same "
         "commit, running the whole workflow twice per push."
     )
-    assert _path_filtered_triggers(workflow) == {}, (
-        "no ci.yml trigger may carry a path filter: the public-posture and "
-        "collection-integrity gates read Markdown and the git tree, so a "
-        "documentation-only change can legitimately fail them and must still "
-        f"run. Path-filtered triggers: {_path_filtered_triggers(workflow)}"
+    assert _disallowed_trigger_filters(workflow) == {}, (
+        "a ci.yml trigger carries a filter it may not: push may be restricted to "
+        "branches, and pull_request and merge_group must be unconditional. Any "
+        "narrowing key leaves the event set and the branch list looking correct "
+        "while deciding CI does not run. Offenders: "
+        f"{_disallowed_trigger_filters(workflow)}"
     )
 
 
-def test_concurrency_group_is_per_ref() -> None:
-    """Runs are grouped per ref, so cancellation never crosses pull requests.
+def test_concurrency_group_distinguishes_pushes_by_commit() -> None:
+    """Each push to the default branch gets its own concurrency group.
 
-    Paired with the cancellation check below, and separable from it: a group that
-    drops ``github.ref`` collapses every pull request into one group, at which
-    point an event-gated ``cancel-in-progress`` — correct on its own terms —
-    cancels one pull request's run when another is pushed to.
+    Separable from the cancellation check below and not implied by it. The forge
+    holds one running and one pending run per group, so a shared per-ref group on
+    the default branch drops the middle run of three quick landings whatever
+    ``cancel-in-progress`` says. Both reasons the branch-protection document
+    gives for running on the default branch at all die with that dropped run.
     """
     group = _concurrency_group(_load(CI_WORKFLOW))
-    assert "github.ref" in group, (
-        "the concurrency group must include github.ref so a cancellation cannot "
-        f"reach another pull request's run; found: {group!r}"
+    assert _group_keys_push_by_commit(group), (
+        "the concurrency group must key a push by github.sha and everything else "
+        f"by github.ref; found: {group!r}"
     )
 
 
-def test_merge_group_and_default_branch_runs_are_never_cancelled() -> None:
-    """Only a superseded pull-request run may be cancelled.
+def test_only_pull_request_and_merge_group_runs_are_cancelled() -> None:
+    """A default-branch push run is never cancelled; ephemeral runs are.
 
-    The queue's run carries a ``gh-readonly-queue/...`` ref, so a
-    ``cancel-in-progress`` keyed on ``github.ref`` treats it as cancellable and a
-    later queue entry can kill the run the merge is waiting on.
+    The queue ref carries the pull request number, so a *later* entry never
+    shares a group with an earlier one and cannot cancel it. The queue run that
+    is reachable here is the orphan left by a dequeue-and-requeue on an unchanged
+    base, which must be cancelled: leaving it running parks the live re-queued
+    entry behind it for a full CI duration.
     """
     expression = _cancel_in_progress(_load(CI_WORKFLOW))
-    assert _cancels_only_pull_requests(expression), (
-        "ci.yml's cancel-in-progress must gate on github.event_name == "
-        f"'pull_request' and must not consult github.ref; found: {expression!r}"
+    assert _cancels_exactly(expression, CANCELLABLE_EVENTS), (
+        "ci.yml's cancel-in-progress must name exactly "
+        f"{sorted(CANCELLABLE_EVENTS)}, must not consult github.ref, and must "
+        f"carry no literal boolean operand; found: {expression!r}"
     )
-
-
-def test_paths_filter_jobs_check_out_full_history() -> None:
-    """Any job running the path-filter action checks out full history.
-
-    On a merge-group run the action resolves the group's base commit from the
-    local object store. A depth-1 checkout does not contain it, so the filter
-    mis-reports and the required frontend lint job that depends on its output is
-    skipped -- which the forge counts as satisfied. The bypass is green, which is
-    why it needs a gate rather than a code review.
-    """
-    offenders: dict[str, str] = {}
-    located: set[str] = set()
-    for path in _iter_workflow_files():
-        workflow = _load(path)
-        offenders.update(_shallow_paths_filter_offenders(workflow, path.name))
-        located |= _paths_filter_job_labels(workflow, path.name)
-
-    assert located, (
-        "no job running "
-        f"{_PATHS_FILTER_ACTION} was found in any workflow -- the scan located "
-        "nothing, so this gate would pass vacuously. If the action was renamed "
-        "or removed, update _PATHS_FILTER_ACTION."
-    )
-    assert not offenders, (
-        "path-filter jobs must check out with fetch-depth: 0 so a merge-group "
-        f"base commit resolves locally; offenders: {offenders}"
-    )
-
-
-def test_scan_reaches_all_workflow_files() -> None:
-    """The path-filter scan visits every committed workflow, so a real one cannot
-    be silently excluded from discovery."""
-    scanned = {p.name for p in _iter_workflow_files()}
-    expected = {"infra.yml", "ci.yml", "build-images.yml", "maintenance.yml"}
-    assert expected <= scanned, f"workflow scan must reach {sorted(expected - scanned)}"
 
 
 def test_secret_scan_has_an_arm_for_every_trigger_event() -> None:
     """The secret scan branches on every event the workflow triggers on.
 
     An event with no arm of its own falls to the default, which scans the whole
-    working tree rather than the commit range. That mode is never exercised by a
-    pull request, so it can fail the queue on content already on the default
-    branch.
+    full commit history of every branch rather than the range this event
+    introduced, so it can fail on a secret that has sat on the default branch for
+    months. No pull request ever exercises that mode.
     """
     workflow = _load(CI_WORKFLOW)
     job = _secret_scan_job(workflow)
@@ -427,8 +403,36 @@ def test_secret_scan_has_an_arm_for_every_trigger_event() -> None:
     missing = _trigger_events(workflow) - arms
     assert not missing, (
         f"the secret scan has no case arm for {sorted(missing)}; those events "
-        "fall to the default arm, which scans the working tree instead of the "
-        f"commit range. Arms present: {sorted(arms)}"
+        "fall to the default arm, which scans full history instead of the "
+        f"commit range this event introduced. Arms present: {sorted(arms)}"
+    )
+
+
+def test_secret_scan_refuses_a_range_that_selects_nothing() -> None:
+    """A ranged scan resolves its range and fails when it selects no commits.
+
+    The scanner exits zero on an empty range and on an invalid one alike, so
+    without this the required check reports success having examined nothing. Two
+    reachable ways in. A merge-shaped head under a first-parent range selects
+    nothing at all, which is decided by the queue rule's ``merge_method`` rather
+    than by anything in this file. And a mis-wired commit id makes the range
+    invalid rather than empty, which is equally green.
+
+    Asserted on the script rather than on a rendered range, because the guard is
+    what has to exist; the ranges themselves are covered per arm above. Comment
+    lines are stripped first: this file's own explanation of why ``--no-merges``
+    is absent names the flag, and a raw substring scan reads that as its presence.
+    """
+    run = _uncommented_run_text(_secret_scan_job(_load(CI_WORKFLOW)))
+    assert "rev-list --count" in run, (
+        "the secret scan must resolve its range with `git rev-list --count` "
+        "before scanning, so an empty or invalid range fails loudly instead of "
+        f"reporting a scan that examined nothing. Script: {run!r}"
+    )
+    assert "--no-merges" not in run, (
+        "the ranged arms must not pass --no-merges: against a merge-shaped head "
+        "a first-parent range then selects zero commits, which is the empty scan "
+        f"the guard exists to catch. Script: {run!r}"
     )
 
 
@@ -540,33 +544,18 @@ _SYNTHETIC_PATH_GATED_TRIGGER: Final[str] = (
     "on:\n  pull_request:\n  merge_group:\n  push:\n    branches: [main]\n    paths: ['sage/**']\n"
 )
 
+# The rival the review found: `pull_request` narrowed to a single activity type,
+# so no later push to a branch runs CI. Every other trigger assertion holds.
+_SYNTHETIC_TYPE_GATED_TRIGGER: Final[str] = (
+    "on:\n  pull_request:\n    types: [opened]\n  merge_group:\n  push:\n    branches: [main]\n"
+)
+
 _SYNTHETIC_REQUIRED_CHECK_TABLE: Final[str] = (
     "| Job | Purpose |\n"
     "|---|---|\n"
     "| `test` | Full suite. |\n"
     "| `lint` | Formatting. |\n"
     "\nProse that mentions `eslint` outside the table must not be read as a row.\n"
-)
-
-_SYNTHETIC_SHALLOW_FILTER: Final[str] = (
-    "jobs:\n"
-    "  paths-filter:\n"
-    "    steps:\n"
-    "      - uses: actions/checkout@v7\n"
-    "      - uses: dorny/paths-filter@v4\n"
-    "  bystander:\n"
-    "    steps:\n"
-    "      - uses: actions/checkout@v7\n"
-)
-
-_SYNTHETIC_FULL_HISTORY_FILTER: Final[str] = (
-    "jobs:\n"
-    "  paths-filter:\n"
-    "    steps:\n"
-    "      - uses: actions/checkout@v7\n"
-    "        with:\n"
-    "          fetch-depth: 0\n"
-    "      - uses: dorny/paths-filter@v4\n"
 )
 
 _SYNTHETIC_SCAN_WITHOUT_MERGE_GROUP: Final[str] = (
@@ -623,45 +612,53 @@ def test_trigger_detector_clears_the_restricted_push() -> None:
 
 
 def test_cancel_detector_rejects_the_ref_keyed_expression() -> None:
-    """The pre-queue expression -- the actual regression -- is rejected. It
-    evaluates true for a ``gh-readonly-queue/...`` ref, so the queue's run is
-    cancellable under it."""
-    assert not _cancels_only_pull_requests("${{ github.ref != 'refs/heads/main' }}")
+    """The pre-queue expression is rejected. It names no event at all and reaches
+    every branch, including the default one this must never cancel."""
+    assert not _cancels_exactly("${{ github.ref != 'refs/heads/main' }}", CANCELLABLE_EVENTS)
 
 
 def test_cancel_detector_rejects_a_hybrid_expression() -> None:
-    """Naming the event is not enough: an expression that still consults
+    """Naming the events is not enough: an expression that still consults
     ``github.ref`` is rejected, so a partial edit cannot satisfy the gate."""
-    assert not _cancels_only_pull_requests(
-        "${{ github.event_name == 'pull_request' && github.ref != 'refs/heads/main' }}"
+    assert not _cancels_exactly(
+        "${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') "
+        "&& github.ref != 'refs/heads/main' }}",
+        CANCELLABLE_EVENTS,
     )
+
+
+def test_cancel_detector_rejects_a_literal_operand() -> None:
+    """The rival the review named: an expression that lists the right events and
+    then cancels everything anyway. It reads as correct to anyone checking the
+    event list, so the detector rejects a bare boolean operand outright."""
+    assert not _cancels_exactly(
+        "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' || true }}",
+        CANCELLABLE_EVENTS,
+    )
+
+
+def test_cancel_detector_rejects_a_narrower_event_set() -> None:
+    """Cancelling only pull requests leaves an orphaned queue run in place, which
+    parks the live re-queued entry behind it, so the set is asserted by equality
+    rather than by containment."""
+    assert not _cancels_exactly("${{ github.event_name == 'pull_request' }}", CANCELLABLE_EVENTS)
 
 
 def test_cancel_detector_accepts_the_event_keyed_expression() -> None:
     """The legitimate form clears."""
-    assert _cancels_only_pull_requests("${{ github.event_name == 'pull_request' }}")
+    assert _cancels_exactly(
+        "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+        CANCELLABLE_EVENTS,
+    )
 
 
-def test_paths_filter_detector_flags_a_shallow_checkout() -> None:
-    """A path-filter job with a default checkout is flagged, and a job that does
-    not run the filter is left alone."""
-    workflow = yaml.safe_load(_SYNTHETIC_SHALLOW_FILTER)
-    assert _shallow_paths_filter_offenders(workflow, "synthetic.yml") == {
-        "synthetic.yml:paths-filter": "checkout fetch-depth [None]"
-    }
-
-
-def test_paths_filter_detector_clears_a_full_history_checkout() -> None:
-    """The legitimate form produces no offender."""
-    workflow = yaml.safe_load(_SYNTHETIC_FULL_HISTORY_FILTER)
-    assert _shallow_paths_filter_offenders(workflow, "synthetic.yml") == {}
-
-
-def test_paths_filter_discovery_finds_a_synthetic_job() -> None:
-    """The job locator actually fires, rather than returning an empty set that
-    would make the located-something assertion pass against an empty scan."""
-    workflow = yaml.safe_load(_SYNTHETIC_SHALLOW_FILTER)
-    assert _paths_filter_job_labels(workflow, "synthetic.yml") == {"synthetic.yml:paths-filter"}
+def test_group_detector_flags_a_push_keyed_by_ref() -> None:
+    """A per-ref group is caught and the per-commit form clears. The first is the
+    shape under which the forge drops the middle run of three quick landings."""
+    assert not _group_keys_push_by_commit("${{ github.workflow }}-${{ github.ref }}")
+    assert _group_keys_push_by_commit(
+        "${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}"
+    )
 
 
 def test_case_arm_detector_flags_a_missing_arm() -> None:
@@ -672,20 +669,31 @@ def test_case_arm_detector_flags_a_missing_arm() -> None:
     assert "merge_group" not in arms
 
 
-def test_path_filter_detector_flags_a_path_gated_trigger() -> None:
-    """A trigger carrying a path filter is caught, and one without is not. Both
-    directions matter: a ``paths`` key leaves the event set and the branch list
-    identical, so every other trigger assertion passes over it."""
+def test_trigger_filter_detector_flags_a_path_gated_trigger() -> None:
+    """A trigger carrying a path filter is caught, and the legitimate form is
+    not. The other two assertions are the point: the gated workflow's event set
+    and branch list are identical to a correct one's, so every other trigger
+    assertion passes straight over it."""
     gated = yaml.safe_load(_SYNTHETIC_PATH_GATED_TRIGGER)
-    assert _path_filtered_triggers(gated) == {"push": ["paths"]}
+    assert _disallowed_trigger_filters(gated) == {"push": ["paths"]}
     assert _trigger_events(gated) == set(EXPECTED_TRIGGERS)
     assert _push_branches(gated) == ["main"]
-    assert _path_filtered_triggers(yaml.safe_load(_SYNTHETIC_SINGLE_TRIGGER)) == {}
+    assert _disallowed_trigger_filters(yaml.safe_load(_SYNTHETIC_SINGLE_TRIGGER)) == {}
+
+
+def test_trigger_filter_detector_flags_a_narrowed_pull_request() -> None:
+    """The rival the review found: ``types: [opened]`` stops CI on every later
+    push to a branch while leaving the event set, the branch list and the path
+    filters all correct. Only the entitlement check sees it."""
+    gated = yaml.safe_load(_SYNTHETIC_TYPE_GATED_TRIGGER)
+    assert _disallowed_trigger_filters(gated) == {"pull_request": ["types"]}
+    assert _trigger_events(gated) == set(EXPECTED_TRIGGERS)
+    assert _push_branches(gated) == ["main"]
 
 
 def test_concurrency_group_detector_reads_the_group_expression() -> None:
     """The group detector reads the expression rather than returning a constant
-    empty string, which would make the per-ref assertion fail open on rewrite."""
+    empty string, which would make the assertion above fail open on a rewrite."""
     assert "github.ref" in _concurrency_group(
         yaml.safe_load("concurrency:\n  group: w-${{ github.ref }}\n")
     )
