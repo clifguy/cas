@@ -93,6 +93,7 @@ test = [
     "pytest>=9.0.3",
     "pytest-cov>=5.0",
     "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.8",
     "hypothesis>=6.150",
     "jsonschema[format]>=4.23",
     "referencing>=0.35",
@@ -162,6 +163,12 @@ known-first-party = ["sage", "root_harness", "app"]
 # Ruff's defaults: double-quote, magic-trailing-comma, LF line endings.
 
 [tool.pytest.ini_options]
+# The default run is parallel. `--dist loadfile` is load-bearing: a few modules
+# depend on file order (tests/sage/test_storage_harness.py) and several fixtures
+# are class- or module-scoped, so a file must stay on one worker. Pass `-n 0`
+# for a serial run (debugging, --pdb); CI passes `-n auto`. Real-model tests
+# are a separate opt-in tier (SAGE_TEST_REAL_MODELS=1; tests/helpers/real_models.py).
+addopts = "-n 6 --dist loadfile"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = "test_*.py"

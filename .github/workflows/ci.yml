@@ -113,6 +113,7 @@ jobs:
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
           .venv/bin/pytest -v --tb=short \
+            -n auto \
             --cov=sage --cov=app \
             --cov-report=term --cov-report=xml \
             tests/

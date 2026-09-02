@@ -28,10 +28,12 @@ from tests.helpers.timing_leaks import (
 
 # Default to stub providers on every pytest invocation. Stubs both the
 # embedding provider (Avoids accidental ~270 MB nomic loads) and the
-# abstraction provider (Prevents Qwen3 ~16GB MLX/Metal loads in tests
+# abstraction provider (Prevents multi-GB Qwen3 MLX/Metal loads in tests
 # alongside a running MCP server, which is the trigger profile documented in
 # F-8). setdefault preserves explicit overrides, including per-test
-# monkeypatch.delenv calls (see test_di_005).
+# monkeypatch.delenv calls (see test_di_005). The tests that deliberately
+# load real weights form a separate opt-in tier behind SAGE_TEST_REAL_MODELS=1
+# (tests/helpers/real_models.py).
 os.environ.setdefault("SAGE_TEST_STUB_PROVIDERS", "1")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

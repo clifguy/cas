@@ -88,18 +88,38 @@ createdb sage_test
 .venv/bin/python scripts/bootstrap_postgres.py --dsn "postgresql:///sage_test"
 
 export SAGE_TEST_PG_DSN="postgresql:///sage_test"   # socket form (peer auth)
-.venv/bin/pytest tests/                             # full suite, all green
+.venv/bin/pytest tests/                             # default tier: parallel, no model weights
 ```
+
+The suite runs in two tiers. The **default tier** is everything except the
+tests that load real model weights; `pyproject.toml` runs it in parallel
+(`-n 6 --dist loadfile` via `addopts`; CI passes `-n auto`). Pass `-n 0` for a
+serial run when debugging. The **real-model tier** -- the Qwen3 MLX and nomic
+embedding tests in `tests/sage/test_adapters.py` -- is opt-in, because it
+loads the model `sage/config.yaml` ships and holds most of the machine's
+memory while it runs:
+
+```sh
+SAGE_TEST_REAL_MODELS=1 .venv/bin/pytest -n 0 tests/sage/test_adapters.py -k "Qwen3 or Nomic"
+```
+
+Run it when a change touches `sage/adapters/abstraction_qwen3.py` or
+`sage/adapters/embedding_nomic.py`. A machine-wide lock file serializes
+real-model runs, so a second one waits rather than exhausting unified memory;
+the model is unloaded as soon as its test class finishes.
 
 `SAGE_TEST_PG_DSN` names a **maintenance** database on a server, not the
 database the tests actually run against. At session start the harness derives a
 private, per-process database on that same server — `sage_test_db_<hex>` — via
 `CREATE DATABASE`, seeds its extensions, and rewrites `SAGE_TEST_PG_DSN` in the
 process environment to point at it; the private database is dropped at session
-end (and any orphans a crashed run left behind are swept, without disturbing a
-concurrent run's live database). This is what lets **two pytest processes run
-against the same `SAGE_TEST_PG_DSN` concurrently** without colliding on the
-shared `test_vault` schema. The `createdb sage_test` + bootstrap above is
+end. Orphans a crashed run left behind are swept at the next session start,
+but only once they are over an hour old: a sibling process holds no
+connection to its freshly created database until its first storage test, so
+age rather than liveness is what keeps a concurrent run's database safe. This
+is what lets **many pytest processes -- xdist workers or separate sessions --
+run against the same `SAGE_TEST_PG_DSN` concurrently** without colliding on
+the shared `test_vault` schema. The `createdb sage_test` + bootstrap above is
 unchanged: `sage_test` becomes the maintenance database the harness connects to
 in order to create each per-process database. Within each per-process database
 the harness still creates and drops its own disposable `sage_test_*` schemas
