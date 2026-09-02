@@ -33,11 +33,8 @@ import http.client
 import http.server
 import json
 import os
-import socket
 import subprocess
 import sys
-import threading
-import time
 import urllib.parse
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -46,13 +43,15 @@ from typing import Any, Final
 
 import pytest
 
+from tests.deploy._stub_server import serve_threaded, serve_uvicorn
+
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _PROBE: Final[Path] = _REPO_ROOT / "deploy" / "mcp_preflight_probe.py"
 
 try:  # the faithful layer needs the app; the trap layer does not
     from contextlib import AsyncExitStack, asynccontextmanager
 
-    import uvicorn
+    import uvicorn  # noqa: F401 -- importability is the faithful layer's skip signal
     from starlette.applications import Starlette
 
     from sage.mcp_server import build_partitioned_server
@@ -105,12 +104,6 @@ def _run_probe(
     )
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 # --------------------------------------------------------------------------- #
 # Faithful layer: the real MCP Streamable HTTP transport, uvicorn-in-thread   #
 # --------------------------------------------------------------------------- #
@@ -144,21 +137,8 @@ def _serve_real() -> Iterator[str]:
             yield
 
     app = Starlette(routes=routes, lifespan=_lifespan)
-    port = _free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 20
-    while not getattr(server, "started", False):
-        if time.monotonic() > deadline:
-            raise RuntimeError("uvicorn did not start within 20s")
-        time.sleep(0.05)
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)
+    with serve_uvicorn(app, startup_timeout=20.0) as base_url:
+        yield base_url
 
 
 @_NEEDS_REAL
@@ -299,7 +279,6 @@ def streamable_stub(
     200-shaped initialize result: the honeypot a redirect-following client
     would land on and wrongly credit.
     """
-    port = _free_port()
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_a: object) -> None:
@@ -347,15 +326,8 @@ def streamable_stub(
             reply = responder(req)
             self._send_json(reply if reply is not None else _error(req.get("id")))
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+    with serve_threaded(lambda _base_url: _Handler) as base_url:
+        yield base_url
 
 
 def test_probe_passes_against_good_stub() -> None:
