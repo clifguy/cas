@@ -66,6 +66,50 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'tests/fixtures/ci_cas_vault_config.yaml'
 
+      # TEMPORARY PROBE -- revert before this branch merges.
+      #
+      # Establishes whether the built-in Actions token can read the rulesets
+      # endpoints at this workflow's declared scope, which decides whether the
+      # drift check needs a stored token at all. Identifiers are deliberately
+      # not echoed: the response carries the ruleset id and the bypass actor id,
+      # which the public-posture gate keeps out of the tree, and a log is a poor
+      # place to reintroduce them.
+      - name: Probe rulesets endpoints with the built-in token
+        continue-on-error: true
+        env:
+          PROBE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROBE_REPO: ${{ github.repository }}
+        run: |
+          api() {
+            curl -sS -o "$2" -w '%{http_code}' \
+              -H "Authorization: Bearer $PROBE_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$PROBE_REPO/rulesets$1"
+          }
+          list_code=$(api "" /tmp/list.json)
+          echo "PROBE list rulesets: HTTP $list_code"
+          if [ "$list_code" != "200" ]; then
+            echo "PROBE list body: $(head -c 400 /tmp/list.json)"
+            echo "PROBE RESULT: built-in token CANNOT list rulesets; a stored token is required."
+            exit 0
+          fi
+          python3 -c "import json;d=json.load(open('/tmp/list.json'));print('PROBE visible ruleset names:',[r.get('name') for r in d])"
+          id=$(python3 -c "import json;d=json.load(open('/tmp/list.json'));print(next((r['id'] for r in d if r.get('name')=='main-protection'),''))")
+          if [ -z "$id" ]; then
+            echo "PROBE RESULT: listing readable but main-protection absent from it."
+            exit 0
+          fi
+          get_code=$(api "/$id" /tmp/one.json)
+          echo "PROBE get ruleset by id: HTTP $get_code"
+          if [ "$get_code" != "200" ]; then
+            echo "PROBE get body: $(head -c 400 /tmp/one.json)"
+            echo "PROBE RESULT: listing readable, definition NOT; a stored token is required."
+            exit 0
+          fi
+          python3 -c "import json;d=json.load(open('/tmp/one.json'));print('PROBE rule types:',[r.get('type') for r in d.get('rules',[])]);print('PROBE bypass_actors present:','bypass_actors' in d)"
+          echo "PROBE RESULT: built-in token CAN read the full ruleset; no stored token needed."
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
