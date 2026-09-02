@@ -745,7 +745,7 @@ async def test_verify_source_files_clean_vault_returns_empty(
     assert report.total_documents_checked == 3
     assert report.check_hashes is False
     assert report.entries == []
-    assert report.summary == {"healthy": 3, "missing": 0, "hash_mismatch": 0}
+    assert report.summary == {"healthy": 3, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
 
 
 async def test_verify_source_files_flags_missing_file(
@@ -773,7 +773,7 @@ async def test_verify_source_files_flags_missing_file(
     report = await maint.verify_vault_source_files(check_hashes=False)
 
     assert report.total_documents_checked == 3
-    assert report.summary == {"healthy": 2, "missing": 1, "hash_mismatch": 0}
+    assert report.summary == {"healthy": 2, "missing": 1, "hash_mismatch": 0, "symlinked": 0}
     assert [e.document_id for e in report.entries] == ["bbbbbbbb_b"]
     entry = report.entries[0]
     assert entry.integrity_status == "missing"
@@ -827,7 +827,7 @@ async def test_verify_source_files_existence_mode_ignores_hash_drift(
     report = await maint.verify_vault_source_files(check_hashes=False)
 
     assert report.entries == []
-    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
 
 
 async def test_verify_source_files_hash_mode_flags_mismatch(
@@ -846,7 +846,7 @@ async def test_verify_source_files_hash_mode_flags_mismatch(
     report = await maint.verify_vault_source_files(check_hashes=True)
 
     assert report.check_hashes is True
-    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 1}
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 1, "symlinked": 0}
     entry = report.entries[0]
     assert entry.integrity_status == "hash_mismatch"
     assert entry.expected_content_hash == expected
@@ -870,7 +870,7 @@ async def test_verify_source_files_hash_mode_clean_when_matching(
     report = await maint.verify_vault_source_files(check_hashes=True)
 
     assert report.entries == []
-    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
 
 
 async def test_verify_source_files_healthy_when_stored_copy_diverges_from_provenance(
@@ -907,7 +907,7 @@ async def test_verify_source_files_healthy_when_stored_copy_diverges_from_proven
     report = await maint.verify_vault_source_files(check_hashes=True)
 
     assert report.entries == []
-    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
 
 
 async def test_verify_source_files_detects_corruption_of_a_diverged_stored_copy(
@@ -941,7 +941,7 @@ async def test_verify_source_files_detects_corruption_of_a_diverged_stored_copy(
 
     report = await maint.verify_vault_source_files(check_hashes=True)
 
-    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 1}
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 1, "symlinked": 0}
     entry = report.entries[0]
     assert entry.integrity_status == "hash_mismatch"
     assert entry.expected_content_hash == _sha256_of(retained)
@@ -980,7 +980,7 @@ async def test_verify_source_files_falls_back_for_a_document_with_no_stored_hash
 
     report = await maint.verify_vault_source_files(check_hashes=True)
 
-    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 1}
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 1, "symlinked": 0}
     entry = report.entries[0]
     assert entry.document_id == "bbbbbbbb_bad"
     assert entry.expected_content_hash == _sha256_of(b"body as it was ingested")
@@ -1001,10 +1001,238 @@ async def test_verify_source_files_hash_mode_missing_stays_missing(
 
     report = await maint.verify_vault_source_files(check_hashes=True)
 
-    assert report.summary == {"healthy": 0, "missing": 1, "hash_mismatch": 0}
+    assert report.summary == {"healthy": 0, "missing": 1, "hash_mismatch": 0, "symlinked": 0}
     entry = report.entries[0]
     assert entry.integrity_status == "missing"
     assert entry.observed_content_hash is None
+
+
+def _link_source(config: VaultConfig, source_path: str, target: Path) -> Path:
+    """Replace ``source_path`` with a symlink to ``target``, as something other
+    than SAGE would."""
+    p = Path(config.vault.storage_root) / source_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists() or p.is_symlink():
+        p.unlink()
+    p.symlink_to(target)
+    return p
+
+
+def test_retained_copy_observation_symlinked_is_never_intact():
+    """A linked path is not intact even when a digest in hand matches.
+
+    ``intact`` is where the rule lives, and it has to hold for any observation
+    rather than only for the ones the helper happens to build. Today the helper
+    reports a linked path with a null digest, which would make ``intact`` false
+    on the digest alone -- so the two facts coincide and the rule looks
+    unnecessary. They are different facts: the null digest says the audit did
+    not read through the link, while this says being a link disqualifies the
+    copy however it hashes. A later change that let a linked observation carry a
+    digest -- to report what the link resolves to, say -- would silently restore
+    ``already_intact`` for exactly the state this ticket exists to surface.
+
+    Anti-coincidental-pass: the digest supplied *matches* the expected one, so
+    every part of the predicate except the link term votes intact. An
+    implementation resting on the null digest fails here and nowhere else.
+    """
+    from sage.services.maintenance import _RetainedCopyObservation
+
+    digest = _sha256_of(b"identical either way")
+    linked = _RetainedCopyObservation(
+        present=True, observed_hash=digest, expected_hash=digest, symlinked=True
+    )
+    ordinary = _RetainedCopyObservation(present=True, observed_hash=digest, expected_hash=digest)
+
+    assert linked.intact is False
+    assert ordinary.intact is True, "the link term must not disqualify an ordinary copy"
+
+
+async def test_observe_retained_copy_keeps_presence_behind_a_link(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A linked path still records whether bytes resolve behind it.
+
+    Both are linked and neither is intact, but they are not the same fault and
+    do not call for the same repair: a dangling link means the content is gone
+    and must be re-delivered, while a link onto a real file means the bytes are
+    already there and only a real copy has to be put back at the recorded path.
+    Collapsing both to absent throws away the one fact that separates them --
+    and it is the same fact the classification ordering rests on, since it is
+    presence that would otherwise call a dangling link `missing`.
+
+    Anti-coincidental-pass: the two observations are asserted to *differ* in
+    ``present``, so an implementation hardcoding either constant fails on one
+    of them. ``symlinked`` and ``intact`` are asserted equal across the pair,
+    so the difference cannot be smuggled in by classifying them apart.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    store = maint._vault_source_store()
+    storage_root = maint._storage_root()
+
+    body = b"bytes that exist"
+    target = tmp_path / "elsewhere" / "real.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+
+    _link_source(minimal_config, "imports/resolving.md", target)
+    resolving_doc = _src_doc("aaaaaaaa_res", _sha256_of(body), source_path="imports/resolving.md")
+    _link_source(minimal_config, "imports/dangling.md", tmp_path / "never_written.md")
+    dangling_doc = _src_doc("bbbbbbbb_dng", _sha256_of(body), source_path="imports/dangling.md")
+
+    resolving = maint._observe_retained_copy(resolving_doc, storage_root, store)
+    dangling = maint._observe_retained_copy(dangling_doc, storage_root, store)
+
+    assert resolving.symlinked is True and dangling.symlinked is True
+    assert resolving.intact is False and dangling.intact is False
+    assert resolving.present is True, "bytes resolve behind this link; the copy is not gone"
+    assert dangling.present is False, "nothing resolves behind this link"
+    assert resolving.observed_hash is None, "neither link is read through"
+    assert dangling.observed_hash is None
+
+
+async def test_verify_source_files_reports_a_symlinked_path_holding_correct_bytes(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A recorded path that *is* a link is reported as such, not read through.
+
+    The scenario: something other than SAGE swaps the retained copy for a link
+    to a file holding the expected bytes. The write side already refuses such a
+    path, so the record names a location the repair primitive will not accept --
+    and until now nothing said so.
+
+    Anti-coincidental-pass: the link's target holds exactly the recorded bytes,
+    so every rival that reads through the link -- which is what the audit did --
+    finds the document healthy and reports nothing at all. A link to *drifted*
+    content would surface as `hash_mismatch` without the new observation ever
+    being consulted, which is why the bytes behind the link are the originals.
+    The null observed hash is asserted separately, so an implementation that
+    classified correctly but still hashed through the link fails.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_link.md"
+    body = b"the bytes the record describes"
+    target = tmp_path / "elsewhere" / "real.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+    _link_source(minimal_config, sp, target)
+    await gs.insert_document(_src_doc("deadbeef_link", _sha256_of(body), source_path=sp))
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 0, "symlinked": 1}
+    entry = report.entries[0]
+    assert entry.document_id == "deadbeef_link"
+    assert entry.integrity_status == "symlinked"
+    assert entry.observed_content_hash is None, "the audit reports the link, it does not read it"
+    assert entry.expected_content_hash == _sha256_of(body)
+
+
+async def test_verify_source_files_reports_a_symlinked_path_in_existence_mode(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """The link is reported with ``check_hashes=False`` too.
+
+    Asking whether a path is a link is an ``lstat``, not a content read, so the
+    existence-only mode carries no new cost and has no reason to withhold the
+    finding.
+
+    Anti-coincidental-pass: the hash branch is off entirely here, so an
+    implementation that reached the classification through the digest
+    comparison produces no entry at all rather than a differently-named one.
+    That is what proves the status is a distinct observation and not a hash
+    finding wearing a new label.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_elink.md"
+    body = b"existence mode body"
+    target = tmp_path / "elsewhere" / "real.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+    _link_source(minimal_config, sp, target)
+    await gs.insert_document(_src_doc("deadbeef_elink", _sha256_of(body), source_path=sp))
+
+    report = await maint.verify_vault_source_files(check_hashes=False)
+
+    assert report.check_hashes is False
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 0, "symlinked": 1}
+    assert report.entries[0].integrity_status == "symlinked"
+    assert report.entries[0].observed_content_hash is None
+
+
+async def test_verify_source_files_reports_a_dangling_link_as_symlinked_not_missing(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A link to nothing is still a link at the recorded path.
+
+    Classifying it `missing` would send an operator to a repair that then
+    refuses: the restore writes through the port, and the binding will not write
+    at a linked destination however absent its target. Reporting `symlinked`
+    makes the audit predict the refusal the repair will actually give.
+
+    Anti-coincidental-pass: ``source_exists`` is False for a dangling link, so
+    any implementation that asks about presence before asking about the link
+    classifies this `missing`. The zero `missing` count is what excludes that
+    rival; asserting only the `symlinked` status would leave a double-count
+    implementation green.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_dangle.md"
+    _link_source(minimal_config, sp, tmp_path / "never_written.md")
+    await gs.insert_document(_src_doc("deadbeef_dangle", _sha256_of(b"x"), source_path=sp))
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 0, "symlinked": 1}
+    assert report.entries[0].integrity_status == "symlinked"
+
+
+async def test_verify_source_files_summary_counts_all_four_states(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """The four summary counts partition the documents walked.
+
+    Anti-coincidental-pass: the vault is mixed, so a summary that hardcodes
+    ``"symlinked": 0``, or that files the linked row into an existing bucket,
+    fails the equality -- neither of which a single-document fixture could
+    catch. The sum is asserted against the total independently, so a
+    classification that emitted an entry without counting it (or counted it
+    twice) fails even if the individual keys look plausible.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    healthy_body = b"present and correct"
+    _write_source(minimal_config, "imports/mixed_ok.md", healthy_body)
+    await gs.insert_document(
+        _src_doc("aaaaaaaa_ok", _sha256_of(healthy_body), source_path="imports/mixed_ok.md")
+    )
+
+    linked_body = b"behind the link"
+    target = tmp_path / "elsewhere" / "linked.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(linked_body)
+    _link_source(minimal_config, "imports/mixed_link.md", target)
+    await gs.insert_document(
+        _src_doc("bbbbbbbb_ln", _sha256_of(linked_body), source_path="imports/mixed_link.md")
+    )
+
+    await gs.insert_document(
+        _src_doc("cccccccc_gone", _sha256_of(b"x"), source_path="imports/mixed_gone.md")
+    )
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.summary == {"healthy": 1, "missing": 1, "hash_mismatch": 0, "symlinked": 1}
+    assert sum(report.summary.values()) == report.total_documents_checked
+    statuses = {e.document_id: e.integrity_status for e in report.entries}
+    assert statuses == {"bbbbbbbb_ln": "symlinked", "cccccccc_gone": "missing"}
 
 
 # ---------------------------------------------------------------------------
@@ -1198,7 +1426,7 @@ async def test_restore_source_file_replaces_a_missing_copy(
     assert on_disk.read_bytes() == body
 
     post = await maint.verify_vault_source_files(check_hashes=True)
-    assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
 
 
 async def test_restore_source_file_refuses_bytes_no_document_claims(
@@ -1226,7 +1454,7 @@ async def test_restore_source_file_refuses_bytes_no_document_claims(
 
     assert on_disk.read_bytes() == body
     post = await maint.verify_vault_source_files(check_hashes=True)
-    assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert post.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
 
 
 async def test_restore_source_file_pin_refuses_bytes_the_document_was_not_made_from(
@@ -1525,6 +1753,128 @@ async def test_restore_source_file_lands_at_the_recorded_path(
     assert doc.source_path == sp, "a restore must never re-home the document"
 
 
+async def test_restore_source_file_refuses_a_symlinked_recorded_path(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A recorded path that is a link is refused, however the bytes behind it
+    hash.
+
+    ``already_intact`` is a claim about the copy the record names, and a link is
+    not that copy: the bytes live wherever its owner points, and the repair
+    primitive will not write through it. Reporting the document fine would
+    close the operator's only question over a record that cannot be repaired.
+
+    Anti-coincidental-pass: the link's target holds exactly the recorded bytes,
+    so the rival -- the short-circuit as it stood -- returns ``already_intact``
+    for precisely this input. Asserting the raised type rather than merely "not
+    already_intact" additionally excludes an implementation that fell through to
+    some other non-intact report without refusing. The detail names the
+    record's own path, so a refusal reported against the resolved target fails.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_rlink.md"
+    body = b"the bytes the record describes"
+    target = tmp_path / "elsewhere" / "real.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+    _link_source(minimal_config, sp, target)
+    await gs.insert_document(_src_doc("deadbeef_rlink", _sha256_of(body), source_path=sp))
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await maint.restore_vault_source_file(_delivered(tmp_path, "r.md", body))
+
+    assert excinfo.value.detail == {"source_path": sp}
+
+
+async def test_restore_source_file_refusal_leaves_the_link_and_its_target_alone(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """The refusal happens before any write, so neither the link nor the file it
+    points at is disturbed.
+
+    Anti-coincidental-pass: the bytes behind the link hash to what the record
+    expects, so this is the path the short-circuit used to take. A *drifted*
+    target would be refused by the write guard that already existed, leaving
+    this test green before the change and testing nothing. The rival is a
+    refusal raised *after* the bytes landed, which following the link would
+    rewrite whatever its owner points at; content cannot catch that here, since
+    the delivered bytes are the target's own, but the modification time can.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_untouched.md"
+    recorded = b"what the record expects"
+    target = tmp_path / "elsewhere" / "victim.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(recorded)
+    link = _link_source(minimal_config, sp, target)
+    await gs.insert_document(_src_doc("deadbeef_untouched", _sha256_of(recorded), source_path=sp))
+    mtime_before = target.stat().st_mtime_ns
+
+    with pytest.raises(VaultSourcePathRefusedError):
+        await maint.restore_vault_source_file(_delivered(tmp_path, "u.md", recorded))
+
+    assert link.is_symlink(), "a refusal must not disturb the tree"
+    assert target.stat().st_mtime_ns == mtime_before, (
+        "a rewrite of identical bytes is still a write through the link"
+    )
+    assert target.read_bytes() == recorded, "no write may land through the link"
+
+
+async def test_audit_and_restore_agree_on_symlinked_through_one_observation(
+    graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
+):
+    """Both surfaces take "is this path a link?" from the one shared
+    observation, so they cannot disagree about it.
+
+    The restore exists to repair what the audit reports. Were each to ask the
+    store on its own, the two could drift apart -- the audit reporting a link
+    the restore then writes over, or the reverse. The observation is replaced
+    with one that *claims* a genuinely linked path is an ordinary intact copy;
+    both surfaces must believe it.
+
+    Anti-coincidental-pass: the path really is a link (the unpatched audit is
+    asserted to report it), so either surface still asking the store itself sees
+    the real link and breaks ranks -- the audit reporting `symlinked` against the
+    faked observation, or the restore refusing. Patching over a clean fixture
+    would leave both rivals green.
+    """
+    from sage.services.maintenance import _RetainedCopyObservation
+
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_symagree.md"
+    body = b"the bytes the record describes"
+    target = tmp_path / "elsewhere" / "agree.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+    _link_source(minimal_config, sp, target)
+    await gs.insert_document(_src_doc("deadbeef_symagree", _sha256_of(body), source_path=sp))
+
+    pre = await maint.verify_vault_source_files(check_hashes=True)
+    assert pre.summary["symlinked"] == 1, "the link must be real before the observation is faked"
+
+    expected = _sha256_of(body)
+    monkeypatch.setattr(
+        MaintenanceService,
+        "_observe_retained_copy",
+        lambda self, doc, storage_root, store, *, hash_copy=True: _RetainedCopyObservation(
+            present=True, observed_hash=expected, expected_hash=expected, symlinked=False
+        ),
+    )
+
+    audit = await maint.verify_vault_source_files(check_hashes=True)
+    restore = await maint.restore_vault_source_file(_delivered(tmp_path, "a.md", body))
+
+    assert audit.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
+    assert restore.status == "already_intact"
+    assert target.read_bytes() == body, "a copy the observation calls intact is not rewritten"
+
+
 async def test_audit_and_restore_agree_on_intact_through_one_observation(
     graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
 ):
@@ -1574,7 +1924,7 @@ async def test_audit_and_restore_agree_on_intact_through_one_observation(
     audit = await maint.verify_vault_source_files(check_hashes=True)
     restore = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", original))
 
-    assert audit.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert audit.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
     assert restore.status == "already_intact"
     assert on_disk.read_bytes() == b"drifted", (
         "a copy the observation calls intact is not rewritten"
@@ -1606,7 +1956,7 @@ async def test_audit_and_restore_agree_on_drift_through_one_observation(
     await gs.insert_document(_src_doc("deadbeef_agree", _sha256_of(original), source_path=sp))
 
     pre = await maint.verify_vault_source_files(check_hashes=True)
-    assert pre.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}, (
+    assert pre.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}, (
         "the copy must be genuinely intact before the observation is faked"
     )
 

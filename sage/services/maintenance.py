@@ -123,15 +123,36 @@ class _RetainedCopyObservation:
     ``observed_hash`` is null when the copy is absent, and also when the caller
     asked only about presence; :attr:`intact` is false in both cases, and it is
     the caller's business to tell them apart through ``present``.
+
+    ``symlinked`` says the recorded path is a link rather than the copy itself.
+    It is carried here rather than asked separately at each surface, for the
+    same reason the digest is: the write side refuses to write at such a path,
+    so an audit that called it healthy would send an operator to a repair that
+    then refuses. Being a link is not a state a copy can be intact in, so it
+    suppresses :attr:`intact` outright -- however the bytes behind the link
+    happen to hash. It defaults to False, the state of every ordinary retained
+    file.
+
+    ``symlinked`` and ``present`` are independent, and both stay meaningful
+    together: a link whose target is gone is absent, while one resolving to a
+    real file is present, and the two call for different repairs -- re-deliver
+    the content, or merely put a real copy back at the recorded path. Reading
+    ``present`` as "the copy is there" is only sound once ``symlinked`` is
+    false; where it is true, presence describes what the link resolves to
+    rather than the copy the record names.
     """
 
     present: bool
     observed_hash: str | None
     expected_hash: str
+    symlinked: bool = False
 
     @property
     def intact(self) -> bool:
-        """The retained copy is present and hashes to what the record expects."""
+        """The retained copy is present, is not a link, and hashes to what the
+        record expects."""
+        if self.symlinked:
+            return False
         return self.observed_hash is not None and self.observed_hash == self.expected_hash
 
 
@@ -260,9 +281,16 @@ class MaintenanceService:
         ``get_document`` delivers), distinct from the content store
         reclaimed by ``optimize_content_store``.
 
+        A recorded path that is a *link* rather than the retained copy is
+        reported as ``symlinked`` in both modes, and is not read through:
+        every other read resolves a link, so such a path would otherwise
+        read as an intact copy while its bytes live wherever the link's
+        owner points -- and the store refuses to write there, so the
+        repair the audit sends an operator to would itself be refused.
+
         Returns a SourceFileIntegrityReport with per-document entries for
-        missing or hash-mismatched files and aggregate counts; documents
-        with an intact source file are absent from ``entries``.
+        missing, symlinked, or hash-mismatched files and aggregate counts;
+        documents with an intact source file are absent from ``entries``.
         """
         all_docs = await self._graph_store.list_all_documents()
         storage_root = self._storage_root()
@@ -278,6 +306,7 @@ class MaintenanceService:
             "healthy": len(all_docs) - len(entries),
             "missing": sum(1 for e in entries if e.integrity_status == "missing"),
             "hash_mismatch": sum(1 for e in entries if e.integrity_status == "hash_mismatch"),
+            "symlinked": sum(1 for e in entries if e.integrity_status == "symlinked"),
         }
 
         return SourceFileIntegrityReport(
@@ -296,7 +325,7 @@ class MaintenanceService:
         store: VaultSourceStore,
     ) -> SourceFileIntegrityEntry | None:
         """Return an integrity entry for ``doc`` if its source file is
-        missing or hash-mismatched, else None.
+        symlinked, missing, or hash-mismatched, else None.
 
         Classifies the shared :class:`_RetainedCopyObservation` -- the same
         one the restore judges "already intact" by -- so the audit and the
@@ -304,9 +333,18 @@ class MaintenanceService:
         source is additionally hashed and compared against the digest recorded
         for the *stored* copy (see :func:`_expected_stored_hash`). A missing
         source is always classified ``missing`` regardless of ``check_hashes``
-        (it is never a hash error).
+        (it is never a hash error), and a linked path is classified
+        ``symlinked`` ahead of both -- it is not the copy the record names, so
+        neither its presence nor its digest is the question to ask about it.
         """
         observation = self._observe_retained_copy(doc, storage_root, store, hash_copy=check_hashes)
+        if observation.symlinked:
+            # Reported in both modes: establishing this is an lstat, not a
+            # content read, so the existence-only mode carries no new cost and
+            # has no reason to withhold the finding. The observed digest stays
+            # null -- the audit reports the link rather than reading through it.
+            return self._integrity_entry(doc, "symlinked", observed=None)
+
         if not observation.present:
             return self._integrity_entry(doc, "missing", observed=None)
 
@@ -332,7 +370,22 @@ class MaintenanceService:
         audit's existence-only mode relies on that.
         """
         expected = _expected_stored_hash(doc)
-        if not store.source_exists(self._vault_id, storage_root, doc.source_path):
+        # Presence and linkedness are independent facts about the recorded path,
+        # and both are cheap stats, so both are established before either is
+        # used. What the audit orders is the *classification* -- a linked path is
+        # reported as the link it is rather than as missing -- not these calls.
+        present = store.source_exists(self._vault_id, storage_root, doc.source_path)
+        if store.source_is_symlink(self._vault_id, storage_root, doc.source_path):
+            # A link is not the copy the record names, so no digest is taken
+            # through it. Whether bytes resolve behind it is kept rather than
+            # collapsed to absent: those are two different repairs. A dangling
+            # link means the content is gone and has to be re-delivered; a
+            # resolving one means it is sitting behind the link and only the
+            # copy has to be put back at the path the record holds.
+            return _RetainedCopyObservation(
+                present=present, observed_hash=None, expected_hash=expected, symlinked=True
+            )
+        if not present:
             return _RetainedCopyObservation(
                 present=False, observed_hash=None, expected_hash=expected
             )
@@ -400,7 +453,11 @@ class MaintenanceService:
 
         Writes nothing when the retained copy already hashes to its recorded
         digest: an unconditional rewrite would re-stamp the copy under a binding
-        that rewrites at rest, churning the recorded digest for no repair.
+        that rewrites at rest, churning the recorded digest for no repair. A
+        recorded path that is a *link* is never treated that way, however the
+        bytes behind it hash -- it is not the copy the record names -- and the
+        write the fall-through attempts is refused by the store rather than
+        landing wherever the link points.
 
         Where a write does happen, the copy is re-read afterwards and the
         record's ``stored_content_hash`` follows it only where the store

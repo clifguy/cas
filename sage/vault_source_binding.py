@@ -394,6 +394,26 @@ class VaultSourceStore(ABC):
         """Whether a retained source is present on the store."""
 
     @abstractmethod
+    def source_is_symlink(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        """Whether the retained path is itself a link rather than the copy.
+
+        The one question about a retained source that every other read answers
+        about its *target*: ``source_exists`` and ``hash_source`` both resolve a
+        link, so a path something other than SAGE replaced with a link to a file
+        holding the expected bytes reads as an intact copy. The write side
+        refuses such a path, so nothing would surface it until a repair was
+        attempted; this is what lets a caller see it first.
+
+        Independent of presence, and deliberately so: a link whose target is
+        absent is still a link at the path the record names, and refusing to
+        write there does not depend on what it points at.
+
+        A binding whose store cannot hold links answers False. That is the true
+        answer for such a store rather than an unimplemented one, which is why
+        the question belongs on the port instead of behind a capability probe.
+        """
+
+    @abstractmethod
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
         """Byte size of a retained source, read cheaply (without loading it)."""
 
@@ -857,6 +877,13 @@ class FilesystemVaultSourceStore(VaultSourceStore):
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
         return (storage_root / source_path).exists()
 
+    def source_is_symlink(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        # ``is_symlink`` is an lstat: it describes the named path itself, where
+        # every other read here resolves through it. That is the whole point --
+        # it is the only way this binding can report the state its own write
+        # guards refuse to create.
+        return (storage_root / source_path).is_symlink()
+
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
         return (storage_root / source_path).stat().st_size
 
@@ -1050,6 +1077,15 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
         return self._get_client().source_item(vault_id, source_path) is not None  # type: ignore[attr-defined]
+
+    def source_is_symlink(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        # An item in a document library is a stored object; nothing in this
+        # binding's write path can produce a link and the store has no concept
+        # of one, so no path here is ever linked. Answered without a lookup
+        # because the answer is a property of the store, not of any item: a
+        # round-trip could only return the same constant more expensively, and
+        # an absent item would then be indistinguishable from a present one.
+        return False
 
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
         item = self._get_client().source_item(vault_id, source_path)  # type: ignore[attr-defined]

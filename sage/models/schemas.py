@@ -3973,10 +3973,11 @@ class SourceFileIntegrityEntry(BaseModel):
     """Per-document entry in a SourceFileIntegrityReport.
 
     Surfaced when a document's backing source file is absent under the
-    vault storage root (`missing`) or, when hash verification is enabled,
-    present but no longer hashing to the recorded `source_content_hash`
-    (`hash_mismatch`). Documents whose source file is intact are absent
-    from the report.
+    vault storage root (`missing`), when the recorded path is a link
+    rather than the retained copy (`symlinked`), or, when hash
+    verification is enabled, present but no longer hashing to the
+    recorded `source_content_hash` (`hash_mismatch`). Documents whose
+    source file is intact are absent from the report.
     """
 
     document_id: DocumentIdStr = Field(
@@ -3991,12 +3992,16 @@ class SourceFileIntegrityEntry(BaseModel):
         default=None,
         description="Version indicator of the document, when set.",
     )
-    integrity_status: Literal["missing", "hash_mismatch"] = Field(
+    integrity_status: Literal["missing", "hash_mismatch", "symlinked"] = Field(
         description=(
             "`missing` — the source file does not exist under the storage "
             "root. `hash_mismatch` — the file exists but its content hash "
             "differs from the recorded source_content_hash (only emitted "
-            "when check_hashes=True)."
+            "when check_hashes=True). `symlinked` — the recorded path is a "
+            "link rather than the retained copy itself. Emitted in both "
+            "modes and never read through: the bytes behind a link are not "
+            "the copy the record names, and the store refuses to repair at "
+            "such a path."
         )
     )
     expected_content_hash: Sha256Str = Field(
@@ -4011,8 +4016,8 @@ class SourceFileIntegrityEntry(BaseModel):
         default=None,
         description=(
             "SHA-256 computed from the on-disk file when check_hashes=True "
-            "and the file was readable; null for `missing` rows and whenever "
-            "check_hashes=False."
+            "and the file was readable; null for `missing` and `symlinked` "
+            "rows and whenever check_hashes=False."
         ),
     )
 
@@ -4035,8 +4040,9 @@ class SourceFileIntegrityReport(BaseModel):
     Per-vault audit that every document's backing source file is present
     under the vault storage root, and — when check_hashes is set — that
     each present file still hashes to its recorded source_content_hash.
-    `entries` carries one row per document whose source file is missing or
-    mismatched; documents with an intact source file are absent.
+    `entries` carries one row per document whose source file is missing,
+    symlinked, or mismatched; documents with an intact source file are
+    absent.
     """
 
     vault_id: VaultIdStr = Field(
@@ -4057,13 +4063,14 @@ class SourceFileIntegrityReport(BaseModel):
     )
     summary: dict[str, int] = Field(
         description=(
-            "Counts keyed by `healthy`, `missing`, and `hash_mismatch`. The "
-            "three values sum to total_documents_checked."
+            "Counts keyed by `healthy`, `missing`, `hash_mismatch`, and "
+            "`symlinked`. The four values sum to total_documents_checked."
         )
     )
     entries: list[SourceFileIntegrityEntry] = Field(
         description=(
-            "Per-document rows; one per document whose source file is missing or hash-mismatched."
+            "Per-document rows; one per document whose source file is "
+            "missing, symlinked, or hash-mismatched."
         )
     )
 

@@ -1961,8 +1961,17 @@ class IngestionService:
         )
         if existing_id is not None:
             existing = await self._store.get_document(existing_id)
-            if existing is not None and store.source_exists(
-                vault_id, storage_root, existing.source_path
+            if (
+                existing is not None
+                and store.source_exists(vault_id, storage_root, existing.source_path)
+                # A link at the recorded path is not a present retained copy.
+                # ``source_exists`` resolves one, so without this the reuse hands
+                # back a path whose bytes live wherever the link's owner points --
+                # and which the write side refuses -- confirming as healthy the
+                # very state a re-delivery is the natural moment to surface.
+                # Falling through sends the bytes to ``retain_source``, whose own
+                # guard refuses rather than writing through the link.
+                and not store.source_is_symlink(vault_id, storage_root, existing.source_path)
             ):
                 return existing.source_path, False
         return store.retain_source(

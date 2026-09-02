@@ -2626,6 +2626,14 @@ def register_sage_tools(
         surfaces as a ``hash_mismatch`` entry (a full file read per
         document). Default false performs an existence check only.
 
+        A recorded path that is a *link* rather than the retained copy
+        surfaces as a ``symlinked`` entry, in both modes and without
+        reading through it. Every other read resolves a link, so such a
+        path otherwise reads as an intact copy while the bytes live
+        wherever the link's owner points. The store refuses to write at a
+        linked path, so repairing that document is refused until the link
+        is removed.
+
         This is an integrity check on the stored copy, not a provenance
         check. A store may retain a copy that is not byte-identical to
         what the caller delivered, in which case the two recorded digests
@@ -2690,7 +2698,11 @@ def register_sage_tools(
         digest describes the stored copy rather than the delivered bytes).
 
         Writes nothing when the retained copy already hashes to its recorded
-        digest, returning ``status: already_intact``. Where a write does happen
+        digest, returning ``status: already_intact``. A recorded path that is a
+        *link* is never reported that way, however the bytes behind it hash: it
+        is not the copy the record names, and the write is refused
+        (``vault_source_path_refused``) rather than landing wherever the link
+        points. Remove the link and re-run. Where a write does happen
         the copy is re-read, and the record's ``stored_content_hash`` follows it
         only where the store demonstrably rewrote the bytes -- which is what
         happens under a store that rewrites its copy at rest, where writing the
