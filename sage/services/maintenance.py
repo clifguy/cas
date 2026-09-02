@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -105,6 +106,33 @@ def _expected_stored_hash(doc: Document) -> str:
     original bytes will not match it.
     """
     return doc.stored_content_hash or doc.source_content_hash
+
+
+@dataclass(frozen=True)
+class _RetainedCopyObservation:
+    """What one look at a document's retained source copy established.
+
+    The source-file integrity audit and the source-file restore both turn on
+    the same question -- does the retained copy still hash to what the record
+    expects? -- and the restore exists to repair what the audit reports. Both
+    read their answer from this one observation so that "intact" cannot mean
+    one thing to the audit and another to the repair: an operator is never sent
+    to fix a copy the restore then declares fine, and the restore never rewrites
+    a copy the audit calls healthy.
+
+    ``observed_hash`` is null when the copy is absent, and also when the caller
+    asked only about presence; :attr:`intact` is false in both cases, and it is
+    the caller's business to tell them apart through ``present``.
+    """
+
+    present: bool
+    observed_hash: str | None
+    expected_hash: str
+
+    @property
+    def intact(self) -> bool:
+        """The retained copy is present and hashes to what the record expects."""
+        return self.observed_hash is not None and self.observed_hash == self.expected_hash
 
 
 class MaintenanceService:
@@ -237,13 +265,8 @@ class MaintenanceService:
         with an intact source file are absent from ``entries``.
         """
         all_docs = await self._graph_store.list_all_documents()
-        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-
-        # Audit through the active profile's vault-source store so the integrity
-        # check is binding-agnostic (CAS-ADR-043).
-        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
-
-        store = resolve_stack_vault_source_store(get_stack_config())
+        storage_root = self._storage_root()
+        store = self._vault_source_store()
 
         entries: list[SourceFileIntegrityEntry] = []
         for doc in all_docs:
@@ -275,24 +298,65 @@ class MaintenanceService:
         """Return an integrity entry for ``doc`` if its source file is
         missing or hash-mismatched, else None.
 
-        Existence and hashing are resolved through the vault-source store
-        (CAS-ADR-043), the same store ``get_document`` delivers through, so
-        the audit observes exactly what delivery would. When ``check_hashes``
-        is set, a present source is additionally hashed and compared against
-        the digest recorded for the *stored* copy (see
-        :func:`_expected_stored_hash`). A missing source is always
-        classified ``missing`` regardless of ``check_hashes`` (it is never
-        a hash error).
+        Classifies the shared :class:`_RetainedCopyObservation` -- the same
+        one the restore judges "already intact" by -- so the audit and the
+        repair agree by construction. When ``check_hashes`` is set, a present
+        source is additionally hashed and compared against the digest recorded
+        for the *stored* copy (see :func:`_expected_stored_hash`). A missing
+        source is always classified ``missing`` regardless of ``check_hashes``
+        (it is never a hash error).
         """
-        if not store.source_exists(self._vault_id, storage_root, doc.source_path):
+        observation = self._observe_retained_copy(doc, storage_root, store, hash_copy=check_hashes)
+        if not observation.present:
             return self._integrity_entry(doc, "missing", observed=None)
 
-        if check_hashes:
-            observed = store.hash_source(self._vault_id, storage_root, doc.source_path)
-            if observed != _expected_stored_hash(doc):
-                return self._integrity_entry(doc, "hash_mismatch", observed=observed)
+        if check_hashes and not observation.intact:
+            return self._integrity_entry(doc, "hash_mismatch", observed=observation.observed_hash)
 
         return None
+
+    def _observe_retained_copy(
+        self,
+        doc: Document,
+        storage_root: Path,
+        store: VaultSourceStore,
+        *,
+        hash_copy: bool = True,
+    ) -> _RetainedCopyObservation:
+        """Look once at ``doc``'s retained source copy.
+
+        Existence and hashing are resolved through the vault-source store
+        (CAS-ADR-043), the same store ``get_document`` delivers through, so
+        the observation is exactly what delivery would see. With ``hash_copy``
+        false only presence is established and no content is read; the
+        audit's existence-only mode relies on that.
+        """
+        expected = _expected_stored_hash(doc)
+        if not store.source_exists(self._vault_id, storage_root, doc.source_path):
+            return _RetainedCopyObservation(
+                present=False, observed_hash=None, expected_hash=expected
+            )
+        observed = (
+            store.hash_source(self._vault_id, storage_root, doc.source_path) if hash_copy else None
+        )
+        return _RetainedCopyObservation(
+            present=True, observed_hash=observed, expected_hash=expected
+        )
+
+    def _vault_source_store(self) -> VaultSourceStore:
+        """The active profile's vault-source store.
+
+        Resolved through the stack config at call time so the audit and the
+        restore are binding-agnostic (CAS-ADR-043) and follow whichever
+        binding the running profile selected.
+        """
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        return resolve_stack_vault_source_store(get_stack_config())
+
+    def _storage_root(self) -> Path:
+        """The vault's resolved storage root, as the source-store port expects it."""
+        return Path(self._config.vault.storage_root).expanduser().resolve()
 
     @staticmethod
     def _integrity_entry(
@@ -363,19 +427,18 @@ class MaintenanceService:
         delivered_hash = canonicalize_sha256(hashlib.sha256(data).hexdigest())
 
         doc, provenance_verified = await self._resolve_restore_target(delivered_hash, document_id)
-        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        storage_root = self._storage_root()
+        store = self._vault_source_store()
 
-        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
         from sage.vault_source_binding import VaultRootEscapeError
 
-        store = resolve_stack_vault_source_store(get_stack_config())
+        # The same observation the integrity audit classifies, so the copy the
+        # audit reports drifted is the copy this repairs, and no other.
+        observation = self._observe_retained_copy(doc, storage_root, store)
+        expected = observation.expected_hash
+        observed = observation.observed_hash
 
-        expected = _expected_stored_hash(doc)
-        observed: str | None = None
-        if store.source_exists(self._vault_id, storage_root, doc.source_path):
-            observed = store.hash_source(self._vault_id, storage_root, doc.source_path)
-
-        if observed == expected:
+        if observation.intact:
             return SourceFileRestoreReport(
                 vault_id=self._vault_id,
                 document_id=doc.id,
