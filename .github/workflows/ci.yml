@@ -1,12 +1,30 @@
 name: CI
 
+# One run per push, one per queue entry, one per landing.
+#
+# `pull_request` covers work in progress. `merge_group` covers the merge queue's
+# run against the exact tree that is about to become `main` — required checks are
+# satisfied from that run, so a workflow that does not answer this event stalls
+# every queued pull request until the queue's check-response timeout dequeues it.
+# `push` is restricted to `main`: unrestricted, it fires alongside `pull_request`
+# on the same commit and runs everything twice on every push to a branch. It is
+# kept for `main` because the ruleset grants the repository-admin role an
+# always-on bypass, so a direct push is reachable and would otherwise get no CI
+# at all, and because it is the only run whose coverage artifact belongs to a
+# `main` commit. See docs/process/branch_protection.md.
 on:
-  push:
   pull_request:
+  merge_group:
+  push:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Only a superseded pull-request run may be cancelled. Keying this on
+  # `github.ref` instead would evaluate true for the queue's temporary
+  # `gh-readonly-queue/...` ref, letting a later entry cancel the very run the
+  # merge is waiting on.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -25,6 +43,15 @@ jobs:
       app: ${{ steps.f.outputs.app }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history. On a merge_group run the filter resolves the merge
+          # group's base commit from the local object store and does not fetch
+          # it itself; under the default depth-1 checkout that object is absent,
+          # the filter mis-reports, and `eslint` — a required check that depends
+          # on this job's output — is skipped. A skipped required check counts as
+          # satisfied, so the gate would be bypassed on every queued landing with
+          # nothing red to show for it.
+          fetch-depth: 0
       - uses: dorny/paths-filter@v4
         id: f
         with:
@@ -170,11 +197,22 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
+          # Every event this workflow triggers on needs an arm of its own. The
+          # default arm below scans the whole working tree rather than a commit
+          # range — a mode no pull request ever exercises, and one that can fail
+          # the queue on content already sitting on the default branch.
           case "$EVENT_NAME" in
             pull_request)
               log_opts="--no-merges --first-parent ${PR_BASE_SHA}^..${PR_HEAD_SHA}"
+              ;;
+            merge_group)
+              # base_sha is the tip of the default branch, already scanned when
+              # it landed, so the range excludes it exactly as the push arm does.
+              log_opts="--no-merges --first-parent ${MERGE_GROUP_BASE_SHA}..${MERGE_GROUP_HEAD_SHA}"
               ;;
             push)
               if [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
