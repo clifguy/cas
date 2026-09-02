@@ -52,15 +52,13 @@ from starlette.routing import Mount, Route
 import sage
 import sage.mcp_server as mcp_server
 from sage._tool_naming import (
-    CANONICAL_VERBS,
     MAINT_ONLY_VERBS,
     SERVER_ASSIGNMENT,
-    SURFACE_MOUNT_PATH,
     TOOL_ALIASES,
     _check_table_invariants,
     extract_verb,
 )
-from sage.app import MCP_HTTP_MOUNTS, create_app
+from sage.app import create_app
 from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
 
@@ -230,7 +228,6 @@ def test_maintenance_only_verbs_population():
     recorded decision and a deliberate edit here, not a one-line append.
     """
     assert MAINT_ONLY_VERBS == frozenset({"reload", "migrate", "optimize", "restore"})
-    assert MAINT_ONLY_VERBS <= CANONICAL_VERBS
 
 
 def test_table_invariants_reject_maintenance_verb_on_ordinary_surface():
@@ -258,21 +255,6 @@ def test_table_invariants_reject_maintenance_verb_on_ordinary_surface():
     ordinary_verb_moved = {**SERVER_ASSIGNMENT, "get_vault_stats": "sage"}
     assert extract_verb("get_vault_stats") not in MAINT_ONLY_VERBS
     _check_table_invariants(ordinary_verb_moved, TOOL_ALIASES)
-
-
-def test_surface_mount_paths_agree_with_app_mounts():
-    """``SURFACE_MOUNT_PATH`` names a mount the app actually serves for each surface.
-
-    The dispatch layer quotes this table when it refuses a tool that lives
-    on the other surface, so a row pointing at a path the app does not
-    mount would send a caller to a dead address.
-    """
-    served = {(surface, path) for path, surface in MCP_HTTP_MOUNTS}
-    assert set(SURFACE_MOUNT_PATH.items()) <= served, (
-        f"SURFACE_MOUNT_PATH rows not served by the app: "
-        f"{sorted(set(SURFACE_MOUNT_PATH.items()) - served)}"
-    )
-    assert set(SURFACE_MOUNT_PATH) == {"sage", "sage_maint"}
 
 
 def test_table_entry_for_vault_enumeration_is_ordinary():

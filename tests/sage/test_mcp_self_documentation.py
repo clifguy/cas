@@ -151,8 +151,7 @@ def test_set_lifecycle_action_docstring_points_at_vault_config():
     ``get_vault_config`` for the authoritative list.
 
     Post-CAS-ADR-029: the tool is ``update_lifecycles`` (collapsed plural-
-    noun); the underlying authority pointer is ``get_vault_config``
-    (maint-prefixed per CAS-ADR-029 v4 amendment).
+    noun); the underlying authority pointer is ``get_vault_config``.
 
     Anti-coincidental-pass: the docstring must mention BOTH ``vault
     config`` (closure source) and ``get_vault_config`` (the

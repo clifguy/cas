@@ -20,8 +20,10 @@ surface and the one table that decides where each tool registers:
   per CAS-ADR-034: ``build_partitioned_server`` reads it to decide which
   tools each surface carries, and a registered tool with no row here
   fails registration rather than landing on a default surface.
-- ``SURFACE_MOUNT_PATH`` — server name → the canonical HTTP mount path
-  that serves it, so a dispatch-time refusal can say where a tool lives.
+- ``MCP_HTTP_MOUNTS`` — the Streamable HTTP mount paths and the surface
+  each serves; the single source of truth for the app's mounter, the
+  access-log filter, and the dispatch-time refusal that names where a
+  tool lives (``SURFACE_MOUNT_PATHS`` is its per-surface view).
 - ``TOOL_ALIASES`` — retired tool name → canonical name, covering every
   spelling a maintenance tool has carried (the ``admin_*`` and ``maint_*``
   generations). The alias middleware consults it on every ``call_tool``
@@ -36,12 +38,12 @@ from typing import Final
 # Verb taxonomy (durable; anchored to CAS-ADR-033)
 # ----------------------------------------------------------------------
 
-#: Canonical verb categories that every SAGE MCP tool name must begin
-#: with (after stripping any member of ``COMPOUND_PREFIXES``). Anchored
-#: to CAS-ADR-033. The first segment of a tool name -- up to the first
-#: underscore, or after consuming a compound prefix -- must be in this
-#: set; the verb-compliance gate test enforces this.
-CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
+#: The general verb categories (CAS-ADR-033): every category a tool on
+#: either surface may carry. Together with ``MAINT_ONLY_VERBS`` below they
+#: form ``CANONICAL_VERBS``, the set the first segment of a tool name --
+#: up to the first underscore, or after consuming a compound prefix --
+#: must belong to; the verb-compliance gate test enforces this.
+_GENERAL_VERBS: Final[frozenset[str]] = frozenset(
     {
         # Read-spine verbs
         "get",
@@ -58,14 +60,8 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
         "ingest",
         "recompute",
         "verify",
-        # Maintenance-only outlier verbs; see MAINT_ONLY_VERBS below.
-        "reload",
-        "migrate",
-        "optimize",
-        "restore",
     }
 )
-
 
 #: The maintenance-only outlier verbs (CAS-ADR-033): maintenance operations
 #: on substrate state whose intent does not fit the read-spine / mutation /
@@ -79,6 +75,11 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
 #: partition CAS-ADR-033 establishes -- the same document the server
 #: registration map below transcribes.
 MAINT_ONLY_VERBS: Final[frozenset[str]] = frozenset({"reload", "migrate", "optimize", "restore"})
+
+#: The whole verb taxonomy: the general categories plus the maintenance-only
+#: outliers, composed so each verb is stated exactly once and a verb cannot
+#: be canonical without belonging to one of the two classes.
+CANONICAL_VERBS: Final[frozenset[str]] = _GENERAL_VERBS | MAINT_ONLY_VERBS
 
 
 #: Prefixes that compose with the verb taxonomy. After stripping a
@@ -182,15 +183,35 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
 }
 
 
-#: Server name → the canonical Streamable HTTP mount path that serves it
-#: (CAS-ADR-034). Held here rather than imported from the app module,
-#: which mounts the servers and imports this package, so the dispatch
-#: layer can name the mount a refused tool actually lives on. The app's
-#: mount table must contain every row here; a test holds the two together.
-SURFACE_MOUNT_PATH: Final[dict[str, str]] = {
-    "sage": "/mcp",
-    "sage_maint": "/mcp_maint",
-}
+#: Canonical HTTP MCP mount points as ``(mount_path, surface)`` pairs
+#: (CAS-ADR-034). Single source of truth for the mounter in ``sage.app``,
+#: the ``uvicorn.access`` suppression filter in ``sage.__main__``, and the
+#: dispatch-time refusal that names where a tool lives: a mount added here
+#: is covered by all three without a second edit. Held in this leaf module
+#: rather than in the app module so the dispatch layer can read it without
+#: importing the app that mounts it.
+MCP_HTTP_MOUNTS: Final[tuple[tuple[str, str], ...]] = (
+    ("/mcp", "sage"),
+    ("/mcp_maint", "sage_maint"),
+    # Pre-rename alias path for the maintenance surface (CAS-ADR-034):
+    # identical roster, kept working with no scheduled removal.
+    ("/mcp_admin", "sage_maint"),
+)
+
+
+def _paths_by_surface(mounts: tuple[tuple[str, str], ...]) -> dict[str, tuple[str, ...]]:
+    """Group mount paths by the surface they serve, in mount-table order."""
+    grouped: dict[str, list[str]] = {}
+    for path, surface in mounts:
+        grouped.setdefault(surface, []).append(path)
+    return {surface: tuple(paths) for surface, paths in grouped.items()}
+
+
+#: Server name → every mount path that serves it, canonical path first.
+#: Derived from ``MCP_HTTP_MOUNTS``; consumed by the dispatch layer when it
+#: refuses a tool that registers on the other surface, and by the table
+#: invariants as the set of surfaces a tool may be assigned to.
+SURFACE_MOUNT_PATHS: Final[dict[str, tuple[str, ...]]] = _paths_by_surface(MCP_HTTP_MOUNTS)
 
 
 # ----------------------------------------------------------------------
@@ -212,6 +233,18 @@ SURFACE_MOUNT_PATH: Final[dict[str, str]] = {
 #: working indefinitely -- no removal is scheduled. The retired names are
 #: deliberately **not** registered as tools: the advertised catalog carries
 #: only the canonical names.
+#:
+#: What the alias reaches, and what it costs. It protects a caller that
+#: sends a retired name on the wire -- a raw JSON-RPC client, a script, a
+#: configuration that names tools by string. It cannot reach a
+#: catalog-validating client, one that resolves a tool name against
+#: ``tools/list`` before any request leaves the process: such a client sees
+#: only the advertised catalog, so a retired name in its configuration must
+#: be updated, not aliased. And an aliased call is correct but not free:
+#: the SDK looks the *requested* name up in its tool-definition cache
+#: before this layer rewrites it, misses, rebuilds the catalog cache, and
+#: draws an SDK WARNING alongside the one logged here. The alias is a
+#: compatibility path, not a steady state.
 #:
 #: One flat table rather than one per generation: a caller need not know
 #: which generation it holds, and dispatch stays a single lookup
@@ -280,10 +313,10 @@ def _check_table_invariants(
     Factored so a test can exercise the checks against a deliberately
     broken copy without re-importing the module.
     """
-    # SERVER_ASSIGNMENT values must be one of the two allowed server names.
-    unknown_servers = set(assignment.values()) - {"sage", "sage_maint"}
+    # SERVER_ASSIGNMENT values must name a surface some mount serves.
+    unknown_servers = set(assignment.values()) - set(SURFACE_MOUNT_PATHS)
     assert unknown_servers == set(), (  # noqa: S101
-        f"SERVER_ASSIGNMENT values must be 'sage' or 'sage_maint': {unknown_servers}"
+        f"SERVER_ASSIGNMENT values must be one of {sorted(SURFACE_MOUNT_PATHS)}: {unknown_servers}"
     )
 
     # Every alias must target a registered name (on either surface -- the
@@ -309,10 +342,6 @@ def _check_table_invariants(
     # whose verb is one of them registers on the maintenance surface and
     # nowhere else. The verb taxonomy states the class; the table places
     # its members, and no tool-name prefix is consulted.
-    assert MAINT_ONLY_VERBS <= CANONICAL_VERBS, (  # noqa: S101
-        f"MAINT_ONLY_VERBS is not a subset of CANONICAL_VERBS: "
-        f"{sorted(MAINT_ONLY_VERBS - CANONICAL_VERBS)}"
-    )
     misplaced = {
         name: extract_verb(name)
         for name, server in assignment.items()

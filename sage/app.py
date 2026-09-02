@@ -19,6 +19,7 @@ from fastapi import FastAPI
 
 from app.backend.auth.router import router as auth_router
 from app.backend.router import router as app_backend_router
+from sage._tool_naming import MCP_HTTP_MOUNTS
 from sage.adapters.interfaces import ContentStore
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import (
@@ -157,17 +158,10 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     app.state.utilities_service = services.utilities_service
 
 
-#: Canonical HTTP MCP mount points as ``(mount_path, surface)`` pairs.
-#: Single source of truth for both the mounter below and the
-#: ``uvicorn.access`` suppression filter in ``sage.__main__``:
-#: a mount added here is covered by both without a second edit.
-MCP_HTTP_MOUNTS: tuple[tuple[str, str], ...] = (
-    ("/mcp", "sage"),
-    ("/mcp_maint", "sage_maint"),
-    # Pre-rename alias path for the maintenance surface (CAS-ADR-034):
-    # identical roster, kept working with no scheduled removal.
-    ("/mcp_admin", "sage_maint"),
-)
+# ``MCP_HTTP_MOUNTS`` -- the ``(mount_path, surface)`` pairs the mounter
+# below iterates -- lives in ``sage._tool_naming`` beside the surface table
+# it indexes, and is re-exported here for the ``uvicorn.access``
+# suppression filter in ``sage.__main__``.
 
 
 def _mount_partitioned_mcp(app: FastAPI) -> None:

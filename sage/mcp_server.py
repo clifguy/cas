@@ -49,7 +49,7 @@ from pydantic import ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
-from sage._tool_naming import SERVER_ASSIGNMENT, SURFACE_MOUNT_PATH, TOOL_ALIASES
+from sage._tool_naming import SERVER_ASSIGNMENT, SURFACE_MOUNT_PATHS, TOOL_ALIASES
 from sage.api.errors import SAGEError, validation_error_envelope
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
@@ -334,6 +334,15 @@ class _LoggingFastMCP(FastMCP):
     mount path serve it. The refusal is raised before dispatch on the
     partitioned servers only (those named for a surface); the full
     unpartitioned server registers everything and never refuses.
+
+    Which name each record carries: the refusal names the spelling the
+    caller sent, because nothing ran and the caller must recognize its
+    own call. Everything after dispatch -- the per-call INFO line, an
+    argument-validation envelope's ``tool`` field, a failure log -- names
+    the canonical tool, because that is the tool that ran and the name a
+    migrating caller should adopt. The INFO line is written only once a
+    call has passed the refusal, so the access trail records dispatches
+    that happened.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -361,28 +370,29 @@ class _LoggingFastMCP(FastMCP):
                 requested,
                 name,
             )
-        logger.info("mcp tool: %s", name)
         # Cross-surface refusal (CAS-ADR-034): an alias grants nothing the
         # canonical name does not, so a tool the other surface registers
         # is unknown here -- but the refusal says where it lives.
         surface = self.name
-        if surface in SURFACE_MOUNT_PATH and self._tool_manager.get_tool(name) is None:
+        if surface in SURFACE_MOUNT_PATHS and self._tool_manager.get_tool(name) is None:
             home = SERVER_ASSIGNMENT.get(name)
             if home is not None and home != surface:
+                served_at = " or ".join(SURFACE_MOUNT_PATHS[home])
                 logger.warning(
                     "mcp tool %r (requested as %r) is registered on the %r surface at %s, "
                     "not on %r",
                     name,
                     requested,
                     home,
-                    SURFACE_MOUNT_PATH[home],
+                    served_at,
                     surface,
                 )
                 raise ToolError(
                     f"Unknown tool: {requested!r} on the {surface!r} surface. "
                     f"{name!r} is registered on the {home!r} surface, served at "
-                    f"{SURFACE_MOUNT_PATH[home]}; connect to that mount to call it."
+                    f"{served_at}; connect to one of those mounts to call it."
                 )
+        logger.info("mcp tool: %s", name)
         try:
             result = await super().call_tool(name, arguments)
         except ToolError as e:

@@ -319,8 +319,8 @@ def test_allowlist_drift_classification(
     Anti-coincidental: the two wrong-surface rows are the rival set. A
     classifier that tested ``assignment.get(tool) is None`` (a no-op, since
     live names are table keys) or dropped the surface branch would leave
-    both unflagged; the recorded divergence on its table server proves the
-    branch reads the table rather than the prefix.
+    both unflagged; vault enumeration on its table server (``sage``) proves
+    the branch reads the table row rather than anything in the name.
     """
     stale, wrong_surface = _allowlist_drift([entry], set(SERVER_ASSIGNMENT), SERVER_ASSIGNMENT)
     assert (entry in stale) is expect_stale

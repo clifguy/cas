@@ -17,8 +17,13 @@ CAS-ADR-034).
 The pin protects against omission and drift, not against a deliberate
 global rewrite: a repo-wide substitution that edits the table and this file
 in one motion passes, as it should -- that is a decision, and this file is
-where the decision is recorded on the test side. Keep the module free of
-``sage`` imports so the oracle cannot become an echo by accident.
+where the decision is recorded on the test side. Nor does it judge a new
+row: an author who assigns a new tool to the wrong surface and transcribes
+that row here satisfies the gate, since a name carries no placement signal
+of its own. That is accepted -- the retired prefix was the same author's
+judgment written twice -- and the check on a new row is the *SAGE MCP Tool
+Surface* registration map and review, not this file. Keep the module free
+of ``sage`` imports so the oracle cannot become an echo by accident.
 """
 
 from __future__ import annotations

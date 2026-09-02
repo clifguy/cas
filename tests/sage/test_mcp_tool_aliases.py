@@ -294,33 +294,72 @@ async def test_maintenance_tool_refused_on_ordinary_mount_naming_the_maintenance
     reads the mount path from the surface table: every enumeration case
     above resolves to the ordinary surface, so a refusal that named
     ``/mcp`` unconditionally would pass there. This one must name
-    ``/mcp_maint`` -- and not ``/mcp_admin``, the alias path, which the
-    table does not carry.
+    ``/mcp_maint``.
+
+    The maintenance surface is served at two paths, so the refusal must
+    name both: a caller holding the alias path is sent somewhere that works.
     """
     server = create_app(config=minimal_config).state.mcp_mounts["/mcp"]
     pattern = (
         re.escape(repr(name))
-        + r".*'get_vault_config' is registered on the 'sage_maint' surface.*/mcp_maint;"
+        + r".*'get_vault_config' is registered on the 'sage_maint' surface, served at "
+        + r"/mcp_maint or /mcp_admin;"
     )
     with pytest.raises(ToolError, match=pattern):
         await server.call_tool(name, {"vault_id": minimal_config.vault.id})
 
 
-async def test_cross_surface_refusal_only_on_partitioned_servers(monkeypatch) -> None:
+@pytest.mark.parametrize("which", ["bare", "unpartitioned"])
+async def test_cross_surface_refusal_only_on_partitioned_servers(which, monkeypatch) -> None:
     """A server not named for a surface never refuses; the name reaches dispatch.
 
     The refusal is gated on the server being one of the partitioned
-    surfaces. The full unpartitioned server, and a bare server built by a
-    test, register whatever they register and leave unknown-tool handling
-    to the SDK -- so an aliased maintenance name on a server named ``test``
-    reaches the (stubbed) dispatch layer as its canonical name.
+    surfaces. The full unpartitioned server (``mcp_server.mcp``, named
+    ``SAGE``, which registers everything) and a bare server built by a
+    test register whatever they register and leave unknown-tool handling
+    to the SDK -- so an aliased maintenance name on either reaches the
+    (stubbed) dispatch layer as its canonical name.
     """
     captured = _capture_dispatch(monkeypatch)
-    server = _LoggingFastMCP("test")
+    server = _LoggingFastMCP("test") if which == "bare" else mcp_server.mcp
 
     await server.call_tool("maint_list_vaults", {})
 
     assert captured == ["list_vaults"]
+
+
+async def test_refused_alias_call_logs_each_line_once_and_no_dispatch(
+    minimal_config: VaultConfig, caplog
+) -> None:
+    """On a partitioned mount, a refused aliased call logs the rewrite once,
+    the refusal once, no dispatch line, and nothing at ERROR.
+
+    The alias-log test above runs on a bare server, which never refuses, so
+    it cannot see the second WARNING the refusal adds; this pins the full
+    partitioned-mount trail. The dispatch INFO line is written only after
+    the refusal, so a call that was refused leaves no record of a dispatch
+    that never happened.
+
+    Anti-coincidental: a second call that *does* dispatch (a maintenance
+    tool on its own mount, against a vault that does not exist, so it
+    answers with an envelope and needs no vault) must produce exactly one
+    dispatch line. Without it, "no dispatch line" would also hold if INFO
+    were simply not being captured.
+    """
+    server = create_app(config=minimal_config).state.mcp_mounts["/mcp_maint"]
+    with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
+        with pytest.raises(ToolError):
+            await server.call_tool("admin_list_vaults", {})
+        await server.call_tool("get_vault_config", {"vault_id": "no_such_vault"})
+
+    records = [rec for rec in caplog.records if rec.name == "sage.mcp_server"]
+    rewrites = [r for r in records if "dispatched as its canonical name" in r.getMessage()]
+    refusals = [r for r in records if "registered on" in r.getMessage()]
+    dispatches = [r.getMessage() for r in records if r.getMessage().startswith("mcp tool: ")]
+    assert [r.levelno for r in rewrites] == [logging.WARNING], rewrites
+    assert [r.levelno for r in refusals] == [logging.WARNING], refusals
+    assert dispatches == ["mcp tool: get_vault_config"], dispatches
+    assert not [r for r in records if r.levelno >= logging.ERROR]
 
 
 async def test_unknown_tool_on_partitioned_server_still_fails_as_unknown(
