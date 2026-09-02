@@ -137,7 +137,7 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     ),
     (
         "sage_core",
-        "maint_reload_vault",
+        "reload_vault",
     ): (
         "MCP-only operational tool: closes a vault's services and "
         "re-initializes them after on-disk vault_config.yaml edits or "
@@ -146,7 +146,7 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     ),
     (
         "sage_core",
-        "maint_get_stack_config",
+        "get_stack_config",
     ): (
         "MCP-only introspection of the SAGE-stack-wide config singleton "
         "(CAS-ADR-030). No HTTP counterpart by design; the stack config is "
@@ -236,7 +236,7 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # server's filesystem or does not. Surface parity with ingest rather
     # than a gap -- a permanent MCP-side divergence by design, not pending
     # remediation.
-    ("sage_core", "maint_restore_vault_source_file"): frozenset({"transfer_token"}),
+    ("sage_core", "restore_vault_source_file"): frozenset({"transfer_token"}),
     # The eleven filter keys are tripwires, not functional arguments, on
     # the same mechanism as the ingest metadata keys above. Scope
     # constraints belong nested under ``filters``; these spellings are
@@ -1061,26 +1061,26 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
     "read_projection": (True, None, False),
     # Reads the caller-local filesystem; side-effect free w.r.t. the vault.
     "list_directory": (True, None, False),
-    "maint_list_vaults": (True, None, False),
-    "maint_get_vault_config": (True, None, False),
-    "maint_get_vault_stats": (True, None, False),
-    "maint_get_stack_config": (True, None, False),
-    "maint_verify_vault_drift": (True, None, False),
-    "maint_verify_vault_source_files": (True, None, False),
+    "list_vaults": (True, None, False),
+    "get_vault_config": (True, None, False),
+    "get_vault_stats": (True, None, False),
+    "get_stack_config": (True, None, False),
+    "verify_vault_drift": (True, None, False),
+    "verify_vault_source_files": (True, None, False),
     # -- Write, additive only ----------------------------------------
     # Idempotent on the natural key; inserts only.
     "create_edges": (False, False, False),
     # Creates a new vault; disturbs nothing that already exists.
-    "maint_create_vault": (False, False, False),
+    "create_vault": (False, False, False),
     # Installs partial UNIQUE indexes when the scan is clean. Idempotent,
     # no data loss.
-    "maint_migrate_vault": (False, False, False),
+    "migrate_vault": (False, False, False),
     # Backfills documents left in `abstraction_skipped`; fills gaps
     # rather than overwriting existing abstracts.
-    "maint_recompute_deferred_vault_abstracts": (False, False, False),
+    "recompute_deferred_vault_abstracts": (False, False, False),
     # VACUUM (FULL, ANALYZE) rewrites the relation but preserves every
     # row; the maintenance-log entry is an append.
-    "maint_optimize_vault_content_store": (False, False, False),
+    "optimize_vault_content_store": (False, False, False),
     # -- Write, may be destructive -----------------------------------
     # `force=true` overwrites a record keyed by content hash, and
     # `predecessor_id` applies the supersede transition to the predecessor.
@@ -1102,16 +1102,16 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
     "recompute_pipeline": (False, True, False),
     # Drops the symlink trees with rmtree and rebuilds; non-atomic, with
     # no rollback.
-    "maint_recompute_views": (False, True, False),
+    "recompute_views": (False, True, False),
     # Whole-section replace; `force=true` can orphan documents.
-    "maint_update_vault_config": (False, True, False),
+    "update_vault_config": (False, True, False),
     # Tears down and replaces live service objects, disrupting any
     # in-flight work against the vault.
-    "maint_reload_vault": (False, True, False),
+    "reload_vault": (False, True, False),
     # Overwrites a retained source file in place. The copy it replaces is
     # the drifted one an operator asked to have repaired, but the bytes it
     # writes over are unrecoverable, so this is not additive.
-    "maint_restore_vault_source_file": (False, True, False),
+    "restore_vault_source_file": (False, True, False),
 }
 
 
@@ -1140,17 +1140,19 @@ def test_registered_tool_enumeration_is_nonempty():
     Anti-vacuity control. If ``_registered_tools`` returned an empty (or
     merely partial) mapping, every assertion in the two annotation gates
     below would pass over nothing at all and the gate would be silently
-    disarmed. Reconciling against ``SERVER_ASSIGNMENT`` -- the table
-    registration reads, which names every tool on either surface -- makes
-    both the empty and the partial case fail loudly.
+    disarmed. Reconciling against the hand-maintained roster pin in
+    ``tests/sage/mcp_surface_pin.py`` -- a literal registration does not
+    read, naming every tool on either surface -- makes both the empty and
+    the partial case fail loudly without echoing the table registration
+    consumes.
     """
-    from sage._tool_naming import SERVER_ASSIGNMENT
+    from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
     names = set(_all_registered_tools())
-    assert names == set(SERVER_ASSIGNMENT), (
+    assert names == set(EXPECTED_SURFACE), (
         "annotation gates do not enumerate the full tool roster: "
-        f"missing {sorted(set(SERVER_ASSIGNMENT) - names)}, "
-        f"extra {sorted(names - set(SERVER_ASSIGNMENT))}"
+        f"missing {sorted(set(EXPECTED_SURFACE) - names)}, "
+        f"extra {sorted(names - set(EXPECTED_SURFACE))}"
     )
 
 

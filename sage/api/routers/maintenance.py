@@ -65,7 +65,7 @@ async def _format_reabstract_stream(
         },
     },
 )
-async def maint_migrate_vault(
+async def migrate_vault(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> MigrationReport:
@@ -82,7 +82,7 @@ async def maint_migrate_vault(
         },
     },
 )
-async def maint_detect_drift(
+async def detect_drift(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> DriftReport:
@@ -114,7 +114,7 @@ async def maint_detect_drift(
         },
     },
 )
-async def maint_reabstract_deferred(
+async def reabstract_deferred(
     body: ReabstractRequest = Body(default_factory=ReabstractRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
@@ -145,7 +145,7 @@ async def maint_reabstract_deferred(
         },
     },
 )
-async def maint_optimize_content_store(
+async def optimize_content_store(
     body: OptimizeContentStoreRequest = Body(default_factory=OptimizeContentStoreRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
@@ -165,7 +165,7 @@ async def maint_optimize_content_store(
         },
     },
 )
-async def maint_verify_vault_source_files(
+async def verify_vault_source_files(
     body: SourceFileIntegrityRequest = Body(default_factory=SourceFileIntegrityRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
@@ -199,7 +199,7 @@ async def maint_verify_vault_source_files(
         },
     },
 )
-async def maint_restore_vault_source_file(
+async def restore_vault_source_file(
     body: SourceFileRestoreRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),

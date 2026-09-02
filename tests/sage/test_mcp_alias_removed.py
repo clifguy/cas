@@ -8,8 +8,8 @@ with a ``tool_removed`` envelope. That deprecation window closed and
 the middleware was removed; those names dispatch verbatim.
 
 A *separate, standing* alias layer now exists for the maintenance
-surface's prefix rename (``MAINT_ALIAS_MAPPING``; covered by
-``test_mcp_maint_alias.py``). Its domain is exactly the mapped
+tools' retired spellings (``TOOL_ALIASES``; covered by
+``test_mcp_tool_aliases.py``). Its domain is exactly the retired
 maintenance names, so these tests double as the boundary proof: the
 verb-rename-era names below must never re-enter any alias table.
 
@@ -29,13 +29,13 @@ import pytest
 from sage.mcp_server import _LoggingFastMCP
 
 
-@pytest.mark.parametrize("old_name", ["sage_discover", "reload_vault", "create_edge"])
+@pytest.mark.parametrize("old_name", ["sage_discover", "update_lifecycle", "create_edge"])
 async def test_old_name_dispatches_without_rewrite(old_name: str, monkeypatch) -> None:
     """A pre-rename name reaches dispatch verbatim -- no alias rewrite.
 
     Against the pre-removal middleware this failed: the name was rewritten
     to its current target (``sage_discover`` -> ``search``,
-    ``reload_vault`` -> ``admin_reload_vault``, ``create_edge`` ->
+    ``update_lifecycle`` -> ``update_lifecycles``, ``create_edge`` ->
     ``create_edges``) before dispatch, so the captured name differed from
     the input. With the middleware gone the name passes through unchanged.
     """

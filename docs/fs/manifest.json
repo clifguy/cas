@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.15",
+      "version": "0.16",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.58",
+  "substrate_version": "1.59",
   "revision_history": [
+    {
+      "version": "1.59",
+      "date": "2026-09-02",
+      "summary": "Retire the maintenance prefix from the SAGE MCP maintenance roster (CAS-ADR-029, CAS-ADR-034). sage/sage_core_api.openapi.yaml bumped v0.15->v0.16: the twelve maintenance operationIds drop their `maint_` prefix (`maint_list_vaults` -> `list_vaults`, `maint_get_vault_config` -> `get_vault_config`, `maint_get_vault_stats` -> `get_vault_stats`, `maint_create_vault` -> `create_vault`, `maint_update_vault_config` -> `update_vault_config`, `maint_recompute_views` -> `recompute_views`, `maint_verify_vault_drift` -> `verify_vault_drift`, `maint_verify_vault_source_files` -> `verify_vault_source_files`, `maint_restore_vault_source_file` -> `restore_vault_source_file`, `maint_migrate_vault` -> `migrate_vault`, `maint_recompute_deferred_vault_abstracts` -> `recompute_deferred_vault_abstracts`, `maint_optimize_vault_content_store` -> `optimize_vault_content_store`), preserving the 1:1 MCP-tool-to-operationId correspondence after the MCP tools dropped the same prefix; REST URL paths, including the `/admin/` segment, are unchanged. Rationale: with the surface-assignment table the sole registration authority since v1.58, the prefix duplicated the table and misdescribed the placement of the one tool the table had moved, so a tool name now describes the operation and the table alone describes the placement. Every retired MCP spelling (the `admin_*` and `maint_*` generations) remains a dispatch-time alias with no scheduled removal; the two MCP-only maintenance tools (`reload_vault`, `get_stack_config`) rename in step with no operation to track."
+    },
     {
       "version": "1.58",
       "date": "2026-09-02",

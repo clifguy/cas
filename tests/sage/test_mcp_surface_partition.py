@@ -16,13 +16,26 @@ Surface assignment is read from ``SERVER_ASSIGNMENT`` in
 ``sage/_tool_naming.py`` — the in-code transcription of the *SAGE MCP Tool
 Surface* steering-document registration map — and from nothing else: a tool
 absent from the table fails registration rather than landing on a default
-surface. The ``maint_`` prefix remains the naming convention for maintenance
-tools (CAS-ADR-029) but no longer decides registration, so the prefix and
-the table are two independent statements of the same partition. These
-tests cross-check them: the set of tools on which they disagree must equal
-``PREFIX_SURFACE_DIVERGENCES`` exactly, and that set is pinned to its one
-recorded member, so a divergence can neither appear unrecorded nor
-accumulate as an allowlist.
+surface.
+
+The independent oracle is ``EXPECTED_SURFACE`` in
+``tests/sage/mcp_surface_pin.py``: a hand-written literal with no production
+reader. The drift gates compare the table, the built servers, and the live
+HTTP mounts to that pin per surface, so a tool silently added to a surface,
+dropped from one, or moved between surfaces goes red until the pin is
+edited deliberately -- in CI, which has no vault to consult the steering
+document in. The pure ``_partition_drift`` classifier is pinned with
+synthetic tables and exercised against a live mutation of the table, so the
+gate cannot pass by comparing the table to itself.
+
+The maintenance-only outlier verbs (CAS-ADR-033) are scoped by the table
+rather than by the verb taxonomy: ``MAINT_ONLY_VERBS`` is pinned to its
+population here, and the import-time invariants refuse a table that places
+a tool carrying one of those verbs off the maintenance surface.
+
+Nothing in a tool's name signals its surface: the maintenance prefix
+CAS-ADR-029 once carried is retired, so the pin and the table are the only
+two statements of the partition and these gates hold them together.
 """
 
 from __future__ import annotations
@@ -38,11 +51,24 @@ from starlette.routing import Mount, Route
 
 import sage
 import sage.mcp_server as mcp_server
-from sage._tool_naming import PREFIX_SURFACE_DIVERGENCES, SERVER_ASSIGNMENT
+from sage._tool_naming import (
+    MAINT_ONLY_VERBS,
+    SERVER_ASSIGNMENT,
+    TOOL_ALIASES,
+    _check_table_invariants,
+    extract_verb,
+)
 from sage.app import create_app
+from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
-EXPECTED_SAGE = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage"}
-EXPECTED_MAINT = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage_maint"}
+
+def _pinned(surface: str) -> set[str]:
+    """The tools the hand-maintained pin places on ``surface``."""
+    return {name for name, srv in EXPECTED_SURFACE.items() if srv == surface}
+
+
+EXPECTED_SAGE = _pinned("sage")
+EXPECTED_MAINT = _pinned("sage_maint")
 
 # The shared read spine (CAS-ADR-034): these live on the ``sage`` server
 # only and must never be duplicated on the ``sage_maint`` server.
@@ -69,84 +95,166 @@ def _mounted_names(app: FastAPI, path: str) -> set[str]:
     return {tool.name for tool in server._tool_manager.list_tools()}  # noqa: SLF001
 
 
-def _prefix_surface(name: str) -> str:
-    """The surface the naming convention alone would imply for ``name``.
+def _partition_drift(
+    assignment: dict[str, str], expected: dict[str, str]
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[tuple[str, str, str], ...]]:
+    """Classify drift between a surface table and the pinned partition.
 
-    Kept here, not in production code: the prefix is a naming convention
-    (CAS-ADR-029), and registration no longer derives anything from it.
-    The tests re-derive it so the prefix-vs-table cross-check compares two
-    independent sources.
+    Returns ``(unpinned, missing, moved)``: names in ``assignment`` but not
+    in ``expected``; names in ``expected`` but not in ``assignment``; and
+    ``(name, actual, pinned)`` triples for names the two place on different
+    surfaces. Pure over its inputs so the classifier itself can be pinned
+    with synthetic tables. The comparison is per name and per surface -- a
+    name-set comparison would let a moved tool pass.
     """
-    return "sage_maint" if name.startswith("maint_") else "sage"
+    unpinned = tuple(sorted(set(assignment) - set(expected)))
+    missing = tuple(sorted(set(expected) - set(assignment)))
+    moved = tuple(
+        (name, assignment[name], expected[name])
+        for name in sorted(set(assignment) & set(expected))
+        if assignment[name] != expected[name]
+    )
+    return unpinned, missing, moved
 
 
-def test_sage_server_registers_exactly_ordinary_tools():
-    """The ``sage`` server registers exactly the tools the table assigns to it.
+_SYNTHETIC_PIN = {"a": "sage", "b": "sage_maint", "x": "sage"}
 
-    ``EXPECTED_SAGE`` is derived from the same table registration reads, so
-    this verifies that the registration path honours the table -- not an
-    independent transcription. The independent cross-check is the
-    prefix-vs-table equality and the population pin below.
+
+@pytest.mark.parametrize(
+    ("assignment", "drift"),
+    [
+        ({"a": "sage", "b": "sage_maint", "x": "sage"}, ((), (), ())),
+        ({"a": "sage", "b": "sage_maint", "x": "sage", "probe": "sage"}, (("probe",), (), ())),
+        ({"a": "sage", "b": "sage_maint"}, ((), ("x",), ())),
+        (
+            {"a": "sage", "b": "sage_maint", "x": "sage_maint"},
+            ((), (), (("x", "sage_maint", "sage"),)),
+        ),
+    ],
+    ids=["identical", "silently-added", "dropped", "moved"],
+)
+def test_partition_drift_classifier(assignment, drift):
+    """The drift classifier separates added, dropped, and moved tools.
+
+    The ``moved`` row is the one a name-set comparison would miss: the same
+    three names, one on the other surface. Pinning it here is what makes
+    the live gates below a per-surface check rather than a roster count.
     """
-    assert _registered_names("sage") == EXPECTED_SAGE
+    assert _partition_drift(assignment, _SYNTHETIC_PIN) == drift
 
 
-def test_sage_maint_server_registers_exactly_maintenance_tools():
-    """The ``sage_maint`` server registers exactly the tools the table assigns to it.
+def test_assignment_table_matches_pinned_partition():
+    """``SERVER_ASSIGNMENT`` equals the hand-maintained pin, per surface.
 
-    Same oracle as the ordinary-surface test: registration honours the
-    table, with independence carried by the prefix-vs-table cross-check.
+    The pin is a literal with no production reader, so this is a genuine
+    cross-check rather than an echo of the table. A tool added, dropped, or
+    moved without a deliberate edit to ``tests/sage/mcp_surface_pin.py``
+    fails here, in CI, with the offenders listed by channel.
     """
-    assert _registered_names("sage_maint") == EXPECTED_MAINT
-
-
-def test_sage_maint_contains_only_maint_prefixed_tools():
-    """Partition invariant: every ``sage_maint`` tool name is ``maint_*``."""
-    names = _registered_names("sage_maint")
-    offenders = {n for n in names if not n.startswith("maint_")}
-    assert not offenders, f"non-maint_ tool(s) on sage_maint: {sorted(offenders)}"
-
-
-def test_maint_prefixed_tools_on_sage_are_only_declared_divergences():
-    """Partition invariant: a ``maint_*`` tool on ``sage`` is a recorded divergence.
-
-    Read from the built server, not the table, so it fails on a registration
-    path that stops honouring the table as much as on a table edit.
-    """
-    names = _registered_names("sage")
-    on_sage = {n for n in names if n.startswith("maint_")}
-    assert on_sage == PREFIX_SURFACE_DIVERGENCES, (
-        f"maint_ tool(s) on sage other than the declared divergences: "
-        f"unexpected {sorted(on_sage - PREFIX_SURFACE_DIVERGENCES)}, "
-        f"missing {sorted(PREFIX_SURFACE_DIVERGENCES - on_sage)}"
+    unpinned, missing, moved = _partition_drift(SERVER_ASSIGNMENT, EXPECTED_SURFACE)
+    assert (unpinned, missing, moved) == ((), (), ()), (
+        "SERVER_ASSIGNMENT drifted from the pinned partition: "
+        f"unpinned {list(unpinned)}, missing {list(missing)}, moved {list(moved)}. "
+        "If the change is deliberate, edit tests/sage/mcp_surface_pin.py."
     )
 
 
-def test_prefix_and_table_disagree_exactly_on_declared_divergences():
-    """The prefix convention and the assignment table disagree on exactly
-    ``PREFIX_SURFACE_DIVERGENCES`` — set equality in both directions.
+@pytest.mark.parametrize("surface", ["sage", "sage_maint"])
+def test_built_server_matches_pinned_partition(surface: str):
+    """Each built server registers exactly the tools the pin places on it.
 
-    An entry moved off its prefix's surface without being declared fails
-    here; so does a declared divergence whose table row still agrees with
-    its prefix (a stale declaration).
+    Compared to the pin, not the table, so a registration path that stops
+    honouring the table fails here even when table and pin agree.
     """
-    divergent = {
-        name for name, surface in SERVER_ASSIGNMENT.items() if _prefix_surface(name) != surface
-    }
-    assert divergent == PREFIX_SURFACE_DIVERGENCES, (
-        f"undeclared prefix/surface divergence(s): "
-        f"{sorted(divergent - PREFIX_SURFACE_DIVERGENCES)}; "
-        f"declared but not divergent: {sorted(PREFIX_SURFACE_DIVERGENCES - divergent)}"
-    )
+    assert _registered_names(surface) == _pinned(surface)
 
 
-def test_declared_divergences_are_exactly_vault_enumeration():
-    """The divergence set is a recorded decision, not an open allowlist.
+@pytest.mark.parametrize(
+    ("mount", "surface"),
+    [("/mcp", "sage"), ("/mcp_maint", "sage_maint"), ("/mcp_admin", "sage_maint")],
+)
+def test_live_mount_matches_pinned_partition(minimal_config, mount: str, surface: str):
+    """Each live HTTP mount advertises exactly the tools the pin places on it."""
+    app = create_app(config=minimal_config)
+    assert _mounted_names(app, mount) == _pinned(surface)
 
-    Pinning the population means a second divergence needs its own recorded
-    decision and a deliberate edit here, not a one-line append.
+
+def test_silently_added_tool_trips_gate(monkeypatch: Any):
+    """A table row with no pin entry is reported as ``unpinned``.
+
+    Live positive control for the drift gate: the mutation is asserted
+    visible before the classifier runs, so a monkeypatch that landed on a
+    copy would fail here rather than pass vacuously.
     """
-    assert PREFIX_SURFACE_DIVERGENCES == frozenset({"maint_list_vaults"})
+    monkeypatch.setitem(SERVER_ASSIGNMENT, "probe_tool", "sage")
+    assert "probe_tool" in SERVER_ASSIGNMENT
+    unpinned, missing, moved = _partition_drift(SERVER_ASSIGNMENT, EXPECTED_SURFACE)
+    assert unpinned == ("probe_tool",)
+    assert (missing, moved) == ((), ())
+
+
+def test_moved_tool_trips_gate(monkeypatch: Any):
+    """A table row moved to the other surface is reported as ``moved`` and
+    changes the built roster.
+
+    The second half proves the built server follows the table: with
+    ``search`` reassigned, ``sage_maint`` now carries it and no longer
+    equals its pin. A registration path that ignored the table would leave
+    the roster unchanged and fail here.
+    """
+    monkeypatch.setitem(SERVER_ASSIGNMENT, "search", "sage_maint")
+    assert SERVER_ASSIGNMENT["search"] == "sage_maint"
+    _, _, moved = _partition_drift(SERVER_ASSIGNMENT, EXPECTED_SURFACE)
+    assert moved == (("search", "sage_maint", "sage"),)
+    maint = _registered_names("sage_maint")
+    assert "search" in maint
+    assert maint != _pinned("sage_maint")
+
+
+async def test_unpartitioned_server_roster_equals_pin():
+    """The full, unpartitioned server carries exactly the pinned roster.
+
+    Roster only: the module-level server has no placement, so this checks
+    the name set and nothing about surfaces.
+    """
+    names = {tool.name for tool in await mcp_server.mcp.list_tools()}
+    assert names == set(EXPECTED_SURFACE)
+
+
+def test_maintenance_only_verbs_population():
+    """``MAINT_ONLY_VERBS`` is exactly the recorded closed class.
+
+    Pinning the population means a fifth outlier verb needs its own
+    recorded decision and a deliberate edit here, not a one-line append.
+    """
+    assert MAINT_ONLY_VERBS == frozenset({"reload", "migrate", "optimize", "restore"})
+
+
+def test_table_invariants_reject_maintenance_verb_on_ordinary_surface():
+    """The import-time check refuses a table that places a tool carrying a
+    maintenance-only verb on the ordinary surface.
+
+    The outlier verbs are scoped by the table, not by a name prefix: the
+    broken copy keeps every name and prefix intact and changes one row's
+    surface, so only a check that reads the table can reject it. The
+    unmodified tables are the positive control.
+
+    Anti-coincidental: the second copy moves a maintenance tool whose verb
+    is *not* maintenance-only and must pass -- a check that flagged any
+    maintenance-surface tool moved to ``sage`` (reading the pin or the
+    roster rather than the verb) would reject it; a verb-reading one
+    accepts it.
+    """
+    _check_table_invariants(SERVER_ASSIGNMENT, TOOL_ALIASES)
+
+    misplaced = {**SERVER_ASSIGNMENT, "reload_vault": "sage"}
+    assert misplaced["reload_vault"] == "sage"
+    with pytest.raises(AssertionError, match=r"reload_vault.*reload"):
+        _check_table_invariants(misplaced, TOOL_ALIASES)
+
+    ordinary_verb_moved = {**SERVER_ASSIGNMENT, "get_vault_stats": "sage"}
+    assert extract_verb("get_vault_stats") not in MAINT_ONLY_VERBS
+    _check_table_invariants(ordinary_verb_moved, TOOL_ALIASES)
 
 
 def test_table_entry_for_vault_enumeration_is_ordinary():
@@ -155,7 +263,7 @@ def test_table_entry_for_vault_enumeration_is_ordinary():
     Cheap table pin so a reverted row reads as its own failure rather than
     only through the built-server assertions below.
     """
-    assert SERVER_ASSIGNMENT["maint_list_vaults"] == "sage"
+    assert SERVER_ASSIGNMENT["list_vaults"] == "sage"
 
 
 def test_vault_enumeration_registers_on_ordinary_surface_only():
@@ -166,8 +274,8 @@ def test_vault_enumeration_registers_on_ordinary_surface_only():
     arguments range over, and the maintenance surface must not carry a
     second copy. Goes red if the assignment reverts to ``sage_maint``.
     """
-    assert "maint_list_vaults" in _registered_names("sage")
-    assert "maint_list_vaults" not in _registered_names("sage_maint")
+    assert "list_vaults" in _registered_names("sage")
+    assert "list_vaults" not in _registered_names("sage_maint")
 
 
 def test_surface_of_is_gone():
@@ -231,14 +339,18 @@ def test_read_spine_not_duplicated_on_sage_maint():
 
 
 def test_partition_is_disjoint_and_exhaustive():
-    """The two partitions are disjoint and together cover the full roster."""
+    """The two built rosters are disjoint and together equal the pinned roster.
+
+    Measured against the pin rather than the table, so the union check is
+    a cross-check and not the table compared to itself.
+    """
     sage_names = _registered_names("sage")
     maint = _registered_names("sage_maint")
     assert sage_names.isdisjoint(maint), f"tool(s) on both servers: {sorted(sage_names & maint)}"
-    assert sage_names | maint == set(SERVER_ASSIGNMENT), (
-        "partition union does not equal the full roster: "
-        f"missing {sorted(set(SERVER_ASSIGNMENT) - (sage_names | maint))}, "
-        f"extra {sorted((sage_names | maint) - set(SERVER_ASSIGNMENT))}"
+    assert sage_names | maint == set(EXPECTED_SURFACE), (
+        "partition union does not equal the pinned roster: "
+        f"missing {sorted(set(EXPECTED_SURFACE) - (sage_names | maint))}, "
+        f"extra {sorted((sage_names | maint) - set(EXPECTED_SURFACE))}"
     )
 
 
@@ -246,18 +358,12 @@ def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
     """The ``/mcp`` HTTP mount advertises exactly the ordinary roster.
 
     Revises the prior full-surface assertion: per CAS-ADR-034 the HTTP
-    transport is partitioned, so ``/mcp`` carries the ``sage`` surface only
-    and no ``maint_*`` tool appears there.
+    transport is partitioned, so ``/mcp`` carries the ``sage`` surface only.
     """
     app = create_app(config=minimal_config)
     names = _mounted_names(app, "/mcp")
     assert names == EXPECTED_SAGE
     assert names, "ordinary mount roster must be non-empty"
-    on_mount = {n for n in names if n.startswith("maint_")}
-    assert on_mount == PREFIX_SURFACE_DIVERGENCES, (
-        f"maint_ tool(s) advertised on /mcp beyond the declared divergences: "
-        f"{sorted(on_mount ^ PREFIX_SURFACE_DIVERGENCES)}"
-    )
 
 
 @pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
@@ -270,8 +376,6 @@ def test_maintenance_mounts_advertise_maintenance_surface_only(minimal_config, m
     app = create_app(config=minimal_config)
     names = _mounted_names(app, mount)
     assert names == EXPECTED_MAINT
-    offenders = {n for n in names if not n.startswith("maint_")}
-    assert not offenders, f"non-maint_ tool(s) on {mount}: {sorted(offenders)}"
     dup = names & READ_SPINE
     assert not dup, f"read-spine tool(s) duplicated on {mount}: {sorted(dup)}"
 
@@ -340,12 +444,12 @@ async def test_mounts_read_shared_vault_registry(
     carries the vault id in its detail and would satisfy a substring check.
     """
     mounts = app_with_one_vault.state.mcp_mounts
-    listed = tool_payload(await mounts["/mcp"].call_tool("maint_list_vaults", {}))
+    listed = tool_payload(await mounts["/mcp"].call_tool("list_vaults", {}))
     assert "error" not in listed
     assert minimal_config.vault.id in {v["id"] for v in listed["vaults"]}
     config = tool_payload(
         await mounts["/mcp_maint"].call_tool(
-            "maint_get_vault_config", {"vault_id": minimal_config.vault.id}
+            "get_vault_config", {"vault_id": minimal_config.vault.id}
         )
     )
     assert "error" not in config

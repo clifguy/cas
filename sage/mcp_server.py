@@ -49,7 +49,7 @@ from pydantic import ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
-from sage._tool_naming import MAINT_ALIAS_MAPPING, SERVER_ASSIGNMENT
+from sage._tool_naming import SERVER_ASSIGNMENT, SURFACE_MOUNT_PATHS, TOOL_ALIASES
 from sage.api.errors import SAGEError, validation_error_envelope
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
@@ -321,11 +321,28 @@ class _LoggingFastMCP(FastMCP):
 
     Pre-dispatch alias resolution (standing, no scheduled removal):
     before dispatch, the requested ``name`` is checked against
-    ``MAINT_ALIAS_MAPPING`` (the maintenance surface's pre-rename tool
-    names per CAS-ADR-034). An old name is rewritten to its canonical
-    target and a per-call WARNING names both, so callers can migrate at
-    their own pace. Canonical names and every name outside the mapping
+    ``TOOL_ALIASES`` (every retired spelling of a maintenance tool per
+    CAS-ADR-034). A retired name is rewritten to its canonical target in
+    one lookup and a per-call WARNING names both, so callers can migrate
+    at their own pace. Canonical names and every name outside the table
     dispatch verbatim.
+
+    Cross-surface refusal (CAS-ADR-034): the partition is evaluated after
+    alias resolution, so a name -- retired or canonical -- whose tool
+    registers on the other surface is refused on this one exactly as an
+    unknown tool would be, but with a message that says which surface and
+    mount path serve it. The refusal is raised before dispatch on the
+    partitioned servers only (those named for a surface); the full
+    unpartitioned server registers everything and never refuses.
+
+    Which name each record carries: the refusal names the spelling the
+    caller sent, because nothing ran and the caller must recognize its
+    own call. Everything after dispatch -- the per-call INFO line, an
+    argument-validation envelope's ``tool`` field, a failure log -- names
+    the canonical tool, because that is the tool that ran and the name a
+    migrating caller should adopt. The INFO line is written only once a
+    call has passed the refusal, so the access trail records dispatches
+    that happened.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -340,19 +357,41 @@ class _LoggingFastMCP(FastMCP):
         self, name: str, arguments: dict[str, Any]
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         logger = _logging.getLogger(__name__)
-        # Pre-dispatch alias resolution for the maintenance-surface rename
-        # (CAS-ADR-034): a pre-rename ``admin_*`` name rewrites to its
-        # canonical ``maint_*`` target so existing callers keep working.
-        # No removal is scheduled; the log line steers callers to the
-        # canonical name without promising one.
-        if name in MAINT_ALIAS_MAPPING:
-            target = MAINT_ALIAS_MAPPING[name]
+        # Pre-dispatch alias resolution for the maintenance tools' retired
+        # names (CAS-ADR-034): an ``admin_*`` or ``maint_*`` spelling
+        # rewrites to its canonical target so existing callers keep
+        # working. No removal is scheduled; the log line steers callers to
+        # the canonical name without promising one.
+        requested = name
+        if name in TOOL_ALIASES:
+            name = TOOL_ALIASES[name]
             logger.warning(
                 "mcp tool alias: %r dispatched as its canonical name %r",
+                requested,
                 name,
-                target,
             )
-            name = target
+        # Cross-surface refusal (CAS-ADR-034): an alias grants nothing the
+        # canonical name does not, so a tool the other surface registers
+        # is unknown here -- but the refusal says where it lives.
+        surface = self.name
+        if surface in SURFACE_MOUNT_PATHS and self._tool_manager.get_tool(name) is None:
+            home = SERVER_ASSIGNMENT.get(name)
+            if home is not None and home != surface:
+                served_at = " or ".join(SURFACE_MOUNT_PATHS[home])
+                logger.warning(
+                    "mcp tool %r (requested as %r) is registered on the %r surface at %s, "
+                    "not on %r",
+                    name,
+                    requested,
+                    home,
+                    served_at,
+                    surface,
+                )
+                raise ToolError(
+                    f"Unknown tool: {requested!r} on the {surface!r} surface. "
+                    f"{name!r} is registered on the {home!r} surface, served at "
+                    f"{served_at}; connect to one of those mounts to call it."
+                )
         logger.info("mcp tool: %s", name)
         try:
             result = await super().call_tool(name, arguments)
@@ -409,24 +448,24 @@ search = _sage_tools["search"]
 read_projection = _sage_tools["read_projection"]
 read_section = _sage_tools["read_section"]
 list_headings = _sage_tools["list_headings"]
-recompute_views = _sage_tools["maint_recompute_views"]
-list_vaults = _sage_tools["maint_list_vaults"]
-create_vault = _sage_tools["maint_create_vault"]
-get_vault_config = _sage_tools["maint_get_vault_config"]
-update_vault_config = _sage_tools["maint_update_vault_config"]
-get_vault_stats = _sage_tools["maint_get_vault_stats"]
+recompute_views = _sage_tools["recompute_views"]
+list_vaults = _sage_tools["list_vaults"]
+create_vault = _sage_tools["create_vault"]
+get_vault_config = _sage_tools["get_vault_config"]
+update_vault_config = _sage_tools["update_vault_config"]
+get_vault_stats = _sage_tools["get_vault_stats"]
 verify_hash = _sage_tools["verify_hashes"]
 list_staging_edges = _sage_tools["list_staging_edges"]
 update_staging_edge = _sage_tools["update_staging_edge"]
 list_pending_metadata = _sage_tools["list_pending_metadata"]
-migrate_vault = _sage_tools["maint_migrate_vault"]
-verify_vault_drift = _sage_tools["maint_verify_vault_drift"]
-verify_vault_source_files = _sage_tools["maint_verify_vault_source_files"]
-restore_vault_source_file = _sage_tools["maint_restore_vault_source_file"]
-recompute_deferred_vault_abstracts = _sage_tools["maint_recompute_deferred_vault_abstracts"]
-optimize_vault_content_store = _sage_tools["maint_optimize_vault_content_store"]
-reload_vault = _sage_tools["maint_reload_vault"]
-get_stack_config = _sage_tools["maint_get_stack_config"]
+migrate_vault = _sage_tools["migrate_vault"]
+verify_vault_drift = _sage_tools["verify_vault_drift"]
+verify_vault_source_files = _sage_tools["verify_vault_source_files"]
+restore_vault_source_file = _sage_tools["restore_vault_source_file"]
+recompute_deferred_vault_abstracts = _sage_tools["recompute_deferred_vault_abstracts"]
+optimize_vault_content_store = _sage_tools["optimize_vault_content_store"]
+reload_vault = _sage_tools["reload_vault"]
+get_stack_config = _sage_tools["get_stack_config"]
 
 list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]
@@ -442,8 +481,8 @@ bulk_ingest_document = _app_tools["bulk_ingest_document"]
 # ``/mcp_admin`` as the maintenance surface's pre-rename alias path; see
 # ``sage/app.py``). Mount selection *is* the role declaration. Surface
 # assignment is read from ``SERVER_ASSIGNMENT`` in ``sage._tool_naming``
-# and from nothing else: the ``maint_`` prefix is a naming convention
-# (CAS-ADR-029), not a registration rule, so a tool can move between
+# and from nothing else: a tool's name describes the operation and says
+# nothing about its surface (CAS-ADR-029), so a tool can move between
 # surfaces without a rename. The module-level ``mcp`` above remains the
 # full, unpartitioned surface whose tool functions are re-exported for
 # direct import; the partitioned servers are built by

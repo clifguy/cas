@@ -482,7 +482,7 @@ async def test_mpi_013_forced_redelivery_does_not_launder_a_drifted_copy(mpi_vau
     written and the mismatch stays visible.
 
     Repairing the drift is a separate operation the operator invokes on purpose
-    (``maint_restore_vault_source_file``, MPI-017), not something any ingest
+    (``restore_vault_source_file``, MPI-017), not something any ingest
     does. A forced re-ingest still cannot stand in for it: retention sees only
     that the bytes at its target differ from the ones offered, which is
     indistinguishable from a name collision, so it disambiguates rather than

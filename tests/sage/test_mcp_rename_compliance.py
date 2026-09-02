@@ -4,12 +4,14 @@ Gates over the live FastMCP catalog and the naming taxonomy:
 
 - ``test_no_legacy_prefix`` — every registered tool name omits the
   pre-rename ``sage_``, ``sage_admin_``, and ``app_`` inner prefixes
-  that the two-server design in CAS-ADR-034 made vestigial.
+  that the two-server design in CAS-ADR-034 made vestigial, and the
+  retired maintenance prefixes ``admin_`` and ``maint_`` (CAS-ADR-029),
+  which survive only as alias keys.
 - ``test_verb_category_compliance`` — every registered tool name
   begins with a verb in ``CANONICAL_VERBS`` (after stripping any
   member of ``COMPOUND_PREFIXES``). Anchored to CAS-ADR-033.
 - ``test_live_catalog_matches_expected_set`` — the live catalog equals
-  the roster transcribed in ``SERVER_ASSIGNMENT``.
+  the hand-maintained roster pin in ``tests/sage/mcp_surface_pin.py``.
 - ``test_rename_target_invocable`` — a representative tool per class
   dispatches end-to-end (a wrong registration key surfaces as
   tool-not-found).
@@ -43,6 +45,7 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from tests.sage.conftest import initialize_services_for_test
+from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,18 +64,18 @@ async def _live_tool_names() -> set[str]:
 
 
 async def test_no_legacy_prefix() -> None:
-    """No live tool name carries the pre-rename ``sage_`` / ``sage_admin_`` / ``app_`` inner prefix.
+    """No live tool name carries a legacy inner prefix or a retired maintenance prefix.
 
     Anti-coincidental check: enumerate the **live** registered names via
     ``mcp.list_tools()`` rather than asserting against a static expected
     list. A static list lets a stale registration pass coincidentally;
     live enumeration surfaces any reintroduced legacy prefix.
     """
-    legacy_prefixes = ("sage_", "sage_admin_", "app_")
+    legacy_prefixes = ("sage_", "sage_admin_", "app_", "admin_", "maint_")
     names = await _live_tool_names()
     offending = sorted(n for n in names if n.startswith(legacy_prefixes))
     assert not offending, (
-        f"Tools still carry a legacy inner prefix (sage_, sage_admin_, or app_): {offending}. "
+        f"Tools still carry a legacy or retired prefix {legacy_prefixes}: {offending}. "
         "The two-server design in CAS-ADR-034 makes these prefixes vestigial; "
         "the MCP client identifier (mcp__<server>__<tool>) carries the disambiguation."
     )
@@ -124,7 +127,7 @@ def _parse_result(result) -> dict | list:
 # tools (create_edges, update_lifecycles, update_metadata).
 _INVOCATION_PROBES: tuple[tuple[str, dict], ...] = (
     # Read spine
-    ("maint_list_vaults", {}),
+    ("list_vaults", {}),
     ("get_document", {"vault_id": "test_vault", "document_id": "does-not-exist"}),
     (
         "search",
@@ -236,6 +239,9 @@ async def test_verb_category_compliance() -> None:
         ("bulk_create_edge", "create"),
         ("bulk_update_metadata", "update"),
         ("bulk_ingest_document", "ingest"),
+        # Retired maintenance prefix no longer unwraps: a name that
+        # reintroduced it reads as verb "maint" and fails the verb gate.
+        ("maint_migrate_vault", "maint"),
         # Multi-segment tail
         ("recompute_deferred_vault_abstracts", "recompute"),
         ("get_filename_metadata", "get"),
@@ -292,9 +298,10 @@ def _allowlist_drift(
     ("entry", "expect_stale", "expect_wrong_surface"),
     [
         ("mcp__sage__search", False, False),
-        ("mcp__sage__maint_list_vaults", False, False),
-        ("mcp__sage_maint__maint_list_vaults", False, True),
-        ("mcp__sage__maint_get_vault_config", False, True),
+        ("mcp__sage__list_vaults", False, False),
+        ("mcp__sage_maint__list_vaults", False, True),
+        ("mcp__sage__get_vault_config", False, True),
+        ("mcp__sage_maint__maint_get_vault_config", True, False),
         ("mcp__sage_maint__admin_list_vaults", True, False),
         ("mcp__sage__sage_discover", True, False),
     ],
@@ -312,8 +319,8 @@ def test_allowlist_drift_classification(
     Anti-coincidental: the two wrong-surface rows are the rival set. A
     classifier that tested ``assignment.get(tool) is None`` (a no-op, since
     live names are table keys) or dropped the surface branch would leave
-    both unflagged; the recorded divergence on its table server proves the
-    branch reads the table rather than the prefix.
+    both unflagged; vault enumeration on its table server (``sage``) proves
+    the branch reads the table row rather than anything in the name.
     """
     stale, wrong_surface = _allowlist_drift([entry], set(SERVER_ASSIGNMENT), SERVER_ASSIGNMENT)
     assert (entry in stale) is expect_stale
@@ -364,37 +371,34 @@ async def test_settings_local_permissions_match_live_catalog() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Live catalog matches the SERVER_ASSIGNMENT roster
+# Live catalog matches the pinned roster
 # ---------------------------------------------------------------------------
 
 
-# Derived from SERVER_ASSIGNMENT in sage/_tool_naming.py — the target
-# catalog after CAS-ADR-029. Sourcing from SERVER_ASSIGNMENT (rather than
-# a hand-typed literal) closes the misclassification re-entry trap: a
-# v6 → v7 amendment that updates SERVER_ASSIGNMENT automatically
-# propagates here, and any drift between the table and the live catalog
-# surfaces on either side as the same diff.
+# The hand-maintained pin in tests/sage/mcp_surface_pin.py, not
+# SERVER_ASSIGNMENT: the table is what registration reads, so a catalog
+# compared to it can only confirm that registration honoured the table.
+# Compared to a literal the table does not feed, the same check also
+# catches a tool that reached the table without a deliberate decision.
 
-_EXPECTED_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
+_EXPECTED_CATALOG: frozenset[str] = frozenset(EXPECTED_SURFACE)
 
 
 async def test_live_catalog_matches_expected_set() -> None:
-    """The live MCP catalog equals the target set defined in
-    SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + surface-prefix pass.
+    """The live MCP catalog equals the hand-maintained roster pin.
 
-    Anti-coincidental check: the expected set is sourced from the
-    SERVER_ASSIGNMENT table in ``sage/_tool_naming.py`` rather than from
-    a hand-typed literal. A v6 → v7 misclassification re-entry (e.g.,
-    re-adding `list_vaults` as unprefixed) would surface as the SAME diff
-    on both sides — the live catalog and the table — which is the desired
-    auditable failure mode.
+    Anti-coincidental check: the expected set is the literal in
+    ``tests/sage/mcp_surface_pin.py``, which no production code reads. A
+    tool registered without a pin entry, or a pin entry for a tool no longer
+    registered, surfaces here as the same diff the partition gates report,
+    so the two failure modes are auditable from either file.
     """
     live = await _live_tool_names()
     expected = set(_EXPECTED_CATALOG)
     missing = expected - live
     extra = live - expected
     assert not missing and not extra, (
-        f"Live MCP catalog differs from the CAS-ADR-029 target set. "
+        "Live MCP catalog differs from the pinned roster. "
         f"Missing from live: {sorted(missing)}; "
-        f"Extra in live (not in SERVER_ASSIGNMENT): {sorted(extra)}."
+        f"Extra in live (not pinned): {sorted(extra)}."
     )

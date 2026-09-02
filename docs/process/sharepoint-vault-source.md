@@ -174,7 +174,7 @@ Deploy with the resolved coordinates (`sharepointSiteId = ${SITE_ID}`,
 finds `vaults/test/`, and loads its `vault_config.yaml` — the seeded vault is
 discovered with no local vault root involved. Confirm:
 
-- `maint_list_vaults` includes `test`, and `maint_get_vault_config` returns its
+- `list_vaults` includes `test`, and `get_vault_config` returns its
   configuration.
 - Restart (or roll a new revision of) the SAGE container app and confirm `test`
   is rediscovered — the live proof that the vault survives the stateless
@@ -219,7 +219,7 @@ export SP_VALIDATE_VAULT_ID=test                      # the seeded validation va
 export SP_VALIDATE_STATE_FILE="$(mktemp -t spvalidate)"
 ```
 
-The `test` vault must already be present (`maint_list_vaults` includes `test`,
+The `test` vault must already be present (`list_vaults` includes `test`,
 from step 5).
 
 ### 6.2 Pre-restart — ingest, readback, audit
@@ -238,7 +238,7 @@ the bytes never reached the library or came back altered — stop and investigat
 before restarting.
 
 Where the investigation finds a retained copy that something other than SAGE
-overwrote, `maint_restore_vault_source_file` (`POST
+overwrote, `restore_vault_source_file` (`POST
 .../admin/restore-source-file`) writes the original bytes back at the path the
 document record already names. It needs those bytes from you — SAGE keeps no
 second copy — and it refuses rather than repairing if the file handed to it is
@@ -300,7 +300,7 @@ export UNGRANTED_SITE_ID=...           # resolved at run time; never committed
 Seed a disposable `vault_config.yaml` whose `document_store.site_id` is
 `$UNGRANTED_SITE_ID` (under any throwaway vault id), roll a revision, and confirm:
 
-- The throwaway vault is **absent** from `maint_list_vaults` / `GET /sage_vaults`.
+- The throwaway vault is **absent** from `list_vaults` / `GET /sage_vaults`.
 - The SAGE container log shows a Microsoft Graph `403 Forbidden` for that site at
   discovery.
 

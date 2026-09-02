@@ -254,7 +254,7 @@ def register_sage_tools(
         to the review queue: filename inference fills fields the caller
         omitted (the field set is vault-config-defined under
         ``metadata_extraction.filename_extraction``; see
-        ``maint_get_vault_config``) and the document is held with
+        ``get_vault_config``) and the document is held with
         ``metadata_confirmed=false`` until confirmed via ``update_metadata``.
 
         Metadata goes in ``metadata``, nested. The recognized keys are
@@ -274,7 +274,7 @@ def register_sage_tools(
         Tier3 uniqueness: a doc_type declaring a ``unique`` constraint in
         its ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in
-        ``maint_get_vault_config``) enforces per-vault uniqueness on the
+        ``get_vault_config``) enforces per-vault uniqueness on the
         named tier3 field at ingest time, checked in the same transaction
         as the row insert so the existing document is never disturbed. In
         the ``cas`` vault, ``ticket.ticket_id`` is the live example.
@@ -380,7 +380,7 @@ def register_sage_tools(
                 format unresolved rather than guessed.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``adapter_defaults`` in
-                ``maint_get_vault_config`` for the per-adapter shape.
+                ``get_vault_config`` for the per-adapter shape.
                 Deep-merged over the vault's adapter defaults; unknown
                 keys are rejected by the adapter.
             created_by: Creator name. Defaults to vault owner.
@@ -419,7 +419,7 @@ def register_sage_tools(
                 list or a comma-separated string (whitespace trimmed, empty
                 fragments dropped).
             tier3_metadata: Per-doc_type typed payload, validated against the
-                doc_type's ``metadata_schema`` (see ``maint_get_vault_config``).
+                doc_type's ``metadata_schema`` (see ``get_vault_config``).
                 When the doc_type declares no schema and this is non-null,
                 ingest fails with ``tier3_schema_violation``. Stored verbatim
                 once validated; queryable via ``search`` filters as
@@ -561,7 +561,7 @@ def register_sage_tools(
 
         Which fields the parser extracts is vault-config-defined; see
         ``metadata_extraction.filename_extraction.segment_fields`` in
-        ``maint_get_vault_config``. In the ``cas`` vault the pattern is
+        ``get_vault_config``. In the ``cas`` vault the pattern is
         ``{date}_{project}_{code}_{title}_{version}``, so the parser returns
         ``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.
 
@@ -689,7 +689,7 @@ def register_sage_tools(
 
         The ``action`` vocabulary is vault-config-defined, not a fixed
         SAGE-wide set. Read ``lifecycle.transitions`` in the vault config
-        (via ``maint_get_vault_config``) for the authoritative
+        (via ``get_vault_config``) for the authoritative
         (from_state, action, to_state, creates_edge) tuples. The ``cas``
         vault uses ``ingest``, ``supersede``, ``complete``, ``archive``,
         ``reactivate``.
@@ -940,7 +940,7 @@ def register_sage_tools(
         the target (it leaves the metadata-review queue if it was there).
         The ``doc_type`` value must be one declared under
         ``document_types.doc_types`` in the vault config; query
-        ``maint_get_vault_config`` for the authoritative list.
+        ``get_vault_config`` for the authoritative list.
 
         Empty-patch confirmation-flip: an item carrying only
         ``document_id`` (no field-patch keys) is a **pure-confirmation
@@ -1826,7 +1826,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_recompute_views", annotations=WRITE_DESTRUCTIVE)
+    @mcp.tool(name="recompute_views", annotations=WRITE_DESTRUCTIVE)
     async def recompute_views(vault_id: str) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
@@ -1850,7 +1850,7 @@ def register_sage_tools(
         a re-call once the cause is addressed. On an empty (or fully
         filtered-out) vault the wipe runs and ``views/`` is not recreated;
         the response carries ``views_generated=0`` — indistinguishable from
-        "every document filtered out", so check ``maint_get_vault_stats`` if
+        "every document filtered out", so check ``get_vault_stats`` if
         the distinction matters.
 
         Error modes:
@@ -1874,7 +1874,7 @@ def register_sage_tools(
     # SAGE API tools for CAS Application (MCP-001 through MCP-014)
     # -------------------------------------------------------------------
 
-    @mcp.tool(name="maint_list_vaults", annotations=READ_ONLY)
+    @mcp.tool(name="list_vaults", annotations=READ_ONLY)
     async def list_vaults() -> dict:
         """Enumerate all configured vaults. No vault_id parameter -- operates
         across all registered vaults, so this is the tool to call first when
@@ -1883,7 +1883,7 @@ def register_sage_tools(
         Each entry carries ``id``, ``name``, ``description``, and
         ``document_count``. The count spans every lifecycle state, including
         archived predecessors -- it says how much a vault holds, not how much
-        of it is current; ``maint_get_vault_stats`` gives the per-state
+        of it is current; ``get_vault_stats`` gives the per-state
         breakdown for one vault. A plausible-looking vault with a count of
         zero is empty and not worth a further call.
         """
@@ -1904,7 +1904,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_create_vault", annotations=WRITE_ADDITIVE)
+    @mcp.tool(name="create_vault", annotations=WRITE_ADDITIVE)
     async def create_vault(config: dict) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
@@ -1913,7 +1913,7 @@ def register_sage_tools(
         written under the vault root (default ``~/sage_vaults/<vault_id>/``),
         services are initialized, and the vault is registered immediately
         (no restart). The full written config is echoed back so the caller
-        can follow up with ``maint_update_vault_config`` without a separate
+        can follow up with ``update_vault_config`` without a separate
         read.
 
         Config dict structure: the ``config`` parameter is opaque at the MCP
@@ -1972,7 +1972,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_get_vault_config", annotations=READ_ONLY)
+    @mcp.tool(name="get_vault_config", annotations=READ_ONLY)
     async def get_vault_config(vault_id: str) -> dict:
         """Return the full vault configuration as a dict.
 
@@ -1998,7 +1998,7 @@ def register_sage_tools(
 
         The returned dict is the live in-memory config; on-disk edits
         to ``vault_config.yaml`` are not picked up until
-        ``maint_reload_vault`` is called.
+        ``reload_vault`` is called.
 
         Args:
             vault_id: Target vault identifier.
@@ -2010,7 +2010,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_update_vault_config", annotations=WRITE_DESTRUCTIVE)
+    @mcp.tool(name="update_vault_config", annotations=WRITE_DESTRUCTIVE)
     async def update_vault_config(
         vault_id: str,
         vault: dict | None = None,
@@ -2038,7 +2038,7 @@ def register_sage_tools(
         ``destructive_config_change`` and the affected counts in the detail.
         Pass ``force=True`` to proceed anyway; the warnings then appear in
         the success response. Changing ``vault.id`` is never permitted
-        regardless of force — use ``maint_create_vault`` for a new vault.
+        regardless of force — use ``create_vault`` for a new vault.
 
         The update writes to disk and updates the running config in place;
         subsequent calls see the new vocabulary immediately. The
@@ -2046,7 +2046,7 @@ def register_sage_tools(
         before tearing down the old, and if any step raises (schema
         migration required, duplicate edges, abstraction-provider build
         failure) the yaml is rolled back to its pre-call bytes and the
-        previous config keeps serving. ``maint_reload_vault`` is needed only
+        previous config keeps serving. ``reload_vault`` is needed only
         when an external process edited the yaml.
 
         Error modes:
@@ -2100,7 +2100,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_get_vault_stats", annotations=READ_ONLY)
+    @mcp.tool(name="get_vault_stats", annotations=READ_ONLY)
     async def get_vault_stats(vault_id: str) -> dict:
         """Vault statistics and health indicators.
 
@@ -2507,7 +2507,7 @@ def register_sage_tools(
     # they produce (e.g. ``invalid_vault_id``, ``vault_not_found``).
     # -------------------------------------------------------------------
 
-    @mcp.tool(name="maint_migrate_vault", annotations=WRITE_ADDITIVE)
+    @mcp.tool(name="migrate_vault", annotations=WRITE_ADDITIVE)
     async def migrate_vault(vault_id: str) -> dict:
         """Run the schema-migration surface's backfill and tier3-uniqueness scan.
 
@@ -2530,7 +2530,7 @@ def register_sage_tools(
         previously-clean index is preserved (no implicit DROP). Activated
         declarations are listed in ``tier3_uniqueness_activations``.
         **Callers must inspect both fields** on every call, no-op or not.
-        Query ``maint_get_vault_config`` for the ``unique_keys`` declarations.
+        Query ``get_vault_config`` for the ``unique_keys`` declarations.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
@@ -2555,7 +2555,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_verify_vault_drift", annotations=READ_ONLY)
+    @mcp.tool(name="verify_vault_drift", annotations=READ_ONLY)
     async def verify_vault_drift(vault_id: str) -> dict:
         """Audit active sync_target / derived_from edges for drift.
 
@@ -2608,7 +2608,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_verify_vault_source_files", annotations=READ_ONLY)
+    @mcp.tool(name="verify_vault_source_files", annotations=READ_ONLY)
     async def verify_vault_source_files(vault_id: str, check_hashes: bool = False) -> dict:
         """Audit that every document's backing source file is present.
 
@@ -2638,7 +2638,7 @@ def register_sage_tools(
 
         Note: this audits the vault-local source files (the ``imports/``
         copies that ``get_document`` delivers), distinct from the content
-        store that ``maint_optimize_vault_content_store`` reclaims.
+        store that ``optimize_vault_content_store`` reclaims.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
@@ -2663,7 +2663,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_restore_vault_source_file", annotations=WRITE_DESTRUCTIVE)
+    @mcp.tool(name="restore_vault_source_file", annotations=WRITE_DESTRUCTIVE)
     async def restore_vault_source_file(
         vault_id: str,
         source: str | None = None,
@@ -2672,7 +2672,7 @@ def register_sage_tools(
     ) -> dict:
         """Repair a document's retained source file by writing delivered bytes back over it.
 
-        The repair counterpart of ``maint_verify_vault_source_files``. That
+        The repair counterpart of ``verify_vault_source_files``. That
         audit reports a retained copy that changed outside SAGE but cannot fix
         one, and re-ingesting cannot stand in: retention sees only that the
         offered bytes differ from what sits at its target -- indistinguishable
@@ -2796,7 +2796,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_recompute_deferred_vault_abstracts", annotations=WRITE_ADDITIVE)
+    @mcp.tool(name="recompute_deferred_vault_abstracts", annotations=WRITE_ADDITIVE)
     async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
@@ -2849,7 +2849,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool(name="maint_optimize_vault_content_store", annotations=WRITE_ADDITIVE)
+    @mcp.tool(name="optimize_vault_content_store", annotations=WRITE_ADDITIVE)
     async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
         """Reclaim bloat in the per-vault content store.
 
@@ -2901,7 +2901,7 @@ def register_sage_tools(
     # Server-level operational tools (no HTTP counterpart by design)
     # -------------------------------------------------------------------
 
-    @mcp.tool(name="maint_reload_vault", annotations=WRITE_DESTRUCTIVE)
+    @mcp.tool(name="reload_vault", annotations=WRITE_DESTRUCTIVE)
     async def reload_vault(vault_id: str) -> dict:
         """Reload a vault by closing its current services and reinitializing.
 
@@ -2918,7 +2918,7 @@ def register_sage_tools(
         ``vault_config.yaml`` is re-read. The stack-wide config
         (``sage/config.yaml``, governing the abstraction-provider singleton)
         is captured at process startup and requires a process restart to
-        change; verify it via ``maint_get_stack_config`` if you suspect
+        change; verify it via ``get_stack_config`` if you suspect
         drift.
 
         Reload is atomic with respect to the registry slot: new services are
@@ -2936,7 +2936,7 @@ def register_sage_tools(
           Detail enumerates the available vaults.
         - ``schema_migration_required`` (409): the vault's ``graph.db`` has
           pending migrations or backfills, so the new graph store cannot
-          ``initialize(migrate=False)``. Run ``maint_migrate_vault`` first.
+          ``initialize(migrate=False)``. Run ``migrate_vault`` first.
         - ``duplicate_edges_present`` (409): the ``edges`` or
           ``staging_edges`` table has duplicate rows on the natural-key
           triple ``(source_id, target_id, edge_type)``, so UNIQUE index
@@ -2944,7 +2944,7 @@ def register_sage_tools(
         - Abstraction-provider build failure: reload builds the provider
           from the current in-memory stack config; e.g.
           ``provider="local-mlx"`` with ``model=None`` raises ``ValueError``.
-          Verify via ``maint_get_stack_config`` if you suspect drift.
+          Verify via ``get_stack_config`` if you suspect drift.
 
         Args:
             vault_id: Target vault identifier.
@@ -2997,13 +2997,13 @@ def register_sage_tools(
             "document_count": total_docs,
         }
 
-    @mcp.tool(name="maint_get_stack_config", annotations=READ_ONLY)
+    @mcp.tool(name="get_stack_config", annotations=READ_ONLY)
     async def get_stack_config() -> dict:
         """Return the SAGE-stack-wide configuration.
 
         Stack-wide config governs resources whose enforcement spans the whole
         SAGE process (e.g., the abstraction provider singleton). Per-vault
-        knobs live in `maint_get_vault_config`.
+        knobs live in `get_vault_config`.
 
         Today the response carries:
           - `profile`: the active deployment-profile marker (e.g. `"local"`),
@@ -3040,22 +3040,22 @@ def register_sage_tools(
         "read_projection": read_projection,
         "read_section": read_section,
         "list_headings": list_headings,
-        "maint_recompute_views": recompute_views,
-        "maint_list_vaults": list_vaults,
-        "maint_create_vault": create_vault,
-        "maint_get_vault_config": get_vault_config,
-        "maint_update_vault_config": update_vault_config,
-        "maint_get_vault_stats": get_vault_stats,
+        "recompute_views": recompute_views,
+        "list_vaults": list_vaults,
+        "create_vault": create_vault,
+        "get_vault_config": get_vault_config,
+        "update_vault_config": update_vault_config,
+        "get_vault_stats": get_vault_stats,
         "verify_hashes": verify_hash,
         "list_staging_edges": list_staging_edges,
         "update_staging_edge": update_staging_edge,
         "list_pending_metadata": list_pending_metadata,
-        "maint_migrate_vault": migrate_vault,
-        "maint_verify_vault_drift": verify_vault_drift,
-        "maint_verify_vault_source_files": verify_vault_source_files,
-        "maint_restore_vault_source_file": restore_vault_source_file,
-        "maint_recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
-        "maint_optimize_vault_content_store": optimize_vault_content_store,
-        "maint_reload_vault": reload_vault,
-        "maint_get_stack_config": get_stack_config,
+        "migrate_vault": migrate_vault,
+        "verify_vault_drift": verify_vault_drift,
+        "verify_vault_source_files": verify_vault_source_files,
+        "restore_vault_source_file": restore_vault_source_file,
+        "recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
+        "optimize_vault_content_store": optimize_vault_content_store,
+        "reload_vault": reload_vault,
+        "get_stack_config": get_stack_config,
     }

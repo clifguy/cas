@@ -4,7 +4,7 @@ Every tool registered on either Streamable HTTP mount declares an
 explicit ``ToolAnnotations`` object, so a client reading ``tools/list``
 can distinguish a pure read from a write from a destructive operation.
 The two mounts and their partition are anchored to CAS-ADR-034; the
-``maint_`` compound prefix that drives the partition is CAS-ADR-029.
+surface-assignment table that places each tool is CAS-ADR-029.
 
 These are hints in the protocol sense: honest self-description of the
 surface, not an access-control mechanism. Nothing in SAGE grants or
@@ -42,7 +42,7 @@ destructive, and every vault-scoped tool reading as open-world. So:
     that would later have to be defended per tool.
 
 Classification is resolved against each tool's implementation rather
-than its name: ``maint_recompute_views`` reads like a refresh but drops
+than its name: ``recompute_views`` reads like a refresh but drops
 its symlink trees with ``rmtree``, while ``get_document`` accepts a
 ``write_to_path`` yet mutates nothing in the vault.
 """
