@@ -8,21 +8,26 @@ partition factory in the one uvicorn process:
 
 - ``sage`` — ordinary surface (read spine + everyday mutation spine +
   multi-record operations).
-- ``sage_maint`` — maintenance surface (every ``maint_*`` tool); opt-in,
-  additive, and does **not** duplicate the read spine.
+- ``sage_maint`` — maintenance surface (substrate-altering and vault- or
+  stack-scoped maintenance tools); opt-in, additive, and does **not**
+  duplicate the read spine.
 
-Surface assignment is derived purely from each tool name's first segment
-(``maint_`` -> ``sage_maint``; everything else -> ``sage``). These tests
-cross-check the built partitions against ``SERVER_ASSIGNMENT`` in
-``sage/_tool_naming.py`` — the in-code transcription of the
-*SAGE MCP Tool Surface* steering-document registration map. That oracle is
-hand-maintained from the steering doc rather than re-derived from the
-prefix rule at runtime, so the comparison is a genuine cross-check, not a
-tautology against the production logic.
+Surface assignment is read from ``SERVER_ASSIGNMENT`` in
+``sage/_tool_naming.py`` — the in-code transcription of the *SAGE MCP Tool
+Surface* steering-document registration map — and from nothing else: a tool
+absent from the table fails registration rather than landing on a default
+surface. The ``maint_`` prefix remains the naming convention for maintenance
+tools (CAS-ADR-029) but no longer decides registration, so the prefix and
+the table are two independent statements of the same partition. These
+tests cross-check them: the set of tools on which they disagree must equal
+``PREFIX_SURFACE_DIVERGENCES`` exactly, and that set is pinned to its one
+recorded member, so a divergence can neither appear unrecorded nor
+accumulate as an allowlist.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -32,7 +37,7 @@ from starlette.routing import Mount, Route
 
 import sage
 import sage.mcp_server as mcp_server
-from sage._tool_naming import SERVER_ASSIGNMENT
+from sage._tool_naming import PREFIX_SURFACE_DIVERGENCES, SERVER_ASSIGNMENT
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -68,6 +73,22 @@ def _mounted_names(app: FastAPI, path: str) -> set[str]:
     return {tool.name for tool in server._tool_manager.list_tools()}  # noqa: SLF001
 
 
+def _payload(result: object) -> dict:
+    """Decode the JSON body FastMCP wraps a tool's dict return into."""
+    return json.loads(result[0].text)  # type: ignore[index]
+
+
+def _prefix_surface(name: str) -> str:
+    """The surface the naming convention alone would imply for ``name``.
+
+    Kept here, not in production code: the prefix is a naming convention
+    (CAS-ADR-029), and registration no longer derives anything from it.
+    The tests re-derive it so the prefix-vs-table cross-check compares two
+    independent sources.
+    """
+    return "sage_maint" if name.startswith("maint_") else "sage"
+
+
 def test_sage_server_registers_exactly_ordinary_tools():
     """The ``sage`` server registers exactly the ordinary-surface roster."""
     assert _registered_names("sage") == EXPECTED_SAGE
@@ -85,11 +106,110 @@ def test_sage_maint_contains_only_maint_prefixed_tools():
     assert not offenders, f"non-maint_ tool(s) on sage_maint: {sorted(offenders)}"
 
 
-def test_no_maint_prefixed_tool_on_sage_server():
-    """Partition invariant: no ``maint_*`` tool is registered on ``sage``."""
+def test_maint_prefixed_tools_on_sage_are_only_declared_divergences():
+    """Partition invariant: a ``maint_*`` tool on ``sage`` is a recorded divergence.
+
+    Read from the built server, not the table, so it fails on a registration
+    path that stops honouring the table as much as on a table edit.
+    """
     names = _registered_names("sage")
-    leaked = {n for n in names if n.startswith("maint_")}
-    assert not leaked, f"maint_ tool(s) leaked onto sage: {sorted(leaked)}"
+    on_sage = {n for n in names if n.startswith("maint_")}
+    assert on_sage == PREFIX_SURFACE_DIVERGENCES, (
+        f"maint_ tool(s) on sage other than the declared divergences: "
+        f"unexpected {sorted(on_sage - PREFIX_SURFACE_DIVERGENCES)}, "
+        f"missing {sorted(PREFIX_SURFACE_DIVERGENCES - on_sage)}"
+    )
+
+
+def test_prefix_and_table_disagree_exactly_on_declared_divergences():
+    """The prefix convention and the assignment table disagree on exactly
+    ``PREFIX_SURFACE_DIVERGENCES`` — set equality in both directions.
+
+    An entry moved off its prefix's surface without being declared fails
+    here; so does a declared divergence whose table row still agrees with
+    its prefix (a stale declaration).
+    """
+    divergent = {
+        name for name, surface in SERVER_ASSIGNMENT.items() if _prefix_surface(name) != surface
+    }
+    assert divergent == PREFIX_SURFACE_DIVERGENCES, (
+        f"undeclared prefix/surface divergence(s): "
+        f"{sorted(divergent - PREFIX_SURFACE_DIVERGENCES)}; "
+        f"declared but not divergent: {sorted(PREFIX_SURFACE_DIVERGENCES - divergent)}"
+    )
+
+
+def test_declared_divergences_are_exactly_vault_enumeration():
+    """The divergence set is a recorded decision, not an open allowlist.
+
+    Pinning the population means a second divergence needs its own recorded
+    decision and a deliberate edit here, not a one-line append.
+    """
+    assert PREFIX_SURFACE_DIVERGENCES == frozenset({"maint_list_vaults"})
+
+
+def test_table_entry_for_vault_enumeration_is_ordinary():
+    """Vault enumeration is assigned to the ordinary surface in the table.
+
+    Cheap table pin so a reverted row reads as its own failure rather than
+    only through the built-server assertions below.
+    """
+    assert SERVER_ASSIGNMENT["maint_list_vaults"] == "sage"
+
+
+def test_vault_enumeration_registers_on_ordinary_surface_only():
+    """Vault enumeration is registered on ``sage`` and absent from ``sage_maint``.
+
+    Read from the built servers: the ordinary surface is vault-addressed, so
+    it must carry the one tool that enumerates the vaults its ``vault_id``
+    arguments range over, and the maintenance surface must not carry a
+    second copy. Goes red if the assignment reverts to ``sage_maint``.
+    """
+    assert "maint_list_vaults" in _registered_names("sage")
+    assert "maint_list_vaults" not in _registered_names("sage_maint")
+
+
+def test_surface_of_is_gone():
+    """No prefix-derived surface helper survives in the registration module.
+
+    Registration reads the table and nothing else; a helper that derives a
+    surface from a name is the seed of a second, silently diverging source.
+    """
+    assert not hasattr(mcp_server, "_surface_of")
+
+
+@pytest.mark.parametrize("surface", ["sage", "sage_maint"])
+def test_unassigned_tool_fails_registration_loudly(surface, monkeypatch):
+    """A registered tool with no ``SERVER_ASSIGNMENT`` row fails the build.
+
+    The registration path must look the name up, not default it: a
+    fallback (``.get(name, "sage")``) would quietly widen the ordinary
+    catalog by one tool per omission. The positive control — the same probe
+    tool with a table row — must build cleanly, so the failure is the missing
+    row and not the probe tool itself.
+    """
+    real_register_app_tools = mcp_server.register_app_tools
+
+    def register_with_probe(server, *args, **kwargs):
+        tools = real_register_app_tools(server, *args, **kwargs)
+
+        @server.tool(name="unassigned_probe_tool")
+        async def unassigned_probe_tool() -> dict:
+            return {}
+
+        return {**tools, "unassigned_probe_tool": unassigned_probe_tool}
+
+    monkeypatch.setattr(mcp_server, "register_app_tools", register_with_probe)
+
+    with pytest.raises(LookupError, match="unassigned_probe_tool") as excinfo:
+        mcp_server.build_partitioned_server(surface)
+    assert "SERVER_ASSIGNMENT" in str(excinfo.value)
+
+    # Positive control: with a table row the probe registers on its surface.
+    monkeypatch.setitem(SERVER_ASSIGNMENT, "unassigned_probe_tool", surface)
+    server = mcp_server.build_partitioned_server(surface)
+    names = {t.name for t in server._tool_manager.list_tools()}  # noqa: SLF001
+    assert "unassigned_probe_tool" in names
 
 
 def test_read_spine_not_duplicated_on_sage_maint():
@@ -122,8 +242,11 @@ def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
     names = _mounted_names(app, "/mcp")
     assert names == EXPECTED_SAGE
     assert names, "ordinary mount roster must be non-empty"
-    leaked = {n for n in names if n.startswith("maint_")}
-    assert not leaked, f"maint_ tool(s) advertised on /mcp: {sorted(leaked)}"
+    on_mount = {n for n in names if n.startswith("maint_")}
+    assert on_mount == PREFIX_SURFACE_DIVERGENCES, (
+        f"maint_ tool(s) advertised on /mcp beyond the declared divergences: "
+        f"{sorted(on_mount ^ PREFIX_SURFACE_DIVERGENCES)}"
+    )
 
 
 @pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
@@ -189,13 +312,19 @@ def test_mount_transport_settings_pinned(minimal_config, mount, surface):
     assert server.settings.streamable_http_path == mount
 
 
-async def test_maintenance_mount_reads_shared_vault_registry(minimal_config):
-    """The maintenance mount's tools read the app-shared ``_vaults`` registry.
+async def test_mounts_read_shared_vault_registry(minimal_config):
+    """Both mounts' tools read the app-shared ``_vaults`` registry.
 
     A vault initialized through the app populates ``mcp_server._vaults``;
-    calling ``maint_list_vaults`` through the ``/mcp_maint`` mount must then
-    see that vault, proving the mount shares the one registry rather than
-    building its own (no duplicate vault initialization).
+    enumerating vaults through the ``/mcp`` mount and reading that vault's
+    config through the ``/mcp_maint`` mount must both see it, proving each
+    mount shares the one registry rather than building its own (no
+    duplicate vault initialization).
+
+    Anti-coincidental: the payloads are decoded and checked for an error
+    envelope rather than substring-matched, because a ``vault_not_found``
+    envelope -- exactly what a mount with its own empty registry returns --
+    carries the vault id in its detail and would satisfy a substring check.
     """
     app = create_app(config=minimal_config)
     await _initialize_services(
@@ -206,9 +335,16 @@ async def test_maintenance_mount_reads_shared_vault_registry(minimal_config):
         abstraction_provider=StubAbstractionProvider(),
     )
     try:
-        maint_server = app.state.mcp_mounts["/mcp_maint"]
-        result = await maint_server.call_tool("maint_list_vaults", {})
-        assert minimal_config.vault.id in str(result)
+        listed = _payload(await app.state.mcp_mounts["/mcp"].call_tool("maint_list_vaults", {}))
+        assert "error" not in listed
+        assert minimal_config.vault.id in {v["id"] for v in listed["vaults"]}
+        config = _payload(
+            await app.state.mcp_mounts["/mcp_maint"].call_tool(
+                "maint_get_vault_config", {"vault_id": minimal_config.vault.id}
+            )
+        )
+        assert "error" not in config
+        assert config["vault"]["id"] == minimal_config.vault.id
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()

@@ -164,7 +164,15 @@ def test_build_vault_summary_populates_every_vault_summary_field():
     services = _SentinelServices()
     projects = ["sentinel_project_alpha", "sentinel_project_beta"]
 
-    summary = VaultRegistryService._build_vault_summary(config, services, projects)
+    summary = VaultRegistryService._build_vault_summary(
+        config, services, projects, document_count=11
+    )
+
+    # The count is caller-supplied, so a factory that dropped it would
+    # surface a zero -- which the int branch below refuses -- but a factory
+    # that wired the wrong source would not; pin the sentinel value too.
+    assert summary.document_count == 11
+    assert "storage_root" not in VaultSummary.model_fields
 
     # ---- VaultSummary: every field non-empty / non-None ----
     # Three-branch closure-test idiom: list/dict-annotation branch
@@ -185,6 +193,11 @@ def test_build_vault_summary_populates_every_vault_summary_field():
             assert value, (
                 f"VaultSummary.{field_name} not populated by _build_vault_summary "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif annotation is int:
+            assert value != 0, (
+                f"VaultSummary.{field_name} is zero — a required int that the "
+                "factory hard-codes or drops would pass a naive 'is not None' check"
             )
         elif default is not PydanticUndefined and default is not None:
             assert value != default, (
@@ -272,7 +285,8 @@ def test_build_vault_summary_populates_every_vault_summary_field():
 class _FakeGraphStore:
     """Per-vault graph store that either returns counts or raises, with a
     controllable storage-presence probe (defaults to present, matching a
-    healthy vault)."""
+    healthy vault) and a controllable total-document count whose call is
+    recorded so a test can prove the listing actually asked for it."""
 
     def __init__(
         self,
@@ -280,10 +294,15 @@ class _FakeGraphStore:
         counts: dict[str, int] | None = None,
         raises: BaseException | None = None,
         storage_present: bool = True,
+        total: int = 0,
+        total_raises: BaseException | None = None,
     ) -> None:
         self._counts = counts
         self._raises = raises
         self._storage_present = storage_present
+        self._total = total
+        self._total_raises = total_raises
+        self.total_count_calls = 0
 
     async def storage_present(self, vault_id: str) -> bool:
         return self._storage_present
@@ -292,6 +311,12 @@ class _FakeGraphStore:
         if self._raises is not None:
             raise self._raises
         return dict(self._counts or {})
+
+    async def get_total_document_count(self) -> int:
+        self.total_count_calls += 1
+        if self._total_raises is not None:
+            raise self._total_raises
+        return self._total
 
 
 class _FakeIngestionService:
@@ -319,10 +344,16 @@ class _FakeServices:
         counts: dict[str, int] | None = None,
         raises: BaseException | None = None,
         storage_present: bool = True,
+        total: int = 0,
+        total_raises: BaseException | None = None,
     ) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore(
-            counts=counts, raises=raises, storage_present=storage_present
+            counts=counts,
+            raises=raises,
+            storage_present=storage_present,
+            total=total,
+            total_raises=total_raises,
         )
         self.ingestion_service = _FakeIngestionService()
         self.close_timing_called = False
@@ -370,6 +401,56 @@ def _patch_source_store(monkeypatch: Any, store: _FakeSourceStore) -> None:
 def _undefined_table() -> psycopg.errors.UndefinedTable:
     """The exact error production raises when a vault's schema was dropped."""
     return psycopg.errors.UndefinedTable('relation "documents" does not exist')
+
+
+async def test_list_vaults_reports_total_document_count(monkeypatch: Any) -> None:
+    """Each listed vault carries the store's total document count, and the
+    listing asked the store for it.
+
+    Anti-coincidental: the totals are distinct non-zero and zero sentinels on
+    two vaults, so a count wired to the wrong vault, hard-coded, or derived
+    from the project counts (which the ``IS NOT NULL`` filter under-reports)
+    fails; the call counter proves the value came from the store's total
+    rather than from a default.
+    """
+    config = _vault_config_with_every_summary_field()
+    populated = _FakeServices(config=config, counts={"proj_a": 2}, total=7)
+    empty = _FakeServices(config=config, counts={}, total=0)
+    registry: dict[str, Any] = {"populated": populated, "empty": empty}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=["populated", "empty"]))
+
+    result = await svc.list_vaults()
+
+    assert [s.document_count for s in result] == [7, 0]
+    assert populated.graph_store.total_count_calls == 1
+    assert empty.graph_store.total_count_calls == 1
+
+
+async def test_list_vaults_skips_a_vault_whose_count_query_fails(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """A vault whose total-count query raises is skipped like any other
+    store error, and the listing survives.
+
+    Anti-coincidental: the failing vault is registered FIRST and its
+    project-count query succeeds, so only a count query placed outside the
+    per-vault guard would propagate; the healthy vault listing proves the
+    loop continued.
+    """
+    config = _vault_config_with_every_summary_field()
+    broken = _FakeServices(config=config, counts={"proj_a": 1}, total_raises=_undefined_table())
+    healthy = _FakeServices(config=config, counts={"proj_a": 1}, total=3)
+    registry: dict[str, Any] = {"broken": broken, "healthy": healthy}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=["broken", "healthy"]))
+
+    with caplog.at_level(logging.ERROR, logger="sage.services.vault_registry"):
+        result = await svc.list_vaults()
+
+    assert [s.document_count for s in result] == [3]
+    assert "broken" in registry  # config still discovered: kept, not evicted
+    assert any(r.levelno == logging.ERROR and "broken" in r.getMessage() for r in caplog.records)
 
 
 async def test_list_vaults_evicts_a_vault_whose_schema_and_config_are_gone(

@@ -37,7 +37,7 @@ function makeVault(id: string, name: string): VaultSummary {
     id,
     name,
     description: null,
-    storage_root: '/tmp/' + id,
+    document_count: 0,
     doc_types: [],
     lifecycle_states: [],
     adapters: [],

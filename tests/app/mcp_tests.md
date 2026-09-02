@@ -40,7 +40,9 @@ example_vault).
 **Expected:**
 - Returns valid JSON string
 - Parsed result is an array of 2 objects
-- Each object includes: `id`, `name`, `description`, `storage_root`
+- Each object includes exactly: `id`, `name`, `description`, `document_count`
+  (the count spans every lifecycle state; the server-side `storage_root` is
+  not carried, since it describes layout a caller choosing a vault cannot use)
 - Vault IDs match the registered vaults
 
 **Rationale:** The vault selector in the CAS Application sidebar and any MCP

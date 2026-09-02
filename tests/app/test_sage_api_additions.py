@@ -307,7 +307,8 @@ class TestVaultListing:
             assert "id" in v
             assert "name" in v
             assert "description" in v
-            assert "storage_root" in v
+            assert isinstance(v["document_count"], int)
+            assert "storage_root" not in v
 
     async def test_be_002_empty_vaults_returns_empty_array(self, empty_client):
         """GET /sage_vaults returns empty array when no vaults configured."""

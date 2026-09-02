@@ -88,7 +88,6 @@ of the Dashboard.
 **Expected:**
 - Vault name displayed (e.g., "Engineering Portfolio")
 - Vault description displayed
-- Base path (storage_root) displayed
 
 **Rationale:** Vault identity confirms the user is looking at the correct vault,
 especially when multiple vaults are configured.

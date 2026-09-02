@@ -315,7 +315,7 @@ def rest_stub(mode: str) -> Iterator[str]:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path.endswith("/sage_vaults"):
-                self._json([{"id": "test", "name": "Stub", "storage_root": "/x"}])  # type: ignore[arg-type]
+                self._json([{"id": "test", "name": "Stub", "document_count": 0}])  # type: ignore[arg-type]
                 return
             if "/documents/" in path:
                 stored = captured.get("bytes", b"")

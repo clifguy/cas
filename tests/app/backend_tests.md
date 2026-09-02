@@ -19,8 +19,8 @@ endpoints.
 
 **Decision:** A new `GET /sage_vaults` endpoint returns all vaults registered
 with the running SAGE instance. Each entry includes the vault ID, name,
-description, and storage_root. This endpoint has no vault_id path parameter
-because it operates across vaults.
+description, and document_count (spanning every lifecycle state). This
+endpoint has no vault_id path parameter because it operates across vaults.
 
 **Precondition:** SAGE instance running with two vaults (example_vault,
 personal_notes).
@@ -30,7 +30,7 @@ personal_notes).
 **Expected:**
 - 200 response
 - Body is an array of vault summary objects
-- Each object includes: `id`, `name`, `description`, `storage_root`
+- Each object includes: `id`, `name`, `description`, `document_count`; no `storage_root`
 - Array contains exactly 2 entries
 
 **Rationale:** The vault selector in the sidebar needs to enumerate available

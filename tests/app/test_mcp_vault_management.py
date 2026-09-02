@@ -169,7 +169,7 @@ class TestSageCreateVault:
 
         assert result["vault_id"] == "new_vault"
         assert result["name"] == "New Vault"
-        assert "storage_root" in result
+        assert result["storage_root"] == result["config"]["vault"]["storage_root"]
         assert "config" in result
 
         # Echoed config must be a full, valid VaultConfig

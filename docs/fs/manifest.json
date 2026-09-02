@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-01",
+  "manifest_date": "2026-09-02",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.14",
+      "version": "0.15",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.57",
+  "substrate_version": "1.58",
   "revision_history": [
+    {
+      "version": "1.58",
+      "date": "2026-09-02",
+      "summary": "Move vault enumeration to the ordinary MCP surface, make the surface-assignment table the registration authority, and reshape the enumeration response for its wider audience. sage/sage_core_api.openapi.yaml bumped v0.14->v0.15: VaultSummary drops storage_root (server-side layout with no use to a caller choosing a vault; the surface move carries the response from maintenance callers to every authenticated one, so the field is dropped deliberately rather than inherited) and gains document_count (integer, required: the number of documents across every lifecycle state, including archived predecessors -- the vault-stats read gives the per-state breakdown); required becomes [id, name, document_count]; the GET /sage_vaults operation prose follows. The operationId maint_list_vaults and the REST path are unchanged. Pydantic mirror in sage/models/schemas.py. Producer: sage/services/vault_registry.py list_vaults reads GraphStore.get_total_document_count inside the existing per-vault error guard (the total, never a sum over the project counts, which omit documents with no project value), and _build_vault_summary takes a document_count keyword defaulting to 0 on the create path. The MCP tool maint_list_vaults in sage/sage_api_tools.py returns {id, name, description, document_count} per entry; maint_create_vault sources its echoed storage_root from the config it already returns. Registration: sage.mcp_server.build_partitioned_server now reads SERVER_ASSIGNMENT in sage/_tool_naming.py and nothing else -- the prefix-derived _surface_of helper is removed, and a registered tool with no table row raises LookupError at build rather than defaulting to a surface. maint_list_vaults moves to the sage surface under its unchanged name (per CAS-ADR-029 the maint_ prefix is a naming convention, not a registration rule); the new PREFIX_SURFACE_DIVERGENCES constant records it as the one deliberate prefix/surface divergence, and the partition gates assert that the prefix-vs-table disagreement set equals that constant in both directions and pin its population. The import-time alias invariant loosens from 'target on the maintenance surface' to 'target is a registered tool' and is factored into _check_table_invariants; admin_list_vaults keeps its alias, resolving on the ordinary mount and failing on the maintenance mounts exactly as the canonical name does (CAS-ADR-034: an alias grants nothing the canonical name does not). Frontend: app/src/api/types.ts VaultSummary mirrors the change and the Dashboard no longer renders the storage root. Gate tests: test_mcp_surface_partition.py is revised (the prefix-leak assertions become divergence-set equalities, the shared-registry proof reads through both mounts, and new tests pin the table row, the built-server placement, the removed helper, and the loud failure on an unassigned tool) and test_mcp_maint_alias.py's roster cross-check is revised with alias-resolution tests on both mounts; test_mcp_rename_compliance.py, test_mcp_tool_conformance.py, test_openapi_conformance.py, test_typed_alias_coverage.py, and test_router_conformance.py pass with no new allowlist entries."
+    },
     {
       "version": "1.57",
       "date": "2026-09-01",

@@ -49,7 +49,7 @@ from pydantic import ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
-from sage._tool_naming import MAINT_ALIAS_MAPPING
+from sage._tool_naming import MAINT_ALIAS_MAPPING, SERVER_ASSIGNMENT
 from sage.api.errors import SAGEError, validation_error_envelope
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
@@ -441,22 +441,13 @@ bulk_ingest_document = _app_tools["bulk_ingest_document"]
 # the SAGE app (``/mcp`` = ordinary, ``/mcp_maint`` = maintenance, with
 # ``/mcp_admin`` as the maintenance surface's pre-rename alias path; see
 # ``sage/app.py``). Mount selection *is* the role declaration. Surface
-# assignment is derived purely from each tool name's first segment per
-# CAS-ADR-029's prefix-encodes-surface rule — there is no per-tool
-# override table. The module-level ``mcp`` above remains the full,
-# unpartitioned surface whose tool functions are re-exported for direct
-# import; the partitioned servers are built by ``build_partitioned_server``
-# below.
-
-
-def _surface_of(tool_name: str) -> str:
-    """Return the MCP server a tool registers on, derived from its name.
-
-    Per CAS-ADR-029's prefix-encodes-surface rule: a tool whose name's first
-    segment is ``maint_`` belongs to the maintenance server (``sage_maint``);
-    every other tool belongs to the ordinary server (``sage``).
-    """
-    return "sage_maint" if tool_name.startswith("maint_") else "sage"
+# assignment is read from ``SERVER_ASSIGNMENT`` in ``sage._tool_naming``
+# and from nothing else: the ``maint_`` prefix is a naming convention
+# (CAS-ADR-029), not a registration rule, so a tool can move between
+# surfaces without a rename. The module-level ``mcp`` above remains the
+# full, unpartitioned surface whose tool functions are re-exported for
+# direct import; the partitioned servers are built by
+# ``build_partitioned_server`` below.
 
 
 def build_partitioned_server(surface: str) -> _LoggingFastMCP:
@@ -464,11 +455,13 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
 
     Both servers share the underlying tool-implementation layer
     (``register_sage_tools`` / ``register_app_tools``). The partition is
-    applied after registration by dropping every tool whose ``_surface_of``
-    does not match ``surface``, so registration is purely prefix-derived
-    (CAS-ADR-029) with no per-tool override table. The maintenance server
-    therefore does not duplicate the shared read spine, which carries no
-    ``maint_`` prefix and so resolves to ``sage``.
+    applied after registration by dropping every tool whose
+    ``SERVER_ASSIGNMENT`` row names a different surface. A registered tool
+    with no row fails the build with ``LookupError`` rather than landing on
+    a default surface: an omission must be visible at startup, not as a
+    tool that quietly appears on the ordinary catalog. The maintenance
+    server does not duplicate the shared read spine, which the table
+    assigns to ``sage`` only.
 
     The server carries the Streamable HTTP transport settings its HTTP
     mounting requires. ``stateless_http=True``
@@ -492,6 +485,11 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
     )
     app_tools = register_app_tools(server, _get_vault, _serialize, _error_response)
     for name in {**sage_tools, **app_tools}:
-        if _surface_of(name) != surface:
+        if name not in SERVER_ASSIGNMENT:
+            raise LookupError(
+                f"MCP tool {name!r} has no SERVER_ASSIGNMENT row; every registered "
+                "tool must be assigned a surface in sage._tool_naming.SERVER_ASSIGNMENT"
+            )
+        if SERVER_ASSIGNMENT[name] != surface:
             server.remove_tool(name)
     return server
