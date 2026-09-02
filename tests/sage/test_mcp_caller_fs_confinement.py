@@ -675,17 +675,21 @@ async def test_b6b_bulk_ingest_exactly_one_delivery_shape(confined_vault, tmp_pa
     tools. Without it the batch tool could publish a narrower or wider
     contract than its siblings and nothing would notice.
 
-    Anti-coincidental for the batch-wide ordering: the mixed batch pairs a
-    *staged* entry with a malformed one and then redeems that entry
-    afterwards, so a per-entry check that refused only on reaching the second
-    entry -- consuming the first token on the way -- leaves nothing to redeem
-    and fails here rather than passing on the error code alone.
+    Anti-coincidental on both orderings the gate has to get right. The mixed
+    batch pairs a *staged* entry and an *absolute path* with a malformed one,
+    and redeems the staged entry afterwards. A per-entry check that refused
+    only on reaching the malformed entry consumes the token on the way, so
+    the completion finds nothing to redeem; a check that minted before
+    validating answers ``upload_required`` off the absolute path instead of
+    refusing. Either mutant fails on an assertion rather than passing on the
+    error code alone.
     """
     _services, _config, _handle = confined_vault
     body = b"# B6b\n"
+    # A path, deliberately not a file: nothing here reads it. The refusals
+    # settle on delivery shape before any file access, minting builds a recipe
+    # from the path string, and the completion's bytes arrive through staging.
     src = tmp_path / "caller_inbox" / "b6b_note.md"
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_bytes(body)
 
     with _profile("local"):
         both = _parse(
@@ -714,16 +718,21 @@ async def test_b6b_bulk_ingest_exactly_one_delivery_shape(confined_vault, tmp_pa
         token = recipe["uploads"][0]["token"]
         _stage_upload(token, body)
 
+        # The absolute path is what makes this discriminating: it is the one
+        # entry a mint would fire on, so a batch that minted before validating
+        # would answer ``upload_required`` here instead of refusing.
         mixed = _parse(
             await bulk_ingest_document(
                 _VAULT_ID,
                 [
                     {"transfer_token": token, "source_type": "markdown"},
+                    {"file_path": str(tmp_path / "b6b_absolute.md"), "source_type": "markdown"},
                     {"source_type": "markdown"},
                 ],
             )
         )
         assert mixed["error"] == "missing_ingest_source", mixed
+        assert mixed.get("status") != "upload_required", mixed
         assert "documents_created" not in mixed, (
             "a malformed batch must refuse before ingesting any of its entries"
         )
@@ -762,3 +771,66 @@ async def test_b7c_restore_ambiguous_outranks_relative_refusal(confined_vault):
         )
 
     assert result["error"] == "ambiguous_ingest_source", result
+
+
+async def test_b6c_cloud_mixed_batch_mints_for_paths_and_spares_tokens(confined_vault, tmp_path):
+    """B6c: a cloud batch mixing an absolute path with an already-staged token
+    answers with a recipe covering only the path, and leaves the token
+    redeemable.
+
+    The mint decision is made for the whole batch before any redemption, so a
+    call the gate answers with a recipe consumes nothing. Nothing else covers
+    a well-formed batch that carries both delivery shapes at once.
+
+    Anti-coincidental on three rivals. A gate that redeemed before minting
+    consumes the token, so the completion leg fails ``transfer_token_invalid``
+    rather than landing a document. A gate that minted for every entry rather
+    than the absolute ones returns two upload legs. A gate that minted for the
+    wrong entry names the staged entry's source in the recipe, which the
+    per-item source assertion catches.
+    """
+    _services, _config, _handle = confined_vault
+    staged_body = b"# B6c staged\n\nDelivered ahead of the call."
+    # Both are paths, deliberately not files: the gate mints from the path
+    # string without reading it, and the staged entry's bytes reach the vault
+    # through the staging directory rather than from this location.
+    staged_src = tmp_path / "caller_inbox" / "b6c_staged.md"
+    unstaged_src = tmp_path / "caller_inbox" / "b6c_unstaged.md"
+
+    with _profile("cloud", transfer_base=_BASE):
+        first = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID, [{"file_path": str(staged_src), "source_type": "markdown"}]
+            )
+        )
+        token = first["uploads"][0]["token"]
+        _stage_upload(token, staged_body)
+
+        mixed = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {"transfer_token": token, "source_type": "markdown"},
+                    {"file_path": str(unstaged_src), "source_type": "markdown"},
+                ],
+            )
+        )
+
+        assert "error" not in mixed, mixed
+        assert mixed["status"] == "upload_required", mixed
+        assert len(mixed["uploads"]) == 1, mixed
+        assert mixed["uploads"][0]["source"] == str(unstaged_src), mixed
+        assert "documents_created" not in mixed, (
+            "a batch answered with a recipe must not ingest any of its entries"
+        )
+
+        # The recipe spared the sibling token, so it still redeems.
+        completed = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID, [{"transfer_token": token, "source_type": "markdown"}]
+            )
+        )
+
+    assert "error" not in completed, completed
+    assert completed.get("error_count") == 0, completed
+    assert completed["documents_created"]["new"] == 1

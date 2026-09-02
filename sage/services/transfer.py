@@ -544,9 +544,12 @@ class ResolvedDelivery:
     #: The path to read: a redeemed token's staging location, or the caller's
     #: own path when this process shares its filesystem.
     path: str
-    #: The path the caller named, when it differs from ``path``. A refusal
-    #: must name this spelling rather than a server-side staging location;
-    #: ``None`` when the caller named the path in ``path`` itself.
+    #: The path the caller named, when it differs from ``path`` -- ``None``
+    #: when the two agree. Offered rather than required: a consumer that
+    #: reports a path back to the caller threads this down so a refusal names
+    #: the caller's own spelling instead of a server-side staging location,
+    #: which is what the ingest paths do with it. A consumer whose downstream
+    #: accepts no such parameter leaves it unread and names the resolved path.
     declared_source: str | None = None
 
 
