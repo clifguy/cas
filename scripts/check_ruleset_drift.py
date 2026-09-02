@@ -16,11 +16,20 @@ The comparison covers state, not claims. The document's prose can misdescribe a
 ruleset the JSON block captures accurately, and no captured-to-live comparison
 would catch it; that remains a review concern.
 
-The read needs a token with repository-administration read access -- the
-built-in Actions token cannot read the rulesets endpoint -- supplied via
-``GH_RULESET_TOKEN``. With no token configured the check logs and exits 0, so
-the surrounding automation stays dormant rather than failing until the token is
-provisioned.
+The read uses whatever credential the forge CLI already holds, which needs no
+more than repository read access: both rulesets endpoints answer at that scope
+and return every rule.
+
+**One field is withheld below administration scope, and is reported rather than
+compared.** A caller without it receives no ``bypass_actors`` key at all -- not
+an empty list, which is what a ruleset granting no bypass returns. The check
+keys on that difference: an absent key means the field was not visible and is
+named as uncovered, while an empty list is a real value and is compared like any
+other. Reporting it as divergence instead would fail every scheduled run on a
+ruleset nobody touched, and silently skipping it would let "I may not see these"
+pass as "there are none". Who may bypass the ruleset is therefore a review
+concern wherever the caller lacks that scope, restated on every run rather than
+left to be remembered.
 
 Usage::
 
@@ -28,8 +37,7 @@ Usage::
     python -m scripts.check_ruleset_drift --repo owner/name
     python -m scripts.check_ruleset_drift --ruleset-file r.json # compare offline
 
-Exit status is 0 when the two agree (or when the check is dormant) and 1 when
-they diverge.
+Exit status is 0 when the two agree and 1 when they diverge.
 """
 
 from __future__ import annotations
@@ -68,6 +76,11 @@ VOLATILE_TOP_LEVEL_KEYS: Final[frozenset[str]] = frozenset(
 # The bypass actor is identified by its role; the numeric id beside it is
 # repository-internal and is omitted from the capture for the same reason.
 VOLATILE_BYPASS_ACTOR_KEYS: Final[frozenset[str]] = frozenset({"actor_id"})
+
+# Fields the forge withholds below administration scope by omitting the key.
+# They cannot be compared by a caller that cannot see them, and treating an
+# absent key as divergence would fail every run at that scope.
+SCOPED_KEYS: Final[frozenset[str]] = frozenset({"bypass_actors"})
 
 # Lists whose members are identified by a field rather than by position, keyed
 # by the name the list appears under. Diffing these positionally would report a
@@ -149,39 +162,80 @@ def normalize_ruleset(ruleset: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def diff_rulesets(captured: dict[str, Any], live: dict[str, Any]) -> list[Divergence]:
+def uncovered_keys(live: dict[str, Any]) -> frozenset[str]:
+    """Scoped fields the live payload did not carry, so cannot be compared.
+
+    Keys on absence of the key itself, never on its value. A ruleset that grants
+    no bypass returns ``bypass_actors: []``; a caller that may not see the
+    grants receives no such key. Collapsing those two would let the second pass
+    as the first, which is the whole risk of excluding a field at all.
+    """
+    return frozenset(key for key in SCOPED_KEYS if key not in live)
+
+
+def diff_rulesets(
+    captured: dict[str, Any],
+    live: dict[str, Any],
+    *,
+    uncovered: frozenset[str] = frozenset(),
+) -> list[Divergence]:
     """Every leaf on which the two rulesets disagree, ordered by path.
 
     Both sides are expected to be normalized. Divergences are reported at the
     leaf: a flipped flag names the flag, an added rule names the rule's type,
     and a renamed status check names both contexts.
+
+    Top-level keys named in ``uncovered`` are dropped from both sides before
+    the walk, so a field the caller could not read is not reported as though it
+    had changed. Pass the result of :func:`uncovered_keys`; passing a key the
+    payload *did* carry would hide a real difference.
     """
     found: list[Divergence] = []
-    _diff_value("", captured, live, found)
+    _diff_value(
+        "",
+        {key: value for key, value in captured.items() if key not in uncovered},
+        {key: value for key, value in live.items() if key not in uncovered},
+        found,
+    )
     return sorted(found, key=lambda divergence: divergence.path)
 
 
-def format_report(divergences: list[Divergence]) -> str:
-    """A human-readable rendering of the diverging fields."""
-    if not divergences:
-        return f"{RULESET_NAME}: the captured block agrees with the live ruleset."
-    field_word = "field" if len(divergences) == 1 else "fields"
-    lines = [
-        f"{RULESET_NAME}: the live ruleset diverges from the captured block "
-        f"in {len(divergences)} {field_word}.",
-        "",
-    ]
-    for divergence in divergences:
-        lines += [
-            f"  {divergence.path}",
-            f"      captured: {_render(divergence.captured)}",
-            f"      live:     {_render(divergence.live)}",
+def format_report(divergences: list[Divergence], uncovered: frozenset[str] = frozenset()) -> str:
+    """A human-readable rendering of the diverging and the uncovered fields.
+
+    The uncovered notice is emitted whether or not anything diverged: a run that
+    reports agreement has to say what it did not look at, or agreement reads as
+    broader than it was.
+    """
+    if divergences:
+        field_word = "field" if len(divergences) == 1 else "fields"
+        lines = [
+            f"{RULESET_NAME}: the live ruleset diverges from the captured block "
+            f"in {len(divergences)} {field_word}.",
+            "",
         ]
-    lines += [
-        "",
-        f"Reconcile per the procedure in {DEFAULT_DOCUMENT_PATH.relative_to(REPO_ROOT)}: apply "
-        "the intended change on whichever side is behind, re-capture, and commit.",
-    ]
+        for divergence in divergences:
+            lines += [
+                f"  {divergence.path}",
+                f"      captured: {_render(divergence.captured)}",
+                f"      live:     {_render(divergence.live)}",
+            ]
+        lines += [
+            "",
+            f"Reconcile per the procedure in {DEFAULT_DOCUMENT_PATH.relative_to(REPO_ROOT)}: "
+            "apply the intended change on whichever side is behind, re-capture, and commit.",
+        ]
+    else:
+        lines = [f"{RULESET_NAME}: the captured block agrees with the live ruleset."]
+
+    if uncovered:
+        lines += [
+            "",
+            f"NOT COMPARED: {', '.join(sorted(uncovered))} -- the forge withheld "
+            "this field at the reading credential's scope, so this run says nothing "
+            "about it either way. Reading it needs administration scope; until then "
+            "it stays a review concern.",
+        ]
     return "\n".join(lines)
 
 
@@ -233,11 +287,13 @@ def _keyed_by(items: list[Any], identity_key: str) -> bool:
 # --- I/O edge ---------------------------------------------------------------
 
 
-def _run(cmd: list[str], *, token: str | None = None) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    if token:
-        env["GH_TOKEN"] = token
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a forge CLI command under the ambient credential.
+
+    A failed call raises rather than degrading: an expired or revoked credential
+    must fail the run loudly, not read as a ruleset that suddenly agrees.
+    """
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stderr}")
     return proc
@@ -253,17 +309,18 @@ def _rulesets_endpoint(repo: str | None, suffix: str = "") -> str:
     return base + suffix
 
 
-def fetch_live_ruleset(
-    repo: str | None, name: str = RULESET_NAME, token: str | None = None
-) -> dict[str, Any]:
+def fetch_live_ruleset(repo: str | None, name: str = RULESET_NAME) -> dict[str, Any]:
     """The live ruleset named ``name``, read in two calls.
 
     The listing endpoint carries the ruleset's identifier but not its rules, so
     the identifier is resolved from the ruleset's name at run time and the
     definition fetched with it. Resolving by name is also what keeps that
     identifier -- which is repository-internal -- out of the tree.
+
+    How much of the definition comes back depends on the ambient credential's
+    scope; see :func:`uncovered_keys`.
     """
-    listing = json.loads(_run(["gh", "api", _rulesets_endpoint(repo)], token=token).stdout)
+    listing = json.loads(_run(["gh", "api", _rulesets_endpoint(repo)]).stdout)
     for entry in listing:
         if isinstance(entry, dict) and entry.get("name") == name:
             ruleset_id = entry["id"]
@@ -271,8 +328,7 @@ def fetch_live_ruleset(
     else:
         available = ", ".join(sorted(str(entry.get("name")) for entry in listing)) or "none"
         raise RuntimeError(f"no ruleset named {name!r} on the repository (found: {available})")
-    endpoint = _rulesets_endpoint(repo, f"/{ruleset_id}")
-    return json.loads(_run(["gh", "api", endpoint], token=token).stdout)
+    return json.loads(_run(["gh", "api", _rulesets_endpoint(repo, f"/{ruleset_id}")]).stdout)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -303,17 +359,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.ruleset_file:
         live = json.loads(Path(args.ruleset_file).read_text(encoding="utf-8"))
     else:
-        token = os.environ.get("GH_RULESET_TOKEN", "").strip()
-        if not token:
-            print(
-                "no ruleset read token configured (GH_RULESET_TOKEN); skipping",
-                file=sys.stderr,
-            )
-            return 0
-        live = fetch_live_ruleset(args.repo or None, RULESET_NAME, token)
+        live = fetch_live_ruleset(args.repo or None, RULESET_NAME)
 
-    divergences = diff_rulesets(captured, normalize_ruleset(live))
-    print(format_report(divergences))
+    uncovered = uncovered_keys(live)
+    divergences = diff_rulesets(captured, normalize_ruleset(live), uncovered=uncovered)
+    print(format_report(divergences, uncovered))
     return 1 if divergences else 0
 
 

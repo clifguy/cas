@@ -8,10 +8,12 @@ name: Ruleset drift
 # rather than as an issue -- drift here is rare and binary, and a failing
 # scheduled run already notifies.
 #
-# The rulesets endpoint needs repository-administration read access, which the
-# built-in Actions token cannot be granted, so the read uses a fine-grained PAT
-# in the RULESET_READ_TOKEN secret; the check skips (exit 0) when that secret is
-# absent, leaving this workflow dormant until it is provisioned.
+# The read needs no stored secret: both rulesets endpoints answer at the
+# `contents: read` scope below and return every rule. The one field they
+# withhold at that scope is `bypass_actors`, which arrives as an absent key
+# rather than an empty list; the check names it as uncovered on every run
+# instead of comparing it. Granting administration scope would require a stored
+# token, since it is not a permission a workflow can declare.
 
 on:
   schedule:
@@ -45,4 +47,4 @@ jobs:
       - run: .venv/bin/python -m scripts.check_ruleset_drift
         env:
           GH_REPO: ${{ github.repository }}
-          GH_RULESET_TOKEN: ${{ secrets.RULESET_READ_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

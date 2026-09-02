@@ -20,9 +20,16 @@ Everything here but the final test is offline: the live shape is *derived* from
 the tracked document by adding back the forge-internal keys the capture omits,
 so the fixtures cannot drift from the document they gate and no forge-internal
 identifier enters the tree. The live read itself is an opt-in tier behind
-``SAGE_TEST_LIVE_RULESET=1``; the default test job has neither network access
-nor a token. Each detector is driven against mutated input so a comparison that
-silently compares nothing cannot pass vacuously.
+``SAGE_TEST_LIVE_RULESET=1``; the default test job has no network access. Each
+detector is driven against mutated input so a comparison that silently compares
+nothing cannot pass vacuously.
+
+The two live callers read at different scopes, and the U cases below cover both.
+The scheduled run holds only repository read, at which the forge withholds
+``bypass_actors`` by omitting the key; a maintainer's own credential carries
+administration scope and receives it. So the field must be excluded when absent
+and compared when present, and an empty list -- a real ruleset value -- must
+never be mistaken for the withholding.
 
 **One gap the offline tier cannot close, recorded rather than solved.** Because
 the live shape is derived from the capture, a key the forge starts sending that
@@ -40,6 +47,7 @@ import copy
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Final
 
@@ -51,12 +59,14 @@ from scripts.check_ruleset_drift import (
     RULESET_NAME,
     VOLATILE_BYPASS_ACTOR_KEYS,
     VOLATILE_TOP_LEVEL_KEYS,
+    _run,
     diff_rulesets,
     extract_captured_ruleset,
     fetch_live_ruleset,
     format_report,
     main,
     normalize_ruleset,
+    uncovered_keys,
 )
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -360,22 +370,141 @@ def test_report_on_agreement_says_so() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The gate: a field withheld by scope is reported, never quietly compared
+# ---------------------------------------------------------------------------
+
+
+def test_withheld_bypass_actors_are_named_uncovered_not_diverged() -> None:
+    """U1: a caller without administration scope receives no ``bypass_actors``
+    key, and that must not read as the grant having been removed.
+
+    This is the shape the scheduled run sees. Reporting it as divergence would
+    fail every run on a ruleset nobody touched, which is how a check earns being
+    ignored.
+    """
+    captured = _captured()
+    live = _forge_decorated(captured)
+    del live["bypass_actors"]
+
+    uncovered = uncovered_keys(live)
+
+    assert uncovered == frozenset({"bypass_actors"})
+    assert diff_rulesets(captured, normalize_ruleset(live), uncovered=uncovered) == []
+
+
+def test_empty_bypass_actors_is_covered_and_diverges() -> None:
+    """U2: an *empty* list is a value, not a withholding.
+
+    The load-bearing half of the pair. A ruleset that grants no bypass returns
+    ``bypass_actors: []``; a caller that may not see the grants gets no key at
+    all. Keying on the value rather than on the key's presence would collapse
+    the two, and the removal of every bypass -- a real change to who can push
+    straight to the default branch -- would be silently excused as a scope
+    limit.
+    """
+    captured = _captured()
+    live = _forge_decorated(captured)
+    live["bypass_actors"] = []
+
+    uncovered = uncovered_keys(live)
+
+    assert uncovered == frozenset()
+    assert _paths(diff_rulesets(captured, normalize_ruleset(live), uncovered=uncovered)) == [
+        "bypass_actors[RepositoryRole]"
+    ]
+
+
+def test_visible_bypass_actors_are_compared() -> None:
+    """U3: where the field IS visible, it is compared like any other.
+
+    Guards the over-correction: excluding ``bypass_actors`` unconditionally
+    passes U1 and U2 alike, and would blind the local and opt-in runs -- which
+    do read it -- to a changed bypass mode.
+    """
+    captured = _captured()
+    live = _forge_decorated(captured)
+    live["bypass_actors"][0]["bypass_mode"] = "pull_request"
+
+    uncovered = uncovered_keys(live)
+
+    assert uncovered == frozenset()
+    divergences = diff_rulesets(captured, normalize_ruleset(live), uncovered=uncovered)
+    assert _paths(divergences) == ["bypass_actors[RepositoryRole].bypass_mode"]
+    assert divergences[0].captured == "always"
+    assert divergences[0].live == "pull_request"
+
+
+def test_report_names_the_uncovered_field_even_on_agreement() -> None:
+    """U4: a green run states what it did not look at.
+
+    Agreement plus silence reads as broader coverage than the run had, which is
+    exactly the misreading this whole check exists to prevent one level up.
+    """
+    report = format_report([], frozenset({"bypass_actors"}))
+
+    assert "bypass_actors" in report
+    assert "NOT COMPARED" in report
+    assert "agrees" in report
+
+
+# ---------------------------------------------------------------------------
 # The gate: the command-line contract
 # ---------------------------------------------------------------------------
 
 
-def test_missing_token_skips_with_exit_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    """S1: with no token configured the check logs and exits 0 rather than
-    failing, so the surrounding automation stays dormant until the secret is
-    provisioned -- and it does not reach the forge on the way there."""
-    monkeypatch.delenv("GH_RULESET_TOKEN", raising=False)
+def test_a_failed_read_is_raised_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S1: a credential the forge rejects fails the run.
 
-    def _explode(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("the check must not shell out with no token configured")
+    The read carries no stored secret, so the only remaining credential failure
+    is an ambient one -- expired, revoked, or absent on the runner. Degrading to
+    exit 0 there would turn "I could not look" into "I looked and all is well",
+    which is the reading this whole check exists to make impossible one level
+    up.
+    """
+    monkeypatch.setattr(
+        "scripts.check_ruleset_drift._run",
+        lambda cmd: (_ for _ in ()).throw(
+            RuntimeError("command failed (1): gh api\nBad credentials")
+        ),
+    )
 
-    monkeypatch.setattr("scripts.check_ruleset_drift._run", _explode)
+    with pytest.raises(RuntimeError, match="Bad credentials"):
+        main(["--repo", "owner/repo"])
 
-    assert main(["--repo", "owner/repo"]) == 0
+
+def test_a_nonzero_forge_call_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S1b: the raising happens in the runner, not only in its stand-in.
+
+    S1 above replaces ``_run`` wholesale, so it says nothing about whether
+    ``_run`` itself treats a rejected call as an error -- a version that
+    returned the failed process unchanged passes S1 and would then parse an
+    error body as a ruleset. This is the only test that reaches that decision.
+    """
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="Bad credentials"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Bad credentials"):
+        _run(["gh", "api", "repos/owner/repo/rulesets"])
+
+
+def test_a_successful_forge_call_returns_its_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S1c: and a call that succeeds is passed through untouched.
+
+    Pairs with S1b: a ``_run`` that raised unconditionally would satisfy that
+    test while making every real read impossible.
+    """
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout="[]", stderr=""
+        ),
+    )
+
+    assert _run(["gh", "api", "repos/owner/repo/rulesets"]).stdout == "[]"
 
 
 def test_divergence_exits_nonzero_and_names_the_leaf(
@@ -438,16 +567,14 @@ def test_workflow_least_privilege_permissions() -> None:
     assert "security-events" not in perms
 
 
-def test_workflow_references_the_token_secret_and_the_script() -> None:
-    """W3: the ruleset read is wired to the fine-grained token secret and to
-    the check module.
+def test_workflow_references_the_token_and_the_script() -> None:
+    """W3: the read is wired to a credential and to the check module.
 
-    The check exits 0 when that secret is absent, so nothing at run time
-    complains about a workflow that was never wired to it. This assertion is
-    what keeps the dormant path honest -- which is why it reads the parsed step
-    rather than the file's text: the secret is named in this workflow's own
-    header comment, so a text search would go on passing after the ``env``
-    binding that actually supplies it was deleted.
+    Read from the parsed step rather than the file's text: the credential is
+    discussed in this workflow's own header comment, so a substring search would
+    go on passing after the ``env`` binding that actually supplies it was
+    deleted -- and an unauthenticated read fails the run rather than reporting
+    agreement, so this is the wiring that keeps the run meaningful.
     """
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = [
@@ -459,8 +586,7 @@ def test_workflow_references_the_token_secret_and_the_script() -> None:
 
     assert steps, "workflow must invoke the drift-check module"
     assert any(
-        "secrets.RULESET_READ_TOKEN" in (step.get("env") or {}).get("GH_RULESET_TOKEN", "")
-        for step in steps
+        "secrets.GITHUB_TOKEN" in (step.get("env") or {}).get("GH_TOKEN", "") for step in steps
     ), "the ruleset read needs the fine-grained token in its step env"
 
 
@@ -500,12 +626,23 @@ def test_live_ruleset_matches_the_captured_block() -> None:
     of truth.
 
     Opt-in because the default test job has neither network access nor a
-    token; this is the same comparison the scheduled workflow makes, available
-    as a faster signal while editing the document.
+    credential; this is the same comparison the scheduled workflow makes,
+    available as a faster signal while editing the document.
+
+    Run from a workstation this covers *more* than the scheduled run does: a
+    maintainer's credential carries administration scope, so ``bypass_actors``
+    comes back and is compared. Hence the assertion on what was uncovered --
+    without it, a run whose credential had quietly narrowed would still report
+    agreement, having compared less than the reader assumes.
     """
     repo = os.environ.get("GH_REPO") or ""
-    live = fetch_live_ruleset(repo or None, RULESET_NAME, os.environ.get("GH_RULESET_TOKEN"))
+    live = fetch_live_ruleset(repo or None, RULESET_NAME)
+    uncovered = uncovered_keys(live)
 
-    divergences = diff_rulesets(_captured(), normalize_ruleset(live))
+    divergences = diff_rulesets(_captured(), normalize_ruleset(live), uncovered=uncovered)
 
-    assert divergences == [], format_report(divergences)
+    assert divergences == [], format_report(divergences, uncovered)
+    assert uncovered == frozenset(), (
+        "this credential could not read "
+        f"{', '.join(sorted(uncovered))}; the comparison was narrower than it looks"
+    )
