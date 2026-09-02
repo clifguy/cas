@@ -179,12 +179,18 @@ def register_app_tools(
         ``get_filename_metadata`` first to preview the parser's output.
 
         Per-file failure isolation: the batch is NOT atomic. Per-file
-        exceptions are caught into ``summary.errors[]`` as
-        ``{filename, message}`` (with ``summary.error_count`` advancing); the
-        batch continues and post-ingest edge inference still runs across
-        whatever inserted. Earlier or later items are not rolled back —
-        mirrors the ``create_edges`` / ``update_lifecycles`` /
-        ``update_metadata`` atomicity contract.
+        exceptions are caught into ``summary.errors[]`` (with
+        ``summary.error_count`` advancing); the batch continues and
+        post-ingest edge inference still runs across whatever inserted.
+        Earlier or later items are not rolled back — mirrors the
+        ``create_edges`` / ``update_lifecycles`` / ``update_metadata``
+        atomicity contract. Each entry names the staged ``filename``, the
+        file as the caller named it (``source_path``: the ``file_path``
+        sent, or the path a redeemed upload was minted from), and the
+        error's ``message``; a typed SAGE error additionally carries its
+        ``code`` and ``detail`` — the same envelope ``ingest_document``
+        returns for that error — so a caller can branch on the code rather
+        than parse prose.
 
         Predecessor auto-transition on Tier-1 supersedes inference: when
         ``infer_edges=True`` and inference creates a Tier-1 ``supersedes``
@@ -240,7 +246,11 @@ def register_app_tools(
         ``source_file_not_found``, ``identical_content_supersede``,
         ``duplicate_content``, ``supersede_target_not_active``,
         ``tier3_unique_constraint_violation``, and ``tier3_schema_violation``.
-        See ``ingest_document`` for the authoritative surface.
+        See ``ingest_document`` for the authoritative surface. Each such
+        entry carries that error's ``code`` and ``detail``; a
+        ``vault_source_path_refused`` entry's ``detail.source_path`` names
+        the caller's own file, never the staging location a redeemed upload
+        was written to.
 
         Error modes:
         - ``unknown_vault`` (400): ``vault_id`` is not a registered vault
@@ -343,10 +353,14 @@ def register_app_tools(
                 descriptors: list[FileDescriptor] = []
                 for f in files:
                     transfer_token = f.get("transfer_token")
+                    declared_source: str | None = None
                     if transfer_token is not None:
                         entry = get_transfer_store().consume_upload(transfer_token, vault_id)
                         consumed.append(entry)
                         resolved_path = str(entry.staged_path)
+                        # The staged path is where the bytes are; the caller's
+                        # own path is what a refusal names back at it.
+                        declared_source = entry.declared_source
                     else:
                         resolved_path = f["file_path"]
 
@@ -366,6 +380,7 @@ def register_app_tools(
                             file_path=resolved_path,
                             source_type=f["source_type"],
                             parsed_metadata=parsed,
+                            declared_source=declared_source,
                         )
                     )
 

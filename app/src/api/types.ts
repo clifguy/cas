@@ -346,6 +346,17 @@ export interface EdgeWarning {
   detail: string;
 }
 
+// One per-file failure from a batch ingest (BatchIngestFileError in both
+// API specs). `source_path` is the file as the caller named it; `code` and
+// `detail` are present only when the failure was a typed SAGE error.
+export interface BatchIngestFileError {
+  filename: string;
+  source_path: string;
+  message: string;
+  code?: string;
+  detail?: Record<string, unknown>;
+}
+
 export interface IngestSummaryEvent {
   event_type: 'summary';
   documents_created: { new: number; new_version: number };
@@ -356,6 +367,7 @@ export interface IngestSummaryEvent {
   abstracts_generated: number;
   abstracts_deferred: number;
   error_count: number;
+  errors: BatchIngestFileError[];
   edge_warnings?: EdgeWarning[] | null;
 }
 
@@ -369,7 +381,7 @@ export interface IngestSummaryEvent {
 // (the server shares no filesystem with the client). Kept distinct from the
 // app-backend Ingest* shapes above so the two endpoints' contracts can evolve
 // independently; BatchSummaryEvent is a superset of IngestSummaryEvent
-// (edges_removed, errors).
+// (edges_removed).
 
 export interface BatchIngestFileMetadata {
   source_type: string;
@@ -409,7 +421,7 @@ export interface BatchSummaryEvent {
   abstracts_generated: number;
   abstracts_deferred: number;
   error_count: number;
-  errors: Array<Record<string, unknown>>;
+  errors: BatchIngestFileError[];
   edge_warnings?: EdgeWarning[] | null;
 }
 

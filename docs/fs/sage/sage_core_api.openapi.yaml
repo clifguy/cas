@@ -574,7 +574,11 @@ paths:
 
         Response is `text/event-stream`: per-file state transitions surface as
         `progress` events (status = started / completed / failed); a final
-        `summary` event carries the batch counts. Edge resolution can refuse
+        `summary` event carries the batch counts. A per-file failure does not
+        end the stream: it is collected into the summary's `errors`
+        (BatchIngestFileError entries), where a typed SAGE error carries its
+        code and detail and names the file as the caller uploaded it, never
+        the server-side staging path. Edge resolution can refuse
         planned edges rather than create them -- notably a Tier-1 supersession
         whose target cannot be read, does not exist, or is in a lifecycle
         state that does not permit the transition; refusals are counted in the
@@ -7114,6 +7118,46 @@ components:
           type: string
           description: Human-readable explanation of the warning.
 
+    BatchIngestFileError:
+      type: object
+      description: >-
+        One per-file failure recorded during a batch ingest. Every entry
+        carries the message-only shape; a failure that was a typed SAGE error
+        additionally carries its code and detail, so a caller can branch on
+        the code and read the same payload the single-document ingest surface
+        returns for that error.
+      required: [filename, source_path, message]
+      properties:
+        filename:
+          type: string
+          description: Basename of the file as staged for ingestion.
+        source_path:
+          type: string
+          description: >-
+            The file as the caller named it: the path or filename the caller
+            supplied, never a server-side resolved or staging location.
+            Distinguishes two failures whose staged basenames coincide.
+        message:
+          type: string
+          description: >-
+            Human-readable error text. For a typed SAGE error this is the
+            error's own message; otherwise the rendered exception.
+        code:
+          type: string
+          description: >-
+            Machine-readable error code, present only when the failure was a
+            typed SAGE error. The same code the single-document ingest
+            surface returns for that error (e.g. `vault_source_path_refused`,
+            `source_file_not_found`, `adapter_not_found`).
+        detail:
+          type: object
+          additionalProperties: true
+          description: >-
+            Structured error payload, present only when the failure was a
+            typed SAGE error that carries one. Shape is per error code; for
+            `vault_source_path_refused` it carries `source_path`, the refused
+            file as the caller named it.
+
     SummaryEvent:
       type: object
       description: >-
@@ -7183,9 +7227,12 @@ components:
         errors:
           type: array
           items:
-            type: object
-            description: Per-file error record (filename, error message).
-          description: Per-file error records for files that failed to ingest in this batch.
+            $ref: "#/components/schemas/BatchIngestFileError"
+          description: >-
+            Per-file error records for files that failed to ingest in this
+            batch, one entry per failure; each names the staged filename,
+            the file as the caller named it, and the error message, and a
+            typed SAGE error additionally carries its code and detail.
         edge_warnings:
           type: array
           items:

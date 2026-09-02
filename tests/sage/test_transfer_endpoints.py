@@ -27,7 +27,7 @@ from sage.adapters.stubs import (
 )
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
-from sage.mcp_server import get_document, ingest_document, read_projection
+from sage.mcp_server import bulk_ingest_document, get_document, ingest_document, read_projection
 from sage.services.transfer import get_transfer_store, reset_transfer_store
 
 _VAULT_ID = "test_vault"
@@ -220,6 +220,65 @@ async def test_vsbb_047_refused_upload_reports_the_callers_path_not_the_staging_
 
     assert done["error"] == "vault_source_path_refused", done
     assert done["detail"] == {"source_path": supplied}
+
+
+async def test_vsbb_052_refused_bulk_upload_entry_carries_code_and_the_callers_path(
+    client, tmp_path, tmp_vault_dir
+):
+    """A retention refusal on the bulk completion leg reaches the caller as a
+    typed per-file entry -- its code, and a detail naming the file the caller
+    sent rather than the staging path the token redeemed to.
+
+    The bulk leg redeems and substitutes the staged path exactly as the
+    singleton leg does (VSBB-047), but its failures are collected into
+    ``summary.errors`` instead of raised, and that collection kept only the
+    rendered message: no code to branch on, and no ``detail`` for the caller's
+    path to travel in.
+
+    Anti-coincidental-pass: the same three rivals VSBB-047 pins, on the entry
+    instead of the envelope. Equality against the recipe's echoed ``source``
+    excludes the staged path (same basename) and the sanitized ``filename``;
+    the ``/./`` segment excludes a ``Path`` round-trip; and the staged path is
+    read and asserted different before redemption consumes the entry, so
+    reporting either spelling could not satisfy the assertion by coincidence.
+    Against a message-only collection this fails on the missing ``code`` key.
+    """
+    body = b"# refused bulk upload\n"
+    imports = tmp_vault_dir / "sources" / "imports"
+    imports.mkdir(parents=True, exist_ok=True)
+    (imports / "refused_bulk.md").symlink_to(tmp_path / "nowhere.md")
+
+    dotted = f"{tmp_path}/caller_inbox/./refused_bulk.md"
+
+    with _profile("cloud"):
+        recipe = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID, [{"file_path": dotted, "source_type": "markdown"}]
+            )
+        )
+        assert recipe.get("status") == "upload_required", recipe
+        item = recipe["uploads"][0]
+        resp = await client.put("/upload", content=body, headers={"X-Upload-Token": item["token"]})
+        assert resp.status_code == 201, resp.text
+
+        supplied = item["source"]
+        assert supplied == dotted, "the recipe echoes the caller's spelling verbatim"
+        staged = str(get_transfer_store()._entries[item["transfer_id"]].staged_path)
+        assert staged != supplied
+
+        summary = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [{"transfer_token": item["token"], "source_type": "markdown"}],
+            )
+        )
+
+    assert summary["error_count"] == 1, summary
+    entry = summary["errors"][0]
+    assert entry["code"] == "vault_source_path_refused"
+    assert entry["detail"] == {"source_path": supplied}
+    assert entry["source_path"] == supplied
+    assert entry["filename"] == "refused_bulk.md"
 
 
 async def test_download_round_trip_source(client, tmp_path):
