@@ -4419,6 +4419,51 @@ class EdgeWarning(BaseModel):
     )
 
 
+class BatchIngestFileError(BaseModel):
+    """One per-file failure recorded during a batch ingest.
+
+    Every entry carries the message-only shape; a failure that was a typed
+    SAGE error additionally carries its ``code`` and ``detail``, so a caller
+    can branch on the code and read the same payload the single-document
+    ingest surface returns for that error.
+    """
+
+    filename: str = Field(
+        description="Basename of the file as staged for ingestion.",
+    )
+    source_path: str = Field(
+        description=(
+            "The file as the caller named it: the path or filename the caller "
+            "supplied, never a server-side resolved or staging location. "
+            "Distinguishes two failures whose staged basenames coincide."
+        ),
+    )
+    message: str = Field(
+        description=(
+            "Human-readable error text. For a typed SAGE error this is the "
+            "error's own message; otherwise the rendered exception."
+        ),
+    )
+    code: str | None = Field(
+        default=None,
+        description=(
+            "Machine-readable error code, present only when the failure was a "
+            "typed SAGE error. The same code the single-document ingest "
+            "surface returns for that error (e.g. `vault_source_path_refused`, "
+            "`source_file_not_found`, `adapter_not_found`)."
+        ),
+    )
+    detail: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structured error payload, present only when the failure was a "
+            "typed SAGE error that carries one. Shape is per error code; for "
+            "`vault_source_path_refused` it carries `source_path`, the refused "
+            "file as the caller named it."
+        ),
+    )
+
+
 class SummaryEvent(BaseModel):
     """SSE ``summary`` event payload.
 
@@ -4477,8 +4522,13 @@ class SummaryEvent(BaseModel):
     error_count: int = Field(
         description="Total number of per-file errors recorded during the batch.",
     )
-    errors: list[dict[str, Any]] = Field(
-        description="Per-file error records for files that failed to ingest in this batch.",
+    errors: list[BatchIngestFileError] = Field(
+        description=(
+            "Per-file error records for files that failed to ingest in this "
+            "batch, one entry per failure; each names the staged filename, "
+            "the file as the caller named it, and the error message, and a "
+            "typed SAGE error additionally carries its code and detail."
+        ),
     )
     edge_warnings: list[EdgeWarning] | None = Field(
         default=None,

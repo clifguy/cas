@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sage.api.errors import SAGEError
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.batch_inference import (
@@ -68,6 +69,14 @@ class FileDescriptor:
     file_path: str
     source_type: str
     parsed_metadata: ParsedMetadataInput | None = None
+    #: The path the caller named, for a caller that put something else in
+    #: ``file_path``: a delivery that staged the bytes server-side first
+    #: substitutes the staging location. Handed to the per-file ingest as its
+    #: ``caller_source`` and reported as the error entry's ``source_path``;
+    #: ``IngestionService.ingest`` is the single home for why a refusal must
+    #: name this spelling and never a resolved one. Left unset, ``file_path``
+    #: stands, which is what every caller that names its own file wants.
+    declared_source: str | None = None
 
 
 @dataclass
@@ -158,12 +167,18 @@ class BatchIngestService:
 
         Per-file failure isolation (CAS-ADR-029):
         The batch is NOT atomic. Per-file exceptions are caught into
-        ``IngestSummary.errors`` as ``{filename, message}`` entries
-        (with ``error_count`` advancing in lockstep); the batch
-        continues with the remaining files and Phase 3 edge
-        execution still runs across whatever did insert. Earlier or
-        later items are not rolled back. Mirrors the bulk-tool
-        atomicity contract used by ``sage_bulk_*`` operations.
+        ``IngestSummary.errors`` (with ``error_count`` advancing in
+        lockstep); the batch continues with the remaining files and
+        Phase 3 edge execution still runs across whatever did insert.
+        Earlier or later items are not rolled back. Mirrors the
+        bulk-tool atomicity contract used by ``sage_bulk_*``
+        operations. Each entry names the staged ``filename``, the
+        caller's own ``source_path`` (the declared source when the
+        descriptor carries one, else ``file_path``), and the error's
+        ``message``; a ``SAGEError`` additionally carries its ``code``
+        and, when it has one, its typed ``detail``, so a caller can
+        branch on the code and read the payload instead of parsing
+        prose. See ``_error_entry``.
 
         Predecessor auto-transition on Tier-1 supersedes inference:
         When ``infer_edges=True`` and Phase 3 edge resolution
@@ -271,6 +286,9 @@ class BatchIngestService:
                 )
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,
+                    # The staged path is where the bytes are; the caller's
+                    # own path is what a refusal names back at it.
+                    caller_source=fd.declared_source,
                 )
                 path_to_id[fd.file_path] = ingest_result.document.id
 
@@ -292,12 +310,7 @@ class BatchIngestService:
 
             except Exception as exc:
                 summary.error_count += 1
-                summary.errors.append(
-                    {
-                        "filename": filename,
-                        "message": str(exc),
-                    }
-                )
+                summary.errors.append(_error_entry(filename, fd, exc))
                 if on_file_error is not None:
                     await on_file_error(i, total, filename, str(exc))
 
@@ -368,6 +381,33 @@ class BatchIngestService:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _error_entry(filename: str, fd: FileDescriptor, exc: Exception) -> dict:
+    """Build one ``IngestSummary.errors`` entry for a failed file.
+
+    ``message`` is the error's own text: a ``SAGEError``'s ``message`` field,
+    which is also what ``str()`` renders for it, and the rendered exception
+    otherwise -- so a consumer that displays ``message`` while branching on
+    ``code`` never sees the two disagree. ``code`` and ``detail`` are carried
+    only for a ``SAGEError``, the one error that has them; a bare exception
+    has no typed detail, and inventing one would misreport it. ``source_path``
+    is the caller's own spelling of the file, so two failures that share a
+    basename stay distinguishable and a refusal names something the caller
+    can act on.
+    """
+    entry: dict = {
+        "filename": filename,
+        "source_path": fd.declared_source or fd.file_path,
+    }
+    if isinstance(exc, SAGEError):
+        entry["message"] = exc.message
+        entry["code"] = exc.code
+        if exc.detail:
+            entry["detail"] = exc.detail
+    else:
+        entry["message"] = str(exc)
+    return entry
 
 
 def _metadata_dict_from_parsed(

@@ -10,7 +10,7 @@ Coverage today: the scan chain (``ScanRequest``, ``ScanResponse``,
 ``ScanResultResponse``, ``ParsedMetadata``) and the ingest request body
 (``IngestRequest``, ``IngestFileItem``) are defined here. The SSE event
 payloads (``ProgressEvent``, ``SummaryEvent``, ``DocumentsCreated``,
-``EdgeWarning``) and
+``EdgeWarning``, ``BatchIngestFileError``) and
 the shared ``ErrorResponse`` envelope are re-exported from
 ``sage.models.schemas``: the bulk-ingest SSE shape is substrate-resident
 so the co-located and hosted profiles emit identical events, and /scan
@@ -24,6 +24,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from sage.models.schemas import (
+    BatchIngestFileError,
     DocumentDateStr,
     DocumentsCreated,
     EdgeWarning,
@@ -35,6 +36,7 @@ from sage.models.schemas import (
 )
 
 __all__ = [
+    "BatchIngestFileError",
     "DocumentsCreated",
     "EdgeWarning",
     "ErrorResponse",

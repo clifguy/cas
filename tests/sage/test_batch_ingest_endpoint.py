@@ -267,6 +267,56 @@ async def test_b4_per_file_failure_isolation(batch_app):
     assert summary["errors"][0]["filename"] == "bad.md"
 
 
+@pytest.mark.asyncio
+async def test_b9_refused_upload_entry_names_the_callers_file_with_code(
+    batch_app, tmp_vault_dir, tmp_path
+):
+    """A retention refusal on an uploaded file reaches the summary as a typed
+    entry whose detail names the file as the caller uploaded it, not the
+    server-side staging path it was written to.
+
+    The upload leg stages each part under a temporary directory and hands the
+    staged path down the pipeline, so a refusal raised below that point knows
+    only the staging location. The caller's own spelling is the upload's
+    filename, and that is what the entry must carry.
+
+    Anti-coincidental-pass: the upload is named with a directory component,
+    so the caller's spelling (``inbox/refused.md``) differs from both the
+    staged path and the sanitized basename the file is staged under; an
+    implementation reporting either of those fails the equality. The explicit
+    negative on the staging-directory prefix names the defect directly.
+    Against the message-only collection this fails on the missing ``code``
+    key.
+    """
+    app, vault_id, _config = batch_app
+    imports = tmp_vault_dir / "sources" / "imports"
+    imports.mkdir(parents=True, exist_ok=True)
+    # Dangling, so retention falls through to its write exit and refuses there.
+    (imports / "refused.md").symlink_to(tmp_path / "nowhere.md")
+
+    metadata = {"files": [{"source_type": "markdown"}, {"source_type": "markdown"}]}
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("good.md", b"# Good\n\nIngestible."),
+                _md_part("inbox/refused.md", b"# Refused\n\nRetention refuses this one."),
+            ],
+            data={"metadata": json.dumps(metadata)},
+        )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    summary = next(e for e in events if e["event_type"] == "summary")
+    assert summary["error_count"] == 1, summary
+    assert summary["documents_created"]["new"] == 1
+    entry = summary["errors"][0]
+    assert entry["code"] == "vault_source_path_refused"
+    assert entry["detail"] == {"source_path": "inbox/refused.md"}
+    assert entry["source_path"] == "inbox/refused.md"
+    assert entry["filename"] == "refused.md"
+    assert "sage-batch-ingest-" not in json.dumps(entry)
+
+
 # ---------------------------------------------------------------------------
 # B6 -- pre-stream validation stays application/json
 # ---------------------------------------------------------------------------

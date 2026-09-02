@@ -208,14 +208,16 @@ async def stream_uploaded_batch_ingest(
     preserved (so the vault's FilenameParser sees the right stem and
     provenance hashes the uploaded bytes), then ingested through the same
     ``batch_ingest_sse_stream`` the co-located profile drives -- so both
-    profiles produce equivalent summaries. The staging directory is removed
-    once the stream is exhausted.
+    profiles produce equivalent summaries. A per-file failure names the file
+    by the upload's own filename, not by the staging path it was written
+    to. The staging directory is removed once the stream is exhausted.
     """
     staging_dir = Path(tempfile.mkdtemp(prefix="sage-batch-ingest-"))
     try:
         descriptors: list[FileDescriptor] = []
         for index, upload in enumerate(uploads):
-            safe_name = Path(upload.filename or f"upload_{index}").name
+            declared = upload.filename or f"upload_{index}"
+            safe_name = Path(declared).name
             dest = staging_dir / safe_name
             dest.write_bytes(upload.content)
             descriptors.append(
@@ -223,6 +225,9 @@ async def stream_uploaded_batch_ingest(
                     file_path=str(dest),
                     source_type=upload.source_type,
                     parsed_metadata=_parsed_metadata_input(upload.parsed_metadata, dest.stem),
+                    # The staged path is where the bytes are; the upload's
+                    # own name is what a refusal names back at the caller.
+                    declared_source=declared,
                 )
             )
         async for chunk in batch_ingest_sse_stream(

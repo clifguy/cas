@@ -82,7 +82,7 @@ class TestSummaryEventFrom:
             edges_dropped=0,
             edge_warnings=[],
             error_count=1,
-            errors=[{"filename": "bad.md", "message": "boom"}],
+            errors=[{"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}],
         )
         event = _summary_event_from(summary)
         assert isinstance(event, SummaryEvent)
@@ -97,7 +97,9 @@ class TestSummaryEventFrom:
         assert event.edges_removed == 1
         assert event.edges_dropped == 0
         assert event.error_count == 1
-        assert event.errors == [{"filename": "bad.md", "message": "boom"}]
+        assert [e.model_dump(exclude_none=True) for e in event.errors] == [
+            {"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}
+        ]
         # Empty warnings list maps to None on the event (preserves the
         # wire convention: exclude_none drops the field).
         assert event.edge_warnings is None
@@ -148,6 +150,56 @@ class TestSummaryEventFrom:
         """
         summary = IngestSummary(
             edge_warnings=[{"edge_type": "supersedes", "warning": "skew"}],
+        )
+        with pytest.raises(ValidationError):
+            _summary_event_from(summary)
+
+    def test_summary_event_serializes_message_only_entry_without_code_or_detail(self) -> None:
+        """A per-file failure that carried no typed error serializes with the
+        filename, the caller's path, and the message -- and no ``code`` or
+        ``detail`` key -- so a consumer sees the absence, not a null.
+
+        Anti-coincidental-pass: equality on the wire payload. A model that
+        emitted the optional fields as ``null`` would satisfy any per-key
+        containment check while misreporting a typed detail that does not
+        exist.
+        """
+        entry = {"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}
+        summary = IngestSummary(error_count=1, errors=[entry])
+        payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
+        assert payload["errors"] == [entry]
+
+    def test_summary_event_carries_code_and_detail_for_a_typed_entry(self) -> None:
+        """A per-file failure that was a typed error serializes with its code
+        and its detail dict intact, alongside the message-only fields.
+
+        Anti-coincidental-pass: the ``detail`` value is a nested dict with a
+        non-string leaf, so a model that flattened or stringified it would
+        fail the equality.
+        """
+        entry = {
+            "filename": "bad.md",
+            "source_path": "/in/bad.md",
+            "message": "refused",
+            "code": "vault_source_path_refused",
+            "detail": {"source_path": "/in/bad.md", "attempt": 2},
+        }
+        summary = IngestSummary(error_count=1, errors=[entry])
+        payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
+        assert payload["errors"] == [entry]
+
+    def test_summary_event_rejects_error_entry_missing_message(self) -> None:
+        """The message-only fields are required: an entry that lacks its
+        ``message`` fails validation rather than reaching the wire
+        half-shaped.
+
+        Anti-coincidental-pass: an ``errors`` field typed as a list of
+        untyped dicts passes every round-trip test above unchanged; only a
+        rejected under-shaped entry proves the entry is a typed model.
+        """
+        summary = IngestSummary(
+            error_count=1,
+            errors=[{"filename": "bad.md", "source_path": "/in/bad.md"}],
         )
         with pytest.raises(ValidationError):
             _summary_event_from(summary)

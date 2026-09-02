@@ -680,6 +680,41 @@ def test_vault_stats_response_documents_last_optimize(
         assert name in summary_required, f"LastOptimizeSummary must list '{name}' in 'required'"
 
 
+@pytest.mark.parametrize("spec_fixture", ["sage_core_spec", "cas_app_spec"])
+def test_summary_event_errors_items_reference_batch_ingest_file_error(
+    request: pytest.FixtureRequest, spec_fixture: str
+):
+    """The batch summary's per-file error entries are typed at both
+    declaration sites: ``SummaryEvent.errors`` points at the
+    ``BatchIngestFileError`` component, whose required set is the
+    message-only shape and whose ``code`` and ``detail`` are optional.
+
+    The schema-parity gate above checks that a same-named component exists
+    on both sides of each spec; it cannot see whether ``errors`` actually
+    references it. A component added but left unreferenced would leave the
+    wire shape declared as a bare object, which is the drift this pins.
+    """
+    spec = request.getfixturevalue(spec_fixture)
+    assert spec is not None, f"{spec_fixture} is missing"
+    schemas = spec["components"]["schemas"]
+
+    errors = schemas["SummaryEvent"]["properties"]["errors"]
+    assert errors.get("type") == "array"
+    assert errors.get("items", {}).get("$ref") == "#/components/schemas/BatchIngestFileError", (
+        f"{spec_fixture}: SummaryEvent.errors.items must $ref BatchIngestFileError, "
+        f"got {errors.get('items')!r}"
+    )
+
+    assert "BatchIngestFileError" in schemas, (
+        f"{spec_fixture}: components.schemas.BatchIngestFileError is not defined"
+    )
+    entry = schemas["BatchIngestFileError"]
+    assert sorted(entry.get("required") or []) == ["filename", "message", "source_path"]
+    properties = entry.get("properties") or {}
+    assert {"filename", "source_path", "message", "code", "detail"} <= set(properties)
+    assert properties["detail"].get("type") == "object"
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Every public Pydantic field in sage.models.schemas has a description
 # ---------------------------------------------------------------------------

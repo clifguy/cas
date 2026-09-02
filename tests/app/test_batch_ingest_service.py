@@ -23,6 +23,7 @@ import pytest
 
 from sage.adapters.interfaces import Chunk, NaturalKeyConflict
 from sage.adapters.stubs import StubContentStore
+from sage.api.errors import SAGEError, VaultSourcePathRefusedError
 from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, Edge, IngestRequest, UnlinkResponse
@@ -189,7 +190,7 @@ def _make_services(
     # Ingestion service -- default: succeed and return new doc
     call_count = 0
 
-    async def _ingest(request):
+    async def _ingest(request, **kwargs):
         nonlocal call_count
         call_count += 1
         doc_id = f"aaaaaaaa_doc_{call_count}"
@@ -582,7 +583,7 @@ class TestPerFileIngestion:
 
         original_ingest = services.ingestion_service.ingest.side_effect
 
-        async def tracking_ingest(request):
+        async def tracking_ingest(request, **kwargs):
             paths_ingested.append(request.source)
             return await original_ingest(request)
 
@@ -634,7 +635,7 @@ class TestPerFileIngestion:
         services = _make_services()
         call_idx = 0
 
-        async def failing_ingest(request):
+        async def failing_ingest(request, **kwargs):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 2:
@@ -659,6 +660,136 @@ class TestPerFileIngestion:
         assert len(result.errors) == 1
         assert result.errors[0]["filename"] == "bad.md"
         assert "Adapter failure" in result.errors[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_bis_021_sage_error_entry_carries_code_and_detail(self):
+        """A per-file failure that is a SAGEError reports its code and typed
+        detail alongside the filename and message, and the batch continues.
+
+        Anti-coincidental-pass: whole-dict equality. A collection that adds
+        ``code`` but drops ``detail``, or that lands either under another
+        key, would pass any per-key containment check; only the exact entry
+        pins the published shape.
+        """
+        services = _make_services()
+        call_idx = 0
+
+        async def refusing_ingest(request, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            if call_idx == 2:
+                raise VaultSourcePathRefusedError("caller/x.md", "refused here")
+            return _make_ingest_result(f"doc-{call_idx}")
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=refusing_ingest)
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/ok1.md"), _fd("/tmp/bad.md"), _fd("/tmp/ok2.md")],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        assert result.docs_new == 2
+        assert result.error_count == 1
+        assert result.errors == [
+            {
+                "filename": "bad.md",
+                "source_path": "/tmp/bad.md",
+                "message": "refused here",
+                "code": "vault_source_path_refused",
+                "detail": {"source_path": "caller/x.md"},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bis_022_non_sage_error_entry_stays_message_only(self):
+        """An entry carries only the typed fields its error actually has: a
+        failure that is not a SAGEError reports the filename, the caller's
+        path, and the message and nothing else; a SAGEError that carries no
+        detail reports its code and no ``detail`` key.
+
+        Anti-coincidental-pass: whole-dict equality pins the *absence* of
+        ``code`` and ``detail`` on the bare exception, and of ``detail`` on
+        the detail-less SAGEError. An implementation that always emits the
+        optional fields as ``None`` would invent a typed envelope for an
+        error that has none; one that emits ``detail`` whenever the error is
+        a SAGEError would pass the bare-exception case alone, which is why
+        the second file is there.
+        """
+        services = _make_services()
+        call_idx = 0
+
+        async def failing_ingest(request, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            if call_idx == 1:
+                raise RuntimeError("boom")
+            if call_idx == 2:
+                raise SAGEError("adapter_not_found", "no adapter", 400)
+            return _make_ingest_result(f"doc-{call_idx}")
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=failing_ingest)
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/bad.md"), _fd("/tmp/typed.md"), _fd("/tmp/ok.md")],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        assert result.error_count == 2
+        assert result.errors == [
+            {"filename": "bad.md", "source_path": "/tmp/bad.md", "message": "boom"},
+            {
+                "filename": "typed.md",
+                "source_path": "/tmp/typed.md",
+                "message": "no adapter",
+                "code": "adapter_not_found",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bis_023_declared_source_reaches_ingest_and_names_the_entry(self):
+        """A descriptor's declared source is handed to the per-file ingest as
+        its ``caller_source`` and names the error entry's ``source_path``; a
+        descriptor without one leaves ``caller_source`` unset and reports its
+        own ``file_path``.
+
+        Anti-coincidental-pass: the declared spelling carries a ``/./``
+        segment, so an implementation that round-trips it through ``Path``
+        hands back a string the caller did not send and fails the equality.
+        The kwarg is asserted on the mock's recorded calls, so deriving
+        ``source_path`` from ``file_path`` while never passing the declared
+        source through cannot pass.
+        """
+        services = _make_services()
+
+        async def failing_ingest(request, **kwargs):
+            raise RuntimeError("boom")
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=failing_ingest)
+        svc = BatchIngestService()
+
+        declared = "/Users/me/./note.md"
+        result = await svc.run(
+            files=[
+                FileDescriptor(
+                    file_path="/srv/stage/abc/note.md",
+                    source_type="markdown",
+                    declared_source=declared,
+                ),
+                FileDescriptor(file_path="/srv/local/plain.md", source_type="markdown"),
+            ],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        calls = services.ingestion_service.ingest.call_args_list
+        assert calls[0].kwargs["caller_source"] == declared
+        assert calls[1].kwargs["caller_source"] is None
+        assert [e["source_path"] for e in result.errors] == [declared, "/srv/local/plain.md"]
+        assert [e["filename"] for e in result.errors] == ["note.md", "plain.md"]
 
     @pytest.mark.asyncio
     async def test_bis_011_abstract_tracking(self):
@@ -718,7 +849,7 @@ class TestEdgeExecution:
         services = _make_services()
         call_idx = 0
 
-        async def partial_ingest(request):
+        async def partial_ingest(request, **kwargs):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 1:
@@ -805,7 +936,7 @@ class TestProgressCallbacks:
         services = _make_services()
         call_idx = 0
 
-        async def failing_ingest(request):
+        async def failing_ingest(request, **kwargs):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 2:
@@ -847,7 +978,7 @@ class TestProgressCallbacks:
         services = _make_services()
         call_idx = 0
 
-        async def mixed_ingest(request):
+        async def mixed_ingest(request, **kwargs):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 2:
@@ -904,7 +1035,7 @@ class TestCallerIntegration:
         services = _make_services()
         call_idx = 0
 
-        async def mixed_ingest(request):
+        async def mixed_ingest(request, **kwargs):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 3:
@@ -938,7 +1069,7 @@ class TestCallerIntegration:
         services = _make_services()
         call_idx = 0
 
-        async def mixed_confirm(request):
+        async def mixed_confirm(request, **kwargs):
             nonlocal call_idx
             call_idx += 1
             confirmed = call_idx == 2  # second doc auto-confirmed
@@ -1193,7 +1324,7 @@ def _make_chain_services(
     # Standard ingestion mock: each new file becomes a fresh document.
     call_count = 0
 
-    async def _ingest(request):
+    async def _ingest(request, **kwargs):
         nonlocal call_count
         call_count += 1
         new_id = f"eeeeeeee_doc_new_{call_count}"
