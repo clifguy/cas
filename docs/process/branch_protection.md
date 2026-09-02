@@ -143,7 +143,11 @@ When this document changes (a new status-check job is added, a job is renamed, t
 
 Treat the document as the source of truth and the UI as its reflection.
 
-The two directions fail differently. A change made here and not applied to the ruleset leaves the repository under-protected relative to what this file claims. A change made in the UI and not captured here leaves this file asserting something untrue, which is worse, because the claim to be the source of truth is what the rest of this document rests on. Nothing compares the two automatically today.
+**What verifies you.** [`.github/workflows/ruleset-drift.yml`](../../.github/workflows/ruleset-drift.yml) reads the live ruleset on a daily schedule and compares it field by field against the *Captured ruleset* block above, failing the run and naming each diverging leaf — a flipped flag inside a rule's `parameters` names that flag, not the rule containing it. The forge-internal identifiers and timestamps the block omits are normalised away, so the capture stays free of them. The same comparison is available locally while editing this document, as `python -m scripts.check_ruleset_drift` or as the opt-in test tier `SAGE_TEST_LIVE_RULESET=1 pytest tests/infra/test_ruleset_drift.py`; the default test job runs neither, having no network access and no token.
+
+The check covers captured-versus-live *state*, not the prose around it. This document has previously asserted a landing model that could not exist on this repository, and given activation instructions that fail against the rules API, while the JSON block stayed accurate throughout — no captured-to-live comparison would have caught either. Prose that misdescribes reality remains a review concern rather than a gated one.
+
+The two directions fail differently. A change made here and not applied to the ruleset leaves the repository under-protected relative to what this file claims. A change made in the UI and not captured here leaves this file asserting something untrue, which is worse, because the claim to be the source of truth is what the rest of this document rests on. The scheduled check is aimed at that second direction, which is the one that carries no commit for an offline gate to hang off.
 
 ## Rationale
 
