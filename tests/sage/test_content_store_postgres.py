@@ -101,18 +101,61 @@ async def _churn(store: PostgresContentStore, doc_id: str = "bloat"):
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=5))
 
 
-async def _await_no_foreign_snapshots(pg_pool, timeout: float = 15.0) -> None:
-    """Wait until no other backend in this database holds a snapshot.
+# Every other backend that currently pins part of the reclaim horizon, with the
+# two properties that decide whether it pins *ours*: whether its snapshot is in
+# this database, and whether it holds an assigned transaction id.
+_HORIZON_HOLDERS_SQL = """
+    SELECT pid,
+           backend_xid::text,
+           backend_xmin IS NOT NULL AND datname IS NOT DISTINCT FROM current_database(),
+           datname,
+           backend_type,
+           state,
+           left(coalesce(query, ''), 80)
+    FROM pg_stat_activity
+    WHERE pid <> pg_backend_pid()
+      AND (backend_xid IS NOT NULL OR backend_xmin IS NOT NULL)
+"""
 
-    VACUUM FULL keeps every dead tuple a concurrent snapshot in the same
-    database could still see -- an autovacuum ANALYZE worker is enough -- so a
-    reclaim assertion made while one is live fails for reasons unrelated to
-    the store. Bounded; on timeout the holders are named.
 
-    ``pg_stat_activity`` shows other roles' ``backend_xmin`` only to a
-    superuser or a member of ``pg_read_all_stats``, and autovacuum workers run
-    as the bootstrap superuser; without that visibility the wait would be a
-    silent no-op, so the precondition is checked first and fails loudly."""
+async def _horizon_holders(pg_pool) -> list[tuple]:
+    async with pg_pool.connection() as conn:
+        return list(await (await conn.execute(_HORIZON_HOLDERS_SQL)).fetchall())
+
+
+async def _await_reclaimable_horizon(pg_pool, timeout: float = 60.0) -> None:
+    """Wait until ``VACUUM FULL`` can actually reclaim this test's dead tuples.
+
+    The rewrite keeps every dead tuple that anything might still see, so a
+    reclaim assertion made while the horizon is pinned fails for reasons that
+    have nothing to do with the store. Two different holders pin it, and they
+    differ in scope -- measured against PostgreSQL 17, not assumed:
+
+    * A backend holding a **snapshot** in *this* database. An autovacuum
+      ANALYZE worker is enough. The same snapshot held from another database
+      does not pin ours.
+    * A transaction holding an **assigned transaction id**, in *any* database
+      on the server, that was assigned before this test deleted its tuples.
+      The rewrite's cutoff is bounded by the oldest transaction id still
+      running cluster-wide, so a writer in an unrelated database blocks the
+      reclaim just as effectively as a local one.
+
+    The second is why this must be called after the churn rather than before,
+    and why a parallel run needs it where a serial run did not: sibling workers
+    provision their own databases and write to them, and every one of those
+    writes holds a transaction id. Waiting for the whole server to fall quiet
+    would never return under a full parallel suite. Waiting only for the
+    writers that were *already* open does return, because a transaction that
+    starts later carries a newer id and cannot hold tuples this test has
+    already deleted. That set is finite and short-lived.
+
+    Bounded; on timeout the remaining holders are named.
+
+    ``pg_stat_activity`` shows other roles' ``backend_xmin`` and ``backend_xid``
+    only to a superuser or a member of ``pg_read_all_stats``, and autovacuum
+    workers run as the bootstrap superuser; without that visibility the wait
+    would be a silent no-op, so the precondition is checked first and fails
+    loudly."""
     async with pg_pool.connection() as conn:
         privilege = await (
             await conn.execute(
@@ -124,20 +167,23 @@ async def _await_no_foreign_snapshots(pg_pool, timeout: float = 15.0) -> None:
         "cannot see other backends' snapshots: run the suite as a superuser "
         "or GRANT pg_read_all_stats TO the test role"
     )
+
+    # Writers already open at this point are exactly the ones whose ids can
+    # predate the deletion; identify each by (pid, xid) so a later transaction
+    # on the same backend is not mistaken for the one being waited out.
+    incumbent_writers = {(row[0], row[1]) for row in await _horizon_holders(pg_pool) if row[1]}
+
     deadline = time.monotonic() + timeout
     while True:
-        async with pg_pool.connection() as conn:
-            rows = await (
-                await conn.execute(
-                    "SELECT pid, backend_type, state, left(query, 80) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND backend_xmin IS NOT NULL "
-                    "AND pid <> pg_backend_pid()"
-                )
-            ).fetchall()
-        if not rows:
+        blocking = [
+            row
+            for row in await _horizon_holders(pg_pool)
+            if (row[1] and (row[0], row[1]) in incumbent_writers) or row[2]
+        ]
+        if not blocking:
             return
         if time.monotonic() > deadline:
-            raise AssertionError(f"backends still holding snapshots in this database: {rows}")
+            raise AssertionError(f"reclaim horizon still pinned after {timeout}s by: {blocking}")
         await asyncio.sleep(0.2)
 
 
@@ -490,7 +536,7 @@ async def test_optimize_reclaims_versions_and_bytes(store, pg_pool):
     await _disable_autovacuum(pg_pool)
     await _churn(store)
     pre_bytes = await store.measured_byte_size()
-    await _await_no_foreign_snapshots(pg_pool)
+    await _await_reclaimable_horizon(pg_pool)
     snap = await store.optimize(timedelta(0))
     assert snap["pre_versions"] > 0
     assert snap["post_versions"] == 0
@@ -504,7 +550,7 @@ async def test_optimize_accepts_nonzero_threshold(store, pg_pool):
     """cleanup_older_than is accepted but irrelevant on Postgres: full reclaim."""
     await _disable_autovacuum(pg_pool)
     await _churn(store)
-    await _await_no_foreign_snapshots(pg_pool)
+    await _await_reclaimable_horizon(pg_pool)
     snap = await store.optimize(timedelta(days=7))
     assert snap["post_versions"] == 0
 
