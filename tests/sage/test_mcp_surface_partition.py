@@ -186,32 +186,41 @@ def test_unassigned_tool_fails_registration_loudly(surface: str, monkeypatch: An
 
     The registration path must look the name up, not default it: a
     fallback (``.get(name, "sage")``) would quietly widen the ordinary
-    catalog by one tool per omission. The positive control — the same probe
-    tool with a table row — must build cleanly, so the failure is the missing
-    row and not the probe tool itself.
+    catalog by one tool per omission. Two probe tools are registered and
+    both must be named in the one failure, so a build that raised on the
+    first omission it met -- reporting one of two -- fails here. The
+    positive control — the same probes with table rows — must build cleanly,
+    so the failure is the missing rows and not the probe tools themselves.
     """
+    probes = ("unassigned_probe_tool", "unassigned_probe_tool_2")
     real_register_app_tools = mcp_server.register_app_tools
 
     def register_with_probe(server: Any, *args: Any, **kwargs: Any) -> dict[str, Callable]:
         tools = real_register_app_tools(server, *args, **kwargs)
+        for probe in probes:
 
-        @server.tool(name="unassigned_probe_tool")
-        async def unassigned_probe_tool() -> dict:
-            return {}
+            async def probe_tool() -> dict:
+                return {}
 
-        return {**tools, "unassigned_probe_tool": unassigned_probe_tool}
+            server.tool(name=probe)(probe_tool)
+            tools[probe] = probe_tool
+        return tools
 
     monkeypatch.setattr(mcp_server, "register_app_tools", register_with_probe)
 
-    with pytest.raises(LookupError, match="unassigned_probe_tool") as excinfo:
+    with pytest.raises(LookupError) as excinfo:
         mcp_server.build_partitioned_server(surface)
-    assert "SERVER_ASSIGNMENT" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "SERVER_ASSIGNMENT" in message
+    for probe in probes:
+        assert probe in message, f"batched failure omits {probe!r}: {message}"
 
-    # Positive control: with a table row the probe registers on its surface.
-    monkeypatch.setitem(SERVER_ASSIGNMENT, "unassigned_probe_tool", surface)
+    # Positive control: with table rows the probes register on their surface.
+    for probe in probes:
+        monkeypatch.setitem(SERVER_ASSIGNMENT, probe, surface)
     server = mcp_server.build_partitioned_server(surface)
     names = {t.name for t in server._tool_manager.list_tools()}  # noqa: SLF001
-    assert "unassigned_probe_tool" in names
+    assert set(probes) <= names
 
 
 def test_read_spine_not_duplicated_on_sage_maint():

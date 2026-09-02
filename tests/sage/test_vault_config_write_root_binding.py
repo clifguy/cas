@@ -60,8 +60,16 @@ class _FakeIngestionService:
     registered_adapters: dict = {}
 
 
+class _FakeCreatedGraphStore:
+    """The one read ``create_vault`` makes of a new vault's store: its document count."""
+
+    async def get_total_document_count(self) -> int:
+        return 0
+
+
 class _FakeServices:
     def __init__(self) -> None:
+        self.graph_store = _FakeCreatedGraphStore()
         self.user_service = _FakeUserService()
         self.ingestion_service = _FakeIngestionService()
 

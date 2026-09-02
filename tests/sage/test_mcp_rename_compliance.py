@@ -263,6 +263,63 @@ def test_extract_verb_synthetic_inputs(tool_name: str, expected_verb: str) -> No
 # ---------------------------------------------------------------------------
 
 
+def _allowlist_drift(
+    allow: list[str], live_names: set[str], assignment: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """Classify SAGE MCP permission entries as ``(stale, wrong_surface)``.
+
+    ``stale``: the entry names no live tool -- renamed away, or an alias,
+    which the catalog never advertises. ``wrong_surface``: the tool is live
+    but ``assignment`` registers it on a different server than the entry's
+    ``mcp__<server>__`` segment claims. Pure over its inputs so the
+    classification can be pinned with synthetic entries where the
+    developer-local settings file is absent.
+    """
+    stale: list[str] = []
+    wrong_surface: list[str] = []
+    for server in ("sage", "sage_maint"):
+        prefix = f"mcp__{server}__"
+        for entry in (e for e in allow if e.startswith(prefix)):
+            tool = entry[len(prefix) :]
+            if tool not in live_names:
+                stale.append(entry)
+            elif assignment.get(tool) != server:
+                wrong_surface.append(entry)
+    return sorted(stale), sorted(wrong_surface)
+
+
+@pytest.mark.parametrize(
+    ("entry", "expect_stale", "expect_wrong_surface"),
+    [
+        ("mcp__sage__search", False, False),
+        ("mcp__sage__maint_list_vaults", False, False),
+        ("mcp__sage_maint__maint_list_vaults", False, True),
+        ("mcp__sage__maint_get_vault_config", False, True),
+        ("mcp__sage_maint__admin_list_vaults", True, False),
+        ("mcp__sage__sage_discover", True, False),
+    ],
+)
+def test_allowlist_drift_classification(
+    entry: str, expect_stale: bool, expect_wrong_surface: bool
+) -> None:
+    """The allowlist classifier separates stale, wrong-surface, and correct entries.
+
+    Synthetic entries against the real assignment table, with the live set
+    taken as the table's keys (the catalog-equals-table invariant is gated
+    separately), so the classification runs everywhere -- including CI,
+    where the developer-local settings file the live test reads is absent.
+
+    Anti-coincidental: the two wrong-surface rows are the rival set. A
+    classifier that tested ``assignment.get(tool) is None`` (a no-op, since
+    live names are table keys) or dropped the surface branch would leave
+    both unflagged; the recorded divergence on its table server proves the
+    branch reads the table rather than the prefix.
+    """
+    stale, wrong_surface = _allowlist_drift([entry], set(SERVER_ASSIGNMENT), SERVER_ASSIGNMENT)
+    assert (entry in stale) is expect_stale
+    assert (entry in wrong_surface) is expect_wrong_surface
+
+
 async def test_settings_local_permissions_match_live_catalog() -> None:
     """Every SAGE MCP permission entry in the project settings names a
     registered tool on the surface the entry's server segment claims.
@@ -293,19 +350,7 @@ async def test_settings_local_permissions_match_live_catalog() -> None:
     data = _json.loads(settings_path.read_text())
     allow = data.get("permissions", {}).get("allow", [])
 
-    live_names = await _live_tool_names()
-    stale: list[str] = []
-    wrong_surface: list[str] = []
-    for server in ("sage", "sage_maint"):
-        prefix = f"mcp__{server}__"
-        for entry in (e for e in allow if e.startswith(prefix)):
-            tool = entry[len(prefix) :]
-            if tool not in live_names:
-                stale.append(entry)
-            elif SERVER_ASSIGNMENT.get(tool) != server:
-                wrong_surface.append(entry)
-    stale.sort()
-    wrong_surface.sort()
+    stale, wrong_surface = _allowlist_drift(allow, await _live_tool_names(), SERVER_ASSIGNMENT)
     assert not stale, (
         f"Stale settings.local.json permission entries (no live MCP tool): "
         f"{stale}. Either rename the entries to the current tool name "

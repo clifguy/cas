@@ -169,10 +169,6 @@ class TestSageCreateVault:
 
         assert result["vault_id"] == "new_vault"
         assert result["name"] == "New Vault"
-        # Compared against the config the test SENT, not the echoed config:
-        # the echo is the value the tool reads, so equality with it would
-        # hold for any wiring.
-        assert result["storage_root"] == default_cfg["vault"]["storage_root"]
         assert "config" in result
 
         # Echoed config must be a full, valid VaultConfig
@@ -189,6 +185,11 @@ class TestSageCreateVault:
         on_disk = yaml.safe_load(yaml_path.read_text())
         assert on_disk["vault"]["id"] == "new_vault"
         assert on_disk["vault"]["name"] == "New Vault"
+        # The reported storage root must match the config the vault actually
+        # uses -- the YAML the create wrote -- not the dict the tool echoes
+        # (which is the caller's own object, so equality with it holds for
+        # any wiring) nor the dict the test sent (same object).
+        assert result["storage_root"] == on_disk["vault"]["storage_root"]
 
     # TEST-APP-MCP-031
     async def test_mcp_031_rejects_duplicate(self, vaults_root, empty_registry):

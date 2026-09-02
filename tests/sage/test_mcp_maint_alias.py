@@ -37,6 +37,8 @@ from sage._tool_naming import (
     SERVER_ASSIGNMENT,
     _check_table_invariants,
 )
+from sage.app import create_app
+from sage.config import VaultConfig
 from sage.mcp_server import _LoggingFastMCP
 
 
@@ -203,7 +205,7 @@ async def test_pre_rename_enumeration_alias_resolves_on_ordinary_mount(
 
 @pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
 async def test_pre_rename_enumeration_alias_fails_on_maintenance_mounts(
-    app_with_one_vault: FastAPI, mount: str
+    minimal_config: VaultConfig, mount: str
 ) -> None:
     """``admin_list_vaults`` fails on the maintenance mounts exactly as the
     canonical name does.
@@ -212,9 +214,11 @@ async def test_pre_rename_enumeration_alias_fails_on_maintenance_mounts(
     is evaluated after resolution, so an aliased call to a mount that does
     not register the target is an unknown tool there. The canonical name is
     the control -- if it resolved, the failure below would be about the
-    alias layer, not the partition.
+    alias layer, not the partition. The mounts exist before any vault is
+    initialized, and an unknown tool fails before any vault is read, so no
+    vault is initialized here.
     """
-    server = app_with_one_vault.state.mcp_mounts[mount]
+    server = create_app(config=minimal_config).state.mcp_mounts[mount]
     with pytest.raises(ToolError, match="maint_list_vaults"):
         await server.call_tool("maint_list_vaults", {})
     with pytest.raises(ToolError, match="maint_list_vaults"):
@@ -230,6 +234,13 @@ def test_table_invariants_reject_unregistered_alias_target_and_divergence() -> N
     divergence set is held to the same standard so a typo or stale entry
     fails at import rather than only in the partition gates. The unmodified
     tables are the positive control.
+
+    Anti-coincidental: the bogus divergence ``maint_not_a_tool`` is neither
+    registered nor an alias target, so a check written against the alias
+    targets (``divergences - set(aliases.values())``) would also reject it.
+    Declaring ``search`` -- registered, never an alias target -- as a
+    divergence must therefore pass: it separates "registered anywhere" from
+    "is an alias target".
     """
     _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)
 
@@ -240,3 +251,7 @@ def test_table_invariants_reject_unregistered_alias_target_and_divergence() -> N
     bogus = PREFIX_SURFACE_DIVERGENCES | {"maint_not_a_tool"}
     with pytest.raises(AssertionError, match="maint_not_a_tool"):
         _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, bogus)
+
+    registered_not_aliased = PREFIX_SURFACE_DIVERGENCES | {"search"}
+    assert "search" not in MAINT_ALIAS_MAPPING.values()
+    _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, registered_not_aliased)

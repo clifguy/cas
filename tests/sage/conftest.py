@@ -11,9 +11,11 @@ import asyncio
 import contextlib
 import dataclasses
 import os
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 
 import sage.adapters.abstraction_qwen3 as _abstraction_qwen3
 from sage.adapters.stubs import (
@@ -52,19 +54,22 @@ def _reset_generation_lock():
 
 
 @pytest.fixture
-async def app_with_one_vault(minimal_config):
+async def app_with_one_vault(minimal_config: VaultConfig) -> AsyncIterator[FastAPI]:
     """A SAGE app with ``minimal_config``'s vault initialized and registered.
 
     Yields the FastAPI app whose MCP mounts (``app.state.mcp_mounts``) share
-    the app-populated vault registry; teardown closes each vault through
-    ``close_storage()`` (the contract ``initialize_services_for_test`` sets)
-    and drops the vault from the module-level MCP registry so it does not
-    leak into later tests.
+    the app-populated vault registry. ``app.state.vault_registry`` is the
+    process-global MCP registry, so teardown touches only the vaults this
+    fixture added: each is closed through ``close_storage()`` (the contract
+    ``initialize_services_for_test`` sets) and popped, and anything another
+    test left registered is neither closed under it nor evicted.
     """
     from sage import mcp_server
     from sage.app import _initialize_services, create_app
 
     app = create_app(config=minimal_config)
+    registry = mcp_server._vaults  # what app.state.vault_registry is bound to
+    before = set(registry)
     await _initialize_services(
         app,
         minimal_config,
@@ -75,14 +80,14 @@ async def app_with_one_vault(minimal_config):
     try:
         yield app
     finally:
-        for services in app.state.vault_registry.values():
+        for vault_id in set(registry) - before:
+            services = registry.pop(vault_id)
             services.close_timing()
             await services.close_storage()
-        mcp_server._vaults.pop(minimal_config.vault.id, None)
 
 
 @pytest.fixture
-def tool_payload():
+def tool_payload() -> Callable[[object], dict]:
     """Decoder for the JSON body FastMCP wraps a tool's dict return into.
 
     ``call_tool`` returns ``[TextContent(text=<json>)]`` for a dict-returning

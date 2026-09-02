@@ -299,8 +299,11 @@ class VaultRegistryService:
                 )
             raise
 
-        # A vault that was just created holds no documents.
-        return self._build_vault_summary(config, services, document_count=0)
+        # Read the count rather than assume zero: creation checks only the
+        # in-memory registry, so an id re-created over a schema that survived
+        # an eviction may already hold documents.
+        document_count = await services.graph_store.get_total_document_count()
+        return self._build_vault_summary(config, services, document_count=document_count)
 
     async def reload(self, vault_id: str, new_config: VaultConfig) -> "SAGEServices":
         """Close old services for a vault and reinitialize from a new config.
