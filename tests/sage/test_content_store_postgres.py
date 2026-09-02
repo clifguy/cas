@@ -12,6 +12,7 @@ import math
 import os
 import time
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -19,6 +20,9 @@ from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, Chunk
 from sage.storage.postgres.schema import EMBEDDING_DIM
 from sage.utils.rrf import rrf_fuse
+
+if TYPE_CHECKING:
+    from psycopg_pool import AsyncConnectionPool
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,29 +105,63 @@ async def _churn(store: PostgresContentStore, doc_id: str = "bloat"):
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=5))
 
 
-# Every other backend that currently pins part of the reclaim horizon, with the
-# two properties that decide whether it pins *ours*: whether its snapshot is in
-# this database, and whether it holds an assigned transaction id.
+# Every other backend that currently pins part of the reclaim horizon. The two
+# columns the predicate reads are named rather than positional: ``xid`` is an
+# assigned transaction id, which pins from any database; ``pins_snapshot`` is a
+# snapshot held in *this* database, which is the only scope a snapshot pins in.
 _HORIZON_HOLDERS_SQL = """
     SELECT pid,
-           backend_xid::text,
-           backend_xmin IS NOT NULL AND datname IS NOT DISTINCT FROM current_database(),
+           backend_xid::text AS xid,
+           (backend_xmin IS NOT NULL
+            AND datname IS NOT DISTINCT FROM current_database()) AS pins_snapshot,
            datname,
            backend_type,
            state,
-           left(coalesce(query, ''), 80)
+           left(coalesce(query, ''), 80) AS query
     FROM pg_stat_activity
     WHERE pid <> pg_backend_pid()
       AND (backend_xid IS NOT NULL OR backend_xmin IS NOT NULL)
 """
 
 
-async def _horizon_holders(pg_pool) -> list[tuple]:
+async def _horizon_holders(pg_pool: AsyncConnectionPool) -> list[Any]:
+    """Current horizon holders, as rows carrying ``pid`` / ``xid`` / ``pins_snapshot``."""
+    from psycopg.rows import namedtuple_row
+
+    async with pg_pool.connection() as conn, conn.cursor(row_factory=namedtuple_row) as cur:
+        await cur.execute(_HORIZON_HOLDERS_SQL)
+        return await cur.fetchall()
+
+
+async def _horizon_diagnostics(pg_pool: AsyncConnectionPool) -> str:
+    """Everything that can pin the horizon, including the classes the wait cannot see.
+
+    Prepared transactions have no ``pg_stat_activity`` row at all, and a
+    replication slot's ``xmin`` pins without any backend attached, so a reclaim
+    that fails anyway fails with the wait reporting nothing to wait for. Dumping
+    all three here turns that into a named holder instead of the opaque
+    ``post_versions`` mismatch this file was debugged from once already."""
+    import psycopg
+
+    parts = [f"horizon holders: {await _horizon_holders(pg_pool)}"]
+    probes = (
+        ("prepared transactions", "SELECT gid, database, transaction::text FROM pg_prepared_xacts"),
+        (
+            "replication slots",
+            "SELECT slot_name, database, xmin::text, catalog_xmin::text FROM pg_replication_slots",
+        ),
+    )
     async with pg_pool.connection() as conn:
-        return list(await (await conn.execute(_HORIZON_HOLDERS_SQL)).fetchall())
+        for label, sql in probes:
+            try:
+                rows: object = await (await conn.execute(sql)).fetchall()
+            except psycopg.Error as exc:
+                rows = f"unavailable ({exc})"
+            parts.append(f"{label}: {rows}")
+    return "\n".join(parts)
 
 
-async def _await_reclaimable_horizon(pg_pool, timeout: float = 60.0) -> None:
+async def _await_reclaimable_horizon(pg_pool: AsyncConnectionPool, timeout: float = 60.0) -> None:
     """Wait until ``VACUUM FULL`` can actually reclaim this test's dead tuples.
 
     The rewrite keeps every dead tuple that anything might still see, so a
@@ -149,6 +187,20 @@ async def _await_reclaimable_horizon(pg_pool, timeout: float = 60.0) -> None:
     starts later carries a newer id and cannot hold tuples this test has
     already deleted. That set is finite and short-lived.
 
+    The xid half is deliberately not restricted by database, so the incumbents
+    can include a backend the suite does not own. Routine work cannot hold one
+    for long -- every store write is a self-contained pooled transaction, and
+    the slow embedding and abstraction work runs between transactions -- but a
+    long single-statement utility against a live vault, such as a content-store
+    optimize or a vault teardown, can. Running one concurrently with the suite
+    makes these two tests wait it out; past the ceiling they fail naming the
+    backend and its query. The ceiling is generous for that reason rather than
+    for the sibling workers, which clear in a tick.
+
+    Only ``VACUUM FULL`` is pinned this way. A plain ``VACUUM`` reclaims under
+    the same held cross-database id, which is why the fragment test below needs
+    no such wait.
+
     Bounded; on timeout the remaining holders are named.
 
     ``pg_stat_activity`` shows other roles' ``backend_xmin`` and ``backend_xid``
@@ -170,15 +222,16 @@ async def _await_reclaimable_horizon(pg_pool, timeout: float = 60.0) -> None:
 
     # Writers already open at this point are exactly the ones whose ids can
     # predate the deletion; identify each by (pid, xid) so a later transaction
-    # on the same backend is not mistaken for the one being waited out.
-    incumbent_writers = {(row[0], row[1]) for row in await _horizon_holders(pg_pool) if row[1]}
+    # on the same backend is not mistaken for the one being waited out. Every
+    # member carries a truthy xid, so a holder with none cannot match.
+    incumbent_writers = {(h.pid, h.xid) for h in await _horizon_holders(pg_pool) if h.xid}
 
     deadline = time.monotonic() + timeout
     while True:
         blocking = [
-            row
-            for row in await _horizon_holders(pg_pool)
-            if (row[1] and (row[0], row[1]) in incumbent_writers) or row[2]
+            h
+            for h in await _horizon_holders(pg_pool)
+            if (h.pid, h.xid) in incumbent_writers or h.pins_snapshot
         ]
         if not blocking:
             return
@@ -539,7 +592,12 @@ async def test_optimize_reclaims_versions_and_bytes(store, pg_pool):
     await _await_reclaimable_horizon(pg_pool)
     snap = await store.optimize(timedelta(0))
     assert snap["pre_versions"] > 0
-    assert snap["post_versions"] == 0
+    if snap["post_versions"] != 0:
+        pytest.fail(
+            f"VACUUM FULL kept {snap['post_versions']} dead tuples, so something pinned "
+            f"the reclaim horizon that the wait does not model:\n"
+            f"{await _horizon_diagnostics(pg_pool)}"
+        )
     assert snap["post_bytes"] < snap["pre_bytes"]
     assert snap["post_small_fragments"] <= snap["pre_small_fragments"]
     assert await store.count_retained_versions() == 0
@@ -552,7 +610,12 @@ async def test_optimize_accepts_nonzero_threshold(store, pg_pool):
     await _churn(store)
     await _await_reclaimable_horizon(pg_pool)
     snap = await store.optimize(timedelta(days=7))
-    assert snap["post_versions"] == 0
+    if snap["post_versions"] != 0:
+        pytest.fail(
+            f"VACUUM FULL kept {snap['post_versions']} dead tuples, so something pinned "
+            f"the reclaim horizon that the wait does not model:\n"
+            f"{await _horizon_diagnostics(pg_pool)}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -130,6 +130,19 @@ and per-test vault schemas.
 The connecting role must be able to `CREATE DATABASE` and `CREATE EXTENSION`
 (the local superuser role and CI's `postgres` role both do).
 
+**One caveat about running the suite beside live work.** Per-process databases
+isolate the *data*, but a few reclaim assertions in
+`tests/sage/test_content_store_postgres.py` depend on a server-wide property:
+`VACUUM FULL` cannot remove a dead tuple while any transaction holding an
+assigned id that predates the deletion is still open, in **any** database on the
+server. Those tests wait out the transactions already open when they start,
+which clears in a tick for sibling workers. A long single-statement utility
+against a live vault — a content-store optimize, a vault teardown — held open
+across that window will make them wait instead, and past their ceiling they fail
+naming the backend and its query rather than failing opaquely. Prefer not to run
+one concurrently with the suite; if a failure names a backend in your working
+database, that is what happened.
+
 ## 6. Storage binding and per-vault connection footprint
 
 The `storage_backend` key in `sage/config.yaml` is the storage port's sole
