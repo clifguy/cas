@@ -1,12 +1,40 @@
 name: CI
 
+# One run per push, one per queue entry, one per landing.
+#
+# `pull_request` covers work in progress. `merge_group` covers the merge queue's
+# run against the exact tree that is about to become `main` — required checks are
+# satisfied from that run, so a workflow that does not answer this event stalls
+# every queued pull request until the queue's check-response timeout dequeues it.
+# `push` is restricted to `main`: unrestricted, it fires alongside `pull_request`
+# on the same commit and runs everything twice on every push to a branch. It is
+# kept for `main` because the ruleset grants the repository-admin role an
+# always-on bypass, so a direct push is reachable and would otherwise get no CI
+# at all, and because it is the only run whose coverage artifact belongs to a
+# `main` commit.
+#
+# The trade the restriction makes: a branch pushed without an open pull request,
+# and a tag push, now get no run at all. Open the pull request (draft is enough)
+# to get one. See docs/process/branch_protection.md.
 on:
-  push:
   pull_request:
+  merge_group:
+  push:
+    branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Per commit for a push, per ref otherwise. A shared per-`main` group holds at
+  # most one running and one pending run, so a third landing arriving inside the
+  # test job's window evicts the second one's pending run — and the two reasons
+  # this workflow runs on `main` at all, an admin-bypass push and a coverage
+  # artifact belonging to a `main` commit, are exactly what that eviction takes.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  # Cancel a superseded pull-request run, and an orphaned queue run left behind
+  # when an entry is dequeued and re-queued on an unchanged base. A *later* queue
+  # entry never shares this group — the queue ref carries the pull request number
+  # — so the only queue run reachable here is that orphan, and leaving it to run
+  # would park the live re-queued entry behind it for a full CI duration.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 permissions:
   contents: read
@@ -14,11 +42,14 @@ permissions:
 
 jobs:
   paths-filter:
-    # Gate frontend jobs (vitest, playwright-e2e) on app/ changes so push
-    # events that touch only sage/, root_harness/, docs/, etc. skip the
-    # expensive Node + Playwright + browser-install setup (acceptance criterion:
-    # "on every push and pull request that touches app/"). The Python
-    # jobs below are not gated; they continue to run on every push.
+    # Gate frontend jobs (vitest, playwright-e2e) on app/ changes so runs that
+    # touch only sage/, root_harness/, docs/, etc. skip the expensive Node +
+    # Playwright + browser-install setup. The Python jobs below are not gated;
+    # they run on every event this workflow answers.
+    #
+    # The filter resolves each event's base itself — the merge group's base_sha,
+    # the push event's `before` — and fetches it when the checkout does not
+    # already carry it, so this job needs no special checkout depth.
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -129,7 +160,7 @@ jobs:
 
   container:
     # Container packaging path: build both images and run the smoke tests
-    # (SMK/BSMK) on every push and PR so a Dockerfile regression cannot merge
+    # (SMK/BSMK) on every event this workflow answers, so a Dockerfile regression cannot merge
     # silently. Together with the native `test` job above this forms the
     # native/container profile matrix. Pushing to a registry is the deploy
     # pipeline's job — each tenant has its own registry, so the per-tenant push
@@ -170,23 +201,56 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_AFTER_SHA: ${{ github.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
+          # Every event this workflow triggers on needs an arm of its own. The
+          # default arm below scans the full commit history of every branch
+          # rather than the range this event introduced, so it can fail on a
+          # secret that has sat on the default branch for months — a mode no
+          # pull request ever exercises, and one that would fail the queue for
+          # something the change under test did not do.
+          #
+          # `--first-parent` without `--no-merges`: if a head is a merge commit,
+          # dropping merges leaves the range empty, and gitleaks reports success
+          # on an empty range. Keeping the merge lets it be diffed against its
+          # first parent, which is the incoming change.
           case "$EVENT_NAME" in
             pull_request)
-              log_opts="--no-merges --first-parent ${PR_BASE_SHA}^..${PR_HEAD_SHA}"
+              log_opts="--first-parent ${PR_BASE_SHA}^..${PR_HEAD_SHA}"
+              ;;
+            merge_group)
+              # base_sha is the tip of the default branch, already scanned when
+              # it landed, so the range excludes it exactly as the push arm does.
+              log_opts="--first-parent ${MERGE_GROUP_BASE_SHA}..${MERGE_GROUP_HEAD_SHA}"
               ;;
             push)
               if [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
                 log_opts="-1"
               else
-                log_opts="--no-merges --first-parent ${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}"
+                log_opts="--first-parent ${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}"
               fi
               ;;
             *)
               log_opts=""
               ;;
           esac
+          # A ranged scan that selects nothing passes, and so does one whose
+          # range is invalid: gitleaks exits 0 in both cases. Neither is a scan.
+          # Resolve the range first and fail loudly if it is empty or unusable,
+          # so a required check cannot go green having examined no commits.
+          if [ -n "$log_opts" ] && [ "$log_opts" != "-1" ]; then
+            if ! selected=$(git rev-list --count $log_opts 2>&1); then
+              echo "secret scan range is invalid: git rev-list $log_opts: ${selected}" >&2
+              exit 1
+            fi
+            if [ "$selected" -eq 0 ]; then
+              echo "secret scan range '$log_opts' selects no commits; refusing to report a scan that examined nothing" >&2
+              exit 1
+            fi
+            echo "secret scan range '$log_opts' selects ${selected} commit(s)"
+          fi
           if [ -n "$log_opts" ]; then
             /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v --log-opts="$log_opts"
           else
