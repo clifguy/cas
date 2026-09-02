@@ -12,6 +12,7 @@ import math
 import os
 import time
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -19,6 +20,9 @@ from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, Chunk
 from sage.storage.postgres.schema import EMBEDDING_DIM
 from sage.utils.rrf import rrf_fuse
+
+if TYPE_CHECKING:
+    from psycopg_pool import AsyncConnectionPool
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,18 +105,109 @@ async def _churn(store: PostgresContentStore, doc_id: str = "bloat"):
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=5))
 
 
-async def _await_no_foreign_snapshots(pg_pool, timeout: float = 15.0) -> None:
-    """Wait until no other backend in this database holds a snapshot.
+# Every other backend that currently pins part of the reclaim horizon. The two
+# columns the predicate reads are named rather than positional: ``xid`` is an
+# assigned transaction id, which pins from any database; ``pins_snapshot`` is a
+# snapshot held in *this* database, which is the only scope a snapshot pins in.
+_HORIZON_HOLDERS_SQL = """
+    SELECT pid,
+           backend_xid::text AS xid,
+           (backend_xmin IS NOT NULL
+            AND datname IS NOT DISTINCT FROM current_database()) AS pins_snapshot,
+           datname,
+           backend_type,
+           state,
+           left(coalesce(query, ''), 80) AS query
+    FROM pg_stat_activity
+    WHERE pid <> pg_backend_pid()
+      AND (backend_xid IS NOT NULL OR backend_xmin IS NOT NULL)
+"""
 
-    VACUUM FULL keeps every dead tuple a concurrent snapshot in the same
-    database could still see -- an autovacuum ANALYZE worker is enough -- so a
-    reclaim assertion made while one is live fails for reasons unrelated to
-    the store. Bounded; on timeout the holders are named.
 
-    ``pg_stat_activity`` shows other roles' ``backend_xmin`` only to a
-    superuser or a member of ``pg_read_all_stats``, and autovacuum workers run
-    as the bootstrap superuser; without that visibility the wait would be a
-    silent no-op, so the precondition is checked first and fails loudly."""
+async def _horizon_holders(pg_pool: AsyncConnectionPool) -> list[Any]:
+    """Current horizon holders, as rows carrying ``pid`` / ``xid`` / ``pins_snapshot``."""
+    from psycopg.rows import namedtuple_row
+
+    async with pg_pool.connection() as conn, conn.cursor(row_factory=namedtuple_row) as cur:
+        await cur.execute(_HORIZON_HOLDERS_SQL)
+        return await cur.fetchall()
+
+
+async def _horizon_diagnostics(pg_pool: AsyncConnectionPool) -> str:
+    """Everything that can pin the horizon, including the classes the wait cannot see.
+
+    Prepared transactions have no ``pg_stat_activity`` row at all, and a
+    replication slot's ``xmin`` pins without any backend attached, so a reclaim
+    that fails anyway fails with the wait reporting nothing to wait for. Dumping
+    all three here turns that into a named holder instead of the opaque
+    ``post_versions`` mismatch this file was debugged from once already."""
+    import psycopg
+
+    parts = [f"horizon holders: {await _horizon_holders(pg_pool)}"]
+    probes = (
+        ("prepared transactions", "SELECT gid, database, transaction::text FROM pg_prepared_xacts"),
+        (
+            "replication slots",
+            "SELECT slot_name, database, xmin::text, catalog_xmin::text FROM pg_replication_slots",
+        ),
+    )
+    async with pg_pool.connection() as conn:
+        for label, sql in probes:
+            try:
+                rows: object = await (await conn.execute(sql)).fetchall()
+            except psycopg.Error as exc:
+                rows = f"unavailable ({exc})"
+            parts.append(f"{label}: {rows}")
+    return "\n".join(parts)
+
+
+async def _await_reclaimable_horizon(pg_pool: AsyncConnectionPool, timeout: float = 60.0) -> None:
+    """Wait until ``VACUUM FULL`` can actually reclaim this test's dead tuples.
+
+    The rewrite keeps every dead tuple that anything might still see, so a
+    reclaim assertion made while the horizon is pinned fails for reasons that
+    have nothing to do with the store. Two different holders pin it, and they
+    differ in scope -- measured against PostgreSQL 17, not assumed:
+
+    * A backend holding a **snapshot** in *this* database. An autovacuum
+      ANALYZE worker is enough. The same snapshot held from another database
+      does not pin ours.
+    * A transaction holding an **assigned transaction id**, in *any* database
+      on the server, that was assigned before this test deleted its tuples.
+      The rewrite's cutoff is bounded by the oldest transaction id still
+      running cluster-wide, so a writer in an unrelated database blocks the
+      reclaim just as effectively as a local one.
+
+    The second is why this must be called after the churn rather than before,
+    and why a parallel run needs it where a serial run did not: sibling workers
+    provision their own databases and write to them, and every one of those
+    writes holds a transaction id. Waiting for the whole server to fall quiet
+    would never return under a full parallel suite. Waiting only for the
+    writers that were *already* open does return, because a transaction that
+    starts later carries a newer id and cannot hold tuples this test has
+    already deleted. That set is finite and short-lived.
+
+    The xid half is deliberately not restricted by database, so the incumbents
+    can include a backend the suite does not own. Routine work cannot hold one
+    for long -- every store write is a self-contained pooled transaction, and
+    the slow embedding and abstraction work runs between transactions -- but a
+    long single-statement utility against a live vault, such as a content-store
+    optimize or a vault teardown, can. Running one concurrently with the suite
+    makes these two tests wait it out; past the ceiling they fail naming the
+    backend and its query. The ceiling is generous for that reason rather than
+    for the sibling workers, which clear in a tick.
+
+    Only ``VACUUM FULL`` is pinned this way. A plain ``VACUUM`` reclaims under
+    the same held cross-database id, which is why the fragment test below needs
+    no such wait.
+
+    Bounded; on timeout the remaining holders are named.
+
+    ``pg_stat_activity`` shows other roles' ``backend_xmin`` and ``backend_xid``
+    only to a superuser or a member of ``pg_read_all_stats``, and autovacuum
+    workers run as the bootstrap superuser; without that visibility the wait
+    would be a silent no-op, so the precondition is checked first and fails
+    loudly."""
     async with pg_pool.connection() as conn:
         privilege = await (
             await conn.execute(
@@ -124,20 +219,24 @@ async def _await_no_foreign_snapshots(pg_pool, timeout: float = 15.0) -> None:
         "cannot see other backends' snapshots: run the suite as a superuser "
         "or GRANT pg_read_all_stats TO the test role"
     )
+
+    # Writers already open at this point are exactly the ones whose ids can
+    # predate the deletion; identify each by (pid, xid) so a later transaction
+    # on the same backend is not mistaken for the one being waited out. Every
+    # member carries a truthy xid, so a holder with none cannot match.
+    incumbent_writers = {(h.pid, h.xid) for h in await _horizon_holders(pg_pool) if h.xid}
+
     deadline = time.monotonic() + timeout
     while True:
-        async with pg_pool.connection() as conn:
-            rows = await (
-                await conn.execute(
-                    "SELECT pid, backend_type, state, left(query, 80) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND backend_xmin IS NOT NULL "
-                    "AND pid <> pg_backend_pid()"
-                )
-            ).fetchall()
-        if not rows:
+        blocking = [
+            h
+            for h in await _horizon_holders(pg_pool)
+            if (h.pid, h.xid) in incumbent_writers or h.pins_snapshot
+        ]
+        if not blocking:
             return
         if time.monotonic() > deadline:
-            raise AssertionError(f"backends still holding snapshots in this database: {rows}")
+            raise AssertionError(f"reclaim horizon still pinned after {timeout}s by: {blocking}")
         await asyncio.sleep(0.2)
 
 
@@ -490,10 +589,15 @@ async def test_optimize_reclaims_versions_and_bytes(store, pg_pool):
     await _disable_autovacuum(pg_pool)
     await _churn(store)
     pre_bytes = await store.measured_byte_size()
-    await _await_no_foreign_snapshots(pg_pool)
+    await _await_reclaimable_horizon(pg_pool)
     snap = await store.optimize(timedelta(0))
     assert snap["pre_versions"] > 0
-    assert snap["post_versions"] == 0
+    if snap["post_versions"] != 0:
+        pytest.fail(
+            f"VACUUM FULL kept {snap['post_versions']} dead tuples, so something pinned "
+            f"the reclaim horizon that the wait does not model:\n"
+            f"{await _horizon_diagnostics(pg_pool)}"
+        )
     assert snap["post_bytes"] < snap["pre_bytes"]
     assert snap["post_small_fragments"] <= snap["pre_small_fragments"]
     assert await store.count_retained_versions() == 0
@@ -504,9 +608,14 @@ async def test_optimize_accepts_nonzero_threshold(store, pg_pool):
     """cleanup_older_than is accepted but irrelevant on Postgres: full reclaim."""
     await _disable_autovacuum(pg_pool)
     await _churn(store)
-    await _await_no_foreign_snapshots(pg_pool)
+    await _await_reclaimable_horizon(pg_pool)
     snap = await store.optimize(timedelta(days=7))
-    assert snap["post_versions"] == 0
+    if snap["post_versions"] != 0:
+        pytest.fail(
+            f"VACUUM FULL kept {snap['post_versions']} dead tuples, so something pinned "
+            f"the reclaim horizon that the wait does not model:\n"
+            f"{await _horizon_diagnostics(pg_pool)}"
+        )
 
 
 # ---------------------------------------------------------------------------
