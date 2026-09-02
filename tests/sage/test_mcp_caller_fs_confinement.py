@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -135,16 +136,18 @@ async def _ingest_local_file(tmp_path, name: str, body: str) -> tuple:
     return src, result
 
 
-def _stage_upload(token: str, body: bytes) -> None:
+def _stage_upload(token: str, body: bytes) -> Path:
     """Deliver bytes for a minted upload the way the upload endpoint does.
 
     The HTTP leg itself is covered by the endpoint tests; here the store is
-    driven directly so the tool-surface tests stay transport-free.
+    driven directly so the tool-surface tests stay transport-free. Returns the
+    staging directory so a caller can assert the completion leg reclaimed it.
     """
     store = get_transfer_store()
     entry = store.begin_upload(token)
     entry.staged_path.write_bytes(body)
     store.finish_upload(entry.transfer_id, size=len(body), sha256=hashlib.sha256(body).hexdigest())
+    return entry.staging_dir
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +221,8 @@ async def test_b1b_ingest_completion_with_transfer_token(confined_vault, tmp_pat
     with _profile("cloud", transfer_base=_BASE):
         recipe = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
         token = recipe["uploads"][0]["token"]
-        _stage_upload(token, body)
+        staging_dir = _stage_upload(token, body)
+        assert staging_dir.exists()
         result = _parse(
             await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=token)
         )
@@ -227,6 +231,10 @@ async def test_b1b_ingest_completion_with_transfer_token(confined_vault, tmp_pat
     assert result["source_path"] == "imports/b1b_note.md"
     retained = handle.retained_bytes(config.vault.storage_root, "imports/b1b_note.md")
     assert retained == body
+    # The completion leg owns the staging directory and must reclaim it; a
+    # redemption that skipped the cleanup leaves the staged bytes behind
+    # without changing any part of the response.
+    assert not staging_dir.exists(), "the completion leg must reclaim its staging directory"
     if handle.fake_client is not None:
         assert handle.fake_client.source_uploads == 1
 
@@ -569,3 +577,188 @@ async def test_b7b_restore_source_file_exactly_one_delivery_shape(confined_vault
     assert both["error"] == "ambiguous_ingest_source", both
     assert neither["error"] == "missing_ingest_source", neither
     assert relative["error"] == "restore_source_not_absolute", relative
+
+
+# ---------------------------------------------------------------------------
+# L2/L3, B6b, B7c: the gate's contract at every tool that carries it
+#
+# The delivery gate is expressed once and applied by each tool that reads
+# bytes from the caller's filesystem. These tests hold the applications
+# honest from the tool surface, which is the only altitude at which a tool
+# that failed to apply the gate is visible: a test of the gate itself would
+# pass while a tool bypassed it entirely.
+# ---------------------------------------------------------------------------
+
+
+async def test_l2_bulk_ingest_local_profile_does_not_mint(confined_vault, tmp_path):
+    """L2: under the local profile the batch tool ingests caller-local paths
+    directly, minting nothing -- the local counterpart to B6.
+
+    Anti-coincidental for the gate's direction: a gate that over-fires (mints
+    when the server *can* read the caller's tree) returns a recipe here, so
+    the retained bytes never appear. The assertion is on the retained bytes
+    rather than the summary counts alone, so a recipe that somehow also
+    reported two documents still fails.
+    """
+    _services, config, handle = confined_vault
+    inbox = tmp_path / "caller_inbox"
+    inbox.mkdir()
+    one = inbox / "l2_alpha.md"
+    one.write_bytes(b"# L2 alpha\n\nFirst body.")
+    two = inbox / "l2_beta.md"
+    two.write_bytes(b"# L2 beta\n\nSecond body.")
+
+    with _profile("local"):
+        result = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {"file_path": str(one), "source_type": "markdown"},
+                    {"file_path": str(two), "source_type": "markdown"},
+                ],
+            )
+        )
+
+    assert "error" not in result, result
+    assert result.get("status") != "upload_required", result
+    assert "uploads" not in result, result
+    assert result.get("error_count") == 0, result
+    assert result["documents_created"]["new"] == 2
+    for src in (one, two):
+        retained = handle.retained_bytes(config.vault.storage_root, f"imports/{src.name}")
+        assert retained == src.read_bytes()
+
+
+async def test_l3_restore_local_profile_repairs_without_minting(confined_vault, tmp_path):
+    """L3: under the local profile the source-file restore repairs from the
+    caller's own path, minting nothing -- the local counterpart to B7.
+
+    The only exercise of this tool under a pinned local profile at the tool
+    surface; the profile-invariance suite reaches the repair through the
+    maintenance service, which sits below the gate and so cannot see it.
+
+    Anti-coincidental: the retained copy is drifted first and asserted
+    repaired afterwards, so a call that minted a recipe instead of repairing
+    fails on the bytes rather than only on a status string.
+    """
+    _services, config, handle = confined_vault
+    body = b"# L3\n\nThe original bytes.\n"
+    src = tmp_path / "caller_inbox" / "l3_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("local"):
+        ingested = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+        assert "error" not in ingested, ingested
+        retained_path = ingested["source_path"]
+
+        drifted = b"something else wrote here"
+        handle.write_retained_bytes(config.vault.storage_root, retained_path, drifted)
+        assert handle.retained_bytes(config.vault.storage_root, retained_path) == drifted
+
+        result = _parse(await restore_vault_source_file(_VAULT_ID, source=str(src)))
+
+    assert "error" not in result, result
+    assert result.get("status") != "upload_required", result
+    assert "uploads" not in result, result
+    assert result["status"] == "restored"
+    assert result["source_path"] == retained_path
+    assert handle.retained_bytes(config.vault.storage_root, retained_path) == body
+
+
+async def test_b6b_bulk_ingest_exactly_one_delivery_shape(confined_vault, tmp_path):
+    """B6b: every batch entry takes exactly one of ``file_path`` or
+    ``transfer_token``, and the whole batch is refused before any token is
+    redeemed or any file ingested.
+
+    The batch tool's half of the contract B1d and B7b pin for the single-file
+    tools. Without it the batch tool could publish a narrower or wider
+    contract than its siblings and nothing would notice.
+
+    Anti-coincidental for the batch-wide ordering: the mixed batch pairs a
+    *staged* entry with a malformed one and then redeems that entry
+    afterwards, so a per-entry check that refused only on reaching the second
+    entry -- consuming the first token on the way -- leaves nothing to redeem
+    and fails here rather than passing on the error code alone.
+    """
+    _services, _config, _handle = confined_vault
+    body = b"# B6b\n"
+    src = tmp_path / "caller_inbox" / "b6b_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("local"):
+        both = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {
+                        "file_path": str(src),
+                        "transfer_token": "whatever",
+                        "source_type": "markdown",
+                    }
+                ],
+            )
+        )
+        neither = _parse(await bulk_ingest_document(_VAULT_ID, [{"source_type": "markdown"}]))
+
+    assert both["error"] == "ambiguous_ingest_source", both
+    assert neither["error"] == "missing_ingest_source", neither
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID, [{"file_path": str(src), "source_type": "markdown"}]
+            )
+        )
+        token = recipe["uploads"][0]["token"]
+        _stage_upload(token, body)
+
+        mixed = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {"transfer_token": token, "source_type": "markdown"},
+                    {"source_type": "markdown"},
+                ],
+            )
+        )
+        assert mixed["error"] == "missing_ingest_source", mixed
+        assert "documents_created" not in mixed, (
+            "a malformed batch must refuse before ingesting any of its entries"
+        )
+
+        # The refusal consumed nothing: the staged token is still redeemable.
+        # A per-entry check would have consumed it before reaching the
+        # malformed entry, and this completion would fail as
+        # ``transfer_token_invalid``.
+        completed = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID, [{"transfer_token": token, "source_type": "markdown"}]
+            )
+        )
+
+    assert "error" not in completed, completed
+    assert completed.get("error_count") == 0, completed
+    assert completed["documents_created"]["new"] == 1
+
+
+async def test_b7c_restore_ambiguous_outranks_relative_refusal(confined_vault):
+    """B7c: supplying both delivery shapes *and* a relative path refuses as
+    ``ambiguous_ingest_source``, not ``restore_source_not_absolute``.
+
+    The delivery contract is settled before the path's own shape is. B7b
+    drives both/neither/relative as three separate calls and so cannot see
+    their interaction; this pins which refusal wins when they collide, so the
+    two checks cannot silently swap places.
+    """
+    _services, _config, _handle = confined_vault
+
+    with _profile("local"):
+        result = _parse(
+            await restore_vault_source_file(
+                _VAULT_ID, source="relative/x.md", transfer_token="whatever"
+            )
+        )
+
+    assert result["error"] == "ambiguous_ingest_source", result

@@ -12,16 +12,11 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter
 
-import sage.mcp_init
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
-from sage.api.errors import (
-    AmbiguousIngestSourceError,
-    MissingIngestSourceError,
-    SAGEError,
-)
+from sage.api.errors import SAGEError
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.schemas import VaultIdStr
-from sage.services.transfer import PendingTransfer, get_transfer_store, mint_upload_recipe
+from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
 # parallel adapter declarations and rationale in
@@ -322,53 +317,32 @@ def register_app_tools(
             # Each entry arrives by exactly one delivery shape: a
             # ``file_path``, or a ``transfer_token`` redeeming bytes the
             # caller's environment already delivered to the upload endpoint.
-            # Validated batch-wide before any redemption so a malformed batch
-            # consumes no tokens.
-            for f in files:
-                if f.get("file_path") is not None and f.get("transfer_token") is not None:
-                    raise AmbiguousIngestSourceError()
-                if f.get("file_path") is None and f.get("transfer_token") is None:
-                    raise MissingIngestSourceError()
-
-            # Absolute paths name files on the caller's machine. When the
-            # server cannot see them, answer with one upload recipe covering
-            # every such entry rather than reading the container's own tree;
-            # the caller's environment delivers each file and repeats the
-            # call with per-entry transfer tokens. Relative paths are
-            # vault-store references the pipeline resolves (CAS-ADR-043).
-            if not sage.mcp_init.caller_local_filesystem_reachable():
-                absolute_sources = [
-                    f["file_path"]
+            # The same gate the single-file tools apply, so the batch surface
+            # cannot publish a narrower or wider contract than its siblings.
+            # It validates the whole batch before redeeming anything, so a
+            # malformed batch consumes no token; it answers an unreachable
+            # caller path with one recipe covering every such entry; and it
+            # reclaims the per-token staging directories once this block
+            # exits, which the fully-awaited batch run makes safe.
+            with caller_local_delivery(
+                vault_id,
+                [
+                    DeliveryDeclaration(
+                        source=f.get("file_path"), transfer_token=f.get("transfer_token")
+                    )
                     for f in files
-                    if f.get("file_path") is not None and Path(f["file_path"]).is_absolute()
-                ]
-                if absolute_sources:
-                    return serialize(mint_upload_recipe(vault_id, absolute_sources))
+                ],
+            ) as plan:
+                if plan.recipe is not None:
+                    return serialize(plan.recipe)
 
-            # Redeemed entries own per-token staging directories, removed
-            # once the batch run has read them (the run is fully awaited, so
-            # cleanup after it is safe).
-            consumed: list[PendingTransfer] = []
-            try:
                 descriptors: list[FileDescriptor] = []
-                for f in files:
-                    transfer_token = f.get("transfer_token")
-                    declared_source: str | None = None
-                    if transfer_token is not None:
-                        entry = get_transfer_store().consume_upload(transfer_token, vault_id)
-                        consumed.append(entry)
-                        resolved_path = str(entry.staged_path)
-                        # The staged path is where the bytes are; the caller's
-                        # own path is what a refusal names back at it.
-                        declared_source = entry.declared_source
-                    else:
-                        resolved_path = f["file_path"]
-
+                for f, delivery in zip(files, plan.resolved, strict=True):
                     pm = f.get("parsed_metadata")
                     parsed = None
                     if pm:
                         parsed = ParsedMetadataInput(
-                            title=pm.get("title", Path(resolved_path).stem),
+                            title=pm.get("title", Path(delivery.path).stem),
                             date=pm.get("date"),
                             project=pm.get("project"),
                             codes=pm.get("codes", []),
@@ -377,10 +351,10 @@ def register_app_tools(
                         )
                     descriptors.append(
                         FileDescriptor(
-                            file_path=resolved_path,
+                            file_path=delivery.path,
                             source_type=f["source_type"],
                             parsed_metadata=parsed,
-                            declared_source=declared_source,
+                            declared_source=delivery.declared_source,
                         )
                     )
 
@@ -391,9 +365,6 @@ def register_app_tools(
                     infer_edges=infer_edges,
                 )
                 return result.to_dict()
-            finally:
-                for entry in consumed:
-                    entry.cleanup()
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

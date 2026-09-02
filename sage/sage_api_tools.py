@@ -23,12 +23,10 @@ import sage.mcp_init  # noqa: I001 -- module import keeps the qualified call sit
 from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
-    AmbiguousIngestSourceError,
     LegacyFormError,
     MisplacedFilterError,
     MisplacedMetadataError,
     MissingDocumentIdentifierError,
-    MissingIngestSourceError,
     RestoreSourceNotAbsoluteError,
     SAGEError,
     translate_validation_error,
@@ -58,7 +56,7 @@ from sage.models.schemas import (
     UpdateVaultConfigRequest,
     VaultIdStr,
 )
-from sage.services.transfer import get_transfer_store, mint_upload_recipe
+from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.services.vault_registry import VaultRegistryService
 
 # Module-scope TypeAdapters for Pattern 2 boundary validation on FastMCP tool
@@ -462,16 +460,6 @@ def register_sage_tools(
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
 
-            # A document arrives by exactly one of two delivery shapes: a
-            # ``source`` path, or a ``transfer_token`` redeeming bytes the
-            # caller's environment already delivered to the upload endpoint.
-            # The tool signature is identical across profiles; only where the
-            # bytes physically move differs, below the tool surface.
-            if source is not None and transfer_token is not None:
-                raise AmbiguousIngestSourceError()
-            if source is None and transfer_token is None:
-                raise MissingIngestSourceError()
-
             def effective_source_type(resolved_source: str) -> str | None:
                 """Caller's ``source_type`` when given, else inferred from the extension.
 
@@ -502,43 +490,33 @@ def register_sage_tools(
                     document_id=document_id,
                 )
 
-            # Fire-and-forget pipeline keeps this RPC under the 60s MCP client
-            # timeout (BH-130). Callers wait for a terminal pipeline_status on
-            # the document rather than requesting status per unit of work.
-            if transfer_token is not None:
-                # Completion leg of a two-phase caller-local ingest: redeem
-                # the token against the bytes the caller's environment already
-                # delivered, then run the normal path-based pipeline on the
-                # staged file. ``ingest`` reads and retains the source
+            # A document arrives by exactly one of two delivery shapes: a
+            # ``source`` path, or a ``transfer_token`` redeeming bytes the
+            # caller's environment already delivered to the upload endpoint.
+            # The gate settles which, decides whether this process can reach a
+            # named path, and reclaims any staging it redeemed on the way out.
+            # The tool signature is identical across profiles; only where the
+            # bytes physically move differs, below the tool surface.
+            with caller_local_delivery(
+                vault_id,
+                [DeliveryDeclaration(source=source, transfer_token=transfer_token)],
+            ) as plan:
+                if plan.recipe is not None:
+                    return serialize(plan.recipe)
+                (delivery,) = plan.resolved
+                # Fire-and-forget pipeline keeps this RPC under the 60s MCP
+                # client timeout (BH-130). Callers wait for a terminal
+                # pipeline_status on the document rather than requesting status
+                # per unit of work. ``ingest`` reads and retains the source
                 # synchronously (before the fire-and-forget stages, which act
-                # on the retained copy), so removing the staging dir after the
-                # await is safe.
-                entry = get_transfer_store().consume_upload(transfer_token, vault_id)
-                try:
-                    result = await v.ingestion_service.ingest(
-                        _build_request(str(entry.staged_path)),
-                        wait_for_pipeline=False,
-                        # The staged path is where the bytes are; the caller's
-                        # own path is what a refusal names back at it.
-                        caller_source=entry.declared_source,
-                    )
-                    return serialize(result.document)
-                finally:
-                    entry.cleanup()
-
-            # Path shape: an absolute path names a file on the *caller's*
-            # machine, readable by the server only when co-located. When the
-            # server cannot see it, mint an upload recipe rather than reading
-            # the container's own tree; the caller's environment delivers the
-            # bytes and calls back with the transfer token. A relative source
-            # is a vault-store reference the active binding resolves
-            # (CAS-ADR-043), so it is left to the pipeline unchanged.
-            if Path(source).is_absolute() and not sage.mcp_init.caller_local_filesystem_reachable():
-                return serialize(mint_upload_recipe(vault_id, [source]))
-            result = await v.ingestion_service.ingest(
-                _build_request(source), wait_for_pipeline=False
-            )
-            return serialize(result.document)
+                # on the retained copy), so reclaiming a redeemed staging
+                # directory once this block exits is safe.
+                result = await v.ingestion_service.ingest(
+                    _build_request(delivery.path),
+                    wait_for_pipeline=False,
+                    caller_source=delivery.declared_source,
+                )
+                return serialize(result.document)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -2755,44 +2733,35 @@ def register_sage_tools(
                     f"Vault {vault_id!r} was initialized without a "
                     "registry_service; maintenance_service is unavailable."
                 )
-            # Exactly one of the two delivery shapes, matching
-            # ``ingest_document``'s contract verbatim: a caller generalizing
-            # that tool's completion shape must not find this one narrower, and
-            # supplying both must not silently resolve to one of them.
-            if source is not None and transfer_token is not None:
-                raise AmbiguousIngestSourceError()
-            if source is None and transfer_token is None:
-                raise MissingIngestSourceError()
+            # The same caller-local delivery gate the ingest tool applies, so
+            # a caller generalizing that tool's completion shape does not find
+            # this one narrower: exactly one of ``source`` or
+            # ``transfer_token``, and an absolute caller path this process
+            # cannot reach answers with an upload recipe rather than reading
+            # its own tree.
+            with caller_local_delivery(
+                vault_id,
+                [DeliveryDeclaration(source=source, transfer_token=transfer_token)],
+            ) as plan:
+                if plan.recipe is not None:
+                    return serialize(plan.recipe)
+                (delivery,) = plan.resolved
 
-            if transfer_token is not None:
-                entry = get_transfer_store().consume_upload(transfer_token, vault_id)
-                try:
-                    report = await v.maintenance_service.restore_vault_source_file(
-                        source=str(entry.staged_path), document_id=document_id
-                    )
-                finally:
-                    entry.cleanup()
+                # A caller-named path must be absolute, under either profile.
+                # Unlike an ingest, a non-absolute path has no fallback
+                # meaning here -- there is no vault-relative reading of "the
+                # bytes to restore". The gate mints only for absolute paths,
+                # so a relative one arrives here rather than earning an upload
+                # recipe the caller's environment could not resolve either.
+                # Settled after the delivery shape, so supplying both shapes
+                # still refuses as ambiguous rather than on the path.
+                if source is not None and not Path(source).is_absolute():
+                    raise RestoreSourceNotAbsoluteError(source)
+
+                report = await v.maintenance_service.restore_vault_source_file(
+                    source=delivery.path, document_id=document_id
+                )
                 return serialize(report)
-
-            # Absoluteness is settled before the delivery gate, not after, so
-            # both profiles refuse a relative path the same way. Unlike an
-            # ingest, a non-absolute path has no fallback meaning here -- there
-            # is no vault-relative reading of "the bytes to restore" -- and
-            # deciding it below the gate would mint an upload recipe for a path
-            # the caller's environment cannot resolve either.
-            if not Path(source).is_absolute():
-                raise RestoreSourceNotAbsoluteError(source)
-
-            # Same caller-local gate the ingest tool applies: the path names a
-            # file on the *caller's* machine, readable by the server only when
-            # co-located.
-            if not sage.mcp_init.caller_local_filesystem_reachable():
-                return serialize(mint_upload_recipe(vault_id, [source]))
-
-            report = await v.maintenance_service.restore_vault_source_file(
-                source=source, document_id=document_id
-            )
-            return serialize(report)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
