@@ -294,23 +294,32 @@ async def test_vsbb_045_refusal_detail_carries_a_relative_source_as_supplied(
     """A refused *relative* source reports the vault-relative string the caller
     sent, not the storage-root-absolute path the service built from it.
 
-    The relative branch joins the caller's string onto the vault's storage root
-    and resolves it, so the refused path reported back named a server-side
-    location -- one the caller never sent, cannot act on, and in a hosted
-    deployment has no business seeing.
+    The relative branch joins the caller's string onto the storage root and
+    resolves it, so what came back named a server-side location. See
+    ``IngestionService.ingest``'s ``caller_source`` parameter for why that is
+    the wrong answer.
 
-    Anti-coincidental-pass: the assertion is equality against
-    ``"imports/link.md"``. The value the defect reports is the *outside* link
-    target's absolute path, which ends in the same basename -- so an
-    ``endswith`` or ``in`` assertion would pass against it. Only the whole
-    string discriminates.
+    Anti-coincidental-pass: two rivals, and the fixture must exclude both.
 
-    The fixture also carries the retention path to its reuse exit through a real
-    ingest: the caller's relative path resolves through the link to a file
-    outside the root, so retention treats it as external, plans
-    ``imports/link.md`` for it, finds that path occupied by bytes that hash
-    equal (they are the same file), and refuses to hand a symlink back as a
-    record's ``source_path``.
+    The first is reporting the resolved path — the *outside* link target's
+    absolute form, which ends in the same basename, so an ``endswith`` or
+    ``in`` assertion would pass against it. Equality is what excludes it.
+
+    The second is any implementation that round-trips the caller's string
+    through ``Path`` — ``str(Path(request.source))`` — which is why the source
+    here is spelled ``./imports/link.md`` rather than the plain form. ``pathlib``
+    drops a leading ``.`` on construction, so that rival silently hands back a
+    spelling the caller did not send, and every fixture using a spelling
+    ``Path()`` leaves unchanged passes against it. The string survives only
+    because the service carries ``request.source`` as a string and never
+    re-derives it, which is the property under test. VSBB-048 uses the same
+    dotted spelling for the provenance-lookup leg.
+
+    The fixture also carries retention to its reuse exit through a real ingest:
+    the caller's relative path resolves through the link to a file outside the
+    root, so retention treats it as external, plans ``imports/link.md`` for it,
+    finds that path occupied by bytes that hash equal (they are the same file),
+    and refuses to hand a symlink back as a record's ``source_path``.
     """
     storage_root = tmp_vault_dir / "sources"
     (storage_root / "imports").mkdir(parents=True, exist_ok=True)
@@ -323,10 +332,10 @@ async def test_vsbb_045_refusal_detail_carries_a_relative_source_as_supplied(
 
     with pytest.raises(VaultSourcePathRefusedError) as excinfo:
         await ingestion_service.ingest(
-            IngestRequest(source="imports/link.md", source_type=SourceType.MARKDOWN)
+            IngestRequest(source="./imports/link.md", source_type=SourceType.MARKDOWN)
         )
 
-    assert excinfo.value.detail == {"source_path": "imports/link.md"}
+    assert excinfo.value.detail == {"source_path": "./imports/link.md"}
 
 
 # --------------------------------------------------------------------------- #

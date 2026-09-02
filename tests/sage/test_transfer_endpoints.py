@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -159,15 +160,30 @@ async def test_vsbb_047_refused_upload_reports_the_callers_path_not_the_staging_
 
     The two-phase completion substitutes the staged path for the caller's, so
     everything downstream of the redemption sees a location inside the server's
-    own temp tree. A refusal reported from there hands a hosted caller a path it
-    never named and cannot act on -- the one shape of this detail that is worse
-    than useless, since the caller's own file is what it would have to fix.
+    own temp tree. See ``IngestionService.ingest``'s ``caller_source`` for why
+    reporting that back is the one shape of this detail worse than useless.
 
-    Anti-coincidental-pass: the staged file keeps the caller's basename, so an
-    ``endswith`` or basename assertion passes against the defect. Equality
-    against the caller's absolute path is the only form that fails without the
-    declared source carried on the transfer entry -- and the fixture asserts the
-    two paths differ before relying on that.
+    Anti-coincidental-pass: three rivals.
+
+    Reporting the staged path is the defect, and the staged file keeps the
+    caller's basename, so an ``endswith`` or basename assertion passes against
+    it. Equality is the only form that fails, and the fixture asserts the two
+    paths actually differ before resting on that -- otherwise reporting either
+    one would satisfy the assertion.
+
+    Reporting the entry's ``filename`` -- the sanitized basename -- fails the
+    same equality against an absolute path.
+
+    Third, any implementation that round-trips the declared source through
+    ``Path``, which is why this mints from a path carrying a ``/./`` segment
+    rather than from the ``_mint_upload`` helper's clean one. On a clean
+    absolute path that round-trip is the identity, so a fixture using one
+    excludes nothing; the dotted spelling is what separates them. This is the
+    transfer leg's form of the rival VSBB-045 pins at the service level.
+
+    The expected value is the recipe's own echoed ``source`` rather than a
+    re-typed path, making this a round-trip claim: the string the caller handed
+    to the mint is the string the refusal names.
     """
     body = b"# refused upload\n"
     # Dangling, so retention reaches its write exit and refuses the link there.
@@ -175,17 +191,26 @@ async def test_vsbb_047_refused_upload_reports_the_callers_path_not_the_staging_
     imports.mkdir(parents=True, exist_ok=True)
     (imports / "refused_upload.md").symlink_to(tmp_path / "nowhere.md")
 
-    supplied = str(tmp_path / "caller_inbox" / "refused_upload.md")
+    # No file is created at this path, and none is needed: under the cloud
+    # profile the mint decides on the path's shape alone and never stats it --
+    # the bytes arrive on the upload leg below. Creating one here would be setup
+    # no assertion depends on.
+    #
+    # Built by concatenation: ``Path`` would collapse the ``/./`` on
+    # construction, and that segment is the whole point of the fixture.
+    dotted = f"{tmp_path}/caller_inbox/./refused_upload.md"
 
     with _profile("cloud"):
-        item = await _mint_upload(tmp_path, "refused_upload.md", body)
+        recipe = _parse(await ingest_document(_VAULT_ID, dotted, "markdown"))
+        assert recipe.get("status") == "upload_required", recipe
+        item = recipe["uploads"][0]
         resp = await client.put("/upload", content=body, headers={"X-Upload-Token": item["token"]})
         assert resp.status_code == 201, resp.text
 
-        # Read before redemption consumes the entry. This is the control the
-        # assertion below rests on: the two paths must actually differ, or
-        # reporting either one would satisfy it and the test would discriminate
-        # nothing.
+        supplied = item["source"]
+        assert supplied == dotted, "the recipe echoes the caller's spelling verbatim"
+        assert supplied != str(Path(supplied)), "the fixture must survive a Path round-trip"
+        # Read before redemption consumes the entry.
         staged = str(get_transfer_store()._entries[item["transfer_id"]].staged_path)
         assert staged != supplied
 
@@ -195,7 +220,6 @@ async def test_vsbb_047_refused_upload_reports_the_callers_path_not_the_staging_
 
     assert done["error"] == "vault_source_path_refused", done
     assert done["detail"] == {"source_path": supplied}
-    assert done["detail"]["source_path"] != staged
 
 
 async def test_download_round_trip_source(client, tmp_path):

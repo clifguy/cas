@@ -598,10 +598,19 @@ class IngestionService:
         ``caller_source`` is the path the *caller* named, for a caller that put
         something else in ``request.source``. Only one does: a delivery that
         moves the bytes to the server first substitutes the server-side location
-        they were staged at, which is a path the caller never saw and cannot act
-        on. It reaches only the messages that report a refused source path back,
-        so those name something the caller recognizes; it does not affect where
-        anything is read from or written to. Left unset, ``request.source``
+        they were staged at. This is the single home for why that matters, and
+        the rest of the ingest path refers back here rather than restating it.
+
+        A refused source path is reported back so the caller can act on it, and
+        every spelling the service holds by the time a refusal is raised is one
+        the caller cannot: joined onto the storage root for a vault-relative
+        input, realpath'd for an external one, or replaced outright by a staging
+        location for a two-phase delivery. None of those can be matched against
+        what the caller sent, none names anything it can go fix, and the last two
+        disclose a server-side filesystem layout that a hosted caller has no
+        business seeing. So the reported spelling is carried separately from the
+        resolved one; it reaches the refusal messages only, and never affects
+        where anything is read from or written to. Left unset, ``request.source``
         stands, which is what every caller that names its own file wants.
 
         Deliberately a parameter rather than a request field: it describes how
@@ -775,80 +784,89 @@ class IngestionService:
         # can have changed the retained copy, so only a write licenses refreshing
         # the as-stored digest below.
         retained = False
-        # What a refusal names back at the caller. Every path below this point
-        # is a location the service resolved or was staged at; this is the one
+        # What a refusal names back at the caller. Every path below this point is
+        # a location the service resolved or was staged at; this is the one
         # spelling the caller would recognize as its own.
         reported_source = caller_source or request.source
 
-        if source_input.is_absolute():
-            # External file import: copy the caller's file into the vault,
-            # retaining it on the active profile's store (BH-053 through
-            # BH-057) so the copy is binding-agnostic.
-            if not source_input.exists():
-                raise SourceFileNotFoundError(request.source)
-            source_path = source_input.resolve()
-            delivered_hash = hash_file(source_path)
-            vault_relative, retained = await self._retain_or_reuse(
-                vault_source_store, storage_root, source_path, delivered_hash, reported_source
-            )
-        else:
-            # Relative source: a vault-relative path into the store. When the
-            # bytes are present on the local tree, retain in place / upload as
-            # usual; otherwise resolve presence through the port so a
-            # backend-resident source (the post-restart cloud condition) is
-            # projected rather than rejected as missing.
-            source_path = storage_root / request.source
-            if source_path.exists():
-                source_path = source_path.resolve()
+        # Wrapped around the whole resolution rather than at each retain call,
+        # so a refusal cannot reach a caller untranslated on one branch while
+        # being typed on another -- including a branch added later, which is the
+        # part a shared helper could not have covered. The branches differ in how
+        # they reach a retain, not in what a refusal means to the caller.
+        with _translate_vault_source_refusal(reported_source):
+            if source_input.is_absolute():
+                # External file import: copy the caller's file into the vault,
+                # retaining it on the active profile's store (BH-053 through
+                # BH-057) so the copy is binding-agnostic.
+                if not source_input.exists():
+                    raise SourceFileNotFoundError(reported_source)
+                source_path = source_input.resolve()
                 delivered_hash = hash_file(source_path)
-                # Retained without consulting the reuse short-circuit. A relative
-                # source names a location the caller chose, not merely bytes to
-                # get in, so reusing some other path holding the same content
-                # would override that choice -- silently refusing the re-home a
-                # caller performs by re-ingesting a moved file from its new path
-                # (BH-067), and hiding the different-path collision the
-                # force-reingest guard exists to raise. The binding is already
-                # the cheap answer here: a source inside the vault is retained in
-                # place, with no copy to avoid.
-                vault_relative = self._retain_translated(
-                    vault_source_store, storage_root, source_path, delivered_hash, reported_source
+                vault_relative, retained = await self._retain_or_reuse(
+                    vault_source_store, storage_root, source_path, delivered_hash
                 )
-                retained = True
-            elif vault_source_store.source_exists(
-                self._config.vault.id, storage_root, request.source
-            ):
-                # Normalized rather than stored as given: this is the one
-                # branch that records the caller's string verbatim, and a path
-                # carrying ``.`` or ``..`` segments would be accepted by the
-                # read side while the write-time guard refuses it -- a record
-                # whose own source_path cannot be written back to.
-                vault_relative = _normalize_vault_relative(request.source)
-                # Nothing was delivered this call -- the bytes were already on
-                # the store and are only being re-projected. The provenance of
-                # this path was established at the ingest that put them there,
-                # so it is read back from that record rather than re-derived
-                # from the stored copy: a binding that rewrote its copy at rest
-                # holds bytes that no longer hash to what produced them, and
-                # taking the stored digest as provenance here would silently
-                # give the re-projection a different identity from the document
-                # it is re-projecting -- which duplicate detection would then
-                # miss, landing a second document on the same stored file.
-                # Absent a record (bytes on the store that were never ingested)
-                # there is no prior provenance to inherit, and the stored digest
-                # stands in, as it does for any first sight of a file.
-                #
-                # Looked up under both spellings: a record written before the
-                # normalization above stored the caller's string verbatim, so a
-                # dotted path that still resolves on the store would miss its own
-                # provenance under the normalized form alone -- and a miss here
-                # is not an error, it silently falls back to the stored digest
-                # and lands a second document on the same stored file.
-                by_path = await self._store.find_documents_by_source_paths(
-                    [vault_relative, request.source]
-                )
-                delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
             else:
-                raise SourceFileNotFoundError(request.source)
+                # Relative source: a vault-relative path into the store. When the
+                # bytes are present on the local tree, retain in place / upload as
+                # usual; otherwise resolve presence through the port so a
+                # backend-resident source (the post-restart cloud condition) is
+                # projected rather than rejected as missing.
+                source_path = storage_root / request.source
+                if source_path.exists():
+                    source_path = source_path.resolve()
+                    delivered_hash = hash_file(source_path)
+                    # Retained without consulting the reuse short-circuit. A
+                    # relative source names a location the caller chose, not
+                    # merely bytes to get in, so reusing some other path holding
+                    # the same content would override that choice -- silently
+                    # refusing the re-home a caller performs by re-ingesting a
+                    # moved file from its new path (BH-067), and hiding the
+                    # different-path collision the force-reingest guard exists to
+                    # raise. The binding is already the cheap answer here: a
+                    # source inside the vault is retained in place, with no copy
+                    # to avoid.
+                    vault_relative = vault_source_store.retain_source(
+                        self._config.vault.id, storage_root, source_path, delivered_hash
+                    )
+                    retained = True
+                elif vault_source_store.source_exists(
+                    self._config.vault.id, storage_root, request.source
+                ):
+                    # Normalized rather than stored as given: this is the one
+                    # branch that records the caller's string verbatim, and a
+                    # path carrying ``.`` or ``..`` segments would be accepted by
+                    # the read side while the write-time guard refuses it -- a
+                    # record whose own source_path cannot be written back to.
+                    vault_relative = _normalize_vault_relative(request.source)
+                    # Nothing was delivered this call -- the bytes were already
+                    # on the store and are only being re-projected. The
+                    # provenance of this path was established at the ingest that
+                    # put them there, so it is read back from that record rather
+                    # than re-derived from the stored copy: a binding that
+                    # rewrote its copy at rest holds bytes that no longer hash to
+                    # what produced them, and taking the stored digest as
+                    # provenance here would silently give the re-projection a
+                    # different identity from the document it is re-projecting --
+                    # which duplicate detection would then miss, landing a second
+                    # document on the same stored file. Absent a record (bytes on
+                    # the store that were never ingested) there is no prior
+                    # provenance to inherit, and the stored digest stands in, as
+                    # it does for any first sight of a file.
+                    #
+                    # Looked up under both spellings: a record written before the
+                    # normalization above stored the caller's string verbatim, so
+                    # a dotted path that still resolves on the store would miss
+                    # its own provenance under the normalized form alone -- and a
+                    # miss here is not an error, it silently falls back to the
+                    # stored digest and lands a second document on the same
+                    # stored file.
+                    by_path = await self._store.find_documents_by_source_paths(
+                        [vault_relative, request.source]
+                    )
+                    delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
+                else:
+                    raise SourceFileNotFoundError(reported_source)
 
         # Stage 1: Projection (synchronous). Merge vault-level adapter config
         # with the per-request config; per-request keys override vault keys
@@ -1875,7 +1893,6 @@ class IngestionService:
         storage_root: Path,
         source_path: Path,
         delivered_hash: str,
-        reported_source: str,
     ) -> tuple[str, bool]:
         """Retain a delivered source, or reuse the copy already holding those bytes.
 
@@ -1948,45 +1965,9 @@ class IngestionService:
                 vault_id, storage_root, existing.source_path
             ):
                 return existing.source_path, False
-        return (
-            self._retain_translated(
-                store, storage_root, source_path, delivered_hash, reported_source
-            ),
-            True,
-        )
-
-    def _retain_translated(
-        self,
-        store: "VaultSourceStore",
-        storage_root: Path,
-        source_path: Path,
-        delivered_hash: str | None,
-        reported_source: str,
-    ) -> str:
-        """Retain through the port, surfacing a refused destination as a typed error.
-
-        The single retain call site for the whole ingest path. The bindings
-        refuse a destination they cannot write at -- a symlink sitting there, a
-        path resolving out of the source tree -- and say so with their own
-        ``ValueError`` subclass, since they sit below the API layer and may not
-        import its hierarchy. Routed through one place rather than wrapped at
-        each caller so the translation cannot be present on one branch and
-        absent on another; the branches differ in how they *reach* a retain, not
-        in what a refusal means to the caller.
-
-        ``reported_source`` is what the refusal names, and it is not
-        ``source_path``. By here the source has been resolved -- joined onto the
-        storage root for a vault-relative input, realpath'd for an external one,
-        or replaced outright by a staging location for a two-phase delivery --
-        so reporting it would answer with a path the caller never sent, cannot
-        match against what it did send, and in a hosted deployment has no
-        business seeing. Retention still acts on ``source_path``; only the
-        message changes.
-        """
-        with _translate_vault_source_refusal(reported_source):
-            return store.retain_source(
-                self._config.vault.id, storage_root, source_path, delivered_hash
-            )
+        return store.retain_source(
+            self._config.vault.id, storage_root, source_path, delivered_hash
+        ), True
 
     @contextlib.contextmanager
     def _project_source(

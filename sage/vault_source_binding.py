@@ -730,17 +730,15 @@ class FilesystemVaultSourceStore(VaultSourceStore):
                 token = _disambiguation_token(content_hash)
                 dest = imports_dir / f"{source_path.stem}_{token}{source_path.suffix}"
 
-        # The destination is settled, so it is guarded once. Both remaining
-        # outcomes need the same assurance about the same path and differ only
-        # in what they then do with it: the reuse below returns it as the
-        # record's ``source_path``, the copy lands bytes at it. Deciding first
-        # and guarding after is what keeps that true -- a guard placed on a
+        # The destination is settled, so it is guarded once. Both outcomes need
+        # the same assurance about the same path and differ only in what they
+        # then do with it: the reuse below returns it as the record's
+        # ``source_path``, the copy lands bytes at it. Deciding first and
+        # guarding after is what keeps that true, since a guard placed on a
         # candidate destination is only ever correct for the branch that happens
-        # to keep it, which is how a check on the planned path left the
-        # disambiguated write open while refusing a link the disambiguating
-        # branch was never going to write through. The one exit that does not
-        # arrive here is the internal short-circuit above, which returns a path
-        # already inside the tree without choosing one.
+        # to keep it. The one exit that does not arrive here is the internal
+        # short-circuit above, which returns a path already inside the tree
+        # without choosing one.
         #
         # A link at the destination would otherwise redirect a copy onto its
         # target, or become a record's ``source_path`` -- every read following
@@ -755,13 +753,11 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # storage root that is itself reached through a link keeps working.
         resolve_and_assert_within_root(dest, storage_root)
 
-        if reuse:
-            return str(dest.relative_to(storage_root))
-
-        shutil.copy2(source_path, dest)
-        # Strip UI-layer invisibility markers that shutil.copy2 may have
-        # propagated from an agent's temp source (CAS-ADR-016).
-        _strip_ui_invisibility(dest)
+        if not reuse:
+            shutil.copy2(source_path, dest)
+            # Strip UI-layer invisibility markers that shutil.copy2 may have
+            # propagated from an agent's temp source (CAS-ADR-016).
+            _strip_ui_invisibility(dest)
         return str(dest.relative_to(storage_root))
 
     def write_source(
