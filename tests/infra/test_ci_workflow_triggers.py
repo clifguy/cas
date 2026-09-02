@@ -1,15 +1,16 @@
 """Structural gate for the CI workflow's trigger, cancellation, and scan shape.
 
 Locks the parts of ``.github/workflows/ci.yml`` that decide *when* CI runs and
-*what tree each run sees*, so the merge queue that lands pull requests onto the
-default branch is actually served rather than silently bypassed. Each invariant
-below guards a failure that reports green:
+*what tree each run sees*, so every landing onto the default branch is actually
+covered rather than silently bypassed. Each invariant below guards a failure
+that reports green:
 
 * **One run per push.** A bare ``push:`` trigger fires alongside ``pull_request``
   on the same commit, so every push to a pull-request branch runs the whole
-  workflow twice. Restricting ``push`` to the default branch and adding
-  ``merge_group`` gives one run per push, one run per queue entry, and one run
-  per landing.
+  workflow twice. Restricting ``push`` to the default branch gives one run per
+  push and one run per landing. ``merge_group`` is answered but dormant: no
+  merge queue dispatches it, and the trigger is retained so the workflow stays
+  ready if one ever can.
 * **No trigger carries a filter it is not entitled to.** ``push`` is
   branch-restricted by design; the other two must be unconditional. Every
   narrowing key -- ``paths``, ``types``, ``branches`` -- leaves the event set and

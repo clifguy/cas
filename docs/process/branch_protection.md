@@ -9,25 +9,47 @@ This document captures the configured branch-protection state for the `main` bra
 - Pull requests must pass all required status checks (below) before merge.
 - The repository is single-developer today, so PR approvals are not required (`required_approving_review_count: 0`); the PR workflow exists for the CI gate and the diff-review surface, not for peer review. The CODEOWNERS entry documents ownership intent for the future multi-contributor case.
 - Squash is the only permitted merge method, so every change lands on `main` as a single commit whose message is the pull request's title and body.
-- Pull requests land through a **merge queue** rather than by rebasing each branch onto `main` before merging. See *Merge queue* below, and *Activation status* for which half of it is live.
+- Pull requests land without being rebased onto `main` first: the strict up-to-date policy is off. See *Landing model* below.
 
-## Merge queue
+## Landing model
 
-The queue builds a temporary branch holding `main` plus the queued changes, runs the required checks against **that** tree, and merges only if they pass. It supplies the same guarantee as *require branches to be up to date* — nothing lands untested against the tree it is landing onto — without a manual rebase, a force-push, and a second full CI cycle per landing.
+A pull request merges once its own required checks pass, whether or not its branch is level with `main`. Two CI runs bracket a landing: the pull-request run against the branch, and the `push` run on `main` after the squash.
 
 Three consequences follow, and all three are load-bearing:
 
-- **`ci.yml` must answer the `merge_group` event.** Required status checks are satisfied from the merge-group run, not from the pull-request run. A required check that no merge-group run reports never arrives at all, and the queue dequeues the pull request when its check-response timeout expires. The trigger set is locked by [`tests/infra/test_ci_workflow_triggers.py`](../../tests/infra/test_ci_workflow_triggers.py) so it cannot regress silently.
-- **The strict up-to-date policy comes off** when the rule is applied. It is redundant beside the queue, and holding both would reinstate the rebase-and-wait cycle the queue exists to remove. Until then it is still on, so a merge today still needs an up-to-date branch.
-- **The queue must merge by squash.** The rule's own `merge_method` decides the shape of the head it builds, independently of the merge methods the repository allows on a pull request. A `MERGE` head has two parents, and a first-parent commit range across it selects nothing — which is how the secret scan would come to report success having examined no commits. `SQUASH` produces the single-parent head the ranged scan assumes. The scan carries its own empty-range guard as well, so the two are independent defences rather than one.
+- **The strict up-to-date policy is deliberately off.** Holding it on buys one guarantee — that nothing lands untested against the tree it is landing onto — at the price of a rebase, a force-push, and a second full CI cycle on every landing. The guarantee is worth less here than the price: see *What the trade actually costs* below.
+- **Textual conflicts still block on their own.** GitHub refuses to merge a pull request whose branch conflicts with the base, and that refusal is independent of this setting. Dropping the strict policy moves exactly one failure class, described next, and no others.
+- **The `main` push run is load-bearing rather than redundant.** With no strict policy and no queue, it is the only run that sees the merged tree. See *Required status checks* for what it runs and *Compensating controls* for what depends on it.
 
-Per push to a pull-request branch there is now exactly one CI run, where an unrestricted `push` trigger previously fired a second run on the same commit. Per landing there will be two once the queue is live: the merge-group run, and the `push` run on `main` after the squash. The trade is that a branch pushed with no open pull request, and a tag push, get no run at all; opening a draft pull request is enough to get one.
+### What the trade actually costs
 
-**The `main` push run is deliberately kept** rather than dropped as redundant with the merge-group run. Two reasons. The ruleset grants the repository-admin role an always-on bypass, so a direct push to `main` is reachable and would otherwise receive no CI at all. And it is the only run whose coverage artifact is attributable to a `main` commit rather than to a transient queue branch. Both reasons depend on that run actually happening, which is why the workflow's concurrency group is keyed per commit for a push rather than per ref: a shared `main` group holds one running and one pending run, so a third landing inside the test job's window would evict the second one's pending run and take away exactly what this paragraph is keeping.
+The class that moves is the **semantic conflict**: two pull requests each green in isolation and red in combination, with no textual overlap for the merge to catch. Under a strict policy such a pair is caught before either lands. Without one, the second lands and the `main` run reports it.
+
+The exposure is a function of how branches are cut, not of how many land:
+
+- **Serial work barely exposes it.** Each branch starts from a `main` that already contains the previous landing, so there is no window in which two untested changes coexist.
+- **Parallel work exposes it directly.** Several branches cut from a single base and landed in sequence are, by construction, untested against one another until each reaches `main`. That shape is where this document expects a red `main` to originate, and where a reviewer's attention belongs.
+
+### Compensating controls
+
+Because `main` can now go transiently red, two things that previously held by construction are now enforced explicitly:
+
+- **The `push` run on `main` is the detector.** It reports a semantic conflict within one cycle of the landing that introduced it, which is the earliest point at which the merged tree exists to be tested.
+- **The cloud deploy must precheck the commit it ships.** A deploy takes `origin/main` HEAD. It used to inherit a green `main` for free, because a strict policy admits nothing else. That inheritance is gone, so the deploy path has to read the CI conclusion for the exact commit it is about to ship and refuse one that is red or still running. That precheck lives in operator-side deploy tooling rather than in this repository, so nothing here enforces it; the requirement is recorded here because this is where the guarantee it replaces was lost.
+
+### Merge queues
+
+A merge queue would supply the strict policy's guarantee without its price, by building a temporary branch holding `main` plus the queued changes and testing *that* tree. It is not available here: GitHub offers merge queues only on repositories owned by an organization, and the rules API rejects the rule on any other repository before it reads the rule's parameters. Transferring the repository to an organization is the only route to one, and that route touches the deploy identity's federated-credential subject, which is why it has not been taken.
+
+**`ci.yml` still answers the `merge_group` event, dormantly and on purpose.** The event never fires without a queue, so the trigger costs nothing; retaining it keeps the workflow ready if the ownership question is ever revisited, and removing it would mean editing the locked trigger set, the secret scan's merge-group arm, and the tests covering both, for no present benefit. The trigger set is locked by [`tests/infra/test_ci_workflow_triggers.py`](../../tests/infra/test_ci_workflow_triggers.py) so it cannot regress silently.
+
+Per push to a pull-request branch there is exactly one CI run, where an unrestricted `push` trigger previously fired a second run on the same commit. The trade is that a branch pushed with no open pull request, and a tag push, get no run at all; opening a draft pull request is enough to get one.
+
+**The `main` push run is deliberately kept.** Three reasons, one of them new. The ruleset grants the repository-admin role an always-on bypass, so a direct push to `main` is reachable and would otherwise receive no CI at all. It is the only run whose coverage artifact is attributable to a `main` commit rather than to a transient branch. And it is now the sole detector for the semantic-conflict class described above. All three depend on that run actually happening, which is why the workflow's concurrency group is keyed per commit for a push rather than per ref: a shared `main` group holds one running and one pending run, so a third landing inside the test job's window would evict the second one's pending run and take away exactly what this paragraph is keeping.
 
 ## Required status checks
 
-The following CI jobs from [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) are required to pass on every pull request targeting `main`, and again on the merge group that lands it:
+The following CI jobs from [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) are required to pass on every pull request targeting `main`, and run again on `main` after the squash:
 
 | Job | Purpose |
 |---|---|
@@ -46,7 +68,7 @@ The `paths-filter` job needs no special checkout depth for this. The filter reso
 ## Required reviews
 
 - **Required approving review count:** `0`. The repository is single-developer; the PR workflow is in place for CI gating and self-review of the diff, not for peer approval.
-- **Code-owner review enforcement:** off. The [`.github/CODEOWNERS`](../../.github/CODEOWNERS) entry (`* @clifguy`) documents ownership intent for the future multi-contributor case, but no review is enforced today.
+- **Code-owner review enforcement:** off. The [`.github/CODEOWNERS`](../../.github/CODEOWNERS) entry documents ownership intent for the future multi-contributor case, but no review is enforced today.
 - When the repository adds collaborators, raise the required-approval count and enable code-owner review enforcement on the ruleset to activate this gate.
 
 ## Activation status
@@ -55,15 +77,7 @@ The `paths-filter` job needs no special checkout depth for this. The filter reso
 
 **Bypass:** the Repository-admin role has `always`-mode bypass, so the repository owner can push directly to `main` when needed. Use bypass sparingly; the default path is PR-then-merge.
 
-**Merge queue: CI side only, not yet live.** `ci.yml` answers `merge_group`, but the ruleset carries no `merge_queue` rule yet and `strict_required_status_checks_policy` is still on. Until both change, pull requests land the old way: an up-to-date branch, then a squash merge.
-
-Applying it is a single `PATCH` to the ruleset, and the rule's parameters are part of the contract rather than defaults to accept:
-
-- `merge_method: SQUASH` — **required**, not a preference. The REST default is `MERGE`, which builds a two-parent head that a first-parent commit range selects nothing across. See the third bullet under *Merge queue* above.
-- `check_response_timeout_minutes` comfortably above the `test` job's runtime, so a slow runner does not dequeue a healthy entry.
-- `strict_required_status_checks_policy: false` in the same `PATCH`.
-
-Apply the rule only after CI can answer `merge_group` on `main`; the reverse order stalls every open pull request until the queue's check-response timeout. Re-capture the block below from the live ruleset once it lands.
+**Strict up-to-date policy: off.** `strict_required_status_checks_policy` is `false`, which is what makes the landing model above the operative one. Turning it back on would reinstate the rebase-and-wait cycle on every landing; do that only alongside a decision to accept that cost, and update the *Landing model* section in the same change.
 
 The captured ruleset JSON is reproduced under *Captured ruleset* below as the source of truth; the GitHub UI is its reflection.
 
@@ -85,7 +99,7 @@ The following is the live ruleset definition (captured via `gh api repos/<owner>
     {
       "type": "required_status_checks",
       "parameters": {
-        "strict_required_status_checks_policy": true,
+        "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "test",         "integration_id": 15368 },
@@ -128,6 +142,8 @@ When this document changes (a new status-check job is added, a job is renamed, t
 4. Commit both the document and (if applicable) the workflow change in the same commit.
 
 Treat the document as the source of truth and the UI as its reflection.
+
+The two directions fail differently. A change made here and not applied to the ruleset leaves the repository under-protected relative to what this file claims. A change made in the UI and not captured here leaves this file asserting something untrue, which is worse, because the claim to be the source of truth is what the rest of this document rests on. Nothing compares the two automatically today.
 
 ## Rationale
 
