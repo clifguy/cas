@@ -1,17 +1,18 @@
 name: CI
 
-# One run per push, one per queue entry, one per landing.
+# One run per push, one per landing.
 #
-# `pull_request` covers work in progress. `merge_group` covers the merge queue's
-# run against the exact tree that is about to become `main` — required checks are
-# satisfied from that run, so a workflow that does not answer this event stalls
-# every queued pull request until the queue's check-response timeout dequeues it.
-# `push` is restricted to `main`: unrestricted, it fires alongside `pull_request`
-# on the same commit and runs everything twice on every push to a branch. It is
-# kept for `main` because the ruleset grants the repository-admin role an
-# always-on bypass, so a direct push is reachable and would otherwise get no CI
-# at all, and because it is the only run whose coverage artifact belongs to a
-# `main` commit.
+# `pull_request` covers work in progress, and the required checks are satisfied
+# from that run. `merge_group` is answered but dormant: no merge queue dispatches
+# it, because merge queues are offered only on organization-owned repositories.
+# The event costs nothing while idle and keeps the workflow ready if that
+# changes. `push` is restricted to `main`: unrestricted, it fires alongside
+# `pull_request` on the same commit and runs everything twice on every push to a
+# branch. It is kept for `main` because the ruleset grants the repository-admin
+# role an always-on bypass, so a direct push is reachable and would otherwise get
+# no CI at all; because it is the only run whose coverage artifact belongs to a
+# `main` commit; and because with no strict up-to-date policy it is the only run
+# that sees the merged tree.
 #
 # The trade the restriction makes: a branch pushed without an open pull request,
 # and a tag push, now get no run at all. Open the pull request (draft is enough)

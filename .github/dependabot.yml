@@ -79,11 +79,10 @@ updates:
       # than application behavior.
       #
       # Ungrouped, one week's tooling refresh opens a separate PR per package
-      # against a single shared app/package-lock.json. Because `main` requires
-      # branches to be up to date, landing them serially costs a rebase and a
-      # full CI cycle each, so the work scales with the number of packages
-      # rather than with the amount of change. Grouped, it is one PR and one
-      # CI run.
+      # against a single shared app/package-lock.json. Each landing invalidates
+      # the others' lockfile, so they conflict pairwise and must be resolved and
+      # re-run one at a time; the work scales with the number of packages rather
+      # than with the amount of change. Grouped, it is one PR and one CI run.
       #
       # Majors are deliberately excluded: a breaking tooling change should land
       # in its own PR that can be reviewed and reverted on its own. Production
