@@ -397,29 +397,29 @@ async def test_call_tool_rejects_misspelled_kwarg_on_registered_sage_tool():
     coincidental pass: a tool that rejected every call would fail action
     1; a tool that accepted every call would fail action 2.
 
-    maint_list_vaults is chosen because it has no required state setup
+    list_vaults is chosen because it has no required state setup
     and exercises the JSON-RPC dispatch the same as every other tool.
     """
     from mcp.types import TextContent
 
     # Action 1 (control): correct invocation returns success.
-    control = await _mcp.mcp.call_tool("maint_list_vaults", {})
+    control = await _mcp.mcp.call_tool("list_vaults", {})
     assert isinstance(control, list)
     assert len(control) >= 1
     assert isinstance(control[0], TextContent)
     control_payload = json.loads(control[0].text)
-    # Success payload is whatever maint_list_vaults returns -- here we
+    # Success payload is whatever list_vaults returns -- here we
     # just assert it's NOT the unknown_parameter envelope.
     assert control_payload.get("error") != "unknown_parameter"
 
     # Action 2 (subject): misspelled kwarg returns the envelope.
-    subject = await _mcp.mcp.call_tool("maint_list_vaults", {"misspelled": "x"})
+    subject = await _mcp.mcp.call_tool("list_vaults", {"misspelled": "x"})
     assert isinstance(subject, list)
     assert len(subject) == 1
     assert isinstance(subject[0], TextContent)
     envelope = json.loads(subject[0].text)
     assert envelope["error"] == "unknown_parameter"
-    assert envelope["detail"]["tool"] == "maint_list_vaults"
+    assert envelope["detail"]["tool"] == "list_vaults"
     assert envelope["detail"]["rejected_params"] == ["misspelled"]
     # valid_params reflects the tool's declared signature; we don't
     # pin the exact list to keep the test resilient to future signature
@@ -3385,13 +3385,13 @@ def test_set_lifecycle_per_item_successor_id_uses_document_id_alias():
 
 
 def test_reload_vault_and_get_stack_config_in_sage_tools_registry():
-    """``maint_reload_vault`` and ``maint_get_stack_config`` are registered
+    """``reload_vault`` and ``get_stack_config`` are registered
     through ``register_sage_tools`` and the module-level re-exports point
     at the same callables.
 
-    Post-CAS-ADR-029 (CAS-ADR-029 v4), both names carry the ``maint_`` prefix
-    in the registration dict to mark them as substrate-maintenance
-    operations. The two tools have no HTTP counterpart by design and are
+    Both are substrate-maintenance operations, placed on the maintenance
+    surface by the surface-assignment table (CAS-ADR-029) rather than by
+    anything in their names. The two tools have no HTTP counterpart by design and are
     operationally MCP-only; they nonetheless ride the canonical
     registration path so the conformance gates and the ``_sage_tools``
     registry view cover them on the same terms as every other tool.
@@ -3402,24 +3402,24 @@ def test_reload_vault_and_get_stack_config_in_sage_tools_registry():
     """
     import sage.mcp_server as _mcp_server
 
-    assert "maint_reload_vault" in _mcp_server._sage_tools, (
-        "maint_reload_vault must be registered through register_sage_tools; "
+    assert "reload_vault" in _mcp_server._sage_tools, (
+        "reload_vault must be registered through register_sage_tools; "
         "an @mcp.tool() definition at module scope in sage/mcp_server.py "
         "would bypass the conformance registry view and is not the "
         "supported registration site."
     )
-    assert "maint_get_stack_config" in _mcp_server._sage_tools, (
-        "maint_get_stack_config must be registered through register_sage_tools; "
+    assert "get_stack_config" in _mcp_server._sage_tools, (
+        "get_stack_config must be registered through register_sage_tools; "
         "an @mcp.tool() definition at module scope in sage/mcp_server.py "
         "would bypass the conformance registry view and is not the "
         "supported registration site."
     )
-    assert _mcp_server._sage_tools["maint_reload_vault"] is _mcp_server.reload_vault, (
-        "_sage_tools['maint_reload_vault'] must be the same callable as the "
+    assert _mcp_server._sage_tools["reload_vault"] is _mcp_server.reload_vault, (
+        "_sage_tools['reload_vault'] must be the same callable as the "
         "sage.mcp_server.reload_vault re-export."
     )
-    assert _mcp_server._sage_tools["maint_get_stack_config"] is _mcp_server.get_stack_config, (
-        "_sage_tools['maint_get_stack_config'] must be the same callable as the "
+    assert _mcp_server._sage_tools["get_stack_config"] is _mcp_server.get_stack_config, (
+        "_sage_tools['get_stack_config'] must be the same callable as the "
         "sage.mcp_server.get_stack_config re-export."
     )
 

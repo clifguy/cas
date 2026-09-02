@@ -1245,7 +1245,7 @@ paths:
 
   /sage_vaults/{vault_id}/refresh-views:
     post:
-      operationId: maint_recompute_views
+      operationId: recompute_views
       summary: Regenerate symlink-based browsable folder views.
       description: >-
         Drops and recreates the symlink trees under the vault's
@@ -1281,7 +1281,7 @@ paths:
 
   /sage_vaults:
     get:
-      operationId: maint_list_vaults
+      operationId: list_vaults
       summary: List all vaults registered with the running SAGE instance.
       description: >-
         Returns a VaultSummary for every vault in the in-memory registry.
@@ -1306,7 +1306,7 @@ paths:
                   $ref: "#/components/schemas/VaultSummary"
 
     post:
-      operationId: maint_create_vault
+      operationId: create_vault
       summary: Create a new vault from a full configuration object.
       description: >-
         Validates the supplied configuration against the vault config
@@ -1349,7 +1349,7 @@ paths:
 
   /sage_vaults/{vault_id}/stats:
     get:
-      operationId: maint_get_vault_stats
+      operationId: get_vault_stats
       summary: Return Dashboard statistics and health indicators for a vault.
       description: >-
         Aggregates document, edge, storage, and pipeline-status counts
@@ -1387,7 +1387,7 @@ paths:
 
   /sage_vaults/{vault_id}/config:
     get:
-      operationId: maint_get_vault_config
+      operationId: get_vault_config
       summary: Return the full vault configuration.
       description: >-
         Returns the configuration as a JSON object conforming to
@@ -1449,7 +1449,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
     put:
-      operationId: maint_update_vault_config
+      operationId: update_vault_config
       summary: Update vault configuration at the section level.
       description: >-
         Each top-level section provided in the request body replaces
@@ -2204,7 +2204,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/detect-drift:
     post:
-      operationId: maint_verify_vault_drift
+      operationId: verify_vault_drift
       summary: Audit active sync_target / derived_from edges for drift.
       description: >-
         Walks every active provenance-bearing edge in the vault and
@@ -2246,7 +2246,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/verify-source-files:
     post:
-      operationId: maint_verify_vault_source_files
+      operationId: verify_vault_source_files
       summary: Audit that every document's backing source file is present.
       description: >-
         Walks every document in the vault and verifies that its
@@ -2268,7 +2268,7 @@ paths:
 
         Audits the vault-local source files (the ``imports/`` copies that
         ``get_document`` delivers), distinct from the content store
-        reclaimed by ``maint_optimize_vault_content_store``.
+        reclaimed by ``optimize_vault_content_store``.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2294,10 +2294,10 @@ paths:
 
   /sage_vaults/{vault_id}/admin/restore-source-file:
     post:
-      operationId: maint_restore_vault_source_file
+      operationId: restore_vault_source_file
       summary: Repair a document's retained source file by writing delivered bytes back over it.
       description: >-
-        The repair counterpart of ``maint_verify_vault_source_files``.
+        The repair counterpart of ``verify_vault_source_files``.
         That audit reports a retained copy that changed outside SAGE but
         cannot fix one, and re-ingesting cannot stand in: retention sees
         only that the offered bytes differ from what sits at its target --
@@ -2360,7 +2360,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/migrate:
     post:
-      operationId: maint_migrate_vault
+      operationId: migrate_vault
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
@@ -2407,7 +2407,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/reabstract-deferred:
     post:
-      operationId: maint_recompute_deferred_vault_abstracts
+      operationId: recompute_deferred_vault_abstracts
       summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
@@ -2476,7 +2476,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/optimize-content-store:
     post:
-      operationId: maint_optimize_vault_content_store
+      operationId: optimize_vault_content_store
       summary: Reclaim bloat in the per-vault content store.
       description: >-
         Per-vault content-store reclamation operation for the SAGE Core

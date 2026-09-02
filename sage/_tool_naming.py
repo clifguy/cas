@@ -11,8 +11,8 @@ surface and the one table that decides where each tool registers:
   restriction is carried by ``SERVER_ASSIGNMENT`` and enforced by the
   import-time invariants below, not by any tool-name prefix.
 - ``COMPOUND_PREFIXES`` — prefixes that compose with the verb taxonomy
-  (currently ``bulk_`` and ``maint_``). Anchored to CAS-ADR-029.
-  Consumed by the conformance gates only.
+  (currently ``bulk_`` only). Anchored to CAS-ADR-029. Consumed by the
+  conformance gates only.
 - ``extract_verb`` — helper returning a tool name's canonical verb
   segment after stripping any compound prefix.
 - ``SERVER_ASSIGNMENT`` — tool name → MCP server name (``sage`` or
@@ -20,14 +20,12 @@ surface and the one table that decides where each tool registers:
   per CAS-ADR-034: ``build_partitioned_server`` reads it to decide which
   tools each surface carries, and a registered tool with no row here
   fails registration rather than landing on a default surface.
-- ``PREFIX_SURFACE_DIVERGENCES`` — the tools whose surface deliberately
-  differs from what their name prefix would suggest. The ``maint_``
-  prefix is a naming convention (CAS-ADR-029), not a registration rule;
-  this set records every place the two are allowed to disagree so the
-  partition gates can hold them to exactly that.
-- ``MAINT_ALIAS_MAPPING`` — pre-rename ``admin_*`` name → canonical
-  ``maint_*`` name. The alias middleware consults it on every
-  ``call_tool`` invocation so pre-rename callers keep working.
+- ``SURFACE_MOUNT_PATH`` — server name → the canonical HTTP mount path
+  that serves it, so a dispatch-time refusal can say where a tool lives.
+- ``TOOL_ALIASES`` — retired tool name → canonical name, covering every
+  spelling a maintenance tool has carried (the ``admin_*`` and ``maint_*``
+  generations). The alias middleware consults it on every ``call_tool``
+  invocation so callers holding an older name keep working.
 """
 
 from __future__ import annotations
@@ -87,30 +85,26 @@ MAINT_ONLY_VERBS: Final[frozenset[str]] = frozenset({"reload", "migrate", "optim
 #: compound prefix from the beginning of a tool name, the remainder
 #: must begin with a canonical verb. ``bulk`` is retained for the
 #: ``bulk_ingest_document`` tool whose rename to ``ingest_documents``
-#: is deferred to a follow-on revision. ``maint`` is the naming marker
-#: for maintenance tools per CAS-ADR-029 (the surface's pre-rename
-#: ``admin`` prefix survives only in the dispatch-level alias mapping
-#: below, never in a registered name, so it composes with nothing).
-COMPOUND_PREFIXES: Final[frozenset[str]] = frozenset(
-    {
-        "bulk",
-        "maint",
-    }
-)
+#: is deferred to a follow-on revision. The maintenance surface's retired
+#: prefixes (``admin``, then ``maint``; CAS-ADR-029) survive only as keys
+#: of the dispatch-level alias table below, never in a registered name,
+#: so they compose with nothing: a name that reintroduced one would fail
+#: the verb gate, since neither token is a verb.
+COMPOUND_PREFIXES: Final[frozenset[str]] = frozenset({"bulk"})
 
 
 def extract_verb(tool_name: str) -> str:
     """Return the canonical verb segment of a tool name.
 
-    Strips any leading compound prefix (e.g. ``bulk_``, ``maint_``),
-    then returns the first underscore-separated segment of the
-    remainder. Returns the empty string if ``tool_name`` is empty.
+    Strips any leading compound prefix (e.g. ``bulk_``), then returns
+    the first underscore-separated segment of the remainder. Returns the
+    empty string if ``tool_name`` is empty.
 
     Examples:
         ``extract_verb("get_document")`` returns ``"get"``.
         ``extract_verb("bulk_ingest_document")`` returns ``"ingest"``.
-        ``extract_verb("maint_migrate_vault")`` returns ``"migrate"``.
-        ``extract_verb("maint_recompute_views")`` returns ``"recompute"``.
+        ``extract_verb("migrate_vault")`` returns ``"migrate"``.
+        ``extract_verb("recompute_deferred_vault_abstracts")`` returns ``"recompute"``.
     """
     if not tool_name:
         return ""
@@ -139,18 +133,16 @@ def extract_verb(tool_name: str) -> str:
 #: document's server registration map; moving a tool between surfaces
 #: is an edit to this row and to that map, never a rename.
 #:
-#: The ``maint_`` prefix is the naming convention for maintenance tools
-#: (CAS-ADR-029); it does not decide registration. The partition gates
-#: cross-check the two, holding their disagreements to exactly
-#: ``PREFIX_SURFACE_DIVERGENCES`` below.
+#: Nothing about a tool's name decides or signals its surface: the
+#: maintenance prefix CAS-ADR-029 once carried is retired, so a name
+#: describes the operation and this row alone describes the placement.
+#: The partition gates hold this table to a hand-maintained pin.
 SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     # sage server (ordinary surface)
     # Vault enumeration: the ordinary surface is vault-addressed, so it
     # carries the one tool that lists the values its ``vault_id``
-    # arguments range over. The name keeps its maintenance prefix -- the
-    # move and any rename are decisions on independent cadences -- and
-    # the divergence is recorded in PREFIX_SURFACE_DIVERGENCES.
-    "maint_list_vaults": "sage",
+    # arguments range over.
+    "list_vaults": "sage",
     "search": "sage",
     "get_document": "sage",
     "read_section": "sage",
@@ -174,76 +166,98 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "recompute_abstract": "sage",
     "recompute_pipeline": "sage",
     # sage_maint server (maintenance surface)
-    "maint_get_vault_config": "sage_maint",
-    "maint_get_vault_stats": "sage_maint",
-    "maint_get_stack_config": "sage_maint",
-    "maint_create_vault": "sage_maint",
-    "maint_reload_vault": "sage_maint",
-    "maint_update_vault_config": "sage_maint",
-    "maint_verify_vault_drift": "sage_maint",
-    "maint_verify_vault_source_files": "sage_maint",
-    "maint_restore_vault_source_file": "sage_maint",
-    "maint_migrate_vault": "sage_maint",
-    "maint_recompute_views": "sage_maint",
-    "maint_recompute_deferred_vault_abstracts": "sage_maint",
-    "maint_optimize_vault_content_store": "sage_maint",
+    "get_vault_config": "sage_maint",
+    "get_vault_stats": "sage_maint",
+    "get_stack_config": "sage_maint",
+    "create_vault": "sage_maint",
+    "reload_vault": "sage_maint",
+    "update_vault_config": "sage_maint",
+    "verify_vault_drift": "sage_maint",
+    "verify_vault_source_files": "sage_maint",
+    "restore_vault_source_file": "sage_maint",
+    "migrate_vault": "sage_maint",
+    "recompute_views": "sage_maint",
+    "recompute_deferred_vault_abstracts": "sage_maint",
+    "optimize_vault_content_store": "sage_maint",
 }
 
 
-#: Tools whose assigned surface differs from the one their name prefix
-#: suggests (``maint_*`` → ``sage_maint``; everything else → ``sage``).
-#:
-#: Written out by hand, not derived from ``SERVER_ASSIGNMENT``: the
-#: partition gates compare the prefix convention against the table and
-#: require their disagreements to equal this set exactly, in both
-#: directions, and pin its population. A tool joins this set only by a
-#: recorded decision, so it cannot quietly grow into an allowlist.
-#:
-#: Vault enumeration is the one member: it carries the maintenance prefix
-#: because it reads the SAGE process's vault registry rather than records
-#: within a vault, and it registers on the ordinary surface because that
-#: surface is vault-addressed and otherwise cannot enumerate the vaults
-#: its own ``vault_id`` arguments range over.
-PREFIX_SURFACE_DIVERGENCES: Final[frozenset[str]] = frozenset({"maint_list_vaults"})
+#: Server name → the canonical Streamable HTTP mount path that serves it
+#: (CAS-ADR-034). Held here rather than imported from the app module,
+#: which mounts the servers and imports this package, so the dispatch
+#: layer can name the mount a refused tool actually lives on. The app's
+#: mount table must contain every row here; a test holds the two together.
+SURFACE_MOUNT_PATH: Final[dict[str, str]] = {
+    "sage": "/mcp",
+    "sage_maint": "/mcp_maint",
+}
 
 
 # ----------------------------------------------------------------------
-# Maintenance-surface alias mapping (anchored to CAS-ADR-034)
+# Retired-name aliases (anchored to CAS-ADR-034)
 # ----------------------------------------------------------------------
 
-#: Pre-rename maintenance tool name → canonical name. The surface's
-#: tools were renamed ``admin_*`` → ``maint_*`` because the old prefix
-#: implied a privilege boundary the surface does not carry (CAS-ADR-034:
-#: uniform auth across both surfaces; the split exists only to keep the
-#: ordinary catalog small). The alias middleware in
-#: ``sage.mcp_server._LoggingFastMCP.call_tool`` consults this table on
-#: every invocation and rewrites an old name onto its canonical target,
-#: so pre-rename callers keep working indefinitely — no removal is
-#: scheduled. The old names are deliberately **not** registered as
-#: tools: the advertised catalog carries only the canonical names.
+#: Retired tool name → canonical name. The maintenance tools have carried
+#: two prefixes since their names were last stable: ``admin_`` (renamed
+#: away because it implied a privilege boundary the surface does not
+#: carry -- CAS-ADR-034: uniform auth across both surfaces; the split
+#: exists only to keep the ordinary catalog small) and then ``maint_``
+#: (retired because, once the surface-assignment table above became the
+#: registration authority, the prefix described nothing the table did
+#: not, and misdescribed the placement of the one tool the table had
+#: moved -- CAS-ADR-029). Every spelling from either generation resolves
+#: here. The alias middleware in ``sage.mcp_server._LoggingFastMCP.call_tool``
+#: consults this table on every invocation and rewrites a retired name
+#: onto its canonical target, so callers holding either older name keep
+#: working indefinitely -- no removal is scheduled. The retired names are
+#: deliberately **not** registered as tools: the advertised catalog carries
+#: only the canonical names.
 #:
-#: The table is written out rather than derived from
-#: ``SERVER_ASSIGNMENT`` on purpose: it covers exactly the tools that
-#: existed under the old prefix. A maintenance tool added after the
-#: rename gets no fabricated ``admin_*`` alias, and a tool that has since
-#: moved to the ordinary surface keeps the alias it already had -- the
-#: alias follows the name, and resolves on whichever surface registers
-#: the target (CAS-ADR-034: an alias grants nothing the canonical name
-#: does not).
-MAINT_ALIAS_MAPPING: Final[dict[str, str]] = {
-    "admin_list_vaults": "maint_list_vaults",
-    "admin_get_vault_config": "maint_get_vault_config",
-    "admin_get_vault_stats": "maint_get_vault_stats",
-    "admin_get_stack_config": "maint_get_stack_config",
-    "admin_create_vault": "maint_create_vault",
-    "admin_reload_vault": "maint_reload_vault",
-    "admin_update_vault_config": "maint_update_vault_config",
-    "admin_verify_vault_drift": "maint_verify_vault_drift",
-    "admin_verify_vault_source_files": "maint_verify_vault_source_files",
-    "admin_migrate_vault": "maint_migrate_vault",
-    "admin_recompute_views": "maint_recompute_views",
-    "admin_recompute_deferred_vault_abstracts": "maint_recompute_deferred_vault_abstracts",
-    "admin_optimize_vault_content_store": "maint_optimize_vault_content_store",
+#: One flat table rather than one per generation: a caller need not know
+#: which generation it holds, and dispatch stays a single lookup
+#: (CAS-ADR-034 prices the alias at one dispatch-time lookup). The
+#: import-time invariants make the flatness safe by refusing an alias
+#: whose target is itself an alias, so a one-hop lookup is provably
+#: complete.
+#:
+#: The table is written out rather than derived from ``SERVER_ASSIGNMENT``
+#: on purpose: it covers exactly the spellings that existed. A maintenance
+#: tool added after a rename gets no fabricated alias for the prefix it
+#: never carried (``restore_vault_source_file`` post-dates the ``admin_``
+#: era and has no ``admin_`` row), and a tool that has since moved to the
+#: ordinary surface keeps the aliases it already had -- an alias follows
+#: the name, and resolves on whichever surface registers the target
+#: (CAS-ADR-034: an alias grants nothing the canonical name does not).
+TOOL_ALIASES: Final[dict[str, str]] = {
+    # admin_ generation
+    "admin_list_vaults": "list_vaults",
+    "admin_get_vault_config": "get_vault_config",
+    "admin_get_vault_stats": "get_vault_stats",
+    "admin_get_stack_config": "get_stack_config",
+    "admin_create_vault": "create_vault",
+    "admin_reload_vault": "reload_vault",
+    "admin_update_vault_config": "update_vault_config",
+    "admin_verify_vault_drift": "verify_vault_drift",
+    "admin_verify_vault_source_files": "verify_vault_source_files",
+    "admin_migrate_vault": "migrate_vault",
+    "admin_recompute_views": "recompute_views",
+    "admin_recompute_deferred_vault_abstracts": "recompute_deferred_vault_abstracts",
+    "admin_optimize_vault_content_store": "optimize_vault_content_store",
+    # maint_ generation
+    "maint_list_vaults": "list_vaults",
+    "maint_get_vault_config": "get_vault_config",
+    "maint_get_vault_stats": "get_vault_stats",
+    "maint_get_stack_config": "get_stack_config",
+    "maint_create_vault": "create_vault",
+    "maint_reload_vault": "reload_vault",
+    "maint_update_vault_config": "update_vault_config",
+    "maint_verify_vault_drift": "verify_vault_drift",
+    "maint_verify_vault_source_files": "verify_vault_source_files",
+    "maint_restore_vault_source_file": "restore_vault_source_file",
+    "maint_migrate_vault": "migrate_vault",
+    "maint_recompute_views": "recompute_views",
+    "maint_recompute_deferred_vault_abstracts": "recompute_deferred_vault_abstracts",
+    "maint_optimize_vault_content_store": "optimize_vault_content_store",
 }
 
 
@@ -260,7 +274,6 @@ MAINT_ALIAS_MAPPING: Final[dict[str, str]] = {
 def _check_table_invariants(
     assignment: dict[str, str],
     aliases: dict[str, str],
-    divergences: frozenset[str],
 ) -> None:
     """Assert the cross-table invariants; called once at import.
 
@@ -273,17 +286,16 @@ def _check_table_invariants(
         f"SERVER_ASSIGNMENT values must be 'sage' or 'sage_maint': {unknown_servers}"
     )
 
-    # Every declared divergence must name a registered tool; a typo or a
-    # stale entry would otherwise import cleanly and surface only in tests.
-    unknown_divergences = divergences - set(assignment)
-    assert unknown_divergences == set(), (  # noqa: S101
-        f"PREFIX_SURFACE_DIVERGENCES names unregistered tool(s): {unknown_divergences}"
-    )
-
     # Every alias must target a registered name (on either surface -- the
-    # alias follows the name, not the surface), and no alias may collide
-    # with a registered name (a collision would shadow a live tool behind
-    # the rewrite).
+    # alias follows the name, not the surface), no alias may collide with
+    # a registered name (a collision would shadow a live tool behind the
+    # rewrite), and no alias may target another alias (the dispatch layer
+    # resolves exactly one hop, so a chained entry would resolve to a name
+    # that is not registered).
+    chained_aliases = {old for old, new in aliases.items() if new in aliases}
+    assert chained_aliases == set(), (  # noqa: S101
+        f"alias(es) whose target is itself an alias (one-hop resolution): {chained_aliases}"
+    )
     orphan_aliases = {old for old, new in aliases.items() if new not in assignment}
     assert orphan_aliases == set(), (  # noqa: S101
         f"alias(es) whose target is not a registered tool: {orphan_aliases}"
@@ -312,4 +324,4 @@ def _check_table_invariants(
     )
 
 
-_check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)
+_check_table_invariants(SERVER_ASSIGNMENT, TOOL_ALIASES)

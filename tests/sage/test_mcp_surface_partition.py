@@ -33,13 +33,9 @@ rather than by the verb taxonomy: ``MAINT_ONLY_VERBS`` is pinned to its
 population here, and the import-time invariants refuse a table that places
 a tool carrying one of those verbs off the maintenance surface.
 
-The ``maint_`` prefix remains the naming convention for maintenance tools
-(CAS-ADR-029) but no longer decides registration, so the prefix and the
-table are two independent statements of the same partition. These tests
-also cross-check them: the set of tools on which they disagree must equal
-``PREFIX_SURFACE_DIVERGENCES`` exactly, and that set is pinned to its one
-recorded member, so a divergence can neither appear unrecorded nor
-accumulate as an allowlist.
+Nothing in a tool's name signals its surface: the maintenance prefix
+CAS-ADR-029 once carried is retired, so the pin and the table are the only
+two statements of the partition and these gates hold them together.
 """
 
 from __future__ import annotations
@@ -57,14 +53,14 @@ import sage
 import sage.mcp_server as mcp_server
 from sage._tool_naming import (
     CANONICAL_VERBS,
-    MAINT_ALIAS_MAPPING,
     MAINT_ONLY_VERBS,
-    PREFIX_SURFACE_DIVERGENCES,
     SERVER_ASSIGNMENT,
+    SURFACE_MOUNT_PATH,
+    TOOL_ALIASES,
     _check_table_invariants,
     extract_verb,
 )
-from sage.app import create_app
+from sage.app import MCP_HTTP_MOUNTS, create_app
 from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 
 
@@ -121,17 +117,6 @@ def _partition_drift(
         if assignment[name] != expected[name]
     )
     return unpinned, missing, moved
-
-
-def _prefix_surface(name: str) -> str:
-    """The surface the naming convention alone would imply for ``name``.
-
-    Kept here, not in production code: the prefix is a naming convention
-    (CAS-ADR-029), and registration no longer derives anything from it.
-    The tests re-derive it so the prefix-vs-table cross-check compares two
-    independent sources.
-    """
-    return "sage_maint" if name.startswith("maint_") else "sage"
 
 
 _SYNTHETIC_PIN = {"a": "sage", "b": "sage_maint", "x": "sage"}
@@ -257,73 +242,37 @@ def test_table_invariants_reject_maintenance_verb_on_ordinary_surface():
     surface, so only a check that reads the table can reject it. The
     unmodified tables are the positive control.
 
-    Anti-coincidental: ``maint_reload_vault`` carries the prefix as well as
-    the verb, so a check that read the prefix ("every ``maint_*`` row is on
-    ``sage_maint``") would also reject the first copy. The second copy moves
-    a prefixed tool whose verb is *not* maintenance-only and must pass -- a
-    prefix-reading check would reject it, a verb-reading one accepts it.
+    Anti-coincidental: the second copy moves a maintenance tool whose verb
+    is *not* maintenance-only and must pass -- a check that flagged any
+    maintenance-surface tool moved to ``sage`` (reading the pin or the
+    roster rather than the verb) would reject it; a verb-reading one
+    accepts it.
     """
-    _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)
+    _check_table_invariants(SERVER_ASSIGNMENT, TOOL_ALIASES)
 
-    misplaced = {**SERVER_ASSIGNMENT, "maint_reload_vault": "sage"}
-    assert misplaced["maint_reload_vault"] == "sage"
-    with pytest.raises(AssertionError, match=r"maint_reload_vault.*reload"):
-        _check_table_invariants(misplaced, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)
+    misplaced = {**SERVER_ASSIGNMENT, "reload_vault": "sage"}
+    assert misplaced["reload_vault"] == "sage"
+    with pytest.raises(AssertionError, match=r"reload_vault.*reload"):
+        _check_table_invariants(misplaced, TOOL_ALIASES)
 
-    prefixed_but_ordinary_verb = {**SERVER_ASSIGNMENT, "maint_get_vault_stats": "sage"}
-    assert extract_verb("maint_get_vault_stats") not in MAINT_ONLY_VERBS
-    _check_table_invariants(
-        prefixed_but_ordinary_verb, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES
+    ordinary_verb_moved = {**SERVER_ASSIGNMENT, "get_vault_stats": "sage"}
+    assert extract_verb("get_vault_stats") not in MAINT_ONLY_VERBS
+    _check_table_invariants(ordinary_verb_moved, TOOL_ALIASES)
+
+
+def test_surface_mount_paths_agree_with_app_mounts():
+    """``SURFACE_MOUNT_PATH`` names a mount the app actually serves for each surface.
+
+    The dispatch layer quotes this table when it refuses a tool that lives
+    on the other surface, so a row pointing at a path the app does not
+    mount would send a caller to a dead address.
+    """
+    served = {(surface, path) for path, surface in MCP_HTTP_MOUNTS}
+    assert set(SURFACE_MOUNT_PATH.items()) <= served, (
+        f"SURFACE_MOUNT_PATH rows not served by the app: "
+        f"{sorted(set(SURFACE_MOUNT_PATH.items()) - served)}"
     )
-
-
-def test_sage_maint_contains_only_maint_prefixed_tools():
-    """Partition invariant: every ``sage_maint`` tool name is ``maint_*``."""
-    names = _registered_names("sage_maint")
-    offenders = {n for n in names if not n.startswith("maint_")}
-    assert not offenders, f"non-maint_ tool(s) on sage_maint: {sorted(offenders)}"
-
-
-def test_maint_prefixed_tools_on_sage_are_only_declared_divergences():
-    """Partition invariant: a ``maint_*`` tool on ``sage`` is a recorded divergence.
-
-    Read from the built server, not the table, so it fails on a registration
-    path that stops honouring the table as much as on a table edit.
-    """
-    names = _registered_names("sage")
-    on_sage = {n for n in names if n.startswith("maint_")}
-    assert on_sage == PREFIX_SURFACE_DIVERGENCES, (
-        f"maint_ tool(s) on sage other than the declared divergences: "
-        f"unexpected {sorted(on_sage - PREFIX_SURFACE_DIVERGENCES)}, "
-        f"missing {sorted(PREFIX_SURFACE_DIVERGENCES - on_sage)}"
-    )
-
-
-def test_prefix_and_table_disagree_exactly_on_declared_divergences():
-    """The prefix convention and the assignment table disagree on exactly
-    ``PREFIX_SURFACE_DIVERGENCES`` — set equality in both directions.
-
-    An entry moved off its prefix's surface without being declared fails
-    here; so does a declared divergence whose table row still agrees with
-    its prefix (a stale declaration).
-    """
-    divergent = {
-        name for name, surface in SERVER_ASSIGNMENT.items() if _prefix_surface(name) != surface
-    }
-    assert divergent == PREFIX_SURFACE_DIVERGENCES, (
-        f"undeclared prefix/surface divergence(s): "
-        f"{sorted(divergent - PREFIX_SURFACE_DIVERGENCES)}; "
-        f"declared but not divergent: {sorted(PREFIX_SURFACE_DIVERGENCES - divergent)}"
-    )
-
-
-def test_declared_divergences_are_exactly_vault_enumeration():
-    """The divergence set is a recorded decision, not an open allowlist.
-
-    Pinning the population means a second divergence needs its own recorded
-    decision and a deliberate edit here, not a one-line append.
-    """
-    assert PREFIX_SURFACE_DIVERGENCES == frozenset({"maint_list_vaults"})
+    assert set(SURFACE_MOUNT_PATH) == {"sage", "sage_maint"}
 
 
 def test_table_entry_for_vault_enumeration_is_ordinary():
@@ -332,7 +281,7 @@ def test_table_entry_for_vault_enumeration_is_ordinary():
     Cheap table pin so a reverted row reads as its own failure rather than
     only through the built-server assertions below.
     """
-    assert SERVER_ASSIGNMENT["maint_list_vaults"] == "sage"
+    assert SERVER_ASSIGNMENT["list_vaults"] == "sage"
 
 
 def test_vault_enumeration_registers_on_ordinary_surface_only():
@@ -343,8 +292,8 @@ def test_vault_enumeration_registers_on_ordinary_surface_only():
     arguments range over, and the maintenance surface must not carry a
     second copy. Goes red if the assignment reverts to ``sage_maint``.
     """
-    assert "maint_list_vaults" in _registered_names("sage")
-    assert "maint_list_vaults" not in _registered_names("sage_maint")
+    assert "list_vaults" in _registered_names("sage")
+    assert "list_vaults" not in _registered_names("sage_maint")
 
 
 def test_surface_of_is_gone():
@@ -427,18 +376,12 @@ def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
     """The ``/mcp`` HTTP mount advertises exactly the ordinary roster.
 
     Revises the prior full-surface assertion: per CAS-ADR-034 the HTTP
-    transport is partitioned, so ``/mcp`` carries the ``sage`` surface only
-    and no ``maint_*`` tool appears there.
+    transport is partitioned, so ``/mcp`` carries the ``sage`` surface only.
     """
     app = create_app(config=minimal_config)
     names = _mounted_names(app, "/mcp")
     assert names == EXPECTED_SAGE
     assert names, "ordinary mount roster must be non-empty"
-    on_mount = {n for n in names if n.startswith("maint_")}
-    assert on_mount == PREFIX_SURFACE_DIVERGENCES, (
-        f"maint_ tool(s) advertised on /mcp beyond the declared divergences: "
-        f"{sorted(on_mount ^ PREFIX_SURFACE_DIVERGENCES)}"
-    )
 
 
 @pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
@@ -451,8 +394,6 @@ def test_maintenance_mounts_advertise_maintenance_surface_only(minimal_config, m
     app = create_app(config=minimal_config)
     names = _mounted_names(app, mount)
     assert names == EXPECTED_MAINT
-    offenders = {n for n in names if not n.startswith("maint_")}
-    assert not offenders, f"non-maint_ tool(s) on {mount}: {sorted(offenders)}"
     dup = names & READ_SPINE
     assert not dup, f"read-spine tool(s) duplicated on {mount}: {sorted(dup)}"
 
@@ -521,12 +462,12 @@ async def test_mounts_read_shared_vault_registry(
     carries the vault id in its detail and would satisfy a substring check.
     """
     mounts = app_with_one_vault.state.mcp_mounts
-    listed = tool_payload(await mounts["/mcp"].call_tool("maint_list_vaults", {}))
+    listed = tool_payload(await mounts["/mcp"].call_tool("list_vaults", {}))
     assert "error" not in listed
     assert minimal_config.vault.id in {v["id"] for v in listed["vaults"]}
     config = tool_payload(
         await mounts["/mcp_maint"].call_tool(
-            "maint_get_vault_config", {"vault_id": minimal_config.vault.id}
+            "get_vault_config", {"vault_id": minimal_config.vault.id}
         )
     )
     assert "error" not in config

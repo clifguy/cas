@@ -4,7 +4,9 @@ Gates over the live FastMCP catalog and the naming taxonomy:
 
 - ``test_no_legacy_prefix`` — every registered tool name omits the
   pre-rename ``sage_``, ``sage_admin_``, and ``app_`` inner prefixes
-  that the two-server design in CAS-ADR-034 made vestigial.
+  that the two-server design in CAS-ADR-034 made vestigial, and the
+  retired maintenance prefixes ``admin_`` and ``maint_`` (CAS-ADR-029),
+  which survive only as alias keys.
 - ``test_verb_category_compliance`` — every registered tool name
   begins with a verb in ``CANONICAL_VERBS`` (after stripping any
   member of ``COMPOUND_PREFIXES``). Anchored to CAS-ADR-033.
@@ -62,18 +64,18 @@ async def _live_tool_names() -> set[str]:
 
 
 async def test_no_legacy_prefix() -> None:
-    """No live tool name carries the pre-rename ``sage_`` / ``sage_admin_`` / ``app_`` inner prefix.
+    """No live tool name carries a legacy inner prefix or a retired maintenance prefix.
 
     Anti-coincidental check: enumerate the **live** registered names via
     ``mcp.list_tools()`` rather than asserting against a static expected
     list. A static list lets a stale registration pass coincidentally;
     live enumeration surfaces any reintroduced legacy prefix.
     """
-    legacy_prefixes = ("sage_", "sage_admin_", "app_")
+    legacy_prefixes = ("sage_", "sage_admin_", "app_", "admin_", "maint_")
     names = await _live_tool_names()
     offending = sorted(n for n in names if n.startswith(legacy_prefixes))
     assert not offending, (
-        f"Tools still carry a legacy inner prefix (sage_, sage_admin_, or app_): {offending}. "
+        f"Tools still carry a legacy or retired prefix {legacy_prefixes}: {offending}. "
         "The two-server design in CAS-ADR-034 makes these prefixes vestigial; "
         "the MCP client identifier (mcp__<server>__<tool>) carries the disambiguation."
     )
@@ -125,7 +127,7 @@ def _parse_result(result) -> dict | list:
 # tools (create_edges, update_lifecycles, update_metadata).
 _INVOCATION_PROBES: tuple[tuple[str, dict], ...] = (
     # Read spine
-    ("maint_list_vaults", {}),
+    ("list_vaults", {}),
     ("get_document", {"vault_id": "test_vault", "document_id": "does-not-exist"}),
     (
         "search",
@@ -237,6 +239,9 @@ async def test_verb_category_compliance() -> None:
         ("bulk_create_edge", "create"),
         ("bulk_update_metadata", "update"),
         ("bulk_ingest_document", "ingest"),
+        # Retired maintenance prefix no longer unwraps: a name that
+        # reintroduced it reads as verb "maint" and fails the verb gate.
+        ("maint_migrate_vault", "maint"),
         # Multi-segment tail
         ("recompute_deferred_vault_abstracts", "recompute"),
         ("get_filename_metadata", "get"),
@@ -293,9 +298,10 @@ def _allowlist_drift(
     ("entry", "expect_stale", "expect_wrong_surface"),
     [
         ("mcp__sage__search", False, False),
-        ("mcp__sage__maint_list_vaults", False, False),
-        ("mcp__sage_maint__maint_list_vaults", False, True),
-        ("mcp__sage__maint_get_vault_config", False, True),
+        ("mcp__sage__list_vaults", False, False),
+        ("mcp__sage_maint__list_vaults", False, True),
+        ("mcp__sage__get_vault_config", False, True),
+        ("mcp__sage_maint__maint_get_vault_config", True, False),
         ("mcp__sage_maint__admin_list_vaults", True, False),
         ("mcp__sage__sage_discover", True, False),
     ],

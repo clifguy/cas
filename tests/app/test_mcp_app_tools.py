@@ -962,12 +962,12 @@ class TestMCPConventions:
         suite.
         """
         sage_tools = [
-            # Post-CAS-ADR-029 v4: vault-scope tools carry the ``maint_``
-            # prefix (maint_list_vaults, maint_get_vault_stats); the
+            # Vault-scoped tools carry no surface prefix (CAS-ADR-029):
+            # placement is the surface-assignment table's alone. The
             # record-collection hash query is the plural-noun
             # ``verify_hashes``.
-            "maint_list_vaults",
-            "maint_get_vault_stats",
+            "list_vaults",
+            "get_vault_stats",
             "verify_hashes",
             "list_staging_edges",
             "update_staging_edge",
