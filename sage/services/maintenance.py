@@ -458,7 +458,7 @@ class MaintenanceService:
             # path. Translated here rather than left to propagate: it is a
             # ``ValueError``, not a ``SAGEError``, so the HTTP surface would
             # return a bare 500 with no error code against a spec that declares
-            # none. The binding's own message travels with it -- it has four
+            # none. The binding's own message travels with it -- it has several
             # distinct causes and only it knows which one fired.
             raise VaultSourcePathRefusedError(doc.source_path, str(exc)) from exc
         restored_hash = store.hash_source(self._vault_id, storage_root, doc.source_path)

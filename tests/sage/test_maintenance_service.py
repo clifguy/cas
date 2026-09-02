@@ -35,6 +35,7 @@ from sage.api.errors import (
     RestoreSourceNotAbsoluteError,
     RestoreTargetUnresolvedError,
     SourceFileNotFoundError,
+    VaultSourcePathRefusedError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, StalenessBasis
@@ -1393,6 +1394,41 @@ async def test_restore_source_file_rejects_a_non_absolute_source(
         await maint.restore_vault_source_file("relative/path.md")
     with pytest.raises(RestoreSourceNotAbsoluteError):
         await maint.restore_vault_source_file("~/originals/x.md")
+
+
+async def test_restore_source_file_refusal_names_the_vault_relative_path(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A binding's refusal to write at the recorded path reaches the caller as
+    the typed ``vault_source_path_refused`` error, and its message names the
+    record's vault-relative path rather than the server's absolute one.
+
+    Anti-coincidental-pass: the link's target holds *different* bytes and sits
+    *inside* the source root, so the restore reaches the write (an intact copy
+    is left alone) and containment accepts, leaving the symlink guard as the
+    sole refuser. The message's positive half passes against the absolute
+    spelling too, which ends in the same path; the negative half -- the storage
+    root's absolute string is absent -- is the discriminator. Nothing may be
+    written: the link and the copy it points at are asserted untouched.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    original = b"the bytes the caller delivered"
+    sp = "imports/r.md"
+    victim = _write_source(minimal_config, "imports/victim.md", b"VICTIM ORIGINAL")
+    link = Path(minimal_config.vault.storage_root) / sp
+    link.symlink_to(victim)
+    await gs.insert_document(_src_doc("deadbeef_refused", _sha256_of(original), source_path=sp))
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await maint.restore_vault_source_file(_delivered(tmp_path, "r.md", original))
+
+    assert sp in excinfo.value.message
+    assert str(Path(minimal_config.vault.storage_root)) not in excinfo.value.message
+    assert excinfo.value.detail == {"source_path": sp}
+    assert link.is_symlink(), "a refusal must not disturb the tree"
+    assert victim.read_bytes() == b"VICTIM ORIGINAL", "the link's target must be untouched"
 
 
 async def test_restore_source_file_missing_delivered_source_raises_the_documented_error(

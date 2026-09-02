@@ -501,6 +501,138 @@ def test_vsbb_036_write_source_refuses_a_symlinked_destination(store, storage_ro
     assert link.is_symlink()
 
 
+def test_vsbb_052_retain_source_refuses_a_directory_at_the_planned_path(
+    store, storage_root, tmp_path
+):
+    """A directory sitting where retention planned to write is refused in the
+    binding's own vocabulary, and the refusal names the vault-relative path.
+
+    The planned path is hashed to decide between reuse and disambiguation
+    before any guard runs, so a directory there escaped as a bare
+    ``IsADirectoryError`` from the hash.
+
+    Anti-coincidental-pass: the exception class discriminates against the bare
+    error, and the "no disambiguated file" assertion excludes a rival that
+    catches it and falls through to the collision branch's fresh name. The
+    message half asserts the vault-relative spelling *and* the absence of the
+    storage root, since the absolute form ends in the same suffix and the
+    positive assertion alone would pass against it.
+    """
+    imports = storage_root / "imports"
+    squatter = imports / "note.md"
+    squatter.mkdir(parents=True)
+    delivered = b"DELIVERED BYTES"
+    ext = _external(tmp_path, "note.md", delivered)
+
+    with pytest.raises(VaultRootEscapeError) as excinfo:
+        store.retain_source(VID, storage_root, ext)
+
+    message = str(excinfo.value)
+    assert "imports/note.md" in message
+    assert str(storage_root) not in message
+    assert squatter.is_dir()
+    assert list(squatter.iterdir()) == [], "nothing may be copied into the directory"
+    token = hashlib.sha256(delivered).hexdigest()[:8]
+    assert not (imports / f"note_{token}.md").exists(), "no fall-through to disambiguation"
+
+
+def test_vsbb_053_retain_source_refuses_a_dangling_imports_link(store, storage_root, tmp_path):
+    """A dangling symlink where ``imports/`` should be is refused rather than
+    escaping as the bare ``FileExistsError`` its ``mkdir`` raises.
+
+    Anti-coincidental-pass: the link must *dangle*. A live link to a directory
+    passes ``mkdir(exist_ok=True)`` and is refused later by containment
+    (VSBB-039), so it would leave this branch unexercised. The link target's
+    continued absence excludes an implementation that created the directory
+    through the link and wrote under it.
+    """
+    gone = tmp_path / "gone"
+    (storage_root / "imports").symlink_to(gone)
+    assert not gone.exists(), "the link must dangle for the mkdir to be the failing step"
+    ext = _external(tmp_path, "n.md", b"data")
+
+    with pytest.raises(VaultRootEscapeError):
+        store.retain_source(VID, storage_root, ext)
+
+    assert not gone.exists(), "nothing may be created through the dangling link"
+    assert (storage_root / "imports").is_symlink(), "a refusal must not disturb the tree"
+
+
+def test_vsbb_054_retain_source_refuses_a_directory_at_the_disambiguated_path(
+    store, storage_root, tmp_path
+):
+    """A directory at the name the collision branch re-derives is refused, not
+    copied into.
+
+    Anti-coincidental-pass: the collision at the planned path must be real
+    (different bytes), or the planned-path check fires first and the settled
+    destination is never examined -- the same trap VSBB-038 sets for the
+    symlink guard. ``shutil.copy2`` to a directory raises nothing: it copies
+    *into* it under the source's basename, and retention would then return the
+    directory as the record's ``source_path``. The assertion is therefore that
+    the directory is still empty, not merely that an exception was raised.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    (imports / "note.md").write_bytes(b"AN ORDINARY COLLISION")
+    delivered = b"DELIVERED BYTES"
+    token = hashlib.sha256(delivered).hexdigest()[:8]
+    squatter = imports / f"note_{token}.md"
+    squatter.mkdir()
+    ext = _external(tmp_path, "note.md", delivered)
+
+    with pytest.raises(VaultRootEscapeError):
+        store.retain_source(VID, storage_root, ext)
+
+    assert list(squatter.iterdir()) == [], "the copy must not land inside the directory"
+    assert (imports / "note.md").read_bytes() == b"AN ORDINARY COLLISION"
+
+
+def test_vsbb_055_write_source_refuses_a_directory_at_the_named_path(store, storage_root):
+    """A directory at the path a repair names is refused in the binding's own
+    vocabulary rather than escaping as the bare ``IsADirectoryError`` of the
+    write, and the refusal names the vault-relative path.
+
+    The operation's precondition is that something other than SAGE wrote to the
+    store, so a directory planted at a record's path is in scope.
+
+    Anti-coincidental-pass: the directory sits *inside* the root and is no
+    symlink, so containment and the symlink guard both accept and only the
+    directory check refuses. The message's negative half is the discriminator
+    against the absolute spelling, which ends in the same path.
+    """
+    squatter = storage_root / "imports" / "doc.md"
+    squatter.mkdir(parents=True)
+
+    with pytest.raises(VaultRootEscapeError) as excinfo:
+        store.write_source(VID, storage_root, "imports/doc.md", b"x")
+
+    message = str(excinfo.value)
+    assert "imports/doc.md" in message
+    assert str(storage_root) not in message
+    assert list(squatter.iterdir()) == [], "nothing may be written into the directory"
+
+
+def test_vsbb_056_write_source_refuses_a_file_where_a_parent_directory_belongs(store, storage_root):
+    """A regular file sitting where the named path's parent directory belongs is
+    refused rather than escaping as the bare ``FileExistsError`` of the parent
+    ``mkdir``.
+
+    Anti-coincidental-pass: a *dangling link* at the parent would not reach the
+    ``mkdir`` -- the containment resolve follows it and either refuses an
+    outside target or resolves an inside one to a plain path -- so only a
+    regular file exercises this branch. The file's bytes are asserted intact,
+    excluding an implementation that replaced it with the directory it wanted.
+    """
+    squatter = storage_root / "imports"
+    squatter.write_bytes(b"NOT A DIRECTORY")
+
+    with pytest.raises(VaultRootEscapeError):
+        store.write_source(VID, storage_root, "imports/doc.md", b"x")
+
+    assert squatter.read_bytes() == b"NOT A DIRECTORY"
+
+
 # --------------------------------------------------------------------------- #
 # read-back: exists / size / read / hash
 # --------------------------------------------------------------------------- #

@@ -13,6 +13,7 @@ Test IDs follow VSBB-NNN (Vault-Source Binding Bytes), routing slice.
 """
 
 import base64
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -336,6 +337,104 @@ async def test_vsbb_045_refusal_detail_carries_a_relative_source_as_supplied(
         )
 
     assert excinfo.value.detail == {"source_path": "./imports/link.md"}
+
+
+async def test_vsbb_049_refusal_message_names_the_vault_relative_destination(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """The refusal's ``message`` describes the refused destination as the
+    vault-relative path, not the server's absolute one.
+
+    VSBB-046 pinned the ``detail`` half; this is the ``message`` half, which is
+    the binding's own text forwarded verbatim. Under a hosted profile an
+    absolute path in it discloses the container's filesystem layout to any
+    caller who trips a refusal, and the same string reaches bulk callers
+    through the per-item error summary.
+
+    Anti-coincidental-pass: both halves of the message assertion are needed.
+    The absolute form ends in ``imports/refused.md`` too, so the positive
+    assertion alone passes against the disclosing message; the negative one --
+    the vault directory's absolute string is absent -- is the discriminator.
+    The ``detail`` assertion pins that the other half did not regress.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+    (storage_root / "imports" / "refused.md").symlink_to(tmp_path / "nowhere.md")
+
+    external = tmp_path / "refused.md"
+    external.write_text("# body\n")
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    assert "imports/refused.md" in excinfo.value.message
+    assert str(tmp_vault_dir) not in excinfo.value.message
+    assert excinfo.value.detail == {"source_path": str(external)}
+
+
+async def test_vsbb_050_directory_at_the_planned_destination_is_a_typed_refusal(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A directory at the path retention planned surfaces as the typed
+    ``vault_source_path_refused`` error, not as an unhandled exception.
+
+    The planned path is hashed to decide between reuse and disambiguation
+    before any guard runs, so a directory there raised ``IsADirectoryError``
+    past every translation -- a bare 500 against a spec that declares neither.
+
+    Anti-coincidental-pass: the class assertion is the claim;
+    ``pytest.raises(Exception)`` passes against the defect. The tree
+    assertions exclude a rival that swallowed the error and disambiguated past
+    the directory: it stays empty and no ``note_<token>.md`` appears.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    squatter = storage_root / "imports" / "note.md"
+    squatter.mkdir(parents=True)
+
+    body = b"# body\n"
+    external = tmp_path / "note.md"
+    external.write_bytes(body)
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.status_code == 400
+    assert squatter.is_dir()
+    assert list(squatter.iterdir()) == []
+    token = hashlib.sha256(body).hexdigest()[:8]
+    assert not (storage_root / "imports" / f"note_{token}.md").exists()
+
+
+async def test_vsbb_051_dangling_imports_link_is_a_typed_refusal(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A dangling symlink where ``imports/`` should be surfaces as the typed
+    refusal, not as the bare ``FileExistsError`` its ``mkdir`` raises.
+
+    Anti-coincidental-pass: the link must dangle -- a live link to a directory
+    passes the ``mkdir`` and is refused later by containment (VSBB-039), which
+    would leave the new branch unexercised. The target's continued absence
+    excludes an implementation that created the directory through the link.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    gone = tmp_path / "gone"
+    (storage_root / "imports").symlink_to(gone)
+
+    external = tmp_path / "n.md"
+    external.write_text("# body\n")
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.status_code == 400
+    assert not gone.exists()
+    assert (storage_root / "imports").is_symlink()
 
 
 # --------------------------------------------------------------------------- #

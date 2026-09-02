@@ -83,7 +83,9 @@ class VaultRootEscapeError(ValueError):
     """
 
 
-def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
+def resolve_and_assert_within_root(
+    path: Path, vault_root: Path, *, display: str | None = None
+) -> Path:
     """Realpath-resolve ``path`` and require it to be a strict descendant of ``vault_root``.
 
     The safety primitive behind every vault-teardown ``rmtree``: a vault's
@@ -94,16 +96,28 @@ def resolve_and_assert_within_root(path: Path, vault_root: Path) -> Path:
     (CAS-ADR-043's ``get_vault_root``), the vault's source root for a retained
     copy. A path that resolves outside that root -- or to the root itself, since
     removing it would destroy everything beneath -- raises
-    :class:`VaultRootEscapeError` and nothing is written or deleted. The message
-    names the root that was checked, because it reaches callers verbatim through
-    the API layer's translation and a fixed one would misdescribe every use but
-    the first. Returns the resolved path on success so the caller removes the
-    canonical (symlink-free) target. ``path`` need not exist: an already-absent
-    target still resolves, keeping the teardown idempotent.
+    :class:`VaultRootEscapeError` and nothing is written or deleted. Returns the
+    resolved path on success so the caller removes the canonical (symlink-free)
+    target. ``path`` need not exist: an already-absent target still resolves,
+    keeping the teardown idempotent.
+
+    The message is shaped for whoever will read it. Without ``display`` it is
+    the operator-facing form: it names the path, its resolution, and the root
+    that was checked, because a teardown's receipt and its stderr carry it
+    verbatim and a fixed root would misdescribe every use but the first. With
+    ``display`` -- the vault-relative spelling the caller supplied or would
+    recognize -- the message names only that spelling: a write refusal reaches
+    API callers verbatim through the service layer's translation, and an
+    absolute server path there discloses the host's filesystem layout to
+    whoever tripped it while telling them nothing they can act on.
     """
     resolved = path.expanduser().resolve()
     root = vault_root.expanduser().resolve()
     if resolved == root or root not in resolved.parents:
+        if display is not None:
+            raise VaultRootEscapeError(
+                f"refusing to write {display!r}: it resolves outside the vault's source tree."
+            )
         raise VaultRootEscapeError(
             f"refusing to operate on {path} (resolved {resolved}): it is not a "
             f"strict descendant of {root}."
@@ -154,7 +168,7 @@ def _assert_plain_vault_relative(source_path: str) -> None:
         )
 
 
-def _assert_not_symlinked(dest: Path) -> None:
+def _assert_not_symlinked(dest: Path, display: str) -> None:
     """Refuse a destination that is a symlink rather than writing through it.
 
     Every write the filesystem binding performs lands at a path it chose or was
@@ -170,12 +184,56 @@ def _assert_not_symlinked(dest: Path) -> None:
     against yet. Shared by both write paths so the two cannot drift apart: the
     hazard is a property of writing at a filesystem path, not of either method's
     particular reason for choosing one.
+
+    ``display`` is the vault-relative spelling the refusal names. Every caller
+    of this guard is writing on a caller's behalf, so the spelling is required
+    rather than optional: the message travels to that caller verbatim, and an
+    absolute path in it would disclose the host's layout without telling the
+    caller anything it could relate to what it sent.
     """
     if dest.is_symlink():
         raise VaultRootEscapeError(
-            f"refusing to write {dest}: the destination is a symlink, so the write "
-            f"would land on its target rather than at the path named."
+            f"refusing to write {display!r}: the destination is a symlink, so the "
+            f"write would land on its target rather than at the path named."
         )
+
+
+def _assert_not_directory(dest: Path, display: str) -> None:
+    """Refuse a destination that is a directory rather than hashing or writing at it.
+
+    A directory (or a link to one) where a retained copy belongs is not a
+    collision retention can disambiguate around: hashing it fails outright,
+    and ``shutil.copy2`` into it raises nothing -- it lands the bytes *under*
+    the directory, and the record would then name the directory as its own
+    source. Checked wherever a destination is about to be read or written,
+    which for retention is twice: the planned path, before the collision
+    comparison hashes it, and the settled path, before the copy lands there.
+    ``display`` is the vault-relative spelling, as for the symlink guard.
+    """
+    if dest.is_dir():
+        raise VaultRootEscapeError(
+            f"refusing to write {display!r}: a directory sits at the destination."
+        )
+
+
+def _ensure_directory(directory: Path, display: str) -> None:
+    """Create ``directory`` (and its parents), or refuse when something else sits there.
+
+    ``mkdir(exist_ok=True)`` tolerates only a real directory: a dangling link,
+    a regular file, or a link to a file at the path raises ``FileExistsError``.
+    That is a refusal in everything but type -- nothing was written, and the
+    destination cannot be made -- so it is raised as one here and reaches
+    callers through the same translation as the other guards rather than as
+    an unhandled error. ``display`` is the vault-relative spelling of the
+    directory, as for the other guards.
+    """
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except FileExistsError as exc:
+        raise VaultRootEscapeError(
+            f"refusing to write under {display!r}: something that is not a "
+            f"directory sits at that path."
+        ) from exc
 
 
 def _disambiguation_token(canonical_hash: str) -> str:
@@ -707,7 +765,7 @@ class FilesystemVaultSourceStore(VaultSourceStore):
             return internal
 
         imports_dir = storage_root / "imports"
-        imports_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(imports_dir, "imports")
 
         # Derived from the naming rule rather than restating it: this path and
         # the one ``planned_source_path`` reports must not be able to drift
@@ -716,6 +774,11 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         dest = storage_root / self.planned_source_path(vault_id, storage_root, source_path)
         reuse = False
         if dest.exists():
+            # A directory here is not a collision the branch below can
+            # disambiguate around: hashing it fails before any guard has run,
+            # so it is refused ahead of the comparison rather than at the
+            # settled-destination guards, which it would never reach.
+            _assert_not_directory(dest, str(dest.relative_to(storage_root)))
             # The caller's digest when it has one, so the delivered bytes are
             # hashed once across the whole ingest rather than once here and once
             # by whoever had to establish content identity first.
@@ -738,27 +801,38 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # candidate destination is only ever correct for the branch that happens
         # to keep it. The one exit that does not arrive here is the internal
         # short-circuit above, which returns a path already inside the tree
-        # without choosing one.
+        # without choosing one. The directory check alone appears twice: the
+        # planned path had to be examined before the collision comparison
+        # hashed it, which is earlier than any settled destination exists.
         #
+        # Every guard names the destination by its vault-relative spelling. A
+        # refusal travels to the caller verbatim, and that spelling is the one
+        # it can relate to what it sent; an absolute server path would only
+        # disclose the host's layout.
+        vault_relative = str(dest.relative_to(storage_root))
+        # The disambiguated name can be a directory as readily as the planned
+        # one, and ``copy2`` into a directory raises nothing -- it lands the
+        # bytes *under* it while the returned path would name the directory.
+        _assert_not_directory(dest, vault_relative)
         # A link at the destination would otherwise redirect a copy onto its
         # target, or become a record's ``source_path`` -- every read following
         # it wherever its owner points, and a later repair refusing the very
         # path the record names.
-        _assert_not_symlinked(dest)
+        _assert_not_symlinked(dest, vault_relative)
         # Containment resolves the whole path, so a symlinked *ancestor* --
         # ``imports/`` itself, say -- cannot land the copy outside the tree while
         # the returned vault-relative path claims it is inside. Asserted rather
         # than substituted: the copy goes to the path as named, and the returned
         # vault-relative form is computed against ``storage_root`` as given, so a
         # storage root that is itself reached through a link keeps working.
-        resolve_and_assert_within_root(dest, storage_root)
+        resolve_and_assert_within_root(dest, storage_root, display=vault_relative)
 
         if not reuse:
             shutil.copy2(source_path, dest)
             # Strip UI-layer invisibility markers that shutil.copy2 may have
             # propagated from an agent's temp source (CAS-ADR-016).
             _strip_ui_invisibility(dest)
-        return str(dest.relative_to(storage_root))
+        return vault_relative
 
     def write_source(
         self, vault_id: str, storage_root: Path, source_path: str, data: bytes
@@ -766,13 +840,15 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         _assert_plain_vault_relative(source_path)
         dest = storage_root / source_path
         # This operation's precondition is that something other than SAGE wrote
-        # to the store, so a planted link is squarely in scope here.
-        _assert_not_symlinked(dest)
+        # to the store, so a planted link -- or a directory -- is squarely in
+        # scope here. Each guard names the path as the caller spelled it.
+        _assert_not_symlinked(dest, source_path)
+        _assert_not_directory(dest, source_path)
         # Containment is checked against the *source root*, not the bound vault
         # root: the caller names a vault-relative path, and the guarantee owed is
         # that it stays inside the tree this vault's sources live in.
-        dest = resolve_and_assert_within_root(dest, storage_root)
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest = resolve_and_assert_within_root(dest, storage_root, display=source_path)
+        _ensure_directory(dest.parent, str(PurePosixPath(source_path).parent))
         dest.write_bytes(data)
         # Same CAS-ADR-016 sanitization ``retain_source`` applies: a restored
         # copy must be no more UI-visible-or-hidden than a freshly retained one.
