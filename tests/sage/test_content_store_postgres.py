@@ -107,7 +107,23 @@ async def _await_no_foreign_snapshots(pg_pool, timeout: float = 15.0) -> None:
     VACUUM FULL keeps every dead tuple a concurrent snapshot in the same
     database could still see -- an autovacuum ANALYZE worker is enough -- so a
     reclaim assertion made while one is live fails for reasons unrelated to
-    the store. Bounded; on timeout the holders are named."""
+    the store. Bounded; on timeout the holders are named.
+
+    ``pg_stat_activity`` shows other roles' ``backend_xmin`` only to a
+    superuser or a member of ``pg_read_all_stats``, and autovacuum workers run
+    as the bootstrap superuser; without that visibility the wait would be a
+    silent no-op, so the precondition is checked first and fails loudly."""
+    async with pg_pool.connection() as conn:
+        privilege = await (
+            await conn.execute(
+                "SELECT rolsuper OR pg_has_role(current_user, 'pg_read_all_stats', 'member') "
+                "FROM pg_roles WHERE rolname = current_user"
+            )
+        ).fetchone()
+    assert privilege and privilege[0], (
+        "cannot see other backends' snapshots: run the suite as a superuser "
+        "or GRANT pg_read_all_stats TO the test role"
+    )
     deadline = time.monotonic() + timeout
     while True:
         async with pg_pool.connection() as conn:

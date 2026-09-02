@@ -92,21 +92,23 @@ export SAGE_TEST_PG_DSN="postgresql:///sage_test"   # socket form (peer auth)
 ```
 
 The suite runs in two tiers. The **default tier** is everything except the
-tests that load real model weights; `pyproject.toml` runs it in parallel
-(`-n 6 --dist loadfile` via `addopts`; CI passes `-n auto`). Pass `-n 0` for a
-serial run when debugging. The **real-model tier** -- the Qwen3 MLX and nomic
-embedding tests in `tests/sage/test_adapters.py` -- is opt-in, because it
-loads the model `sage/config.yaml` ships and holds most of the machine's
-memory while it runs:
+tests that load the real Qwen3 model; `pyproject.toml` runs it in parallel
+(`-n auto --dist loadfile` via `addopts`, with `auto` sized by CPU count
+bounded by the server's `max_connections` -- six on a 14-core workstation
+against the default ceiling of 100). Pass `-n 0` for a
+serial run when debugging. The **real-model tier** -- the Qwen3 MLX tests in
+`tests/sage/test_adapters.py` -- is opt-in, because it loads the model
+`sage/config.yaml` ships and holds most of the machine's memory while it runs:
 
 ```sh
-SAGE_TEST_REAL_MODELS=1 .venv/bin/pytest -n 0 tests/sage/test_adapters.py -k "Qwen3 or Nomic"
+SAGE_TEST_REAL_MODELS=1 .venv/bin/pytest -n 0 tests/sage/test_adapters.py -k Qwen3
 ```
 
-Run it when a change touches `sage/adapters/abstraction_qwen3.py` or
-`sage/adapters/embedding_nomic.py`. A machine-wide lock file serializes
-real-model runs, so a second one waits rather than exhausting unified memory;
-the model is unloaded as soon as its test class finishes.
+Run it when a change touches `sage/adapters/abstraction_qwen3.py`. A
+machine-wide lock file serializes real-model runs, so a second one waits
+rather than exhausting unified memory, and the model is unloaded as soon as
+its test class finishes. The nomic embedding tests are cheap (seconds, well
+under a gigabyte) and stay in the default tier, locally and in CI.
 
 `SAGE_TEST_PG_DSN` names a **maintenance** database on a server, not the
 database the tests actually run against. At session start the harness derives a

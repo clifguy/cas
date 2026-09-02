@@ -218,10 +218,15 @@ class IsolatedTestDB:
 
     ``maintenance_dsn`` names the server + the working database the harness
     connects to for ``CREATE``/``DROP DATABASE``; ``throwaway_dsn`` is that DSN
-    retargeted at this process's private database.
+    retargeted at this process's private database, which the provisioner keeps
+    a connection open to for the whole session.
     """
 
     maintenance_dsn: str
     maintenance_dbname: str | None
     throwaway_dsn: str
     throwaway_dbname: str
+    #: Backend pid of the connection the provisioner holds on the throwaway for
+    #: the whole session, so the database is never backend-less; ``None`` when
+    #: the provisioner did not open one.
+    keepalive_backend_pid: int | None = None

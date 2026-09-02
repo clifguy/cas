@@ -172,6 +172,18 @@ def test_stack_config_binds_to_the_throwaway_database(isolated_db):
     assert cfg.postgres.database != isolated_db.maintenance_dbname
 
 
+def test_provisioner_holds_a_backend_on_the_throwaway(isolated_db):
+    """PGI-e: the throwaway has a backend attached from the moment it is
+    created, so the liveness rule alone spares it from a sibling's sweep for
+    its whole life; the sweep's age gate is the second layer."""
+    pid = isolated_db.keepalive_backend_pid
+    assert pid is not None
+    with psycopg.connect(isolated_db.maintenance_dsn, autocommit=True) as conn:
+        row = conn.execute("SELECT datname FROM pg_stat_activity WHERE pid = %s", (pid,)).fetchone()
+    assert row is not None, "keep-alive backend is not attached"
+    assert row[0] == isolated_db.throwaway_dbname
+
+
 # ---------------------------------------------------------------------------
 # D. Orphan-sweep safety
 # ---------------------------------------------------------------------------

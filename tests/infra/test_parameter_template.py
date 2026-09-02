@@ -171,12 +171,13 @@ def test_template_compiles(tmp_path: Path) -> None:
     paths), so nothing transient lands in the tracked ``infra/`` tree, where a
     concurrent scan of ``*.bicepparam`` would find it.
     """
-    relative_using = "using './main.bicep'"
-    text = _template_text()
-    assert text.startswith(relative_using), "template must open with the relative using line"
-    tmp = tmp_path / "main.bicepparam"
     from_tmp = os.path.relpath(MAIN_BICEP, tmp_path)
-    tmp.write_text(text.replace(relative_using, f"using '{from_tmp}'", 1), encoding="utf-8")
+    text, substitutions = re.subn(
+        r"^using\s+'\./main\.bicep'", f"using '{from_tmp}'", _template_text(), count=1, flags=re.M
+    )
+    assert substitutions == 1, "template must reference the orchestrator with a relative using line"
+    tmp = tmp_path / "main.bicepparam"
+    tmp.write_text(text, encoding="utf-8")
     outfile = tmp_path / "params.json"
     if shutil.which("bicep") is not None:
         cmd = ["bicep", "build-params", str(tmp), "--outfile", str(outfile)]
