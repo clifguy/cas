@@ -298,6 +298,38 @@ def test_vsb_034_resolve_and_assert_within_root_boundaries(tmp_path):
         resolve_and_assert_within_root(tmp_path / "elsewhere", root)
 
 
+def test_vsb_071_within_root_guard_speaks_to_two_audiences(tmp_path):
+    """The containment guard's message is shaped by who will read it: the
+    operator-facing form (no ``display``) names the absolute resolved path and
+    the root it was checked against, while the caller-facing form names only
+    the vault-relative spelling the caller supplied.
+
+    Anti-coincidental-pass: the two halves fail in opposite directions, so a
+    guard collapsed onto either spelling fails one of them. Always-relative
+    fails the operator assertions -- and would leave a vault teardown's receipt
+    unable to say which root it checked. Always-absolute, or a form that names
+    the display *and* still appends the root, fails the caller half's negative
+    assertions. Both absolute strings are taken in resolved form, since that is
+    what the message prints. Neither path is created: the guard resolves
+    non-strictly, so the tree's existence is not part of what it decides on.
+    """
+    root = tmp_path / "vaults"
+    outside = tmp_path / "elsewhere"
+
+    with pytest.raises(VaultRootEscapeError) as operator:
+        resolve_and_assert_within_root(outside, root)
+    operator_message = str(operator.value)
+    assert str(outside.resolve()) in operator_message
+    assert str(root.resolve()) in operator_message
+
+    with pytest.raises(VaultRootEscapeError) as caller:
+        resolve_and_assert_within_root(outside, root, display="imports/x.md")
+    caller_message = str(caller.value)
+    assert "imports/x.md" in caller_message
+    assert str(outside.resolve()) not in caller_message
+    assert str(root.resolve()) not in caller_message
+
+
 # ---------------------------------------------------------------------------
 # remove_tree_tolerating_concurrent_writer: rmtree resilient to a concurrent
 # writer repopulating a directory mid-removal (macOS .DS_Store precedent,

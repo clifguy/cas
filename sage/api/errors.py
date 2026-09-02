@@ -977,10 +977,12 @@ class VaultSourcePathRefusedError(SAGEError):
 
     Carries the binding's own reason rather than restating one. A binding
     refuses a write target for several distinct causes -- the path is absolute,
-    it walks out of the vault's source tree, a symlink sits at the destination,
-    or it resolves outside the source root through an ancestor -- and a fixed
-    message can only describe one of them, leaving the other three reported as
-    something that did not happen.
+    it walks out of the vault's source tree, a symlink or a directory sits at
+    the destination, it resolves outside the source root through an ancestor,
+    or something that is not a directory sits where its parent belongs -- and
+    a fixed message can only describe one of them, leaving the others reported
+    as something that did not happen. The reason names the destination by its
+    vault-relative spelling, never by a server-side absolute path.
 
     Exists because the binding raises a plain ``ValueError`` subclass: it sits
     below the API layer and may not import it, so without a translation at the

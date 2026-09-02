@@ -290,8 +290,10 @@ def register_sage_tools(
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``vault_source_path_refused`` (400): the vault-source store refused
-          the destination it would have retained the source at -- a symlink
-          sitting there, or a path resolving out of the vault's source tree.
+          the destination it would have retained the source at -- a symlink or
+          a directory sitting there, a path resolving out of the vault's source
+          tree, or an ``imports`` entry that is not a directory. The reason
+          names the destination by its vault-relative path.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied; they are mutually exclusive.
         - ``missing_ingest_source`` (400): neither ``source`` nor
