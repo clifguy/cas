@@ -514,7 +514,11 @@ def register_sage_tools(
                 entry = get_transfer_store().consume_upload(transfer_token, vault_id)
                 try:
                     result = await v.ingestion_service.ingest(
-                        _build_request(str(entry.staged_path)), wait_for_pipeline=False
+                        _build_request(str(entry.staged_path)),
+                        wait_for_pipeline=False,
+                        # The staged path is where the bytes are; the caller's
+                        # own path is what a refusal names back at it.
+                        caller_source=entry.declared_source,
                     )
                     return serialize(result.document)
                 finally:

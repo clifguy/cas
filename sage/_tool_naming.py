@@ -53,14 +53,12 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
         "recompute",
         "verify",
         # Maintenance-only outlier verbs (accepted on the sage_maint surface
-        # only). `optimize` joins the precedent of `reload`/`migrate`:
-        # maintenance operations on substrate state whose intent does not fit
-        # the read-spine / mutation / derivation / validation taxonomy.
-        # `restore` follows them: returning a retained source file to a state
-        # it previously held is not a partial record update (`update`), a
-        # re-derivation from inputs the substrate still holds (`recompute`),
-        # or a read-only assertion about state (`verify`) -- the bytes come
-        # from outside and overwrite what the store currently has.
+        # only): maintenance operations on substrate state whose intent does
+        # not fit the read-spine / mutation / derivation / validation taxonomy.
+        # This is the set the gate enforces; the argument admitting each member
+        # lives in the *SAGE MCP Tool Surface* steering document, which holds
+        # the population of every partition CAS-ADR-033 establishes -- the same
+        # document the server registration map below transcribes.
         "reload",
         "migrate",
         "optimize",

@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -27,7 +28,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
 from sage.mcp_server import get_document, ingest_document, read_projection
-from sage.services.transfer import reset_transfer_store
+from sage.services.transfer import get_transfer_store, reset_transfer_store
 
 _VAULT_ID = "test_vault"
 _BASE = "https://sage.test.example"
@@ -149,6 +150,76 @@ async def test_upload_round_trip(client, tmp_path):
     assert "error" not in done, done
     assert done["source_path"] == "imports/round_trip.md"
     assert done["source_content_hash"] == "sha256:" + hashlib.sha256(body).hexdigest()
+
+
+async def test_vsbb_047_refused_upload_reports_the_callers_path_not_the_staging_one(
+    client, tmp_path, tmp_vault_dir
+):
+    """A retention refusal on the completion leg names the file the caller sent,
+    not the server-side staging path the token redeemed to.
+
+    The two-phase completion substitutes the staged path for the caller's, so
+    everything downstream of the redemption sees a location inside the server's
+    own temp tree. See ``IngestionService.ingest``'s ``caller_source`` for why
+    reporting that back is the one shape of this detail worse than useless.
+
+    Anti-coincidental-pass: three rivals.
+
+    Reporting the staged path is the defect, and the staged file keeps the
+    caller's basename, so an ``endswith`` or basename assertion passes against
+    it. Equality is the only form that fails, and the fixture asserts the two
+    paths actually differ before resting on that -- otherwise reporting either
+    one would satisfy the assertion.
+
+    Reporting the entry's ``filename`` -- the sanitized basename -- fails the
+    same equality against an absolute path.
+
+    Third, any implementation that round-trips the declared source through
+    ``Path``, which is why this mints from a path carrying a ``/./`` segment
+    rather than from the ``_mint_upload`` helper's clean one. On a clean
+    absolute path that round-trip is the identity, so a fixture using one
+    excludes nothing; the dotted spelling is what separates them. This is the
+    transfer leg's form of the rival VSBB-045 pins at the service level.
+
+    The expected value is the recipe's own echoed ``source`` rather than a
+    re-typed path, making this a round-trip claim: the string the caller handed
+    to the mint is the string the refusal names.
+    """
+    body = b"# refused upload\n"
+    # Dangling, so retention reaches its write exit and refuses the link there.
+    imports = tmp_vault_dir / "sources" / "imports"
+    imports.mkdir(parents=True, exist_ok=True)
+    (imports / "refused_upload.md").symlink_to(tmp_path / "nowhere.md")
+
+    # No file is created at this path, and none is needed: under the cloud
+    # profile the mint decides on the path's shape alone and never stats it --
+    # the bytes arrive on the upload leg below. Creating one here would be setup
+    # no assertion depends on.
+    #
+    # Built by concatenation: ``Path`` would collapse the ``/./`` on
+    # construction, and that segment is the whole point of the fixture.
+    dotted = f"{tmp_path}/caller_inbox/./refused_upload.md"
+
+    with _profile("cloud"):
+        recipe = _parse(await ingest_document(_VAULT_ID, dotted, "markdown"))
+        assert recipe.get("status") == "upload_required", recipe
+        item = recipe["uploads"][0]
+        resp = await client.put("/upload", content=body, headers={"X-Upload-Token": item["token"]})
+        assert resp.status_code == 201, resp.text
+
+        supplied = item["source"]
+        assert supplied == dotted, "the recipe echoes the caller's spelling verbatim"
+        assert supplied != str(Path(supplied)), "the fixture must survive a Path round-trip"
+        # Read before redemption consumes the entry.
+        staged = str(get_transfer_store()._entries[item["transfer_id"]].staged_path)
+        assert staged != supplied
+
+        done = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=item["token"])
+        )
+
+    assert done["error"] == "vault_source_path_refused", done
+    assert done["detail"] == {"source_path": supplied}
 
 
 async def test_download_round_trip_source(client, tmp_path):

@@ -116,6 +116,12 @@ class PendingTransfer:
     expires_at: datetime
     staging_dir: Path
     filename: str = ""
+    #: The path the caller named when this upload was minted, from which
+    #: ``filename`` is derived. Redemption substitutes the staged path for it
+    #: everywhere downstream, so it is kept here for the one consumer that must
+    #: not report a server-side location -- see ``IngestionService.ingest``'s
+    #: ``caller_source``. Empty only on a download entry, which has no such path.
+    declared_source: str = ""
     state: Literal["pending_bytes", "streaming", "bytes_staged"] = "pending_bytes"
     staged_size: int | None = None
     staged_sha256: str | None = None
@@ -158,15 +164,23 @@ class TransferStore:
 
     # -- minting ---------------------------------------------------------
 
-    def mint_upload(self, vault_id: str, filename: str, ttl_seconds: int) -> MintedTransfer:
-        """Mint an upload token bound to one vault and one staged filename."""
-        safe_name = staging_name(filename, "transfer_source")
+    def mint_upload(self, vault_id: str, source: str, ttl_seconds: int) -> MintedTransfer:
+        """Mint an upload token bound to one vault and one caller-named source.
+
+        Takes the path the caller named and derives the staged basename from it,
+        rather than accepting the two spellings separately. The entry needs both
+        — the basename to stage under, the caller's path to name in a refusal —
+        and they are the same value at different reductions, so deriving one
+        from the other is what keeps them from disagreeing and makes an entry
+        without a caller-facing spelling unrepresentable.
+        """
         with self._lock:
             self._sweep_locked()
             minted, entry = self._new_entry_locked(
                 direction="upload", vault_id=vault_id, ttl_seconds=ttl_seconds
             )
-            entry.filename = safe_name
+            entry.filename = staging_name(source, "transfer_source")
+            entry.declared_source = source
         return minted
 
     def mint_download_source(
@@ -403,7 +417,7 @@ def mint_upload_recipe(vault_id: str, sources: list[str]):
     items: list[UploadRecipeItem] = []
     expires_at = None
     for source in sources:
-        minted = store.mint_upload(vault_id, Path(source).name, ttl_seconds)
+        minted = store.mint_upload(vault_id, source, ttl_seconds)
         expires_at = minted.expires_at
         items.append(
             UploadRecipeItem(

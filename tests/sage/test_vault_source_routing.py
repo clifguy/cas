@@ -20,6 +20,7 @@ import pytest
 
 from sage.api.errors import (
     ContentFileMissingError,
+    DuplicateContentError,
     ForceReingestPathMismatchError,
     SourceFileNotFoundError,
     VaultSourcePathRefusedError,
@@ -244,6 +245,97 @@ async def test_vsbb_041_ingest_surfaces_a_refused_write_path_as_a_typed_error(
 
     assert excinfo.value.status_code == 400
     assert excinfo.value.code == "vault_source_path_refused"
+
+
+async def test_vsbb_046_refusal_detail_carries_the_external_path_as_supplied(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """The refusal's ``source_path`` detail is the caller's spelling, not the
+    realpath the service resolved it to.
+
+    The detail exists so a caller can tell *which* of the paths it named was
+    refused. Reporting a resolved form answers a question nobody asked: the
+    caller cannot match it against anything it sent, and it discloses a
+    filesystem layout the caller may not otherwise see.
+
+    Anti-coincidental-pass: the fixture reaches the file through a symlinked
+    *parent directory*, so the supplied and resolved spellings genuinely differ.
+    A file named directly under ``tmp_path`` would not discriminate — pytest
+    hands out an already-realpath'd ``tmp_path`` on macOS, so supplied and
+    resolved are the same string there and the assertion would pass against the
+    defect. Equality rather than a suffix match, since both spellings end in the
+    same basename.
+
+    VSBB-041's sibling: that test pins the exception class, this one its payload.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+    # Dangling, so retention falls through to the write exit and refuses there.
+    (storage_root / "imports" / "note.md").symlink_to(tmp_path / "nowhere.md")
+
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (real_dir / "note.md").write_text("# body\n")
+    (tmp_path / "alias").symlink_to(real_dir)
+    supplied = str(tmp_path / "alias" / "note.md")
+    assert supplied != str(Path(supplied).resolve()), "the fixture must separate the two spellings"
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=supplied, source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.detail == {"source_path": supplied}
+
+
+async def test_vsbb_045_refusal_detail_carries_a_relative_source_as_supplied(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A refused *relative* source reports the vault-relative string the caller
+    sent, not the storage-root-absolute path the service built from it.
+
+    The relative branch joins the caller's string onto the storage root and
+    resolves it, so what came back named a server-side location. See
+    ``IngestionService.ingest``'s ``caller_source`` parameter for why that is
+    the wrong answer.
+
+    Anti-coincidental-pass: two rivals, and the fixture must exclude both.
+
+    The first is reporting the resolved path — the *outside* link target's
+    absolute form, which ends in the same basename, so an ``endswith`` or
+    ``in`` assertion would pass against it. Equality is what excludes it.
+
+    The second is any implementation that round-trips the caller's string
+    through ``Path`` — ``str(Path(request.source))`` — which is why the source
+    here is spelled ``./imports/link.md`` rather than the plain form. ``pathlib``
+    drops a leading ``.`` on construction, so that rival silently hands back a
+    spelling the caller did not send, and every fixture using a spelling
+    ``Path()`` leaves unchanged passes against it. The string survives only
+    because the service carries ``request.source`` as a string and never
+    re-derives it, which is the property under test. VSBB-048 uses the same
+    dotted spelling for the provenance-lookup leg.
+
+    The fixture also carries retention to its reuse exit through a real ingest:
+    the caller's relative path resolves through the link to a file outside the
+    root, so retention treats it as external, plans ``imports/link.md`` for it,
+    finds that path occupied by bytes that hash equal (they are the same file),
+    and refuses to hand a symlink back as a record's ``source_path``.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = outside_dir / "link.md"
+    outside.write_text("# body\n")
+    (storage_root / "imports" / "link.md").symlink_to(outside)
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source="./imports/link.md", source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.detail == {"source_path": "./imports/link.md"}
 
 
 # --------------------------------------------------------------------------- #
@@ -620,6 +712,45 @@ async def test_vsbb_044_legacy_dotted_record_is_found_not_duplicated(
     assert len(await graph_store.list_all_documents()) == 1, (
         "a missed provenance lookup inserts a second document on the same stored "
         "file, which is the outcome the raw-string fallback exists to prevent"
+    )
+
+
+async def test_vsbb_048_normalized_record_is_found_under_a_dotted_caller_string(
+    ingestion_service, graph_store, tmp_vault_dir, monkeypatch
+):
+    """The mirror of VSBB-044: a record stored in the normalized spelling is
+    still found when the caller names it with a dotted one.
+
+    The provenance lookup consults two spellings because either side may carry
+    the ``.``. VSBB-044 covers the case where the *record* holds the dotted form
+    and the caller matches it, which the raw-string leg answers. This is the
+    other half -- an ordinary, post-normalization record re-projected by a
+    caller who typed ``./`` -- which only the normalized leg answers.
+
+    Anti-coincidental-pass: the two tests pin opposite legs, and neither is
+    redundant. A lookup narrowed to the raw caller string passes VSBB-044 and
+    fails here; one narrowed to the normalized form does the reverse. The
+    assertion is the error type *together with* the document count, because the
+    defective path succeeds rather than raising: the lookup misses, provenance
+    falls back to the digest of the sentinel bytes the backend yields, no hash
+    matches, and a second document lands on the same stored file. A
+    ``pytest.raises`` alone would not show that, and a success assertion would
+    pass against the defect outright.
+    """
+    first = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "imports/plain.md", "# Plain\n\nBody."
+    )
+    assert first.source_path == "imports/plain.md", "the record must hold the normalized spelling"
+    (tmp_vault_dir / "sources" / "imports" / "plain.md").unlink()
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    with pytest.raises(DuplicateContentError):
+        await ingestion_service.ingest(
+            IngestRequest(source="./imports/plain.md", source_type=SourceType.MARKDOWN)
+        )
+
+    assert len(await graph_store.list_all_documents()) == 1, (
+        "a missed provenance lookup lands a second document on the same stored file"
     )
 
 
