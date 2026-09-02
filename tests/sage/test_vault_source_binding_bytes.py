@@ -655,6 +655,116 @@ def test_vsbb_007_source_exists_true_and_false(store, storage_root, tmp_path):
     assert store.source_exists(VID, storage_root, "imports/absent.md") is False
 
 
+def test_vsbb_057_source_is_symlink_discriminates_a_link_from_a_regular_file(
+    store, storage_root, tmp_path
+):
+    """``source_is_symlink`` reports the path's own nature, not its target's.
+
+    The read side's blind spot: something other than SAGE replaces a retained
+    copy with a link to a file holding the expected bytes. Every read follows
+    the link, so the record names a path the write side will refuse and nothing
+    surfaces it.
+
+    Anti-coincidental-pass: the link's target exists and holds valid bytes, so
+    an implementation built on ``exists()`` -- which is what ``source_exists``
+    is -- answers True for both inputs and discriminates nothing. Only an
+    ``lstat`` separates them. Both directions are asserted, so a constant answer
+    fails whichever value it is.
+    """
+    ext = _external(tmp_path, "plain.md", b"ordinary")
+    plain_rel = store.retain_source(VID, storage_root, ext)
+
+    target = storage_root / "imports" / "target.md"
+    target.write_bytes(b"the expected bytes")
+    (storage_root / "imports" / "linked.md").symlink_to(target)
+
+    assert store.source_is_symlink(VID, storage_root, "imports/linked.md") is True
+    assert store.source_is_symlink(VID, storage_root, plain_rel) is False
+    assert store.source_exists(VID, storage_root, "imports/linked.md") is True, (
+        "the link must resolve, or the existence check alone would catch it"
+    )
+
+
+def test_vsbb_058_source_is_symlink_is_true_for_a_dangling_link(store, storage_root):
+    """A link whose target is absent is still a link at the recorded path.
+
+    It matters because the audit must report such a path as linked rather than
+    merely missing: the repair primitive refuses to write through a link, so
+    reporting it missing would send an operator to a repair that then refuses.
+
+    Anti-coincidental-pass: ``source_exists`` is False here, so an
+    implementation that folds presence into its answer (``exists and
+    is_symlink``) returns False and fails. The existence assertion below is what
+    makes that rival visible rather than merely excluded.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    (imports / "dangling.md").symlink_to(imports / "never_written.md")
+
+    assert store.source_is_symlink(VID, storage_root, "imports/dangling.md") is True
+    assert store.source_exists(VID, storage_root, "imports/dangling.md") is False
+
+
+def test_vsbb_059_paths_the_binding_itself_produced_are_never_symlinked(
+    store, storage_root, tmp_path
+):
+    """Neither of the binding's own write paths leaves a link behind.
+
+    The unchanged-behaviour half of the contract: the new observation must not
+    begin reporting ordinary retained files as linked. Both write paths are
+    covered because both are guarded by the same refusal, and a regression in
+    either would be invisible to a test exercising only one.
+
+    Anti-coincidental-pass: asserted against paths the binding chose, so an
+    implementation returning a constant True fails here while VSBB-057 fails a
+    constant False. An absent path is asserted too -- ``is_symlink`` on nothing
+    is False, not an error.
+    """
+    ext = _external(tmp_path, "retained.md", b"copied in")
+    retained_rel = store.retain_source(VID, storage_root, ext)
+    store.write_source(VID, storage_root, "imports/written.md", b"put here")
+
+    assert store.source_is_symlink(VID, storage_root, retained_rel) is False
+    assert store.source_is_symlink(VID, storage_root, "imports/written.md") is False
+    assert store.source_is_symlink(VID, storage_root, "imports/absent.md") is False
+
+
+def test_vsbb_061_a_regular_file_under_a_symlinked_ancestor_is_not_symlinked(
+    store, storage_root, tmp_path
+):
+    """The question is about the recorded path's own final component, not about
+    whether reaching it crosses a link.
+
+    That narrow contract is the whole of what ``source_is_symlink`` claims. A
+    retained copy under a linked ``imports/`` is a regular file, and this method
+    says so; whether the *path* is one the store will write at is a separate
+    question, asked by the write side's containment check rather than here.
+    The two do not always agree: an ancestor whose target is inside the source
+    root is accepted by the write side, while one resolving outside it is
+    refused -- so a document under an out-of-root ancestor audits healthy and
+    its repair is still refused. That residue is containment's, not this
+    method's, and this test does not pin it either way.
+
+    Anti-coincidental-pass: this is the case that separates an ``lstat`` of the
+    final component from the rival that asks whether the path resolves to
+    somewhere other than itself. Both answer the plain-file and dangling-link
+    cases identically, so VSBB-057 through 059 pass against either; only a link
+    in an *ancestor* -- where the leaf is a genuine file but the resolution
+    moves -- tells them apart. The ancestor is asserted to be a link and the
+    leaf asserted to be a real file, so a fixture that failed to build the
+    condition cannot pass by accident.
+    """
+    real_imports = tmp_path / "elsewhere" / "imports"
+    real_imports.mkdir(parents=True)
+    (real_imports / "doc.md").write_bytes(b"an ordinary retained copy")
+    (storage_root / "imports").symlink_to(real_imports)
+
+    assert (storage_root / "imports").is_symlink(), "the ancestor must really be a link"
+    assert (storage_root / "imports" / "doc.md").is_file(), "the leaf must really be a file"
+
+    assert store.source_is_symlink(VID, storage_root, "imports/doc.md") is False
+
+
 def test_vsbb_008_source_size_matches_byte_length(store, storage_root, tmp_path):
     """``source_size`` equals the byte length of the retained source."""
     body = b"twelve bytes"

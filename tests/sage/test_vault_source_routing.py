@@ -248,6 +248,54 @@ async def test_vsbb_041_ingest_surfaces_a_refused_write_path_as_a_typed_error(
     assert excinfo.value.code == "vault_source_path_refused"
 
 
+async def test_vsbb_060_reuse_does_not_treat_a_symlinked_path_as_a_retained_copy(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A re-delivery does not reuse a recorded path that has become a link.
+
+    The third surface of the same blind spot: ``source_exists`` resolves
+    through a link, so the reuse short-circuit saw a present retained copy and
+    handed the path back untouched. The record went on naming a location the
+    write side refuses, and the re-delivery that could have surfaced it instead
+    confirmed it.
+
+    Anti-coincidental-pass: the bytes behind the link are byte-identical to the
+    ones re-delivered, which closes the short-circuit's other two fall-throughs
+    -- no document carries these bytes, and the copy is gone -- so nothing but
+    the link question can change the outcome. The ingest is forced, because an
+    unforced one is declined by duplicate detection downstream and the reuse
+    would never be the discriminator. Before the check, this call succeeds and
+    returns the linked path; asserting the refusal *type* is what distinguishes
+    that from any other decline.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+
+    external = tmp_path / "reused.md"
+    external.write_text("# body\n")
+    first = await ingestion_service.ingest(
+        IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+    )
+    retained = storage_root / first.document.source_path
+
+    # Something other than SAGE swaps the retained copy for a link to a file
+    # holding the very same bytes -- the state the write-side guards refuse to
+    # create and the read side could not see.
+    outside = tmp_path / "outside" / "reused.md"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(retained.read_bytes())
+    retained.unlink()
+    retained.symlink_to(outside)
+
+    with pytest.raises(VaultSourcePathRefusedError):
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN, force=True)
+        )
+
+    assert retained.is_symlink(), "a refusal must not disturb the tree"
+    assert outside.read_bytes() == external.read_bytes()
+
+
 async def test_vsbb_046_refusal_detail_carries_the_external_path_as_supplied(
     ingestion_service, tmp_vault_dir, tmp_path
 ):

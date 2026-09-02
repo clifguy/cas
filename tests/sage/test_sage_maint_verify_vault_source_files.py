@@ -42,7 +42,12 @@ async def test_verify_vault_source_files_returns_report_dict(minimal_vault_confi
             assert report.total_documents_checked == 0
             assert report.check_hashes is False
             assert report.entries == []
-            assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 0}
+            assert report.summary == {
+                "healthy": 0,
+                "missing": 0,
+                "hash_mismatch": 0,
+                "symlinked": 0,
+            }
         finally:
             mcp_server._vaults.pop(vault_id, None)
 

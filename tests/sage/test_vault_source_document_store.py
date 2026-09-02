@@ -344,6 +344,31 @@ def test_vsb_ds_033_source_exists_true_and_false():
     assert store.source_exists("v", Path("/unused"), "imports/gone.md") is False
 
 
+def test_vsb_ds_072_no_source_is_symlinked_on_this_binding():
+    """``source_is_symlink`` is False for every path under the document store.
+
+    Not a stub: an item in a document library is a stored object, and nothing in
+    this binding's write path can produce a link, so False is the true answer
+    rather than an unimplemented one. That is what keeps the question on the
+    port -- satisfiable by its weakest binding -- instead of behind an optional
+    capability probe.
+
+    Anti-coincidental-pass: the store-call counters are asserted at zero, so an
+    implementation that reached for item metadata and inferred an answer from
+    its shape fails here even while returning the right boolean. A present key
+    and an absent one are both asserted, so the answer cannot be riding on
+    lookup failure.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/here.md"] = b"x"
+    store = _binding(fake)
+
+    assert store.source_is_symlink("v", Path("/unused"), "imports/here.md") is False
+    assert store.source_is_symlink("v", Path("/unused"), "imports/gone.md") is False
+    assert fake.source_stats == 0
+    assert fake.source_reads == 0
+
+
 def test_vsb_ds_034_source_size_is_a_cheap_stat():
     """``source_size`` returns the byte length via item metadata without pulling
     the content.
