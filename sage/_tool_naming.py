@@ -245,7 +245,11 @@ MAINT_ALIAS_MAPPING: Final[dict[str, str]] = {
 # `assert` does not apply.
 
 
-def _check_table_invariants(assignment: dict[str, str], aliases: dict[str, str]) -> None:
+def _check_table_invariants(
+    assignment: dict[str, str],
+    aliases: dict[str, str],
+    divergences: frozenset[str],
+) -> None:
     """Assert the cross-table invariants; called once at import.
 
     Factored so a test can exercise the checks against a deliberately
@@ -255,6 +259,13 @@ def _check_table_invariants(assignment: dict[str, str], aliases: dict[str, str])
     unknown_servers = set(assignment.values()) - {"sage", "sage_maint"}
     assert unknown_servers == set(), (  # noqa: S101
         f"SERVER_ASSIGNMENT values must be 'sage' or 'sage_maint': {unknown_servers}"
+    )
+
+    # Every declared divergence must name a registered tool; a typo or a
+    # stale entry would otherwise import cleanly and surface only in tests.
+    unknown_divergences = divergences - set(assignment)
+    assert unknown_divergences == set(), (  # noqa: S101
+        f"PREFIX_SURFACE_DIVERGENCES names unregistered tool(s): {unknown_divergences}"
     )
 
     # Every alias must target a registered name (on either surface -- the
@@ -271,4 +282,4 @@ def _check_table_invariants(assignment: dict[str, str], aliases: dict[str, str])
     )
 
 
-_check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING)
+_check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)

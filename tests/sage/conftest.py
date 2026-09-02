@@ -51,6 +51,53 @@ def _reset_generation_lock():
     _abstraction_qwen3._generation_lock = asyncio.Lock()
 
 
+@pytest.fixture
+async def app_with_one_vault(minimal_config):
+    """A SAGE app with ``minimal_config``'s vault initialized and registered.
+
+    Yields the FastAPI app whose MCP mounts (``app.state.mcp_mounts``) share
+    the app-populated vault registry; teardown closes each vault through
+    ``close_storage()`` (the contract ``initialize_services_for_test`` sets)
+    and drops the vault from the module-level MCP registry so it does not
+    leak into later tests.
+    """
+    from sage import mcp_server
+    from sage.app import _initialize_services, create_app
+
+    app = create_app(config=minimal_config)
+    await _initialize_services(
+        app,
+        minimal_config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
+    try:
+        yield app
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.close_storage()
+        mcp_server._vaults.pop(minimal_config.vault.id, None)
+
+
+@pytest.fixture
+def tool_payload():
+    """Decoder for the JSON body FastMCP wraps a tool's dict return into.
+
+    ``call_tool`` returns ``[TextContent(text=<json>)]`` for a dict-returning
+    tool; tests that need to inspect the payload rather than substring-match
+    its ``str()`` (an error envelope also names the ids it failed on) decode
+    it through this.
+    """
+    import json
+
+    def decode(result: object) -> dict:
+        return json.loads(result[0].text)  # type: ignore[index]
+
+    return decode
+
+
 @contextlib.asynccontextmanager
 async def initialize_services_for_test(config, **kwargs):
     """Async context manager wrapping ``initialize_services`` for tests.

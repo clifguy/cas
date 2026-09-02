@@ -27,8 +27,9 @@ accumulate as an allowlist.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -38,12 +39,7 @@ from starlette.routing import Mount, Route
 import sage
 import sage.mcp_server as mcp_server
 from sage._tool_naming import PREFIX_SURFACE_DIVERGENCES, SERVER_ASSIGNMENT
-from sage.adapters.stubs import (
-    StubAbstractionProvider,
-    StubContentStore,
-    StubEmbeddingProvider,
-)
-from sage.app import _initialize_services, create_app
+from sage.app import create_app
 
 EXPECTED_SAGE = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage"}
 EXPECTED_MAINT = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage_maint"}
@@ -73,11 +69,6 @@ def _mounted_names(app: FastAPI, path: str) -> set[str]:
     return {tool.name for tool in server._tool_manager.list_tools()}  # noqa: SLF001
 
 
-def _payload(result: object) -> dict:
-    """Decode the JSON body FastMCP wraps a tool's dict return into."""
-    return json.loads(result[0].text)  # type: ignore[index]
-
-
 def _prefix_surface(name: str) -> str:
     """The surface the naming convention alone would imply for ``name``.
 
@@ -90,12 +81,22 @@ def _prefix_surface(name: str) -> str:
 
 
 def test_sage_server_registers_exactly_ordinary_tools():
-    """The ``sage`` server registers exactly the ordinary-surface roster."""
+    """The ``sage`` server registers exactly the tools the table assigns to it.
+
+    ``EXPECTED_SAGE`` is derived from the same table registration reads, so
+    this verifies that the registration path honours the table -- not an
+    independent transcription. The independent cross-check is the
+    prefix-vs-table equality and the population pin below.
+    """
     assert _registered_names("sage") == EXPECTED_SAGE
 
 
 def test_sage_maint_server_registers_exactly_maintenance_tools():
-    """The ``sage_maint`` server registers exactly the maintenance roster."""
+    """The ``sage_maint`` server registers exactly the tools the table assigns to it.
+
+    Same oracle as the ordinary-surface test: registration honours the
+    table, with independence carried by the prefix-vs-table cross-check.
+    """
     assert _registered_names("sage_maint") == EXPECTED_MAINT
 
 
@@ -170,16 +171,17 @@ def test_vault_enumeration_registers_on_ordinary_surface_only():
 
 
 def test_surface_of_is_gone():
-    """No prefix-derived surface helper survives in the registration module.
+    """Name removal-guard: the retired prefix-derived helper does not return.
 
-    Registration reads the table and nothing else; a helper that derives a
-    surface from a name is the seed of a second, silently diverging source.
+    Guards the symbol only; a helper reintroduced under another name would
+    pass. The property -- registration reads the table and nothing else --
+    is carried by ``test_unassigned_tool_fails_registration_loudly``.
     """
     assert not hasattr(mcp_server, "_surface_of")
 
 
 @pytest.mark.parametrize("surface", ["sage", "sage_maint"])
-def test_unassigned_tool_fails_registration_loudly(surface, monkeypatch):
+def test_unassigned_tool_fails_registration_loudly(surface: str, monkeypatch: Any) -> None:
     """A registered tool with no ``SERVER_ASSIGNMENT`` row fails the build.
 
     The registration path must look the name up, not default it: a
@@ -190,7 +192,7 @@ def test_unassigned_tool_fails_registration_loudly(surface, monkeypatch):
     """
     real_register_app_tools = mcp_server.register_app_tools
 
-    def register_with_probe(server, *args, **kwargs):
+    def register_with_probe(server: Any, *args: Any, **kwargs: Any) -> dict[str, Callable]:
         tools = real_register_app_tools(server, *args, **kwargs)
 
         @server.tool(name="unassigned_probe_tool")
@@ -312,7 +314,9 @@ def test_mount_transport_settings_pinned(minimal_config, mount, surface):
     assert server.settings.streamable_http_path == mount
 
 
-async def test_mounts_read_shared_vault_registry(minimal_config):
+async def test_mounts_read_shared_vault_registry(
+    app_with_one_vault: FastAPI, minimal_config: Any, tool_payload: Callable[[object], dict]
+) -> None:
     """Both mounts' tools read the app-shared ``_vaults`` registry.
 
     A vault initialized through the app populates ``mcp_server._vaults``;
@@ -326,30 +330,17 @@ async def test_mounts_read_shared_vault_registry(minimal_config):
     envelope -- exactly what a mount with its own empty registry returns --
     carries the vault id in its detail and would satisfy a substring check.
     """
-    app = create_app(config=minimal_config)
-    await _initialize_services(
-        app,
-        minimal_config,
-        content_store=StubContentStore(),
-        embedding_provider=StubEmbeddingProvider(),
-        abstraction_provider=StubAbstractionProvider(),
-    )
-    try:
-        listed = _payload(await app.state.mcp_mounts["/mcp"].call_tool("maint_list_vaults", {}))
-        assert "error" not in listed
-        assert minimal_config.vault.id in {v["id"] for v in listed["vaults"]}
-        config = _payload(
-            await app.state.mcp_mounts["/mcp_maint"].call_tool(
-                "maint_get_vault_config", {"vault_id": minimal_config.vault.id}
-            )
+    mounts = app_with_one_vault.state.mcp_mounts
+    listed = tool_payload(await mounts["/mcp"].call_tool("maint_list_vaults", {}))
+    assert "error" not in listed
+    assert minimal_config.vault.id in {v["id"] for v in listed["vaults"]}
+    config = tool_payload(
+        await mounts["/mcp_maint"].call_tool(
+            "maint_get_vault_config", {"vault_id": minimal_config.vault.id}
         )
-        assert "error" not in config
-        assert config["vault"]["id"] == minimal_config.vault.id
-    finally:
-        for services in app.state.vault_registry.values():
-            services.close_timing()
-            await services.graph_store.close()
-        mcp_server._vaults.pop(minimal_config.vault.id, None)
+    )
+    assert "error" not in config
+    assert config["vault"]["id"] == minimal_config.vault.id
 
 
 def test_stdio_entry_points_absent():

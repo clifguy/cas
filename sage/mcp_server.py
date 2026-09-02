@@ -484,12 +484,14 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
         server, _get_vault, _serialize, _error_response, _get_vaults, get_vault_registry_service
     )
     app_tools = register_app_tools(server, _get_vault, _serialize, _error_response)
-    for name in {**sage_tools, **app_tools}:
-        if name not in SERVER_ASSIGNMENT:
-            raise LookupError(
-                f"MCP tool {name!r} has no SERVER_ASSIGNMENT row; every registered "
-                "tool must be assigned a surface in sage._tool_naming.SERVER_ASSIGNMENT"
-            )
+    registered = {**sage_tools, **app_tools}
+    unassigned = sorted(name for name in registered if name not in SERVER_ASSIGNMENT)
+    if unassigned:
+        raise LookupError(
+            f"MCP tool(s) {unassigned} have no SERVER_ASSIGNMENT row; every registered "
+            "tool must be assigned a surface in sage._tool_naming.SERVER_ASSIGNMENT"
+        )
+    for name in registered:
         if SERVER_ASSIGNMENT[name] != surface:
             server.remove_tool(name)
     return server

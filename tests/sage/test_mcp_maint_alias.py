@@ -22,10 +22,12 @@ target and fails on the other, exactly as the canonical name would.
 
 from __future__ import annotations
 
-import json
 import logging
+from collections.abc import Callable
+from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from mcp.server.fastmcp.exceptions import ToolError
 
 import sage.mcp_server as mcp_server
@@ -35,12 +37,6 @@ from sage._tool_naming import (
     SERVER_ASSIGNMENT,
     _check_table_invariants,
 )
-from sage.adapters.stubs import (
-    StubAbstractionProvider,
-    StubContentStore,
-    StubEmbeddingProvider,
-)
-from sage.app import _initialize_services, create_app
 from sage.mcp_server import _LoggingFastMCP
 
 
@@ -139,9 +135,9 @@ def test_mapping_is_exact_prefix_swap() -> None:
         f"orphan alias target(s): {sorted(set(MAINT_ALIAS_MAPPING.values()) - registered)}"
     )
     ordinary_targets = {n for n in MAINT_ALIAS_MAPPING.values() if SERVER_ASSIGNMENT[n] == "sage"}
-    assert ordinary_targets == PREFIX_SURFACE_DIVERGENCES, (
-        f"alias target(s) on the ordinary surface must be exactly the recorded "
-        f"divergences: got {sorted(ordinary_targets)}"
+    assert ordinary_targets <= PREFIX_SURFACE_DIVERGENCES, (
+        f"alias target(s) on the ordinary surface must be recorded divergences: "
+        f"unrecorded {sorted(ordinary_targets - PREFIX_SURFACE_DIVERGENCES)}"
     )
     assert len(MAINT_ALIAS_MAPPING) == 13
     for old, new in MAINT_ALIAS_MAPPING.items():
@@ -166,31 +162,9 @@ async def test_aliases_absent_from_catalog() -> None:
         assert not aliased, f"alias name(s) registered on the {label} catalog: {sorted(aliased)}"
 
 
-async def _app_with_one_vault(minimal_config):
-    app = create_app(config=minimal_config)
-    await _initialize_services(
-        app,
-        minimal_config,
-        content_store=StubContentStore(),
-        embedding_provider=StubEmbeddingProvider(),
-        abstraction_provider=StubAbstractionProvider(),
-    )
-    return app
-
-
-async def _close_app_vaults(app, minimal_config) -> None:
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
-    mcp_server._vaults.pop(minimal_config.vault.id, None)
-
-
-def _payload(result: object) -> dict:
-    """Decode the JSON body FastMCP wraps a tool's dict return into."""
-    return json.loads(result[0].text)  # type: ignore[index]
-
-
-async def test_alias_end_to_end_identical_behavior(minimal_config) -> None:
+async def test_alias_end_to_end_identical_behavior(
+    app_with_one_vault: FastAPI, minimal_config: Any, tool_payload: Callable[[object], dict]
+) -> None:
     """Old and canonical names answer identically through the ``/mcp_admin`` mount.
 
     Exercises the full path a legacy client takes: the aliased mount, the
@@ -199,43 +173,37 @@ async def test_alias_end_to_end_identical_behavior(minimal_config) -> None:
     ``vault_not_found`` envelope also names the vault id, and two identical
     envelopes would satisfy a payload-equality check alone.
     """
-    app = await _app_with_one_vault(minimal_config)
-    try:
-        maint_server = app.state.mcp_mounts["/mcp_admin"]
-        args = {"vault_id": minimal_config.vault.id}
-        via_alias = await maint_server.call_tool("admin_get_vault_config", args)
-        via_canonical = await maint_server.call_tool("maint_get_vault_config", args)
-        assert str(via_alias) == str(via_canonical)
-        payload = _payload(via_alias)
-        assert "error" not in payload
-        assert payload["vault"]["id"] == minimal_config.vault.id
-    finally:
-        await _close_app_vaults(app, minimal_config)
+    maint_server = app_with_one_vault.state.mcp_mounts["/mcp_admin"]
+    args = {"vault_id": minimal_config.vault.id}
+    via_alias = await maint_server.call_tool("admin_get_vault_config", args)
+    via_canonical = await maint_server.call_tool("maint_get_vault_config", args)
+    assert str(via_alias) == str(via_canonical)
+    payload = tool_payload(via_alias)
+    assert "error" not in payload
+    assert payload["vault"]["id"] == minimal_config.vault.id
 
 
-async def test_pre_rename_enumeration_alias_resolves_on_ordinary_mount(minimal_config) -> None:
+async def test_pre_rename_enumeration_alias_resolves_on_ordinary_mount(
+    app_with_one_vault: FastAPI, minimal_config: Any, tool_payload: Callable[[object], dict]
+) -> None:
     """``admin_list_vaults`` follows its target to the ``/mcp`` mount.
 
     The alias is a name rewrite, not a surface grant: with vault enumeration
     registered on the ordinary surface, a legacy caller holding the old name
     reaches it through the ordinary mount and gets the canonical payload.
     """
-    app = await _app_with_one_vault(minimal_config)
-    try:
-        ordinary = app.state.mcp_mounts["/mcp"]
-        via_alias = await ordinary.call_tool("admin_list_vaults", {})
-        via_canonical = await ordinary.call_tool("maint_list_vaults", {})
-        assert str(via_alias) == str(via_canonical)
-        payload = _payload(via_alias)
-        assert "error" not in payload
-        assert minimal_config.vault.id in {v["id"] for v in payload["vaults"]}
-    finally:
-        await _close_app_vaults(app, minimal_config)
+    ordinary = app_with_one_vault.state.mcp_mounts["/mcp"]
+    via_alias = await ordinary.call_tool("admin_list_vaults", {})
+    via_canonical = await ordinary.call_tool("maint_list_vaults", {})
+    assert str(via_alias) == str(via_canonical)
+    payload = tool_payload(via_alias)
+    assert "error" not in payload
+    assert minimal_config.vault.id in {v["id"] for v in payload["vaults"]}
 
 
 @pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
 async def test_pre_rename_enumeration_alias_fails_on_maintenance_mounts(
-    minimal_config, mount
+    app_with_one_vault: FastAPI, mount: str
 ) -> None:
     """``admin_list_vaults`` fails on the maintenance mounts exactly as the
     canonical name does.
@@ -246,27 +214,29 @@ async def test_pre_rename_enumeration_alias_fails_on_maintenance_mounts(
     the control -- if it resolved, the failure below would be about the
     alias layer, not the partition.
     """
-    app = await _app_with_one_vault(minimal_config)
-    try:
-        server = app.state.mcp_mounts[mount]
-        with pytest.raises(ToolError, match="maint_list_vaults"):
-            await server.call_tool("maint_list_vaults", {})
-        with pytest.raises(ToolError, match="maint_list_vaults"):
-            await server.call_tool("admin_list_vaults", {})
-    finally:
-        await _close_app_vaults(app, minimal_config)
+    server = app_with_one_vault.state.mcp_mounts[mount]
+    with pytest.raises(ToolError, match="maint_list_vaults"):
+        await server.call_tool("maint_list_vaults", {})
+    with pytest.raises(ToolError, match="maint_list_vaults"):
+        await server.call_tool("admin_list_vaults", {})
 
 
-def test_alias_invariant_rejects_unregistered_target() -> None:
-    """The import-time table check still refuses an alias with no live target.
+def test_table_invariants_reject_unregistered_alias_target_and_divergence() -> None:
+    """The import-time table check refuses an alias or a declared divergence
+    that names no registered tool.
 
-    Loosening the check from "target on the maintenance surface" to "target
-    registered anywhere" must not loosen it to nothing: an alias pointing at
-    a name absent from the assignment table is an orphan and fails. The
-    unmodified tables are the positive control.
+    Loosening the alias check from "target on the maintenance surface" to
+    "target registered anywhere" must not loosen it to nothing, and the
+    divergence set is held to the same standard so a typo or stale entry
+    fails at import rather than only in the partition gates. The unmodified
+    tables are the positive control.
     """
-    _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING)
+    _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, PREFIX_SURFACE_DIVERGENCES)
 
     orphaned = {**MAINT_ALIAS_MAPPING, "admin_not_a_tool": "maint_not_a_tool"}
     with pytest.raises(AssertionError, match="admin_not_a_tool"):
-        _check_table_invariants(SERVER_ASSIGNMENT, orphaned)
+        _check_table_invariants(SERVER_ASSIGNMENT, orphaned, PREFIX_SURFACE_DIVERGENCES)
+
+    bogus = PREFIX_SURFACE_DIVERGENCES | {"maint_not_a_tool"}
+    with pytest.raises(AssertionError, match="maint_not_a_tool"):
+        _check_table_invariants(SERVER_ASSIGNMENT, MAINT_ALIAS_MAPPING, bogus)

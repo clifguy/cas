@@ -169,7 +169,10 @@ class TestSageCreateVault:
 
         assert result["vault_id"] == "new_vault"
         assert result["name"] == "New Vault"
-        assert result["storage_root"] == result["config"]["vault"]["storage_root"]
+        # Compared against the config the test SENT, not the echoed config:
+        # the echo is the value the tool reads, so equality with it would
+        # hold for any wiring.
+        assert result["storage_root"] == default_cfg["vault"]["storage_root"]
         assert "config" in result
 
         # Echoed config must be a full, valid VaultConfig

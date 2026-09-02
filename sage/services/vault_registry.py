@@ -299,7 +299,8 @@ class VaultRegistryService:
                 )
             raise
 
-        return self._build_vault_summary(config, services)
+        # A vault that was just created holds no documents.
+        return self._build_vault_summary(config, services, document_count=0)
 
     async def reload(self, vault_id: str, new_config: VaultConfig) -> "SAGEServices":
         """Close old services for a vault and reinitialize from a new config.
@@ -320,7 +321,7 @@ class VaultRegistryService:
         services: Any,
         projects: list[str] | None = None,
         *,
-        document_count: int = 0,
+        document_count: int,
     ) -> VaultSummary:
         """Build a VaultSummary from a config and services instance.
 
@@ -336,9 +337,10 @@ class VaultRegistryService:
         pairs onto each sub-model individually.
 
         ``document_count`` is caller-supplied because the store query that
-        produces it belongs inside the listing's per-vault error guard; the
-        create path passes nothing, since a vault that was just created
-        holds no documents.
+        produces it belongs inside the listing's per-vault error guard. It
+        is required rather than defaulted: a summary carrying a confident
+        zero for a populated vault steers callers away from it, so the
+        create path states its zero explicitly.
         """
         vault = config.vault
         doc_types = [

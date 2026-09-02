@@ -264,18 +264,23 @@ def test_extract_verb_synthetic_inputs(tool_name: str, expected_verb: str) -> No
 
 
 async def test_settings_local_permissions_match_live_catalog() -> None:
-    """Every SAGE MCP permission entry in the project settings names a registered tool.
+    """Every SAGE MCP permission entry in the project settings names a
+    registered tool on the surface the entry's server segment claims.
 
     Reads ``.claude/settings.local.json`` (project root) and asserts
     every ``mcp__sage__<X>`` and ``mcp__sage_maint__<X>`` permission
-    entry has ``X`` registered in the live MCP catalog. Catches drift
-    in either direction: permission entries for renamed-away tools, or
-    unauthorized new tools. Alias names are deliberately not admitted:
-    a permission entry should name the canonical tool.
+    entry has ``X`` registered in the live MCP catalog **and** assigned
+    to that server in ``SERVER_ASSIGNMENT``. Catches drift in three
+    directions: entries for renamed-away tools, unauthorized new tools,
+    and entries left on a surface a tool has since moved off -- a
+    catalog-only check is surface-blind and leaves that last case green.
+    Alias names are deliberately not admitted: a permission entry should
+    name the canonical tool.
 
     Anti-coincidental check: the assertion compares against the live
-    catalog rather than a static expected list; if the catalog drifts
-    or a permission goes stale, the next test run surfaces it.
+    catalog and the registration table rather than a static expected
+    list; if either drifts or a permission goes stale, the next test run
+    surfaces it.
     """
     import json as _json
     from pathlib import Path
@@ -290,14 +295,26 @@ async def test_settings_local_permissions_match_live_catalog() -> None:
 
     live_names = await _live_tool_names()
     stale: list[str] = []
-    for prefix in ("mcp__sage__", "mcp__sage_maint__"):
-        entries = [e for e in allow if e.startswith(prefix)]
-        stale.extend(e for e in entries if e[len(prefix) :] not in live_names)
+    wrong_surface: list[str] = []
+    for server in ("sage", "sage_maint"):
+        prefix = f"mcp__{server}__"
+        for entry in (e for e in allow if e.startswith(prefix)):
+            tool = entry[len(prefix) :]
+            if tool not in live_names:
+                stale.append(entry)
+            elif SERVER_ASSIGNMENT.get(tool) != server:
+                wrong_surface.append(entry)
     stale.sort()
+    wrong_surface.sort()
     assert not stale, (
         f"Stale settings.local.json permission entries (no live MCP tool): "
         f"{stale}. Either rename the entries to the current tool name "
         "or remove them."
+    )
+    assert not wrong_surface, (
+        f"settings.local.json permission entries naming a tool on a server it "
+        f"is not registered on: {wrong_surface}. Move each entry to the server "
+        "SERVER_ASSIGNMENT assigns the tool to."
     )
 
 
