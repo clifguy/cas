@@ -1489,6 +1489,111 @@ async def test_restore_source_file_lands_at_the_recorded_path(
     assert doc.source_path == sp, "a restore must never re-home the document"
 
 
+async def test_audit_and_restore_agree_on_intact_through_one_observation(
+    graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
+):
+    """The audit and the restore take "intact" from one shared observation of
+    the retained copy, so they cannot disagree about it.
+
+    The restore exists to repair what the audit reports. Were each to look at
+    the store on its own, the two could drift apart -- the audit sending an
+    operator to repair a copy the restore then declares already intact, or the
+    restore rewriting a copy the audit calls healthy. The observation is
+    replaced with one that *claims* a genuinely drifted copy is intact; both
+    surfaces must believe it.
+
+    Anti-coincidental-pass: the copy on disk really is drifted (the unpatched
+    audit is asserted to see it), so either function still doing its own
+    ``source_exists`` / ``hash_source`` pair sees the real drift and breaks
+    ranks -- the audit reporting a mismatch, or the restore writing. The file's
+    bytes and modification time pin the restore side; a rewrite of the same
+    drifted bytes would leave the content assertion green.
+    """
+    from sage.services.maintenance import _RetainedCopyObservation
+
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_agree.md"
+    original = b"the bytes the record describes"
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(_src_doc("deadbeef_agree", _sha256_of(original), source_path=sp))
+    on_disk.write_bytes(b"drifted")
+
+    pre = await maint.verify_vault_source_files(check_hashes=True)
+    assert pre.summary["hash_mismatch"] == 1, (
+        "the drift must be real before the observation is faked"
+    )
+
+    expected = _sha256_of(original)
+    monkeypatch.setattr(
+        MaintenanceService,
+        "_observe_retained_copy",
+        lambda self, doc, storage_root, store, *, hash_copy=True: _RetainedCopyObservation(
+            present=True, observed_hash=expected, expected_hash=expected
+        ),
+    )
+    mtime_before = on_disk.stat().st_mtime_ns
+
+    audit = await maint.verify_vault_source_files(check_hashes=True)
+    restore = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", original))
+
+    assert audit.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+    assert restore.status == "already_intact"
+    assert on_disk.read_bytes() == b"drifted", (
+        "a copy the observation calls intact is not rewritten"
+    )
+    assert on_disk.stat().st_mtime_ns == mtime_before
+
+
+async def test_audit_and_restore_agree_on_drift_through_one_observation(
+    graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
+):
+    """The converse: an observation claiming drift over a genuinely intact copy
+    is believed by both the audit and the restore, and the digest each reports
+    is the observation's.
+
+    Anti-coincidental-pass: the copy on disk really is intact (the unpatched
+    audit is asserted clean), so a function doing its own hashing would report
+    the copy healthy or leave it alone. The reported ``observed_content_hash``
+    on both surfaces is asserted equal to the fabricated digest, which no
+    second hashing of the real file could produce.
+    """
+    from sage.services.maintenance import _RetainedCopyObservation
+
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_agree.md"
+    original = b"undisturbed bytes"
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(_src_doc("deadbeef_agree", _sha256_of(original), source_path=sp))
+
+    pre = await maint.verify_vault_source_files(check_hashes=True)
+    assert pre.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}, (
+        "the copy must be genuinely intact before the observation is faked"
+    )
+
+    expected = _sha256_of(original)
+    fabricated = _sha256_of(b"not what is there")
+    monkeypatch.setattr(
+        MaintenanceService,
+        "_observe_retained_copy",
+        lambda self, doc, storage_root, store, *, hash_copy=True: _RetainedCopyObservation(
+            present=True, observed_hash=fabricated, expected_hash=expected
+        ),
+    )
+
+    audit = await maint.verify_vault_source_files(check_hashes=True)
+    restore = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", original))
+
+    assert audit.summary["hash_mismatch"] == 1
+    assert audit.entries[0].observed_content_hash == fabricated
+    assert restore.status == "restored"
+    assert restore.observed_content_hash == fabricated
+    assert on_disk.read_bytes() == original
+
+
 # ============================================================================
 # optimize_vault_content_store tests
 # ============================================================================
