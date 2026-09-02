@@ -1029,7 +1029,7 @@ def test_retained_copy_observation_symlinked_is_never_intact():
     not read through the link, while this says being a link disqualifies the
     copy however it hashes. A later change that let a linked observation carry a
     digest -- to report what the link resolves to, say -- would silently restore
-    ``already_intact`` for exactly the state this ticket exists to surface.
+    ``already_intact`` for exactly the state this change exists to surface.
 
     Anti-coincidental-pass: the digest supplied *matches* the expected one, so
     every part of the predicate except the link term votes intact. An
@@ -1867,12 +1867,19 @@ async def test_audit_and_restore_agree_on_symlinked_through_one_observation(
         ),
     )
 
+    mtime_before = target.stat().st_mtime_ns
     audit = await maint.verify_vault_source_files(check_hashes=True)
     restore = await maint.restore_vault_source_file(_delivered(tmp_path, "a.md", body))
 
     assert audit.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0, "symlinked": 0}
     assert restore.status == "already_intact"
-    assert target.read_bytes() == body, "a copy the observation calls intact is not rewritten"
+    # Content cannot carry the "not rewritten" claim here: the delivered bytes
+    # are the target's own, so a restore that wrote through the link would leave
+    # them equal. The modification time is what separates the two.
+    assert target.stat().st_mtime_ns == mtime_before, (
+        "a copy the observation calls intact is not rewritten"
+    )
+    assert target.read_bytes() == body
 
 
 async def test_audit_and_restore_agree_on_intact_through_one_observation(

@@ -2327,6 +2327,13 @@ paths:
         write does happen the copy is re-read and the record's
         ``stored_content_hash`` set to what it now holds; the provenance
         digest is never touched.
+
+
+        A recorded path that is a *link* is never reported
+        ``already_intact``, however the bytes behind it hash: it is not the
+        copy the record names, and the write is refused
+        (``vault_source_path_refused``) rather than landing wherever the
+        link points. Remove the link and re-run.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"

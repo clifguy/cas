@@ -1079,12 +1079,16 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         return self._get_client().source_item(vault_id, source_path) is not None  # type: ignore[attr-defined]
 
     def source_is_symlink(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
-        # An item in a document library is a stored object; nothing in this
-        # binding's write path can produce a link and the store has no concept
-        # of one, so no path here is ever linked. Answered without a lookup
-        # because the answer is a property of the store, not of any item: a
-        # round-trip could only return the same constant more expensively, and
-        # an absent item would then be indistinguishable from a present one.
+        # An item in a document library is a stored object, and nothing in this
+        # binding's write path can produce a link at the key it writes, so no
+        # retained source's final component is ever one. Scoped to that leaf,
+        # which is all this method claims: the store does have a shortcut
+        # concept, and a shortcut standing in for a *folder* on the way to a key
+        # is not answered here any more than a symlinked ancestor is on the
+        # filesystem binding. Answered without a lookup because the answer is a
+        # property of the store, not of any item: a round-trip could only return
+        # the same constant more expensively, and an absent item would then be
+        # indistinguishable from a present one.
         return False
 
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:

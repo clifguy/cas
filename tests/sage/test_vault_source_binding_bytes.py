@@ -735,11 +735,15 @@ def test_vsbb_061_a_regular_file_under_a_symlinked_ancestor_is_not_symlinked(
     """The question is about the recorded path's own final component, not about
     whether reaching it crosses a link.
 
-    A vault whose ``imports/`` is itself a link is an ordinary deployment shape
-    (the sources moved to another volume), and every retained copy under it is
-    still a regular file. Reporting those as linked would take a whole vault's
-    documents red on an audit and refuse every repair, for a condition none of
-    them has.
+    That narrow contract is the whole of what ``source_is_symlink`` claims. A
+    retained copy under a linked ``imports/`` is a regular file, and this method
+    says so; whether the *path* is one the store will write at is a separate
+    question, asked by the write side's containment check rather than here.
+    The two do not always agree: an ancestor whose target is inside the source
+    root is accepted by the write side, while one resolving outside it is
+    refused -- so a document under an out-of-root ancestor audits healthy and
+    its repair is still refused. That residue is containment's, not this
+    method's, and this test does not pin it either way.
 
     Anti-coincidental-pass: this is the case that separates an ``lstat`` of the
     final component from the rival that asks whether the path resolves to
