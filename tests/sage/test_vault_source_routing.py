@@ -296,6 +296,54 @@ async def test_vsbb_060_reuse_does_not_treat_a_symlinked_path_as_a_retained_copy
     assert outside.read_bytes() == external.read_bytes()
 
 
+async def test_vsbb_067_reuse_does_not_treat_an_out_of_root_path_as_a_retained_copy(
+    ingestion_service, tmp_vault_dir, tmp_path
+):
+    """A re-delivery does not reuse a recorded path that has left the source tree.
+
+    The containment counterpart of the case above, and the same blind spot in
+    the same place: ``source_exists`` resolves through an ancestor as readily as
+    through a leaf link, so the reuse short-circuit saw a present retained copy
+    and handed back a path the write side refuses.
+
+    Anti-coincidental-pass: the recorded path's own final component is an
+    ordinary file, asserted so, which means the link question answers False here
+    and cannot be what produces the refusal. The bytes behind the ancestor are
+    byte-identical to the ones re-delivered, which closes the short-circuit's
+    other fall-throughs -- no document carries these bytes, and the copy is gone
+    -- so nothing but the containment question can change the outcome. The
+    ingest is forced, because an unforced one is declined by duplicate detection
+    downstream and the reuse would never be the discriminator.
+    """
+    storage_root = tmp_vault_dir / "sources"
+    (storage_root / "imports").mkdir(parents=True, exist_ok=True)
+
+    external = tmp_path / "escaped.md"
+    external.write_text("# body\n")
+    first = await ingestion_service.ingest(
+        IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+    )
+    retained = storage_root / first.document.source_path
+
+    # An operator re-points ``imports/`` at a directory outside the vault's
+    # source tree, carrying the retained copy with it. The leaf stays an
+    # ordinary file; only the way to it now leaves the root.
+    outside = tmp_path / "outside" / "imports"
+    outside.mkdir(parents=True, exist_ok=True)
+    (outside / retained.name).write_bytes(retained.read_bytes())
+    shutil.rmtree(storage_root / "imports")
+    (storage_root / "imports").symlink_to(outside)
+    moved = outside / retained.name
+    assert moved.is_file() and not moved.is_symlink(), "the leaf must stay an ordinary file"
+
+    with pytest.raises(VaultSourcePathRefusedError):
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN, force=True)
+        )
+
+    assert moved.read_bytes() == external.read_bytes(), "a refusal must not disturb the tree"
+
+
 async def test_vsbb_046_refusal_detail_carries_the_external_path_as_supplied(
     ingestion_service, tmp_vault_dir, tmp_path
 ):

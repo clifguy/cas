@@ -1972,6 +1972,14 @@ class IngestionService:
                 # Falling through sends the bytes to ``retain_source``, whose own
                 # guard refuses rather than writing through the link.
                 and not store.source_is_symlink(vault_id, storage_root, existing.source_path)
+                # Nor is a path that resolves outside the vault's source tree.
+                # The same shape of mistake one level up: reuse would hand back a
+                # path every later read follows out of the tree, and which the
+                # write side likewise refuses. Falling through reaches
+                # ``retain_source``, whose containment guard refuses rather than
+                # landing the copy outside the vault while the returned
+                # vault-relative path claims it is inside.
+                and not store.source_is_out_of_root(vault_id, storage_root, existing.source_path)
             ):
                 return existing.source_path, False
         return store.retain_source(

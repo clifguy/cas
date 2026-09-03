@@ -414,6 +414,31 @@ class VaultSourceStore(ABC):
         """
 
     @abstractmethod
+    def source_is_out_of_root(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        """Whether the retained path names somewhere outside the vault's source tree.
+
+        The second question the write side asks about a path, and the companion
+        of :meth:`source_is_symlink` rather than a restatement of it. That one
+        asks whether the recorded path's own final component is a link; this asks
+        where the path as a whole lands. The two do not always agree -- a plain
+        file under an ancestor pointing outside the tree is not a link, and a
+        link resolving back inside the tree does not leave it -- and they call
+        for different repairs, which is why they stay separate facts: a link is
+        removed, while a path that leaves the tree is re-pointed or the vault
+        reconfigured.
+
+        Independent of presence, as linkedness is: ``write_source`` refuses such
+        a path whether or not anything resolves behind it, so a caller told only
+        that the copy is absent would be sent to a repair the store then
+        declines at the very path the record holds.
+
+        Each binding answers for the containment its own ``write_source``
+        enforces. A binding with no local tree to resolve against answers from
+        the shape of the path alone; that is the whole of the containment
+        promise on such a side, not a weaker stand-in for one.
+        """
+
+    @abstractmethod
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
         """Byte size of a retained source, read cheaply (without loading it)."""
 
@@ -884,6 +909,23 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # guards refuse to create.
         return (storage_root / source_path).is_symlink()
 
+    def source_is_out_of_root(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        # Asked by running the guards themselves rather than by restating the
+        # rule they encode, so the answer a caller reads and the verdict a write
+        # would receive cannot drift apart -- the same reason ``retain_source``
+        # derives its destination from ``planned_source_path``. Both of
+        # ``write_source``'s containment guards are run: the shape check refuses
+        # a path that never had a chance of being vault-relative, and the resolve
+        # catches one whose components lead out of the tree. The symlink and
+        # directory guards are deliberately not run here; they refuse for
+        # reasons of their own, and ``source_is_symlink`` answers the first.
+        try:
+            _assert_plain_vault_relative(source_path)
+            resolve_and_assert_within_root(storage_root / source_path, storage_root)
+        except VaultRootEscapeError:
+            return True
+        return False
+
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
         return (storage_root / source_path).stat().st_size
 
@@ -1089,6 +1131,25 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # property of the store, not of any item: a round-trip could only return
         # the same constant more expensively, and an absent item would then be
         # indistinguishable from a present one.
+        return False
+
+    def source_is_out_of_root(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        # The shape of the path is the whole containment question on this side.
+        # There is no local tree for a resolver to walk, and the client's URL
+        # builder joins segments verbatim, so the shape check is what this
+        # binding's ``write_source`` refuses on -- and running it here is what
+        # keeps the answer and the refusal one fact rather than two.
+        #
+        # Scoped to the key, as ``source_is_symlink`` is scoped to the leaf: the
+        # store has a shortcut concept, and a folder shortcut standing in for a
+        # segment on the way to a key is not answered here, any more than a
+        # linked ancestor is answered by that method. Answered without a lookup,
+        # since the path alone decides it -- a round-trip could only return the
+        # same answer more expensively.
+        try:
+            _assert_plain_vault_relative(source_path)
+        except VaultRootEscapeError:
+            return True
         return False
 
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:

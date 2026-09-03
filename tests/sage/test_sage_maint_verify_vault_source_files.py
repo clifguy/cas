@@ -47,6 +47,7 @@ async def test_verify_vault_source_files_returns_report_dict(minimal_vault_confi
                 "missing": 0,
                 "hash_mismatch": 0,
                 "symlinked": 0,
+                "out_of_root": 0,
             }
         finally:
             mcp_server._vaults.pop(vault_id, None)
