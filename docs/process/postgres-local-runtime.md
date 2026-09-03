@@ -85,11 +85,25 @@ the working `sage` database:
 
 ```sh
 createdb sage_test
-.venv/bin/python scripts/bootstrap_postgres.py --dsn "postgresql:///sage_test"
+.venv/bin/python scripts/bootstrap_postgres.py --dsn "postgresql://localhost:5432/sage_test"
 
-export SAGE_TEST_PG_DSN="postgresql:///sage_test"   # socket form (peer auth)
-.venv/bin/pytest tests/                             # default tier: parallel, no model weights
+export SAGE_TEST_PG_DSN="postgresql://localhost:5432/sage_test"
+.venv/bin/pytest tests/                     # default tier: parallel, no model weights
 ```
+
+**The DSN must name a host explicitly.** A socket-form conninfo like
+`postgresql:///sage_test` is valid libpq -- and works for a direct connection,
+which is why the bootstrap command above accepts it -- but the harness does not
+hand the DSN to libpq whole. It decomposes it (`conninfo_to_dict`) and reads the
+host as a discrete field when composing the stack config, and a socket-form DSN
+carries no host key at all, so storage binds to host `None`. The run then starts
+normally and every storage-backed test fails at setup with
+`psycopg.OperationalError: failed to resolve host None`, which reads as broken
+code rather than a bad connection string. Use the form above; the no-port
+`postgresql://localhost/sage_test` works too. A loopback TCP connection still
+authenticates as the OS user under the default Homebrew configuration, so no
+password is needed -- and note that CI's `postgres:postgres@localhost` form
+names a role its service container creates, which a local install does not have.
 
 The suite runs in two tiers. The **default tier** is everything except the
 tests that load the real Qwen3 model; `pyproject.toml` runs it in parallel
