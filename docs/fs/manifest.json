@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-02",
+  "manifest_date": "2026-09-03",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.21",
+      "version": "0.22",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -91,7 +91,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "0.2",
+      "version": "0.3",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.64",
+  "substrate_version": "1.65",
   "revision_history": [
+    {
+      "version": "1.65",
+      "date": "2026-09-03",
+      "summary": "Identify a batch-ingest error entry by its position in the batch. sage_core_api.openapi.yaml bumped v0.21->v0.22 and cas_app_api.openapi.yaml v0.2->v0.3 with byte-identical component edits: BatchIngestFileError gains a required file_index (integer, minimum 0), the file's zero-based position in the batch and the same index the progress events report; ProgressEvent.file_index gains the matching minimum 0 so the two declarations of one concept carry one bound; SummaryEvent.errors' description names the position alongside the staged filename, the caller's spelling, and the message. The upload leg of the batch endpoint stages every part under one directory by basename, so two same-named parts collapsed onto one staged path and the later part replaced the earlier one's bytes before either was ingested; and because on that leg the caller's spelling is the upload's filename, two same-named parts carry identical filename and source_path by construction, so the error entry needed a field that still tells them apart. Code (not in this spec): sage/services/batch_ingest_stream.py stages each part in its own position-named subdirectory and reduces a degenerate filename through the shared staging_name helper; sage/services/batch_ingest.py emits file_index from the one entry builder both the SSE and MCP legs share; sage/models/schemas.py declares BatchFileIndex once and applies it at both sites; app/src/api/types.ts mirrors the field. Prior history this entry also records: the same component's optional code and detail properties, added to both specs when a typed refusal's code and detail were carried through the batch error envelope (v0.20 era), landed without a manifest revision; the component as of 1.65 is filename, source_path, message, file_index (required) plus code, detail (optional)."
+    },
     {
       "version": "1.64",
       "date": "2026-09-03",

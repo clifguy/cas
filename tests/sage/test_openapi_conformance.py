@@ -687,7 +687,8 @@ def test_summary_event_errors_items_reference_batch_ingest_file_error(
     """The batch summary's per-file error entries are typed at both
     declaration sites: ``SummaryEvent.errors`` points at the
     ``BatchIngestFileError`` component, whose required set is the
-    message-only shape and whose ``code`` and ``detail`` are optional.
+    message-only shape plus the file's zero-based position in the batch,
+    and whose ``code`` and ``detail`` are optional.
 
     The schema-parity gate above checks that a same-named component exists
     on both sides of each spec; it cannot see whether ``errors`` actually
@@ -709,10 +710,38 @@ def test_summary_event_errors_items_reference_batch_ingest_file_error(
         f"{spec_fixture}: components.schemas.BatchIngestFileError is not defined"
     )
     entry = schemas["BatchIngestFileError"]
-    assert sorted(entry.get("required") or []) == ["filename", "message", "source_path"]
+    assert sorted(entry.get("required") or []) == [
+        "file_index",
+        "filename",
+        "message",
+        "source_path",
+    ]
     properties = entry.get("properties") or {}
-    assert {"filename", "source_path", "message", "code", "detail"} <= set(properties)
+    assert {"file_index", "filename", "source_path", "message", "code", "detail"} <= set(properties)
+    assert properties["file_index"].get("type") == "integer"
+    assert properties["file_index"].get("minimum") == 0
     assert properties["detail"].get("type") == "object"
+
+
+@pytest.mark.parametrize("spec_fixture", ["sage_core_spec", "cas_app_spec"])
+def test_progress_event_file_index_is_bounded_like_the_error_entrys(
+    request: pytest.FixtureRequest, spec_fixture: str
+):
+    """``ProgressEvent.file_index`` and ``BatchIngestFileError.file_index``
+    are one concept -- the file's zero-based position in the batch -- and the
+    two declarations carry the same lower bound in both specs.
+
+    The Pydantic side expresses the shared shape through one alias; the YAML
+    has no alias mechanism, so parity there is only what this test pins.
+    """
+    spec = request.getfixturevalue(spec_fixture)
+    assert spec is not None, f"{spec_fixture} is missing"
+    schemas = spec["components"]["schemas"]
+    progress = schemas["ProgressEvent"]["properties"]["file_index"]
+    entry = schemas["BatchIngestFileError"]["properties"]["file_index"]
+    assert progress.get("type") == "integer"
+    assert progress.get("minimum") == 0, f"{spec_fixture}: ProgressEvent.file_index is unbounded"
+    assert progress.get("minimum") == entry.get("minimum")
 
 
 # ---------------------------------------------------------------------------

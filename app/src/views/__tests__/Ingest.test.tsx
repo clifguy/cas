@@ -185,7 +185,9 @@ describe('Ingest view — hosted profile', () => {
         abstracts_generated: 0,
         abstracts_deferred: 0,
         error_count: 1,
-        errors: [{ filename: 'bad.pdf', source_path: 'bad.pdf', message: 'Unsupported PDF' }],
+        errors: [
+          { file_index: 1, filename: 'bad.pdf', source_path: 'bad.pdf', message: 'Unsupported PDF' },
+        ],
       });
     });
     // The Tier-1 edges row renders the SAGE summary's edges_created map.

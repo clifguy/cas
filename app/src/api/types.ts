@@ -347,9 +347,13 @@ export interface EdgeWarning {
 }
 
 // One per-file failure from a batch ingest (BatchIngestFileError in both
-// API specs). `source_path` is the file as the caller named it; `code` and
-// `detail` are present only when the failure was a typed SAGE error.
+// API specs). `file_index` is the file's zero-based position in the batch,
+// the same index the progress events carry, and the only field that tells
+// apart two same-named uploads; `source_path` is the file as the caller
+// named it; `code` and `detail` are present only when the failure was a
+// typed SAGE error.
 export interface BatchIngestFileError {
+  file_index: number;
   filename: string;
   source_path: string;
   message: string;

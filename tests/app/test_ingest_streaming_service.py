@@ -30,6 +30,7 @@ from app.backend.models import (
     IngestFileItem,
     IngestRequest,
     ParsedMetadata,
+    ProgressEvent,
     SummaryEvent,
 )
 from sage.services.batch_ingest import IngestSummary
@@ -82,7 +83,14 @@ class TestSummaryEventFrom:
             edges_dropped=0,
             edge_warnings=[],
             error_count=1,
-            errors=[{"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}],
+            errors=[
+                {
+                    "file_index": 0,
+                    "filename": "bad.md",
+                    "source_path": "/in/bad.md",
+                    "message": "boom",
+                }
+            ],
         )
         event = _summary_event_from(summary)
         assert isinstance(event, SummaryEvent)
@@ -98,7 +106,12 @@ class TestSummaryEventFrom:
         assert event.edges_dropped == 0
         assert event.error_count == 1
         assert [e.model_dump(exclude_none=True) for e in event.errors] == [
-            {"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}
+            {
+                "file_index": 0,
+                "filename": "bad.md",
+                "source_path": "/in/bad.md",
+                "message": "boom",
+            }
         ]
         # Empty warnings list maps to None on the event (preserves the
         # wire convention: exclude_none drops the field).
@@ -164,7 +177,12 @@ class TestSummaryEventFrom:
         containment check while misreporting a typed detail that does not
         exist.
         """
-        entry = {"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}
+        entry = {
+            "file_index": 0,
+            "filename": "bad.md",
+            "source_path": "/in/bad.md",
+            "message": "boom",
+        }
         summary = IngestSummary(error_count=1, errors=[entry])
         payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
         assert payload["errors"] == [entry]
@@ -178,6 +196,7 @@ class TestSummaryEventFrom:
         fail the equality.
         """
         entry = {
+            "file_index": 3,
             "filename": "bad.md",
             "source_path": "/in/bad.md",
             "message": "refused",
@@ -195,11 +214,78 @@ class TestSummaryEventFrom:
 
         Anti-coincidental-pass: an ``errors`` field typed as a list of
         untyped dicts passes every round-trip test above unchanged; only a
-        rejected under-shaped entry proves the entry is a typed model.
+        rejected under-shaped entry proves the entry is a typed model, and
+        the error must name ``message`` so a rejection for some other
+        reason cannot stand in.
         """
         summary = IngestSummary(
             error_count=1,
-            errors=[{"filename": "bad.md", "source_path": "/in/bad.md"}],
+            errors=[{"file_index": 0, "filename": "bad.md", "source_path": "/in/bad.md"}],
+        )
+        with pytest.raises(ValidationError) as excinfo:
+            _summary_event_from(summary)
+        assert "message" in str(excinfo.value)
+
+    def test_summary_event_rejects_error_entry_missing_file_index(self) -> None:
+        """The file's position in the batch is required on every entry: an
+        entry that lacks ``file_index`` fails validation rather than reaching
+        the wire without the one field that separates two same-named files.
+
+        Anti-coincidental-pass: an optional ``file_index`` would accept this
+        entry and serialize it without the key; only a rejection proves the
+        field is required, and the error must name it.
+        """
+        summary = IngestSummary(
+            error_count=1,
+            errors=[{"filename": "bad.md", "source_path": "/in/bad.md", "message": "boom"}],
+        )
+        with pytest.raises(ValidationError) as excinfo:
+            _summary_event_from(summary)
+        assert "file_index" in str(excinfo.value)
+
+    def test_summary_event_rejects_negative_file_index(self) -> None:
+        """``file_index`` is a zero-based position: a negative value fails
+        validation.
+
+        Anti-coincidental-pass: a bare ``int`` field accepts ``-1``; only the
+        lower bound rejects it. A bound set one too high (``ge=1``) also
+        rejects ``-1`` and would pass this test alone; it is excluded by the
+        round-trip tests in this class, whose entries all carry
+        ``file_index: 0`` on the success path, so the discriminating
+        evidence is that pair rather than this rejection by itself.
+        """
+        summary = IngestSummary(
+            error_count=1,
+            errors=[
+                {
+                    "file_index": -1,
+                    "filename": "bad.md",
+                    "source_path": "/in/bad.md",
+                    "message": "boom",
+                }
+            ],
         )
         with pytest.raises(ValidationError):
             _summary_event_from(summary)
+
+
+class TestProgressEventShape:
+    def test_progress_event_rejects_negative_file_index(self) -> None:
+        """``ProgressEvent.file_index`` is the same zero-based position the
+        summary's error entries carry, and is bounded the same way: a
+        negative value fails validation while zero constructs.
+
+        Anti-coincidental-pass: a bare ``int`` accepts ``-1``; a bound set
+        one too high rejects the zero the success-path half constructs, so
+        the pair excludes both.
+        """
+        fields = {
+            "event_type": "progress",
+            "total_files": 1,
+            "filename": "a.md",
+            "stage": "projection",
+            "status": "started",
+        }
+        assert ProgressEvent(file_index=0, **fields).file_index == 0
+        with pytest.raises(ValidationError):
+            ProgressEvent(file_index=-1, **fields)
