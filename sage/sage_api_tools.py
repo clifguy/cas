@@ -1081,7 +1081,9 @@ def register_sage_tools(
         target, verifies the lifecycle status is one the vault's
         configuration declares dependency-satisfying (``active`` or
         ``completed`` under the base lifecycle) and pipeline_status not
-        ``failed`` — a target still mid-pipeline is not rejected.
+        ``failed`` — a target still mid-pipeline is not rejected. A
+        target the vault does not hold is reported unsatisfied with
+        ``actual`` of "not found" rather than raising.
         Returns ``satisfied`` boolean plus a
         per-edge breakdown of failing reasons (e.g. predecessor still
         in projection, target archived) so the caller can act on the
@@ -1215,9 +1217,10 @@ def register_sage_tools(
         Follows edges of a single type in both directions from the
         starting document, collecting all reachable nodes into an
         ordered list with positional metadata (head, tail, query
-        position, linearity). Uses a single recursive CTE round-trip
-        regardless of chain length. Designed for version history
-        retrieval on supersedes chains but works with any edge type. A
+        position, linearity). The walk itself is one recursive CTE
+        whatever the chain length, followed by a query for the
+        connecting edges. Designed for version history retrieval on
+        supersedes chains but works with any edge type. A
         document with no edges of the requested type returns a
         single-entry chain (the document itself as both head and tail).
 
@@ -2172,7 +2175,8 @@ def register_sage_tools(
         - **Tier 1** (e.g. ``supersedes`` via version_chain, ``sync_target``
           via re_ingestion): high-confidence inferences. Created
           directly as production edges; do not appear here.
-        - **Tier 2** (``references`` via content_reference, ``covers`` via
+        - **Tier 2** (e.g. ``references`` via identifier_mention or the
+          superseded content_reference placeholder, ``covers`` via
           filename_code_match): inferred edges that require human review.
           Land in the staging-edge table; surfaced by this tool until
           confirmed or dismissed.

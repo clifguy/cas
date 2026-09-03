@@ -44,11 +44,21 @@ exactly, by ``test_enrolled_pairs_name_the_same_identifiers``. The two
 checks answer different questions, and the second exists because the
 first cannot: coverage measures how much of a claim's wording the other
 surface shares, so dropping a single identifier from a nine-word rule
-stays above any workable floor. A probe that deleted one inference rule
-from a docstring passed the claim check and failed the name check,
-which is the division of labour intended. A comparison over names alone
-would be no substitute either -- neither of the two divergences this
-module was built for introduced a name.
+stays above any workable floor while the name check reports it. A
+comparison over names alone would be no substitute either -- neither of
+the two divergences this module was built for introduced a name.
+
+**Polarity is the exception to the fraction.** A word that inverts a
+claim rather than adding to it -- ``not``, ``never``, ``without`` and
+their kin, listed in ``_POLARITY_WORDS`` -- is *required* rather than
+counted, because one added negation in a seven-word rule clears any
+workable floor and the opposite rule would otherwise read as disclosed.
+Word order is still invisible: two claims naming the same participants
+in swapped roles reduce to one bag, and nothing here separates them.
+
+One known cutoff: ``_STRUCTURAL_HEADER`` treats ``Note:`` as the end of
+a narrative, so a docstring stating a rule under that heading has it
+excluded from comparison. No mapped pair's narrative carries one today.
 
 Enrollment is a ratchet. A pair is either in ``ENROLLED_PAIRS``, where
 the relation is enforced, or in ``UNENROLLED_PAIRS`` with a reason and
@@ -62,7 +72,7 @@ quietly grows is how a parity gate stops meaning anything; these cannot.
 from __future__ import annotations
 
 import re
-from typing import Final
+from typing import Final, NamedTuple
 
 import pytest
 
@@ -73,11 +83,22 @@ from tests.sage.test_mcp_tool_conformance import (
     _load_spec,
     _mapped_tool_pairs,
     _resolve_expected_operation_id,
+    _resolve_ref,
 )
 
 # Fraction of a claim's content words the opposing surface must also
-# use for the claim to count as disclosed there. Calibrated against
-# every mapped pair; see the module docstring.
+# use for the claim to count as disclosed there.
+#
+# Measured band, swept in 0.05 steps over the enrolled pairs: every
+# enrolled pair is clean from 0.30 through 0.85, three go red at 0.90
+# and all four at 0.95. So the upper edge is 0.85 and the value below
+# sits one step under it. The lower edge is not visible in that sweep --
+# the pairs stay clean all the way down, which is what a floor that is
+# too permissive looks like -- so it is pinned by
+# ``test_a_near_miss_claim_is_reported_at_the_floor_and_not_below``
+# instead, with a claim measured at 0.75 coverage that must be reported
+# here and covered a step lower. Move this constant and that test fails;
+# that is the point of it.
 COVERAGE_FLOOR: Final[float] = 0.80
 
 # Sentence fragments shorter than this are dropped before comparison.
@@ -141,16 +162,25 @@ def _claim_sentences(text: object, prose_only: bool = True) -> list[str]:
 # Words carried by almost every sentence on both surfaces. They say
 # nothing about which claim a sentence makes, and leaving them in would
 # let any two sentences cover one another.
+#
+# Polarity, quantifier and modal words are deliberately NOT here --
+# ``not``, ``no``, ``never``, ``without``, ``only``, ``unless``, ``all``,
+# ``any``, ``every``, ``before``, ``after``, ``must``, ``can``. They are
+# common enough to look like function words and are the entire content of
+# a claim's polarity, so stripping them let a surface state the opposite
+# rule and stay covered: a rule and its negation reduced to the same bag.
+# They are rare enough per sentence not to cause the indiscriminate
+# matching this list exists to prevent.
 _FUNCTION_WORDS: Final[frozenset[str]] = frozenset(
-    """a an the and or but nor so for yet of to in on at by from with without
+    """a an the and or so for yet of to in on at by from with
     is are was were be been being it its this that these those there here as
-    if when where which who whom whose what how than then only also not no
-    any each every both either neither all some one two do does did done has
-    have had having can could may might must shall should will would you your
+    if when where which who whom whose what how than then also
+    each both either some one two do does did done has
+    have had having may might shall should will would you your
     they them their we our us he she him her his hers rather into onto over
-    under out up down off about against between through during before after
+    under out up down off about against between through during
     above below same other another such own more most less least very just
-    still even ever never always because while until unless upon per via""".split()
+    even always because while upon per via""".split()
 )
 
 
@@ -170,6 +200,16 @@ def _content_words(sentence: str) -> frozenset[str]:
     )
 
 
+# Words that invert a claim rather than adding to it. A fraction cannot
+# police these: adding one ``not`` to a seven-word rule still clears any
+# workable floor, so the opposite rule reads as disclosed. They are
+# therefore *required* rather than counted -- a claim whose polarity word
+# the other surface never uses is uncovered whatever else it shares.
+_POLARITY_WORDS: Final[frozenset[str]] = frozenset(
+    {"not", "no", "never", "without", "unless", "none", "cannot", "nor", "neither"}
+)
+
+
 def _coverage(claim: str, surface_words: frozenset[str]) -> float:
     """Fraction of a claim's content words the other surface also uses.
 
@@ -185,6 +225,8 @@ def _coverage(claim: str, surface_words: frozenset[str]) -> float:
     words = _content_words(claim)
     if not words:
         return 1.0
+    if (words & _POLARITY_WORDS) - surface_words:
+        return 0.0
     return len(words & surface_words) / len(words)
 
 
@@ -214,7 +256,6 @@ def disclosure_divergence(
     description: object,
     exempt: frozenset[str] = frozenset(),
     floor: float = COVERAGE_FLOOR,
-    docstring_whole: object = None,
     description_whole: object = None,
 ) -> tuple[list[str], list[str]]:
     """Compare two disclosure surfaces.
@@ -225,16 +266,25 @@ def disclosure_divergence(
     claims. Sentences in ``exempt`` are dropped from both results.
 
     Claims are extracted from the narrative surfaces, but coverage is
-    measured against the whole of the opposing one -- pass
-    ``docstring_whole`` / ``description_whole`` to widen it. The
-    asymmetry is deliberate, and answers two different questions. Which
-    claims does this surface's prose make? Only its prose can say. Does
-    the other surface disclose that claim *anywhere* a caller reads? Its
-    argument and error blocks count too: a tool that states a rule under
+    measured against the whole of the opposing one. The asymmetry is
+    deliberate, and answers two different questions. Which claims does
+    this surface's prose make? Only its prose can say. Does the other
+    surface disclose that claim *anywhere* a caller reads? Its argument
+    and error blocks count too: a tool that states a rule under
     ``Args:`` has disclosed it, even though the contract states the same
     rule in its operation description. Without the widening, every such
     pair reports a divergence that is one of placement rather than
-    disclosure.
+    disclosure -- two enrolled pairs do exactly that, verified.
+
+    The two widenings correspond, which is what keeps the comparison
+    even. A docstring's ``Args:`` and ``Error modes:`` blocks are
+    matched by ``parameters[*].description`` and
+    ``responses[*].description`` on the contract side (supplied as
+    ``description_whole``), and by nothing further: component-schema
+    property prose is a much larger pool that answers to its own gate,
+    and drawing on it here would make the tool-says-more direction --
+    the direction most pairs diverge in -- quietly weaker than its
+    mirror.
 
     This is the single entry point every test goes through, so a probe
     that plants a divergence in either input traverses the whole
@@ -242,11 +292,7 @@ def disclosure_divergence(
     """
     doc_claims = _claim_sentences(docstring)
     spec_claims = _claim_sentences(description)
-    doc_vocabulary = (
-        _claim_sentences(docstring_whole, prose_only=False)
-        if docstring_whole is not None
-        else doc_claims
-    )
+    doc_vocabulary = _claim_sentences(docstring, prose_only=False)
     spec_vocabulary = (
         _claim_sentences(description_whole, prose_only=False)
         if description_whole is not None
@@ -255,6 +301,23 @@ def disclosure_divergence(
     spec_only = [c for c in _uncovered(spec_claims, doc_vocabulary, floor) if c not in exempt]
     doc_only = [c for c in _uncovered(doc_claims, spec_vocabulary, floor) if c not in exempt]
     return spec_only, doc_only
+
+
+def _described(spec: dict, node: object) -> str:
+    """The description on one spec node, following a local ``$ref``.
+
+    Resolution goes through the sibling gate's ``_resolve_ref``, which
+    raises on a reference the spec does not define. The hand-rolled walk
+    this replaced failed open -- a renamed component resolved to an empty
+    node and silently shrank the vocabulary, so a docstring claim read as
+    undisclosed for a cause no failure message ever named.
+    """
+    if not isinstance(node, dict):
+        return ""
+    if "$ref" in node:
+        node = _resolve_ref(spec, str(node["$ref"]))
+    description = node.get("description") if isinstance(node, dict) else None
+    return description if isinstance(description, str) else ""
 
 
 def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
@@ -267,9 +330,13 @@ def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
 
     ``spec_narrative`` is the operation's summary and description -- the
     prose a caller reads as the account of the call. ``spec_whole`` adds
-    the parameter and response descriptions, so that a rule the contract
-    states against one argument or one status still counts as disclosed
-    when the docstring states it in its narrative.
+    exactly the two surfaces a docstring's own structural blocks
+    correspond to: ``parameters[*].description`` for its ``Args:`` block
+    and ``responses[*].description`` for its ``Error modes:``. It stops
+    there deliberately. Following ``$ref`` down into component-schema
+    property prose would widen the pool far past that correspondence and
+    weaken the tool-says-more direction, which is the direction most
+    pairs diverge in; schema property descriptions have their own gate.
     """
     tool = _all_registered_tools()[tool_name]
     surface = _SURFACES_BY_NAME[surface_name]
@@ -281,30 +348,17 @@ def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
         "the spec does not define. The tool-to-operation mapping gate should "
         "have caught this first."
     )
+    # ``summary`` joins ``description`` because a docstring opens with its
+    # own summary line, and the spec carries that sentence in the
+    # neighbouring field rather than in the description.
     narrative = f"{operation.get('summary') or ''}\n\n{operation.get('description') or ''}"
-    extra = [
-        _describe_node(spec, node)
-        for node in list(operation.get("parameters") or [])
-        + list((operation.get("responses") or {}).values())
-        + ([operation["requestBody"]] if operation.get("requestBody") else [])
-    ]
-    return tool.description or "", narrative, narrative + "\n\n" + "\n\n".join(extra)
-
-
-def _describe_node(spec: dict, node: object, depth: int = 0) -> str:
-    """Every description string reachable from a spec node."""
-    if depth > 6 or not isinstance(node, (dict, list)):
-        return ""
-    if isinstance(node, list):
-        return " ".join(_describe_node(spec, n, depth + 1) for n in node)
-    if "$ref" in node:
-        target: object = spec
-        for segment in str(node["$ref"]).lstrip("#/").split("/"):
-            target = target.get(segment, {}) if isinstance(target, dict) else {}
-        return _describe_node(spec, target, depth + 1)
-    parts = [str(node["description"])] if isinstance(node.get("description"), str) else []
-    parts += [_describe_node(spec, v, depth + 1) for k, v in node.items() if k != "description"]
-    return " ".join(p for p in parts if p)
+    structural = [_described(spec, node) for node in (operation.get("parameters") or [])]
+    structural += [_described(spec, node) for node in (operation.get("responses") or {}).values()]
+    return (
+        tool.description or "",
+        narrative,
+        narrative + "\n\n" + "\n\n".join(part for part in structural if part),
+    )
 
 
 def pair_divergence(
@@ -312,13 +366,7 @@ def pair_divergence(
 ) -> tuple[list[str], list[str]]:
     """Disclosure divergence for one live mapped pair."""
     docstring, narrative, whole = _surfaces_for(surface_name, tool_name)
-    return disclosure_divergence(
-        docstring,
-        narrative,
-        exempt=exempt,
-        docstring_whole=docstring,
-        description_whole=whole,
-    )
+    return disclosure_divergence(docstring, narrative, exempt=exempt, description_whole=whole)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +384,7 @@ ENROLLED_PAIRS: Final[frozenset[tuple[str, str]]] = frozenset(
     }
 )
 
+
 # Pairs not yet held to the relation, each with the divergence measured
 # when it was pinned. The two surfaces were written as companions rather
 # than copies -- the tool docstrings were the model for the operation
@@ -348,91 +397,49 @@ ENROLLED_PAIRS: Final[frozenset[tuple[str, str]]] = frozenset(
 # divergence that already existed, and ``test_unenrolled_pins_are_not_stale``
 # rejects it the moment the pair comes clean -- so the list can only
 # shrink, and enrollment is forced rather than volunteered.
-UNENROLLED_PAIRS: Final[dict[tuple[str, str], str]] = {
-    ("sage_core", "create_edges"): (
-        "6 claim(s) stated only in the contract and 15 only in the tool docstring."
-    ),
-    ("sage_core", "create_vault"): (
-        "4 claim(s) stated only in the contract and 15 only in the tool docstring."
-    ),
-    ("sage_core", "delete_edge"): (
-        "6 claim(s) stated only in the contract and 3 only in the tool docstring."
-    ),
-    ("sage_core", "get_document"): (
-        "10 claim(s) stated only in the contract and 2 only in the tool docstring."
-    ),
-    ("sage_core", "get_filename_metadata"): (
-        "7 claim(s) stated only in the contract and 4 only in the tool docstring."
-    ),
-    ("sage_core", "get_vault_config"): (
-        "6 claim(s) stated only in the contract and 3 only in the tool docstring."
-    ),
-    ("sage_core", "get_vault_stats"): (
-        "6 claim(s) stated only in the contract and 1 only in the tool docstring."
-    ),
-    ("sage_core", "ingest_document"): (
-        "12 claim(s) stated only in the contract and 13 only in the tool docstring."
-    ),
-    ("sage_core", "list_pending_metadata"): (
-        "7 claim(s) stated only in the contract and 3 only in the tool docstring."
-    ),
-    ("sage_core", "list_vaults"): (
-        "4 claim(s) stated only in the contract and 5 only in the tool docstring."
-    ),
-    ("sage_core", "migrate_vault"): (
-        "8 claim(s) stated only in the contract and 10 only in the tool docstring."
-    ),
-    ("sage_core", "optimize_vault_content_store"): (
-        "2 claim(s) stated only in the contract and 2 only in the tool docstring."
-    ),
-    ("sage_core", "read_projection"): (
-        "2 claim(s) stated only in the contract and 10 only in the tool docstring."
-    ),
-    ("sage_core", "read_section"): (
-        "2 claim(s) stated only in the contract and 1 only in the tool docstring."
-    ),
-    ("sage_core", "recompute_abstract"): (
-        "4 claim(s) stated only in the contract and 20 only in the tool docstring."
-    ),
-    ("sage_core", "recompute_deferred_vault_abstracts"): (
-        "6 claim(s) stated only in the contract and 8 only in the tool docstring."
-    ),
-    ("sage_core", "recompute_views"): (
-        "4 claim(s) stated only in the contract and 10 only in the tool docstring."
-    ),
-    ("sage_core", "restore_vault_source_file"): (
-        "0 claim(s) stated only in the contract and 6 only in the tool docstring."
-    ),
-    ("sage_core", "search"): (
-        "3 claim(s) stated only in the contract and 8 only in the tool docstring."
-    ),
-    ("sage_core", "traverse"): (
-        "5 claim(s) stated only in the contract and 1 only in the tool docstring."
-    ),
-    ("sage_core", "update_lifecycles"): (
-        "9 claim(s) stated only in the contract and 6 only in the tool docstring."
-    ),
-    ("sage_core", "update_metadata"): (
-        "9 claim(s) stated only in the contract and 16 only in the tool docstring."
-    ),
-    ("sage_core", "update_vault_config"): (
-        "7 claim(s) stated only in the contract and 9 only in the tool docstring."
-    ),
-    ("sage_core", "verify_hashes"): (
-        "3 claim(s) stated only in the contract and 4 only in the tool docstring."
-    ),
-    ("sage_core", "verify_vault_drift"): (
-        "4 claim(s) stated only in the contract and 6 only in the tool docstring."
-    ),
-    ("sage_core", "verify_vault_source_files"): (
-        "3 claim(s) stated only in the contract and 6 only in the tool docstring."
-    ),
-    ("cas_app", "bulk_ingest_document"): (
-        "9 claim(s) stated only in the contract and 36 only in the tool docstring."
-    ),
-    ("cas_app", "list_directory"): (
-        "6 claim(s) stated only in the contract and 9 only in the tool docstring."
-    ),
+class Pin(NamedTuple):
+    """The divergence a pinned pair carried when it was pinned.
+
+    Counts rather than prose. The strings these replaced read as
+    measurements but were asserted by nothing, so a pinned pair could
+    drift further -- including in the exact direction this module
+    exists to close, a contract gaining a rule its tool never gets --
+    and stay green. Held as a ceiling, so divergence can only shrink.
+    """
+
+    spec_only: int
+    doc_only: int
+
+
+UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
+    ("sage_core", "create_edges"): Pin(6, 16),
+    ("sage_core", "create_vault"): Pin(4, 17),
+    ("sage_core", "delete_edge"): Pin(6, 3),
+    ("sage_core", "get_document"): Pin(10, 2),
+    ("sage_core", "get_filename_metadata"): Pin(7, 4),
+    ("sage_core", "get_vault_config"): Pin(6, 3),
+    ("sage_core", "get_vault_stats"): Pin(6, 1),
+    ("sage_core", "ingest_document"): Pin(12, 15),
+    ("sage_core", "list_pending_metadata"): Pin(7, 3),
+    ("sage_core", "list_vaults"): Pin(4, 5),
+    ("sage_core", "migrate_vault"): Pin(8, 10),
+    ("sage_core", "optimize_vault_content_store"): Pin(2, 2),
+    ("sage_core", "read_projection"): Pin(2, 10),
+    ("sage_core", "read_section"): Pin(2, 1),
+    ("sage_core", "recompute_abstract"): Pin(3, 21),
+    ("sage_core", "recompute_deferred_vault_abstracts"): Pin(6, 8),
+    ("sage_core", "recompute_views"): Pin(4, 10),
+    ("sage_core", "restore_vault_source_file"): Pin(0, 10),
+    ("sage_core", "search"): Pin(3, 12),
+    ("sage_core", "traverse"): Pin(5, 1),
+    ("sage_core", "update_lifecycles"): Pin(9, 7),
+    ("sage_core", "update_metadata"): Pin(9, 17),
+    ("sage_core", "update_vault_config"): Pin(7, 8),
+    ("sage_core", "verify_hashes"): Pin(3, 5),
+    ("sage_core", "verify_vault_drift"): Pin(4, 7),
+    ("sage_core", "verify_vault_source_files"): Pin(3, 7),
+    ("cas_app", "bulk_ingest_document"): Pin(9, 37),
+    ("cas_app", "list_directory"): Pin(6, 9),
 }
 
 # Claims one surface may make alone, by pair. A contract states some
@@ -441,7 +448,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], str]] = {
 # a disclosure gap. Entries are normalized claim text, and
 # ``test_surface_only_claims_are_not_stale`` rejects one as soon as the
 # other surface makes the claim too.
-SURFACE_ONLY_CLAIMS: Final[dict[tuple[str, str], frozenset[str]]] = {}
+SURFACE_ONLY_CLAIMS: Final[dict[tuple[str, str], dict[str, str]]] = {}
 
 
 # Identifiers an enrolled pair may name on one surface only. Keyed by
@@ -460,7 +467,7 @@ SURFACE_ONLY_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
 
 def _exempt_for(surface_name: str, tool_name: str) -> frozenset[str]:
     """Claims pinned as legitimate on one surface only for this pair."""
-    return SURFACE_ONLY_CLAIMS.get((surface_name, tool_name), frozenset())
+    return frozenset(SURFACE_ONLY_CLAIMS.get((surface_name, tool_name), {}))
 
 
 # ---------------------------------------------------------------------------
@@ -536,10 +543,16 @@ def test_surface_only_identifier_pins_are_not_stale():
     """An identifier pin cannot outlive the asymmetry it records."""
     for (surface_name, tool_name), pinned in SURFACE_ONLY_IDENTIFIERS.items():
         docstring, narrative, _whole = _surfaces_for(surface_name, tool_name)
-        shared = _identifiers(docstring) & _identifiers(narrative)
-        stale = sorted(set(pinned) & shared)
+        # A pin records an asymmetry, so it is live only while the name
+        # sits on exactly one surface. Intersecting with the shared set
+        # caught a name that had appeared on both and missed one that had
+        # vanished from both -- which outlives the asymmetry just as much.
+        asymmetric = _identifiers(docstring) ^ _identifiers(narrative)
+        stale = sorted(set(pinned) - asymmetric)
         assert not stale, (
-            f"{tool_name}: identifier(s) {stale} are now named on both surfaces. Remove the pin."
+            f"{tool_name}: identifier(s) {stale} no longer sit on exactly one "
+            "surface -- they are either named on both now, or gone from both. "
+            "Either way the pin outlived the asymmetry it records; remove it."
         )
 
 
@@ -570,10 +583,23 @@ def test_unenrolled_pins_are_not_stale(surface_name: str, tool_name: str):
     spec_only, doc_only = pair_divergence(
         surface_name, tool_name, exempt=_exempt_for(surface_name, tool_name)
     )
+    pin = UNENROLLED_PAIRS[(surface_name, tool_name)]
+
     assert spec_only or doc_only, (
         f"{tool_name} is pinned in UNENROLLED_PAIRS but its two surfaces now "
         "disclose the same claims. Delete the pin and add the pair to "
         "ENROLLED_PAIRS -- that is the only direction this list moves."
+    )
+    assert len(spec_only) <= pin.spec_only, (
+        f"{tool_name}: the contract now states {len(spec_only)} claim(s) the "
+        f"tool docstring does not, against {pin.spec_only} when it was pinned. "
+        "A pinned pair may be reconciled, never widened -- this is the "
+        f"direction this module exists to close. New: {spec_only}"
+    )
+    assert len(doc_only) <= pin.doc_only, (
+        f"{tool_name}: the tool docstring now states {len(doc_only)} claim(s) "
+        f"the contract does not, against {pin.doc_only} when it was pinned. "
+        f"New: {doc_only}"
     )
 
 
@@ -632,8 +658,9 @@ Writes nothing when the retained copy already hashes to its recorded
 digest, returning ``status: already_intact``.
 """
 
-# Stated first in the tool docstring; the operation description caught
-# up in the same change only because the author noticed.
+# A rule the tool docstring states and the operation description does
+# not: the write is refused for a linked path, whatever its bytes hash
+# to.
 _LINK_RULE: Final[str] = """
 A recorded path that is a *link* is never reported that way, however
 the bytes behind it hash: it is not the copy the record names, and the
@@ -641,9 +668,9 @@ write is refused (``vault_source_path_refused``) rather than landing
 wherever the link points. Remove the link and re-run.
 """
 
-# Stated first in the operation description and not in the docstring,
-# leaving the tool saying less than the contract about the same call.
-# Caught by a person reading both, and fixed separately.
+# The mirror: a rule the operation description states and the tool
+# docstring does not, so the tool says less than the contract about the
+# same call.
 #
 # It introduces no new quoted vocabulary -- it reaches for "the same
 # refusal" rather than naming a code -- which is why a comparison over
@@ -737,9 +764,8 @@ def test_reports_a_rule_the_docstring_states_and_the_spec_omits():
 def test_reports_a_rule_the_spec_states_and_the_docstring_omits():
     """A rule disclosed only at the HTTP boundary is reported.
 
-    The mirror of the case above, and the one that actually shipped.
-    The assertion anchors on the claim, never on a quoted token -- that
-    divergence introduced none.
+    The mirror of the case above. The assertion anchors on the claim,
+    never on a quoted token -- this divergence introduces none.
     """
     docstring = _SHARED_PREAMBLE + _LINK_RULE
     description = _SHARED_PREAMBLE + _LINK_RULE + _CONTAINMENT_RULE
@@ -760,7 +786,7 @@ def test_a_token_comparison_would_not_have_caught_the_containment_drift():
     than shipping a gate that is green through the exact divergence it
     was built for.
     """
-    quoted = re.compile(r"`{1,2}([^`]*)`{1,2}")
+    quoted = _BACKTICKED
     before = set(quoted.findall(_SHARED_PREAMBLE + _LINK_RULE))
     after = set(quoted.findall(_SHARED_PREAMBLE + _LINK_RULE + _CONTAINMENT_RULE))
     assert before, (
@@ -770,6 +796,72 @@ def test_a_token_comparison_would_not_have_caught_the_containment_drift():
     assert before == after, (
         "the containment rule introduces no new quoted token, so a token-set "
         "comparison cannot see it"
+    )
+
+
+def test_a_rule_flipped_to_its_opposite_is_reported():
+    """Negative control on polarity.
+
+    Coverage is a bag of content words, so without polarity treated as
+    required a surface could state the opposite rule and stay covered:
+    a rule and its negation reduce to nearly the same bag, and one added
+    ``not`` in a seven-word claim clears any workable fraction. Each
+    flip below returned no divergence at all before that changed.
+    """
+    flips = [
+        (
+            "A recorded path that is a link is refused by the store rather "
+            "than landing wherever the link points.",
+            "A recorded path that is a link is never refused by the store "
+            "and lands wherever the link points.",
+        ),
+        (
+            "Body content is not read by this call at any point.",
+            "Body content is read by this call at any point.",
+        ),
+        (
+            "The store writes nothing without an explicit confirmation from the caller.",
+            "The store writes with an explicit confirmation from the caller.",
+        ),
+    ]
+    for stated, flipped in flips:
+        spec_only, doc_only = disclosure_divergence(stated, flipped)
+        assert spec_only or doc_only, (
+            f"a rule and its opposite were read as the same disclosure: {stated!r}"
+        )
+
+    # The control must not pass by reporting everything.
+    spec_only, doc_only = disclosure_divergence(_SHARED_PREAMBLE, _SHARED_PREAMBLE)
+    assert not spec_only and not doc_only
+
+
+def test_a_near_miss_claim_is_reported_at_the_floor_and_not_below():
+    """The floor is pinned from below by a claim measured against it.
+
+    Every other control here is alien vocabulary or a polarity flip, and
+    both are reported at any floor -- so nothing else would notice
+    ``COVERAGE_FLOOR`` drifting to a value at which the gate is inert.
+    This claim shares all but three of its content words with the
+    preamble (0.75 coverage, measured), so it must be reported at 0.80
+    and must not be at 0.70.
+    """
+    near_miss = (
+        "The repair counterpart reports a retained copy that changed outside "
+        "SAGE using a scheduled quarterly audit."
+    )
+    reported, _ = disclosure_divergence(
+        _SHARED_PREAMBLE, _SHARED_PREAMBLE + near_miss, floor=COVERAGE_FLOOR
+    )
+    assert any("quarterly" in claim for claim in reported), (
+        f"a claim at 0.75 coverage must be reported at floor {COVERAGE_FLOOR}"
+    )
+
+    covered, _ = disclosure_divergence(
+        _SHARED_PREAMBLE, _SHARED_PREAMBLE + near_miss, floor=COVERAGE_FLOOR - 0.10
+    )
+    assert not any("quarterly" in claim for claim in covered), (
+        f"the same claim must be covered at floor {COVERAGE_FLOOR - 0.10}; if it "
+        "is still reported the floor is not what pins this"
     )
 
 
