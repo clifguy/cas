@@ -29,6 +29,7 @@ from tests.deploy._stub_server import (
 )
 
 _DEPLOY_TESTS: Final[Path] = Path(__file__).resolve().parent
+_TESTS_ROOT: Final[Path] = _DEPLOY_TESTS.parent
 
 #: The three stub modules the shared helper exists for.
 _STUB_MODULES: Final[tuple[str, ...]] = (
@@ -66,6 +67,21 @@ def _bind_fails(port: int) -> bool:
         probe.close()
 
 
+def _accepts_connections(port: int) -> bool:
+    """Whether a TCP connection to that loopback port completes.
+
+    The direct read of this property, ``getsockopt(SOL_SOCKET, SO_ACCEPTCONN)``,
+    raises ``Protocol not available`` on macOS, so the property is observed rather
+    than queried: the kernel completes the handshake from a listening socket's
+    backlog with no ``accept`` call, and refuses outright on one merely bound.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 @pytest.fixture
 def recorded_binds(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[Any, ...]]]:
     """Record every ``socket.bind`` address in this process, from any thread."""
@@ -80,9 +96,20 @@ def recorded_binds(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[Any, 
     yield binds
 
 
-def _loopback_binds(binds: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
-    """Only the loopback binds -- an unrelated bind elsewhere must not pollute a count."""
-    return [b for b in binds if b and b[0] == "127.0.0.1"]
+def _assert_single_ephemeral_bind(binds: list[tuple[Any, ...]]) -> None:
+    """One loopback bind asking for an ephemeral port, and no rebind anywhere.
+
+    Two clauses, because either alone is non-discriminating. The first is filtered
+    to loopback so an unrelated bind elsewhere cannot pollute the count -- but that
+    filter is itself an escape hatch: sampling a port on ``127.0.0.1`` and rebinding
+    it on ``0.0.0.0`` reopens the window while leaving the filtered count at one.
+    The second clause is therefore unfiltered, and rejects a bind naming a concrete
+    port on *any* host, which is what a rebind must always do.
+    """
+    loopback = [b for b in binds if b and b[0] == "127.0.0.1"]
+    assert loopback == [("127.0.0.1", 0)], f"expected a single ephemeral bind, got {loopback}"
+    rebinds = [b for b in binds if len(b) > 1 and b[1] != 0]
+    assert not rebinds, f"a bind naming a concrete port reopens the window: {rebinds}"
 
 
 # --------------------------------------------------------------------------- #
@@ -94,10 +121,16 @@ def test_reserved_socket_holds_its_port_while_open() -> None:
     This is the property the old bind-read-close idiom lacked: the port number it
     handed back was free the instant it was returned. The post-exit control proves
     the refusal above comes from the hold rather than from a malformed probe.
+
+    The reservation is also asserted to be *listening*, not merely bound. Binding
+    alone holds the port, so without this clause the ``listen`` call is inert and
+    could be deleted with every test still green -- while a consumer handed the
+    socket would inherit one that refuses connections until it listens itself.
     """
     with reserved_loopback_socket() as sock:
         port = sock.getsockname()[1]
         assert _bind_fails(port), "a held reservation must refuse a second binder"
+        assert _accepts_connections(port), "the reservation must be listening, not merely bound"
     assert not _bind_fails(port), "the port must be bindable once the reservation is released"
 
 
@@ -154,12 +187,12 @@ def test_serve_threaded_binds_exactly_once(recorded_binds: list[tuple[Any, ...]]
     The idiom this replaces bound twice -- ``("127.0.0.1", 0)`` to sample a port,
     then ``("127.0.0.1", <that port>)`` to serve on it -- with the race living
     between them. A second bind of any kind, and a bind naming a specific port in
-    particular, is the signature of that window reopening.
+    particular, is the signature of that window reopening -- on any host, not only
+    on loopback.
     """
     with serve_threaded(lambda _base: _EchoHandler):
         pass
-    loopback = _loopback_binds(recorded_binds)
-    assert loopback == [("127.0.0.1", 0)], f"expected a single ephemeral bind, got {loopback}"
+    _assert_single_ephemeral_bind(recorded_binds)
 
 
 def test_serve_threaded_yields_a_loopback_base_url_that_answers() -> None:
@@ -218,30 +251,43 @@ def test_serve_uvicorn_serves_on_the_reserved_socket(
         assert re.fullmatch(r"http://127\.0\.0\.1:\d+", base), base
         with urllib.request.urlopen(base + "/", timeout=10) as response:  # noqa: S310
             assert response.read() == b"ok"
-    loopback = _loopback_binds(recorded_binds)
-    assert loopback == [("127.0.0.1", 0)], f"expected a single ephemeral bind, got {loopback}"
+    _assert_single_ephemeral_bind(recorded_binds)
 
 
 # --------------------------------------------------------------------------- #
 # The shared-helper gate                                                       #
 # --------------------------------------------------------------------------- #
-def test_no_deploy_test_module_picks_its_own_port() -> None:
-    """No test module reads a port back out of a socket it bound itself.
+def test_no_test_module_picks_its_own_port() -> None:
+    """No test module anywhere reads a port back out of a socket it bound itself.
 
     ``getsockname`` is the name-independent tell: a module that renames its port
     picker still has to read the number off a socket. This module is exempt because
     it is the one place the reservation primitive is exercised directly.
+
+    The walk spans the whole suite rather than ``tests/deploy/`` alone -- the stub
+    servers live there today, but a scan scoped to where the problem happened to
+    surface would not see the next one appear next door.
     """
+    modules = sorted(_TESTS_ROOT.glob("**/test_*.py"))
+    assert len(modules) > len(list(_DEPLOY_TESTS.glob("test_*.py"))), (
+        "the walk must reach beyond tests/deploy/ -- a glob matching nothing passes vacuously"
+    )
     offenders = [
-        path.name
-        for path in sorted(_DEPLOY_TESTS.glob("test_*.py"))
+        str(path.relative_to(_TESTS_ROOT))
+        for path in modules
         if path.name != Path(__file__).name and "getsockname(" in path.read_text(encoding="utf-8")
     ]
     assert not offenders, f"these modules pick their own port instead of reserving one: {offenders}"
 
 
 @pytest.mark.parametrize("module", _STUB_MODULES)
-def test_stub_modules_consume_the_shared_helper(module: str) -> None:
-    """Each stub module stands its servers up through the shared helper."""
+def test_stub_modules_import_the_shared_helper(module: str) -> None:
+    """Removal guard on the import, and no more than that.
+
+    Asserting the import line is present does not establish that a module stands
+    its servers up through the helper -- it could import and still hand-roll one.
+    The teeth are in ``test_no_test_module_picks_its_own_port``; this guards
+    against the import quietly disappearing.
+    """
     source = (_DEPLOY_TESTS / module).read_text(encoding="utf-8")
     assert "from tests.deploy._stub_server import" in source, module

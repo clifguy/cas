@@ -114,12 +114,14 @@ def serve_uvicorn(app: ASGIApp, *, startup_timeout: float = 30.0) -> Iterator[st
     """Serve an ASGI app with uvicorn-in-thread; yield its ``http://127.0.0.1:<port>``.
 
     ``uvicorn.Server.run`` accepts already-open sockets and binds nothing of its
-    own when given them, so the reservation carries straight through to the
-    listening server. The reservation is what removes the startup race: it is
-    already listening, so a connection arriving before uvicorn attaches is
-    backlogged by the kernel rather than refused. Waiting on ``started`` earns
-    something narrower -- a startup that never completes raises here, naming the
-    timeout, instead of surfacing as a hung request.
+    own when given them, so the reservation -- bound and listening -- carries
+    straight through to the serving socket.
+
+    Waiting on ``started`` is what keeps a caller from racing startup: a startup
+    that never completes surfaces as a named timeout rather than as a hung
+    request, and a thread that dies before reporting started (a lifespan failure,
+    an import error in the app) is reported the moment it does rather than after
+    the full timeout.
     """
     import uvicorn
 
@@ -131,6 +133,8 @@ def serve_uvicorn(app: ASGIApp, *, startup_timeout: float = 30.0) -> Iterator[st
         thread.start()
         deadline = time.monotonic() + startup_timeout
         while not getattr(server, "started", False):
+            if not thread.is_alive():
+                raise RuntimeError("uvicorn thread exited before reporting started")
             if time.monotonic() > deadline:
                 raise RuntimeError(f"uvicorn did not start within {startup_timeout}s")
             time.sleep(0.05)
