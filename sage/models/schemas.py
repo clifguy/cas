@@ -3689,6 +3689,17 @@ class SourcePathNormalization(BaseModel):
     normalized_source_path: str = Field(
         description="The plain form the record holds after the migration."
     )
+    path_shared_with: list[DocumentIdStr] = Field(
+        default_factory=list,
+        description=(
+            "Other documents that hold the normalized path once this migration "
+            "completes -- those that already held it, and those the same pass "
+            "rewrote onto it. Empty in the ordinary case. Non-empty means the "
+            "rewrite left more than one record naming a single stored file, "
+            "which the differing spellings had until now kept apart; the "
+            "migration reports it rather than choosing between them."
+        ),
+    )
 
 
 class MigrationReport(BaseModel):

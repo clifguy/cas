@@ -637,6 +637,21 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
+    async def find_document_ids_by_source_paths(
+        self, source_paths: list[str]
+    ) -> dict[str, list[str]]:
+        """Map source paths to the ids of *every* document carrying each.
+
+        The companion of :meth:`find_documents_by_source_paths`, which answers
+        a different question: that one collapses the several-documents-one-path
+        case to a single representative, because provenance needs one answer.
+        A caller asking who else holds a path needs all of them, so nothing is
+        collapsed here. Ids are ordered within a path so the answer does not
+        depend on storage order; paths no document carries are absent from the
+        mapping. No lifecycle filtering is applied.
+        """
+
+    @abstractmethod
     async def list_non_canonical_source_paths(self) -> dict[str, str]:
         """Map document id to stored source_path, for paths not in plain form.
 

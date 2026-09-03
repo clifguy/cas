@@ -293,10 +293,23 @@ class MaintenanceService:
         rather than resolved, so it is already its own plain form and the store
         does not offer it -- and both conditions are reported by
         ``verify_vault_source_files`` rather than here.
+
+        Every rewrite is planned before any of them is applied, so the pass can
+        say which records end up sharing a path. That question has a stable
+        answer only against the vault as it stood before the pass began: asked
+        while rewriting, it would depend on how far the pass had got, and each
+        of two converging records would give a different answer about the same
+        convergence. This is also the last moment it can be asked at all -- the
+        differing spellings are what keep such records apart, and once they are
+        reduced the pass has spent the only evidence that they were ever
+        distinguishable. It is reported rather than acted on: several documents
+        on one source path is a state the substrate allows, resolving it means
+        deciding which record to keep, and that judgment is the operator's.
         """
         from sage.vault_source_binding import VaultRootEscapeError, normalize_vault_relative
 
-        normalized: list[SourcePathNormalization] = []
+        # doc_id -> (stored spelling, plain form), in id order.
+        planned: dict[str, tuple[str, str]] = {}
         for doc_id, stored in sorted(
             (await self._graph_store.list_non_canonical_source_paths()).items()
         ):
@@ -306,6 +319,23 @@ class MaintenanceService:
                 continue
             if plain == stored:
                 continue
+            planned[doc_id] = (stored, plain)
+
+        if not planned:
+            # A vault with nothing to repair asks the store once and stops; the
+            # holder lookup below is work only a real repair has earned.
+            return []
+
+        prior_holders = await self._graph_store.find_document_ids_by_source_paths(
+            sorted({plain for _, plain in planned.values()})
+        )
+
+        normalized: list[SourcePathNormalization] = []
+        for doc_id, (stored, plain) in planned.items():
+            shared = (
+                set(prior_holders.get(plain, ()))
+                | {other for other, (_, p) in planned.items() if p == plain}
+            ) - {doc_id}
             # Only the path is written. The record's meaning is unchanged --
             # this is a respelling, not a modification -- so stamping
             # ``updated_at`` here would make every record in a legacy vault
@@ -316,6 +346,7 @@ class MaintenanceService:
                     document_id=doc_id,
                     previous_source_path=stored,
                     normalized_source_path=plain,
+                    path_shared_with=sorted(shared),
                 )
             )
         return normalized

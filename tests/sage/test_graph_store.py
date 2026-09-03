@@ -1269,3 +1269,39 @@ async def test_list_non_canonical_source_paths_omits_a_store_of_plain_paths(grap
 
     assert set(await graph_store.find_documents_by_source_paths(paths)) == set(paths)
     assert seeded_ids & set(result) == set()
+
+
+async def test_find_document_ids_by_source_paths_returns_every_id_per_path(graph_store):
+    """Each present path maps to every document id carrying it, in id order.
+
+    Trap: the neighbouring ``find_documents_by_source_paths`` collapses the
+    several-documents-one-path case to a single representative, which is the
+    right answer for provenance and the wrong one here -- a caller asking who
+    else holds a path needs all of them. Seeding two documents on one path is
+    what separates this method from a copy of that one; a single-document
+    corpus cannot tell them apart. The absent path closes the other side: an
+    implementation echoing its input reports a holder for a path nobody holds.
+    """
+    shared = "test/ids/shared.md"
+    second = _make_doc_at("00000002_ids_shared_hi", shared)
+    first = _make_doc_at("00000001_ids_shared_lo", shared)
+    lone = _make_doc_at(_id("ids_lone"), "test/ids/lone.md")
+    for doc in (second, first, lone):
+        await graph_store.insert_document(doc)
+
+    result = await graph_store.find_document_ids_by_source_paths(
+        [shared, lone.source_path, "test/ids/absent.md"]
+    )
+
+    assert result == {shared: [first.id, second.id], lone.source_path: [lone.id]}
+
+
+async def test_find_document_ids_by_source_paths_empty_list_returns_empty_dict(graph_store):
+    """An empty path list returns an empty mapping, not the whole table.
+
+    Trap: a predicate that collapses to a no-op WHERE clause returns every row.
+    Asserting against a store that is *not* empty distinguishes them.
+    """
+    await graph_store.insert_document(_make_doc_at(_id("ids_probe"), "test/ids/probe.md"))
+
+    assert await graph_store.find_document_ids_by_source_paths([]) == {}

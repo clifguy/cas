@@ -485,6 +485,18 @@ class StubGraphStore(GraphStore):
                 found[d.source_path] = d.source_content_hash
         return found
 
+    async def find_document_ids_by_source_paths(
+        self, source_paths: list[str]
+    ) -> dict[str, list[str]]:
+        wanted = set(source_paths)
+        found: dict[str, list[str]] = {}
+        # Every id carrying the path, in id order -- not the lowest-id-wins
+        # collapse the method above applies, which answers a different question.
+        for d in sorted(self._docs.values(), key=lambda doc: doc.id):
+            if d.source_path in wanted:
+                found.setdefault(d.source_path, []).append(d.id)
+        return found
+
     async def list_non_canonical_source_paths(self) -> dict[str, str]:
         # The port's own pattern, not a re-derivation of it. Asking the path
         # reducer directly would look equivalent and is not: it resolves the

@@ -296,15 +296,27 @@ def _doc_at(short_name: str, ticket_id: str, source_path: str) -> Document:
 
 
 class _CountingStubGraphStore(StubGraphStore):
-    """A stub that records every document update the service issues."""
+    """A stub that records every document update and holder lookup issued."""
 
     def __init__(self) -> None:
         super().__init__()
         self.update_calls: list[tuple[str, dict]] = []
+        self.holder_lookups: list[list[str]] = []
 
     async def update_document(self, doc_id: str, updates: dict):
         self.update_calls.append((doc_id, dict(updates)))
         return await super().update_document(doc_id, updates)
+
+    async def find_document_ids_by_source_paths(self, source_paths: list[str]):
+        self.holder_lookups.append(list(source_paths))
+        return await super().find_document_ids_by_source_paths(source_paths)
+
+
+class _FailingUpdateStubGraphStore(StubGraphStore):
+    """A stub whose document writes fail for a reason that is not a refusal."""
+
+    async def update_document(self, doc_id: str, updates: dict):
+        raise RuntimeError("graph store unavailable")
 
 
 async def test_migrate_vault_normalizes_a_dotted_source_path(
@@ -400,6 +412,10 @@ async def test_migrate_vault_writes_nothing_when_no_path_needs_repair(minimal_co
     assert (await store.get_document(seeded["imports/sub/b.md"].id)).source_path == (
         "imports/sub/b.md"
     )
+    # The convergence lookup is work a real repair earns. Issuing it anyway
+    # costs a clean vault a second query per migration for an answer about an
+    # empty set, and nothing else here would notice.
+    assert store.holder_lookups == []
 
 
 async def test_migrate_vault_skips_a_path_with_no_plain_form(
@@ -504,6 +520,196 @@ async def test_migrate_vault_normalization_touches_no_other_field(
     after = await graph_store.get_document(dotted.id)
     assert after.source_path != before.source_path
     assert after.model_dump(exclude={"source_path"}) == before.model_dump(exclude={"source_path"})
+
+
+async def test_migrate_vault_reports_a_record_already_holding_the_plain_form(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-011: a rewrite that lands on a path another record already holds
+    says so on its entry.
+
+    This is the pair the lookup fix left behind: a legacy record spelled with a
+    `.`, and the second document a re-projection landed on the same stored file
+    before that miss was closed. The spellings are the only thing keeping the
+    two apart, so the migration that reduces them is the last moment the pair
+    can be seen at all.
+
+    Trap: a field that is always empty satisfies every other test in this file
+    -- none of them seeds a second record on the path. The plain record is not
+    itself a candidate, so it is also the control that the entry names the
+    *other* document rather than echoing the one being rewritten.
+    """
+    legacy = _doc_at("doc-a", "T-0001", "./imports/a.md").model_copy(
+        update={"id": "00000001_shared_legacy"}
+    )
+    holder = _doc_at("doc-b", "T-0002", "imports/a.md").model_copy(
+        update={"id": "00000002_shared_holder"}
+    )
+    for doc in (legacy, holder):
+        await graph_store.insert_document(doc)
+
+    report = await _maintenance_for(
+        graph_store, minimal_config, content_store=stub_content_store
+    ).migrate_vault()
+
+    assert [(e.document_id, e.path_shared_with) for e in report.source_paths_normalized] == [
+        (legacy.id, [holder.id])
+    ]
+    assert (await graph_store.get_document(legacy.id)).source_path == "imports/a.md"
+
+
+async def test_migrate_vault_reports_two_candidates_converging_on_one_path(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-012: two records the same pass rewrites onto one path each name the
+    other.
+
+    The second shape of the same convergence: neither record holds the plain
+    form beforehand, so a lookup against the store alone finds nothing, and
+    both arrive at it together.
+
+    Trap: two rivals pass MNT-011 and fail only here, which is why this is a
+    separate test. Resolving the holders *while* rewriting reports the
+    convergence on whichever record the id order visits second and leaves the
+    first with an empty list; consulting only the store and not the pass's own
+    plan reports it on neither. Asserting both entries, in a case where the ids
+    fix the visit order, separates them from the correct implementation and
+    from each other.
+    """
+    first = _doc_at("doc-a", "T-0001", "./imports/a.md").model_copy(
+        update={"id": "00000001_converge_first"}
+    )
+    second = _doc_at("doc-b", "T-0002", "imports//a.md").model_copy(
+        update={"id": "00000002_converge_second"}
+    )
+    for doc in (first, second):
+        await graph_store.insert_document(doc)
+
+    report = await _maintenance_for(
+        graph_store, minimal_config, content_store=stub_content_store
+    ).migrate_vault()
+
+    assert [(e.document_id, e.path_shared_with) for e in report.source_paths_normalized] == [
+        (first.id, [second.id]),
+        (second.id, [first.id]),
+    ]
+
+
+async def test_migrate_vault_reports_no_sharing_for_an_ordinary_rewrite(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-013: the ordinary lone rewrite carries an empty list.
+
+    Trap: this is the half MNT-011 and MNT-012 cannot carry. An implementation
+    that names every candidate, or that echoes the record's own id, reports a
+    convergence on every migration -- and both pass the two tests above, which
+    only ever assert that the *expected* id is present. A signal that fires
+    always is one an operator learns to ignore, which is the same defect as one
+    that never fires.
+    """
+    lone = _doc_at("doc-a", "T-0001", "./imports/lone.md")
+    await graph_store.insert_document(lone)
+
+    report = await _maintenance_for(
+        graph_store, minimal_config, content_store=stub_content_store
+    ).migrate_vault()
+
+    assert [(e.document_id, e.path_shared_with) for e in report.source_paths_normalized] == [
+        (lone.id, [])
+    ]
+
+
+async def test_migrate_vault_does_not_swallow_a_store_failure(minimal_config):
+    """MNT-014: a failing write propagates rather than being absorbed.
+
+    The sweep tolerates one thing -- a path the normalizer refuses -- and that
+    tolerance is scoped to deciding the plain form, not to writing it. A store
+    that cannot accept the write is not an unrepairable record; reporting a
+    clean migration over records it never repaired is the outcome this refuses.
+
+    Trap: the mutation this excludes is a widening of the tolerated *region*,
+    not of the exception type. Extending the refusal's ``try`` over the write
+    -- or wrapping the write in one of its own -- turns a store outage into a
+    silent no-op with an empty report, and nothing else in this file notices.
+    Widening the exception type alone cannot produce that outcome here and so
+    is not what this test excludes: the write is issued from a separate pass
+    over the plan, outside any ``try`` at all, which is the structural property
+    that makes the narrow scope hold rather than a promise the catch makes.
+    """
+    store = _FailingUpdateStubGraphStore()
+    await store.insert_document(_doc_at("doc-a", "T-0001", "./imports/a.md"))
+
+    maintenance = _maintenance_for(store, minimal_config)
+
+    with pytest.raises(RuntimeError):
+        await maintenance.migrate_vault()
+
+
+async def test_migrate_vault_reports_every_record_already_holding_the_plain_form(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-015: a rewrite landing where two records already sit names both.
+
+    Trap: the lookup this rests on has a sibling that collapses several
+    documents on one path to a single representative, which is the right answer
+    for provenance and the wrong one here. Applying that collapse leaves every
+    other test in this file green -- MNT-012's pair converges with no prior
+    holder at all, so its sibling union carries it, and MNT-011 has exactly one
+    holder, where collapsed and uncollapsed agree. Two prior holders is the
+    smallest case where the two answers differ, so it is the only one that
+    keeps the distinction under test on this side of the port.
+    """
+    legacy = _doc_at("doc-a", "T-0001", "./imports/a.md").model_copy(
+        update={"id": "00000001_multi_legacy"}
+    )
+    holder_one = _doc_at("doc-b", "T-0002", "imports/a.md").model_copy(
+        update={"id": "00000002_multi_holder"}
+    )
+    holder_two = _doc_at("doc-c", "T-0003", "imports/a.md").model_copy(
+        update={"id": "00000003_multi_holder"}
+    )
+    for doc in (legacy, holder_one, holder_two):
+        await graph_store.insert_document(doc)
+
+    report = await _maintenance_for(
+        graph_store, minimal_config, content_store=stub_content_store
+    ).migrate_vault()
+
+    assert [(e.document_id, e.path_shared_with) for e in report.source_paths_normalized] == [
+        (legacy.id, [holder_one.id, holder_two.id])
+    ]
+
+
+async def test_stub_graph_store_ids_by_source_paths_matches_port_contract():
+    """The stub returns every id on a path, as the durable store does.
+
+    Trap: the neighbouring stub method collapses a shared path to its
+    lowest-ordering id, deliberately, and this one sits directly beneath it in
+    the same class. Inheriting that collapse here is a one-word edit that no
+    service test in this file can see -- the service tests run against the
+    durable store, so the port test covers only that side of the seam, and a
+    collapsed stub would quietly answer a narrower question wherever a test
+    injects one. Two documents on one path is the smallest case that separates
+    the two answers; the lone path is the control that ids are not being
+    accumulated across paths.
+    """
+    store = StubGraphStore()
+    shared_hi = _doc_at("doc-a", "T-0001", "imports/shared.md").model_copy(
+        update={"id": "00000002_ids_hi"}
+    )
+    shared_lo = _doc_at("doc-b", "T-0002", "imports/shared.md").model_copy(
+        update={"id": "00000001_ids_lo"}
+    )
+    lone = _doc_at("doc-c", "T-0003", "imports/lone.md")
+    for doc in (shared_hi, shared_lo, lone):
+        await store.insert_document(doc)
+
+    assert await store.find_document_ids_by_source_paths(
+        ["imports/shared.md", "imports/lone.md", "imports/absent.md"]
+    ) == {
+        "imports/shared.md": [shared_lo.id, shared_hi.id],
+        "imports/lone.md": [lone.id],
+    }
 
 
 async def test_stub_graph_store_non_canonical_paths_matches_port_contract(minimal_config):

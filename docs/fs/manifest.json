@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.19",
+      "version": "0.20",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.62",
+  "substrate_version": "1.63",
   "revision_history": [
+    {
+      "version": "1.63",
+      "date": "2026-09-03",
+      "summary": "Report a source-path rewrite that leaves two records naming one stored file. sage_core_api.openapi.yaml bumped v0.19->v0.20: SourcePathNormalization gains path_shared_with, the other document ids holding the normalized path once the migration completes -- those that already held it, and those the same pass rewrote onto it. Empty in the ordinary case. The normalization sweep reduced a legacy spelling to its plain form without asking whether another record already held that form, and the pair for which that matters is the one the sweep exists to repair: a record spelled with a `.` segment, and the second document a re-projection landed on the same stored file before the provenance lookup consulted both spellings. Their differing spellings were the only thing keeping them apart, so the migration that reduces them is the last moment the pair can be observed at all -- a later pass sees two identical paths and cannot tell that one was ever the legacy one. Reported rather than acted on, matching the tier3-uniqueness scan it runs beside: several documents on one source path is a state the substrate allows (the durable store collapses it with DISTINCT ON, its source_path index is non-unique), and resolving it means deciding which record to keep, which is the operator's judgment. Code (not in this spec): the GraphStore port gains find_document_ids_by_source_paths, the companion of find_documents_by_source_paths rather than a variant of it -- that one collapses the several-documents-one-path case to a single representative because provenance needs one answer, while a caller asking who else holds a path needs all of them -- implemented on both bindings with ids ordered within each path. MaintenanceService._normalize_source_paths splits into plan-then-apply: every rewrite is planned, the holders are resolved once against the vault as it stood before the pass, and only then are the writes issued. The ordering is load-bearing rather than incidental: asked while rewriting, the question depends on how far the pass has got, and each of two converging records gives a different answer about the same convergence. The lookup is skipped entirely when nothing is planned, so a clean vault still asks the store exactly once. Tests: two port tests (every id per path, which is what separates the method from its DISTINCT ON sibling and needs a two-document corpus to show; and an empty request against a non-empty store), MNT-011 (a record already holding the plain form), MNT-012 (two candidates arriving at one path together -- the shape a store-only lookup misses entirely and a resolve-while-rewriting one reports on whichever id sorts second), MNT-013 (the ordinary lone rewrite reports nothing, the half the other two cannot carry since both only assert an expected id is present), MNT-014 (a store write failing for anything but a refusal propagates rather than being swallowed by a widened catch -- the seed MNT-008 lacked, which left `except VaultRootEscapeError` and `except Exception` indistinguishable), and a lookup-count assertion on the clean-vault test. The seam, verbatim-description, YAML<->Pydantic parity, router-conformance, MCP-tool-conformance and typed-alias gates pass with no new allowlist entries."
+    },
     {
       "version": "1.62",
       "date": "2026-09-02",

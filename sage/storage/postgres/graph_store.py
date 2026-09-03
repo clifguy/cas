@@ -1065,6 +1065,24 @@ class PostgresGraphStore(GraphStore):
             )
             return {row["source_path"]: row["source_content_hash"] for row in rows}
 
+    async def find_document_ids_by_source_paths(
+        self, source_paths: list[str]
+    ) -> dict[str, list[str]]:
+        with self._query_timer.measure("find_document_ids_by_source_paths"):
+            if not source_paths:
+                return {}
+            # No DISTINCT ON here, unlike the method above: every id carrying a
+            # path is the answer, and the id ordering makes the list stable.
+            rows = await self._fetch_rows(
+                "SELECT id, source_path FROM documents WHERE source_path = ANY(%s) "
+                "ORDER BY source_path, id",
+                (source_paths,),
+            )
+            found: dict[str, list[str]] = {}
+            for row in rows:
+                found.setdefault(row["source_path"], []).append(row["id"])
+            return found
+
     async def list_non_canonical_source_paths(self) -> dict[str, str]:
         with self._query_timer.measure("list_non_canonical_source_paths"):
             # Passed as a parameter rather than embedded, so the one pattern the
