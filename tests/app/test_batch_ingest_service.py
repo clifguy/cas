@@ -996,7 +996,22 @@ class TestEdgeExecution:
 
     @pytest.mark.asyncio
     async def test_bis_013_edges_dropped_for_failed_files(self):
-        """Edges dropped when referenced file failed ingestion."""
+        """Edges dropped when referenced file failed ingestion, and the
+        warning that records the drop reaches both delivery legs as the same
+        payload.
+
+        The cross-leg half is the companion of BIS-025: ``edge_warnings``
+        carries the same typed entries ``errors`` does, so the dict the
+        non-streaming caller receives and the streaming caller's validated
+        summary event must serialize identically. Anti-coincidental-pass: the
+        expected payload is a whole-dict equality on a warning the pipeline
+        really produced, so a serialization that dropped a field, renamed
+        one, or emitted the entry as the model's repr fails it; the two legs
+        are compared against that literal rather than only against each
+        other, which they would satisfy by agreeing on a wrong shape, and
+        every value is spelled out rather than read back off the result,
+        which would make three of the five fields match by construction.
+        """
         services = _make_services()
         call_idx = 0
 
@@ -1023,7 +1038,21 @@ class TestEdgeExecution:
         # The supersedes edge referencing v2 should be dropped
         assert result.edges_dropped >= 1
         assert len(result.edge_warnings) >= 1
-        assert result.edge_warnings[0]["reason"] == "ingestion_failed"
+        assert result.edge_warnings[0].reason == "ingestion_failed"
+
+        expected = [
+            {
+                "source": "/tmp/v2.md",
+                "target": "/tmp/v1.md",
+                "edge_type": "supersedes",
+                "reason": "ingestion_failed",
+                "detail": "Source file failed ingestion: /tmp/v2.md",
+            }
+        ]
+        assert result.to_dict()["edge_warnings"] == expected
+        event = _summary_event_from(result)
+        assert event.edge_warnings is not None
+        assert [w.model_dump() for w in event.edge_warnings] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1976,7 +2005,7 @@ class TestChainRepair:
 
         # Both facts reach the caller: why the add was refused, and that a
         # removal was withheld as a result.
-        reasons = {w["reason"] for w in result.edge_warnings}
+        reasons = {w.reason for w in result.edge_warnings}
         assert "supersede_target_not_transitionable" in reasons
         assert "chain_repair_withheld" in reasons
 
@@ -2054,7 +2083,7 @@ class TestChainRepair:
         # Both facts reach the caller: the write failure itself, and that
         # a removal was withheld as a result. The first is also the
         # control that the injected failure actually fired.
-        reasons = {w["reason"] for w in result.edge_warnings}
+        reasons = {w.reason for w in result.edge_warnings}
         assert "edge_creation_failed" in reasons
         assert "chain_repair_withheld" in reasons
 

@@ -2485,6 +2485,15 @@ paths:
         and 409 error paths resolve synchronously BEFORE the stream is
         opened and return an application/json ErrorResponse envelope
         with no SSE events emitted.
+
+
+        A failure of the run itself, which can only surface after the 200
+        is committed, ends the stream: it emits no further events -- there is
+        no `error` event variant -- and closes the connection without a
+        `summary`. A stream that ends without one did not complete, and the
+        cause is logged server-side rather than sent. Clients should treat
+        the `summary` event, not the end of the stream, as the completion
+        signal.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"

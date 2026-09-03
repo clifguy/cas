@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from sage.api.errors import SAGEError
 from sage.models.enums import SourceType
-from sage.models.schemas import BatchIngestFileError, IngestRequest
+from sage.models.schemas import BatchIngestFileError, EdgeWarning, IngestRequest
 from sage.services.batch_inference import (
     EdgePlan,
     InferenceItem,
@@ -92,7 +92,7 @@ class IngestSummary:
     edges_staged: dict[str, int] = field(default_factory=dict)
     edges_removed: int = 0
     edges_dropped: int = 0
-    edge_warnings: list[dict[str, str]] = field(default_factory=list)
+    edge_warnings: list[EdgeWarning] = field(default_factory=list)
     error_count: int = 0
     errors: list[BatchIngestFileError] = field(default_factory=list)
 
@@ -114,7 +114,10 @@ class IngestSummary:
             "errors": [e.model_dump(exclude_none=True) for e in self.errors],
         }
         if self.edge_warnings:
-            result["edge_warnings"] = self.edge_warnings
+            # Plain ``model_dump``: every EdgeWarning field is required, so
+            # there is no optional field for ``exclude_none`` to omit, unlike
+            # the error entries above.
+            result["edge_warnings"] = [w.model_dump() for w in self.edge_warnings]
         return result
 
 

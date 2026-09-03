@@ -45,7 +45,7 @@ from sage.adapters.interfaces import ContentStore, GraphStore, NaturalKeyConflic
 from sage.api.errors import SupersedeTargetNotActiveError
 from sage.config import render_state_set
 from sage.models.enums import EdgeType, RationaleKind
-from sage.models.schemas import Edge, LinkRequest, StagingEdge
+from sage.models.schemas import Edge, EdgeWarning, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.services.graph_ops import GraphOpsService
 from sage.storage.locks import DocumentLockManager
@@ -167,7 +167,7 @@ class _SettledEdge:
     # landing state, neither of which needs a write.
     supersede_to_state: str | None = None
     # Emitted only if the edge is refused; carries the reason and detail.
-    warning: dict[str, str] | None = None
+    warning: EdgeWarning | None = None
 
 
 @dataclass
@@ -176,7 +176,7 @@ class EdgeResult:
     edges_staged: dict[str, int] = field(default_factory=dict)
     edges_removed: int = 0
     edges_dropped: int = 0
-    warnings: list[dict[str, str]] = field(default_factory=list)
+    warnings: list[EdgeWarning] = field(default_factory=list)
 
 
 def _is_workflow(doc_type: str | None) -> bool:
@@ -637,13 +637,13 @@ async def resolve_and_execute(
                 exc,
             )
             result.warnings.append(
-                {
-                    "source": source_id,
-                    "target": target_id,
-                    "edge_type": edge_type_value,
-                    "reason": "chunk_lifecycle_sync_failed",
-                    "detail": str(exc),
-                }
+                EdgeWarning(
+                    source=source_id,
+                    target=target_id,
+                    edge_type=edge_type_value,
+                    reason="chunk_lifecycle_sync_failed",
+                    detail=str(exc),
+                )
             )
 
     # Loop-invariant: the table does not change across the batch, and the
@@ -672,13 +672,13 @@ async def resolve_and_execute(
                     source_id,
                     target_id,
                     _REFUSED,
-                    warning={
-                        "source": planned.source_ref,
-                        "target": planned.target_ref,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "ingestion_failed",
-                        "detail": f"Source file failed ingestion: {planned.source_ref}",
-                    },
+                    warning=EdgeWarning(
+                        source=planned.source_ref,
+                        target=planned.target_ref,
+                        edge_type=planned.edge_type.value,
+                        reason="ingestion_failed",
+                        detail=f"Source file failed ingestion: {planned.source_ref}",
+                    ),
                 )
             )
             continue
@@ -689,13 +689,13 @@ async def resolve_and_execute(
                     source_id,
                     target_id,
                     _REFUSED,
-                    warning={
-                        "source": planned.source_ref,
-                        "target": planned.target_ref,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "ingestion_failed",
-                        "detail": f"Target file failed ingestion: {planned.target_ref}",
-                    },
+                    warning=EdgeWarning(
+                        source=planned.source_ref,
+                        target=planned.target_ref,
+                        edge_type=planned.edge_type.value,
+                        reason="ingestion_failed",
+                        detail=f"Target file failed ingestion: {planned.target_ref}",
+                    ),
                 )
             )
             continue
@@ -717,13 +717,13 @@ async def resolve_and_execute(
                     source_id,
                     target_id,
                     _REFUSED,
-                    warning={
-                        "source": source_id,
-                        "target": target_id,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "supersede_target_read_failed",
-                        "detail": str(exc),
-                    },
+                    warning=EdgeWarning(
+                        source=source_id,
+                        target=target_id,
+                        edge_type=planned.edge_type.value,
+                        reason="supersede_target_read_failed",
+                        detail=str(exc),
+                    ),
                 )
             )
             continue
@@ -740,13 +740,13 @@ async def resolve_and_execute(
                     source_id,
                     target_id,
                     _REFUSED,
-                    warning={
-                        "source": source_id,
-                        "target": target_id,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "supersede_target_missing",
-                        "detail": f"Cannot supersede document {target_id}: no such document",
-                    },
+                    warning=EdgeWarning(
+                        source=source_id,
+                        target=target_id,
+                        edge_type=planned.edge_type.value,
+                        reason="supersede_target_missing",
+                        detail=f"Cannot supersede document {target_id}: no such document",
+                    ),
                 )
             )
             continue
@@ -784,19 +784,19 @@ async def resolve_and_execute(
                     source_id,
                     target_id,
                     _REFUSED,
-                    warning={
-                        "source": source_id,
-                        "target": target_id,
-                        "edge_type": planned.edge_type.value,
-                        "reason": "supersede_target_not_transitionable",
-                        # The error type every other supersede surface
-                        # raises for this condition formats the detail, so
-                        # the precondition reads identically wherever it
-                        # is reported.
-                        "detail": SupersedeTargetNotActiveError(
+                    warning=EdgeWarning(
+                        source=source_id,
+                        target=target_id,
+                        edge_type=planned.edge_type.value,
+                        reason="supersede_target_not_transitionable",
+                        # The error type every other supersede surface raises
+                        # for this condition formats the detail, so the
+                        # precondition reads identically wherever it is
+                        # reported.
+                        detail=SupersedeTargetNotActiveError(
                             target_id, current_state, allowed_states
                         ).message,
-                    },
+                    ),
                 )
             )
 
@@ -863,13 +863,13 @@ async def resolve_and_execute(
                     )
                     result.edges_dropped += 1
                     result.warnings.append(
-                        {
-                            "source": source_id,
-                            "target": target_id,
-                            "edge_type": planned.edge_type.value,
-                            "reason": "supersede_target_read_failed",
-                            "detail": str(exc),
-                        }
+                        EdgeWarning(
+                            source=source_id,
+                            target=target_id,
+                            edge_type=planned.edge_type.value,
+                            reason="supersede_target_read_failed",
+                            detail=str(exc),
+                        )
                     )
                     if planned.repair_group in groups_with_removals:
                         withheld_groups.add(planned.repair_group)
@@ -877,13 +877,13 @@ async def resolve_and_execute(
                 if fresh_target is None:
                     result.edges_dropped += 1
                     result.warnings.append(
-                        {
-                            "source": source_id,
-                            "target": target_id,
-                            "edge_type": planned.edge_type.value,
-                            "reason": "supersede_target_missing",
-                            "detail": (f"Cannot supersede document {target_id}: no such document"),
-                        }
+                        EdgeWarning(
+                            source=source_id,
+                            target=target_id,
+                            edge_type=planned.edge_type.value,
+                            reason="supersede_target_missing",
+                            detail=f"Cannot supersede document {target_id}: no such document",
+                        )
                     )
                     if planned.repair_group in groups_with_removals:
                         withheld_groups.add(planned.repair_group)
@@ -911,13 +911,13 @@ async def resolve_and_execute(
                     )
                     result.edges_dropped += 1
                     result.warnings.append(
-                        {
-                            "source": source_id,
-                            "target": target_id,
-                            "edge_type": planned.edge_type.value,
-                            "reason": "supersede_target_not_transitionable",
-                            "detail": exc.message,
-                        }
+                        EdgeWarning(
+                            source=source_id,
+                            target=target_id,
+                            edge_type=planned.edge_type.value,
+                            reason="supersede_target_not_transitionable",
+                            detail=exc.message,
+                        )
                     )
                     if planned.repair_group in groups_with_removals:
                         withheld_groups.add(planned.repair_group)
@@ -953,13 +953,13 @@ async def resolve_and_execute(
                             exc,
                         )
                         result.warnings.append(
-                            {
-                                "source": source_id,
-                                "target": target_id,
-                                "edge_type": planned.edge_type.value,
-                                "reason": "lifecycle_transition_failed",
-                                "detail": str(exc),
-                            }
+                            EdgeWarning(
+                                source=source_id,
+                                target=target_id,
+                                edge_type=planned.edge_type.value,
+                                reason="lifecycle_transition_failed",
+                                detail=str(exc),
+                            )
                         )
                         continue
                     await _sync_chunk_lifecycle(
@@ -974,13 +974,13 @@ async def resolve_and_execute(
                     )
                     result.edges_dropped += 1
                     result.warnings.append(
-                        {
-                            "source": source_id,
-                            "target": target_id,
-                            "edge_type": planned.edge_type.value,
-                            "reason": "edge_creation_failed",
-                            "detail": str(exc),
-                        }
+                        EdgeWarning(
+                            source=source_id,
+                            target=target_id,
+                            edge_type=planned.edge_type.value,
+                            reason="edge_creation_failed",
+                            detail=str(exc),
+                        )
                     )
                     if planned.repair_group in groups_with_removals:
                         withheld_groups.add(planned.repair_group)
@@ -1046,13 +1046,13 @@ async def resolve_and_execute(
             )
             result.edges_dropped += 1
             result.warnings.append(
-                {
-                    "source": source_id,
-                    "target": target_id,
-                    "edge_type": planned.edge_type.value,
-                    "reason": "edge_creation_failed",
-                    "detail": str(exc),
-                }
+                EdgeWarning(
+                    source=source_id,
+                    target=target_id,
+                    edge_type=planned.edge_type.value,
+                    reason="edge_creation_failed",
+                    detail=str(exc),
+                )
             )
             if (
                 planned.tier == 1
@@ -1076,18 +1076,16 @@ async def resolve_and_execute(
                 removal.target_id,
             )
             result.warnings.append(
-                {
-                    "source": removal.source_id,
-                    "target": removal.target_id,
-                    "edge_type": removal.edge_type.value,
-                    "reason": "chain_repair_withheld",
-                    "detail": (
-                        f"Existing edge {removal.source_id} -> {removal.target_id} kept: "
-                        "a replacement supersedes edge in the same repair was refused "
-                        "or failed to land, and removing this one would leave the "
-                        "chain shorter than it was found"
-                    ),
-                }
+                EdgeWarning(
+                    source=removal.source_id,
+                    target=removal.target_id,
+                    edge_type=removal.edge_type.value,
+                    reason="chain_repair_withheld",
+                    detail=f"Existing edge {removal.source_id} -> {removal.target_id} kept: "
+                    "a replacement supersedes edge in the same repair was refused "
+                    "or failed to land, and removing this one would leave the "
+                    "chain shorter than it was found",
+                )
             )
             continue
         try:
@@ -1101,13 +1099,13 @@ async def resolve_and_execute(
                 removal.target_id,
             )
             result.warnings.append(
-                {
-                    "source": removal.source_id,
-                    "target": removal.target_id,
-                    "edge_type": removal.edge_type.value,
-                    "reason": "edge_removal_failed",
-                    "detail": str(exc),
-                }
+                EdgeWarning(
+                    source=removal.source_id,
+                    target=removal.target_id,
+                    edge_type=removal.edge_type.value,
+                    reason="edge_removal_failed",
+                    detail=str(exc),
+                )
             )
 
     return result
