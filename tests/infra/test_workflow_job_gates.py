@@ -68,6 +68,7 @@ _EXPECTED_WORKFLOWS: Final[tuple[str, ...]] = (
     "dependabot-triage.yml",
     "sharepoint-validate.yml",
     "maintenance.yml",
+    "ruleset-drift.yml",
 )
 
 

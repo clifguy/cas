@@ -1,0 +1,50 @@
+name: Ruleset drift
+
+# Compares the branch-protection ruleset captured in
+# docs/process/branch_protection.md against the live one, and fails naming the
+# diverging fields. The motivating case is an edit made in the forge UI: it
+# carries no commit, so the offline gates that read the tracked document cannot
+# see it, and only a scheduled read can. Divergence surfaces as a failing run
+# rather than as an issue -- drift here is rare and binary, and a failing
+# scheduled run already notifies.
+#
+# The read needs no stored secret: both rulesets endpoints answer at the
+# `contents: read` scope below and return every rule. The one field they
+# withhold at that scope is `bypass_actors`, which arrives as an absent key
+# rather than an empty list; the check names it as uncovered on every run
+# instead of comparing it. Granting administration scope would require a stored
+# token, since it is not a permission a workflow can declare.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"  # daily 07:00 UTC; a weekly cadence would leave a UI edit standing for six days
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # `prune-cache: true` is pinned rather than left to the action default:
+      # setup-uv v9 flipped that default to false (astral-sh/setup-uv#967) to
+      # ease load on PyPI, at the cost of a materially larger saved cache. This
+      # repo already runs near half the 10 GB Actions cache ceiling, and an
+      # unpruned uv cache at every call site would crowd out the entries other
+      # jobs depend on. Drop the pin if the cache budget stops binding.
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          prune-cache: true
+          python-version: "3.14"
+      - run: uv sync --locked
+      - run: .venv/bin/python -m scripts.check_ruleset_drift
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
