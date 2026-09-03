@@ -20,11 +20,13 @@ import hashlib
 import subprocess
 import sys
 import textwrap
+import zipfile
 from pathlib import Path
 
 import httpx
 import pytest
 
+import sage.vault_source_document_store as graph_module
 from sage.config import StackDocumentStoreConfig, VaultConfig
 from sage.vault_source_binding import (
     DiscoveredVault,
@@ -35,6 +37,7 @@ from sage.vault_source_document_store import (
     SharePointGraphClient,
     build_sharepoint_graph_client,
 )
+from tests.helpers.bounded_reads import refuse_whole_reads
 from tests.helpers.fake_graph_client import (
     STREAM_CHUNK_BYTES,
 )
@@ -54,6 +57,22 @@ _DRIVE = "b!drive-id"
 
 def _binding(fake: _FakeGraphClient) -> DocumentStoreVaultSourceStore:
     return DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=fake)
+
+
+def _delivered(tmp_path: Path, name: str, body: bytes) -> Path:
+    """A caller-side file holding the bytes to write, outside any vault tree."""
+    p = tmp_path / "delivered" / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(body)
+    return p
+
+
+def _minimal_office_package(path: Path) -> Path:
+    """The smallest ZIP the fake's at-rest stamping will reopen and re-stamp."""
+    with zipfile.ZipFile(path, "w") as package:
+        package.writestr("[Content_Types].xml", "<Types/>")
+        package.writestr("word/document.xml", "<w:document/>")
+    return path
 
 
 def test_vsb_ds_001_write_discover_load_round_trip(minimal_vault_config_dict):
@@ -304,7 +323,7 @@ def test_vsb_ds_070_write_source_replaces_bytes_at_the_named_path(tmp_path):
     fake.sources["imports/x.md"] = b"drifted out of band"
     store = _binding(fake)
 
-    store.write_source("v", tmp_path, "imports/x.md", b"original")
+    store.write_source("v", tmp_path, "imports/x.md", _delivered(tmp_path, "x.md", b"original"))
 
     assert fake.source_uploads == 1
     assert fake.sources["imports/x.md"] == b"original"
@@ -325,12 +344,68 @@ def test_vsb_ds_071_write_source_refuses_paths_that_leave_the_vault_tree(tmp_pat
     fake = _FakeGraphClient()
     store = _binding(fake)
 
+    delivered = _delivered(tmp_path, "d.md", b"data")
     for bad in ("../escape.md", "imports/../../escape.md", "/etc/passwd"):
         with pytest.raises(VaultRootEscapeError):
-            store.write_source("v", tmp_path, bad, b"data")
+            store.write_source("v", tmp_path, bad, delivered)
 
     assert fake.source_uploads == 0
     assert fake.sources == {}
+
+
+def test_vsb_ds_074_write_source_returns_the_digest_of_what_the_store_holds(tmp_path):
+    """``write_source`` returns the digest of the copy as the store now keeps
+    it, which for a format the store rewrites at rest is not the delivered
+    digest.
+
+    This binding cannot learn the as-stored digest from the upload itself, so
+    the answer is a streamed re-read of the stored copy -- the one place the
+    post-write read still belongs, because here it can differ from what was
+    sent.
+
+    Anti-coincidental-pass: the key is an Office package, so the fake stamps
+    it and the two digests genuinely diverge (``stamped_uploads`` is the
+    positive control). Returning the delivered digest fails the inequality;
+    pulling the copy down to hash it locally fails ``source_reads == 0``; not
+    consulting the store at all fails ``source_hashes == 1``.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+    delivered = _minimal_office_package(tmp_path / "probe.docx")
+    delivered_digest = "sha256:" + hashlib.sha256(delivered.read_bytes()).hexdigest()
+
+    digest = store.write_source("v", tmp_path, "imports/probe.docx", delivered)
+
+    assert fake.stamped_uploads == 1, "the store must actually have rewritten the copy"
+    assert digest == fake.hash_source_bytes("v", "imports/probe.docx")
+    assert digest != delivered_digest
+    assert fake.source_hashes == 2  # one inside write_source, one by this test's control
+    assert fake.source_reads == 0
+
+
+def test_vsb_ds_075_retain_source_does_not_materialize_the_delivered_file(tmp_path, monkeypatch):
+    """``retain_source`` hands the delivered file to the client by path and
+    never loads it whole.
+
+    Anti-coincidental-pass: whole-file reads of the delivered file are refused
+    for the duration of the call -- ``read_bytes`` and any unsized read on an
+    open handle alike -- so the bytes the fake ends up holding can only have
+    arrived through bounded reads. The upload counter and the stored bytes are
+    both asserted, so a retain that refused the file (and so never read it)
+    fails too.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+    external = tmp_path / "report.md"
+    external.write_bytes(b"# Report\n\nbody")
+
+    with monkeypatch.context() as m:
+        refuse_whole_reads(m, external, graph_module._SOURCE_CHUNK_BYTES)
+        rel = store.retain_source("v", tmp_path, external)
+
+    assert rel == "imports/report.md"
+    assert fake.source_uploads == 1
+    assert fake.sources["imports/report.md"] == b"# Report\n\nbody"
 
 
 def test_vsb_ds_033_source_exists_true_and_false():
@@ -815,7 +890,7 @@ def test_vsb_ds_020_graph_client_builder_resolves_in_clean_interpreter():
 # --------------------------------------------------------------------------
 
 
-def test_vsb_ds_040_source_ops_hit_scoped_content_and_item_urls():
+def test_vsb_ds_040_source_ops_hit_scoped_content_and_item_urls(tmp_path):
     """``upload_source`` / ``read_source_bytes`` / ``source_item`` address the
     site/drive-scoped content and item endpoints under a bearer token.
 
@@ -838,7 +913,7 @@ def test_vsb_ds_040_source_ops_hit_scoped_content_and_item_urls():
         return httpx.Response(500, text="unexpected")
 
     client = _client(handler)
-    client.upload_source("vault_a", "imports/x.md", b"SRC")
+    client.upload_source("vault_a", "imports/x.md", _delivered(tmp_path, "x.md", b"SRC"))
     assert client.read_source_bytes("vault_a", "imports/x.md") == b"SRC"
     assert client.source_item("vault_a", "imports/x.md") == {"name": "x.md", "size": 3}
 
@@ -856,7 +931,7 @@ def test_vsb_ds_040_source_ops_hit_scoped_content_and_item_urls():
     assert str(stat_get.url).endswith("/vaults/vault_a/imports/x.md")
 
 
-def test_vsb_ds_041_source_ops_fail_closed_and_404_tolerant():
+def test_vsb_ds_041_source_ops_fail_closed_and_404_tolerant(tmp_path):
     """A Graph 4xx/5xx on a source op fails closed as ``RuntimeError``; a 404 on
     ``source_item`` is the absent case (``None``).
 
@@ -872,7 +947,7 @@ def test_vsb_ds_041_source_ops_fail_closed_and_404_tolerant():
 
     broken = _client(lambda r: httpx.Response(500, text="boom"))
     with pytest.raises(RuntimeError, match="500"):
-        broken.upload_source("v", "imports/x.md", b"data")
+        broken.upload_source("v", "imports/x.md", _delivered(tmp_path, "x.md", b"data"))
 
 
 def test_vsb_ds_042_source_read_retries_once_on_throttle():
@@ -1177,3 +1252,354 @@ def test_vsb_ds_066_list_sources_enumerates_vault_folder_recursively():
     # Item absent (404) -> None.
     absent = _client(lambda r: httpx.Response(404))
     assert absent.source_download_url("v", "imports/x.pdf") is None
+
+
+# --------------------------------------------------------------------------
+# Graph client streaming upload: single PUT below the session threshold, an
+# upload session above it
+# --------------------------------------------------------------------------
+
+_FRAGMENT = 327_680  # Graph's fragment quantum: 320 KiB
+_SESSION_URL = "https://up.example/session-1"
+
+
+def _small_thresholds(monkeypatch) -> None:
+    """Pin the session threshold and fragment size to one Graph quantum so a
+    test file of a few hundred KiB exercises the multi-fragment path."""
+    monkeypatch.setattr(graph_module, "_UPLOAD_SESSION_THRESHOLD_BYTES", _FRAGMENT)
+    monkeypatch.setattr(graph_module, "_UPLOAD_FRAGMENT_BYTES", _FRAGMENT)
+
+
+def _session_handler(seen: list[httpx.Request], *, fragment_status):
+    """A Graph stand-in for the session flow: answers the session create with
+    an ``uploadUrl`` and each fragment ``PUT`` with ``fragment_status(index,
+    request)``. Every request is recorded, with its body read, so a test can
+    assert ranges and reassemble the payload."""
+    fragments = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request.read()
+        seen.append(request)
+        url = str(request.url)
+        if request.method == "POST" and url.endswith(":/createUploadSession"):
+            return httpx.Response(
+                200, json={"uploadUrl": _SESSION_URL, "expirationDateTime": "2099-01-01T00:00:00Z"}
+            )
+        if request.method == "PUT" and url == _SESSION_URL:
+            index = fragments["n"]
+            fragments["n"] += 1
+            return fragment_status(index, request)
+        if request.method == "DELETE" and url == _SESSION_URL:
+            return httpx.Response(204)
+        return httpx.Response(500, text=f"unexpected {request.method} {url}")
+
+    return handler
+
+
+def _accept_fragments(total_fragments: int):
+    """Fragment responses for a clean upload: 202 until the last, then 201."""
+
+    def respond(index: int, request: httpx.Request) -> httpx.Response:
+        if index < total_fragments - 1:
+            return httpx.Response(202, json={"nextExpectedRanges": ["?-"]})
+        return httpx.Response(201, json={"id": "item", "size": 0, "file": {}})
+
+    return respond
+
+
+def _fragment_puts(seen: list[httpx.Request]) -> list[httpx.Request]:
+    return [r for r in seen if r.method == "PUT" and str(r.url) == _SESSION_URL]
+
+
+def test_vsb_ds_076_small_source_is_one_streaming_put_with_a_fixed_length(tmp_path, monkeypatch):
+    """A source at or below the session threshold is uploaded with a single
+    ``PUT`` to the content endpoint whose body is streamed from the file and
+    declared with an explicit ``Content-Length``.
+
+    Anti-coincidental-pass: whole-file reads of the source are refused for the
+    duration -- ``read_bytes`` and any unsized read on an open handle -- so a
+    body assembled from one fails; ``content-length`` is asserted equal to the
+    size and ``transfer-encoding`` asserted absent, so an iterator body sent
+    chunked -- which Graph's simple upload does not accept -- fails; exactly
+    one request excludes a session for a small file.
+    """
+    body = (bytes(range(256)) * 1200)[:300_000]
+    source = _delivered(tmp_path, "x.bin", body)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request.read()
+        seen.append(request)
+        return httpx.Response(201, json={"id": "item", "size": len(body), "file": {}})
+
+    client = _client(handler)
+    with monkeypatch.context() as m:
+        refuse_whole_reads(m, source, graph_module._SOURCE_CHUNK_BYTES)
+        client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert len(seen) == 1
+    put = seen[0]
+    assert put.method == "PUT"
+    assert str(put.url).endswith("/vaults/vault_a/imports/x.bin:/content")
+    assert put.headers["authorization"] == "Bearer tok"
+    assert put.headers["content-length"] == "300000"
+    assert "transfer-encoding" not in put.headers
+    assert put.content == body
+
+
+def test_vsb_ds_077_large_source_is_an_upload_session_of_ranged_unauthenticated_fragments(
+    tmp_path, monkeypatch
+):
+    """A source above the session threshold is uploaded through an upload
+    session: one site/drive-scoped, bearer-authenticated ``createUploadSession``
+    asking to replace the item, then sequential fragment ``PUT``s to the
+    session's ``uploadUrl`` carrying ``Content-Range`` / ``Content-Length`` and
+    no bearer, the whole file never held in memory.
+
+    Anti-coincidental-pass: a whole-file ``PUT`` to ``:/content`` fails the
+    session-create assertion; a bearer on a fragment ``PUT`` (which Graph
+    answers with 401) fails the header assertion; the three ``Content-Range``
+    values are asserted exactly, so an off-by-one on either end or a wrong
+    total fails; the fragments reassemble to the file, so a boundary error
+    that dropped or duplicated bytes fails; whole-file and whole-fragment reads
+    are refused throughout, so each fragment must itself be streamed.
+    """
+    _small_thresholds(monkeypatch)
+    body = (bytes(range(256)) * ((2 * _FRAGMENT + 100) // 256 + 1))[: 2 * _FRAGMENT + 100]
+    source = _delivered(tmp_path, "big.bin", body)
+    seen: list[httpx.Request] = []
+
+    client = _client(_session_handler(seen, fragment_status=_accept_fragments(3)))
+    with monkeypatch.context() as m:
+        refuse_whole_reads(m, source, graph_module._SOURCE_CHUNK_BYTES)
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    create = [r for r in seen if r.method == "POST"]
+    assert len(create) == 1
+    assert str(create[0].url).endswith("/vaults/vault_a/imports/big.bin:/createUploadSession")
+    assert create[0].headers["authorization"] == "Bearer tok"
+    assert f"/sites/{_SITE}/drives/{_DRIVE}/root" in str(create[0].url)
+    import json
+
+    assert json.loads(create[0].content) == {
+        "item": {"@microsoft.graph.conflictBehavior": "replace"}
+    }
+
+    puts = _fragment_puts(seen)
+    total = len(body)
+    assert [p.headers["content-range"] for p in puts] == [
+        f"bytes 0-{_FRAGMENT - 1}/{total}",
+        f"bytes {_FRAGMENT}-{2 * _FRAGMENT - 1}/{total}",
+        f"bytes {2 * _FRAGMENT}-{total - 1}/{total}",
+    ]
+    assert [int(p.headers["content-length"]) for p in puts] == [_FRAGMENT, _FRAGMENT, 100]
+    assert all("authorization" not in p.headers for p in puts)
+    assert b"".join(p.content for p in puts) == body
+    assert not any(str(r.url).endswith(":/content") for r in seen)
+    assert not any(r.method == "DELETE" for r in seen)
+
+
+def test_vsb_ds_078_fragment_geometry_honors_the_store_rules():
+    """The fragment size is a multiple of Graph's 320 KiB quantum and under its
+    60 MiB per-request ceiling, and the session threshold sits under the simple
+    upload's 250 MB limit.
+
+    Pinned rather than trusted to a comment: a fragment that is not a multiple
+    of the quantum fails only when the *last* range is committed, which no
+    offline test can reproduce.
+    """
+    assert graph_module._UPLOAD_FRAGMENT_BYTES % _FRAGMENT == 0
+    assert graph_module._UPLOAD_FRAGMENT_BYTES < 60 * 1024 * 1024
+    assert 0 < graph_module._UPLOAD_SESSION_THRESHOLD_BYTES <= 250 * 1000 * 1000
+
+
+def test_vsb_ds_079_failed_fragment_cancels_the_session_and_fails_closed(tmp_path, monkeypatch):
+    """A fragment the store refuses fails closed as a ``RuntimeError`` naming
+    the op, the target and the status -- after cancelling the session, so no
+    half-uploaded temporary lingers until the store expires it.
+
+    Anti-coincidental-pass: the cancel is asserted as a ``DELETE`` on the
+    session URL issued after the failing fragment, so an implementation that
+    raised without cleaning up, or cleaned up first and then continued, fails;
+    the absence of a third fragment excludes an upload that ignored the error.
+    """
+    _small_thresholds(monkeypatch)
+    body = bytes(2 * _FRAGMENT + 100)
+    source = _delivered(tmp_path, "big.bin", body)
+    seen: list[httpx.Request] = []
+
+    def refuse_second(index: int, request: httpx.Request) -> httpx.Response:
+        if index == 1:
+            return httpx.Response(500, text="store refused")
+        return _accept_fragments(3)(index, request)
+
+    client = _client(_session_handler(seen, fragment_status=refuse_second))
+    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin.*500"):
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    methods = [(r.method, str(r.url)) for r in seen]
+    assert methods.count(("PUT", _SESSION_URL)) == 2, "no fragment may follow the refusal"
+    assert methods[-1] == ("DELETE", _SESSION_URL), "the session must be cancelled last"
+
+
+def test_vsb_ds_080_throttled_fragment_is_retried_once_with_the_same_range(tmp_path, monkeypatch):
+    """A 429 on a fragment is retried once, honoring ``Retry-After``, and the
+    retry re-sends the *same* range.
+
+    Anti-coincidental-pass: the two ``Content-Range`` headers for the first
+    range are asserted identical, so a retry that advanced the offset (which
+    the store would answer with 416) fails; the fragment count is four, so no
+    retry or an unbounded one fails.
+    """
+    _small_thresholds(monkeypatch)
+    body = bytes(2 * _FRAGMENT + 100)
+    source = _delivered(tmp_path, "big.bin", body)
+    seen: list[httpx.Request] = []
+    slept: list[float] = []
+    throttled = {"done": False}
+
+    def throttle_first(index: int, request: httpx.Request) -> httpx.Response:
+        if index == 0 and not throttled["done"]:
+            throttled["done"] = True
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        # The retry re-sends fragment 0, so the accepting sequence is offset by one.
+        return _accept_fragments(3)(index - 1, request)
+
+    client = _client(_session_handler(seen, fragment_status=throttle_first), sleep=slept.append)
+    client.upload_source("vault_a", "imports/big.bin", source)
+
+    puts = _fragment_puts(seen)
+    assert len(puts) == 4
+    assert puts[0].headers["content-range"] == puts[1].headers["content-range"]
+    assert slept == [0.0]
+    assert b"".join(p.content for p in puts[1:]) == body
+
+
+def test_vsb_ds_081_refused_session_creation_fails_closed_before_any_bytes_flow(
+    tmp_path, monkeypatch
+):
+    """A store that declines to open a session (507 Insufficient Storage, say)
+    fails closed naming the status, and no fragment is sent.
+
+    Anti-coincidental-pass: a client that checked only fragment responses would
+    treat the missing ``uploadUrl`` as some other error, or send bytes nowhere;
+    the ``PUT`` count of zero is the discriminator.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(507, text="insufficient storage")
+
+    client = _client(handler)
+    with pytest.raises(RuntimeError, match="507"):
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    assert [r.method for r in seen] == ["POST"]
+
+
+def test_vsb_ds_082_premature_completion_is_an_error(tmp_path, monkeypatch):
+    """A store reporting the item complete before the last fragment has been
+    sent is an error, not a success: the copy it holds is not the file.
+
+    Anti-coincidental-pass: an implementation returning on the first 2xx
+    regardless of remaining bytes returns normally here; the raise is the
+    discriminator, and the cancel proves the session was not left open.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+    seen: list[httpx.Request] = []
+
+    def complete_early(index: int, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": "item", "size": 0, "file": {}})
+
+    client = _client(_session_handler(seen, fragment_status=complete_early))
+    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin"):
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)
+
+
+def test_vsb_ds_083_small_source_put_is_retried_once_with_a_fresh_body(tmp_path):
+    """A 429 on the single-request upload is retried once, honoring
+    ``Retry-After``, and the retry carries the whole file again.
+
+    Anti-coincidental-pass: the retried request's body is asserted equal to
+    the file, so a retry that replayed the first attempt's exhausted generator
+    (an empty second body) fails; its ``Content-Length`` is asserted too, so a
+    resend that rebuilt the body but not the fixed-length framing fails;
+    exactly two requests excludes no retry.
+    """
+    body = bytes(range(256)) * 300
+    source = _delivered(tmp_path, "x.bin", body)
+    seen: list[httpx.Request] = []
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request.read()
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(201, json={"id": "item", "size": len(body), "file": {}})
+
+    client = _client(handler, sleep=slept.append)
+    client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert [r.method for r in seen] == ["PUT", "PUT"]
+    assert slept == [0.0]
+    assert seen[1].content == body
+    assert seen[1].headers["content-length"] == str(len(body))
+    assert "transfer-encoding" not in seen[1].headers
+
+
+def test_vsb_ds_084_small_source_put_gives_up_after_one_retry(tmp_path):
+    """A persistent 429 on the single-request upload fails closed naming the
+    status after exactly one retry.
+
+    Anti-coincidental-pass: the request count is the whole claim. A loop that
+    retried without bound never returns to raise; one that dropped its bound
+    but kept its two attempts falls through to a different error, so the
+    ``429`` match fails; no retry gives one request.
+    """
+    source = _delivered(tmp_path, "x.bin", b"payload")
+    seen: list[httpx.Request] = []
+
+    def always_429(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    client = _client(always_429)
+    with pytest.raises(RuntimeError, match=r"write source.*imports/x\.bin.*429"):
+        client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert len(seen) == 2
+
+
+def test_vsb_ds_085_persistently_throttled_fragment_gives_up_after_one_retry_and_cancels(
+    tmp_path, monkeypatch
+):
+    """A fragment the store keeps throttling is re-sent once, then the upload
+    fails closed naming the status and the session is cancelled.
+
+    Anti-coincidental-pass: exactly two PUTs of the same range, then the raise
+    matching ``429`` and a trailing ``DELETE``. An unbounded retry never
+    returns; a bound without the status check raises the wrong error; a
+    give-up that skipped the cancel leaves no ``DELETE``.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+    seen: list[httpx.Request] = []
+
+    def always_throttled(index: int, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    client = _client(_session_handler(seen, fragment_status=always_throttled))
+    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin.*429"):
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    puts = _fragment_puts(seen)
+    assert len(puts) == 2
+    assert puts[0].headers["content-range"] == puts[1].headers["content-range"]
+    assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)

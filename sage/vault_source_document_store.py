@@ -12,11 +12,11 @@ The access model is least-privilege: every request addresses the single
 configured site and drive (``.../sites/{site}/drives/{drive}/root:/...``), never a
 tenant-wide path, matching the site-scoped application permission CAS-ADR-043
 mandates. Adapter mechanics land thin per that ADR's "established thin and extended
-as the binding lands" clause: a direct create-or-replace upload (SAGE is the sole
-writer of the tree, so write contention is not a concern), a single retry on a
-throttling / transient response, and a flat folder enumeration; richer mechanics
-(upload-session atomic-write emulation, change feeds, locks) are deferred to the
-binding's later slices.
+as the binding lands" clause: a streamed create-or-replace upload (SAGE is the
+sole writer of the tree, so write contention is not a concern) that opens an upload
+session for a large source, a single retry on a throttling / transient response,
+and a flat folder enumeration; richer mechanics (change feeds, locks) are deferred
+to the binding's later slices.
 
 The ``azure-identity`` import is deferred to credential-build time so an on-box
 local-profile process that never selects the document store never loads it.
@@ -24,9 +24,11 @@ local-profile process that never selects the document store never loads it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import time
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import httpx
 
@@ -52,6 +54,38 @@ _HASH_CHUNK_BYTES = 65536
 # Chunk size for streamed source delivery, matching the filesystem binding's
 # delivery chunk size so both bindings hand equal-bounded chunks upward.
 _SOURCE_CHUNK_BYTES = 65536
+
+# Graph's simple upload (``PUT ...:/content``) accepts a file of up to 250 MB;
+# anything larger needs an upload session. The session is opened well below
+# that ceiling, at the 10 MiB from which Graph's documentation recommends a
+# resumable transfer, so the single-request path never carries a large body.
+# Both paths stream the file from disk; neither holds it whole.
+_UPLOAD_SESSION_THRESHOLD_BYTES = 10 * 1024 * 1024
+
+# A session fragment must be a multiple of 320 KiB and under 60 MiB per request
+# (Graph's documented rules -- a fragment that is not a multiple fails only when
+# the final range is committed, which no offline test can reproduce). 10 MiB is
+# 32 quanta, the size the documentation recommends for a stable connection.
+_UPLOAD_FRAGMENT_QUANTUM = 327_680
+_UPLOAD_FRAGMENT_BYTES = 32 * _UPLOAD_FRAGMENT_QUANTUM
+
+
+def _file_range(source_file: Path, start: int, length: int) -> Iterator[bytes]:
+    """Yield ``length`` bytes of ``source_file`` from ``start`` in bounded chunks.
+
+    The body of every upload request, whether the whole file or one session
+    fragment: a fresh generator per request, so a retried request re-reads its
+    range from disk rather than replaying an exhausted iterator.
+    """
+    remaining = length
+    with source_file.open("rb") as f:
+        f.seek(start)
+        while remaining > 0:
+            chunk = f.read(min(_SOURCE_CHUNK_BYTES, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+            yield chunk
 
 
 class SharePointGraphClient:
@@ -289,21 +323,126 @@ class SharePointGraphClient:
             self._fail(resp, "read source", f"{vault_id}/{source_path}")
         return resp.content
 
-    def upload_source(self, vault_id: str, source_path: str, data: bytes) -> None:
-        """Create or replace a retained source's bytes (a direct upload).
+    def upload_source(self, vault_id: str, source_path: str, source_file: Path) -> None:
+        """Create or replace a retained source's bytes, streamed from ``source_file``.
 
-        The Graph item is replaced atomically server-side, so no temp-and-rename
-        emulation is needed (SAGE is the sole writer). Large-source chunked upload
-        sessions are deferred (CAS-ADR-043's thin-then-extended mechanics).
+        The file is never held whole. At or below the session threshold it is
+        one ``PUT`` to the content endpoint with the file as a fixed-length
+        streamed body (Graph's simple upload); above it, an upload session: the
+        item is replaced through sequential fragment ``PUT``s to the session's
+        ``uploadUrl``, each carrying its ``Content-Range`` and no bearer (the
+        URL is pre-authenticated, and Graph refuses a bearer on it). A fragment
+        the store refuses cancels the session and fails closed, so no
+        half-uploaded temporary lingers until the store expires it. Either way
+        the Graph item is replaced atomically server-side on completion, so no
+        temp-and-rename emulation is needed (SAGE is the sole writer).
         """
+        size = source_file.stat().st_size
+        target = f"{vault_id}/{source_path}"
+        if size > _UPLOAD_SESSION_THRESHOLD_BYTES:
+            self._upload_through_session(vault_id, source_path, source_file, size)
+            return
+        # The retry is local rather than through ``_request`` because the body
+        # is a generator: a retry must open the file again, not replay a stream
+        # the first attempt already consumed. ``Content-Length`` is set
+        # explicitly so the streamed body goes up fixed-length rather than
+        # chunked, which the simple upload does not accept.
+        url = self._content_url(vault_id, *source_path.split("/"))
+        for attempt in range(2):
+            headers = {
+                "Authorization": f"Bearer {self._token_provider()}",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(size),
+            }
+            resp = self._http.request(
+                "PUT", url, headers=headers, content=_file_range(source_file, 0, size)
+            )
+            if resp.status_code in _RETRY_STATUSES and attempt == 0:
+                retry_after = resp.headers.get("Retry-After")
+                self._sleep(float(retry_after) if retry_after else 0.0)
+                continue
+            if resp.status_code >= 400:
+                self._fail(resp, "write source", target)
+            return
+
+    def _upload_through_session(
+        self, vault_id: str, source_path: str, source_file: Path, size: int
+    ) -> None:
+        """Replace a retained source through an upload session, fragment by fragment."""
+        target = f"{vault_id}/{source_path}"
         resp = self._request(
-            "PUT",
-            self._content_url(vault_id, *source_path.split("/")),
-            content=data,
-            headers={"Content-Type": "application/octet-stream"},
+            "POST",
+            f"{self._item_url(vault_id, *source_path.split('/'))}:/createUploadSession",
+            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
         )
         if resp.status_code >= 400:
-            self._fail(resp, "write source", f"{vault_id}/{source_path}")
+            self._fail(resp, "write source", target)
+        upload_url = resp.json()["uploadUrl"]
+        try:
+            for start in range(0, size, _UPLOAD_FRAGMENT_BYTES):
+                end = min(start + _UPLOAD_FRAGMENT_BYTES, size)
+                resp = self._put_fragment(upload_url, source_file, start, end, size)
+                if resp.status_code >= 400:
+                    self._fail(resp, "write source", target)
+                # 202 means the store is waiting for more; 200/201 means it has
+                # committed the item. Each is an error at the other position:
+                # a commit before the last fragment means the store now holds
+                # something that is not the file.
+                completed = resp.status_code in (200, 201)
+                if completed and end < size:
+                    raise RuntimeError(
+                        f"Microsoft Graph write source for {target!r} on site "
+                        f"{self._site_id}/{self._drive_id} completed the upload session "
+                        f"early, after {end} of {size} bytes."
+                    )
+                if not completed and end == size:
+                    raise RuntimeError(
+                        f"Microsoft Graph write source for {target!r} on site "
+                        f"{self._site_id}/{self._drive_id} did not complete the upload "
+                        f"session after the final fragment ({size} bytes): {resp.status_code}."
+                    )
+        except BaseException:
+            self._cancel_upload_session(upload_url)
+            raise
+
+    def _put_fragment(
+        self, upload_url: str, source_file: Path, start: int, end: int, size: int
+    ) -> httpx.Response:
+        """PUT bytes ``[start, end)`` of the file to the session, with one throttle retry.
+
+        No bearer: the session URL is pre-authenticated and Graph answers an
+        ``Authorization`` header on it with 401. The retry re-sends the same
+        range from a fresh read of the file.
+        """
+        headers = {
+            "Content-Length": str(end - start),
+            "Content-Range": f"bytes {start}-{end - 1}/{size}",
+        }
+        for attempt in range(2):
+            resp = self._http.request(
+                "PUT",
+                upload_url,
+                headers=headers,
+                content=_file_range(source_file, start, end - start),
+            )
+            if resp.status_code in _RETRY_STATUSES and attempt == 0:
+                retry_after = resp.headers.get("Retry-After")
+                self._sleep(float(retry_after) if retry_after else 0.0)
+                continue
+            return resp
+        # ``range(2)`` is non-empty, so the loop always returns on the second
+        # attempt; this line is unreachable and only satisfies the type checker.
+        raise RuntimeError("vault-source Graph fragment retry loop produced no response")
+
+    def _cancel_upload_session(self, upload_url: str) -> None:
+        """Best-effort ``DELETE`` of an abandoned session.
+
+        The store expires an abandoned session on its own, so a cancel that
+        fails is not worth reporting -- and must not mask the error that
+        prompted it.
+        """
+        with contextlib.suppress(httpx.HTTPError):
+            self._http.request("DELETE", upload_url)
 
     def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
         """Stream a retained source and return its canonical ``sha256:<hex>``.

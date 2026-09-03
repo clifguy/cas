@@ -8,7 +8,6 @@ three-layer service + router + MCP-tool shape.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -521,12 +520,14 @@ class MaintenanceService:
         fall-through, so the refusal reaches the caller instead of a report
         calling a document fine that cannot be repaired where it sits.
 
-        Where a write does happen, the copy is re-read afterwards and the
-        record's ``stored_content_hash`` follows it only where the store
-        demonstrably rewrote the bytes. That is narrower than "an actual write
-        happened": a store returning what it was handed licenses no update, so
-        bytes that are not this document's leave the recorded mismatch reported
-        rather than adopted. ``record_refreshed`` on the report says which
+        Where a write does happen, the store reports the digest of the copy it
+        now holds -- reading it back only under a binding that may have
+        rewritten the bytes -- and the record's ``stored_content_hash`` follows
+        it only where the store demonstrably rewrote them. That is narrower
+        than "an actual write happened": a store returning what it was handed
+        licenses no update, so bytes that are not this document's leave the
+        recorded mismatch reported rather than adopted. ``record_refreshed`` on
+        the report says which
         happened. It matters under a binding that
         rewrites at rest, where writing the original bytes back produces a
         stored copy that is correct but freshly stamped, and so hashes to
@@ -539,17 +540,17 @@ class MaintenanceService:
             raise RestoreSourceNotAbsoluteError(source)
         if not delivered.is_file():
             raise SourceFileNotFoundError(source)
-        data = delivered.read_bytes()
-        # Digested from the bytes already in hand rather than by re-reading the
-        # file: the write needs them anyway, so a streamed digest of the same
-        # path would be a second pass over the same content.
-        delivered_hash = canonicalize_sha256(hashlib.sha256(data).hexdigest())
+
+        from sage.vault_source_binding import VaultRootEscapeError, hash_file
+
+        # A streamed digest: the target has to be resolved from it before
+        # anything is written, and the write streams the file from its path
+        # again, so at no point does the delivered file need to fit in memory.
+        delivered_hash = hash_file(delivered)
 
         doc, provenance_verified = await self._resolve_restore_target(delivered_hash, document_id)
         storage_root = self._storage_root()
         store = self._vault_source_store()
-
-        from sage.vault_source_binding import VaultRootEscapeError
 
         # The same observation the integrity audit classifies, so the copy the
         # audit reports drifted is the copy this repairs, and no other.
@@ -571,7 +572,9 @@ class MaintenanceService:
             )
 
         try:
-            store.write_source(self._vault_id, storage_root, doc.source_path, data)
+            restored_hash = store.write_source(
+                self._vault_id, storage_root, doc.source_path, delivered
+            )
         except VaultRootEscapeError as exc:
             # The binding refuses a destination it cannot write at the named
             # path. Translated here rather than left to propagate: it is a
@@ -580,7 +583,6 @@ class MaintenanceService:
             # none. The binding's own message travels with it -- it has several
             # distinct causes and only it knows which one fired.
             raise VaultSourcePathRefusedError(doc.source_path, str(exc)) from exc
-        restored_hash = store.hash_source(self._vault_id, storage_root, doc.source_path)
         record_refreshed = restored_hash != expected and restored_hash != delivered_hash
         if record_refreshed:
             # Refreshed only when the *store* changed the bytes -- the sole

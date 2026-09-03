@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.18",
+      "version": "0.19",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.61",
+  "substrate_version": "1.62",
   "revision_history": [
+    {
+      "version": "1.62",
+      "date": "2026-09-02",
+      "summary": "Stream a source-file restore instead of holding the delivered file whole and re-reading the copy. sage_core_api.openapi.yaml bumped v0.18->v0.19: the restore operation's description no longer says the copy is re-read after every write -- the store reports the digest of the copy it now holds, reading it back only under a binding that may have rewritten the bytes, and stored_content_hash follows it only where the store demonstrably did. No schema or operation shape changes. Code (not in this spec): the VaultSourceStore port's write_source takes the delivered file's path rather than its bytes and returns the canonical digest of the copy the store holds, on both bindings. The filesystem binding streams the file into place and digests it as it passes -- one read of the source and no read of the destination, since that binding stores what it is handed, so the digest of the bytes in flight is the digest of the copy at rest. The document-store binding streams the file to the store and answers with a streamed re-read of the copy, the one place that read still belongs: the store rewrites Office packages at rest and reports no SHA-256 of its own, so what it holds cannot be known from what was sent. Its Graph client's upload_source now streams from a path: a single fixed-length PUT at or below 10 MiB (Graph's simple upload accepts up to 250 MB; 10 MiB is where its documentation recommends a resumable transfer) and an upload session above it -- createUploadSession asking to replace the item, then sequential 10 MiB fragments (32 times the 320 KiB quantum Graph requires, under its 60 MiB per-request ceiling) PUT to the session URL with Content-Range and no bearer, one throttle retry per fragment re-sending the same range, and a refused fragment or a premature commit cancelling the session and failing closed. That lifts the document store's upload ceiling from the restore path, and the Graph module's docstring no longer records upload sessions as deferred. retain_source on the document-store binding sheds its own whole-file read as a consequence, with no behavioural change. restore_vault_source_file digests the delivered file in one streamed pass, hands its path to write_source, and takes the as-stored digest from the write instead of a separate hash_source round-trip; the refresh rule is unchanged, so an intact copy is still left alone and stored_content_hash moves only where the store demonstrably rewrote the bytes. Tests: VSBB-068/069/070 (the digest of what was written is returned; the file is streamed with whole-file reads forbidden; one pass over the source and never a read of the destination, by recording every open), VSB-DS-074/075 (the returned digest is what the store holds, diverging from the delivered one on a stamped package, by one streamed re-read and no download; retain_source never materializes the file), VSB-DS-076..082 (a small source is one fixed-length streamed PUT; a large one is a session of exactly ranged, unauthenticated fragments that reassemble to the file; fragment geometry honors the store's rules; a refused fragment cancels the session and fails closed; a throttled fragment is retried once with the same range; a refused session creation sends no bytes; a premature commit is an error), and two service tests (the restore streams the delivered file; the as-stored digest is taken from the write, with the copy hashed once before the write and never after). The seam gate's signature check passes on both bindings with no exemption; the MCP-tool-conformance, typed-alias, router-conformance and published-document gates pass unchanged."
+    },
     {
       "version": "1.61",
       "date": "2026-09-02",

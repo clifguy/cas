@@ -2694,11 +2694,12 @@ def register_sage_tools(
         with the same refusal: the store will not write there, so the repair
         cannot land where the record names. Re-point the path or reconfigure
         the vault, then re-run. Where a write does happen
-        the copy is re-read, and the record's ``stored_content_hash`` follows it
-        only where the store demonstrably rewrote the bytes -- which is what
-        happens under a store that rewrites its copy at rest, where writing the
-        original bytes back yields a correct but freshly rewritten copy. The
-        provenance digest is never touched.
+        the store reports the digest of the copy it now holds, and the record's
+        ``stored_content_hash`` follows it only where the store demonstrably
+        rewrote the bytes -- which is what happens under a store that rewrites
+        its copy at rest, where writing the original bytes back yields a
+        correct but freshly rewritten copy. The provenance digest is never
+        touched.
 
         Two report fields say what the call could and did not establish.
         ``provenance_verified`` is false only for a pinned restore of a document

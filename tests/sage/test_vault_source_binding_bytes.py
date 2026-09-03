@@ -24,7 +24,9 @@ from sage.vault_source_binding import (
     _SOURCE_CHUNK_BYTES,
     FilesystemVaultSourceStore,
     VaultRootEscapeError,
+    hash_file,
 )
+from tests.helpers.bounded_reads import refuse_whole_reads
 
 VID = "vault_x"  # ignored by the filesystem binding; present for signature parity.
 
@@ -261,19 +263,19 @@ def test_vsbb_032_write_source_replaces_bytes_at_the_named_path(store, storage_r
     rel = store.retain_source(VID, storage_root, ext)
     (storage_root / rel).write_bytes(b"drifted out of band")
 
-    store.write_source(VID, storage_root, rel, b"original")
+    store.write_source(VID, storage_root, rel, _external(tmp_path, "restore_copy.md", b"original"))
 
     assert (storage_root / rel).read_bytes() == b"original"
     assert list((storage_root / "imports").glob("x*.md")) == [storage_root / "imports" / "x.md"]
 
 
-def test_vsbb_033_write_source_creates_missing_parents(store, storage_root):
+def test_vsbb_033_write_source_creates_missing_parents(store, storage_root, tmp_path):
     """A named path whose parent directory does not exist yet is written anyway --
     the restore of a copy whose whole tree went missing must not fail on the
     directory."""
     assert not (storage_root / "imports").exists()
 
-    store.write_source(VID, storage_root, "imports/new.md", b"data")
+    store.write_source(VID, storage_root, "imports/new.md", _external(tmp_path, "new.md", b"data"))
 
     assert (storage_root / "imports" / "new.md").read_bytes() == b"data"
 
@@ -290,7 +292,7 @@ def test_vsbb_034_write_source_refuses_to_escape_the_storage_root(store, storage
     assert not outside.exists()
 
     with pytest.raises(VaultRootEscapeError):
-        store.write_source(VID, storage_root, "../escape.md", b"data")
+        store.write_source(VID, storage_root, "../escape.md", _external(tmp_path, "d.md", b"data"))
 
     assert not outside.exists()
 
@@ -311,9 +313,163 @@ def test_vsbb_035_write_source_refuses_an_absolute_path(store, storage_root, tmp
     assert not inside_absolute.exists()
 
     with pytest.raises(VaultRootEscapeError):
-        store.write_source(VID, storage_root, str(inside_absolute), b"data")
+        store.write_source(
+            VID, storage_root, str(inside_absolute), _external(tmp_path, "d.md", b"data")
+        )
 
     assert not inside_absolute.exists()
+
+
+def _varied(length: int) -> bytes:
+    """``length`` bytes with no repeating 64 KiB period, so a chunk boundary
+    error cannot reassemble into the same content by coincidence."""
+    return (bytes(range(256)) * (length // 256 + 1))[:length]
+
+
+def test_vsbb_068_write_source_returns_the_digest_of_what_it_wrote(store, storage_root, tmp_path):
+    """``write_source`` returns the canonical digest of the copy now at the path.
+
+    On this binding the store keeps what it was handed, so the digest is the
+    delivered file's -- and the caller can compare it to the delivered digest
+    without a second read of the destination.
+
+    Anti-coincidental-pass: the destination held *different* bytes before the
+    call, so an implementation returning the digest of what was there fails;
+    the returned value is asserted equal to an independent ``hash_file`` of the
+    destination as well as to the delivered digest, so a value that merely
+    echoed the delivered digest without writing it would fail the first check
+    and a ``None`` return fails both.
+    """
+    ext = _external(tmp_path, "x.md", b"original")
+    rel = store.retain_source(VID, storage_root, ext)
+    (storage_root / rel).write_bytes(b"drifted out of band")
+    delivered = _external(tmp_path, "restore_copy.md", b"original")
+
+    digest = store.write_source(VID, storage_root, rel, delivered)
+
+    assert digest == "sha256:" + hashlib.sha256(b"original").hexdigest()
+    assert digest == hash_file(storage_root / rel)
+
+
+def test_vsbb_069_write_source_streams_the_delivered_file(
+    store, storage_root, tmp_path, monkeypatch
+):
+    """``write_source`` never loads the delivered file whole.
+
+    The file spans several read chunks, and for the duration of the call
+    whole-file reads of it are refused -- ``read_bytes`` outright, and any
+    read on an open handle that is unsized or larger than one chunk -- so the
+    copy can only have been made by bounded-chunk reads.
+
+    Anti-coincidental-pass: an implementation that materializes the file,
+    whether by ``read_bytes`` or by an unsized ``read()`` on the handle it
+    opened, raises inside the call; the bytes are compared after the traps are
+    lifted so the comparison itself cannot be what trips them. The multi-chunk
+    size is what makes a chunked copy that mishandled its boundary visible as a
+    content mismatch.
+    """
+    body = _varied(3 * _SOURCE_CHUNK_BYTES + 1)
+    delivered = _external(tmp_path, "big.bin", body)
+
+    with monkeypatch.context() as m:
+        refuse_whole_reads(m, delivered, _SOURCE_CHUNK_BYTES)
+        digest = store.write_source(VID, storage_root, "imports/big.bin", delivered)
+
+    assert (storage_root / "imports" / "big.bin").read_bytes() == body
+    assert digest == "sha256:" + hashlib.sha256(body).hexdigest()
+
+
+def test_vsbb_070_write_source_makes_one_pass_and_never_rereads_the_destination(
+    store, storage_root, tmp_path, monkeypatch
+):
+    """The delivered file is read once, and the destination is only ever
+    written -- the digest comes from the bytes as they pass, not from a re-read.
+
+    Anti-coincidental-pass: every ``Path.open`` is recorded with its mode. An
+    implementation that hashed the destination after writing (the shape this
+    replaces) opens it for reading; one that hashed the source in a separate
+    pass from copying it opens the source twice. Both are asserted absent. The
+    one open of the source is also bounded, so "one pass" cannot be satisfied
+    by a single unsized ``read()`` that holds the file whole.
+    """
+    delivered = _external(tmp_path, "once.md", b"read me once")
+    dest = storage_root / "imports" / "once.md"
+    opens: list[tuple[Path, str]] = []
+
+    with monkeypatch.context() as m:
+        refuse_whole_reads(m, delivered, _SOURCE_CHUNK_BYTES)
+        bounded_open = Path.open
+
+        def _recording_open(self: Path, mode: str = "r", *args, **kwargs):
+            opens.append((self, mode))
+            return bounded_open(self, mode, *args, **kwargs)
+
+        m.setattr(Path, "open", _recording_open)
+        store.write_source(VID, storage_root, "imports/once.md", delivered)
+
+    source_reads = [m for p, m in opens if p.resolve() == delivered.resolve() and m.startswith("r")]
+    dest_reads = [m for p, m in opens if p.resolve() == dest.resolve() and m.startswith("r")]
+    assert source_reads == ["rb"], f"the delivered file must be read exactly once, saw {opens}"
+    assert dest_reads == [], f"the destination must never be re-read, saw {opens}"
+
+
+def test_vsbb_071_write_source_refuses_the_retained_copy_as_its_own_source(
+    store, storage_root, tmp_path
+):
+    """A delivered path that *is* the retained copy is refused, and the copy is
+    left exactly as it was.
+
+    The streaming write opens its destination for writing before it has read
+    the source; on a shared inode that truncates the copy to nothing before the
+    first chunk is read. Refusing the input is the only safe answer -- there
+    are no bytes anywhere else to restore from.
+
+    Anti-coincidental-pass: the bytes *and* the modification time are asserted
+    unchanged. An unguarded write empties the file and returns the empty
+    digest; a guard that read the source whole first and then wrote it back
+    would leave the bytes equal but move the mtime.
+    """
+    ext = _external(tmp_path, "x.md", b"the retained copy")
+    rel = store.retain_source(VID, storage_root, ext)
+    copy = storage_root / rel
+    mtime_before = copy.stat().st_mtime_ns
+
+    with pytest.raises(VaultRootEscapeError, match="retained copy itself"):
+        store.write_source(VID, storage_root, rel, copy)
+
+    assert copy.read_bytes() == b"the retained copy"
+    assert copy.stat().st_mtime_ns == mtime_before
+
+
+def test_vsbb_072_write_source_refuses_a_link_to_the_retained_copy(store, storage_root, tmp_path):
+    """A delivered path that is a link to the retained copy -- symbolic or
+    hard -- is refused on the same grounds: it names the same inode, however
+    it is spelled.
+
+    Anti-coincidental-pass: both links sit *outside* the vault tree, so a guard
+    comparing spellings accepts either and the write truncates the copy
+    through the link. The hard link is the case that separates an inode
+    comparison from a resolved-path one: resolving a hard link yields its own
+    path, not the copy's, so a ``resolve()``-equality guard passes the symlink
+    case and still truncates the copy through the hard link. The bytes are
+    asserted intact after each.
+    """
+    ext = _external(tmp_path, "x.md", b"the retained copy")
+    rel = store.retain_source(VID, storage_root, ext)
+    copy = storage_root / rel
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    soft = elsewhere / "soft.md"
+    soft.symlink_to(copy)
+    hard = elsewhere / "hard.md"
+    os.link(copy, hard)
+    assert soft.resolve() == copy.resolve()
+    assert hard.resolve() != copy.resolve() and hard.stat().st_ino == copy.stat().st_ino
+
+    for alias in (soft, hard):
+        with pytest.raises(VaultRootEscapeError, match="retained copy itself"):
+            store.write_source(VID, storage_root, rel, alias)
+        assert copy.read_bytes() == b"the retained copy"
 
 
 def test_vsbb_037_retain_source_refuses_a_dangling_symlinked_destination(
@@ -495,7 +651,9 @@ def test_vsbb_036_write_source_refuses_a_symlinked_destination(store, storage_ro
     link.symlink_to(victim)
 
     with pytest.raises(VaultRootEscapeError):
-        store.write_source(VID, storage_root, "imports/link.md", b"ATTACKER BYTES")
+        store.write_source(
+            VID, storage_root, "imports/link.md", _external(tmp_path, "a.md", b"ATTACKER BYTES")
+        )
 
     assert victim.read_bytes() == b"VICTIM ORIGINAL", "the link's target must be untouched"
     assert link.is_symlink()
@@ -588,7 +746,7 @@ def test_vsbb_054_retain_source_refuses_a_directory_at_the_disambiguated_path(
     assert (imports / "note.md").read_bytes() == b"AN ORDINARY COLLISION"
 
 
-def test_vsbb_055_write_source_refuses_a_directory_at_the_named_path(store, storage_root):
+def test_vsbb_055_write_source_refuses_a_directory_at_the_named_path(store, storage_root, tmp_path):
     """A directory at the path a repair names is refused in the binding's own
     vocabulary rather than escaping as the bare ``IsADirectoryError`` of the
     write, and the refusal names the vault-relative path.
@@ -605,7 +763,7 @@ def test_vsbb_055_write_source_refuses_a_directory_at_the_named_path(store, stor
     squatter.mkdir(parents=True)
 
     with pytest.raises(VaultRootEscapeError) as excinfo:
-        store.write_source(VID, storage_root, "imports/doc.md", b"x")
+        store.write_source(VID, storage_root, "imports/doc.md", _external(tmp_path, "x.md", b"x"))
 
     message = str(excinfo.value)
     assert "imports/doc.md" in message
@@ -613,7 +771,9 @@ def test_vsbb_055_write_source_refuses_a_directory_at_the_named_path(store, stor
     assert list(squatter.iterdir()) == [], "nothing may be written into the directory"
 
 
-def test_vsbb_056_write_source_refuses_a_file_where_a_parent_directory_belongs(store, storage_root):
+def test_vsbb_056_write_source_refuses_a_file_where_a_parent_directory_belongs(
+    store, storage_root, tmp_path
+):
     """A regular file sitting where the named path's parent directory belongs is
     refused rather than escaping as the bare ``FileExistsError`` of the parent
     ``mkdir``.
@@ -628,7 +788,7 @@ def test_vsbb_056_write_source_refuses_a_file_where_a_parent_directory_belongs(s
     squatter.write_bytes(b"NOT A DIRECTORY")
 
     with pytest.raises(VaultRootEscapeError):
-        store.write_source(VID, storage_root, "imports/doc.md", b"x")
+        store.write_source(VID, storage_root, "imports/doc.md", _external(tmp_path, "x.md", b"x"))
 
     assert squatter.read_bytes() == b"NOT A DIRECTORY"
 
@@ -722,7 +882,9 @@ def test_vsbb_059_paths_the_binding_itself_produced_are_never_symlinked(
     """
     ext = _external(tmp_path, "retained.md", b"copied in")
     retained_rel = store.retain_source(VID, storage_root, ext)
-    store.write_source(VID, storage_root, "imports/written.md", b"put here")
+    store.write_source(
+        VID, storage_root, "imports/written.md", _external(tmp_path, "w.md", b"put here")
+    )
 
     assert store.source_is_symlink(VID, storage_root, retained_rel) is False
     assert store.source_is_symlink(VID, storage_root, "imports/written.md") is False
@@ -839,7 +1001,9 @@ def test_vsbb_064_paths_the_binding_itself_produced_are_never_out_of_root(
     """
     ext = _external(tmp_path, "retained.md", b"copied in")
     retained_rel = store.retain_source(VID, storage_root, ext)
-    store.write_source(VID, storage_root, "imports/written.md", b"put here")
+    store.write_source(
+        VID, storage_root, "imports/written.md", _external(tmp_path, "w.md", b"put here")
+    )
 
     assert store.source_is_out_of_root(VID, storage_root, retained_rel) is False
     assert store.source_is_out_of_root(VID, storage_root, "imports/written.md") is False
@@ -894,6 +1058,7 @@ def test_vsbb_066_out_of_root_agrees_with_what_write_source_refuses(store, stora
     inside.mkdir()
     (storage_root / "alias").symlink_to(inside)
 
+    probe = _external(tmp_path, "probe.md", b"probe")
     for rel in (
         "imports/plain.md",
         "alias/through_an_in_root_link.md",
@@ -903,7 +1068,7 @@ def test_vsbb_066_out_of_root_agrees_with_what_write_source_refuses(store, stora
     ):
         refused = False
         try:
-            store.write_source(VID, storage_root, rel, b"probe")
+            store.write_source(VID, storage_root, rel, probe)
         except VaultRootEscapeError:
             refused = True
         assert store.source_is_out_of_root(VID, storage_root, rel) is refused, (
