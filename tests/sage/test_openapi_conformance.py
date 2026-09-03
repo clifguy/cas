@@ -723,6 +723,27 @@ def test_summary_event_errors_items_reference_batch_ingest_file_error(
     assert properties["detail"].get("type") == "object"
 
 
+@pytest.mark.parametrize("spec_fixture", ["sage_core_spec", "cas_app_spec"])
+def test_progress_event_file_index_is_bounded_like_the_error_entrys(
+    request: pytest.FixtureRequest, spec_fixture: str
+):
+    """``ProgressEvent.file_index`` and ``BatchIngestFileError.file_index``
+    are one concept -- the file's zero-based position in the batch -- and the
+    two declarations carry the same lower bound in both specs.
+
+    The Pydantic side expresses the shared shape through one alias; the YAML
+    has no alias mechanism, so parity there is only what this test pins.
+    """
+    spec = request.getfixturevalue(spec_fixture)
+    assert spec is not None, f"{spec_fixture} is missing"
+    schemas = spec["components"]["schemas"]
+    progress = schemas["ProgressEvent"]["properties"]["file_index"]
+    entry = schemas["BatchIngestFileError"]["properties"]["file_index"]
+    assert progress.get("type") == "integer"
+    assert progress.get("minimum") == 0, f"{spec_fixture}: ProgressEvent.file_index is unbounded"
+    assert progress.get("minimum") == entry.get("minimum")
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Every public Pydantic field in sage.models.schemas has a description
 # ---------------------------------------------------------------------------

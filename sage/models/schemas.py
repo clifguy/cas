@@ -259,6 +259,11 @@ def _validate_function_id(v: str) -> str:
 
 FunctionIdStr = Annotated[str, AfterValidator(_validate_function_id)]
 
+# A file's zero-based position in a batch ingest. One shape declared once:
+# the progress events and the summary's per-file error entries both carry
+# it, and they must agree on its bound.
+BatchFileIndex = Annotated[int, Field(ge=0)]
+
 
 # ---------------------------------------------------------------------------
 # Shared response primitives
@@ -4407,7 +4412,7 @@ class ProgressEvent(BaseModel):
     event_type: Literal["progress"] = Field(
         description="Discriminator for the SSE event payload variant; always 'progress'.",
     )
-    file_index: int = Field(description="Zero-based index of this file in the batch.")
+    file_index: BatchFileIndex = Field(description="Zero-based index of this file in the batch.")
     total_files: int = Field(description="Total file count in the batch.")
     filename: str = Field(description="Filename this progress event refers to.")
     stage: Literal["projection"] = Field(
@@ -4484,8 +4489,7 @@ class BatchIngestFileError(BaseModel):
     coincide, as they do for two same-named uploads.
     """
 
-    file_index: int = Field(
-        ge=0,
+    file_index: BatchFileIndex = Field(
         description=(
             "Zero-based position of the file in the batch, the same index the "
             "`progress` events report. Distinguishes two failures whose "

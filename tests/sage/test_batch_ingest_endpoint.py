@@ -621,13 +621,16 @@ async def test_b10_same_named_uploads_each_ingest_from_their_own_bytes(batch_app
 
 async def test_b11_same_named_uploads_keep_the_parsed_stem_and_leak_no_separator(batch_app):
     """Whatever keeps two same-named parts apart in staging stays out of the
-    vault: both landed documents carry the original stem under ``imports/``,
-    and neither path shows a staging segment.
+    vault: the first part is retained at exactly the path a single upload of
+    that name lands at, and the second at retention's own content-hash
+    disambiguation of it.
 
-    Anti-coincidental-pass: a positional directory leaking into the retained
-    path would match the bare-integer-segment pattern; the two paths must
-    differ (retention's own content-hash disambiguation), which a lost part
-    -- one document -- cannot satisfy.
+    Anti-coincidental-pass: the retained paths are pinned to their exact
+    forms rather than to the absence of one spelling of a leak, so any
+    staging segment surviving into retention -- numeric, prefixed, or a
+    suffix on the basename -- fails the equality or the pattern; a lost
+    part (one document) fails the count. B3 establishes the single-upload
+    form the first equality assumes.
     """
     app, vault_id, _config = batch_app
     services: SAGEServices = app.state.vault_registry[vault_id]
@@ -646,31 +649,36 @@ async def test_b11_same_named_uploads_keep_the_parsed_stem_and_leak_no_separator
     completed = _completed_by_index(_parse_sse_events(resp.text))
     assert sorted(completed) == [0, 1], completed
 
-    paths = []
-    for index in (0, 1):
-        doc = await services.graph_store.get_document(completed[index]["document_id"])
-        assert "report_v2" in doc.source_path, doc.source_path
-        assert doc.source_path.startswith("imports/"), doc.source_path
-        assert re.search(r"(^|/)\d+/", doc.source_path) is None, doc.source_path
-        assert "sage-batch-ingest-" not in doc.source_path
-        paths.append(doc.source_path)
-    assert paths[0] != paths[1], paths
+    first = await services.graph_store.get_document(completed[0]["document_id"])
+    second = await services.graph_store.get_document(completed[1]["document_id"])
+    assert first.source_path == "imports/report_v2.md", first.source_path
+    assert re.fullmatch(r"imports/report_v2_[0-9a-f]{8}\.md", second.source_path), (
+        second.source_path
+    )
+    for path in (first.source_path, second.source_path):
+        assert "sage-batch-ingest-" not in path
 
 
 async def test_b12_failed_same_named_part_is_identified_by_file_index(batch_app):
-    """When two parts share a filename, the summary entry for the one that
-    failed names its position in the batch, the same ``file_index`` the
-    progress events report -- the only field that tells the two apart, since
-    on this leg ``filename`` and ``source_path`` are both the upload's name.
+    """When several parts share a filename, each failed part's summary entry
+    names its position in the batch, the same ``file_index`` the progress
+    events report -- the only field that tells them apart, since on this leg
+    ``filename`` and ``source_path`` are both the upload's name.
 
-    Anti-coincidental-pass: the failing part is the second one, so an index
-    hard-coded to zero, or taken from the entry's ordinal among the errors,
-    reports 0 and fails the equality; the failed progress event's own index
-    is the reference.
+    Anti-coincidental-pass: two same-named parts fail, at positions 1 and 2,
+    so the summary holds two entries identical in every field but the
+    index; an index hard-coded to zero reports ``[0, 0]`` and one taken from
+    the entry's ordinal among the errors reports ``[0, 1]``, and both fail
+    the equality against the failed progress events' own indices. The
+    equality-after-drop assertion pins that nothing else separates them.
     """
     app, vault_id, _config = batch_app
     metadata = {
-        "files": [{"source_type": "markdown"}, {"source_type": "not_a_real_adapter"}],
+        "files": [
+            {"source_type": "markdown"},
+            {"source_type": "not_a_real_adapter"},
+            {"source_type": "not_a_real_adapter"},
+        ],
     }
     async with _client(app) as client:
         resp = await client.post(
@@ -678,21 +686,24 @@ async def test_b12_failed_same_named_part_is_identified_by_file_index(batch_app)
             files=[
                 _md_part("twin.md", b"# Twin\n\nThis one ingests."),
                 _md_part("twin.md", b"# Twin\n\nThis one fails."),
+                _md_part("twin.md", b"# Twin\n\nSo does this one."),
             ],
             data={"metadata": json.dumps(metadata)},
         )
     assert resp.status_code == 200, resp.text
     events = _parse_sse_events(resp.text)
     failed = [e for e in events if e["event_type"] == "progress" and e["status"] == "failed"]
-    assert [e["file_index"] for e in failed] == [1], failed
+    assert [e["file_index"] for e in failed] == [1, 2], failed
     assert sorted(_completed_by_index(events)) == [0]
 
     summary = next(e for e in events if e["event_type"] == "summary")
-    assert summary["error_count"] == 1, summary
-    (entry,) = summary["errors"]
-    assert entry["filename"] == "twin.md"
-    assert entry["source_path"] == "twin.md"
-    assert entry["file_index"] == failed[0]["file_index"] == 1, entry
+    assert summary["error_count"] == 2, summary
+    entries = summary["errors"]
+    assert [e["file_index"] for e in entries] == [e["file_index"] for e in failed] == [1, 2]
+    assert [e["filename"] for e in entries] == ["twin.md", "twin.md"]
+    assert [e["source_path"] for e in entries] == ["twin.md", "twin.md"]
+    without_index = [{k: v for k, v in e.items() if k != "file_index"} for e in entries]
+    assert without_index[0] == without_index[1], without_index
 
 
 async def test_b13_stage_writes_same_named_parts_to_distinct_paths(monkeypatch):
@@ -730,3 +741,43 @@ async def test_b13_stage_writes_same_named_parts_to_distinct_paths(monkeypatch):
     assert seen == [("dup.md", b"zero", "dup.md"), ("dup.md", b"one", "dup.md")]
     assert len(roots) == 1, roots
     assert not os.path.exists(next(iter(roots)))
+
+
+async def test_b14_degenerate_upload_names_stage_under_a_synthetic_basename(monkeypatch):
+    """A part whose filename reduces to no usable basename -- ``"."``,
+    ``".."``, or the empty string -- is staged under a synthetic name, each
+    part holding its own bytes, while the caller's own spelling is what a
+    refusal would name back.
+
+    Anti-coincidental-pass: staging under the bare ``Path(name).name`` makes
+    ``"."`` resolve to the part's staging directory itself, so the write
+    raises ``IsADirectoryError`` before any assertion runs; ``".."`` keeps
+    its name and writes to the staging root, failing the basename equality.
+    The bytes are read inside the patched consumer, so the three parts must
+    have landed in three distinct files.
+    """
+    seen: list[tuple[str, bytes, str | None]] = []
+
+    async def fake_stream(descriptors, vault_services, infer_edges=True, needs_review=True):
+        for fd in descriptors:
+            staged = Path(fd.file_path)
+            seen.append((staged.name, staged.read_bytes(), fd.declared_source))
+        yield "data: {}\n\n"
+
+    monkeypatch.setattr(batch_ingest_stream, "batch_ingest_sse_stream", fake_stream)
+    uploads = [
+        UploadedFile(filename=".", content=b"dot", source_type="markdown"),
+        UploadedFile(filename="..", content=b"dotdot", source_type="markdown"),
+        UploadedFile(filename="", content=b"empty", source_type="markdown"),
+    ]
+
+    chunks = [
+        chunk async for chunk in stream_uploaded_batch_ingest(uploads, vault_services=object())
+    ]
+
+    assert chunks == ["data: {}\n\n"]
+    assert seen == [
+        ("upload_0", b"dot", "."),
+        ("upload_1", b"dotdot", ".."),
+        ("upload_2", b"empty", "upload_2"),
+    ]

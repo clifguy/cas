@@ -809,8 +809,12 @@ class TestPerFileIngestion:
         three-file batch, so an index taken from the entry's ordinal among
         the errors reports ``[0, 1]``, and a constant reports two equal
         values; both fail the equality against the callback's indices. All
-        three files share a basename, so nothing but the index separates
-        the two entries.
+        three descriptors declare the same caller spelling, ``same.md``, on
+        top of sharing a basename -- an upload's declared source is just its
+        filename -- so the two entries are identical once ``file_index`` is
+        dropped, which the equality-after-drop assertion pins: distinct
+        ``file_path``s alone would already separate them at ``source_path``
+        and prove nothing about the index.
         """
         services = _make_services()
         call_idx = 0
@@ -819,7 +823,7 @@ class TestPerFileIngestion:
             nonlocal call_idx
             call_idx += 1
             if call_idx in (1, 3):
-                raise RuntimeError(f"boom {call_idx}")
+                raise RuntimeError("boom")
             return _make_ingest_result(f"doc-{call_idx}")
 
         services.ingestion_service.ingest = AsyncMock(side_effect=failing_ingest)
@@ -831,9 +835,12 @@ class TestPerFileIngestion:
         svc = BatchIngestService()
         result = await svc.run(
             files=[
-                FileDescriptor(file_path="/srv/stage/0/same.md", source_type="markdown"),
-                FileDescriptor(file_path="/srv/stage/1/same.md", source_type="markdown"),
-                FileDescriptor(file_path="/srv/stage/2/same.md", source_type="markdown"),
+                FileDescriptor(
+                    file_path=f"/srv/stage/{i}/same.md",
+                    source_type="markdown",
+                    declared_source="same.md",
+                )
+                for i in range(3)
             ],
             vault_services=services,
             infer_edges=False,
@@ -844,6 +851,9 @@ class TestPerFileIngestion:
         assert reported == [0, 2]
         assert [e["file_index"] for e in result.errors] == reported
         assert [e["filename"] for e in result.errors] == ["same.md", "same.md"]
+        assert [e["source_path"] for e in result.errors] == ["same.md", "same.md"]
+        without_index = [{k: v for k, v in e.items() if k != "file_index"} for e in result.errors]
+        assert without_index[0] == without_index[1], without_index
 
     @pytest.mark.asyncio
     async def test_bis_011_abstract_tracking(self):

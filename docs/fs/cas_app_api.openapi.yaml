@@ -499,6 +499,7 @@ components:
           description: Discriminator for the SSE event payload variant; always 'progress'.
         file_index:
           type: integer
+          minimum: 0
           description: Zero-based index of this file in the batch.
         total_files:
           type: integer

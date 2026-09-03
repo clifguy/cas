@@ -32,6 +32,7 @@ from sage.services.batch_ingest import (
     IngestSummary,
     ParsedMetadataInput,
 )
+from sage.services.transfer import staging_name
 
 logger = logging.getLogger(__name__)
 
@@ -214,16 +215,19 @@ async def stream_uploaded_batch_ingest(
     the later one replace the earlier one's bytes before either is ingested.
     The separator is a directory rather than a change to the basename, so
     what the parser and the vault's retention see is still the upload's own
-    name. A per-file failure names the file by the upload's own filename,
-    not by the staging path it was written to. The staging directory is
-    removed once the stream is exhausted.
+    name. A filename that reduces to no usable basename (``"."``, ``".."``,
+    or nothing at all) is staged under a synthetic name, the same reduction
+    the token leg applies, rather than resolving to the staging directory
+    itself and failing mid-stream. A per-file failure names the file by the
+    upload's own filename, not by the staging path it was written to. The
+    staging directory is removed once the stream is exhausted.
     """
     staging_dir = Path(tempfile.mkdtemp(prefix="sage-batch-ingest-"))
     try:
         descriptors: list[FileDescriptor] = []
         for index, upload in enumerate(uploads):
             declared = upload.filename or f"upload_{index}"
-            safe_name = Path(declared).name
+            safe_name = staging_name(declared, f"upload_{index}")
             part_dir = staging_dir / str(index)
             part_dir.mkdir()
             dest = part_dir / safe_name
