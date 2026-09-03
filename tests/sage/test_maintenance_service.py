@@ -2264,6 +2264,42 @@ async def test_restore_source_file_takes_the_stored_digest_from_the_write(
     assert hash_calls == [sp], "the copy is hashed once, before the write, and never after it"
 
 
+async def test_restore_source_file_refuses_the_retained_copy_as_its_own_source(
+    graph_store, minimal_config, stub_content_store, tmp_path
+):
+    """A restore whose delivered path is the retained copy itself is refused
+    as a typed path refusal, and neither the copy nor the record is touched.
+
+    The reach that makes this matter: a *pinned* restore of a record carrying
+    no stored digest skips the provenance check, so nothing upstream of the
+    write questions the input, and the write is where the refusal has to live.
+
+    Anti-coincidental-pass: the record is pre-split (no stored digest) and its
+    provenance names bytes the copy does not hold, so the observation reads
+    the copy as drifted and the call reaches the write -- the rival, a write
+    that truncates the copy through its own source, returns ``restored`` with
+    the empty-file digest and refreshes the record to it. The typed error,
+    the intact bytes, and the still-null stored digest each exclude it.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_self.md"
+    drifted = b"drifted bytes nobody else claims"
+    on_disk = _write_source(minimal_config, sp, drifted)
+    await gs.insert_document(
+        _src_doc("deadbeef_self", _sha256_of(b"the bytes the record was made from"), source_path=sp)
+    )
+
+    with pytest.raises(VaultSourcePathRefusedError) as excinfo:
+        await maint.restore_vault_source_file(str(on_disk), document_id="deadbeef_self")
+
+    assert excinfo.value.detail == {"source_path": sp}
+    assert on_disk.read_bytes() == drifted
+    doc = await gs.get_document("deadbeef_self")
+    assert doc.stored_content_hash is None
+
+
 async def test_audit_and_restore_agree_on_out_of_root_through_one_observation(
     graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
 ):

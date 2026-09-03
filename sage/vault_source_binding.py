@@ -377,7 +377,11 @@ class VaultSourceStore(ABC):
         store may rewrite the copy at rest reads the copy back to answer, since
         what it holds cannot then be known from what was sent. Either way the
         caller learns whether the store changed the bytes by comparing the
-        returned digest to the one it delivered, with no read of its own.
+        returned digest to the one it delivered, with no read of its own. That
+        comparison carries its meaning only for a delivered file that is
+        quiescent between the caller's digest and this write: the two are
+        separate passes over the caller's path, so a file changing underneath
+        them reads as a store rewrite.
 
         The complement of :meth:`retain_source`, and deliberately not a mode of
         it. ``retain_source`` answers "find a home for this source" and owns the
@@ -902,13 +906,26 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # root: the caller names a vault-relative path, and the guarantee owed is
         # that it stays inside the tree this vault's sources live in.
         dest = resolve_and_assert_within_root(dest, storage_root, display=source_path)
+        # A delivered file that *is* the retained copy -- its own path, or a
+        # link to it -- is refused before anything is opened. The streaming
+        # write below truncates the destination before it has read the source,
+        # and on a shared inode that would empty the copy and report the empty
+        # digest as what was written; there are no bytes anywhere else to
+        # recover it from. Compared by inode, not by spelling, so a link
+        # outside the tree pointing at the copy is caught with it.
+        if dest.exists() and source_file.exists() and os.path.samefile(source_file, dest):
+            raise VaultRootEscapeError(
+                f"refusing to write {source_path!r}: the delivered file is the "
+                "retained copy itself."
+            )
         _ensure_directory(dest.parent, str(PurePosixPath(source_path).parent))
         # One pass: the delivered file is streamed into place and digested as
         # it goes by, so it is never held whole and the destination is never
         # read back. This binding stores what it is handed, so the digest of
         # the bytes in flight is the digest of the copy at rest. The source is
         # opened before the destination is truncated, so a missing source
-        # leaves the existing copy as it was.
+        # leaves the existing copy as it was -- and a source that is the
+        # destination never reaches this point at all.
         digest = hashlib.sha256()
         with source_file.open("rb") as incoming, dest.open("wb") as outgoing:
             for chunk in iter(lambda: incoming.read(_SOURCE_CHUNK_BYTES), b""):

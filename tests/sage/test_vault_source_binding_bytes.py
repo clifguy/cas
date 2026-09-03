@@ -413,6 +413,65 @@ def test_vsbb_070_write_source_makes_one_pass_and_never_rereads_the_destination(
     assert dest_reads == [], f"the destination must never be re-read, saw {opens}"
 
 
+def test_vsbb_071_write_source_refuses_the_retained_copy_as_its_own_source(
+    store, storage_root, tmp_path
+):
+    """A delivered path that *is* the retained copy is refused, and the copy is
+    left exactly as it was.
+
+    The streaming write opens its destination for writing before it has read
+    the source; on a shared inode that truncates the copy to nothing before the
+    first chunk is read. Refusing the input is the only safe answer -- there
+    are no bytes anywhere else to restore from.
+
+    Anti-coincidental-pass: the bytes *and* the modification time are asserted
+    unchanged. An unguarded write empties the file and returns the empty
+    digest; a guard that read the source whole first and then wrote it back
+    would leave the bytes equal but move the mtime.
+    """
+    ext = _external(tmp_path, "x.md", b"the retained copy")
+    rel = store.retain_source(VID, storage_root, ext)
+    copy = storage_root / rel
+    mtime_before = copy.stat().st_mtime_ns
+
+    with pytest.raises(VaultRootEscapeError, match="retained copy itself"):
+        store.write_source(VID, storage_root, rel, copy)
+
+    assert copy.read_bytes() == b"the retained copy"
+    assert copy.stat().st_mtime_ns == mtime_before
+
+
+def test_vsbb_072_write_source_refuses_a_link_to_the_retained_copy(store, storage_root, tmp_path):
+    """A delivered path that is a link to the retained copy -- symbolic or
+    hard -- is refused on the same grounds: it names the same inode, however
+    it is spelled.
+
+    Anti-coincidental-pass: both links sit *outside* the vault tree, so a guard
+    comparing spellings accepts either and the write truncates the copy
+    through the link. The hard link is the case that separates an inode
+    comparison from a resolved-path one: resolving a hard link yields its own
+    path, not the copy's, so a ``resolve()``-equality guard passes the symlink
+    case and still truncates the copy through the hard link. The bytes are
+    asserted intact after each.
+    """
+    ext = _external(tmp_path, "x.md", b"the retained copy")
+    rel = store.retain_source(VID, storage_root, ext)
+    copy = storage_root / rel
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    soft = elsewhere / "soft.md"
+    soft.symlink_to(copy)
+    hard = elsewhere / "hard.md"
+    os.link(copy, hard)
+    assert soft.resolve() == copy.resolve()
+    assert hard.resolve() != copy.resolve() and hard.stat().st_ino == copy.stat().st_ino
+
+    for alias in (soft, hard):
+        with pytest.raises(VaultRootEscapeError, match="retained copy itself"):
+            store.write_source(VID, storage_root, rel, alias)
+        assert copy.read_bytes() == b"the retained copy"
+
+
 def test_vsbb_037_retain_source_refuses_a_dangling_symlinked_destination(
     store, storage_root, tmp_path
 ):

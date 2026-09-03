@@ -1520,3 +1520,86 @@ def test_vsb_ds_082_premature_completion_is_an_error(tmp_path, monkeypatch):
         client.upload_source("vault_a", "imports/big.bin", source)
 
     assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)
+
+
+def test_vsb_ds_083_small_source_put_is_retried_once_with_a_fresh_body(tmp_path):
+    """A 429 on the single-request upload is retried once, honoring
+    ``Retry-After``, and the retry carries the whole file again.
+
+    Anti-coincidental-pass: the retried request's body is asserted equal to
+    the file, so a retry that replayed the first attempt's exhausted generator
+    (an empty second body) fails; its ``Content-Length`` is asserted too, so a
+    resend that rebuilt the body but not the fixed-length framing fails;
+    exactly two requests excludes no retry.
+    """
+    body = bytes(range(256)) * 300
+    source = _delivered(tmp_path, "x.bin", body)
+    seen: list[httpx.Request] = []
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request.read()
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(201, json={"id": "item", "size": len(body), "file": {}})
+
+    client = _client(handler, sleep=slept.append)
+    client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert [r.method for r in seen] == ["PUT", "PUT"]
+    assert slept == [0.0]
+    assert seen[1].content == body
+    assert seen[1].headers["content-length"] == str(len(body))
+    assert "transfer-encoding" not in seen[1].headers
+
+
+def test_vsb_ds_084_small_source_put_gives_up_after_one_retry(tmp_path):
+    """A persistent 429 on the single-request upload fails closed naming the
+    status after exactly one retry.
+
+    Anti-coincidental-pass: the request count is the whole claim. A loop that
+    retried without bound never returns to raise; one that dropped its bound
+    but kept its two attempts falls through to a different error, so the
+    ``429`` match fails; no retry gives one request.
+    """
+    source = _delivered(tmp_path, "x.bin", b"payload")
+    seen: list[httpx.Request] = []
+
+    def always_429(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    client = _client(always_429)
+    with pytest.raises(RuntimeError, match=r"write source.*imports/x\.bin.*429"):
+        client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert len(seen) == 2
+
+
+def test_vsb_ds_085_persistently_throttled_fragment_gives_up_after_one_retry_and_cancels(
+    tmp_path, monkeypatch
+):
+    """A fragment the store keeps throttling is re-sent once, then the upload
+    fails closed naming the status and the session is cancelled.
+
+    Anti-coincidental-pass: exactly two PUTs of the same range, then the raise
+    matching ``429`` and a trailing ``DELETE``. An unbounded retry never
+    returns; a bound without the status check raises the wrong error; a
+    give-up that skipped the cancel leaves no ``DELETE``.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+    seen: list[httpx.Request] = []
+
+    def always_throttled(index: int, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    client = _client(_session_handler(seen, fragment_status=always_throttled))
+    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin.*429"):
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    puts = _fragment_puts(seen)
+    assert len(puts) == 2
+    assert puts[0].headers["content-range"] == puts[1].headers["content-range"]
+    assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)
