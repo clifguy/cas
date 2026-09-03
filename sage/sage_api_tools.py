@@ -2689,7 +2689,11 @@ def register_sage_tools(
         *link* is never reported that way, however the bytes behind it hash: it
         is not the copy the record names, and the write is refused
         (``vault_source_path_refused``) rather than landing wherever the link
-        points. Remove the link and re-run. Where a write does happen
+        points. Remove the link and re-run. Nor is a recorded path that
+        resolves *outside* the vault's source tree, for the same reason and
+        with the same refusal: the store will not write there, so the repair
+        cannot land where the record names. Re-point the path or reconfigure
+        the vault, then re-run. Where a write does happen
         the store reports the digest of the copy it now holds, and the record's
         ``stored_content_hash`` follows it only where the store demonstrably
         rewrote the bytes -- which is what happens under a store that rewrites
