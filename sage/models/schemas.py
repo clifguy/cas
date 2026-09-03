@@ -4479,9 +4479,20 @@ class BatchIngestFileError(BaseModel):
     Every entry carries the message-only shape; a failure that was a typed
     SAGE error additionally carries its ``code`` and ``detail``, so a caller
     can branch on the code and read the same payload the single-document
-    ingest surface returns for that error.
+    ingest surface returns for that error. ``file_index`` is the one field
+    that separates two entries whose ``filename`` and ``source_path`` both
+    coincide, as they do for two same-named uploads.
     """
 
+    file_index: int = Field(
+        ge=0,
+        description=(
+            "Zero-based position of the file in the batch, the same index the "
+            "`progress` events report. Distinguishes two failures whose "
+            "`filename` and `source_path` coincide, as two same-named uploads "
+            "do."
+        ),
+    )
     filename: str = Field(
         description="Basename of the file as staged for ingestion.",
     )
@@ -4579,9 +4590,10 @@ class SummaryEvent(BaseModel):
     errors: list[BatchIngestFileError] = Field(
         description=(
             "Per-file error records for files that failed to ingest in this "
-            "batch, one entry per failure; each names the staged filename, "
-            "the file as the caller named it, and the error message, and a "
-            "typed SAGE error additionally carries its code and detail."
+            "batch, one entry per failure; each names the file's position in "
+            "the batch, the staged filename, the file as the caller named it, "
+            "and the error message, and a typed SAGE error additionally "
+            "carries its code and detail."
         ),
     )
     edge_warnings: list[EdgeWarning] | None = Field(

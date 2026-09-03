@@ -464,7 +464,7 @@ IngestRequest.metadata for single-call ingestion with metadata.
   - `abstracts_generated` (integer)
   - `abstracts_deferred` (integer)
   - `error_count` (integer)
-  - `errors` (array of `{ filename, source_path, message }` for any failures;
+  - `errors` (array of `{ file_index, filename, source_path, message }` for any failures;
     a typed SAGE error adds `code` and `detail`)
 
 **Rationale:** The MCP tool returns the same summary shape as the SSE endpoint's
@@ -510,7 +510,7 @@ error and continues with the next file. The batch does not abort.
 
 **Expected:**
 - Returns summary with `error_count: 1`
-- `errors` array contains one entry with filename, the caller's `source_path`, and error message (plus `code`/`detail` when the failure was a typed SAGE error)
+- `errors` array contains one entry with the file's zero-based `file_index`, filename, the caller's `source_path`, and error message (plus `code`/`detail` when the failure was a typed SAGE error)
 - `documents_created.new` reflects the 2 successful files
 - No exception raised
 

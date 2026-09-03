@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -36,7 +37,9 @@ from sage.adapters.stubs import StubContentStore
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_init import SAGEServices
+from sage.services import batch_ingest_stream
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
+from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
 
 
 class _StubOidc:
@@ -553,3 +556,177 @@ async def test_b8_cloud_proxy_forwards_upload_to_batch_endpoint(batch_app):
     doc = await services.graph_store.get_document(completed[0]["document_id"])
     assert doc is not None
     assert "uploaded" in doc.source_path
+
+
+# ---------------------------------------------------------------------------
+# B10-B13 -- same-named uploads stage apart
+# ---------------------------------------------------------------------------
+
+
+def _completed_by_index(events: list[dict]) -> dict[int, dict]:
+    """Map each ``progress/completed`` event to its ``file_index``."""
+    return {
+        e["file_index"]: e
+        for e in events
+        if e["event_type"] == "progress" and e["status"] == "completed"
+    }
+
+
+async def test_b10_same_named_uploads_each_ingest_from_their_own_bytes(batch_app):
+    """Two uploaded parts that share a filename both land, each carrying the
+    provenance hash of its own bytes.
+
+    Staging every part under one directory by basename lets a later
+    same-named part replace an earlier one before either is ingested: one
+    document lands with the last part's bytes, and the lost part is never
+    reported.
+
+    Anti-coincidental-pass: the hash is checked per ``file_index`` against
+    that part's own body, so shared staging -- where index 0's document
+    carries index 1's bytes -- fails on the first part even though two
+    completed events may still be emitted. ``documents_created.new == 2``
+    with distinct ids excludes the two parts collapsing into one document
+    and a version of it.
+    """
+    app, vault_id, _config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    bodies = [b"# Zero\n\nFirst part.", b"# One\n\nSecond part."]
+    metadata = {"files": [{"source_type": "markdown"}, {"source_type": "markdown"}]}
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("dup.md", bodies[0]), _md_part("dup.md", bodies[1])],
+            data={"metadata": json.dumps(metadata)},
+        )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    summary = next(e for e in events if e["event_type"] == "summary")
+    assert summary["error_count"] == 0, summary
+    assert summary["documents_created"]["new"] == 2, summary
+
+    completed = _completed_by_index(events)
+    assert sorted(completed) == [0, 1]
+    ids = {e["document_id"] for e in completed.values()}
+    assert len(ids) == 2, completed
+
+    hashes = []
+    for index, body in enumerate(bodies):
+        doc = await services.graph_store.get_document(completed[index]["document_id"])
+        expected = "sha256:" + hashlib.sha256(body).hexdigest()
+        assert doc.source_content_hash == expected, (index, doc.source_content_hash)
+        hashes.append(doc.source_content_hash)
+    assert hashes[0] != hashes[1]
+
+
+async def test_b11_same_named_uploads_keep_the_parsed_stem_and_leak_no_separator(batch_app):
+    """Whatever keeps two same-named parts apart in staging stays out of the
+    vault: both landed documents carry the original stem under ``imports/``,
+    and neither path shows a staging segment.
+
+    Anti-coincidental-pass: a positional directory leaking into the retained
+    path would match the bare-integer-segment pattern; the two paths must
+    differ (retention's own content-hash disambiguation), which a lost part
+    -- one document -- cannot satisfy.
+    """
+    app, vault_id, _config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    metadata = {"files": [{"source_type": "markdown"}, {"source_type": "markdown"}]}
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("report_v2.md", b"# Report\n\nFirst same-named part."),
+                _md_part("report_v2.md", b"# Report\n\nSecond same-named part, marker."),
+            ],
+            data={"metadata": json.dumps(metadata)},
+        )
+    assert resp.status_code == 200, resp.text
+    completed = _completed_by_index(_parse_sse_events(resp.text))
+    assert sorted(completed) == [0, 1], completed
+
+    paths = []
+    for index in (0, 1):
+        doc = await services.graph_store.get_document(completed[index]["document_id"])
+        assert "report_v2" in doc.source_path, doc.source_path
+        assert doc.source_path.startswith("imports/"), doc.source_path
+        assert re.search(r"(^|/)\d+/", doc.source_path) is None, doc.source_path
+        assert "sage-batch-ingest-" not in doc.source_path
+        paths.append(doc.source_path)
+    assert paths[0] != paths[1], paths
+
+
+async def test_b12_failed_same_named_part_is_identified_by_file_index(batch_app):
+    """When two parts share a filename, the summary entry for the one that
+    failed names its position in the batch, the same ``file_index`` the
+    progress events report -- the only field that tells the two apart, since
+    on this leg ``filename`` and ``source_path`` are both the upload's name.
+
+    Anti-coincidental-pass: the failing part is the second one, so an index
+    hard-coded to zero, or taken from the entry's ordinal among the errors,
+    reports 0 and fails the equality; the failed progress event's own index
+    is the reference.
+    """
+    app, vault_id, _config = batch_app
+    metadata = {
+        "files": [{"source_type": "markdown"}, {"source_type": "not_a_real_adapter"}],
+    }
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("twin.md", b"# Twin\n\nThis one ingests."),
+                _md_part("twin.md", b"# Twin\n\nThis one fails."),
+            ],
+            data={"metadata": json.dumps(metadata)},
+        )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    failed = [e for e in events if e["event_type"] == "progress" and e["status"] == "failed"]
+    assert [e["file_index"] for e in failed] == [1], failed
+    assert sorted(_completed_by_index(events)) == [0]
+
+    summary = next(e for e in events if e["event_type"] == "summary")
+    assert summary["error_count"] == 1, summary
+    (entry,) = summary["errors"]
+    assert entry["filename"] == "twin.md"
+    assert entry["source_path"] == "twin.md"
+    assert entry["file_index"] == failed[0]["file_index"] == 1, entry
+
+
+async def test_b13_stage_writes_same_named_parts_to_distinct_paths(monkeypatch):
+    """The staging step hands the pipeline one path per part, each holding
+    that part's bytes under the upload's own basename, even when two parts
+    share a filename -- and the staging root is gone once the stream is
+    exhausted.
+
+    Anti-coincidental-pass: the bytes and basenames are read inside the
+    patched pipeline consumer, while staging still exists, so a shared
+    staged path reads the second part's bytes for the first descriptor and
+    fails the equality; a basename-suffix scheme fails on the basename.
+    """
+    seen: list[tuple[str, bytes, str | None]] = []
+    roots: set[str] = set()
+
+    async def fake_stream(descriptors, vault_services, infer_edges=True, needs_review=True):
+        for fd in descriptors:
+            staged = Path(fd.file_path)
+            seen.append((staged.name, staged.read_bytes(), fd.declared_source))
+            roots.add(next(p for p in staged.parents if p.name.startswith("sage-batch-ingest-")))
+        yield "data: {}\n\n"
+
+    monkeypatch.setattr(batch_ingest_stream, "batch_ingest_sse_stream", fake_stream)
+    uploads = [
+        UploadedFile(filename="dup.md", content=b"zero", source_type="markdown"),
+        UploadedFile(filename="dup.md", content=b"one", source_type="markdown"),
+    ]
+
+    chunks = [
+        chunk async for chunk in stream_uploaded_batch_ingest(uploads, vault_services=object())
+    ]
+
+    assert chunks == ["data: {}\n\n"]
+    assert seen == [("dup.md", b"zero", "dup.md"), ("dup.md", b"one", "dup.md")]
+    assert len(roots) == 1, roots
+    assert not os.path.exists(next(iter(roots)))

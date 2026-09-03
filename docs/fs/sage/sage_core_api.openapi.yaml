@@ -7220,8 +7220,16 @@ components:
         additionally carries its code and detail, so a caller can branch on
         the code and read the same payload the single-document ingest surface
         returns for that error.
-      required: [filename, source_path, message]
+      required: [file_index, filename, source_path, message]
       properties:
+        file_index:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based position of the file in the batch, the same index the
+            `progress` events report. Distinguishes two failures whose
+            `filename` and `source_path` coincide, as two same-named uploads
+            do.
         filename:
           type: string
           description: Basename of the file as staged for ingestion.
@@ -7324,9 +7332,10 @@ components:
             $ref: "#/components/schemas/BatchIngestFileError"
           description: >-
             Per-file error records for files that failed to ingest in this
-            batch, one entry per failure; each names the staged filename,
-            the file as the caller named it, and the error message, and a
-            typed SAGE error additionally carries its code and detail.
+            batch, one entry per failure; each names the file's position in
+            the batch, the staged filename, the file as the caller named it,
+            and the error message, and a typed SAGE error additionally
+            carries its code and detail.
         edge_warnings:
           type: array
           items:

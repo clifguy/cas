@@ -242,6 +242,8 @@ async def test_vsbb_052_refused_bulk_upload_entry_carries_code_and_the_callers_p
     read and asserted different before redemption consumes the entry, so
     reporting either spelling could not satisfy the assertion by coincidence.
     Against a message-only collection this fails on the missing ``code`` key.
+    The entry also carries the file's position in the batch, the field the
+    token leg shares with the upload leg's summary.
     """
     body = b"# refused bulk upload\n"
     imports = tmp_vault_dir / "sources" / "imports"
@@ -279,6 +281,7 @@ async def test_vsbb_052_refused_bulk_upload_entry_carries_code_and_the_callers_p
     assert entry["detail"] == {"source_path": supplied}
     assert entry["source_path"] == supplied
     assert entry["filename"] == "refused_bulk.md"
+    assert entry["file_index"] == 0
 
 
 async def test_download_round_trip_source(client, tmp_path):

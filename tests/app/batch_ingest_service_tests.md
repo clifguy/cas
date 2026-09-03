@@ -532,3 +532,36 @@ atomic supersede commit is made to fail for the v1 predecessor only.
 a write-time failure previously left the chain shorter because removals
 committed first. Ordering adds first and withholding on failure closes the
 window without a wider transaction over the whole repair group.
+
+### TEST-BIS-024: Error entries carry the file's position in the batch
+
+**Artifact:** `_error_entry` in `sage/services/batch_ingest.py`; `BatchIngestFileError`
+in `sage/models/schemas.py` and both OpenAPI specs
+**Category:** batch_ingest_service
+
+**Decision:** Every per-file error entry carries a required `file_index`, the
+file's zero-based position in the batch — the same index the progress
+callbacks and SSE `progress` events report. The entry's `filename` is the
+staged basename and its `source_path` the caller's own spelling; for an
+upload the caller's spelling is just the filename, so two same-named uploads
+share both, and the position is the only field that tells their entries
+apart. The builder is shared by the SSE upload leg and the MCP token leg, so
+both carry the field.
+
+**Precondition:** Batch of 3 files that all share a basename; files 1 and 3
+raise, file 2 ingests. An `on_file_error` recorder captures the reported
+indices.
+
+**Input:** Three descriptors with identical basenames under distinct staging
+directories, mock ingestion_service raises on files 1 and 3.
+
+**Expected:**
+- `IngestSummary.error_count == 2`
+- `[e["file_index"] for e in errors] == [0, 2]`, equal to the indices the
+  `on_file_error` callback reported
+- Both entries carry the shared basename as `filename`
+
+**Rationale:** Failures at positions 0 and 2 exclude an index taken from the
+entry's ordinal among the errors (which would report `[0, 1]`) and a
+constant. The shared-basename setup proves the position is doing the
+discriminating work, not the filename.

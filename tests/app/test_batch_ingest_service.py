@@ -694,6 +694,7 @@ class TestPerFileIngestion:
         assert result.error_count == 1
         assert result.errors == [
             {
+                "file_index": 1,
                 "filename": "bad.md",
                 "source_path": "/tmp/bad.md",
                 "message": "refused here",
@@ -740,8 +741,14 @@ class TestPerFileIngestion:
 
         assert result.error_count == 2
         assert result.errors == [
-            {"filename": "bad.md", "source_path": "/tmp/bad.md", "message": "boom"},
             {
+                "file_index": 0,
+                "filename": "bad.md",
+                "source_path": "/tmp/bad.md",
+                "message": "boom",
+            },
+            {
+                "file_index": 1,
                 "filename": "typed.md",
                 "source_path": "/tmp/typed.md",
                 "message": "no adapter",
@@ -790,6 +797,53 @@ class TestPerFileIngestion:
         assert calls[1].kwargs["caller_source"] is None
         assert [e["source_path"] for e in result.errors] == [declared, "/srv/local/plain.md"]
         assert [e["filename"] for e in result.errors] == ["note.md", "plain.md"]
+
+    @pytest.mark.asyncio
+    async def test_bis_024_error_entry_carries_the_files_batch_position(self):
+        """Each error entry names the failed file's zero-based position in the
+        batch -- the same index the ``on_file_error`` callback reports -- so a
+        consumer can tell apart two failures whose ``filename`` and
+        ``source_path`` coincide, as two same-named uploads do.
+
+        Anti-coincidental-pass: the failures sit at positions 0 and 2 of a
+        three-file batch, so an index taken from the entry's ordinal among
+        the errors reports ``[0, 1]``, and a constant reports two equal
+        values; both fail the equality against the callback's indices. All
+        three files share a basename, so nothing but the index separates
+        the two entries.
+        """
+        services = _make_services()
+        call_idx = 0
+
+        async def failing_ingest(request, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            if call_idx in (1, 3):
+                raise RuntimeError(f"boom {call_idx}")
+            return _make_ingest_result(f"doc-{call_idx}")
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=failing_ingest)
+        reported: list[int] = []
+
+        async def on_file_error(index, total, filename, message):
+            reported.append(index)
+
+        svc = BatchIngestService()
+        result = await svc.run(
+            files=[
+                FileDescriptor(file_path="/srv/stage/0/same.md", source_type="markdown"),
+                FileDescriptor(file_path="/srv/stage/1/same.md", source_type="markdown"),
+                FileDescriptor(file_path="/srv/stage/2/same.md", source_type="markdown"),
+            ],
+            vault_services=services,
+            infer_edges=False,
+            on_file_error=on_file_error,
+        )
+
+        assert result.error_count == 2
+        assert reported == [0, 2]
+        assert [e["file_index"] for e in result.errors] == reported
+        assert [e["filename"] for e in result.errors] == ["same.md", "same.md"]
 
     @pytest.mark.asyncio
     async def test_bis_011_abstract_tracking(self):

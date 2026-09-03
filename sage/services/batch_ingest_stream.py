@@ -208,9 +208,15 @@ async def stream_uploaded_batch_ingest(
     preserved (so the vault's FilenameParser sees the right stem and
     provenance hashes the uploaded bytes), then ingested through the same
     ``batch_ingest_sse_stream`` the co-located profile drives -- so both
-    profiles produce equivalent summaries. A per-file failure names the file
-    by the upload's own filename, not by the staging path it was written
-    to. The staging directory is removed once the stream is exhausted.
+    profiles produce equivalent summaries. Each part is staged in its own
+    subdirectory, named by its position in the batch: two uploads may share
+    a filename, and staging them side by side under one directory would let
+    the later one replace the earlier one's bytes before either is ingested.
+    The separator is a directory rather than a change to the basename, so
+    what the parser and the vault's retention see is still the upload's own
+    name. A per-file failure names the file by the upload's own filename,
+    not by the staging path it was written to. The staging directory is
+    removed once the stream is exhausted.
     """
     staging_dir = Path(tempfile.mkdtemp(prefix="sage-batch-ingest-"))
     try:
@@ -218,7 +224,9 @@ async def stream_uploaded_batch_ingest(
         for index, upload in enumerate(uploads):
             declared = upload.filename or f"upload_{index}"
             safe_name = Path(declared).name
-            dest = staging_dir / safe_name
+            part_dir = staging_dir / str(index)
+            part_dir.mkdir()
+            dest = part_dir / safe_name
             dest.write_bytes(upload.content)
             descriptors.append(
                 FileDescriptor(

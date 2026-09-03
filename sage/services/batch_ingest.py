@@ -310,7 +310,7 @@ class BatchIngestService:
 
             except Exception as exc:
                 summary.error_count += 1
-                summary.errors.append(_error_entry(filename, fd, exc))
+                summary.errors.append(_error_entry(i, filename, fd, exc))
                 if on_file_error is not None:
                     await on_file_error(i, total, filename, str(exc))
 
@@ -383,7 +383,7 @@ class BatchIngestService:
 # ---------------------------------------------------------------------------
 
 
-def _error_entry(filename: str, fd: FileDescriptor, exc: Exception) -> dict:
+def _error_entry(index: int, filename: str, fd: FileDescriptor, exc: Exception) -> dict:
     """Build one ``IngestSummary.errors`` entry for a failed file.
 
     ``message`` is the error's own text: a ``SAGEError``'s ``message`` field,
@@ -394,9 +394,14 @@ def _error_entry(filename: str, fd: FileDescriptor, exc: Exception) -> dict:
     has no typed detail, and inventing one would misreport it. ``source_path``
     is the caller's own spelling of the file, so two failures that share a
     basename stay distinguishable and a refusal names something the caller
-    can act on.
+    can act on. ``file_index`` is the file's zero-based position in the
+    batch, the same index the progress callbacks report: when the caller's
+    spelling is itself just the filename, as it is for an upload, two
+    same-named files share both ``filename`` and ``source_path``, and the
+    position is what still tells their entries apart.
     """
     entry: dict = {
+        "file_index": index,
         "filename": filename,
         "source_path": fd.declared_source or fd.file_path,
     }
