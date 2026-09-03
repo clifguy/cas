@@ -1217,17 +1217,19 @@ def register_sage_tools(
         Follows edges of a single type in both directions from the
         starting document, collecting all reachable nodes into an
         ordered list with positional metadata (head, tail, query
-        position, linearity). The walk itself is one recursive CTE
+        position, ``is_linear``). The walk itself is one recursive CTE
         whatever the chain length, followed by a query for the
         connecting edges. Designed for version history retrieval on
         supersedes chains but works with any edge type. A
         document with no edges of the requested type returns a
         single-entry chain (the document itself as both head and tail).
 
-        ``linearity`` in the response reports whether the chain is
-        strictly linear, branched (multiple successors), or forks
-        somewhere in the lineage -- relevant when chasing supersedes
-        chains that have not yet been merged.
+        ``is_linear`` is true when the chain is strictly linear: no
+        document shares a predecessor or a successor of the requested
+        edge type with another. False marks a fork or a merge in the
+        lineage -- a data quality problem rather than an ordinary shape,
+        and worth surfacing when chasing supersedes chains that have not
+        yet been reconciled.
 
         Error modes:
         - ``invalid_document_id`` (400): the supplied document_id is not a

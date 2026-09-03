@@ -60,6 +60,17 @@ One known cutoff: ``_STRUCTURAL_HEADER`` treats ``Note:`` as the end of
 a narrative, so a docstring stating a rule under that heading has it
 excluded from comparison. No mapped pair's narrative carries one today.
 
+**What this gate does not check: whether a disclosure is true.** It
+compares two disclosures to each other, so prose that is wrong the same
+way on both surfaces passes clean. A response field named in both
+narratives but absent from the response model is invisible here, as is a
+field described with the wrong arity -- parity holds and only truth
+fails. Prose against the response schema, and prose against the
+implementing code, are different comparisons answering to a different
+oracle; neither is in scope for this module, and a divergence of that
+shape surviving here is the boundary working rather than the gate
+failing.
+
 Enrollment is a ratchet. A pair is either in ``ENROLLED_PAIRS``, where
 the relation is enforced, or in ``UNENROLLED_PAIRS`` with a reason and
 its measured divergence. ``test_unenrolled_pins_are_not_stale`` fails on
