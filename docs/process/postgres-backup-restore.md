@@ -123,6 +123,10 @@ The restore is exercised automatically — a full dump → drop → `pg_restore`
 against a throwaway database — by:
 
 ```sh
-SAGE_TEST_PG_DSN=postgresql:///sage_test \
+SAGE_TEST_PG_DSN=postgresql://localhost:5432/sage_test \
     .venv/bin/pytest tests/sage/test_backup_postgres_roundtrip.py -v
 ```
+
+The host is explicit because the test harness reads it as a discrete field; a
+socket-form DSN leaves it unset and the test fails against host `None`. See
+`docs/process/postgres-local-runtime.md` §5.
