@@ -394,9 +394,22 @@ class VaultSourceStore(ABC):
 
     @abstractmethod
     def write_source(
-        self, vault_id: str, storage_root: Path, source_path: str, data: bytes
-    ) -> None:
-        """Write ``data`` to the vault-relative path the *caller* named.
+        self, vault_id: str, storage_root: Path, source_path: str, source_file: Path
+    ) -> str:
+        """Stream ``source_file`` to the vault-relative path the *caller* named.
+
+        Returns the canonical ``sha256:<hex>`` digest of the copy the store
+        holds once the write is done. The file is streamed from its path and
+        never held whole, on either binding. A binding that stores what it is
+        handed digests the bytes as they pass and reports that; a binding whose
+        store may rewrite the copy at rest reads the copy back to answer, since
+        what it holds cannot then be known from what was sent. Either way the
+        caller learns whether the store changed the bytes by comparing the
+        returned digest to the one it delivered, with no read of its own. That
+        comparison carries its meaning only for a delivered file that is
+        quiescent between the caller's digest and this write: the two are
+        separate passes over the caller's path, so a file changing underneath
+        them reads as a store rewrite.
 
         The complement of :meth:`retain_source`, and deliberately not a mode of
         it. ``retain_source`` answers "find a home for this source" and owns the
@@ -908,8 +921,8 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         return vault_relative
 
     def write_source(
-        self, vault_id: str, storage_root: Path, source_path: str, data: bytes
-    ) -> None:
+        self, vault_id: str, storage_root: Path, source_path: str, source_file: Path
+    ) -> str:
         _assert_plain_vault_relative(source_path)
         dest = storage_root / source_path
         # This operation's precondition is that something other than SAGE wrote
@@ -921,11 +934,35 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # root: the caller names a vault-relative path, and the guarantee owed is
         # that it stays inside the tree this vault's sources live in.
         dest = resolve_and_assert_within_root(dest, storage_root, display=source_path)
+        # A delivered file that *is* the retained copy -- its own path, or a
+        # link to it -- is refused before anything is opened. The streaming
+        # write below truncates the destination before it has read the source,
+        # and on a shared inode that would empty the copy and report the empty
+        # digest as what was written; there are no bytes anywhere else to
+        # recover it from. Compared by inode, not by spelling, so a link
+        # outside the tree pointing at the copy is caught with it.
+        if dest.exists() and source_file.exists() and os.path.samefile(source_file, dest):
+            raise VaultRootEscapeError(
+                f"refusing to write {source_path!r}: the delivered file is the "
+                "retained copy itself."
+            )
         _ensure_directory(dest.parent, str(PurePosixPath(source_path).parent))
-        dest.write_bytes(data)
+        # One pass: the delivered file is streamed into place and digested as
+        # it goes by, so it is never held whole and the destination is never
+        # read back. This binding stores what it is handed, so the digest of
+        # the bytes in flight is the digest of the copy at rest. The source is
+        # opened before the destination is truncated, so a missing source
+        # leaves the existing copy as it was -- and a source that is the
+        # destination never reaches this point at all.
+        digest = hashlib.sha256()
+        with source_file.open("rb") as incoming, dest.open("wb") as outgoing:
+            for chunk in iter(lambda: incoming.read(_SOURCE_CHUNK_BYTES), b""):
+                digest.update(chunk)
+                outgoing.write(chunk)
         # Same CAS-ADR-016 sanitization ``retain_source`` applies: a restored
         # copy must be no more UI-visible-or-hidden than a freshly retained one.
         _strip_ui_invisibility(dest)
+        return f"sha256:{digest.hexdigest()}"
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
         return (storage_root / source_path).exists()
@@ -1100,10 +1137,10 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # how the config surface ignores the filesystem locator. UI-invisibility
         # stripping is a macOS-filesystem concern; a Graph upload of raw bytes
         # carries no xattr/chflag, so there is nothing to strip.
-        data = source_path.read_bytes()
-        # The caller's digest when it has one. The bytes are already in hand for
-        # the upload body, so what is saved here is the digest pass, not the read.
-        content_hash = delivered_hash or f"sha256:{hashlib.sha256(data).hexdigest()}"
+        #
+        # The caller's digest when it has one, else a streamed one: the file
+        # is never loaded here, since the upload streams it from its path.
+        content_hash = delivered_hash or hash_file(source_path)
         client = self._get_client()
         rel = self.planned_source_path(vault_id, storage_root, source_path)
         if client.source_item(vault_id, rel) is not None:  # type: ignore[attr-defined]
@@ -1127,15 +1164,15 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
             # method (see ``planned_source_path``).
             token = _disambiguation_token(content_hash)
             rel = f"imports/{source_path.stem}_{token}{source_path.suffix}"
-        client.upload_source(vault_id, rel, data)  # type: ignore[attr-defined]
+        client.upload_source(vault_id, rel, source_path)  # type: ignore[attr-defined]
         return rel
 
     def write_source(
-        self, vault_id: str, storage_root: Path, source_path: str, data: bytes
-    ) -> None:
-        # A direct upload to the named key. The store's own create-or-replace on
-        # a path is the whole primitive here; ``storage_root`` is unused, as it
-        # is for every other source operation under this binding.
+        self, vault_id: str, storage_root: Path, source_path: str, source_file: Path
+    ) -> str:
+        # A streamed upload to the named key. The store's own create-or-replace
+        # on a path is the whole primitive here; ``storage_root`` is unused, as
+        # it is for every other source operation under this binding.
         #
         # The shape check is not redundant with the filesystem binding's: there
         # is no local tree here for a resolver to catch an escape against, and
@@ -1143,7 +1180,13 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # the port's containment promise would have no implementation at all on
         # this side.
         _assert_plain_vault_relative(source_path)
-        self._get_client().upload_source(vault_id, source_path, data)  # type: ignore[attr-defined]
+        client = self._get_client()
+        client.upload_source(vault_id, source_path, source_file)  # type: ignore[attr-defined]
+        # The as-stored digest is a streamed read of the copy, and this is the
+        # one binding where that read still belongs: the store rewrites some
+        # formats at rest and reports no SHA-256 of its own, so what it now
+        # holds cannot be known from what was sent.
+        return client.hash_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
         return self._get_client().source_item(vault_id, source_path) is not None  # type: ignore[attr-defined]

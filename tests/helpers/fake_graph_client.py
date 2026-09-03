@@ -12,6 +12,7 @@ import hashlib
 import io
 import zipfile
 from collections.abc import Iterator
+from pathlib import Path
 
 # Chunk size for the fake's streamed reads. Small enough that modest test
 # payloads exercise multi-chunk delivery.
@@ -90,9 +91,15 @@ class FakeGraphClient:
         self.source_reads += 1
         return self.sources[source_path]
 
-    def upload_source(self, vault_id: str, source_path: str, data: bytes) -> None:
+    def upload_source(self, vault_id: str, source_path: str, source_file: Path) -> None:
+        # Consumed in bounded chunks, as the real client streams a file up:
+        # mirroring the path-taking signature is what keeps a binding test from
+        # passing against a bytes-taking stand-in the production client no
+        # longer has.
         self.source_uploads += 1
-        self.sources[source_path] = self._store_form(source_path, data)
+        with source_file.open("rb") as f:
+            chunks = list(iter(lambda: f.read(STREAM_CHUNK_BYTES), b""))
+        self.sources[source_path] = self._store_form(source_path, b"".join(chunks))
 
     def _store_form(self, source_path: str, data: bytes) -> bytes:
         """The bytes the store retains for an upload of ``data``.

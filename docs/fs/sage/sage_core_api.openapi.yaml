@@ -2333,8 +2333,10 @@ paths:
 
         Writes nothing when the retained copy already hashes to its
         recorded digest, returning ``status: already_intact``. Where a
-        write does happen the copy is re-read and the record's
-        ``stored_content_hash`` set to what it now holds; the provenance
+        write does happen the store reports the digest of the copy it now
+        holds -- reading it back only under a binding that may have
+        rewritten the bytes -- and the record's ``stored_content_hash``
+        follows it only where the store demonstrably did; the provenance
         digest is never touched.
 
 
