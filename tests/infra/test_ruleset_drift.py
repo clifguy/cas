@@ -20,7 +20,8 @@ Everything here but the final test is offline: the live shape is *derived* from
 the tracked document by adding back the forge-internal keys the capture omits,
 so the fixtures cannot drift from the document they gate and no forge-internal
 identifier enters the tree. The live read itself is an opt-in tier behind
-``SAGE_TEST_LIVE_RULESET=1``; the default test job has no network access. Each
+``SAGE_TEST_LIVE_RULESET=1``, which is unset in the default test job -- that,
+rather than any network restriction, is why the tier does not run there. Each
 detector is driven against mutated input so a comparison that silently compares
 nothing cannot pass vacuously.
 
@@ -59,6 +60,7 @@ from scripts.check_ruleset_drift import (
     RULESET_NAME,
     VOLATILE_BYPASS_ACTOR_KEYS,
     VOLATILE_TOP_LEVEL_KEYS,
+    _keyed_by,
     _run,
     diff_rulesets,
     extract_captured_ruleset,
@@ -434,6 +436,69 @@ def test_visible_bypass_actors_are_compared() -> None:
     assert divergences[0].live == "pull_request"
 
 
+def test_second_bypass_grant_is_divergence() -> None:
+    """U5: a bypass grant added alongside an identical one is reported.
+
+    The analogue of D4 for this list, and the case U1--U3 do not reach: they are
+    all satisfied by an implementation that keys grants on ``actor_type`` alone,
+    under which every ``RepositoryRole`` grant shares one identity and a second
+    one is silently folded into the first. Who may push straight to the default
+    branch is the last thing this check should lose quietly.
+    """
+    captured = _captured()
+    live = _forge_decorated(captured)
+    live["bypass_actors"].append(
+        {"actor_id": 98, "actor_type": "RepositoryRole", "bypass_mode": "always"}
+    )
+
+    divergences = diff_rulesets(captured, normalize_ruleset(live), uncovered=uncovered_keys(live))
+
+    assert _paths(divergences) == ["bypass_actors"]
+    assert len(divergences[0].live) == 2
+
+
+def test_removed_bypass_grant_is_divergence() -> None:
+    """U6: the other direction -- every grant revoked is reported.
+
+    Pairs with U5 so the fix cannot be a rule that only ever notices growth.
+    """
+    captured = _captured()
+    live = _forge_decorated(captured)
+    live["bypass_actors"] = []
+
+    divergences = diff_rulesets(captured, normalize_ruleset(live), uncovered=uncovered_keys(live))
+
+    assert _paths(divergences) == ["bypass_actors[RepositoryRole]"]
+    assert divergences[0].live is MISSING
+
+
+def test_colliding_identities_fall_through_to_whole_list_comparison() -> None:
+    """U7: the mechanism, driven directly rather than through its one instance.
+
+    Identity keying builds a dict, so a repeated identity drops a member. The
+    rule is that keying requires uniqueness as well as presence -- stated here
+    against a synthetic list so it is gated as a general property and not only
+    where ``bypass_actors`` happens to exercise it.
+    """
+    assert _keyed_by([{"type": "a"}, {"type": "b"}], "type") is True
+    assert _keyed_by([{"type": "a"}, {"type": "a"}], "type") is False
+    assert _keyed_by([{"type": "a"}, {"other": 1}], "type") is False
+
+
+def test_dict_list_member_key_order_is_not_divergence() -> None:
+    """U8: two lists of equal mappings agree whatever order the keys came in.
+
+    A dict's ``repr`` follows insertion order, so sorting a list of mappings by
+    it can place equal members in different positions and report drift on a
+    ruleset nobody touched. Dormant today -- ``required_reviewers`` is the only
+    unkeyed dict list and it is empty -- and cheap to hold closed.
+    """
+    left = {"required_reviewers": [{"b": 1, "a": 2}, {"a": 9}]}
+    right = {"required_reviewers": [{"a": 2, "b": 1}, {"a": 9}]}
+
+    assert diff_rulesets(left, right) == []
+
+
 def test_report_names_the_uncovered_field_even_on_agreement() -> None:
     """U4: a green run states what it did not look at.
 
@@ -587,7 +652,7 @@ def test_workflow_references_the_token_and_the_script() -> None:
     assert steps, "workflow must invoke the drift-check module"
     assert any(
         "secrets.GITHUB_TOKEN" in (step.get("env") or {}).get("GH_TOKEN", "") for step in steps
-    ), "the ruleset read needs the fine-grained token in its step env"
+    ), "the ruleset read needs a credential bound in its step env"
 
 
 # ---------------------------------------------------------------------------
@@ -625,9 +690,10 @@ def test_live_ruleset_matches_the_captured_block() -> None:
     """L1: the live ruleset agrees with the block the document calls the source
     of truth.
 
-    Opt-in because the default test job has neither network access nor a
-    credential; this is the same comparison the scheduled workflow makes,
-    available as a faster signal while editing the document.
+    Opt-in so that reaching the forge is always a deliberate choice rather than
+    a side effect of running the suite; this is the same comparison the
+    scheduled workflow makes, available as a faster signal while editing the
+    document.
 
     Run from a workstation this covers *more* than the scheduled run does: a
     maintainer's credential carries administration scope, so ``bypass_actors``

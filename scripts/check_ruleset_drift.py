@@ -31,6 +31,13 @@ pass as "there are none". Who may bypass the ruleset is therefore a review
 concern wherever the caller lacks that scope, restated on every run rather than
 left to be remembered.
 
+**And one change to the bypass grants is invisible at every scope**: swapping
+which built-in role holds a grant, leaving the mode alone. The role is carried
+by ``actor_id``, which the capture omits, so two grants differing only in role
+normalize to the same thing. Grants added, removed, or re-moded are caught; a
+same-mode swap is not, and reading it would mean committing that id to the
+tracked document.
+
 Usage::
 
     python -m scripts.check_ruleset_drift                       # compare against live
@@ -270,8 +277,12 @@ def _diff_value(path: str, captured: Any, live: Any, found: list[Divergence]) ->
                     found,
                 )
             return
-        # A list of scalars is a leaf, and the forge promises no order for one.
-        if sorted(captured, key=repr) != sorted(live, key=repr):
+        # Whatever identity keying could not resolve is compared as a whole, and
+        # the forge promises no order for a list. Sort on a canonical rendering
+        # rather than on ``repr``: a dict's repr follows key insertion order, so
+        # two members equal as mappings can sort into different positions and
+        # then compare unequal.
+        if sorted(captured, key=_canonical) != sorted(live, key=_canonical):
             found.append(Divergence(path, captured, live))
         return
 
@@ -279,9 +290,24 @@ def _diff_value(path: str, captured: Any, live: Any, found: list[Divergence]) ->
         found.append(Divergence(path, captured, live))
 
 
+def _canonical(value: Any) -> str:
+    """A rendering equal for equal values, independent of key order."""
+    return json.dumps(value, sort_keys=True, default=repr)
+
+
 def _keyed_by(items: list[Any], identity_key: str) -> bool:
-    """True when every member carries the identity field, so keying is total."""
-    return all(isinstance(item, dict) and identity_key in item for item in items)
+    """True when the identity field is present *and* unique across members.
+
+    Uniqueness is as load-bearing as presence. Keying a list into a dict on a
+    field two members share drops one of them silently, so a grant added
+    alongside an identical one would compare equal to the list it was added to.
+    Rejecting the collision sends the list to the whole-list comparison instead,
+    which still reports the change -- less precisely, but never invisibly.
+    """
+    if not all(isinstance(item, dict) and identity_key in item for item in items):
+        return False
+    identities = [item[identity_key] for item in items]
+    return len({_canonical(identity) for identity in identities}) == len(identities)
 
 
 # --- I/O edge ---------------------------------------------------------------
