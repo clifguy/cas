@@ -369,6 +369,33 @@ def test_vsb_ds_072_no_source_is_symlinked_on_this_binding():
     assert fake.source_reads == 0
 
 
+def test_vsb_ds_073_out_of_root_is_answered_from_the_path_shape():
+    """``source_is_out_of_root`` answers from the path alone on this binding.
+
+    There is no local tree here for a resolver to walk, so the shape of the
+    recorded path is the whole of the containment question this store can be
+    asked -- and exactly what its ``write_source`` refuses on those grounds.
+
+    Anti-coincidental-pass: unlike this binding's ``source_is_symlink``, the
+    answer is not a constant. A constant False fails the absolute and
+    ``..``-bearing paths; a constant True fails the ordinary one. The store-call
+    counters are asserted at zero, so an implementation that went to the store
+    for an answer the path already carries fails while returning the right
+    boolean, and a present key and an absent one are both asserted so the answer
+    cannot be riding on lookup failure.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/here.md"] = b"x"
+    store = _binding(fake)
+
+    assert store.source_is_out_of_root("v", Path("/unused"), "imports/here.md") is False
+    assert store.source_is_out_of_root("v", Path("/unused"), "imports/gone.md") is False
+    assert store.source_is_out_of_root("v", Path("/unused"), "/etc/passwd") is True
+    assert store.source_is_out_of_root("v", Path("/unused"), "imports/../escaped.md") is True
+    assert fake.source_stats == 0
+    assert fake.source_reads == 0
+
+
 def test_vsb_ds_034_source_size_is_a_cheap_stat():
     """``source_size`` returns the byte length via item metadata without pulling
     the content.

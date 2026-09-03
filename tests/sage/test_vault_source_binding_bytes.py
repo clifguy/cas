@@ -765,6 +765,152 @@ def test_vsbb_061_a_regular_file_under_a_symlinked_ancestor_is_not_symlinked(
     assert store.source_is_symlink(VID, storage_root, "imports/doc.md") is False
 
 
+# --------------------------------------------------------------------------- #
+# source_is_out_of_root
+# --------------------------------------------------------------------------- #
+
+
+def test_vsbb_062_out_of_root_is_true_under_an_ancestor_leaving_the_root(
+    store, storage_root, tmp_path
+):
+    """A regular file reached through an ancestor pointing outside the root is
+    out of root.
+
+    The state the write side refuses and every other read reports as fine. Both
+    of the other questions about this path are asserted alongside the answer, so
+    the test records the whole discrepancy rather than only half of it: the leaf
+    is not a link and the copy is present, yet the store will not write here.
+
+    Anti-coincidental-pass: an implementation that lstats the leaf -- which is
+    what ``source_is_symlink`` does -- answers False here, so the two questions
+    are told apart by this fixture and by no other in this file.
+    """
+    real_imports = tmp_path / "elsewhere" / "imports"
+    real_imports.mkdir(parents=True)
+    (real_imports / "doc.md").write_bytes(b"an ordinary retained copy")
+    (storage_root / "imports").symlink_to(real_imports)
+
+    assert store.source_is_symlink(VID, storage_root, "imports/doc.md") is False
+    assert store.source_exists(VID, storage_root, "imports/doc.md") is True
+
+    assert store.source_is_out_of_root(VID, storage_root, "imports/doc.md") is True
+
+
+def test_vsbb_063_out_of_root_is_false_under_an_ancestor_staying_inside_the_root(
+    store, storage_root
+):
+    """An ancestor link resolving back *inside* the root is not out of root.
+
+    Containment, not linkedness, is the question: the write side accepts this
+    path today and must go on accepting it.
+
+    Anti-coincidental-pass: this is the case that separates asking where the
+    path resolves from asking whether reaching it crosses a link. VSBB-062
+    passes against either rival; only an in-root ancestor link tells them apart,
+    and an implementation that refused any linked ancestor would reject a safe
+    long-standing arrangement. The ancestor is asserted to be a link and the leaf
+    a real file, so a fixture that failed to build the condition cannot pass by
+    accident.
+    """
+    imports = storage_root / "imports"
+    imports.mkdir()
+    (imports / "doc.md").write_bytes(b"an ordinary retained copy")
+    (storage_root / "alias").symlink_to(imports)
+
+    assert (storage_root / "alias").is_symlink(), "the ancestor must really be a link"
+    assert (storage_root / "alias" / "doc.md").is_file(), "the leaf must really be a file"
+
+    assert store.source_is_out_of_root(VID, storage_root, "alias/doc.md") is False
+
+
+def test_vsbb_064_paths_the_binding_itself_produced_are_never_out_of_root(
+    store, storage_root, tmp_path
+):
+    """Neither write path leaves a path the containment question then refuses.
+
+    The unchanged-behaviour half: the new observation must not begin reporting
+    ordinary retained files as unwritable. An absent in-root path is asserted
+    too -- containment resolves a path that does not exist, so a missing copy
+    stays a missing copy rather than being re-filed as out of root.
+
+    Anti-coincidental-pass: asserted against paths the binding chose, so an
+    implementation returning a constant True fails here while VSBB-062 fails a
+    constant False.
+    """
+    ext = _external(tmp_path, "retained.md", b"copied in")
+    retained_rel = store.retain_source(VID, storage_root, ext)
+    store.write_source(VID, storage_root, "imports/written.md", b"put here")
+
+    assert store.source_is_out_of_root(VID, storage_root, retained_rel) is False
+    assert store.source_is_out_of_root(VID, storage_root, "imports/written.md") is False
+    assert store.source_is_out_of_root(VID, storage_root, "imports/absent.md") is False
+
+
+def test_vsbb_065_out_of_root_is_true_for_a_path_refused_on_shape(store, storage_root):
+    """An absolute path and one walking out of the tree are both out of root.
+
+    These are the two shapes ``write_source`` refuses before it resolves
+    anything, so the question has to carry them too or it would answer False
+    about a path the store declines.
+
+    Anti-coincidental-pass: the ``..`` case is the one that forces the shape
+    check. It is written to land back *inside* the root after resolution, so an
+    implementation that only resolves and compares answers False; only the shape
+    check refuses it. The absolute path is kept alongside because joining it
+    discards the root entirely, and an implementation that skipped the join
+    would answer about the wrong path.
+    """
+    assert store.source_is_out_of_root(VID, storage_root, "/etc/passwd") is True
+    assert store.source_is_out_of_root(VID, storage_root, "imports/../imports/doc.md") is True
+
+
+def test_vsbb_066_out_of_root_agrees_with_what_write_source_refuses(store, storage_root, tmp_path):
+    """The containment answer and the write guards' verdict match on every path.
+
+    The property that makes one observation worth having: a caller reading this
+    question learns what the write side will do, rather than holding a second
+    predicate that has to be kept in step by hand.
+
+    What this test is, and is not: against the implementation as written it
+    cannot fail, because the containment question is answered by running the
+    guards ``write_source`` itself runs -- it compares an implementation with
+    itself. That is deliberate and is the whole of its value: it is a ratchet
+    against a *future* rewrite that restates the rule instead of running it,
+    which is the form the disagreement this fact exists to close would take if
+    it returned. Read it as a regression guard on the derivation, not as
+    evidence that two independently-derived answers were checked and agreed.
+
+    Anti-coincidental-pass: the paths span all four verdicts -- accepted plain,
+    accepted through an in-root ancestor link, refused on resolution, refused on
+    shape -- so a pair of independently-written predicates that happened to agree
+    on one case is caught by the others. The symlinked *leaf* is excluded by
+    construction: ``write_source`` refuses it through a different guard, and this
+    question deliberately does not answer it.
+    """
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (storage_root / "escapes").symlink_to(outside)
+    inside = storage_root / "imports"
+    inside.mkdir()
+    (storage_root / "alias").symlink_to(inside)
+
+    for rel in (
+        "imports/plain.md",
+        "alias/through_an_in_root_link.md",
+        "escapes/through_an_out_of_root_link.md",
+        "/etc/passwd",
+        "imports/../imports/walked.md",
+    ):
+        refused = False
+        try:
+            store.write_source(VID, storage_root, rel, b"probe")
+        except VaultRootEscapeError:
+            refused = True
+        assert store.source_is_out_of_root(VID, storage_root, rel) is refused, (
+            f"the containment answer and the write refusal disagree about {rel!r}"
+        )
+
+
 def test_vsbb_008_source_size_matches_byte_length(store, storage_root, tmp_path):
     """``source_size`` equals the byte length of the retained source."""
     body = b"twelve bytes"

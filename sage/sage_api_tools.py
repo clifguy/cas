@@ -2634,6 +2634,15 @@ def register_sage_tools(
         linked path, so repairing that document is refused until the link
         is removed.
 
+        A recorded path that resolves *outside* the vault's source tree --
+        one reached through an ancestor pointing elsewhere, say --
+        surfaces as an ``out_of_root`` entry, in both modes and likewise
+        without reading through it. The store refuses to write there
+        whether or not anything resolves at the far end, which is why this
+        outranks ``missing``: such a document is not repaired by
+        re-delivering its content, but by re-pointing the path or
+        reconfiguring the vault.
+
         This is an integrity check on the stored copy, not a provenance
         check. A store may retain a copy that is not byte-identical to
         what the caller delivered, in which case the two recorded digests

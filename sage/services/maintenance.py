@@ -140,18 +140,35 @@ class _RetainedCopyObservation:
     ``present`` as "the copy is there" is only sound once ``symlinked`` is
     false; where it is true, presence describes what the link resolves to
     rather than the copy the record names.
+
+    ``out_of_root`` says the recorded path names somewhere outside the vault's
+    source tree -- the other question the write side asks, carried here for the
+    same reason as the first: the store refuses to write at such a path, so an
+    audit that called it healthy would send an operator to a repair that then
+    refuses. Being unwritable is not a state a copy can be intact in, so it
+    suppresses :attr:`intact` outright, however the bytes at the end of the path
+    happen to hash.
+
+    It stays a fact of its own rather than folding into ``symlinked`` because
+    the two call for different remedies: a link at the recorded path is removed,
+    while a path leaving the tree is re-pointed or the vault reconfigured.
+    Neither implies the other -- a plain file under an ancestor pointing outside
+    the tree is not a link, and a link resolving back inside the tree does not
+    leave it. Independent of ``present`` too, for the reason linkedness is: the
+    refusal does not depend on what, if anything, resolves at the far end.
     """
 
     present: bool
     observed_hash: str | None
     expected_hash: str
     symlinked: bool = False
+    out_of_root: bool = False
 
     @property
     def intact(self) -> bool:
-        """The retained copy is present, is not a link, and hashes to what the
-        record expects."""
-        if self.symlinked:
+        """The retained copy is present, is not a link, names a path inside the
+        source tree, and hashes to what the record expects."""
+        if self.symlinked or self.out_of_root:
             return False
         return self.observed_hash is not None and self.observed_hash == self.expected_hash
 
@@ -288,9 +305,17 @@ class MaintenanceService:
         owner points -- and the store refuses to write there, so the
         repair the audit sends an operator to would itself be refused.
 
+        A recorded path that resolves *outside* the vault's source tree --
+        under an ancestor pointing elsewhere, say -- is reported as
+        ``out_of_root`` in both modes, and likewise not read through. The
+        store refuses to write there too, whether or not anything resolves
+        at the far end, so it outranks ``missing``: an absent copy at such
+        a path is not repaired by re-delivering the content.
+
         Returns a SourceFileIntegrityReport with per-document entries for
-        missing, symlinked, or hash-mismatched files and aggregate counts;
-        documents with an intact source file are absent from ``entries``.
+        missing, symlinked, out-of-root, or hash-mismatched files and
+        aggregate counts; documents with an intact source file are absent
+        from ``entries``.
         """
         all_docs = await self._graph_store.list_all_documents()
         storage_root = self._storage_root()
@@ -307,6 +332,7 @@ class MaintenanceService:
             "missing": sum(1 for e in entries if e.integrity_status == "missing"),
             "hash_mismatch": sum(1 for e in entries if e.integrity_status == "hash_mismatch"),
             "symlinked": sum(1 for e in entries if e.integrity_status == "symlinked"),
+            "out_of_root": sum(1 for e in entries if e.integrity_status == "out_of_root"),
         }
 
         return SourceFileIntegrityReport(
@@ -325,7 +351,7 @@ class MaintenanceService:
         store: VaultSourceStore,
     ) -> SourceFileIntegrityEntry | None:
         """Return an integrity entry for ``doc`` if its source file is
-        symlinked, missing, or hash-mismatched, else None.
+        symlinked, out of root, missing, or hash-mismatched, else None.
 
         Classifies the shared :class:`_RetainedCopyObservation` -- the same
         one the restore judges "already intact" by -- so the audit and the
@@ -333,9 +359,16 @@ class MaintenanceService:
         source is additionally hashed and compared against the digest recorded
         for the *stored* copy (see :func:`_expected_stored_hash`). A missing
         source is always classified ``missing`` regardless of ``check_hashes``
-        (it is never a hash error), and a linked path is classified
-        ``symlinked`` ahead of both -- it is not the copy the record names, so
-        neither its presence nor its digest is the question to ask about it.
+        (it is never a hash error).
+
+        The two statuses that describe the *path* rather than the copy outrank
+        both. ``symlinked`` comes first: where the recorded path is itself a
+        link, removing it is the whole repair, and saying so is more use than
+        naming wherever it happens to point. ``out_of_root`` comes next, ahead
+        of ``missing``, because the store refuses to write there whether or not
+        anything resolves at the far end -- reporting a document absent would
+        send an operator to re-deliver content into a path that will decline it,
+        when the fix is to bring the path back inside the tree.
         """
         observation = self._observe_retained_copy(doc, storage_root, store, hash_copy=check_hashes)
         if observation.symlinked:
@@ -344,6 +377,13 @@ class MaintenanceService:
             # has no reason to withhold the finding. The observed digest stays
             # null -- the audit reports the link rather than reading through it.
             return self._integrity_entry(doc, "symlinked", observed=None)
+
+        if observation.out_of_root:
+            # Reported in both modes for the same reason: establishing it is a
+            # path resolution, not a content read. The observed digest stays
+            # null -- what the bytes at the end of an unwritable path hash to is
+            # not a fact about the copy this record can hold.
+            return self._integrity_entry(doc, "out_of_root", observed=None)
 
         if not observation.present:
             return self._integrity_entry(doc, "missing", observed=None)
@@ -370,11 +410,13 @@ class MaintenanceService:
         audit's existence-only mode relies on that.
         """
         expected = _expected_stored_hash(doc)
-        # Presence and linkedness are independent facts about the recorded path,
-        # and both are cheap stats, so both are established before either is
-        # used. What the audit orders is the *classification* -- a linked path is
-        # reported as the link it is rather than as missing -- not these calls.
+        # Presence, linkedness and containment are independent facts about the
+        # recorded path, and all three are cheap -- two stats and a path
+        # resolution -- so all three are established before any is used. What the
+        # audit orders is the *classification* -- a linked path is reported as the
+        # link it is rather than as missing -- not these calls.
         present = store.source_exists(self._vault_id, storage_root, doc.source_path)
+        out_of_root = store.source_is_out_of_root(self._vault_id, storage_root, doc.source_path)
         if store.source_is_symlink(self._vault_id, storage_root, doc.source_path):
             # A link is not the copy the record names, so no digest is taken
             # through it. Whether bytes resolve behind it is kept rather than
@@ -383,7 +425,24 @@ class MaintenanceService:
             # resolving one means it is sitting behind the link and only the
             # copy has to be put back at the path the record holds.
             return _RetainedCopyObservation(
-                present=present, observed_hash=None, expected_hash=expected, symlinked=True
+                present=present,
+                observed_hash=None,
+                expected_hash=expected,
+                symlinked=True,
+                out_of_root=out_of_root,
+            )
+        if out_of_root:
+            # No digest is taken either: the path names somewhere the store will
+            # not write, so what the bytes at the far end hash to says nothing
+            # about the copy this record can hold. Presence is kept for the same
+            # reason it is kept behind a link -- once the path is brought back
+            # inside the tree, whether the content is still there decides whether
+            # a re-delivery is needed on top of that.
+            return _RetainedCopyObservation(
+                present=present,
+                observed_hash=None,
+                expected_hash=expected,
+                out_of_root=True,
             )
         if not present:
             return _RetainedCopyObservation(
@@ -457,7 +516,10 @@ class MaintenanceService:
         recorded path that is a *link* is never treated that way, however the
         bytes behind it hash -- it is not the copy the record names -- and the
         write the fall-through attempts is refused by the store rather than
-        landing wherever the link points.
+        landing wherever the link points. Nor is a path that resolves outside
+        the vault's source tree: the store declines it on the same
+        fall-through, so the refusal reaches the caller instead of a report
+        calling a document fine that cannot be repaired where it sits.
 
         Where a write does happen, the copy is re-read afterwards and the
         record's ``stored_content_hash`` follows it only where the store
