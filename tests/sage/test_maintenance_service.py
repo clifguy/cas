@@ -46,8 +46,13 @@ from sage.models.schemas import (
     Edge,
     MigrationReport,
     OptimizeContentStoreReport,
+    SourcePathNormalization,
 )
-from sage.services.maintenance import BACKFILL_STALE_PIPELINE_ERROR, MaintenanceService
+from sage.services.maintenance import (
+    BACKFILL_NON_CANONICAL_SOURCE_PATH,
+    BACKFILL_STALE_PIPELINE_ERROR,
+    MaintenanceService,
+)
 from sage.storage.tier3_uniqueness import tier3_unique_index_name
 from tests.sage.test_tier3_uniqueness import (
     _config_dict_with_unique_keys,
@@ -278,6 +283,262 @@ async def test_stub_graph_store_clear_pipeline_error_matches_port_contract(minim
     assert (await store.get_document(still_failed.id)).pipeline_error is not None
     assert await store.clear_pipeline_error_for_statuses(statuses) == 0
     assert await store.clear_pipeline_error_for_statuses([]) == 0
+
+
+# ---------------------------------------------------------------------------
+# migrate_vault: the source_path normalization sweep
+# ---------------------------------------------------------------------------
+
+
+def _doc_at(short_name: str, ticket_id: str, source_path: str) -> Document:
+    """A ticket document holding an explicit stored ``source_path``."""
+    return _make_ticket_doc(short_name, ticket_id).model_copy(update={"source_path": source_path})
+
+
+class _CountingStubGraphStore(StubGraphStore):
+    """A stub that records every document update the service issues."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.update_calls: list[tuple[str, dict]] = []
+
+    async def update_document(self, doc_id: str, updates: dict):
+        self.update_calls.append((doc_id, dict(updates)))
+        return await super().update_document(doc_id, updates)
+
+
+async def test_migrate_vault_normalizes_a_dotted_source_path(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-005: a record holding a pre-normalization spelling is brought forward.
+
+    Ingest reduces the recorded path to one spelling, but records written
+    before it did still hold the caller's string, and nothing else brings them
+    forward. The migration is the operator-facing surface that does.
+
+    Trap: a record already in plain form must not be reported as repaired --
+    an implementation that rewrites every row to itself satisfies every
+    assertion about the dotted record and turns the report into a claim of work
+    that never happened. The plain record is asserted absent from the report,
+    not merely left correct, because a self-rewrite leaves it correct too.
+    """
+    dotted = _doc_at("doc-a", "T-0001", "./imports/a.md")
+    plain = _doc_at("doc-b", "T-0002", "imports/b.md")
+    for doc in (dotted, plain):
+        await graph_store.insert_document(doc)
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    report = await maintenance.migrate_vault()
+
+    assert (await graph_store.get_document(dotted.id)).source_path == "imports/a.md"
+    assert (await graph_store.get_document(plain.id)).source_path == "imports/b.md"
+    assert report.source_paths_normalized == [
+        SourcePathNormalization(
+            document_id=dotted.id,
+            previous_source_path="./imports/a.md",
+            normalized_source_path="imports/a.md",
+        )
+    ]
+    assert BACKFILL_NON_CANONICAL_SOURCE_PATH in report.backfills_applied
+
+
+async def test_migrate_vault_reports_no_normalization_when_clean(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-006: a second pass over a repaired vault reports nothing further.
+
+    Anti-coincidental-pass: this is the half MNT-005 cannot catch. An
+    unconditional append names the backfill on every migration forever, which
+    is exactly the false positive the report exists to avoid -- and it passes
+    MNT-005 unchanged. Running the migration twice and asserting the second
+    call is silent is what separates them.
+    """
+    dotted = _doc_at("doc-a", "T-0001", "./imports/a.md")
+    await graph_store.insert_document(dotted)
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    first = await maintenance.migrate_vault()
+    assert len(first.source_paths_normalized) == 1
+
+    second = await maintenance.migrate_vault()
+    assert second.source_paths_normalized == []
+    assert BACKFILL_NON_CANONICAL_SOURCE_PATH not in second.backfills_applied
+
+
+async def test_migrate_vault_writes_nothing_when_no_path_needs_repair(minimal_config):
+    """MNT-007: a vault with no such record issues no document write at all.
+
+    Trap: "the report is empty" is satisfiable by a sweep that reads every row
+    and rewrites each to itself -- the report would be empty either way, since
+    nothing changed value. Only counting the writes distinguishes a genuine
+    no-op from a full-table self-write, which is what the clean-vault cost
+    claim actually rests on.
+    """
+    store = _CountingStubGraphStore()
+    seeded = {
+        "imports/a.md": _doc_at("doc-a", "T-0001", "imports/a.md"),
+        "imports/sub/b.md": _doc_at("doc-b", "T-0002", "imports/sub/b.md"),
+    }
+    for doc in seeded.values():
+        await store.insert_document(doc)
+
+    maintenance = _maintenance_for(store, minimal_config)
+
+    report = await maintenance.migrate_vault()
+
+    assert report.source_paths_normalized == []
+    assert BACKFILL_NON_CANONICAL_SOURCE_PATH not in report.backfills_applied
+    assert store.update_calls == []
+    # The store the sweep declined to write to was not an empty one: without
+    # this, every assertion above holds over a vault with no documents at all,
+    # and the claim being made is about a populated one. The paths are named
+    # here rather than read back out of the seed, so removing the seeding fails
+    # this instead of quietly iterating nothing.
+    assert (await store.get_document(seeded["imports/a.md"].id)).source_path == "imports/a.md"
+    assert (await store.get_document(seeded["imports/sub/b.md"].id)).source_path == (
+        "imports/sub/b.md"
+    )
+
+
+async def test_migrate_vault_skips_a_path_with_no_plain_form(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-008: a recorded path with no plain form inside the vault is left as
+    found, and does not abort the rest of the migration.
+
+    The reachable case is an *absolute* path that also carries a ``.`` segment:
+    reducing the segment is a real change, so the record is a candidate, but the
+    result still names somewhere outside the vault and the normalizer refuses
+    it. (A ``..`` path never gets this far -- it is preserved rather than
+    resolved, so it is already its own plain form and is not a candidate at all.
+    One is seeded here anyway, as the control that it is neither rewritten nor
+    reported.) Both conditions are what ``verify_vault_source_files`` reports;
+    the migration's job is to leave them exactly as recorded.
+
+    Trap: the normalizer *raises* on the absolute path. Calling it without
+    catching that turns one unrepairable legacy record into a hard failure of
+    the whole maintenance call, taking the standing pipeline_error backfill and
+    the tier3-uniqueness scan down with it. Asserting the scan's result is
+    present is what additionally catches a sweep that swallowed the error but
+    returned early, leaving the repairable record behind.
+
+    The ids are assigned rather than generated, and the refused record is given
+    the lower one. The sweep walks its candidates in id order, so this is what
+    separates recovering from the refusal (``continue``) from abandoning the
+    pass at it (``break``): with generated ids the two are indistinguishable
+    whenever the repairable record happens to sort first, and the abandoning
+    implementation passes on an ordering the test never chose.
+    """
+    absolute = _doc_at("doc-a", "T-0001", "/outside/./a.md").model_copy(
+        update={"id": "00000001_migrate_skip_absolute"}
+    )
+    dotted = _doc_at("doc-b", "T-0002", "./imports/b.md").model_copy(
+        update={"id": "00000002_migrate_skip_dotted"}
+    )
+    escaping = _doc_at("doc-c", "T-0003", "../outside/c.md")
+    for doc in (absolute, escaping, dotted):
+        await graph_store.insert_document(doc)
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+
+    report = await maintenance.migrate_vault()
+
+    assert (await graph_store.get_document(absolute.id)).source_path == "/outside/./a.md"
+    assert (await graph_store.get_document(escaping.id)).source_path == "../outside/c.md"
+    assert [e.document_id for e in report.source_paths_normalized] == [dotted.id]
+    assert report.tier3_uniqueness_collisions == []
+
+
+async def test_migrate_vault_skips_a_candidate_that_reduces_to_itself(minimal_config):
+    """MNT-010: a candidate whose plain form is the string it already holds is
+    written nothing and reported nothing.
+
+    The store's filter is syntactic, so a spelling that matches it and still
+    reduces to itself is offered along with the genuinely reducible ones. ``.``
+    is the only such spelling the sweep settles by *comparing* -- the others
+    (``/`` and the ``//`` root) are absolute, so the normalizer refuses them
+    and they leave by the same door as MNT-008's record.
+
+    Trap: without this the comparison branch has no coverage at all -- every
+    other candidate that reaches it does change under reduction, so dropping
+    the comparison looks harmless and passes the whole rest of this file. What
+    it would really do is write the record back with the value it already held
+    and report it as a repair: the false claim of work the report exists to
+    avoid, on the one input where nothing else would notice.
+    """
+    store = _CountingStubGraphStore()
+    await store.insert_document(
+        _doc_at("doc-a", "T-0001", ".").model_copy(update={"id": "00000001_migrate_degenerate"})
+    )
+
+    maintenance = _maintenance_for(store, minimal_config)
+
+    report = await maintenance.migrate_vault()
+
+    assert report.source_paths_normalized == []
+    assert BACKFILL_NON_CANONICAL_SOURCE_PATH not in report.backfills_applied
+    assert store.update_calls == []
+    assert (await store.get_document("00000001_migrate_degenerate")).source_path == "."
+
+
+async def test_migrate_vault_normalization_touches_no_other_field(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-009: the rewrite changes the stored path and nothing else.
+
+    Trap: routing the write through anything that stamps ``updated_at`` makes
+    every record in a legacy vault look freshly modified, and drift and
+    staleness comparisons read that as change -- a repair that manufactures the
+    very signal other surfaces exist to report. The record's meaning is
+    unchanged here; only its spelling is.
+    """
+    dotted = _doc_at("doc-a", "T-0001", "./imports/a.md")
+    await graph_store.insert_document(dotted)
+    before = await graph_store.get_document(dotted.id)
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+    await maintenance.migrate_vault()
+
+    after = await graph_store.get_document(dotted.id)
+    assert after.source_path != before.source_path
+    assert after.model_dump(exclude={"source_path"}) == before.model_dump(exclude={"source_path"})
+
+
+async def test_stub_graph_store_non_canonical_paths_matches_port_contract(minimal_config):
+    """The stub selects the same records the durable store does.
+
+    The stub stands in for the graph store across the service tests above, so a
+    permissive one -- returning everything, or nothing -- would let every one of
+    them pass over a sweep that never ran, or one that ran over the whole table.
+    Same separation as the Postgres case: reducible, already plain, carrying a
+    ``..`` that cannot be reduced, and the degenerate ``//`` root the pattern
+    offers though reducing it changes nothing.
+
+    Trap: asking the path reducer directly instead of the port's pattern reads
+    as the stronger choice -- one shared function rather than one shared string
+    -- and is quietly narrower. The reducer resolves nothing under a ``//``
+    root, so a reducer-backed stub omits ``//imports/f.md`` while the durable
+    store offers it, and every service test above would then run over a
+    candidate set production does not have. That path is in the corpus for no
+    other reason.
+    """
+    store = StubGraphStore()
+    dotted = _doc_at("doc-a", "T-0001", "./imports/a.md")
+    doubled = _doc_at("doc-b", "T-0002", "imports//b.md")
+    plain = _doc_at("doc-c", "T-0003", "imports/c.md")
+    hidden = _doc_at("doc-d", "T-0004", "imports/.hidden.md")
+    escaping = _doc_at("doc-e", "T-0005", "../outside/e.md")
+    rooted = _doc_at("doc-f", "T-0006", "//imports/f.md")
+    for doc in (dotted, doubled, plain, hidden, escaping, rooted):
+        await store.insert_document(doc)
+
+    assert await store.list_non_canonical_source_paths() == {
+        dotted.id: "./imports/a.md",
+        doubled.id: "imports//b.md",
+        rooted.id: "//imports/f.md",
+    }
 
 
 # ---------------------------------------------------------------------------

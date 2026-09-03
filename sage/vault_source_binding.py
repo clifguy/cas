@@ -141,6 +141,34 @@ def hash_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def normalize_vault_relative(source_path: str) -> str:
+    """Collapse a vault-relative path to its plain form, refusing an escape.
+
+    The read side is tolerant of spellings the write side is not: existence,
+    hash and the integrity audit all resolve a ``.`` segment, a doubled
+    separator or a trailing one, while :func:`_assert_plain_vault_relative` --
+    the shape check every binding owes ``write_source`` -- accepts only the
+    plain form. A record holding one of the tolerated spellings therefore names
+    a path its own bytes can never be written back to. Reducing the path here,
+    at the point it enters a record, is what keeps the two sides agreeing on
+    what a source path is.
+
+    ``..`` is refused rather than resolved. A caller-supplied segment that
+    walks up cannot be collapsed without deciding it lands somewhere legitimate,
+    and the write guard refuses it outright; resolving it here would admit
+    sources that guard then declines, moving the refusal from the moment a path
+    is recorded to the moment someone tries to repair it. An absolute path is
+    refused for the same reason.
+    """
+    candidate = PurePosixPath(source_path)
+    if ".." in candidate.parts or candidate.is_absolute() or Path(source_path).is_absolute():
+        raise VaultRootEscapeError(
+            f"refusing {source_path!r}: a vault-relative source path may not be "
+            f"absolute or walk out of the vault's source tree."
+        )
+    return str(candidate)
+
+
 def _assert_plain_vault_relative(source_path: str) -> None:
     """Require ``source_path`` to be a plain relative path inside the vault.
 

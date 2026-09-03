@@ -949,6 +949,56 @@ async def test_vsbb_048_normalized_record_is_found_under_a_dotted_caller_string(
     )
 
 
+async def test_vsbb_049_migration_makes_a_legacy_dotted_record_reprojectable(
+    ingestion_service, graph_store, minimal_config, stub_content_store, tmp_vault_dir, monkeypatch
+):
+    """VSBB-044's record, once the migration has run, re-projects instead of
+    raising -- and re-projects as itself.
+
+    The lookup half made the legacy record *found*, which turned silent
+    duplication into a loud refusal but left the refusal with no remedy: the
+    stored path genuinely differs from the computed one, which is the exact
+    condition the cross-document guard exists to reject. Only rewriting the
+    stored path can clear it, and this is the claim that the rewrite does.
+
+    Anti-coincidental-pass: the ``pytest.raises`` before the migration is the
+    control -- without it, a test asserting only the success afterwards would
+    pass against a build where the guard never fired at all, proving nothing
+    about the repair. Afterwards the assertion is the *identity* of the returned
+    document together with the vault's document count, not merely that no error
+    was raised: a re-projection landing a second document on the same stored
+    file also raises nothing, and that silent duplication is the outcome the
+    guard was installed to refuse in the first place.
+    """
+    first = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "imports/legacy2.md", "# Legacy2\n\nBody."
+    )
+    # The pre-normalization spelling of the record's own path.
+    await graph_store.update_document(first.id, {"source_path": "./imports/legacy2.md"})
+    (tmp_vault_dir / "sources" / "imports" / "legacy2.md").unlink()
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    with pytest.raises(ForceReingestPathMismatchError):
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="./imports/legacy2.md", source_type=SourceType.MARKDOWN, force=True
+            )
+        )
+
+    report = await _maintenance(
+        minimal_config.vault.id, graph_store, minimal_config, stub_content_store
+    ).migrate_vault()
+    assert [e.document_id for e in report.source_paths_normalized] == [first.id]
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="./imports/legacy2.md", source_type=SourceType.MARKDOWN, force=True)
+    )
+
+    assert result.document.id == first.id
+    assert result.document.source_path == "imports/legacy2.md"
+    assert len(await graph_store.list_all_documents()) == 1
+
+
 class _AbsentBackendStore(FilesystemVaultSourceStore):
     """Reports every relative source absent from the store."""
 

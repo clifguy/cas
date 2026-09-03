@@ -25,6 +25,17 @@ from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 # marker; backfill and stage-3 refresh match on it via equality.
 SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
 
+# The spellings a plain POSIX form reduces: a `.` segment (bounded by a
+# separator or an end, so a dot inside a *filename* is untouched), a doubled
+# separator, and a trailing one. `..` is deliberately absent -- it is preserved
+# rather than resolved, so a path carrying one is already its own plain form.
+#
+# Shared by every GraphStore binding's `list_non_canonical_source_paths` rather
+# than written once per backend. The syntax is the intersection of POSIX and
+# Python regex, so the durable store can hand it to the database and an
+# in-memory store to `re`, and the two cannot answer differently.
+NON_CANONICAL_SOURCE_PATH_PATTERN = r"(^|/)[.](/|$)|//|/$"
+
 
 @dataclass
 class Chunk:
@@ -623,6 +634,35 @@ class GraphStore(ABC):
         documents may share a source path (re-ingest, supersession); the
         lowest-ordering document id represents the path, so the answer does
         not depend on storage order. No lifecycle filtering is applied.
+        """
+
+    @abstractmethod
+    async def list_non_canonical_source_paths(self) -> dict[str, str]:
+        """Map document id to stored source_path, for paths not in plain form.
+
+        A record is selected when its stored path carries something a plain
+        POSIX form reduces -- a ``.`` segment, a doubled separator, or a
+        trailing one. Each is mapped to the value the record holds, not to its
+        plain form: deciding what that form is, and whether the path has one at
+        all, belongs to the caller.
+
+        Every binding answers with :data:`NON_CANONICAL_SOURCE_PATH_PATTERN`,
+        so the question is asked once rather than approximated per backend.
+
+        The selection is a **superset**, not an exact answer: it is syntactic,
+        while whether a plain form actually differs is a question about the
+        path reducer. A few spellings match the pattern and still reduce to
+        themselves -- ``.``, ``/``, and anything under a ``//`` root, which
+        POSIX leaves implementation-defined and the reducer preserves. A caller
+        that reduces each candidate and compares finds nothing to do for those.
+        Settling it there is deliberate: a predicate exact enough to exclude
+        them would have to re-encode the reducer's own treatment of ``//``, and
+        a second encoding of that rule is the drift this method exists to
+        avoid.
+
+        ``..`` is not a selector. It is preserved rather than resolved, so such
+        a path is already the only spelling of itself and there is nothing here
+        to reduce. No lifecycle filtering is applied.
         """
 
     # --- Out-of-band removal / selection ---

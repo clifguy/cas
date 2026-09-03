@@ -2493,10 +2493,17 @@ def register_sage_tools(
         pending schema work for this tool to apply and ``columns_added`` is
         always empty.
 
-        One data backfill runs: documents already at a successful terminal
+        Two data backfills run. Documents already at a successful terminal
         ``pipeline_status`` that still carry the ``pipeline_error`` of a
         failure they have since recovered from get that field cleared.
-        ``backfills_applied`` names the backfill only when it changed rows, so
+        Documents whose stored ``source_path`` holds a spelling ingest no
+        longer records -- a ``.`` segment, a doubled separator, or a trailing
+        one -- have it reduced to its plain form, so re-projecting them stops
+        raising ``force_reingest_path_mismatch``; each rewrite is reported in
+        ``source_paths_normalized``. A recorded path that walks out of the
+        source tree has no plain form inside it and is left as recorded;
+        ``verify_vault_source_files`` reports those.
+        ``backfills_applied`` names each backfill only when it changed rows, so
         a vault with nothing to repair reports an empty list. Idempotent: a
         re-call after a repair reports nothing further and no error.
 

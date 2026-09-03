@@ -47,6 +47,7 @@ from sage.models.schemas import (
     SourceFileIntegrityEntry,
     SourceFileIntegrityReport,
     SourceFileRestoreReport,
+    SourcePathNormalization,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
     canonicalize_sha256,
@@ -76,6 +77,10 @@ _POLL_INTERVAL_SECONDS = 0.05
 # Name reported in MigrationReport.backfills_applied when the migration
 # repaired documents whose pipeline_error outlived the failure it described.
 BACKFILL_STALE_PIPELINE_ERROR = "clear_pipeline_error_on_successful_terminal_status"
+
+# Name reported in MigrationReport.backfills_applied when the migration reduced
+# stored source paths to the single spelling ingest records.
+BACKFILL_NON_CANONICAL_SOURCE_PATH = "normalize_non_canonical_source_paths"
 
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
@@ -215,14 +220,27 @@ class MaintenanceService:
         there is no pending-column work for this method to detect or apply and
         ``columns_added`` is always empty.
 
-        One data backfill runs. A document that failed abstraction and was
-        later repaired predates the rule that a successful terminal
-        ``pipeline_status`` clears ``pipeline_error``, so it still carries the
-        message describing a failure that no longer holds. The backfill nulls
-        ``pipeline_error`` on every document already at a successful terminal
-        status and names itself in ``backfills_applied`` only when it changed
-        rows, so a clean vault still reports an empty list and a re-call after
-        a repair reports nothing further.
+        Two data backfills run, each naming itself in ``backfills_applied``
+        only when it changed rows, so a clean vault reports an empty list and a
+        re-call after a repair reports nothing further.
+
+        The first: a document that failed abstraction and was later repaired
+        predates the rule that a successful terminal ``pipeline_status`` clears
+        ``pipeline_error``, so it still carries the message describing a failure
+        that no longer holds. The backfill nulls ``pipeline_error`` on every
+        document already at a successful terminal status.
+
+        The second: a document ingested before the recorded source path was
+        reduced to one spelling can still hold another -- a ``.`` segment, a
+        doubled separator, or a trailing one. The read side resolves such a
+        path while the write-time guard refuses it, so the record names a
+        location its own bytes cannot be written back to, and re-projecting it
+        raises the cross-document path-mismatch guard rather than repairing it.
+        The backfill rewrites the stored value to the plain form ingest would
+        compute, and reports each rewrite in ``source_paths_normalized``. A path
+        that walks out of the source tree has no plain form inside it, so it is
+        left exactly as recorded; ``verify_vault_source_files`` is where that
+        condition is reported.
 
         Scan every ``unique_keys`` declaration in vault config. For each
         declared (doc_type, field), build the chain-head-grouped value map and
@@ -240,15 +258,67 @@ class MaintenanceService:
         )
         backfills_applied = [BACKFILL_STALE_PIPELINE_ERROR] if cleared else []
 
+        normalized = await self._normalize_source_paths()
+        if normalized:
+            backfills_applied.append(BACKFILL_NON_CANONICAL_SOURCE_PATH)
+
         activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
             vault_id=self._vault_id,
             columns_added=[],
             backfills_applied=backfills_applied,
+            source_paths_normalized=normalized,
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
         )
+
+    async def _normalize_source_paths(self) -> list[SourcePathNormalization]:
+        """Rewrite each stored source path that is not already in plain form.
+
+        The plain form is computed with the same function ingest records
+        through, not a second reduction that happens to agree today: the whole
+        point of the rewrite is that the path a re-projection computes and the
+        path the record holds stop differing, and two implementations of "plain
+        form" would leave that difference in place under some spelling.
+
+        A path the normalizer refuses is skipped rather than propagated as a
+        failure. There is nothing to rewrite it to, and letting the refusal
+        escape would turn one unrepairable legacy record into a failure of the
+        whole migration, taking the other backfill and the uniqueness scan with
+        it. What arrives here to be refused is an absolute path that also
+        carries a reducible segment: reducing it is a real change, so the record
+        is a candidate, but the result still names somewhere outside the vault.
+        A path walking *up* out of the tree never arrives -- it is preserved
+        rather than resolved, so it is already its own plain form and the store
+        does not offer it -- and both conditions are reported by
+        ``verify_vault_source_files`` rather than here.
+        """
+        from sage.vault_source_binding import VaultRootEscapeError, normalize_vault_relative
+
+        normalized: list[SourcePathNormalization] = []
+        for doc_id, stored in sorted(
+            (await self._graph_store.list_non_canonical_source_paths()).items()
+        ):
+            try:
+                plain = normalize_vault_relative(stored)
+            except VaultRootEscapeError:
+                continue
+            if plain == stored:
+                continue
+            # Only the path is written. The record's meaning is unchanged --
+            # this is a respelling, not a modification -- so stamping
+            # ``updated_at`` here would make every record in a legacy vault
+            # look freshly changed to the drift and staleness comparisons.
+            await self._graph_store.update_document(doc_id, {"source_path": plain})
+            normalized.append(
+                SourcePathNormalization(
+                    document_id=doc_id,
+                    previous_source_path=stored,
+                    normalized_source_path=plain,
+                )
+            )
+        return normalized
 
     async def detect_drift(self) -> DriftReport:
         """Walk every active sync_target / derived_from edge; classify drift.
