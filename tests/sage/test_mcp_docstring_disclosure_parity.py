@@ -53,8 +53,21 @@ claim rather than adding to it -- ``not``, ``never``, ``without`` and
 their kin, listed in ``_POLARITY_WORDS`` -- is *required* rather than
 counted, because one added negation in a seven-word rule clears any
 workable floor and the opposite rule would otherwise read as disclosed.
-Word order is still invisible: two claims naming the same participants
-in swapped roles reduce to one bag, and nothing here separates them.
+It is required against the claim's **counterpart sentence** on the other
+surface, not against that surface as a whole: the whole-surface form
+reads stronger than it is, since the vocabulary is a set and one ``not``
+anywhere satisfies every claim's polarity at once, leaving the check
+live only against a surface that never negates at all.
+
+Three things it still does not see, all by construction. **Word order**:
+two claims naming the same participants in swapped roles reduce to one
+bag. **Sub-floor fragments**: a negation inside a claim shorter than
+``MIN_CLAIM_WORDS`` is dropped before comparison, so "do not appear
+here" is never examined. **Double negation**: polarity is a set, so
+removing one of two negations in a sentence leaves it unchanged. Each is
+a place where a flip passes, and none is a defect awaiting a fix -- they
+are the price of a bag-of-words relation, recorded so a reader does not
+infer coverage the module never claimed.
 
 One known cutoff: ``_STRUCTURAL_HEADER`` treats ``Note:`` as the end of
 a narrative, so a docstring stating a rule under that heading has it
@@ -174,14 +187,22 @@ def _claim_sentences(text: object, prose_only: bool = True) -> list[str]:
 # nothing about which claim a sentence makes, and leaving them in would
 # let any two sentences cover one another.
 #
-# Polarity, quantifier and modal words are deliberately NOT here --
-# ``not``, ``no``, ``never``, ``without``, ``only``, ``unless``, ``all``,
-# ``any``, ``every``, ``before``, ``after``, ``must``, ``can``. They are
-# common enough to look like function words and are the entire content of
-# a claim's polarity, so stripping them let a surface state the opposite
-# rule and stay covered: a rule and its negation reduced to the same bag.
-# They are rare enough per sentence not to cause the indiscriminate
-# matching this list exists to prevent.
+# Words that carry a claim's meaning are deliberately NOT here, even
+# where they look like function words. Three groups came out: negations
+# and their kin (``not``, ``no``, ``never``, ``without``, ``unless``,
+# ``nor``, ``neither``); scope words (``only``, ``all``, ``any``,
+# ``every``, ``before``, ``after``, ``until``, ``ever``, ``still``,
+# ``but``); and the deontic modals (``must``, ``can``, ``could``). They
+# are the entire content of a claim's polarity or scope, so stripping
+# them let a surface state the opposite rule and stay covered -- a rule
+# and its negation reduced to the same bag -- and they are rare enough
+# per sentence not to cause the indiscriminate matching this list exists
+# to prevent.
+#
+# The epistemic modals (``may``, ``should``, ``would``) and the
+# distributives that read as grammar rather than scope (``each``,
+# ``both``, ``some``) stay: they qualify a claim without inverting or
+# bounding it, and no enrolled pair's coverage turns on them.
 _FUNCTION_WORDS: Final[frozenset[str]] = frozenset(
     """a an the and or so for yet of to in on at by from with
     is are was were be been being it its this that these those there here as
@@ -236,9 +257,56 @@ def _coverage(claim: str, surface_words: frozenset[str]) -> float:
     words = _content_words(claim)
     if not words:
         return 1.0
-    if (words & _POLARITY_WORDS) - surface_words:
-        return 0.0
     return len(words & surface_words) / len(words)
+
+
+# A claim must share at least this fraction of its content words with a
+# sentence for that sentence to be its counterpart. Below it the two are
+# talking about different things, and comparing their polarity would be
+# comparing unrelated rules.
+_COUNTERPART_FLOOR: Final[float] = 0.50
+
+
+def _counterpart(claim: str, others: list[str]) -> str | None:
+    """The sentence on the other surface that best matches this claim."""
+    words = _content_words(claim)
+    if not words:
+        return None
+    best, best_score = None, 0.0
+    for other in others:
+        other_words = _content_words(other)
+        if not other_words:
+            continue
+        score = len(words & other_words) / len(words)
+        if score > best_score:
+            best, best_score = other, score
+    return best if best_score >= _COUNTERPART_FLOOR else None
+
+
+def _polarity_disagrees(claim: str, others: list[str], surface_words: frozenset[str]) -> bool:
+    """Whether the other surface contradicts this claim's polarity.
+
+    Checked against the claim's **counterpart sentence**, not against the
+    opposing surface as a whole. Whole-surface was the first attempt and
+    is far weaker than it reads: the vocabulary is a set, so one ``not``
+    anywhere on the other side satisfies every claim's polarity
+    requirement at once. A rule and its opposite then pass whenever the
+    other surface negates something else -- which every enrolled
+    contract does -- and the check fires only on a surface that never
+    negates at all.
+
+    A claim with no counterpart above ``_COUNTERPART_FLOOR`` falls back
+    to the whole-surface test rather than being exempted: no mate means
+    the claim is undisclosed on the coverage fraction anyway, and
+    exempting it would be the one direction that can only lose signal.
+    """
+    polarity = _content_words(claim) & _POLARITY_WORDS
+    if not polarity:
+        return False
+    mate = _counterpart(claim, others)
+    if mate is None:
+        return bool(polarity - surface_words)
+    return bool(polarity - _content_words(mate))
 
 
 def _identifiers(text: object) -> set[str]:
@@ -259,7 +327,11 @@ def _surface_words(claims: list[str]) -> frozenset[str]:
 def _uncovered(claims: list[str], others: list[str], floor: float = COVERAGE_FLOOR) -> list[str]:
     """Claims the other surface does not disclose at ``floor``."""
     vocabulary = _surface_words(others)
-    return [c for c in claims if _coverage(c, vocabulary) < floor]
+    return [
+        c
+        for c in claims
+        if _polarity_disagrees(c, others, vocabulary) or _coverage(c, vocabulary) < floor
+    ]
 
 
 def disclosure_divergence(
@@ -287,15 +359,25 @@ def disclosure_divergence(
     pair reports a divergence that is one of placement rather than
     disclosure -- two enrolled pairs do exactly that, verified.
 
-    The two widenings correspond, which is what keeps the comparison
-    even. A docstring's ``Args:`` and ``Error modes:`` blocks are
-    matched by ``parameters[*].description`` and
-    ``responses[*].description`` on the contract side (supplied as
-    ``description_whole``), and by nothing further: component-schema
-    property prose is a much larger pool that answers to its own gate,
-    and drawing on it here would make the tool-says-more direction --
-    the direction most pairs diverge in -- quietly weaker than its
-    mirror.
+    What each side widens to is stated rather than assumed, because the
+    two are close but not mirrors. The docstring side widens to the
+    whole docstring, ``Args:`` and ``Error modes:`` included. The
+    contract side widens to ``parameters[*].description``,
+    ``responses[*].description`` and the ``requestBody``'s own
+    ``description`` (supplied as ``description_whole``), and no further:
+    component-schema property prose is a much larger pool answering to
+    its own gate.
+
+    The residue is deliberate. For a tool whose arguments travel in a
+    request body, an ``Args:`` entry describes a body *field*, whose
+    contract mirror is schema-property prose that this pool excludes --
+    so the docstring side can disclose something the contract side
+    cannot be credited for. ``chain`` is the live instance: its
+    "the result is symmetric" claim scores 0.455 against the docstring's
+    prose and 1.000 against the whole docstring, disclosed only under an
+    ``Args:`` entry. That is legitimate disclosure; the asymmetry it
+    creates is the cost of leaving schema prose to the gate that owns
+    it.
 
     This is the single entry point every test goes through, so a probe
     that plants a divergence in either input traverses the whole
@@ -365,6 +447,8 @@ def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
     narrative = f"{operation.get('summary') or ''}\n\n{operation.get('description') or ''}"
     structural = [_described(spec, node) for node in (operation.get("parameters") or [])]
     structural += [_described(spec, node) for node in (operation.get("responses") or {}).values()]
+    if operation.get("requestBody"):
+        structural.append(_described(spec, operation["requestBody"]))
     return (
         tool.description or "",
         narrative,
@@ -415,7 +499,16 @@ class Pin(NamedTuple):
     measurements but were asserted by nothing, so a pinned pair could
     drift further -- including in the exact direction this module
     exists to close, a contract gaining a rule its tool never gets --
-    and stay green. Held as a ceiling, so divergence can only shrink.
+    and stay green.
+
+    Asserted as an **equality**, not a ceiling. A ceiling holds against
+    the pin rather than against the pair: reconcile five of a pair's ten
+    spec-only claims and nothing forces the pin down, so a later spec
+    edit adding five rules the tool never gets restores the old count
+    and stays green, hidden behind slack the earlier reconciliation
+    created. Equality spends a little friction -- reconciling a pinned
+    pair reddens until its pin is lowered in the same change -- to buy a
+    ratchet that moves in one direction only.
     """
 
     spec_only: int
@@ -430,7 +523,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "get_filename_metadata"): Pin(7, 4),
     ("sage_core", "get_vault_config"): Pin(6, 3),
     ("sage_core", "get_vault_stats"): Pin(6, 1),
-    ("sage_core", "ingest_document"): Pin(12, 15),
+    ("sage_core", "ingest_document"): Pin(13, 16),
     ("sage_core", "list_pending_metadata"): Pin(7, 3),
     ("sage_core", "list_vaults"): Pin(4, 5),
     ("sage_core", "migrate_vault"): Pin(8, 10),
@@ -444,10 +537,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "search"): Pin(3, 12),
     ("sage_core", "traverse"): Pin(5, 1),
     ("sage_core", "update_lifecycles"): Pin(9, 7),
-    ("sage_core", "update_metadata"): Pin(9, 17),
+    ("sage_core", "update_metadata"): Pin(9, 18),
     ("sage_core", "update_vault_config"): Pin(7, 8),
-    ("sage_core", "verify_hashes"): Pin(3, 5),
-    ("sage_core", "verify_vault_drift"): Pin(4, 7),
+    ("sage_core", "verify_hashes"): Pin(4, 5),
+    ("sage_core", "verify_vault_drift"): Pin(5, 7),
     ("sage_core", "verify_vault_source_files"): Pin(3, 7),
     ("cas_app", "bulk_ingest_document"): Pin(9, 37),
     ("cas_app", "list_directory"): Pin(6, 9),
@@ -601,16 +694,26 @@ def test_unenrolled_pins_are_not_stale(surface_name: str, tool_name: str):
         "disclose the same claims. Delete the pin and add the pair to "
         "ENROLLED_PAIRS -- that is the only direction this list moves."
     )
-    assert len(spec_only) <= pin.spec_only, (
-        f"{tool_name}: the contract now states {len(spec_only)} claim(s) the "
-        f"tool docstring does not, against {pin.spec_only} when it was pinned. "
-        "A pinned pair may be reconciled, never widened -- this is the "
-        f"direction this module exists to close. New: {spec_only}"
+    assert len(spec_only) == pin.spec_only, (
+        f"{tool_name}: the contract states {len(spec_only)} claim(s) the tool "
+        f"docstring does not, against {pin.spec_only} when it was pinned. "
+        + (
+            "Widening is the direction this module exists to close: reconcile "
+            f"the pair, or fix whatever added the claim. New: {spec_only}"
+            if len(spec_only) > pin.spec_only
+            else "Fewer is progress -- lower the pin to the new count in this "
+            "same change, so the next widening is measured against what the "
+            "pair actually discloses rather than against its old slack."
+        )
     )
-    assert len(doc_only) <= pin.doc_only, (
-        f"{tool_name}: the tool docstring now states {len(doc_only)} claim(s) "
-        f"the contract does not, against {pin.doc_only} when it was pinned. "
-        f"New: {doc_only}"
+    assert len(doc_only) == pin.doc_only, (
+        f"{tool_name}: the tool docstring states {len(doc_only)} claim(s) the "
+        f"contract does not, against {pin.doc_only} when it was pinned. "
+        + (
+            f"New: {doc_only}"
+            if len(doc_only) > pin.doc_only
+            else "Fewer is progress -- lower the pin to the new count in this same change."
+        )
     )
 
 
@@ -810,40 +913,94 @@ def test_a_token_comparison_would_not_have_caught_the_containment_drift():
     )
 
 
-def test_a_rule_flipped_to_its_opposite_is_reported():
-    """Negative control on polarity.
+# Flips whose only content-word difference is the negation itself, so the
+# coverage fraction still clears the floor and the polarity rule is the
+# only thing that can report them. The pair with an unrelated negation on
+# both surfaces is the shape the first implementation missed: it required
+# a claim's polarity against the *whole* opposing surface, where one
+# ``not`` anywhere satisfied every claim at once.
+_POLARITY_FLIPS: Final[tuple[tuple[str, str, str], ...]] = (
+    (
+        "A retained copy is not rewritten when its digest already matches the record.",
+        "A retained copy is always rewritten when its digest already matches the record.",
+        "plain negation",
+    ),
+    (
+        "Body content is not read by this call at any point.",
+        "Body content is read by this call at any point.",
+        "negation carrying the whole rule",
+    ),
+    (
+        "A retained copy is not rewritten when its digest already matches the record.\n\n"
+        "Nothing is written when the vault is not registered for retention.",
+        "A retained copy is always rewritten when its digest already matches the record.\n\n"
+        "Nothing is written when the vault is not registered for retention.",
+        "negation present elsewhere on both surfaces",
+    ),
+)
 
-    Coverage is a bag of content words, so without polarity treated as
-    required a surface could state the opposite rule and stay covered:
-    a rule and its negation reduce to nearly the same bag, and one added
-    ``not`` in a seven-word claim clears any workable fraction. Each
-    flip below returned no divergence at all before that changed.
+
+@pytest.mark.parametrize(
+    ("stated", "flipped", "shape"),
+    _POLARITY_FLIPS,
+    ids=[shape.replace(" ", "-") for _s, _f, shape in _POLARITY_FLIPS],
+)
+def test_a_rule_flipped_to_its_opposite_is_reported(stated: str, flipped: str, shape: str):
+    """A surface stating the opposite rule is reported."""
+    spec_only, doc_only = disclosure_divergence(stated, flipped)
+    assert spec_only or doc_only, f"a rule and its opposite read as the same disclosure ({shape})"
+
+
+@pytest.mark.parametrize(
+    ("stated", "flipped", "shape"),
+    _POLARITY_FLIPS,
+    ids=[shape.replace(" ", "-") for _s, _f, shape in _POLARITY_FLIPS],
+)
+def test_each_polarity_flip_is_reported_by_the_polarity_rule_alone(
+    stated: str, flipped: str, shape: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Each flip above is caught by the polarity rule and nothing else.
+
+    The control this replaces asserted only that the flips were reported,
+    and two of its three fixtures were reported by the coverage fraction
+    instead -- their negations became ordinary content words when the
+    polarity list stopped treating them as function words, and the
+    fraction fell below the floor on its own. So the control passed
+    identically against the rule it was written to constrain and against
+    no rule at all, and could not have told the whole-surface
+    implementation from the per-counterpart one either.
+
+    Disabling the rule and requiring silence is what makes each fixture
+    a test of the rule rather than of the fraction.
     """
-    flips = [
-        (
-            "A recorded path that is a link is refused by the store rather "
-            "than landing wherever the link points.",
-            "A recorded path that is a link is never refused by the store "
-            "and lands wherever the link points.",
-        ),
-        (
-            "Body content is not read by this call at any point.",
-            "Body content is read by this call at any point.",
-        ),
-        (
-            "The store writes nothing without an explicit confirmation from the caller.",
-            "The store writes with an explicit confirmation from the caller.",
-        ),
-    ]
-    for stated, flipped in flips:
-        spec_only, doc_only = disclosure_divergence(stated, flipped)
-        assert spec_only or doc_only, (
-            f"a rule and its opposite were read as the same disclosure: {stated!r}"
-        )
+    monkeypatch.setattr(
+        "tests.sage.test_mcp_docstring_disclosure_parity._POLARITY_WORDS", frozenset()
+    )
+    spec_only, doc_only = disclosure_divergence(stated, flipped)
+    assert not spec_only and not doc_only, (
+        f"the {shape!r} fixture is reported with the polarity rule disabled, so it "
+        f"tests the coverage fraction rather than polarity: {spec_only or doc_only}"
+    )
 
-    # The control must not pass by reporting everything.
-    spec_only, doc_only = disclosure_divergence(_SHARED_PREAMBLE, _SHARED_PREAMBLE)
-    assert not spec_only and not doc_only
+
+def test_polarity_is_checked_against_the_counterpart_not_the_whole_surface():
+    """The rule survives an unrelated negation on the opposing surface.
+
+    Pins the difference between the two implementations directly, so a
+    reversion to whole-surface polarity fails here rather than silently
+    weakening every enrolled pair.
+    """
+    stated, flipped, _shape = _POLARITY_FLIPS[2]
+    claim = [c for c in _claim_sentences(stated) if "rewritten" in c][0]
+    others = _claim_sentences(flipped)
+
+    assert _polarity_disagrees(claim, others, _surface_words(others)), (
+        "the flip must be reported even though the other surface negates elsewhere"
+    )
+    assert not (_content_words(claim) & _POLARITY_WORDS) - _surface_words(others), (
+        "precondition: whole-surface polarity is satisfied here, which is exactly "
+        "why the earlier implementation stayed silent"
+    )
 
 
 def test_a_near_miss_claim_is_reported_at_the_floor_and_not_below():
@@ -853,8 +1010,10 @@ def test_a_near_miss_claim_is_reported_at_the_floor_and_not_below():
     both are reported at any floor -- so nothing else would notice
     ``COVERAGE_FLOOR`` drifting to a value at which the gate is inert.
     This claim shares all but three of its content words with the
-    preamble (0.75 coverage, measured), so it must be reported at 0.80
-    and must not be at 0.70.
+    preamble (0.75 coverage, measured), so it must be reported at
+    ``COVERAGE_FLOOR`` and must not be one step below it. The assertions
+    derive both floors from the constant, so moving the constant moves
+    the test with it.
     """
     near_miss = (
         "The repair counterpart reports a retained copy that changed outside "
