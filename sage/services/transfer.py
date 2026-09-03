@@ -32,16 +32,21 @@ import secrets
 import shutil
 import tempfile
 import threading
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from sage.api.errors import (
     TransferAlreadyStagedError,
     TransferNotStagedError,
     TransferTokenInvalidError,
 )
+
+if TYPE_CHECKING:
+    from sage.models.schemas import UploadRecipe
 
 #: Header carrying the upload token on the transfer endpoint's PUT leg.
 UPLOAD_TOKEN_HEADER = "X-Upload-Token"  # noqa: S105 -- header *name*, not a credential
@@ -496,3 +501,140 @@ def mint_download_recipe_for_projection(
         filename=filename,
         write_to_path=write_to_path,
     )
+
+
+# -- the caller-local delivery gate ----------------------------------------
+#
+# Every tool that reads bytes from the caller's filesystem faces the same
+# question in the same order: is this call's delivery shape well formed, can
+# this process reach the paths it names, and if it cannot, what recipe does
+# the caller's environment run before calling back? The answer straddles the
+# tool boundary -- it decides whether to return a recipe *instead of* doing
+# the work -- so it cannot be a service the tools call through. It is instead
+# a gate the tools apply, expressed once here.
+#
+# The gate is one context-managed call rather than a set of helpers on
+# purpose. Separate validate/plan/redeem helpers can each be omitted
+# independently, and an omission is exactly the drift this exists to prevent:
+# a tool would silently publish a narrower or wider delivery contract than its
+# siblings. There is no way to reach the redeemed bytes without passing
+# through the contract check and the reachability decision, because they are
+# the same call.
+
+
+@dataclass(frozen=True)
+class DeliveryDeclaration:
+    """One file's caller-declared delivery shape.
+
+    Exactly one field is populated: ``source`` names a path, and
+    ``transfer_token`` redeems bytes the caller's environment already
+    delivered to the upload endpoint. Supplying both is ambiguous and
+    supplying neither says nothing; the gate refuses both ways rather than
+    resolving to whichever it happens to inspect first.
+    """
+
+    source: str | None = None
+    transfer_token: str | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedDelivery:
+    """Where one declaration's bytes are, from this process's side of the gate."""
+
+    #: The path to read: a redeemed token's staging location, or the caller's
+    #: own path when this process shares its filesystem.
+    path: str
+    #: The path the caller named, when it differs from ``path`` -- ``None``
+    #: when the two agree. Offered rather than required: a consumer that
+    #: reports a path back to the caller threads this down so a refusal names
+    #: the caller's own spelling instead of a server-side staging location,
+    #: which is what the ingest paths do with it. A consumer whose downstream
+    #: accepts no such parameter leaves it unread and names the resolved path.
+    declared_source: str | None = None
+
+
+@dataclass(frozen=True)
+class DeliveryPlan:
+    """The gate's answer for one call's declarations.
+
+    Exactly one side is populated. ``recipe`` means this process cannot reach
+    the caller's paths and the bytes must be delivered before the work can
+    run; the tool returns it and does nothing else. ``resolved`` means the
+    call may proceed, and is index-aligned with the declarations it was built
+    from.
+    """
+
+    recipe: UploadRecipe | None = None
+    resolved: tuple[ResolvedDelivery, ...] = ()
+
+
+@contextmanager
+def caller_local_delivery(
+    vault_id: str, declarations: Sequence[DeliveryDeclaration]
+) -> Iterator[DeliveryPlan]:
+    """Apply the caller-local delivery gate to one call's declarations.
+
+    Validates each declaration's delivery shape, decides whether this process
+    can reach the caller's filesystem, and either mints an upload recipe or
+    redeems the declared tokens. Redeemed staging directories are reclaimed
+    when the block exits, however it exits.
+
+    An absolute path names a file on the *caller's* machine, readable here
+    only when the two are co-located. When they are not, the gate mints a
+    recipe rather than reading this process's own tree -- the caller's
+    environment delivers the bytes and repeats the call with the recipe's
+    tokens. A relative path is a vault-store reference the active binding
+    resolves (CAS-ADR-043), so it is never minted for and is passed through
+    unchanged.
+
+    Minting happens before any redemption, so a call the gate answers with a
+    recipe consumes no token.
+
+    Raises:
+        AmbiguousIngestSourceError: a declaration carries both shapes.
+        MissingIngestSourceError: a declaration carries neither.
+        TransferTokenInvalidError: a token is unknown, expired, consumed, or
+            scoped to another vault.
+        TransferNotStagedError: a token's bytes have not been delivered yet.
+        TransferEndpointNotConfiguredError: a recipe is due but the
+            deployment declares no public base URL.
+    """
+    from sage.api.errors import AmbiguousIngestSourceError, MissingIngestSourceError
+    from sage.mcp_init import caller_local_filesystem_reachable
+
+    for declaration in declarations:
+        if declaration.source is not None and declaration.transfer_token is not None:
+            raise AmbiguousIngestSourceError()
+        if declaration.source is None and declaration.transfer_token is None:
+            raise MissingIngestSourceError()
+
+    if not caller_local_filesystem_reachable():
+        unreachable = [
+            d.source for d in declarations if d.source is not None and Path(d.source).is_absolute()
+        ]
+        if unreachable:
+            yield DeliveryPlan(recipe=mint_upload_recipe(vault_id, unreachable))
+            return
+
+    store = get_transfer_store()
+    consumed: list[PendingTransfer] = []
+    try:
+        resolved: list[ResolvedDelivery] = []
+        for declaration in declarations:
+            if declaration.transfer_token is not None:
+                entry = store.consume_upload(declaration.transfer_token, vault_id)
+                consumed.append(entry)
+                # The staged path is where the bytes are; the caller's own
+                # path is what a refusal names back at it.
+                resolved.append(
+                    ResolvedDelivery(
+                        path=str(entry.staged_path),
+                        declared_source=entry.declared_source,
+                    )
+                )
+            else:
+                resolved.append(ResolvedDelivery(path=declaration.source))
+        yield DeliveryPlan(resolved=tuple(resolved))
+    finally:
+        for entry in consumed:
+            entry.cleanup()
