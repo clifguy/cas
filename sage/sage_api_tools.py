@@ -1212,12 +1212,14 @@ def register_sage_tools(
     ) -> dict:
         """Walk an edge chain to both ends from a starting document.
 
-        Returns an ordered list of all documents in the chain with
-        positional metadata (head, tail, query position, linearity).
-        Designed for version history retrieval on supersedes chains
-        but works with any edge type. A document with no edges of the
-        requested type returns a single-entry chain (the document
-        itself as both head and tail).
+        Follows edges of a single type in both directions from the
+        starting document, collecting all reachable nodes into an
+        ordered list with positional metadata (head, tail, query
+        position, linearity). Uses a single recursive CTE round-trip
+        regardless of chain length. Designed for version history
+        retrieval on supersedes chains but works with any edge type. A
+        document with no edges of the requested type returns a
+        single-entry chain (the document itself as both head and tail).
 
         ``linearity`` in the response reports whether the chain is
         strictly linear, branched (multiple successors), or forks
@@ -1764,9 +1766,11 @@ def register_sage_tools(
     ) -> dict:
         """List all heading paths for a document in document order.
 
-        Returns the structural table of contents (heading paths only) without
-        reading body content. Use this to verify a document's structure or
-        pick a heading path before calling read_section.
+        Returns the distinct heading paths present in a document, ordered
+        by their position in the source -- the structural table of
+        contents. Body content is not read. Use this to verify a
+        document's structure or pick a heading path before calling
+        read_section.
 
         Replaces the antipattern of calling read_section with a
         deliberately wrong heading path to harvest ``available_headings``
@@ -2168,9 +2172,10 @@ def register_sage_tools(
         - **Tier 1** (e.g. ``supersedes`` via version_chain, ``sync_target``
           via re_ingestion): high-confidence inferences. Created
           directly as production edges; do not appear here.
-        - **Tier 2** (e.g. ``references`` via content_reference): inferred
-          edges that require human review. Land in the staging-edge
-          table; surfaced by this tool until confirmed or dismissed.
+        - **Tier 2** (``references`` via content_reference, ``covers`` via
+          filename_code_match): inferred edges that require human review.
+          Land in the staging-edge table; surfaced by this tool until
+          confirmed or dismissed.
         - **Tier 3**: agent-supplied edges (``derived_from``,
           ``depends_on``); not inferred, so do not pass through staging.
 

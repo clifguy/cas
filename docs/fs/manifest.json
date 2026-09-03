@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.22",
+      "version": "0.23",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.65",
+  "substrate_version": "1.66",
   "revision_history": [
+    {
+      "version": "1.66",
+      "date": "2026-09-03",
+      "summary": "Gate a tool docstring against the operation description it implements. sage_core_api.openapi.yaml bumped v0.22->v0.23: the verify_preconditions operation's summary now reads as the tool's own summary line does, naming what is checked (all depends_on targets satisfied -- dependency-satisfying lifecycle, pipeline not failed) rather than restating it as targets existing and being in a valid state. No schema or operation shape changes. The two surfaces already agreed on the rule; they disagreed on how it reads, which is the whole class this change exists to close. Precedent for the alignment is the source-file repair operation, whose summary and docstring first line are already byte-identical. Code (not in this spec): three tool docstrings in sage/sage_api_tools.py gain claims their operation descriptions already carried and they did not -- list_staging_edges names covers via filename_code_match beside references via content_reference, so the tier-2 bullet enumerates both inference rules the contract enumerates rather than one; chain states that it follows edges of a single type in both directions collecting reachable nodes into an ordered list, and that it uses a single recursive CTE round-trip regardless of chain length; list_headings states that the paths are distinct and ordered by their position in the source, and that body content is not read. Tests: a new gate, tests/sage/test_mcp_docstring_disclosure_parity.py, compares the two prose surfaces of a mapped pair, which nothing did before -- the argument-conformance gate compares parameter shape and the description-parity gate compares Pydantic fields against YAML properties, and neither reaches the prose on a tool. It runs two complementary comparisons, both bidirectional. Claims are compared by content-word coverage against the whole opposing surface, which is order- and length-insensitive because the two surfaces order the same rules differently and one routinely elaborates what the other states once; verbatim equality is impossible here and set equality over quoted tokens is worse than insufficient, since neither of the two divergences this gate was built for introduced a token. Names are compared exactly and by snake_case shape rather than by markup, because coverage tolerates a claim that survives almost intact and that is the wrong tolerance for an identifier: a probe deleting one inference rule from a docstring cleared the claim check and failed the name check. Enrollment is a ratchet -- four pairs are held to the relation, every other mapped pair is pinned with the divergence measured when it was pinned, and a staleness test rejects a pin the moment its pair comes clean, so the list only shrinks and enrollment is forced rather than volunteered. Both historical divergences are carried as regression fixtures built from the prose as it stood, each asserting the relation reports the drift and falls silent once reconciled. The published-document, verbatim-description, YAML<->Pydantic parity, MCP-tool-conformance, self-documentation, public-posture and collection-integrity gates pass with no new allowlist entries."
+    },
     {
       "version": "1.65",
       "date": "2026-09-03",

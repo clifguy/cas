@@ -955,7 +955,8 @@ paths:
   /sage_vaults/{vault_id}/preconditions/{function_id}:
     get:
       operationId: verify_preconditions
-      summary: Verify that all depends_on targets exist and are in valid state.
+      summary: Check whether all depends_on targets for a function document are
+        satisfied (dependency-satisfying lifecycle, pipeline not failed).
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
         target, verifies the lifecycle status is one the vault's
