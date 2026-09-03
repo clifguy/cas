@@ -902,13 +902,13 @@ paths:
         Follows edges of a single type in both directions from the
         starting document, collecting all reachable nodes into an
         ordered list. Returns positional metadata (head, tail, query
-        position) and a `linearity` flag.
+        position) and an `is_linear` flag.
 
 
         Designed for version history retrieval (supersedes chains) but
         works with any edge type that forms a linear or near-linear
-        chain. Uses a single recursive CTE round-trip regardless of
-        chain length.
+        chain. The walk itself is one recursive CTE whatever the chain
+        length, followed by a query for the connecting edges.
 
 
         The result is symmetric: any chain member returns the full
@@ -917,10 +917,12 @@ paths:
         chain (the document itself as both head and tail).
 
 
-        `linearity` reports whether the chain is strictly linear,
-        branched (multiple successors), or forks somewhere in the
-        lineage -- relevant when chasing supersedes chains that have
-        not yet been merged.
+        `is_linear` is true when the chain is strictly linear: no
+        document shares a predecessor or a successor of the requested
+        edge type with another. False marks a fork or a merge in the
+        lineage -- a data quality problem rather than an ordinary shape,
+        and worth surfacing when chasing supersedes chains that have not
+        yet been reconciled.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -955,7 +957,8 @@ paths:
   /sage_vaults/{vault_id}/preconditions/{function_id}:
     get:
       operationId: verify_preconditions
-      summary: Verify that all depends_on targets exist and are in valid state.
+      summary: Check whether all depends_on targets for a function document are
+        satisfied (dependency-satisfying lifecycle, pipeline not failed).
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
         target, verifies the lifecycle status is one the vault's
@@ -966,7 +969,9 @@ paths:
         Returns a `satisfied` boolean plus a per-edge breakdown of
         failing reasons (e.g. predecessor still in projection, target
         archived) so the caller can act on the gap rather than
-        re-querying each dependency.
+        re-querying each dependency. A target the vault does not hold
+        is reported unsatisfied with `actual` of "not found" rather
+        than raising.
 
 
         Despite the path parameter name `function_id`, this operation
@@ -1595,10 +1600,11 @@ paths:
           `sync_target` via re_ingestion): high-confidence inferences.
           Created directly as production edges; do not appear here.
 
-        - **Tier 2** (e.g. `references` via content_reference,
-          `covers` via filename_code_match): inferred edges that
-          require human review. Land in the staging-edge table;
-          surfaced by this operation until confirmed or dismissed.
+        - **Tier 2** (e.g. `references` via identifier_mention or the
+          superseded content_reference placeholder, `covers` via
+          filename_code_match): inferred edges that require human
+          review. Land in the staging-edge table; surfaced by this
+          operation until confirmed or dismissed.
 
         - **Tier 3**: agent-supplied edges (`derived_from`,
           `depends_on`); not inferred, so do not pass through staging.
