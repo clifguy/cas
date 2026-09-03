@@ -35,11 +35,8 @@ import hashlib
 import http.server
 import json
 import os
-import socket
 import subprocess
 import sys
-import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -47,12 +44,14 @@ from typing import Any, Final
 
 import pytest
 
+from tests.deploy._stub_server import serve_threaded, serve_uvicorn
+
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _DRIVER: Final[Path] = _REPO_ROOT / "deploy" / "sharepoint_validate.py"
 _CI_VAULT_CONFIG: Final[Path] = _REPO_ROOT / "tests" / "fixtures" / "ci_test_vault_config.yaml"
 
 try:  # the faithful layer needs the app; the structural and trap layers do not
-    import uvicorn
+    import uvicorn  # noqa: F401 -- importability is the faithful layer's skip signal
     import yaml
 
     from sage.adapters.stubs import StubContentStore
@@ -71,12 +70,6 @@ _NEEDS_REAL = pytest.mark.skipif(
     not (_REAL_SERVER and _PG_DSN),
     reason="real-server layer needs sage + uvicorn importable and SAGE_TEST_PG_DSN set",
 )
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def _run_driver(
@@ -159,20 +152,8 @@ def _serve_real(tmp_path: Path) -> Iterator[str]:
 
     os.environ["SAGE_TEST_STUB_PROVIDERS"] = "1"
     app = create_app(config=config, content_store_factory=lambda _root: StubContentStore())
-    port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 30
-    while not getattr(server, "started", False):
-        if time.monotonic() > deadline:
-            raise RuntimeError("uvicorn did not start within 30s")
-        time.sleep(0.05)
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)
+    with serve_uvicorn(app) as base_url:
+        yield base_url
 
 
 @_NEEDS_REAL
@@ -232,7 +213,6 @@ def rest_stub(mode: str) -> Iterator[str]:
     """A threaded HTTP stub for the four edge calls the driver makes. ``mode``
     selects a well-behaved surface or one of three pathologies.
     """
-    port = _free_port()
     captured: dict[str, bytes] = {}
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -330,15 +310,8 @@ def rest_stub(mode: str) -> Iterator[str]:
                 return
             self._json({"error": "unexpected"}, status=404)
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+    with serve_threaded(lambda _base_url: _Handler) as base_url:
+        yield base_url
 
 
 def test_trap_good_stub_passes(tmp_path: Path) -> None:
