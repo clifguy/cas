@@ -2690,11 +2690,12 @@ def register_sage_tools(
         is not the copy the record names, and the write is refused
         (``vault_source_path_refused``) rather than landing wherever the link
         points. Remove the link and re-run. Where a write does happen
-        the copy is re-read, and the record's ``stored_content_hash`` follows it
-        only where the store demonstrably rewrote the bytes -- which is what
-        happens under a store that rewrites its copy at rest, where writing the
-        original bytes back yields a correct but freshly rewritten copy. The
-        provenance digest is never touched.
+        the store reports the digest of the copy it now holds, and the record's
+        ``stored_content_hash`` follows it only where the store demonstrably
+        rewrote the bytes -- which is what happens under a store that rewrites
+        its copy at rest, where writing the original bytes back yields a
+        correct but freshly rewritten copy. The provenance digest is never
+        touched.
 
         Two report fields say what the call could and did not establish.
         ``provenance_verified`` is false only for a pinned restore of a document

@@ -2169,6 +2169,101 @@ async def test_restore_source_file_refuses_an_out_of_root_recorded_path(
     assert target.read_bytes() == body
 
 
+async def test_restore_source_file_streams_the_delivered_file(
+    graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
+):
+    """The delivered file is never loaded whole: a restore of a file spanning
+    several read chunks succeeds with whole-file reads forbidden.
+
+    Anti-coincidental-pass: whole-file reads of the delivered file are refused
+    for the duration of the restore call only -- the fixtures around it read
+    whole files themselves -- both ``read_bytes`` (the shape this replaces) and
+    any unsized read on an open handle, so a restore that materializes the
+    file by either route fails inside the call. The bytes on disk are compared
+    afterwards, so a streamed copy that mishandled a chunk boundary fails on
+    content, and the audit going clean is the end-to-end control.
+    """
+    from sage.vault_source_binding import _SOURCE_CHUNK_BYTES
+    from tests.helpers.bounded_reads import refuse_whole_reads
+
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_stream.md"
+    length = 3 * _SOURCE_CHUNK_BYTES + 1
+    original = (bytes(range(256)) * (length // 256 + 1))[:length]
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(_src_doc("deadbeef_stream", _sha256_of(original), source_path=sp))
+    on_disk.write_bytes(b"drifted")
+    delivered = _delivered(tmp_path, "big.md", original)
+
+    with monkeypatch.context() as m:
+        refuse_whole_reads(m, Path(delivered), _SOURCE_CHUNK_BYTES)
+        report = await maint.restore_vault_source_file(delivered)
+
+    assert report.status == "restored"
+    assert on_disk.read_bytes() == original
+    post = await maint.verify_vault_source_files(check_hashes=True)
+    assert post.summary["hash_mismatch"] == 0
+
+
+async def test_restore_source_file_takes_the_stored_digest_from_the_write(
+    graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
+):
+    """The as-stored digest the report and the record carry is the one the
+    write returned; the copy is not hashed again afterwards.
+
+    The store is the only party that knows whether it rewrote the bytes, so the
+    write reports the digest of what it now holds and the restore takes that
+    answer rather than re-reading the copy to reconstruct it.
+
+    Anti-coincidental-pass: the store under test writes the real bytes but
+    returns a sentinel digest no hashing of the file could produce, so an
+    implementation that ignored the return value and re-hashed reports the
+    real digest and fails; ``hash_source`` is counted and must have run exactly
+    once -- the pre-write observation still needs it -- so a trailing re-read
+    fails on the count even if it happened to agree. The sentinel differs from
+    both the recorded and the delivered digest, so the refresh rule fires and
+    the record is asserted to carry it.
+    """
+    from sage.vault_source_binding import FilesystemVaultSourceStore
+
+    sentinel = "sha256:" + "f" * 64
+    hash_calls: list[str] = []
+
+    class _ReportingStore(FilesystemVaultSourceStore):
+        def write_source(self, vault_id, storage_root, source_path, source_file):
+            super().write_source(vault_id, storage_root, source_path, source_file)
+            return sentinel
+
+        def hash_source(self, vault_id, storage_root, source_path):
+            hash_calls.append(source_path)
+            return super().hash_source(vault_id, storage_root, source_path)
+
+    monkeypatch.setattr(
+        MaintenanceService, "_vault_source_store", lambda self: _ReportingStore(Path("/unused"))
+    )
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+
+    sp = "imports/deadbeef_fromwrite.md"
+    original = b"the bytes the caller delivered"
+    on_disk = _write_source(minimal_config, sp, original)
+    await gs.insert_document(_src_doc("deadbeef_fromwrite", _sha256_of(original), source_path=sp))
+    on_disk.write_bytes(b"drifted")
+
+    report = await maint.restore_vault_source_file(_delivered(tmp_path, "x.md", original))
+
+    assert report.status == "restored"
+    assert report.stored_content_hash == sentinel
+    assert report.record_refreshed is True
+    assert on_disk.read_bytes() == original
+    doc = await gs.get_document("deadbeef_fromwrite")
+    assert doc.stored_content_hash == sentinel
+    assert doc.source_content_hash == _sha256_of(original)
+    assert hash_calls == [sp], "the copy is hashed once, before the write, and never after it"
+
+
 async def test_audit_and_restore_agree_on_out_of_root_through_one_observation(
     graph_store, minimal_config, stub_content_store, tmp_path, monkeypatch
 ):
