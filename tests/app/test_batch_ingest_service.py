@@ -26,7 +26,13 @@ from sage.adapters.stubs import StubContentStore
 from sage.api.errors import SAGEError, VaultSourcePathRefusedError
 from sage.config import LifecycleTransition, TransitionTable
 from sage.models.enums import EdgeType, SourceType
-from sage.models.schemas import Document, Edge, IngestRequest, UnlinkResponse
+from sage.models.schemas import (
+    BatchIngestFileError,
+    Document,
+    Edge,
+    IngestRequest,
+    UnlinkResponse,
+)
 from sage.services.batch_inference import EdgePlan
 from sage.services.batch_ingest import (
     BatchIngestService,
@@ -34,6 +40,7 @@ from sage.services.batch_ingest import (
     IngestSummary,
     ParsedMetadataInput,
 )
+from sage.services.batch_ingest_stream import _summary_event_from
 from sage.services.ingestion import IngestResult
 from sage.services.lifecycle import LifecycleService
 from sage.storage.locks import DocumentLockManager
@@ -221,6 +228,18 @@ def _make_services(
     services.graph_store.supersede_atomic = AsyncMock(return_value=_MM())
 
     return services
+
+
+def _entries(result: IngestSummary) -> list[dict]:
+    """The summary's error entries as the non-streaming caller sees them.
+
+    The entries are ``BatchIngestFileError`` models; this is the exact
+    serialization ``IngestSummary.to_dict`` emits, so the whole-dict
+    equalities below keep pinning the *absence* of an optional field -- which
+    equality on the models themselves would not, an unset ``code`` being
+    ``None`` there rather than missing.
+    """
+    return [e.model_dump(exclude_none=True) for e in result.errors]
 
 
 def _fd(
@@ -658,8 +677,8 @@ class TestPerFileIngestion:
         assert result.docs_new == 2
         assert result.error_count == 1
         assert len(result.errors) == 1
-        assert result.errors[0]["filename"] == "bad.md"
-        assert "Adapter failure" in result.errors[0]["message"]
+        assert result.errors[0].filename == "bad.md"
+        assert "Adapter failure" in result.errors[0].message
 
     @pytest.mark.asyncio
     async def test_bis_021_sage_error_entry_carries_code_and_detail(self):
@@ -692,7 +711,7 @@ class TestPerFileIngestion:
 
         assert result.docs_new == 2
         assert result.error_count == 1
-        assert result.errors == [
+        assert _entries(result) == [
             {
                 "file_index": 1,
                 "filename": "bad.md",
@@ -740,7 +759,7 @@ class TestPerFileIngestion:
         )
 
         assert result.error_count == 2
-        assert result.errors == [
+        assert _entries(result) == [
             {
                 "file_index": 0,
                 "filename": "bad.md",
@@ -795,8 +814,8 @@ class TestPerFileIngestion:
         calls = services.ingestion_service.ingest.call_args_list
         assert calls[0].kwargs["caller_source"] == declared
         assert calls[1].kwargs["caller_source"] is None
-        assert [e["source_path"] for e in result.errors] == [declared, "/srv/local/plain.md"]
-        assert [e["filename"] for e in result.errors] == ["note.md", "plain.md"]
+        assert [e.source_path for e in result.errors] == [declared, "/srv/local/plain.md"]
+        assert [e.filename for e in result.errors] == ["note.md", "plain.md"]
 
     @pytest.mark.asyncio
     async def test_bis_024_error_entry_carries_the_files_batch_position(self):
@@ -849,11 +868,79 @@ class TestPerFileIngestion:
 
         assert result.error_count == 2
         assert reported == [0, 2]
-        assert [e["file_index"] for e in result.errors] == reported
-        assert [e["filename"] for e in result.errors] == ["same.md", "same.md"]
-        assert [e["source_path"] for e in result.errors] == ["same.md", "same.md"]
-        without_index = [{k: v for k, v in e.items() if k != "file_index"} for e in result.errors]
+        assert [e.file_index for e in result.errors] == reported
+        assert [e.filename for e in result.errors] == ["same.md", "same.md"]
+        assert [e.source_path for e in result.errors] == ["same.md", "same.md"]
+        without_index = [
+            {k: v for k, v in e.items() if k != "file_index"} for e in _entries(result)
+        ]
         assert without_index[0] == without_index[1], without_index
+
+    @pytest.mark.asyncio
+    async def test_bis_025_error_entries_are_the_wire_model_both_legs_share(self):
+        """The collected entries are ``BatchIngestFileError`` models, and the
+        dict the non-streaming caller receives is byte-for-byte the payload
+        the streaming caller's validated summary event carries.
+
+        The streaming leg validated its entries when it built the summary
+        event; the non-streaming leg serialized the collection as it stood.
+        One typed builder makes the two the same object graph, so an entry
+        that is shaped wrongly is refused by the builder rather than reaching
+        one leg as a bad payload and the other as a raised error. The
+        enforcement is the builder's, not the field's: ``IngestSummary`` is a
+        plain dataclass, whose annotation documents the contract without
+        checking it.
+
+        Anti-coincidental-pass: the batch fails twice, once with a SAGEError
+        carrying a detail and once with a bare exception carrying neither
+        code nor detail. A serialization that emitted the optional fields as
+        ``null`` would agree with itself across both legs and still fail the
+        expected dicts; one that dropped ``detail`` would pass the bare
+        exception's entry and fail the typed one. Equality against the
+        literal dicts is what pins the shape, and the cross-leg equality is
+        what pins that the two agree on it.
+        """
+        services = _make_services()
+        call_idx = 0
+
+        async def failing_ingest(request, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            if call_idx == 1:
+                raise VaultSourcePathRefusedError("caller/x.md", "refused here")
+            raise RuntimeError("boom")
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=failing_ingest)
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/typed.md"), _fd("/tmp/bare.md")],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        assert all(isinstance(e, BatchIngestFileError) for e in result.errors)
+
+        expected = [
+            {
+                "file_index": 0,
+                "filename": "typed.md",
+                "source_path": "/tmp/typed.md",
+                "message": "refused here",
+                "code": "vault_source_path_refused",
+                "detail": {"source_path": "caller/x.md"},
+            },
+            {
+                "file_index": 1,
+                "filename": "bare.md",
+                "source_path": "/tmp/bare.md",
+                "message": "boom",
+            },
+        ]
+        assert result.to_dict()["errors"] == expected
+
+        event = _summary_event_from(result)
+        assert [e.model_dump(exclude_none=True) for e in event.errors] == expected
 
     @pytest.mark.asyncio
     async def test_bis_011_abstract_tracking(self):

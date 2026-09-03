@@ -781,3 +781,58 @@ async def test_b14_degenerate_upload_names_stage_under_a_synthetic_basename(monk
         ("upload_1", b"dotdot", ".."),
         ("upload_2", b"empty", "upload_2"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# B15 -- batch-level pipeline failure after the response is committed
+# ---------------------------------------------------------------------------
+
+
+async def test_b15_pipeline_failure_ends_the_committed_stream(batch_app, monkeypatch):
+    """A failure of the batch pipeline itself -- raised after the 200 has
+    already been committed -- ends the request instead of leaving it open.
+
+    The 400 and 404 refusals resolve before the stream opens and return a
+    typed envelope; this one cannot, so it propagates and tears the response
+    down. The client sees a stream that ended without a ``summary`` event.
+
+    Anti-coincidental-pass: the wait does not cancel the request. Cancelling
+    would throw into the generator at its queue wait, whose
+    ``finally: await task`` re-raises the pipeline's own exception -- so a
+    hung stream would surface the same failure a terminating one does, and
+    an assertion on the exception alone would pass against the hang. The
+    deadline reports the hang as itself instead. The staging directory
+    assertion is the second half: a teardown that skipped the cleanup would
+    satisfy the termination check alone.
+    """
+    app, vault_id, _config = batch_app
+    roots: set[Path] = set()
+
+    async def failing_run(self, files, vault_services, **kwargs):  # noqa: ANN001, ARG001
+        staged = Path(files[0].file_path)
+        roots.add(next(p for p in staged.parents if p.name.startswith("sage-batch-ingest-")))
+        raise RuntimeError("pipeline boom")
+
+    monkeypatch.setattr(BatchIngestService, "run", failing_run)
+
+    metadata = json.dumps({"files": [{"source_type": "markdown"}], "infer_edges": False})
+
+    async def _post() -> None:
+        async with _client(app) as client:
+            await client.post(
+                f"/sage_vaults/{vault_id}/documents:batch",
+                files=[_md_part("a.md", b"# A\n")],
+                data={"metadata": metadata},
+            )
+
+    task = asyncio.create_task(_post())
+    done, _pending = await asyncio.wait({task}, timeout=5.0)
+    if task not in done:
+        task.cancel()
+        raise AssertionError("the endpoint did not terminate on its own within 5.0s")
+
+    with pytest.raises(RuntimeError, match="pipeline boom"):
+        task.result()
+
+    assert len(roots) == 1, roots
+    assert not next(iter(roots)).exists(), "staging survived the failed run"

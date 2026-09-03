@@ -557,7 +557,7 @@ directories, mock ingestion_service raises on files 1 and 3.
 
 **Expected:**
 - `IngestSummary.error_count == 2`
-- `[e["file_index"] for e in errors] == [0, 2]`, equal to the indices the
+- `[e.file_index for e in errors] == [0, 2]`, equal to the indices the
   `on_file_error` callback reported
 - Both entries carry the shared basename as `filename`
 
@@ -565,3 +565,42 @@ directories, mock ingestion_service raises on files 1 and 3.
 entry's ordinal among the errors (which would report `[0, 1]`) and a
 constant. The shared-basename setup proves the position is doing the
 discriminating work, not the filename.
+
+### TEST-BIS-025: Error entries are the wire model both delivery legs share
+
+**Artifact:** `_error_entry` and `IngestSummary.to_dict` in
+`sage/services/batch_ingest.py`; `BatchIngestFileError` in
+`sage/models/schemas.py` and both OpenAPI specs
+**Category:** batch_ingest_service
+
+**Decision:** `IngestSummary.errors` holds `BatchIngestFileError` models
+rather than dicts shaped like them. The streaming leg validated its entries
+when it built the summary event, while the non-streaming leg serialized
+whatever the collection held; one typed builder gives both the same
+contract, so an entry that is shaped wrongly is refused by the builder
+rather than reaching one leg as a bad payload and the other as a raised
+error. The field's annotation states the contract but does not enforce it --
+`IngestSummary` is a plain dataclass -- so the builder is where the
+enforcement lives. `to_dict` serializes with `exclude_none`, so the dict the
+non-streaming caller receives is unchanged: an optional field the error does
+not have is absent, not null.
+
+**Precondition:** A two-file batch that fails twice -- once with a SAGEError
+carrying a detail, once with a bare exception carrying neither code nor
+detail.
+
+**Input:** Two descriptors; mock ingestion_service raises
+`VaultSourcePathRefusedError` on the first and `RuntimeError` on the second.
+
+**Expected:**
+- Every entry is a `BatchIngestFileError`
+- `to_dict()["errors"]` equals the two literal dicts: the typed entry with
+  `code` and `detail`, the bare one with neither key present
+- The summary event's entries serialize to the same two dicts
+
+**Rationale:** The two legs previously disagreed about who validated: the
+SSE leg's `SummaryEvent` enforced the entry shape, and the MCP leg passed
+the collection through untouched. The cross-leg equality is what pins that
+they now agree, and equality against the literal dicts is what pins the
+shape they agree on -- a serialization emitting the optional fields as null
+would be self-consistent across both legs and still wrong.
