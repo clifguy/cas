@@ -119,6 +119,21 @@ async def batch_ingest_sse_stream(
     completes. A background task drives the pipeline while this
     generator drains the queue, so progress streams to the client as
     each file lands rather than all at once at the end.
+
+    A per-file failure does not end the stream -- it is collected into the
+    summary's ``errors``. A failure of the batch itself does, and by
+    propagating: the sentinel is enqueued unconditionally so the consumer
+    always reaches ``await task``, which re-raises and tears the caller's
+    response down. The client sees a stream that ends without a ``summary``
+    event; the cause is logged, not sent.
+
+    No error event is emitted, because by then the ``200`` is already
+    committed -- both the staging loop and the pipeline run on this
+    generator's first step. Every batch-ingest refusal that can be decided
+    before the response opens is decided there, as a typed error envelope;
+    what is left here cannot be, and the shape it takes matches the only
+    other SSE stream in the service layer, whose exceptions propagate the
+    same way.
     """
     queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()
 
@@ -173,17 +188,27 @@ async def batch_ingest_sse_stream(
 
     async def run_service() -> None:
         svc = BatchIngestService()
-        result = await svc.run(
-            files=descriptors,
-            vault_services=vault_services,
-            infer_edges=infer_edges,
-            needs_review=needs_review,
-            on_file_start=on_file_start,
-            on_file_done=on_file_done,
-            on_file_error=on_file_error,
-        )
-        await queue.put(_summary_event_from(result))
-        await queue.put(None)
+        try:
+            result = await svc.run(
+                files=descriptors,
+                vault_services=vault_services,
+                infer_edges=infer_edges,
+                needs_review=needs_review,
+                on_file_start=on_file_start,
+                on_file_done=on_file_done,
+                on_file_error=on_file_error,
+            )
+            await queue.put(_summary_event_from(result))
+        except Exception:
+            # The stream carries no error payload, so the log is the only
+            # place the cause survives; `exception` keeps the traceback.
+            logger.exception("Batch ingest failed; ending the SSE stream")
+            raise
+        finally:
+            # Unconditional: the consumer's only exit is this sentinel, so a
+            # run that raised before enqueueing it would leave the consumer
+            # blocked forever on a response whose 200 is already committed.
+            await queue.put(None)
 
     task = asyncio.create_task(run_service())
     try:

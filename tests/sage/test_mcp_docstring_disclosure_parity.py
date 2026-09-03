@@ -552,7 +552,33 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
 # a disclosure gap. Entries are normalized claim text, and
 # ``test_surface_only_claims_are_not_stale`` rejects one as soon as the
 # other surface makes the claim too.
-SURFACE_ONLY_CLAIMS: Final[dict[tuple[str, str], dict[str, str]]] = {}
+TERMINATION: Final[str] = (
+    "the stream's termination contract, which the MCP tool has no transport to "
+    "state: its contract is report-and-return, so there is no committed "
+    "response for a mid-run failure to end, and no summary event whose absence "
+    "could signal one"
+)
+
+SURFACE_ONLY_CLAIMS: Final[dict[tuple[str, str], dict[str, str]]] = {
+    ("cas_app", "bulk_ingest_document"): {
+        "a failure of the batch itself which can only surface after the 200 is "
+        "committed ends the stream it emits no further events  there is no error "
+        "event variant  and closes the connection without a summary": TERMINATION,
+        "a stream that ends without one did not complete and the cause is logged "
+        "serverside rather than sent": TERMINATION,
+        "clients should treat the summary event not the end of the stream as the "
+        "completion signal": TERMINATION,
+    },
+    ("sage_core", "recompute_deferred_vault_abstracts"): {
+        "a failure of the run itself which can only surface after the 200 is "
+        "committed ends the stream it emits no further events  there is no error "
+        "event variant  and closes the connection without a summary": TERMINATION,
+        "a stream that ends without one did not complete and the cause is logged "
+        "serverside rather than sent": TERMINATION,
+        "clients should treat the summary event not the end of the stream as the "
+        "completion signal": TERMINATION,
+    },
+}
 
 
 # Identifiers an enrolled pair may name on one surface only. Keyed by

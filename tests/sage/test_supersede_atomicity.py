@@ -293,7 +293,7 @@ async def test_batch_supersede_settlement_rolls_back_on_edge_failure(
     # The removal was withheld: the chain is no shorter than it was found.
     assert await _supersedes_edges(graph_store, succ.id, old.id) != []
     assert result.edges_removed == 0
-    reasons = {w["reason"] for w in result.warnings}
+    reasons = {w.reason for w in result.warnings}
     assert reasons == {"edge_creation_failed", "chain_repair_withheld"}
 
     # Restore and re-run: the same plan converges.
@@ -381,7 +381,7 @@ async def test_batch_supersede_race_lands_exactly_one_settlement(
     created = [r.edges_created.get("supersedes", 0) for r in (result_a, result_b)]
     assert sorted(created) == [0, 1], f"expected exactly one settlement, got {created}"
     all_warnings = result_a.warnings + result_b.warnings
-    assert [w["reason"] for w in all_warnings] == ["supersede_target_not_transitionable"]
+    assert [w.reason for w in all_warnings] == ["supersede_target_not_transitionable"]
 
     pred_after = await real_get_document(pred.id)
     assert pred_after.lifecycle_status == "archived"

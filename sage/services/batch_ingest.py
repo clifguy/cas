@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from sage.api.errors import SAGEError
 from sage.models.enums import SourceType
-from sage.models.schemas import IngestRequest
+from sage.models.schemas import BatchIngestFileError, EdgeWarning, IngestRequest
 from sage.services.batch_inference import (
     EdgePlan,
     InferenceItem,
@@ -92,9 +92,9 @@ class IngestSummary:
     edges_staged: dict[str, int] = field(default_factory=dict)
     edges_removed: int = 0
     edges_dropped: int = 0
-    edge_warnings: list[dict[str, str]] = field(default_factory=list)
+    edge_warnings: list[EdgeWarning] = field(default_factory=list)
     error_count: int = 0
-    errors: list[dict] = field(default_factory=list)
+    errors: list[BatchIngestFileError] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Produce the summary dict both callers need."""
@@ -111,10 +111,13 @@ class IngestSummary:
             "abstracts_generated": self.abstracts_generated,
             "abstracts_deferred": self.abstracts_deferred,
             "error_count": self.error_count,
-            "errors": self.errors,
+            "errors": [e.model_dump(exclude_none=True) for e in self.errors],
         }
         if self.edge_warnings:
-            result["edge_warnings"] = self.edge_warnings
+            # Plain ``model_dump``: every EdgeWarning field is required, so
+            # there is no optional field for ``exclude_none`` to omit, unlike
+            # the error entries above.
+            result["edge_warnings"] = [w.model_dump() for w in self.edge_warnings]
         return result
 
 
@@ -383,7 +386,9 @@ class BatchIngestService:
 # ---------------------------------------------------------------------------
 
 
-def _error_entry(index: int, filename: str, fd: FileDescriptor, exc: Exception) -> dict:
+def _error_entry(
+    index: int, filename: str, fd: FileDescriptor, exc: Exception
+) -> BatchIngestFileError:
     """Build one ``IngestSummary.errors`` entry for a failed file.
 
     ``message`` is the error's own text: a ``SAGEError``'s ``message`` field,
@@ -399,20 +404,26 @@ def _error_entry(index: int, filename: str, fd: FileDescriptor, exc: Exception) 
     spelling is itself just the filename, as it is for an upload, two
     same-named files share both ``filename`` and ``source_path``, and the
     position is what still tells their entries apart.
+
+    The entry is the wire model itself, not a dict shaped like one, so every
+    caller of the pipeline carries the same validated contract: the streaming
+    leg validated its entries when it built the summary event, while the
+    non-streaming leg serialized whatever the collection held.
     """
-    entry: dict = {
-        "file_index": index,
-        "filename": filename,
-        "source_path": fd.declared_source or fd.file_path,
-    }
     if isinstance(exc, SAGEError):
-        entry["message"] = exc.message
-        entry["code"] = exc.code
-        if exc.detail:
-            entry["detail"] = exc.detail
+        # ``or None`` so an empty detail drops out on serialization rather
+        # than reaching a caller as an empty object.
+        message, code, detail = exc.message, exc.code, exc.detail or None
     else:
-        entry["message"] = str(exc)
-    return entry
+        message, code, detail = str(exc), None, None
+    return BatchIngestFileError(
+        file_index=index,
+        filename=filename,
+        source_path=fd.declared_source or fd.file_path,
+        message=message,
+        code=code,
+        detail=detail,
+    )
 
 
 def _metadata_dict_from_parsed(

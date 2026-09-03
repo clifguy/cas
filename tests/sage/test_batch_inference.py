@@ -742,22 +742,21 @@ class TestTwoPhaseOrchestration:
 
         assert len(result.warnings) == 1
         warning = result.warnings[0]
-        # IngestSummary.edge_warnings is typed dict[str, str]; the gated
-        # entry must carry the same keys as every other warning reason.
-        assert set(warning) == {"source", "target", "edge_type", "reason", "detail"}
-        assert all(isinstance(value, str) for value in warning.values())
-        assert warning["reason"] == "supersede_target_not_transitionable"
-        assert warning["source"] == DOC_V3
-        assert warning["target"] == DOC_V2
+        # The entry's field set and string types are the EdgeWarning model's
+        # own guarantee now, so asserting them here would pin nothing a
+        # producer could violate -- an under-shaped entry is refused where it
+        # is built. What is still this test's to check is the values.
+        assert warning.reason == "supersede_target_not_transitionable"
+        assert warning.source == DOC_V3
+        assert warning.target == DOC_V2
         # The detail names the observed state and the permitted ones, both
         # read off the table rather than restated.
-        assert "completed" in warning["detail"]
-        assert "active" in warning["detail"]
+        assert "completed" in warning.detail
+        assert "active" in warning.detail
         # And it is the same text the ingest surface raises for this
         # condition, so one precondition reads identically everywhere.
         assert (
-            warning["detail"]
-            == SupersedeTargetNotActiveError(DOC_V2, "completed", ["active"]).message
+            warning.detail == SupersedeTargetNotActiveError(DOC_V2, "completed", ["active"]).message
         )
 
     @pytest.mark.asyncio
@@ -914,8 +913,8 @@ class TestTwoPhaseOrchestration:
         assert mock_ops.linked == []
         assert result.edges_dropped == 1
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "supersede_target_read_failed"
-        assert "storage unavailable" in result.warnings[0]["detail"]
+        assert result.warnings[0].reason == "supersede_target_read_failed"
+        assert "storage unavailable" in result.warnings[0].detail
 
     @pytest.mark.asyncio
     async def test_ei_038_supersede_of_an_already_superseded_target_needs_no_write(self):
@@ -977,7 +976,7 @@ class TestTwoPhaseOrchestration:
         assert [request.target_id for request in mock_ops.linked] == [DOC_V1]
         assert mock_store.updated == []
         assert result.edges_dropped == 1
-        assert result.warnings[0]["target"] == DOC_B1
+        assert result.warnings[0].target == DOC_B1
 
     @pytest.mark.asyncio
     async def test_ei_037_supersede_dropped_when_target_document_is_missing(self):
@@ -1001,8 +1000,8 @@ class TestTwoPhaseOrchestration:
         assert len(result.warnings) == 1
         # Its own reason, not the not-transitionable one: an absent document
         # has no state to report against the table's permitted set.
-        assert result.warnings[0]["reason"] == "supersede_target_missing"
-        assert DOC_V1 in result.warnings[0]["detail"]
+        assert result.warnings[0].reason == "supersede_target_missing"
+        assert DOC_V1 in result.warnings[0].detail
 
     @pytest.mark.asyncio
     async def test_ei_041_supersede_syncs_chunk_lifecycle_to_landing_state(self):
@@ -1104,10 +1103,10 @@ class TestTwoPhaseOrchestration:
         assert result.edges_created == {"supersedes": 1}
         assert mock_store.state_of(DOC_V1) == "archived"
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "chunk_lifecycle_sync_failed"
-        assert result.warnings[0]["source"] == DOC_V2
-        assert result.warnings[0]["target"] == DOC_V1
-        assert "chunk store unavailable" in result.warnings[0]["detail"]
+        assert result.warnings[0].reason == "chunk_lifecycle_sync_failed"
+        assert result.warnings[0].source == DOC_V2
+        assert result.warnings[0].target == DOC_V1
+        assert "chunk store unavailable" in result.warnings[0].detail
 
     @pytest.mark.asyncio
     async def test_ei_043_no_chunk_sync_when_the_settlement_write_fails(self):
@@ -1146,8 +1145,8 @@ class TestTwoPhaseOrchestration:
         result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store)
 
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "edge_creation_failed"
-        assert "settlement write failed" in result.warnings[0]["detail"]
+        assert result.warnings[0].reason == "edge_creation_failed"
+        assert "settlement write failed" in result.warnings[0].detail
         assert content_store.sync_calls == []
         # Nothing landed: no edge counted, no state moved, no strand.
         assert result.edges_created == {}
@@ -1260,8 +1259,8 @@ class TestTwoPhaseOrchestration:
         assert mock_store.superseded == []
         assert result.edges_dropped == 1
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "supersede_target_not_transitionable"
-        assert "archived" in result.warnings[0]["detail"]
+        assert result.warnings[0].reason == "supersede_target_not_transitionable"
+        assert "archived" in result.warnings[0].detail
 
     @pytest.mark.asyncio
     async def test_ei_047_existing_edge_converges_the_stranded_transition(self):
@@ -1343,8 +1342,8 @@ class TestTwoPhaseOrchestration:
         result = await _run(plan, {}, mock_store, mock_ops, BASE_TABLE, content_store=content_store)
 
         assert len(result.warnings) == 1
-        assert result.warnings[0]["reason"] == "lifecycle_transition_failed"
-        assert "document write failed" in result.warnings[0]["detail"]
+        assert result.warnings[0].reason == "lifecycle_transition_failed"
+        assert "document write failed" in result.warnings[0].detail
         assert content_store.sync_calls == []
         assert mock_store.state_of(DOC_V1) == "active"
 
@@ -1397,7 +1396,7 @@ class TestTwoPhaseOrchestration:
 
         assert mock_ops.unlinked == [], "the removal must not have committed"
         assert result.edges_removed == 0
-        reasons = {w["reason"] for w in result.warnings}
+        reasons = {w.reason for w in result.warnings}
         assert reasons == {"edge_creation_failed", "chain_repair_withheld"}
 
     @pytest.mark.asyncio
@@ -1460,7 +1459,7 @@ class TestTwoPhaseOrchestration:
         assert mock_store.reads >= 2, "control: the in-lock re-read must have happened"
         assert mock_ops.unlinked == [], "the removal must not have committed"
         assert result.edges_removed == 0
-        reasons = {w["reason"] for w in result.warnings}
+        reasons = {w.reason for w in result.warnings}
         assert reasons == {"supersede_target_not_transitionable", "chain_repair_withheld"}
 
     def test_ei_029_empty_manifest_empty_plan(self):

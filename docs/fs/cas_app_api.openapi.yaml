@@ -195,6 +195,15 @@ paths:
           produced).
 
 
+        A failure of the batch itself, which can only surface after the 200
+        is committed, ends the stream: it emits no further events -- there is
+        no `error` event variant -- and closes the connection without a
+        `summary`. A stream that ends without one did not complete, and the
+        cause is logged server-side rather than sent. Clients should treat
+        the `summary` event, not the end of the stream, as the completion
+        signal.
+
+
         See ScanResponse for how files are first classified before being
         passed to this endpoint.
       tags: [Ingest]

@@ -27,6 +27,8 @@ from app.backend.ingest_streaming_service import (
     _summary_event_from,
 )
 from app.backend.models import (
+    BatchIngestFileError,
+    EdgeWarning,
     IngestFileItem,
     IngestRequest,
     ParsedMetadata,
@@ -84,12 +86,12 @@ class TestSummaryEventFrom:
             edge_warnings=[],
             error_count=1,
             errors=[
-                {
-                    "file_index": 0,
-                    "filename": "bad.md",
-                    "source_path": "/in/bad.md",
-                    "message": "boom",
-                }
+                BatchIngestFileError(
+                    file_index=0,
+                    filename="bad.md",
+                    source_path="/in/bad.md",
+                    message="boom",
+                )
             ],
         )
         event = _summary_event_from(summary)
@@ -125,16 +127,18 @@ class TestSummaryEventFrom:
             "reason": "supersede_target_not_transitionable",
             "detail": "Cannot supersede document doc_v1: observed state 'completed'",
         }
-        summary = IngestSummary(edge_warnings=[warning])
+        summary = IngestSummary(edge_warnings=[EdgeWarning(**warning)])
         event = _summary_event_from(summary)
         assert event.edge_warnings is not None
         assert [entry.model_dump() for entry in event.edge_warnings] == [warning]
 
     def test_summary_event_serializes_edge_warnings_unchanged(self) -> None:
         """The wire payload preserves the producer's warning entries
-        key-for-key and order-for-order, and drops unknown keys instead
-        of raising — a malformed producer entry must degrade, never break
-        the SSE stream."""
+        key-for-key and order-for-order, and drops unknown keys instead of
+        raising — a producer that carries a key the wire shape does not
+        declare must degrade, never break the stream. That matters more now
+        than it did: a raise here no longer merely mis-serializes, it
+        terminates the stream without a summary."""
         warning = {
             "source": "imports/new.md",
             "target": "imports/old.md",
@@ -144,7 +148,7 @@ class TestSummaryEventFrom:
         }
         summary = IngestSummary(
             edges_dropped=1,
-            edge_warnings=[{**warning, "hint": "not part of the wire shape"}],
+            edge_warnings=[EdgeWarning(**{**warning, "hint": "not part of the wire shape"})],
         )
         event = _summary_event_from(summary)
         payload = json.loads(event.model_dump_json(exclude_none=True))
@@ -160,6 +164,15 @@ class TestSummaryEventFrom:
         defaults would pass the round-trip tests above unchanged; only a
         rejected under-shaped entry separates required fields from
         defaulted ones.
+
+        These four tests are the only ones in this class that still hand
+        ``IngestSummary`` a raw dict, and deliberately so. The shared
+        builders now emit validated models, so no production path can put a
+        half-shaped entry in front of this boundary -- but ``IngestSummary``
+        is a plain dataclass whose annotation checks nothing at runtime, so a
+        producer that appends to the collection directly instead of going
+        through the builder still can. That bypass is what these guard, and a
+        raw dict is the only way to express it.
         """
         summary = IngestSummary(
             edge_warnings=[{"edge_type": "supersedes", "warning": "skew"}],
@@ -183,7 +196,7 @@ class TestSummaryEventFrom:
             "source_path": "/in/bad.md",
             "message": "boom",
         }
-        summary = IngestSummary(error_count=1, errors=[entry])
+        summary = IngestSummary(error_count=1, errors=[BatchIngestFileError(**entry)])
         payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
         assert payload["errors"] == [entry]
 
@@ -203,7 +216,7 @@ class TestSummaryEventFrom:
             "code": "vault_source_path_refused",
             "detail": {"source_path": "/in/bad.md", "attempt": 2},
         }
-        summary = IngestSummary(error_count=1, errors=[entry])
+        summary = IngestSummary(error_count=1, errors=[BatchIngestFileError(**entry)])
         payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
         assert payload["errors"] == [entry]
 
@@ -217,6 +230,15 @@ class TestSummaryEventFrom:
         rejected under-shaped entry proves the entry is a typed model, and
         the error must name ``message`` so a rejection for some other
         reason cannot stand in.
+
+        These four tests are the only ones in this class that still hand
+        ``IngestSummary`` a raw dict, and deliberately so. The shared
+        builders now emit validated models, so no production path can put a
+        half-shaped entry in front of this boundary -- but ``IngestSummary``
+        is a plain dataclass whose annotation checks nothing at runtime, so a
+        producer that appends to the collection directly instead of going
+        through the builder still can. That bypass is what these guard, and a
+        raw dict is the only way to express it.
         """
         summary = IngestSummary(
             error_count=1,
@@ -234,6 +256,15 @@ class TestSummaryEventFrom:
         Anti-coincidental-pass: an optional ``file_index`` would accept this
         entry and serialize it without the key; only a rejection proves the
         field is required, and the error must name it.
+
+        These four tests are the only ones in this class that still hand
+        ``IngestSummary`` a raw dict, and deliberately so. The shared
+        builders now emit validated models, so no production path can put a
+        half-shaped entry in front of this boundary -- but ``IngestSummary``
+        is a plain dataclass whose annotation checks nothing at runtime, so a
+        producer that appends to the collection directly instead of going
+        through the builder still can. That bypass is what these guard, and a
+        raw dict is the only way to express it.
         """
         summary = IngestSummary(
             error_count=1,
@@ -253,6 +284,15 @@ class TestSummaryEventFrom:
         round-trip tests in this class, whose entries all carry
         ``file_index: 0`` on the success path, so the discriminating
         evidence is that pair rather than this rejection by itself.
+
+        These four tests are the only ones in this class that still hand
+        ``IngestSummary`` a raw dict, and deliberately so. The shared
+        builders now emit validated models, so no production path can put a
+        half-shaped entry in front of this boundary -- but ``IngestSummary``
+        is a plain dataclass whose annotation checks nothing at runtime, so a
+        producer that appends to the collection directly instead of going
+        through the builder still can. That bypass is what these guard, and a
+        raw dict is the only way to express it.
         """
         summary = IngestSummary(
             error_count=1,
