@@ -29,8 +29,10 @@ from sage.vault_source_binding import (
     FilesystemVaultSourceStore,
     SupportsSourceDownloadUrl,
     VaultRootEscapeError,
+    _assert_plain_vault_relative,
     _strip_macos_ui_artifacts,
     build_stack_vault_source_store,
+    normalize_vault_relative,
     remove_tree_tolerating_concurrent_writer,
     resolve_and_assert_within_root,
 )
@@ -517,3 +519,86 @@ def test_vsb_052_filesystem_store_close_is_noop(tmp_path):
     store = FilesystemVaultSourceStore(tmp_path)
 
     store.close()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# normalize_vault_relative -- the read-side spelling rule that has to agree
+# with the write-side guard (_assert_plain_vault_relative) one function up.
+# ---------------------------------------------------------------------------
+
+
+# Every spelling a vault-relative path can arrive in, paired with what the
+# plain form is -- or None where there is no plain form inside the tree. Shared
+# by the three tests below so the accepted set and the refused set are stated
+# once and cannot drift apart between them.
+_SPELLINGS: dict[str, str | None] = {
+    "imports/x.md": "imports/x.md",
+    "./imports/x.md": "imports/x.md",
+    "imports/./x.md": "imports/x.md",
+    "imports//x.md": "imports/x.md",
+    "imports/x.md/": "imports/x.md",
+    ".//imports//x.md": "imports/x.md",
+    "imports/sub/./x.md": "imports/sub/x.md",
+    "../x.md": None,
+    "imports/../imports/x.md": None,
+    "imports/..": None,
+    "/abs/x.md": None,
+    "/imports/./x.md": None,
+}
+
+
+@pytest.mark.parametrize(
+    "spelling,plain",
+    [(s, p) for s, p in _SPELLINGS.items() if p is not None],
+)
+def test_vsb_053_normalize_collapses_a_spelling_to_its_plain_form(spelling, plain):
+    """VSB-053: a vault-relative path is reduced to one spelling.
+
+    A leading ``./``, an interior ``/./``, a doubled separator and a trailing
+    separator all name the same file, and a record may hold any of them. The
+    plain form is what the write guard accepts, so it is the only one a record
+    should carry.
+
+    Anti-coincidental-pass: the parametrization is the check. An
+    implementation that strips only a *leading* ``./`` passes on
+    ``./imports/x.md`` and leaves ``imports/./x.md`` holding a spelling its own
+    bytes can never be written back to -- the exact record this rule exists to
+    stop being written. A path already plain is included as a fixed point, so a
+    normalizer that mangles the common case cannot hide behind the dotted ones.
+    """
+    assert normalize_vault_relative(spelling) == plain
+
+
+@pytest.mark.parametrize("spelling", [s for s, p in _SPELLINGS.items() if p is None])
+def test_vsb_054_normalize_refuses_a_path_with_no_plain_form_in_the_tree(spelling):
+    """VSB-054: an absolute path or a surviving ``..`` is refused, not repaired.
+
+    Anti-coincidental-pass: ``imports/../imports/x.md`` is the trap. A
+    normalizer that *resolved* ``..`` would hand back ``imports/x.md`` -- an
+    in-tree path -- and quietly widen the set of sources ingest accepts beyond
+    what the write guard admits. Refusing is the contract; resolving is a
+    different one.
+    """
+    with pytest.raises(VaultRootEscapeError):
+        normalize_vault_relative(spelling)
+
+
+def test_vsb_055_normalize_and_the_write_guard_agree_on_every_spelling():
+    """VSB-055: what the normalizer emits, the write guard accepts -- and what
+    it refuses, the guard refuses too.
+
+    Anti-coincidental-pass: this is the drift the rule exists to close, stated
+    one level up. Either half failing re-creates the original defect: a
+    normalizer emitting something ``write_source`` refuses produces a record
+    whose own path cannot be written back to, and one accepting a path the
+    guard rejects moves the refusal from ingest time to repair time, where an
+    operator meets it instead.
+    """
+    for spelling, plain in _SPELLINGS.items():
+        if plain is None:
+            with pytest.raises(VaultRootEscapeError):
+                normalize_vault_relative(spelling)
+            with pytest.raises(VaultRootEscapeError):
+                _assert_plain_vault_relative(spelling)
+        else:
+            _assert_plain_vault_relative(normalize_vault_relative(spelling))

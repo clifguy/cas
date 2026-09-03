@@ -19,7 +19,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -133,26 +133,6 @@ def _translate_vault_source_refusal(source: str) -> Iterator[None]:
         yield
     except VaultRootEscapeError as exc:
         raise VaultSourcePathRefusedError(source, str(exc)) from exc
-
-
-def _normalize_vault_relative(source_path: str) -> str:
-    """Collapse a vault-relative path to its plain form, refusing an escape.
-
-    ``.`` and ``..`` segments are accepted by the read side -- existence, hash,
-    and the integrity audit all resolve them -- but refused by the write-time
-    guard, so a record that stored one verbatim would name a path its own bytes
-    could never be written back to. Normalizing at the point the path enters the
-    record keeps the two sides agreeing on what a source_path is.
-    """
-    candidate = PurePosixPath(source_path)
-    normalized = PurePosixPath(*(p for p in candidate.parts if p != "."))
-    if ".." in normalized.parts or normalized.is_absolute():
-        raise VaultSourcePathRefusedError(
-            source_path,
-            f"refusing {source_path!r}: a vault-relative source path may not be "
-            f"absolute or walk out of the vault's source tree.",
-        )
-    return str(normalized)
 
 
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
@@ -838,7 +818,12 @@ class IngestionService:
                     # path carrying ``.`` or ``..`` segments would be accepted by
                     # the read side while the write-time guard refuses it -- a
                     # record whose own source_path cannot be written back to.
-                    vault_relative = _normalize_vault_relative(request.source)
+                    # The rule lives beside that guard so the two cannot drift;
+                    # its refusal is translated to the caller-facing code by the
+                    # enclosing ``_translate_vault_source_refusal``.
+                    from sage.vault_source_binding import normalize_vault_relative
+
+                    vault_relative = normalize_vault_relative(request.source)
                     # Nothing was delivered this call -- the bytes were already
                     # on the store and are only being re-projected. The
                     # provenance of this path was established at the ingest that

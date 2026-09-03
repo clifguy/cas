@@ -2403,10 +2403,17 @@ paths:
         the registry so subsequent operations observe the new schema.
 
 
-        One data backfill runs: documents already at a successful terminal
-        pipeline_status that still carry the pipeline_error of a failure
-        they have since recovered from get that field cleared.
-        backfills_applied names the backfill only when it changed rows.
+        Two data backfills run, each naming itself in backfills_applied
+        only when it changed rows. Documents already at a successful
+        terminal pipeline_status that still carry the pipeline_error of a
+        failure they have since recovered from get that field cleared.
+        Documents holding a stored source_path in a spelling ingest no
+        longer records -- a `.` segment, a doubled separator, or a
+        trailing one -- have it reduced to its plain form, so that
+        re-projecting them stops raising force_reingest_path_mismatch;
+        each rewrite is reported in source_paths_normalized. A recorded
+        path that walks out of the vault's source tree has no plain form
+        inside it and is left as recorded.
 
 
         Idempotent: a re-call against an already-migrated vault with
@@ -6274,6 +6281,16 @@ components:
           items:
             type: string
           description: Names of data backfills that were detected as pending and applied. Empty when no backfills were needed.
+        source_paths_normalized:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourcePathNormalization"
+          description: >-
+            Per-document entries for every record whose stored source path was
+            reduced to its plain form. Empty when no record held another
+            spelling. A path that walks out of the vault's source tree has no
+            plain form inside it and is left as recorded; `verify_vault_source_files`
+            reports those.
         tier3_uniqueness_activations:
           type: array
           items:
@@ -6294,6 +6311,39 @@ components:
             substrate refuses to activate the constraint while collisions
             remain (CAS-ADR-031 §5). The operator resolves via renumber,
             supersede, or archive-and-recreate, then re-runs the migration.
+
+    SourcePathNormalization:
+      type: object
+      required: [document_id, previous_source_path, normalized_source_path]
+      description: >-
+        One record whose stored source_path was reduced to its plain form.
+        Ingest records a vault-relative source path in one spelling, but
+        records written before it did can still hold another -- a `.` segment,
+        a doubled separator, or a trailing one. The read side resolves those
+        and the write-time guard refuses them, so such a record names a path
+        its own bytes cannot be written back to. The migration rewrites the
+        stored value once.
+      properties:
+        document_id:
+          $ref: "#/components/schemas/DocumentId"
+          description: Identifier of the document whose stored source path was rewritten.
+        previous_source_path:
+          type: string
+          description: The spelling the record held before the migration rewrote it.
+        normalized_source_path:
+          type: string
+          description: The plain form the record holds after the migration.
+        path_shared_with:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentId"
+          description: >-
+            Other documents that hold the normalized path once this migration
+            completes -- those that already held it, and those the same pass
+            rewrote onto it. Empty in the ordinary case. Non-empty means the
+            rewrite left more than one record naming a single stored file,
+            which the differing spellings had until now kept apart; the
+            migration reports it rather than choosing between them.
 
     Tier3UniquenessActivation:
       type: object

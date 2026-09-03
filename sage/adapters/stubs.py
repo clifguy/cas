@@ -4,10 +4,12 @@ These return predictable results and require no external services.
 """
 
 import math
+import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sage.adapters.interfaces import (
+    NON_CANONICAL_SOURCE_PATH_PATTERN,
     SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
     Chunk,
@@ -482,6 +484,31 @@ class StubGraphStore(GraphStore):
             if d.source_path in wanted and d.source_path not in found:
                 found[d.source_path] = d.source_content_hash
         return found
+
+    async def find_document_ids_by_source_paths(
+        self, source_paths: list[str]
+    ) -> dict[str, list[str]]:
+        wanted = set(source_paths)
+        found: dict[str, list[str]] = {}
+        # Every id carrying the path, in id order -- not the lowest-id-wins
+        # collapse the method above applies, which answers a different question.
+        for d in sorted(self._docs.values(), key=lambda doc: doc.id):
+            if d.source_path in wanted:
+                found.setdefault(d.source_path, []).append(d.id)
+        return found
+
+    async def list_non_canonical_source_paths(self) -> dict[str, str]:
+        # The port's own pattern, not a re-derivation of it. Asking the path
+        # reducer directly would look equivalent and is not: it resolves the
+        # `//` root the pattern deliberately offers, so the stub would answer a
+        # narrower question than the durable store and let a service test pass
+        # over candidates production would really see.
+        return {
+            doc_id: doc.source_path
+            for doc_id, doc in self._docs.items()
+            if doc.source_path is not None
+            and re.search(NON_CANONICAL_SOURCE_PATH_PATTERN, doc.source_path)
+        }
 
     async def remove_document(self, document_id: str) -> None:
         self._docs.pop(document_id, None)

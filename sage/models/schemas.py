@@ -3670,6 +3670,38 @@ class Tier3UniquenessActivation(BaseModel):
     field: str = Field(description="The tier3_metadata field whose values are now unique.")
 
 
+class SourcePathNormalization(BaseModel):
+    """One record whose stored source_path was reduced to its plain form.
+
+    Ingest records a vault-relative source path in one spelling, but records
+    written before it did can still hold another -- a `.` segment, a doubled
+    separator, or a trailing one. The read side resolves those and the
+    write-time guard refuses them, so such a record names a path its own bytes
+    cannot be written back to. The migration rewrites the stored value once.
+    """
+
+    document_id: DocumentIdStr = Field(
+        description="Identifier of the document whose stored source path was rewritten."
+    )
+    previous_source_path: str = Field(
+        description="The spelling the record held before the migration rewrote it."
+    )
+    normalized_source_path: str = Field(
+        description="The plain form the record holds after the migration."
+    )
+    path_shared_with: list[DocumentIdStr] = Field(
+        default_factory=list,
+        description=(
+            "Other documents that hold the normalized path once this migration "
+            "completes -- those that already held it, and those the same pass "
+            "rewrote onto it. Empty in the ordinary case. Non-empty means the "
+            "rewrite left more than one record naming a single stored file, "
+            "which the differing spellings had until now kept apart; the "
+            "migration reports it rather than choosing between them."
+        ),
+    )
+
+
 class MigrationReport(BaseModel):
     vault_id: VaultIdStr = Field(description="Identifier of the vault whose schema was inspected.")
     columns_added: list[MigrationReportEntry] = Field(
@@ -3683,6 +3715,16 @@ class MigrationReport(BaseModel):
             "Names of data backfills that were detected as pending and applied. "
             "Empty when no backfills were needed."
         )
+    )
+    source_paths_normalized: list[SourcePathNormalization] = Field(
+        default_factory=list,
+        description=(
+            "Per-document entries for every record whose stored source path was "
+            "reduced to its plain form. Empty when no record held another "
+            "spelling. A path that walks out of the vault's source tree has no "
+            "plain form inside it and is left as recorded; `verify_vault_source_files` "
+            "reports those."
+        ),
     )
     tier3_uniqueness_activations: list[Tier3UniquenessActivation] = Field(
         default_factory=list,

@@ -1127,3 +1127,181 @@ async def test_stub_graph_store_facets_unsupported():
     store = StubGraphStore()
     with pytest.raises(NotImplementedError):
         await store.query_document_facets()
+
+
+# ---------------------------------------------------------------------------
+# list_non_canonical_source_paths
+# ---------------------------------------------------------------------------
+
+# Every stored spelling worth asking about. Whether each one is expected back is
+# *derived* below rather than written down here, so the expectation cannot be
+# quietly edited into agreement with a defective predicate.
+#
+# The controls matter as much as the candidates. Four plain paths carry a dot in
+# the *filename* -- including a hidden file and a trailing-dot name, the two
+# shapes a segment pattern is most likely to over-match -- and three carry a
+# ``..``, which pathlib preserves rather than resolving, so their plain form is
+# the string they already are and there is nothing here to repair.
+_STORED_SPELLINGS: tuple[str, ...] = (
+    "test/dot/plain.md",
+    "test/dot/two.dots.in.name.md",
+    "test/dot/.hidden.md",
+    "test/dot/trailing.dot.",
+    "../test/dot/up.md",
+    "test/dot/../dot/rel.md",
+    "test/dot/..",
+    "./test/dot/lead.md",
+    "test/dot/./interior.md",
+    "test/dot//doubled.md",
+    "test/dot/trailing_sep.md/",
+    ".//test/dot//both.md",
+    "test/dot/sub/.",
+    "/test/dot/./absolute.md",
+)
+
+# The spellings that match the filter and still reduce to themselves: the two
+# degenerate whole-path forms, and anything under a ``//`` root, which POSIX
+# leaves implementation-defined and the reducer preserves. The filter is
+# syntactic, so it offers all of them and the caller drops them. They are held
+# apart from the corpus above rather than folded into it because they are
+# exactly where the filter is deliberately a superset of "the plain form
+# differs", and separating them is what keeps the corpus assertion an exact one.
+_DEGENERATE_SPELLINGS: tuple[str, ...] = (".", "/", "//test/dot/rooted.md")
+
+
+def _respelling_differs(source_path: str) -> bool:
+    """Whether the plain POSIX form of ``source_path`` is a different string.
+
+    Computed with ``PurePosixPath`` -- the same reduction the caller normalizes
+    with -- rather than restated as a pattern, so the store's predicate and this
+    expectation are provably answering one question.
+    """
+    from pathlib import PurePosixPath
+
+    return str(PurePosixPath(source_path)) != source_path
+
+
+async def _seed_spellings(graph_store, tag: str) -> dict[str, str]:
+    """Insert one document per stored spelling; return {source_path: doc_id}."""
+    seeded = {}
+    for n, path in enumerate(_STORED_SPELLINGS):
+        doc = _make_doc_at(_id(f"noncanon_{tag}_{n}"), path)
+        await graph_store.insert_document(doc)
+        seeded[path] = doc.id
+    return seeded
+
+
+async def test_list_non_canonical_source_paths_returns_exactly_the_respellable(graph_store):
+    """Over the seeded corpus, the store selects a record if and only if the
+    plain form of its stored path is a different string -- and maps it to the
+    value the record actually holds.
+
+    Trap: a predicate keyed on the substring ``'.'`` selects every ``.md`` file,
+    which a presence-only assertion cannot tell from a correct one. Set equality
+    against a corpus whose controls include a hidden file, a trailing-dot name
+    and three ``..`` forms closes that from both sides at once: over-matching
+    fails on the controls, under-matching on the candidates. Asserting the
+    returned *value* catches an implementation handing back the repaired path
+    instead of the stored one, which would leave the caller nothing to repair.
+    """
+    seeded = await _seed_spellings(graph_store, "corpus")
+
+    result = await graph_store.list_non_canonical_source_paths()
+
+    selected = {path for path, doc_id in seeded.items() if doc_id in result}
+    assert selected == {p for p in _STORED_SPELLINGS if _respelling_differs(p)}
+    for path in selected:
+        assert result[seeded[path]] == path
+
+
+async def test_list_non_canonical_source_paths_offers_the_degenerate_spellings(graph_store):
+    """``.`` and ``/`` are offered even though reducing them changes nothing.
+
+    The filter is syntactic and these two are the whole of where that makes it
+    a superset of "the plain form differs". Pinning it means the port's promise
+    matches what the predicate does, rather than a stricter one that happens to
+    hold everywhere a reviewer looked.
+
+    Trap: leaving this unstated is how the caller's own "reduced to the same
+    string, nothing to do" branch ends up with no test behind it -- the branch
+    is unreachable in every other case, so removing it would look harmless.
+    """
+    seeded = {}
+    for n, path in enumerate(_DEGENERATE_SPELLINGS):
+        doc = _make_doc_at(_id(f"noncanon_degenerate_{n}"), path)
+        await graph_store.insert_document(doc)
+        seeded[path] = doc.id
+
+    result = await graph_store.list_non_canonical_source_paths()
+
+    assert {path: result.get(doc_id) for path, doc_id in seeded.items()} == {
+        path: path for path in _DEGENERATE_SPELLINGS
+    }
+    assert not any(_respelling_differs(p) for p in _DEGENERATE_SPELLINGS)
+
+
+async def test_list_non_canonical_source_paths_omits_a_store_of_plain_paths(graph_store):
+    """Records whose paths are all already plain contribute nothing.
+
+    Trap: this is the half the corpus test cannot carry. The migration that
+    consumes this reads "not returned" as "nothing to repair", so a predicate
+    degenerating to a no-op WHERE clause turns every call into a full-table read
+    and every row into a self-rewrite. Seeding only ordinary paths and asserting
+    none of them come back is what distinguishes a real no-op from that.
+
+    The positive control is what makes the absence mean anything: an empty
+    result set is also what a store that never received the documents would
+    produce, so the same paths are looked up through a query that *does* return
+    them before the absence is asserted.
+    """
+    paths = [
+        "test/dot/clean/alpha.md",
+        "test/dot/clean/beta.tar.gz",
+        "test/dot/clean/gamma",
+    ]
+    seeded_ids = set()
+    for n, path in enumerate(paths):
+        doc = _make_doc_at(_id(f"noncanon_clean_{n}"), path)
+        await graph_store.insert_document(doc)
+        seeded_ids.add(doc.id)
+
+    result = await graph_store.list_non_canonical_source_paths()
+
+    assert set(await graph_store.find_documents_by_source_paths(paths)) == set(paths)
+    assert seeded_ids & set(result) == set()
+
+
+async def test_find_document_ids_by_source_paths_returns_every_id_per_path(graph_store):
+    """Each present path maps to every document id carrying it, in id order.
+
+    Trap: the neighbouring ``find_documents_by_source_paths`` collapses the
+    several-documents-one-path case to a single representative, which is the
+    right answer for provenance and the wrong one here -- a caller asking who
+    else holds a path needs all of them. Seeding two documents on one path is
+    what separates this method from a copy of that one; a single-document
+    corpus cannot tell them apart. The absent path closes the other side: an
+    implementation echoing its input reports a holder for a path nobody holds.
+    """
+    shared = "test/ids/shared.md"
+    second = _make_doc_at("00000002_ids_shared_hi", shared)
+    first = _make_doc_at("00000001_ids_shared_lo", shared)
+    lone = _make_doc_at(_id("ids_lone"), "test/ids/lone.md")
+    for doc in (second, first, lone):
+        await graph_store.insert_document(doc)
+
+    result = await graph_store.find_document_ids_by_source_paths(
+        [shared, lone.source_path, "test/ids/absent.md"]
+    )
+
+    assert result == {shared: [first.id, second.id], lone.source_path: [lone.id]}
+
+
+async def test_find_document_ids_by_source_paths_empty_list_returns_empty_dict(graph_store):
+    """An empty path list returns an empty mapping, not the whole table.
+
+    Trap: a predicate that collapses to a no-op WHERE clause returns every row.
+    Asserting against a store that is *not* empty distinguishes them.
+    """
+    await graph_store.insert_document(_make_doc_at(_id("ids_probe"), "test/ids/probe.md"))
+
+    assert await graph_store.find_document_ids_by_source_paths([]) == {}
