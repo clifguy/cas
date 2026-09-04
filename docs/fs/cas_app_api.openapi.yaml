@@ -159,7 +159,7 @@ paths:
       operationId: bulk_ingest_document
       summary: Ingest a batch of files with two-phase edge inference, streamed via Server-Sent Events.
       description: >-
-        Three-phase pipeline implemented by app.backend.ingest_service.BatchIngestService:
+        Three-phase pipeline:
 
 
         - Phase 1: build the edge plan from the supplied parsed_metadata
@@ -188,7 +188,7 @@ paths:
           (on success) document_id or (on error) error message.
 
         - `summary` event emitted once at the end, carrying the
-          IngestSummary dict (counts of new docs, edges created/staged/
+          batch summary (counts of new docs, edges created/staged/
           dropped, metadata pending, abstracts generated/deferred, per-file
           errors as BatchIngestFileError entries -- a typed SAGE error
           carrying its code and detail -- and edge warnings when any were
@@ -740,6 +740,11 @@ components:
           type: object
           nullable: true
           description: Additional context. Structure varies by error type (e.g., current_state and attempted_action for lifecycle transition errors).
+        read_meta:
+          type: object
+          description: >-
+            Self-describing read markers (CAS-ADR-039). `success=False` on
+            the error envelope, parallel to the success-response marker.
 
     # -------------------------------------------------------------------------
     # Interactive sign-in (backend-for-frontend)

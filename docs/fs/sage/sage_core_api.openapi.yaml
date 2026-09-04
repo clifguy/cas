@@ -560,9 +560,9 @@ paths:
         filesystem in the cloud profile, so content is delivered by upload
         rather than by path -- stages each file under the SAGE process with
         its original filename preserved, then runs the same three-phase batch
-        pipeline (plan_batch_edges, per-file ingest, resolve_and_execute) the
-        co-located profile drives in-process. Both profiles therefore produce
-        equivalent ingest summaries.
+        pipeline -- plan the edges, ingest each file, then resolve the planned
+        edges -- that the co-located profile drives in-process. Both profiles
+        therefore produce equivalent ingest summaries.
 
 
         The `metadata` form field is a JSON-encoded BatchIngestUploadMetadata
@@ -916,14 +916,29 @@ paths:
 
         Designed for version history retrieval (supersedes chains) but
         works with any edge type that forms a linear or near-linear
-        chain. The walk itself is one recursive CTE whatever the chain
-        length, followed by a query for the connecting edges.
+        chain. Three round-trips for a chain of two or more: an
+        existence check on the starting document, then the walk itself
+        -- one recursive CTE whatever the chain length -- then a query
+        for the connecting edges. A chain whose `total_length` is 1
+        skips that edge query and spends two round-trips on the
+        `available_edge_types` hint instead, asking for the document's
+        inbound and outbound edges separately: four in all. The hint
+        turns on the whole chain being one document, not on a page of
+        one, so a `limit` of 1 over a longer chain does not trigger it.
 
 
         The result is symmetric: any chain member returns the full
         ordered chain with that member's position indicated. A document
         with no edges of the requested type returns a single-entry
         chain (the document itself as both head and tail).
+
+
+        `limit` and `offset` page the returned entries without changing
+        the walk: `total_length` stays the size of the whole chain,
+        `length` counts what this response carries, and each entry keeps
+        its absolute `position` rather than being renumbered from the
+        start of the page. `head_id` and `tail_id` likewise name the
+        chain's own ends, which a page need not contain.
 
 
         `is_linear` is true when the chain is strictly linear: no
@@ -1776,7 +1791,7 @@ paths:
       operationId: get_filename_metadata
       summary: Parse a filename without ingesting.
       description: >-
-        Side-effect-free wrapper over the vault's `FilenameParser`.
+        Side-effect-free wrapper over the vault's filename parsing.
         Returns the metadata fields the parser would extract from the
         supplied filename under the named adapter. No document is
         created; vault state is unchanged. Intended for callers that
@@ -2411,8 +2426,8 @@ paths:
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
-        maintenance surface (CAS-ADR-029). Wraps the
-        GraphStore.initialize(migrate=True) codepath: closes the running
+        maintenance surface (CAS-ADR-029). Runs the graph store's own
+        migrating initialization: closes the running
         vault's graph_store, opens a fresh one to apply ALTER TABLE
         migrations and BACKFILL_PLAN backfills, then reloads the vault in
         the registry so subsequent operations observe the new schema.
@@ -2466,8 +2481,8 @@ paths:
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
         to the maintenance API surface (CAS-ADR-029). Enumerates
-        documents whose pipeline_status is 'abstraction_skipped', dispatches
-        IngestionService.reabstract per document, and polls until each
+        documents whose pipeline_status is 'abstraction_skipped', dispatches a
+        reabstract per document, and polls until each
         reaches a terminal pipeline_status (abstraction_complete,
         abstraction_skipped, or failed).
 
@@ -2498,7 +2513,7 @@ paths:
         failed at it, and `timeout` is one abandoned at the ceiling.
 
 
-        Reuses the in-process AbstractionProvider that the running SAGE
+        Reuses the in-process abstraction provider that the running SAGE
         process loaded once at startup; does NOT initialize a second
         provider (the F-8 unified-memory cautionary tale). The
         complementary scripts/reabstract_deferred.py remains as the
@@ -3031,6 +3046,23 @@ components:
       description: Edge traversal direction relative to the starting document.
 
     # -------------------------------------------------------------------------
+    # Identifiers
+    # -------------------------------------------------------------------------
+    #
+    # The named identifier types that response schemas reference. The
+    # like-named entries under `components/parameters` describe the same
+    # values arriving as path parameters; these describe them appearing
+    # as properties of a response body.
+
+    VaultId:
+      type: string
+      description: Vault identifier. All operations are scoped to a single vault.
+
+    DocumentId:
+      type: string
+      description: Immutable document identifier (short hash + title hint).
+
+    # -------------------------------------------------------------------------
     # Core Entities
     # -------------------------------------------------------------------------
 
@@ -3188,6 +3220,13 @@ components:
           description: >-
             Source-type-specific metadata (Tier 3). Structure varies by
             source_type. Stored as key-value pairs in the graph store.
+        metadata_confirmed:
+          type: boolean
+          description: >-
+            True when the document's metadata has been confirmed (no
+            filename inference needed or inferred values have been
+            reviewed). False marks the document as pending in the
+            metadata-review queue.
 
     DocumentSummary:
       type: object
@@ -3250,6 +3289,25 @@ components:
             so callers can read fields like ticket_priority or
             failure_class from a single catalog/semantic/keyword pass
             without follow-up get_document round-trips.
+        source_path:
+          type: string
+          nullable: true
+          description: Location of the original artifact, when present.
+        source_modified_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Source file modification timestamp at last ingestion.
+        document_date:
+          type: string
+          nullable: true
+          description: >-
+            Authoritative content date in YYYY-MM-DD format (calendar
+            date, not a UTC-anchored instant). Matches the on-disk
+            Document.document_date shape — the projection passes the
+            string through unchanged so the wire serialization stays a
+            bare calendar date. Consumers that need a datetime (e.g.,
+            recency scoring) parse it at the use site.
 
     DocumentSummaryLight:
       type: object
@@ -4727,6 +4785,17 @@ components:
             on real-run responses, error entries, and no-op
             transitions. Preserved under `response_mode=light` (it's
             small and is the most useful summary for dry-run callers).
+        created_edge:
+          $ref: "#/components/schemas/Edge"
+          nullable: true
+          description: >-
+            The atomic supersedes edge produced by the per-item
+            transition, populated only for `action=supersede` items.
+            Carries the real edge id on a successful real run and the
+            nil-UUID sentinel id on a successful dry-run. Null on error
+            entries and on every non-supersede action. Preserved under
+            `response_mode=light` (small; the only signal supersede
+            callers have for the edge's wire shape).
 
     BulkLifecycleResponse:
       type: object
@@ -5490,7 +5559,7 @@ components:
 
     ChainResponse:
       type: object
-      required: [chain, head_id, tail_id, query_position, length, is_linear]
+      required: [chain, head_id, tail_id, query_position, length, total_length, is_linear]
       description: Response body for the chain walk endpoint; carries the ordered chain with head/tail anchors and a fork-detection flag.
       properties:
         chain:
@@ -5499,7 +5568,9 @@ components:
             $ref: "#/components/schemas/ChainEntry"
           description: >-
             Ordered list of documents in the chain, from tail (position 0)
-            to head (position length-1).
+            to head. Each entry's position is its index in the full chain,
+            so a page taken with limit or offset keeps those absolute
+            positions rather than renumbering from zero.
         head_id:
           type: string
           description: Document ID of the chain head (latest version / terminal node).
@@ -5513,14 +5584,29 @@ components:
             Zero-based position of the queried document within the chain.
         length:
           type: integer
+          minimum: 0
+          description: >-
+            Number of entries carried in this response, after limit and
+            offset are applied. Read total_length for the size of the
+            whole chain.
+        total_length:
+          type: integer
           minimum: 1
-          description: Total number of documents in the chain.
+          description: Total number of documents in the full chain.
         is_linear:
           type: boolean
           description: >-
             True if the chain is strictly linear (no forks or merges).
             False indicates a data quality issue where multiple documents
             share a predecessor or successor of the specified edge type.
+        available_edge_types:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >-
+            Other edge types observed on the queried document, surfaced as
+            a hint when the requested edge_type produced no chain.
 
     ChainEntry:
       type: object
