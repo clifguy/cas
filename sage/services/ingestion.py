@@ -148,14 +148,23 @@ def _translate_vault_source_refusal(source: str) -> Iterator[None]:
 def _translate_projection_failure(project_path: Path, reported_source: str) -> Iterator[None]:
     """Respell a projection failure's file reference as the caller's own.
 
-    A source adapter that cannot read its input raises a ``ValueError``
-    naming the path it was handed, and that text reaches a caller verbatim
-    -- as this call's failure, and through the per-file error summary on the
-    bulk legs. The path is always a location the service chose: the retained
-    copy under the storage root, or a staging file the vault-source port
-    pulled the bytes back into. Neither is anything the caller sent, and
-    under a hosted profile the absolute form discloses the container's
-    filesystem layout to anyone who trips a malformed file.
+    A source adapter that cannot read its input fails naming the path it was
+    handed, and that text reaches a caller verbatim -- as this call's
+    failure, and through the per-file error summary on the bulk legs. The
+    path is always a location the service chose: the retained copy under the
+    storage root, or a staging file the vault-source port pulled the bytes
+    back into. Neither is anything the caller sent, and under a hosted
+    profile the absolute form discloses the container's filesystem layout to
+    anyone who trips a malformed file.
+
+    Catches ``Exception`` rather than any narrower set. An adapter that wraps
+    its library's failure chooses the type; one that lets the library's own
+    exception through does not, and that second shape is the one a type list
+    misses -- it is what a library raises today, not what this module knows
+    about. ``BaseException`` cases (``KeyboardInterrupt``, ``SystemExit``,
+    ``asyncio.CancelledError``) sit outside ``Exception`` and are unaffected,
+    and anything whose message does not name the projected path passes
+    through untouched by the guard below, so the breadth costs nothing.
 
     A substitution rather than a replacement, for the reason the refusal
     translation above states: only the adapter knows what went wrong, so a
@@ -167,14 +176,21 @@ def _translate_projection_failure(project_path: Path, reported_source: str) -> I
     which is already the spelling a caller can relate to what it sent.
 
     Type-preserving, so the error's status and code contract is untouched:
-    what was an untyped adapter failure stays one, respelled. A subclass
-    that cannot be rebuilt from a single message re-raises unchanged, which
-    is no worse than not translating it, and a message that does not name
-    the projected path is left alone rather than guessed at.
+    what was an untyped adapter failure stays one, respelled. A type that
+    cannot be rebuilt from a single message re-raises unchanged, which is no
+    worse than not translating it, and a message that does not name the
+    projected path is left alone rather than guessed at.
+
+    The rebuild's own failure is caught into a sentinel rather than re-raised
+    from inside its handler, so the bare ``raise`` below runs with the
+    original failure active again: it keeps that failure's ``__cause__`` --
+    the library error an adapter chained onto it, which the operator log and
+    any stamping site read -- and attaches no context from the rebuild
+    attempt. Raising from within the inner handler cannot do both.
     """
     try:
         yield
-    except ValueError as exc:
+    except Exception as exc:
         projected = str(project_path)
         message = str(exc)
         if projected not in message:
@@ -182,7 +198,9 @@ def _translate_projection_failure(project_path: Path, reported_source: str) -> I
         try:
             translated = type(exc)(message.replace(projected, reported_source))
         except Exception:
-            raise exc from None
+            translated = None
+        if translated is None:
+            raise
         raise translated from exc
 
 

@@ -1510,6 +1510,53 @@ class TestDocxAdapterDotxSupport:
         # content_hash is over raw.dotx bytes, not the shadow copy
         assert result.content_hash == hashlib.sha256(dotx_path.read_bytes()).hexdigest()
 
+    async def test_ad_074_unreadable_docx_and_dotx_name_the_source_not_the_shadow(self, tmp_path):
+        """A .docx or .dotx the library cannot open fails as a ValueError naming
+        the file the caller supplied.
+
+        Two properties, and the second is the one only this test reaches. The
+        library's own exception (`PackageNotFoundError`, which is not a
+        `ValueError`) is wrapped, so a corrupt document fails in the same shape
+        the pdf and pptx adapters produce instead of a type peculiar to
+        python-docx. And the .dotx branch opens a *shadow* copy this method
+        writes under a temp directory, so an unwrapped failure there names a
+        scratch location the caller never supplied -- worse than naming the
+        vault copy, since it describes nothing the caller could act on.
+
+        Anti-coincidental-pass: the `sage_dotx_` assertion is the whole of the
+        second property. Both the shadow and the source end in a name the
+        message could plausibly carry, and the source-path assertion alone
+        passes against an implementation that names the shadow, because the
+        assertion only checks that the source appears. Asserting the absence of
+        the temp prefix is what separates them.
+        """
+        import zipfile as _zipfile
+
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+
+        not_a_zip = tmp_path / "corrupt.docx"
+        not_a_zip.write_bytes(b"not a zip at all")
+        with pytest.raises(ValueError) as excinfo:
+            await adapter.project(not_a_zip)
+        assert str(not_a_zip) in str(excinfo.value), excinfo.value
+        assert "PackageNotFoundError" not in type(excinfo.value).__name__
+
+        # A real zip whose content types mark it a template, but whose body is
+        # not a document: the package read succeeds and the shadow open fails,
+        # which is the branch that would otherwise name the temp copy.
+        bad_template = tmp_path / "corrupt.dotx"
+        with _zipfile.ZipFile(bad_template, "w") as z:
+            z.writestr("[Content_Types].xml", "<Types/>")
+            z.writestr("word/document.xml", "<not-a-document/>")
+        with pytest.raises(ValueError) as excinfo:
+            await adapter.project(bad_template)
+        message = str(excinfo.value)
+        assert str(bad_template) in message, message
+        assert "sage_dotx_" not in message, message
+        assert "shadow.docx" not in message, message
+
     async def test_ad_070_dotx_has_inventory_docx_does_not(self, tmp_path):
         """AD-070: template_style_inventory is.dotx-only; absent on.docx."""
         from sage.source_adapters.docx_adapter import DocxAdapter

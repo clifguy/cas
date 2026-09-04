@@ -1067,14 +1067,18 @@ class TestEdgeExecution:
         redeems a transfer token against a cloud-hosted vault reaches this same
         code with the same divergence, and has no endpoint test of its own.
 
-        Anti-coincidental-pass: ``file_path`` and ``declared_source`` are made
-        deliberately unequal, so a warning that reported either ref verbatim
-        fails; the ``/staged/`` sweep at the end catches a leak in any field
-        rather than only the three asserted above. BIS-013 above is the
-        companion control: its descriptors carry no ``declared_source``, and it
-        asserts the raw paths, so a fix that substituted a spelling
-        unconditionally -- a basename, or a lookup that silently defaulted --
-        turns that test red.
+        Anti-coincidental-pass: the staged path and the declared name differ in
+        their **basename**, not merely in their directory, so this test excludes
+        the basename-reduction rival on its own rather than leaning on a control
+        in another class. That distinction is the point: when both spellings end
+        in the same basename -- as they do on the upload leg, where the staged
+        name derives from the caller's -- an implementation that simply returned
+        ``Path(ref).name`` satisfies every assertion here while being wrong for
+        any caller whose declared name is a path. BIS-013 above remains the
+        companion control from the other direction: its descriptors carry no
+        ``declared_source`` and it asserts the raw paths, so an unconditional
+        substitution turns that test red. The ``/staged/`` sweep at the end
+        catches a leak in any field rather than only the three asserted above.
         """
         services = _make_services()
         call_idx = 0
@@ -1090,8 +1094,11 @@ class TestEdgeExecution:
         svc = BatchIngestService()
 
         def _staged(index: int, name: str, version: str) -> FileDescriptor:
+            # The staged basename (``part-<i>.bin``) shares nothing with the
+            # declared one, so no reduction of the staged path can produce the
+            # expected spelling by coincidence.
             return FileDescriptor(
-                file_path=f"/staged/{index}/{name}",
+                file_path=f"/staged/{index}/part-{index}.bin",
                 source_type="markdown",
                 parsed_metadata=ParsedMetadataInput(
                     title="Doc", version=version, doc_type="design_spec"

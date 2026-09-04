@@ -1196,3 +1196,88 @@ async def test_vsbb_071_recovery_reprojection_names_the_documents_own_path(
     message = str(excinfo.value)
     assert message == "Failed to open PDF imports/recovery.md: broken header", message
     assert str(tmp_vault_dir / "sources") not in message, message
+
+
+async def test_vsbb_072_untranslatable_failure_keeps_its_cause_chain(
+    ingestion_service, tmp_path, monkeypatch
+):
+    """A failure the seam cannot respell reaches the caller with its own cause
+    intact.
+
+    The seam rebuilds the exception to substitute the path, which needs a type
+    constructible from a single message. A type that is not falls back to
+    re-raising the original -- and the original is only unchanged if the
+    re-raise leaves the rebuild's handler first. Raising from inside it strips
+    the ``__cause__`` an adapter chained on, which is the library error an
+    operator reads to find out what actually went wrong.
+
+    Anti-coincidental-pass: the assertion is on ``__cause__`` identity, not on
+    the message, so it is blind to the substitution and sees only the chain.
+    The fixture's exception type takes two required arguments, so the rebuild
+    genuinely fails and the fallback branch genuinely runs -- an implementation
+    whose rebuild succeeded would never reach the line under test, and the
+    ``is`` check against a sentinel would then be satisfied by the translated
+    exception's own ``from exc``, which is why the message is left unasserted.
+    """
+
+    class _TwoArgError(ValueError):
+        def __init__(self, message: str, code: int) -> None:
+            super().__init__(message)
+            self.code = code
+
+    external = tmp_path / "chained.md"
+    external.write_text("# Chained\n")
+    cause = OSError("disk went away")
+    adapter = ingestion_service._adapters[SourceType.MARKDOWN]
+
+    async def failing_project(source_path, config=None):
+        raise _TwoArgError(f"Failed to open {source_path}", 42) from cause
+
+    monkeypatch.setattr(adapter, "project", failing_project)
+
+    with pytest.raises(_TwoArgError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN),
+            caller_source="chained.md",
+        )
+
+    assert excinfo.value.__cause__ is cause, excinfo.value.__cause__
+
+
+async def test_vsbb_073_projection_failure_that_is_not_a_valueerror_is_respelled(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """The seam respells by message, not by exception type.
+
+    An adapter that wraps its library's failure chooses the type; one that
+    hands the library's own exception through does not. The second shape is
+    the one a type list misses, because it is whatever the library raises
+    rather than anything this codebase declared -- and a library that names
+    the path it was given puts a server-side location on the wire through it.
+
+    Anti-coincidental-pass: ``OSError`` is deliberately outside every
+    exception class the adapters raise, so nothing but the seam's own breadth
+    can be respelling it; narrowing the catch to ``ValueError`` turns this
+    red while every other test in the caller-spelling set stays green. Held
+    separately from B18, which drives a real corrupt document but whose
+    failure the adapter now wraps into a ``ValueError`` before the seam sees
+    it -- so B18 cannot see this property at all.
+    """
+    external = tmp_path / "unwrapped.md"
+    external.write_text("# Unwrapped\n")
+    adapter = ingestion_service._adapters[SourceType.MARKDOWN]
+
+    async def failing_project(source_path, config=None):
+        raise OSError(f"library could not read {source_path}")
+
+    monkeypatch.setattr(adapter, "project", failing_project)
+
+    with pytest.raises(OSError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN),
+            caller_source="unwrapped.md",
+        )
+
+    message = str(excinfo.value)
+    assert message == "library could not read unwrapped.md", message
+    assert str(tmp_vault_dir / "sources") not in message, message

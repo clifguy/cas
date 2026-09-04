@@ -905,6 +905,53 @@ async def test_b17_projection_failure_message_names_the_upload_not_the_vault(
     assert str(config.vault.storage_root) not in rendered, summary
 
 
+async def test_b18_non_valueerror_adapter_failure_also_names_the_upload(batch_app):
+    """An adapter failure that is not a ``ValueError`` is respelled too.
+
+    The seam cannot key on an exception type. An adapter that wraps its
+    library's failure picks the type; one that lets the library's own
+    exception through does not, and python-docx raises its own
+    ``PackageNotFoundError`` -- naming the absolute path it was handed -- for
+    any input that is not a zip. Typing the seam to the shape the pdf and
+    pptx adapters happen to use leaves that one on the wire.
+
+    Drives the real adapter and the real library: no monkeypatch, no stub
+    exception. The part is genuinely not a zip, so the failure is the one a
+    caller uploading a corrupt file actually gets.
+
+    Anti-coincidental-pass: the positive assertion is a whole-message equality
+    naming the upload, and the sweep is over the entire summary for the vault's
+    own storage root -- which is what an untranslated message contains.
+
+    What this pins, precisely: the **adapter's wrap**, end to end through the
+    real library. It does *not* discriminate the seam's exception breadth,
+    because the wrap makes this failure a ``ValueError`` before the seam sees
+    it -- narrowing the seam back to ``ValueError`` leaves this test green.
+    Two repairs were applied to one defect and they overlap here; VSBB-073 is
+    the one that pins the breadth, using a failure no adapter wraps.
+    """
+    app, vault_id, config = batch_app
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[("files", ("bogus.docx", b"not a zip at all", "application/octet-stream"))],
+            data={"metadata": json.dumps({"files": [{"source_type": "docx"}]})},
+        )
+    assert resp.status_code == 200, resp.text
+    summary = next(e for e in _parse_sse_events(resp.text) if e["event_type"] == "summary")
+
+    assert summary["error_count"] == 1, summary
+    entry = summary["errors"][0]
+    assert entry["source_path"] == "bogus.docx", entry
+    assert entry["message"] == (
+        "Failed to open document bogus.docx: Package not found at 'bogus.docx'"
+    ), entry
+
+    rendered = json.dumps(summary)
+    assert str(config.vault.storage_root) not in rendered, summary
+    assert "sage-batch-ingest-" not in rendered, summary
+
+
 # ---------------------------------------------------------------------------
 # B15 -- batch-level pipeline failure after the response is committed
 # ---------------------------------------------------------------------------
