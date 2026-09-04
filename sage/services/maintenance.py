@@ -520,7 +520,14 @@ class MaintenanceService:
 
         entries: list[SourceFileIntegrityEntry] = []
         for doc in all_docs:
-            entry = self._check_document_source_file(doc, storage_root, check_hashes, store)
+            # A refusal aborts the walk rather than becoming a per-document
+            # status: the audit and the repair read the store through one
+            # observation helper, and a caller is owed the same answer from it
+            # whichever operation asked. The translation sits inside the loop
+            # so the error names the document the store actually declined on,
+            # not the walk as a whole.
+            with translate_store_refusal(doc.source_path):
+                entry = self._check_document_source_file(doc, storage_root, check_hashes, store)
             if entry is not None:
                 entries.append(entry)
 

@@ -622,6 +622,15 @@ def register_sage_tools(
           already exists.
         - ``write_path_invalid`` (400): ``write_to_path`` parent is
           missing or not writable, or the path is not absolute.
+        - ``vault_source_store_refused`` (502): the store declined the operation
+          on its merits -- quota, a permission it withdrew, a reply that opened
+          no usable upload session. Resolve it at the store before retrying;
+          ``detail.store_status`` carries the status it declined with.
+        - ``vault_source_store_unavailable`` (503): the store declined to serve
+          the operation just now -- throttling, a transient backend signal, an
+          upload session it expired. The same call may succeed later.
+          Both only when bytes are requested; a metadata-only read touches
+          the store not at all.
 
         Args:
             vault_id: Target vault identifier.
@@ -2689,6 +2698,18 @@ def register_sage_tools(
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
+        - ``vault_source_store_refused`` (502): the store declined the operation
+          on its merits -- quota, a permission it withdrew, a reply that opened
+          no usable upload session. Resolve it at the store before retrying;
+          ``detail.store_status`` carries the status it declined with.
+        - ``vault_source_store_unavailable`` (503): the store declined to serve
+          the operation just now -- throttling, a transient backend signal, an
+          upload session it expired. The same call may succeed later.
+
+        A refusal ends the walk rather than becoming a per-document status, so
+        no report is returned and the findings gathered so far are discarded.
+        The audit is read-only and repeatable, so re-running it is the whole
+        remedy for a refusal the store called transient.
 
         Args:
             vault_id: Target vault identifier.

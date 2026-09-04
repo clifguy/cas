@@ -1923,3 +1923,77 @@ def test_specs_respect_url_prefix_boundaries(
             issues.append(f"  {p}")
 
     assert not issues, "\n".join(issues)
+
+
+# ---------------------------------------------------------------------------
+# Test 2c: every operation that can emit the store-refusal codes declares them
+# ---------------------------------------------------------------------------
+
+
+# The operations whose service path reads or writes through the vault-source
+# store inside a refusal translation, and which therefore can answer with
+# either store-refusal code. Adding a translation to a fifth operation without
+# adding it here is the drift this pins.
+STORE_REFUSAL_OPERATIONS = frozenset(
+    {
+        "ingest_document",
+        "restore_vault_source_file",
+        "verify_vault_source_files",
+        "get_document",
+        "get_document_content",
+        "get_document_download_url",
+        "transfer_download",
+    }
+)
+
+
+def test_store_refusal_operations_declare_both_codes(live_openapi: dict):
+    """The set of operations declaring the two vault-source store-refusal
+    statuses is exactly the set whose service path can raise them.
+
+    The envelope gate above is driven from the YAML, so it catches a router
+    that dropped a declared status but not an operation that can emit a status
+    it never declared. That direction matters here: the translation and the
+    declaration are separate edits, and an operation carrying the first without
+    the second answers with a status absent from its own contract.
+
+    Pinned as an equality rather than a subset so the reverse drift -- a
+    declaration left on an operation whose translation was removed, which would
+    document a status the operation can no longer return -- fails too.
+    """
+    declaring = {
+        operation.get("operationId")
+        for methods in (live_openapi.get("paths") or {}).values()
+        for operation in methods.values()
+        if isinstance(operation, dict)
+        for responses in [operation.get("responses") or {}]
+        if "502" in responses and "503" in responses
+    }
+
+    assert declaring == set(STORE_REFUSAL_OPERATIONS), (
+        "store-refusal declaration drift\n"
+        f"  declared but not expected: {sorted(declaring - STORE_REFUSAL_OPERATIONS)}\n"
+        f"  expected but not declared: {sorted(STORE_REFUSAL_OPERATIONS - declaring)}"
+    )
+
+
+def test_store_refusal_operations_each_declare_both_not_one(live_openapi: dict):
+    """No operation declares one of the pair without the other.
+
+    Anti-coincidental-pass: the equality above matches on operations carrying
+    *both* statuses, so an operation that declared only the 502 would drop out
+    of ``declaring`` and be reported as a missing expectation -- a message that
+    points at the wrong fix. This separates the two failures.
+    """
+    lopsided = [
+        (operation.get("operationId"), sorted(set(responses) & {"502", "503"}))
+        for methods in (live_openapi.get("paths") or {}).values()
+        for operation in methods.values()
+        if isinstance(operation, dict)
+        for responses in [operation.get("responses") or {}]
+        if len(set(responses) & {"502", "503"}) == 1
+    ]
+
+    assert not lopsided, (
+        f"operations declaring one store-refusal status but not the pair: {lopsided}"
+    )

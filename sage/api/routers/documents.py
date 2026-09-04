@@ -119,6 +119,24 @@ async def recompute_abstract(
                 "URL)."
             ),
         },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that opened no usable upload session. Resolve it at the store before "
+                "retrying; `detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, a transient backend "
+                "signal, an upload session it expired. The same request may succeed "
+                "on a later attempt."
+            ),
+        },
     },
 )
 async def get_document_download_url(
@@ -138,6 +156,24 @@ async def get_document_download_url(
                 "Vault or document not found. Also returned with "
                 "`content_file_missing` when the retained source file is "
                 "absent from the vault-source store."
+            ),
+        },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that opened no usable upload session. Resolve it at the store before "
+                "retrying; `detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, a transient backend "
+                "signal, an upload session it expired. The same request may succeed "
+                "on a later attempt."
             ),
         },
     },
@@ -217,6 +253,24 @@ async def get_document_content(
                 "via `SAGE_MAX_INLINE_CONTENT_BYTES`). Does not apply to "
                 "`write_to_path` delivery. Use `write_to_path` or a "
                 "filesystem-based workflow for files above the ceiling."
+            ),
+        },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that opened no usable upload session. Resolve it at the store before "
+                "retrying; `detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, a transient backend "
+                "signal, an upload session it expired. The same request may succeed "
+                "on a later attempt."
             ),
         },
     },

@@ -48,6 +48,7 @@ from sage.models.schemas import (
     Edge,
     MigrationReport,
     OptimizeContentStoreReport,
+    SourceFileIntegrityEntry,
     SourcePathNormalization,
 )
 from sage.services.maintenance import (
@@ -56,6 +57,7 @@ from sage.services.maintenance import (
     MaintenanceService,
 )
 from sage.storage.tier3_uniqueness import tier3_unique_index_name
+from tests.helpers.store_refusal import STORE_BODY, store_refusal
 from tests.sage.test_tier3_uniqueness import (
     _config_dict_with_unique_keys,
     _make_ticket_doc,
@@ -3278,44 +3280,11 @@ async def test_get_stats_surfaces_last_optimize(graph_store, minimal_config):
 # Restore: a store that refuses what it was handed
 # --------------------------------------------------------------------------
 
-# The store's own body, which names its cause precisely and belongs in the log.
-# A sentinel rather than plausible prose so an assertion that it did *not*
-# travel onto the public error cannot pass by paraphrase.
-_STORE_BODY = "quota-exceeded-on-site-contoso-sharepoint-com-drive-b!xyz"
-
-
-@pytest.fixture
-def refusing_source_store(monkeypatch):
-    """A document-store vault-source binding whose Graph client can be told to refuse.
-
-    Pins the stack's binding through the same env override the shared
-    ``vault_source_backend`` fixture uses, so the real
-    ``DocumentStoreVaultSourceStore`` and the real dispatch both run and only
-    the Graph transport is faked. Returned so a test can install a refusal on
-    the operation it is about.
-    """
-    from tests.helpers.fake_graph_client import FakeGraphClient
-
-    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
-    fake = FakeGraphClient()
-    monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client",
-        lambda *args, **kwargs: fake,
-    )
-    return fake
-
-
-def _refusal(status: int | None, *, retryable: bool, operation: str = "write source"):
-    """The refusal the real Graph client raises, built the way it builds it."""
-    from sage.vault_source_document_store import SourceStoreRefusalError
-
-    return SourceStoreRefusalError(
-        f"Microsoft Graph {operation} failed: {status} {_STORE_BODY}",
-        operation=operation,
-        target="vault_a/imports/r.md",
-        status=status,
-        retryable=retryable,
-    )
+# The refusal harness lives in tests/helpers/store_refusal.py; the fixture that
+# installs the faked Graph transport is in the package conftest. Aliased to the
+# spellings the assertions below already use.
+_STORE_BODY = STORE_BODY
+_refusal = store_refusal
 
 
 async def _drifted_doc(gs, fake, *, source_path: str, original: bytes) -> None:
@@ -3514,3 +3483,236 @@ async def test_restore_source_file_a_refusal_carrying_no_status_is_not_transient
 
     assert excinfo.value.code == "vault_source_store_refused"
     assert "store_status" not in excinfo.value.detail
+
+
+# --------------------------------------------------------------------------
+# Audit: a store that refuses part-way through the walk
+# --------------------------------------------------------------------------
+
+
+async def _audit_doc(gs, fake, did: str, *, present: bool = True) -> str:
+    """Record a document whose retained copy lives on the faked store.
+
+    Returns its source_path. ``present=False`` records the document without
+    seeding bytes, so the audit classifies it ``missing`` -- a real finding,
+    collected before a later refusal lands.
+    """
+    sp = f"imports/{did}.md"
+    body = f"{did} body".encode()
+    if present:
+        fake.sources[sp] = body
+    await gs.insert_document(_src_doc(did, _sha256_of(body), source_path=sp))
+    return sp
+
+
+def _refuse_after(successes: int, refusal: Exception):
+    """A refusal that lets ``successes`` reads through before it fires.
+
+    Order-independent: whichever documents the walk reaches first, the
+    refusal lands after exactly that many succeeded, so a test can assert
+    what had been collected by then without pinning the iteration order.
+    """
+    seen = {"n": 0}
+
+    def hook(vault_id: str, source_path: str) -> Exception | None:
+        if seen["n"] >= successes:
+            return refusal
+        seen["n"] += 1
+        return None
+
+    return hook
+
+
+async def test_verify_source_files_store_refusal_is_typed_and_actionable(
+    graph_store, minimal_config, stub_content_store, refusing_source_store
+):
+    """A store that declines the audit's read on its merits reaches the caller
+    as the typed ``vault_source_store_refused``, not a bare internal error.
+
+    The audit and the repair reach the store through one shared observation
+    helper, so one refusal must not answer a caller two different ways
+    depending on which operation asked.
+
+    Anti-coincidental-pass: ``detail["source_path"]`` is asserted to be the
+    document the store actually refused on, which fails a translation wrapped
+    around the whole walk rather than the document in hand. ``status_code`` is
+    asserted because an untranslated refusal produces a bare 500 instead.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    sp = await _audit_doc(gs, refusing_source_store, "deadbeef_a1")
+    refusing_source_store.refuse_stat = _refusal(403, retryable=False, operation="stat source")
+
+    with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
+        await maint.verify_vault_source_files()
+
+    exc = excinfo.value
+    assert exc.code == "vault_source_store_refused"
+    assert exc.status_code == 502
+    assert exc.detail["source_path"] == sp
+    assert exc.detail["store_status"] == 403
+    assert exc.detail["operation"] == "stat source"
+
+
+async def test_verify_source_files_store_throttling_is_typed_and_transient(
+    graph_store, minimal_config, stub_content_store, refusing_source_store
+):
+    """A store that only declined to serve the audit *now* reaches the caller as
+    ``vault_source_store_unavailable``, so re-running is the indicated response
+    -- which for a read-only, idempotent audit is the whole remedy.
+
+    Anti-coincidental-pass: the paired non-transient case above runs the same
+    call and asserts the other code, excluding a translation that collapsed
+    the distinction the binding drew.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _audit_doc(gs, refusing_source_store, "deadbeef_a2")
+    refusing_source_store.refuse_stat = _refusal(429, retryable=True, operation="stat source")
+
+    with pytest.raises(VaultSourceStoreUnavailableError) as excinfo:
+        await maint.verify_vault_source_files()
+
+    assert excinfo.value.code == "vault_source_store_unavailable"
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail["store_status"] == 429
+
+
+async def test_verify_source_files_aborts_rather_than_reporting_a_per_document_status(
+    graph_store, minimal_config, stub_content_store, refusing_source_store
+):
+    """A refusal part-way through the walk aborts the run. The caller receives
+    the typed error and no report at all -- not a report in which the
+    unreadable documents carry a per-document integrity status.
+
+    Both shapes were available. A per-document status would keep the findings
+    already collected, at the cost of widening the report's enumeration and
+    needing a rule for what the summary counts mean when the store answered
+    for some documents and not others. The audit aborts instead, so one store
+    call answers the same way whichever operation reached it.
+
+    Anti-coincidental-pass: this is the test that separates the two. Three
+    documents are recorded, all of them absent from the store, and the refusal
+    is armed to fire only after one read has succeeded -- so a real ``missing``
+    finding exists by the time the store declines. A per-document-status rival
+    returns a report; a rival that aborts but hands back the findings gathered
+    so far also returns a report; only an abort that discards them raises. The
+    ``source_stats`` assertion proves there was something to discard, so this
+    cannot pass against a run that refused before it observed anything.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    for did in ("deadbeef_a3", "deadbeef_b3", "deadbeef_c3"):
+        await _audit_doc(gs, refusing_source_store, did, present=False)
+    refusing_source_store.refuse_stat = _refuse_after(
+        1, _refusal(403, retryable=False, operation="stat source")
+    )
+
+    with pytest.raises(VaultSourceStoreRefusedError):
+        await maint.verify_vault_source_files()
+
+    assert refusing_source_store.source_stats == 1, (
+        "one document must have been observed before the refusal, so the run "
+        "had a finding to discard"
+    )
+
+    # The control names what was discarded. Without it the absent-source setup
+    # is consumed by no assertion: seeding the documents as present would leave
+    # the run raising just the same, and the claim that a real finding existed
+    # by then would rest on nothing this test reads.
+    refusing_source_store.refuse_stat = None
+    report = await maint.verify_vault_source_files()
+    assert [e.integrity_status for e in report.entries] == ["missing"] * 3
+    assert report.summary["missing"] == 3
+
+
+def test_verify_source_files_schema_still_declares_exactly_four_integrity_states():
+    """The report's enumeration is unchanged by the refusal work.
+
+    Anti-coincidental-pass: an implementation that typed the refusal *and*
+    added a fifth status "in case" would pass every other test here while
+    widening a published contract the abort decision deliberately left alone.
+    """
+    import typing
+
+    annotation = SourceFileIntegrityEntry.model_fields["integrity_status"].annotation
+    assert set(typing.get_args(annotation)) == {
+        "missing",
+        "hash_mismatch",
+        "symlinked",
+        "out_of_root",
+    }
+
+
+async def test_verify_source_files_hash_refusal_is_typed(
+    graph_store, minimal_config, stub_content_store, refusing_source_store
+):
+    """A refusal on the digest the audit reads in hash mode is typed too.
+
+    Anti-coincidental-pass: the digest is the *second* store call the shared
+    observation helper makes, and it is reached only under ``check_hashes``.
+    A translation wrapped around the existence probe alone passes every other
+    audit refusal test here and fails this one.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _audit_doc(gs, refusing_source_store, "deadbeef_a5")
+    refusing_source_store.refuse_hash = _refusal(503, retryable=True, operation="hash source")
+
+    with pytest.raises(VaultSourceStoreUnavailableError) as excinfo:
+        await maint.verify_vault_source_files(check_hashes=True)
+
+    assert excinfo.value.detail["operation"] == "hash source"
+
+
+async def test_verify_source_files_refusal_message_omits_the_store_body(
+    graph_store, minimal_config, stub_content_store, refusing_source_store
+):
+    """The store's own response body does not travel onto the error the caller
+    receives, however useful it is in the log.
+
+    Anti-coincidental-pass: the sentinel is asserted present on the binding's
+    own exception first, so a test that passed because the refusal never
+    carried a body -- and therefore proved nothing about what the translation
+    drops -- fails on that assertion instead.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _audit_doc(gs, refusing_source_store, "deadbeef_a6")
+    refusal = _refusal(507, retryable=False, operation="stat source")
+    assert _STORE_BODY in str(refusal), "the binding must carry the body for the log"
+    refusing_source_store.refuse_stat = refusal
+
+    with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
+        await maint.verify_vault_source_files()
+
+    assert _STORE_BODY not in excinfo.value.message
+    assert _STORE_BODY not in json.dumps(excinfo.value.detail)
+
+
+@pytest.mark.parametrize(
+    ("retryable", "expected"),
+    [(True, VaultSourceStoreUnavailableError), (False, VaultSourceStoreRefusedError)],
+)
+async def test_verify_source_files_transience_follows_the_binding_not_the_status(
+    graph_store,
+    minimal_config,
+    stub_content_store,
+    refusing_source_store,
+    retryable,
+    expected,
+):
+    """Whether a refusal is transient is the binding's finding, carried on the
+    refusal. The audit's translation reports it rather than re-deriving it.
+
+    Anti-coincidental-pass: both arms refuse with the *same* status and differ
+    only in the flag the binding set, so a translation that read transience off
+    the status code satisfies at most one arm.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _audit_doc(gs, refusing_source_store, "deadbeef_a7")
+    refusing_source_store.refuse_stat = _refusal(404, retryable=retryable, operation="stat source")
+
+    with pytest.raises(expected):
+        await maint.verify_vault_source_files()

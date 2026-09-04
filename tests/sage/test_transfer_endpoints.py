@@ -29,6 +29,8 @@ from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
 from sage.mcp_server import bulk_ingest_document, get_document, ingest_document, read_projection
 from sage.services.transfer import get_transfer_store, reset_transfer_store
+from sage.vault_source_binding import FilesystemVaultSourceStore
+from tests.helpers.store_refusal import STORE_BODY, store_refusal
 
 _VAULT_ID = "test_vault"
 _BASE = "https://sage.test.example"
@@ -491,3 +493,77 @@ async def test_transfer_paths_exempt_from_bearer_auth(monkeypatch):
         download = await c.get("/download/xyz", headers={"X-Download-Token": "bogus.token"})
         assert download.status_code == 410
         assert "www-authenticate" not in download.headers
+
+
+# ---------------------------------------------------------------------------
+# The download leg's source reads reach the vault-source store
+# ---------------------------------------------------------------------------
+
+
+class _RefusingSourceStore(FilesystemVaultSourceStore):
+    """A binding whose presence check is declined by the store behind it."""
+
+    def __init__(self, root, refusal: Exception) -> None:
+        super().__init__(root)
+        self._refusal = refusal
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        raise self._refusal
+
+
+@pytest.mark.parametrize(
+    ("retryable", "status", "code"),
+    [
+        (False, 502, "vault_source_store_refused"),
+        (True, 503, "vault_source_store_unavailable"),
+    ],
+)
+async def test_download_source_store_refusal_is_typed(
+    client, tmp_path, monkeypatch, retryable, status, code
+):
+    """A store that declines the download leg's read reaches the caller as the
+    typed refusal rather than a bare 500.
+
+    The download leg is the third caller-facing surface reading a retained
+    source, and its token is the sole credential -- so an untyped failure here
+    costs the caller a spent token *and* tells them nothing about whether
+    re-issuing the originating call is worth doing. The status is what carries
+    that: 503 says try again, 502 says fix it at the store first.
+
+    Anti-coincidental-pass: the two arms refuse with the same status and differ
+    only in the flag the binding set, so a translation deriving transience from
+    the status satisfies at most one. The `code` assertion also excludes the
+    route's existing `content_file_missing`, which is what a binding reporting
+    a genuinely absent source returns -- a different fact from one that
+    declined to answer.
+    """
+    body = "# Refused download\n\n" + "line\n" * 50
+    ingested = await _ingest_locally(tmp_path, "dl_refused.md", body)
+
+    with _profile("cloud"):
+        recipe = _parse(
+            await get_document(_VAULT_ID, ingested["id"], write_to_path=str(tmp_path / "o.md"))
+        )
+        assert recipe.get("status") == "download_required", recipe
+
+        monkeypatch.setattr(
+            "sage.mcp_init.resolve_stack_vault_source_store",
+            lambda *a, **k: _RefusingSourceStore(
+                tmp_path,
+                store_refusal(
+                    409, retryable=retryable, operation="stat source", target=recipe["transfer_id"]
+                ),
+            ),
+        )
+        resp = await client.get(
+            f"/download/{recipe['transfer_id']}",
+            headers={"X-Download-Token": recipe["token"]},
+        )
+
+    assert resp.status_code == status, resp.text
+    payload = resp.json()
+    assert payload["code"] == code
+    assert payload["code"] != "content_file_missing"
+    assert payload["detail"]["operation"] == "stat source"
+    assert payload["detail"]["store_status"] == 409
+    assert STORE_BODY not in json.dumps(payload)
