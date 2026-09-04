@@ -2895,7 +2895,9 @@ def register_sage_tools(
         ``llm_failure`` indicates an error the provider actually raised:
         ``still_skipped`` is a document that settled back at
         ``abstraction_skipped``, having declined abstraction rather than
-        failed at it, and ``timeout`` is one abandoned at the ceiling.
+        failed at it; ``timeout`` is one abandoned at the ceiling; and
+        ``interrupted`` is one whose work a stopped queue dropped before
+        any provider was reached.
 
         Reuses the in-process abstraction provider this MCP server loaded at
         startup; does NOT spin up a second Qwen3 instance. The standalone

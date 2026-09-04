@@ -353,6 +353,44 @@ async def test_a_failing_sweep_exits_non_zero(corpus):
     assert rc == 1
 
 
+async def test_every_counted_failure_is_named_in_the_stderr_listing(make_doc, capsys):
+    """The failure listing names every document the failure count counts.
+
+    The count, the exit code and the `Failures:` header are all keyed on
+    `failed_count`, so a listing keyed on a narrower set prints a header over
+    an incomplete list while the line above says how many failed -- an
+    operator reading stderr to find out which documents to chase gets a
+    header and nothing under it.
+
+    Anti-coincidental-pass: the document settles at `abstraction_interrupted`
+    rather than `failed`, so the listing must reach an outcome other than
+    `llm_failure` to name it. Against a listing filtered to `llm_failure`
+    alone the count still reads 1 and the exit code is still 1 -- only the
+    stderr body separates them, which is why the assertion reads `.err` and
+    not the summary line.
+    """
+    doc = make_doc("interrupted1", pipeline_status=PipelineStatus.ABSTRACTION_INTERRUPTED)
+    graph = RecordingGraphStore([doc])
+    ingestion = RecordingIngestion(graph, settles_to=PipelineStatus.ABSTRACTION_INTERRUPTED)
+
+    rc = await rb.reabstract_bulk(
+        graph_store=graph,
+        ingestion_service=ingestion,
+        vault_id=VAULT,
+        statuses=frozenset({PipelineStatus.ABSTRACTION_INTERRUPTED.value}),
+        limit=None,
+        reason="recovery",
+        apply=True,
+        poll_interval=0.0,
+    )
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "1 failed" in captured.out
+    assert doc.id in captured.err, captured.err
+    assert ReabstractOutcome.INTERRUPTED.value in captured.err
+
+
 async def test_multi_status_worklist_follows_the_vocabulary_declaration_order(make_doc):
     """The worklist order is stable across runs, not set-iteration order.
 

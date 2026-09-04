@@ -1383,13 +1383,14 @@ class MaintenanceService:
                         )
                     else:
                         # Every non-success settles into failed_count, but the
-                        # three ways of getting there are different findings
-                        # and are reported apart. A document back at
+                        # ways of getting there are different findings and are
+                        # reported apart. A document back at
                         # abstraction_skipped declined abstraction rather than
                         # failing at it; a timed-out one was abandoned by the
-                        # waiter and may yet finish. Reporting either as an
-                        # llm_failure sends an operator looking for a provider
-                        # error that was never raised.
+                        # waiter and may yet finish; an interrupted one had its
+                        # work dropped by a stopped queue. Reporting any of them
+                        # as an llm_failure sends an operator looking for a
+                        # provider error that was never raised.
                         outcome, event_status, error_message = _reabstract_failure_report(status)
                         entries.append(
                             ReabstractReportEntry(

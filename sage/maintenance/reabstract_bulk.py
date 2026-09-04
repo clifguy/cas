@@ -345,7 +345,19 @@ async def reabstract_bulk(
     if report.failed_count:
         print("Failures:", file=sys.stderr)
         for entry in report.entries:
-            if entry.outcome == ReabstractOutcome.LLM_FAILURE:
-                print(f"  {entry.document_id}: {entry.error_message}", file=sys.stderr)
+            # Everything the count counts, listed. Keyed on "did not succeed"
+            # rather than on the failure outcomes by name: naming them here
+            # restates a set that goes stale the next time one is added -- as
+            # it did when `interrupted` joined and this listing kept printing
+            # a header over an empty set while the count above said one
+            # failed. Safe as the complement of SUCCESS because this sweep
+            # emits no skipped_pdf entries (skipped_pdf_count is always zero
+            # here, for the reason the module docstring gives), so every
+            # entry either succeeded or counted toward failed_count.
+            if entry.outcome != ReabstractOutcome.SUCCESS:
+                print(
+                    f"  {entry.document_id}: [{entry.outcome.value}] {entry.error_message}",
+                    file=sys.stderr,
+                )
         return 1
     return 0

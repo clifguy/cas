@@ -837,14 +837,20 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
     the lock can go stale before the write lands, and the document that
     settled in between is overwritten anyway.
 
-    Anti-coincidental-pass: the discriminating observation is the lock's state
-    *at the moment of each store call*, not the ordering of the calls, which
-    both implementations share. ``DocumentLockManager.lock`` hands back a
-    plain ``asyncio.Lock``, so ``locked()`` answers that directly and
-    deterministically -- no second writer and no chosen interleaving needed.
-    Against a read hoisted above the ``async with``, the first entry records
-    False. The trailing read is ``update_document``'s own re-read, inside the
-    same hold.
+    Anti-coincidental-pass, and it takes a pair. ``DocumentLockManager.lock``
+    hands back a plain ``asyncio.Lock``, so ``locked()`` at the moment of each
+    store call is deterministic -- no second writer and no chosen interleaving
+    needed -- and against a read hoisted above the ``async with``, the first
+    observation records False.
+
+    That observation alone is *not* enough. A check-then-write under two
+    separate holds -- acquire, read, release, acquire, write -- reports True
+    at every call and in the same order, so the lock-state list is identical
+    to the correct implementation's. It is also the exact TOCTOU this guard
+    exists to exclude: the document can settle between the two holds. The
+    acquisition count is what separates them, so it is asserted alongside:
+    one hold, not two. The trailing read is ``update_document``'s own re-read,
+    inside that same hold.
     """
     doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s13.md")
     gated = _GatedAbstractionProvider()
@@ -855,8 +861,15 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
 
     lock = ingestion_service._locks.lock(doc_id)
     observed: list[tuple[str, bool]] = []
+    acquisitions = 0
     original_read = graph_store.get_document
     original_write = graph_store.update_document
+    original_acquire = lock.acquire
+
+    async def _counting_acquire():
+        nonlocal acquisitions
+        acquisitions += 1
+        return await original_acquire()
 
     async def _probing_read(document_id):
         if document_id == doc_id:
@@ -870,15 +883,21 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
 
     graph_store.get_document = _probing_read
     graph_store.update_document = _probing_write
+    lock.acquire = _counting_acquire
     try:
         await ingestion_service.stop_worker()
     finally:
         graph_store.get_document = original_read
         graph_store.update_document = original_write
+        del lock.acquire
 
     assert observed, "the settle pass made no store call for the stamped document"
     assert all(held for _, held in observed), observed
     assert [kind for kind, _ in observed][:2] == ["read", "write"]
+    assert acquisitions == 1, (
+        f"the settle stamp took the document lock {acquisitions} times; the read "
+        "and the write must share one hold, or the status can change between them"
+    )
 
 
 async def test_stop_worker_survives_a_restamp_store_failure(
