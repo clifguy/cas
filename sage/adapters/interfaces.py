@@ -31,13 +31,23 @@ class KeywordQueryParse(NamedTuple):
 
     ``terms`` are the lexemes a chunk must carry, after the backend's own
     stopword and stemming treatment and with anything the query excluded
-    removed. ``all_required`` is false when the parse admits alternatives, so
-    a caller cannot describe the query as conjunctive: a chunk can satisfy it
-    while carrying only some of the terms.
+    removed. ``excluded`` are the lexemes the query rules out; they are not
+    something the caller must supply, but their presence means a search ran
+    even when ``terms`` is empty -- which is what separates a query asking
+    only for absences from one whose every word the backend discarded.
+
+    ``all_required`` is false when the parse admits alternatives, so a caller
+    cannot describe the query as conjunctive: a chunk can satisfy it while
+    carrying only some of the terms. ``adjacent`` is true when the parse
+    contains a phrase, whose terms must appear together and in order -- a
+    stronger condition than carrying them all, so a chunk can hold every term
+    and still not match.
     """
 
     terms: tuple[str, ...]
+    excluded: tuple[str, ...]
     all_required: bool
+    adjacent: bool
 
 
 # The spellings a plain POSIX form reduces: a `.` segment (bounded by a

@@ -5954,6 +5954,13 @@ async def test_keyword_single_term_empty_result_stays_silent(
         [("Section 1", "alphaword content only.")],
     )
 
+    # Positive control: the corpus answers a term it does carry, so the silence
+    # below is a single-term miss on a reachable vault rather than an empty one.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
     request = DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword")
     response = await retrieval_service.discover(request)
 
@@ -6028,7 +6035,12 @@ async def test_keyword_warning_reports_the_backend_parse_not_a_word_split(
     assert control.results, "precondition: the indexed corpus must be searchable"
 
     async def _parse(query: str) -> KeywordQueryParse:
-        return KeywordQueryParse(terms=("stemmedlexeme", "otherlexeme"), all_required=True)
+        return KeywordQueryParse(
+            terms=("stemmedlexeme", "otherlexeme"),
+            excluded=(),
+            all_required=True,
+            adjacent=False,
+        )
 
     monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse)
 
@@ -6138,7 +6150,7 @@ async def test_keyword_all_stopword_query_gets_its_own_advisory(
     )
 
     async def _parse_to_nothing(query: str) -> KeywordQueryParse:
-        return KeywordQueryParse(terms=(), all_required=True)
+        return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
 
     # Positive control, taken before the parse is replaced: the corpus is
     # searchable, so the empty result below is about the query, not the vault.
@@ -6180,7 +6192,12 @@ async def test_keyword_or_query_gets_no_conjunction_advisory(
     )
 
     async def _parse_alternation(query: str) -> KeywordQueryParse:
-        return KeywordQueryParse(terms=("deltaword", "epsilonword"), all_required=False)
+        return KeywordQueryParse(
+            terms=("deltaword", "epsilonword"),
+            excluded=(),
+            all_required=False,
+            adjacent=False,
+        )
 
     # Positive control, taken before the parse is replaced: the corpus is
     # searchable, so the empty result below is about the query, not the vault.
@@ -6198,6 +6215,134 @@ async def test_keyword_or_query_gets_no_conjunction_advisory(
     assert response.results == []
     joined = " ".join((response.hints or {}).get("warnings") or [])
     assert "conjunctive" not in joined, "a chunk can satisfy an alternation with one term"
+
+
+async def test_keyword_exclusion_only_query_is_not_called_all_stopwords(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """A query asking only for absences searched; it must not be told it did not.
+
+    ``-alphaword`` renders a negation, so the required-term set is empty for a
+    reason entirely unlike an all-stopword query: the backend searched, for
+    chunks *lacking* that term. A rival reading only the emptiness of ``terms``
+    reports "every word was discarded", which is false.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_l")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_l"),
+        [("Section 1", "zzz qqq vvv.")],
+    )
+
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zzz")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    async def _parse_exclusion_only(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=(), excluded=("alphaword",), all_required=True, adjacent=False
+        )
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_exclusion_only)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="-alphaword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "stopword" not in joined, "a search ran; nothing was discarded"
+    assert "absences" in joined and "alphaword" in joined, (
+        "the advisory must name what the query excluded"
+    )
+
+
+async def test_keyword_phrase_query_reports_adjacency_not_bare_conjunction(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """A phrase demands more than carrying every term, and the advice must not invert.
+
+    ``"a b"`` renders adjacency. A chunk can carry both terms apart and still
+    miss, so "matches only a chunk carrying all of them" understates the
+    condition -- and telling the caller to quote a phrase names the very thing
+    they already did.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_m")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_m"),
+        [("Section 1", "zzz qqq vvv.")],
+    )
+
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zzz")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    async def _parse_phrase(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword", "betaword"), excluded=(), all_required=True, adjacent=True
+        )
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_phrase)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query='"alphaword betaword"')
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "adjacent" in joined, "the advisory must name the condition that actually failed"
+    assert "quote a phrase" not in joined, (
+        "advising a caller to quote what they already quoted inverts the fix"
+    )
+
+
+async def test_keyword_empty_filters_object_does_not_claim_a_filter_scope(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """An empty filters object constrains nothing, so the claim must stay unscoped.
+
+    A Pydantic model instance is truthy whatever its fields hold. A rival
+    testing the object rather than its contents scopes the sentence to filters
+    the same response does not list -- the two halves of one response
+    contradicting each other.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_n")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_n"),
+        [("Section 1", "alphaword content only.")],
+    )
+
+    # Positive control: the corpus is reachable through the same empty filters
+    # object, so the empty result below is the query's doing and the sentence
+    # under test describes a real slice.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword", filters=RetrievalFilters())
+    )
+    assert control.results, "precondition: an empty filters object constrains nothing"
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="deltaword epsilonword",
+            filters=RetrievalFilters(),
+        )
+    )
+
+    assert response.results == []
+    assert "active_filters" not in (response.hints or {}), (
+        "precondition: an empty filters object lists no active filters"
+    )
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "within the active filters" not in joined, (
+        "the response must not name a filter scope it does not report"
+    )
 
 
 async def test_keyword_advisory_scopes_its_claim_to_the_active_filters(

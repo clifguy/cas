@@ -304,6 +304,38 @@ class RetrievalService:
         return (result or None, has_non_pushdown)
 
     @staticmethod
+    def _active_filters(request: DiscoverRequest) -> dict[str, object]:
+        """The filter fields actually constraining this request.
+
+        A ``RetrievalFilters`` instance is truthy whatever its fields hold, so
+        presence of the object says nothing about whether anything was
+        constrained. Everything reporting on active filters reads this, rather
+        than the object, so a response cannot both name a filter scope and list
+        no filters.
+        """
+        if not request.filters:
+            return {}
+        f = request.filters
+        active: dict[str, object] = {}
+        if f.doc_type:
+            active["doc_type"] = f.doc_type
+        if f.project:
+            active["project"] = f.project
+        if f.lifecycle_status:
+            active["lifecycle_status"] = f.lifecycle_status
+        if f.tags:
+            active["tags"] = f.tags
+        if f.document_ids:
+            active["document_ids"] = f.document_ids
+        if f.pipeline_status:
+            active["pipeline_status"] = f.pipeline_status
+        if f.source_type:
+            active["source_type"] = f.source_type.value
+        if f.tier3_metadata:
+            active["tier3_metadata"] = f.tier3_metadata
+        return active
+
+    @staticmethod
     def _build_hints(
         raw_count: int,
         request: DiscoverRequest,
@@ -323,26 +355,9 @@ class RetrievalService:
         if raw_count == 0 and not request.filters:
             return None
         hints: dict[str, object] = {"total_before_filtering": raw_count}
-        if request.filters:
-            active: dict[str, object] = {}
-            if request.filters.doc_type:
-                active["doc_type"] = request.filters.doc_type
-            if request.filters.project:
-                active["project"] = request.filters.project
-            if request.filters.lifecycle_status:
-                active["lifecycle_status"] = request.filters.lifecycle_status
-            if request.filters.tags:
-                active["tags"] = request.filters.tags
-            if request.filters.document_ids:
-                active["document_ids"] = request.filters.document_ids
-            if request.filters.pipeline_status:
-                active["pipeline_status"] = request.filters.pipeline_status
-            if request.filters.source_type:
-                active["source_type"] = request.filters.source_type.value
-            if request.filters.tier3_metadata:
-                active["tier3_metadata"] = request.filters.tier3_metadata
-            if active:
-                hints["active_filters"] = active
+        active = RetrievalService._active_filters(request)
+        if active:
+            hints["active_filters"] = active
         if request.scope and request.scope != RetrievalScope.ALL:
             hints["scope"] = request.scope.value
         return hints
@@ -436,25 +451,42 @@ class RetrievalService:
             return []
         parse = await self._content.parse_keyword_query(query)
 
-        # Every word discarded: the backend searched for nothing. This is the
-        # emptiest an empty result gets, and the least self-explanatory.
+        # Under an active constraint the miss is established only within the
+        # slice it selected, so the sentence must not claim more than that.
+        scope = " within the active filters" if self._active_filters(request) else ""
+
         if not parse.terms:
-            if not query.split():
-                return []
+            # A query that rendered only exclusions did search -- for chunks
+            # lacking those terms -- so it is not the discarded-input case.
+            if parse.excluded:
+                rendered = ", ".join(repr(t) for t in parse.excluded)
+                return [
+                    f"This query asked only for absences ({rendered}) and matched no "
+                    f"chunk{scope}, which means every chunk carries at least one of "
+                    "them. Add a term to search for, rather than only terms to avoid."
+                ]
             return [
-                "This query carried no searchable terms: every word in it is a stopword "
-                "under the vault's text-search configuration, so nothing was searched "
-                'for. Use a distinctive term, or mode="semantic", which does not drop '
-                "words."
+                "This query carried no searchable terms: every word in it was discarded "
+                "by the vault's text-search configuration as a stopword or punctuation, "
+                'so nothing was searched for. Use a distinctive term, or mode="semantic", '
+                "which does not drop words."
             ]
 
         if not parse.all_required or len(parse.terms) < self._MIN_CONJUNCTION_TERMS:
             return []
 
         rendered = ", ".join(repr(t) for t in parse.terms)
-        # Under an active filter the miss is only established within the slice
-        # the filter selected, so the sentence must not claim more than that.
-        scope = " within the active filters" if request.filters else ""
+        if parse.adjacent:
+            # A phrase is stricter than a conjunction: a chunk can carry every
+            # term and still miss. Telling such a caller to quote a phrase
+            # would name the thing they already did.
+            return [
+                f"This query parsed to {len(parse.terms)} terms ({rendered}) that a chunk "
+                f"must carry adjacently, in that order, because the query contains a "
+                f"phrase. No chunk does{scope} -- a chunk holding the same terms apart "
+                "does not match. Try unquoting the phrase, using fewer terms, or "
+                'mode="semantic".'
+            ]
         return [
             f"Keyword mode is conjunctive: this query parsed to {len(parse.terms)} terms "
             f"({rendered}) and matches only a chunk carrying all of them. No chunk"

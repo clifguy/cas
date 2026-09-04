@@ -141,12 +141,14 @@ class StubContentStore(ContentStore):
         """Whitespace terms, lowercased -- no stopword, stemming, or operator model.
 
         The production binding parses through a text-search configuration and
-        recognises exclusion and alternation; this double does none of that, so
-        it always reports ``all_required=True``. Assertions about stopwords,
-        stemming, negation, or ``or`` belong against a real backend rather than
-        here.
+        recognises exclusion, alternation, and phrases; this double does none of
+        that, so it reports no exclusions, ``all_required=True``, and no
+        adjacency. Assertions about stopwords, stemming, negation, ``or``, or
+        quoted phrases belong against a real backend rather than here.
         """
-        return KeywordQueryParse(terms=tuple(query.lower().split()), all_required=True)
+        return KeywordQueryParse(
+            terms=tuple(query.lower().split()), excluded=(), all_required=True, adjacent=False
+        )
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

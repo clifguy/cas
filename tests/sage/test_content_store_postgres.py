@@ -584,6 +584,55 @@ async def test_parse_keyword_query_carries_no_terms_when_every_word_is_a_stopwor
     parse = await store.parse_keyword_query("the a of")
 
     assert parse.terms == (), "every word is a stopword, so the tsquery is empty"
+    assert parse.excluded == (), "nothing was excluded either -- nothing rendered at all"
+
+
+async def test_parse_keyword_query_separates_exclusion_only_from_discarded_input(store):
+    """An exclusion-only query renders a search; an all-stopword query renders nothing.
+
+    Both carry no required terms, so the term list alone cannot tell them
+    apart -- and a caller told "every word was discarded" when the backend
+    searched for chunks lacking a term has been misinformed. ``excluded`` is
+    what separates them.
+    """
+    exclusion_only = await store.parse_keyword_query("-alphaword")
+    assert exclusion_only.terms == ()
+    assert exclusion_only.excluded == ("alphaword",), (
+        "a rendered negation means a search ran, for chunks lacking the term"
+    )
+
+    discarded = await store.parse_keyword_query("the a of")
+    assert discarded.terms == () and discarded.excluded == (), (
+        "nothing rendered at all -- the two cases must be distinguishable"
+    )
+
+
+async def test_parse_keyword_query_reports_a_quoted_phrase_as_adjacent(store):
+    """A phrase requires adjacency, which is stronger than carrying every term.
+
+    ``"a b"`` renders ``'a' <-> 'b'``. A chunk carrying both terms apart
+    satisfies a conjunction and not this, so a caller told only that every term
+    is required has been told something weaker than the truth.
+    """
+    phrase = await store.parse_keyword_query('"alphaword betaword"')
+    assert phrase.terms == ("alphaword", "betaword")
+    assert phrase.adjacent, "a quoted phrase must report adjacency"
+
+    bare = await store.parse_keyword_query("alphaword betaword")
+    assert bare.terms == ("alphaword", "betaword")
+    assert not bare.adjacent, "the same terms unquoted carry no adjacency requirement"
+
+
+async def test_search_bm25_phrase_requires_adjacency_not_just_presence(store):
+    """The adjacency the parse reports is the one the search enforces."""
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword zzz betaword")])
+
+    assert [r.document_id for r in await store.search_bm25("alphaword betaword", limit=10)] == [
+        "d1"
+    ], "both terms are present, so the bare conjunction matches"
+    assert await store.search_bm25('"alphaword betaword"', limit=10) == [], (
+        "the terms are not adjacent, so the phrase does not match"
+    )
 
 
 async def test_parse_keyword_query_empty_for_blank_query(store):

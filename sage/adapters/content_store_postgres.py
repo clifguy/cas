@@ -83,37 +83,47 @@ def _skip_quoted(rendered: str, i: int) -> int:
     return i
 
 
-def _strip_negated(rendered: str) -> str:
-    """Drop every negated span, so only terms the caller must supply remain.
+def _split_negation(rendered: str) -> tuple[str, list[str]]:
+    """Separate a rendered tsquery into what it requires and what it excludes.
 
     Scans rather than pattern-matches because a negation's scope can be a
     parenthesised group holding several lexemes. Matching the ``!`` against an
     adjacent quote instead would keep every lexeme of a negated phrase after
     the first, reporting terms the caller explicitly excluded as required.
+
+    Returns the text with negated spans removed, plus the lexemes those spans
+    held. The excluded list matters beyond being dropped: a query that renders
+    only negations searched for something, which an empty required set alone
+    cannot distinguish from a query the backend discarded entirely.
     """
-    out: list[str] = []
+    kept: list[str] = []
+    excluded: list[str] = []
     i = 0
     while i < len(rendered):
         if rendered[i] != "!":
             if rendered[i] == "'":
                 end = _skip_quoted(rendered, i)
-                out.append(rendered[i:end])
+                kept.append(rendered[i:end])
                 i = end
                 continue
-            out.append(rendered[i])
+            kept.append(rendered[i])
             i += 1
             continue
-        # A negation: skip its whole scope.
+        # A negation: consume its whole scope, collecting the lexemes in it.
         i += 1
         while i < len(rendered) and rendered[i].isspace():
             i += 1
         if i < len(rendered) and rendered[i] == "'":
-            i = _skip_quoted(rendered, i)
+            end = _skip_quoted(rendered, i)
+            excluded.append(rendered[i + 1 : end - 1])
+            i = end
         elif i < len(rendered) and rendered[i] == "(":
             depth = 0
             while i < len(rendered):
                 if rendered[i] == "'":
-                    i = _skip_quoted(rendered, i)
+                    end = _skip_quoted(rendered, i)
+                    excluded.append(rendered[i + 1 : end - 1])
+                    i = end
                     continue
                 if rendered[i] == "(":
                     depth += 1
@@ -123,7 +133,7 @@ def _strip_negated(rendered: str) -> str:
                         i += 1
                         break
                 i += 1
-    return "".join(out)
+    return "".join(kept), [lexeme.replace("''", "'") for lexeme in excluded]
 
 
 class PostgresContentStore(ContentStore):
@@ -297,27 +307,31 @@ class PostgresContentStore(ContentStore):
         are dropped and the rest are stemmed, so the terms actually required
         are neither the words typed nor a whitespace split of them.
 
-        Two forms the query language admits are reported rather than assumed
-        away. Terms the query excludes (``-word``, ``-"a phrase"``) constrain
-        the match but are not something the caller must supply, so they are
-        omitted. A query using ``or`` renders an alternation, which makes it
-        non-conjunctive; ``all_required`` says so rather than letting a caller
-        describe it backwards.
+        The forms the query language admits beyond bare terms are reported
+        rather than assumed away, because each makes a different sentence true
+        of an empty result. Terms the query excludes (``-word``, ``-"a
+        phrase"``) are not something the caller must supply, so they leave
+        ``terms`` and are reported in ``excluded``. A query using ``or``
+        renders an alternation, which makes it non-conjunctive. A quoted
+        phrase renders adjacency, which is stronger than carrying every term:
+        a chunk can hold them all, apart, and still not match.
         """
         with self._query_timer.measure("parse_keyword_query"):
             if not query or not query.strip():
-                return KeywordQueryParse(terms=(), all_required=True)
+                return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
             rows = await self._fetchall(
                 f"SELECT websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text",  # noqa: S608
                 [query],
             )
             rendered = rows[0][0] if rows and rows[0][0] else ""
-            required = _strip_negated(rendered)
+            required, excluded = _split_negation(rendered)
             return KeywordQueryParse(
                 terms=tuple(
                     lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required)
                 ),
+                excluded=tuple(excluded),
                 all_required="|" not in required,
+                adjacent="<->" in required,
             )
 
     async def get_chunks_by_heading_prefix(
