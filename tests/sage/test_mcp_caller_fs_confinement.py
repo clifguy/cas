@@ -834,3 +834,226 @@ async def test_b6c_cloud_mixed_batch_mints_for_paths_and_spares_tokens(confined_
     assert "error" not in completed, completed
     assert completed.get("error_count") == 0, completed
     assert completed["documents_created"]["new"] == 1
+
+
+# ---------------------------------------------------------------------------
+# B7d/B7e/B1f: a redeemed transfer is spent only by work that completed
+#
+# Redemption pops the entry and the gate reclaims its staging directory, so
+# whether a failure downstream of redemption costs the caller a second byte
+# leg is decided at the seam, not at any one tool. These hold that decision
+# from the tool surface for both tools that carry the gate.
+# ---------------------------------------------------------------------------
+
+
+def _entry_for(transfer_id: str):
+    """The store's entry for a transfer id, or None once it has been spent."""
+    return get_transfer_store()._entries.get(transfer_id)
+
+
+async def test_b7d_restore_failure_after_redemption_leaves_the_token_redeemable(
+    confined_vault, tmp_path
+):
+    """B7d: a restore that redeems a token and then fails hands the token back
+    with its bytes, so the caller repeats the work and not the byte leg.
+
+    The bytes reached the server intact; only the work failed. Spending the
+    token there charges the caller for a fault that was never theirs -- and on
+    the path this matters most, a large binary whose retained copy drifted, the
+    byte leg is the expensive half.
+
+    Anti-coincidental-pass: the second attempt is driven through the *same*
+    token and asserted to restore the real bytes, so a gate that kept the entry
+    but discarded its staged file fails on the read rather than on the state.
+    The entry is asserted present in the store before the failing call, so a
+    test that took the ``source`` path and redeemed nothing cannot pass
+    vacuously; and B7e asserts the success path still spends the token, which
+    excludes a gate that simply stopped reclaiming anything.
+    """
+    _services, config, handle = confined_vault
+    body = b"# B7d\n\nThe original bytes.\n"
+    src = tmp_path / "caller_inbox" / "b7d_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(await restore_vault_source_file(_VAULT_ID, source=str(src)))
+        token = recipe["uploads"][0]["token"]
+        transfer_id = recipe["uploads"][0]["transfer_id"]
+        staging_dir = _stage_upload(token, body)
+        assert _entry_for(transfer_id) is not None, "nothing was staged to redeem"
+
+        # No document claims these bytes yet, so the repair cannot resolve a
+        # target: a failure that lands after the token has been redeemed.
+        unresolved = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+        assert unresolved["error"] == "restore_target_unresolved", unresolved
+
+    entry = _entry_for(transfer_id)
+    assert entry is not None, "a failed repair must not spend the caller's upload"
+    assert entry.state == "bytes_staged"
+    assert entry.staged_path.read_bytes() == body
+    assert staging_dir.exists()
+
+    # Give the bytes a document to belong to, then drift its retained copy so
+    # the second attempt has a real repair to perform.
+    with _profile("local"):
+        ingested = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+    assert "error" not in ingested, ingested
+    retained_path = ingested["source_path"]
+    handle.write_retained_bytes(config.vault.storage_root, retained_path, b"drifted")
+
+    with _profile("cloud", transfer_base=_BASE):
+        repaired = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+
+    assert "error" not in repaired, repaired
+    assert repaired["status"] == "restored"
+    assert handle.retained_bytes(config.vault.storage_root, retained_path) == body
+
+
+async def test_b7e_restore_success_still_spends_the_token(confined_vault, tmp_path):
+    """B7e: a repair that completes consumes its token and reclaims the staging
+    directory, exactly as before -- the return in B7d is for failures only.
+
+    Anti-coincidental-pass: this is the test a "never reclaim anything" gate
+    fails while passing B7d. The re-redemption is asserted refused rather than
+    merely absent from the store, so the token is proven dead at the surface a
+    caller would use it from.
+    """
+    _services, config, handle = confined_vault
+    body = b"# B7e\n\nThe original bytes.\n"
+    src = tmp_path / "caller_inbox" / "b7e_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("local"):
+        ingested = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+    assert "error" not in ingested, ingested
+    retained_path = ingested["source_path"]
+    handle.write_retained_bytes(config.vault.storage_root, retained_path, b"drifted")
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(await restore_vault_source_file(_VAULT_ID, source=str(src)))
+        token = recipe["uploads"][0]["token"]
+        transfer_id = recipe["uploads"][0]["transfer_id"]
+        staging_dir = _stage_upload(token, body)
+
+        repaired = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+        assert repaired["status"] == "restored", repaired
+
+        replayed = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+
+    assert _entry_for(transfer_id) is None, "a completed repair must spend its token"
+    assert not staging_dir.exists()
+    assert replayed["error"] == "transfer_token_invalid", replayed
+
+
+async def test_b7f_store_refusal_leaves_the_token_redeemable(confined_vault, tmp_path):
+    """B7f: the refusal B7d generalizes over, at the path the repair exists for
+    -- a store that declines the bytes it was handed.
+
+    The repair's targets are the retained copies that drifted, and the ones
+    worth repairing are large binaries, which are the uploads most exposed to a
+    store declining mid-transfer. That the failure is typed *and* costs no
+    second byte leg is the pair a caller needs: the error says whether to
+    retry, and the token makes retrying cheap.
+
+    Anti-coincidental-pass: the refusal is lifted between the two attempts and
+    the second is asserted to restore the real bytes through the same token, so
+    a gate that returned an entry whose staged file it had already reclaimed
+    fails. Skipped on the filesystem leg, where no store refuses.
+    """
+    _services, config, handle = confined_vault
+    if handle.fake_client is None:
+        pytest.skip("a store-side refusal exists only under the document-store binding")
+
+    from sage.vault_source_document_store import SourceStoreRefusalError
+
+    body = b"# B7f\n\nThe original bytes.\n"
+    src = tmp_path / "caller_inbox" / "b7f_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("local"):
+        ingested = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+    assert "error" not in ingested, ingested
+    retained_path = ingested["source_path"]
+    handle.write_retained_bytes(config.vault.storage_root, retained_path, b"drifted")
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(await restore_vault_source_file(_VAULT_ID, source=str(src)))
+        token = recipe["uploads"][0]["token"]
+        transfer_id = recipe["uploads"][0]["transfer_id"]
+        _stage_upload(token, body)
+
+        handle.fake_client.refuse_upload = SourceStoreRefusalError(
+            "Microsoft Graph write source failed: 429 throttled",
+            operation="write source",
+            target=retained_path,
+            status=429,
+            retryable=True,
+        )
+        refused = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+        assert refused["error"] == "vault_source_store_unavailable", refused
+        assert refused["detail"]["store_status"] == 429
+
+        assert _entry_for(transfer_id) is not None, (
+            "a store refusal must not charge the caller a second byte leg"
+        )
+
+        handle.fake_client.refuse_upload = None
+        repaired = _parse(await restore_vault_source_file(_VAULT_ID, transfer_token=token))
+
+    assert repaired["status"] == "restored", repaired
+    assert handle.retained_bytes(config.vault.storage_root, retained_path) == body
+
+
+async def test_b1f_ingest_failure_after_redemption_leaves_the_token_redeemable(
+    confined_vault, tmp_path
+):
+    """B1f: the same return, at the other tool that carries the gate.
+
+    B7d could be satisfied by a fix inside the restore tool. This is the test
+    that says the behavior belongs to the gate: an ingest that redeems a token
+    and then fails hands it back too, without the ingest tool knowing anything
+    about it.
+
+    Anti-coincidental-pass: the refusal is lifted and the same token re-ingested
+    to a real document, so a returned entry with no bytes behind it fails.
+    Skipped on the filesystem leg, where no store refuses.
+    """
+    _services, _config, handle = confined_vault
+    if handle.fake_client is None:
+        pytest.skip("a store-side refusal exists only under the document-store binding")
+
+    from sage.vault_source_document_store import SourceStoreRefusalError
+
+    body = b"# B1f\n\nBytes for the batch.\n"
+    src = tmp_path / "caller_inbox" / "b1f_note.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(body)
+
+    with _profile("cloud", transfer_base=_BASE):
+        recipe = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+        token = recipe["uploads"][0]["token"]
+        transfer_id = recipe["uploads"][0]["transfer_id"]
+        _stage_upload(token, body)
+
+        handle.fake_client.refuse_upload = SourceStoreRefusalError(
+            "Microsoft Graph write source failed: 403 permission withdrawn",
+            operation="write source",
+            target="imports/b1f_note.md",
+            status=403,
+            retryable=False,
+        )
+        refused = _parse(await ingest_document(_VAULT_ID, transfer_token=token))
+        assert refused["error"] == "vault_source_store_refused", refused
+
+        assert _entry_for(transfer_id) is not None, (
+            "a store refusal must not charge the caller a second byte leg"
+        )
+
+        handle.fake_client.refuse_upload = None
+        ingested = _parse(await ingest_document(_VAULT_ID, transfer_token=token))
+
+    assert "error" not in ingested, ingested
+    assert handle.retained_bytes(_config.vault.storage_root, ingested["source_path"]) == body

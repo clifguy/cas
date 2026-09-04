@@ -999,6 +999,75 @@ class VaultSourcePathRefusedError(SAGEError):
         )
 
 
+class VaultSourceStoreRefusedError(SAGEError):
+    """502: the vault-source store refused the operation on its merits.
+
+    The store was reachable and answered; it declined. A quota it will not
+    exceed, a permission it no longer grants, a reply that accepted an upload
+    session and named no URL to write to, a session it committed at the wrong
+    fragment. Repeating the request reproduces the answer, so the operator has
+    to act on the store before the operation can succeed --
+    :class:`VaultSourceStoreUnavailableError` is the counterpart for the
+    refusals where waiting is the whole remedy.
+
+    502 rather than a 4xx: the request that reached SAGE was well formed, and
+    the fault is an upstream one SAGE is reporting rather than committing.
+
+    The message is composed here rather than forwarded from the binding. The
+    store's own response body names its cause precisely and is written to the
+    log for that reason, but it is the store's text, can carry tenant
+    coordinates, and would become a declared part of this API's surface if it
+    travelled on the error.
+    """
+
+    def __init__(self, source_path: str, operation: str, store_status: int | None = None) -> None:
+        detail: dict = {"source_path": source_path, "operation": operation}
+        if store_status is not None:
+            detail["store_status"] = store_status
+        super().__init__(
+            "vault_source_store_refused",
+            (
+                f"The vault-source store refused to {operation} for "
+                f"{source_path!r}. The refusal is not transient: resolve it at "
+                f"the store before retrying."
+            ),
+            502,
+            detail,
+        )
+
+
+class VaultSourceStoreUnavailableError(SAGEError):
+    """503: the vault-source store declined to serve the operation just now.
+
+    Throttling that outlasted the binding's one retry, a transient backend
+    signal, an upload session the store expired or that was interrupted. The
+    request was never judged on its merits, so the same one can succeed later
+    unchanged -- which is the whole difference from
+    :class:`VaultSourceStoreRefusedError`, and the reason the two are separate
+    codes rather than one code with a flag: a caller reads the code to decide
+    whether to retry or to escalate, and a flag inside a detail dict is easy to
+    miss and easy to leave unread.
+
+    Carries the same curated message discipline as its non-transient
+    counterpart: the store's own body goes to the log, not to the caller.
+    """
+
+    def __init__(self, source_path: str, operation: str, store_status: int | None = None) -> None:
+        detail: dict = {"source_path": source_path, "operation": operation}
+        if store_status is not None:
+            detail["store_status"] = store_status
+        super().__init__(
+            "vault_source_store_unavailable",
+            (
+                f"The vault-source store could not {operation} for "
+                f"{source_path!r} just now. The same request may succeed on a "
+                f"later attempt."
+            ),
+            503,
+            detail,
+        )
+
+
 class RestoreSourceNotAbsoluteError(SAGEError):
     """400: the restore source path is not absolute.
 

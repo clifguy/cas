@@ -50,6 +50,11 @@ class FakeGraphClient:
         # STAMPED_SUFFIXES), so a test can prove the divergence it asserts
         # against was actually produced rather than assumed.
         self.stamped_uploads = 0
+        # Refusals a test installs to drive the store-refusal paths: an
+        # exception raised in place of the operation, the way the real client
+        # raises when the store declines. Left None, every operation behaves.
+        self.refuse_upload: Exception | None = None
+        self.refuse_hash: Exception | None = None
 
     def list_vault_ids(self) -> list[str]:
         return sorted(self.store)
@@ -96,6 +101,8 @@ class FakeGraphClient:
         # mirroring the path-taking signature is what keeps a binding test from
         # passing against a bytes-taking stand-in the production client no
         # longer has.
+        if self.refuse_upload is not None:
+            raise self.refuse_upload
         self.source_uploads += 1
         with source_file.open("rb") as f:
             chunks = list(iter(lambda: f.read(STREAM_CHUNK_BYTES), b""))
@@ -137,6 +144,8 @@ class FakeGraphClient:
         # Counted like every other source-byte operation: a caller that swaps a
         # whole-file read for a streamed digest is only proved to have done so by
         # a test that can see this call happen while source_reads stays at zero.
+        if self.refuse_hash is not None:
+            raise self.refuse_hash
         self.source_hashes += 1
         return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()
 

@@ -550,6 +550,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that opened no usable upload session. Resolve it at the store before
+            retrying; `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, a transient backend
+            signal, an upload session it expired. The same request may succeed
+            on a later attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /sage_vaults/{vault_id}/documents:batch:
     post:
       operationId: batch_ingest_documents
@@ -2415,6 +2435,26 @@ paths:
             delivered bytes as its provenance.
             `document_not_found`: the supplied document_id names no document.
             `source_file_not_found`: the delivered source path does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that opened no usable upload session. Resolve it at the store before
+            retrying; `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, a transient backend
+            signal, an upload session it expired. The same request may succeed
+            on a later attempt.
           content:
             application/json:
               schema:
