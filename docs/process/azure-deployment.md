@@ -177,8 +177,14 @@ gh variable set POSTGRES_AAD_ADMIN_OBJECT_ID      --env "$ENVIRONMENT" --body "<
 gh variable set POSTGRES_AAD_ADMIN_PRINCIPAL_NAME --env "$ENVIRONMENT" --body "<principal-name>"
 gh variable set SHAREPOINT_SITE_ID    --env "$ENVIRONMENT" --body "<site-id>"
 gh variable set SHAREPOINT_DRIVE_ID   --env "$ENVIRONMENT" --body "<drive-id>"
-# Preflight expectations:
-gh variable set PREFLIGHT_EXPECTED_VAULTS --env "$ENVIRONMENT" --body "cas"
+# Preflight expectations. The list names every vault the deploy gate requires
+# discovery to have loaded, and the gate fails closed on a missing one. Set this
+# only after the validation vault's config has actually been seeded into the
+# document library (sharepoint-vault-source.md §4). Knowing the SHAREPOINT_*
+# coordinates above is a weaker condition and does not imply it: the bootstrap
+# script seeds before emitting them, but the manual runbook resolves them three
+# steps earlier, at §1.
+gh variable set PREFLIGHT_EXPECTED_VAULTS --env "$ENVIRONMENT" --body "cas,cloud_validation"
 gh variable set PREFLIGHT_VAULT_SOURCE    --env "$ENVIRONMENT" --body "document_store"
 ```
 
@@ -302,7 +308,7 @@ its own:
 AUTH_TOKEN="$(az account get-access-token \
   --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
   BASE_DOMAIN=example.org \
-  PREFLIGHT_EXPECTED_VAULTS=cas \
+  PREFLIGHT_EXPECTED_VAULTS=cas,cloud_validation \
   PREFLIGHT_VAULT_SOURCE=document_store \
   deploy/cloud-preflight.sh
 ```

@@ -138,29 +138,29 @@ This is the step that actually confers access, and it confers it to exactly one
 site. Repeat steps 1 and 3 per site only if the deployment ever hosts vault trees
 on more than one site; the default is a single site.
 
-### 4. Seed the test vault's configuration
+### 4. Seed the validation vault's configuration
 
 Provisioning a cloud vault is an act against the store (CAS-ADR-043): place a
 schema-valid `vault_config.yaml` directly into the library at
 `<vaultSourceRootPath>/<vault_id>/vault_config.yaml` by an authorized writer, so
 the sole-writer posture holds and the declaration is canonical on first
-discovery. The committed seed for the disposable `test` vault is
+discovery. The committed seed for the disposable `cloud_validation` vault is
 [`deploy/test-vault/vault_config.yaml`](../../deploy/test-vault/vault_config.yaml);
 its schema validity is gated by `tests/sage/test_cloud_test_vault_seed_config.py`.
 
 ```bash
 az rest --method PUT \
-  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/test/vault_config.yaml:/content" \
+  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/cloud_validation/vault_config.yaml:/content" \
   --headers "Content-Type=text/yaml" \
   --body "@deploy/test-vault/vault_config.yaml"
 
 # Confirm it landed:
 az rest --method GET \
-  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/test/vault_config.yaml" \
+  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/cloud_validation/vault_config.yaml" \
   --query name -o tsv
 ```
 
-The `:/path:/content` upload creates the intermediate `vaults/test/` folders
+The `:/path:/content` upload creates the intermediate `vaults/cloud_validation/` folders
 implicitly. No source-hash or chain-head provenance attaches to the config
 declaration itself — provenance tracks ingested documents, not the vault config.
 (The path above assumes the default `vaults` root; adjust if `vaultSourceRootPath`
@@ -171,12 +171,12 @@ is overridden.)
 Deploy with the resolved coordinates (`sharepointSiteId = ${SITE_ID}`,
 `sharepointDriveId = ${DRIVE_ID}`) so the SAGE config selects
 `vault_source_backend: document_store`. At startup SAGE enumerates the library,
-finds `vaults/test/`, and loads its `vault_config.yaml` — the seeded vault is
+finds `vaults/cloud_validation/`, and loads its `vault_config.yaml` — the seeded vault is
 discovered with no local vault root involved. Confirm:
 
-- `list_vaults` includes `test`, and `get_vault_config` returns its
+- `list_vaults` includes `cloud_validation`, and `get_vault_config` returns its
   configuration.
-- Restart (or roll a new revision of) the SAGE container app and confirm `test`
+- Restart (or roll a new revision of) the SAGE container app and confirm `cloud_validation`
   is rediscovered — the live proof that the vault survives the stateless
   compute's restart, read back from the document store rather than an ephemeral
   local root.
@@ -192,7 +192,7 @@ grant actually rejects a site the identity was never granted. It is pure
 validation: per the CAS-ADR-043 weakest-binding rule it adds no capability;
 `deploy/sharepoint_validate.py` drives only endpoints that already exist.
 
-Run it against the deployed `test` vault — never a canonical vault. The driver is
+Run it against the deployed `cloud_validation` vault — never a canonical vault. The driver is
 standard-library only and phase-aware; it writes both probe documents' identity
 and bytes to a state file between the two phases, so the restart happens in
 between and the post-restart phase can re-deliver the same content to a container
@@ -217,12 +217,13 @@ stays a manual step.
 export AUTH_TOKEN="$(az account get-access-token \
   --scope "${SAGE_AUDIENCE}/.default" --query accessToken -o tsv)"
 export SAGE_BASE_URL="https://${SAGE_FQDN}"           # the deployed SAGE host
-export SP_VALIDATE_VAULT_ID=test                      # the seeded validation vault
+export SP_VALIDATE_VAULT_ID=cloud_validation                      # the seeded validation vault
 export SP_VALIDATE_STATE_FILE="$(mktemp -t spvalidate)"
 export SP_VALIDATE_EXPECT_REWRITTEN=yes               # this tenant's store rewrites at rest
 ```
 
-The `test` vault must already be present (`list_vaults` includes `test`,
+The `cloud_validation` vault must already be present (`list_vaults` includes
+`cloud_validation`,
 from step 5).
 
 `SP_VALIDATE_EXPECT_REWRITTEN` is not optional decoration here. Several of the

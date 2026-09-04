@@ -74,7 +74,7 @@ After the vault and the SAGE identity exist:
 - `deploy/bootstrap/load-key-vault-secrets.sh` — loads the abstraction-provider
   key, the BFF client secret, and the wildcard TLS certificate into Key Vault.
 - `deploy/bootstrap/seed-vault-source.sh` — grants the SAGE identity the
-  site-scoped Microsoft Graph permission and seeds the test vault's
+  site-scoped Microsoft Graph permission and seeds the validation vault's
   configuration into the document library (CAS-ADR-043); **emits
   `sharepointSiteId` and `sharepointDriveId`**.
 

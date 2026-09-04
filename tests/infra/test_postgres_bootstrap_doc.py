@@ -89,7 +89,9 @@ def test_doc_documents_success_signal() -> None:
     text = _doc_text()
     lowered = text.lower()
     assert "vaults loaded" in lowered, "doc must name the `vaults loaded` success signal"
-    assert "test" in lowered, "doc must name the seeded `test` vault in the verification"
+    assert "cloud_validation" in lowered, (
+        "doc must name the seeded `cloud_validation` vault in the verification"
+    )
     assert "operationalerror" in lowered, "doc must name the OperationalError the bootstrap clears"
 
 

@@ -24,7 +24,13 @@ Safety envelope, adapted to the CI/in-cloud context:
 - Typed confirmation is preserved: ``SAGE_DELETE_CONFIRM`` must equal the vault id
   (the core refuses otherwise). CI has no interactive stdin, so the confirmation is
   supplied as a workflow input the operator retypes, threaded here as the core's
-  prompt.
+  prompt. One carve-out is inherited rather than restated: the core skips the
+  confirmation entirely for the literal vault id ``test``, so for that id alone
+  ``SAGE_DELETE_CONFIRM`` is never consulted and any value passes. ``test`` names
+  an ephemeral workstation or CI vault and is not expected on a deployed tenant --
+  the cloud validation vault is ``cloud_validation`` precisely so that it falls
+  outside the carve-out -- but nothing on this arm *enforces* that, so a tenant
+  vault that did carry the id ``test`` would tear down unconfirmed.
 - Snapshot-before-destroy is ON by default. The container filesystem is ephemeral,
   so the snapshot is pushed to a durable SharePoint archive folder -- a sibling of
   the vault tree, so it survives the vault-folder delete -- before any destruction.
