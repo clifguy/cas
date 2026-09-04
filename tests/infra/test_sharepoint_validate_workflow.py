@@ -252,6 +252,42 @@ def test_phase_steps_fail_closed() -> None:
         )
 
 
+def test_phase_steps_declare_the_rewrite_expectation() -> None:
+    """Each phase step passes ``--expect-rewritten yes``.
+
+    Several of the driver's provenance assertions only bite where the store
+    actually rewrote the retained copy, and the driver is deliberately
+    binding-agnostic: it observes whether a rewrite happened and reports it,
+    which means a tenant that stopped rewriting would leave every verdict green
+    while most of that check's value quietly went away. The workflow is the only
+    place that knows which binding is behind the edge, so the expectation lives
+    here — and it has to be asserted here too, or dropping it costs nothing that
+    anything notices. Anchored on the command text, not on prose.
+
+    This is a drift guard, not a correctness proof. It establishes that the
+    harness *asks* for the expectation; whether the tenant actually rewrites is a
+    live fact, and the only thing that establishes it is a real dispatch whose
+    ``check=provenance`` line reads ``rewritten=yes``. Read a green run here as
+    "the flag is still wired", never as "the store still rewrites".
+    """
+    job = _validation_job(_load())
+    phase_steps = [
+        step
+        for step in (job.get("steps") or [])
+        if isinstance(step, dict) and "sharepoint_validate.py" in step.get("run", "")
+    ]
+    assert len(phase_steps) >= 2, "expected a pre-restart and a post-restart phase step"
+    for step in phase_steps:
+        uncommented = "\n".join(
+            line for line in step["run"].splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "--expect-rewritten yes" in uncommented, (
+            "each phase step must pass `--expect-rewritten yes`: the tenant store rewrites "
+            "Office packages at rest, and without the expectation a store that stopped "
+            "doing so would pass the run instead of failing it"
+        )
+
+
 def test_least_privilege_probe_deferral_documented() -> None:
     """The least-privilege probe is explicitly deferred with a note surfaced in the job
     summary, pointing at the manual runbook procedure.

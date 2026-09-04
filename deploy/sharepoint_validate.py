@@ -90,6 +90,13 @@ PHASE_CHECKS: dict[str, list[str]] = {
 _MARKDOWN = "markdown"
 _DOCX = "docx"
 
+#: ``--expect-rewritten`` values. ``any`` accepts whatever the store does, which
+#: is the right default for a driver that does not know its binding; a caller
+#: that does know states it, and turns three otherwise-conditional provenance
+#: assertions into ones that cannot lapse quietly.
+_EXPECT_ANY = "any"
+_EXPECT_CHOICES = (_EXPECT_ANY, "yes", "no")
+
 _PASS = "PASS"  # noqa: S105 -- a verdict token, not a secret
 _FAIL = "FAIL"
 
@@ -124,11 +131,19 @@ class _Probe:
 class _Context:
     """Per-run state threaded across the checks of a single phase."""
 
-    def __init__(self, base_url: str, vault_id: str, state_file: str, timeout: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        vault_id: str,
+        state_file: str,
+        timeout: float,
+        expect_rewritten: str = _EXPECT_ANY,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.vault_id = vault_id
         self.state_file = state_file
         self.timeout = timeout
+        self.expect_rewritten = expect_rewritten
         token = os.environ.get("AUTH_TOKEN", "")
         self.auth: dict[str, str] = {"Authorization": f"Bearer {token}"} if token else {}
         # Populated by the ingest check (pre-restart) or loaded from the state
@@ -145,25 +160,32 @@ class _Context:
     def load_state(self) -> bool:
         """Recover both probes from the state file. False unless both are whole.
 
-        Both or neither: a phase that ran against one probe and skipped the other
-        would report a green result having verified half of what it claims to.
+        Total by construction: a state file that is absent, unreadable, not JSON,
+        or JSON of the wrong shape leaves ``probes`` empty and returns False,
+        rather than raising. The return value is advisory -- what actually keeps a
+        half-recovered run from reporting green is each check's own
+        ``no_probe_state`` guard, which is where that guarantee is enforced. This
+        method's job is only to ensure a malformed file cannot take the phase down
+        before a single verdict line is printed: the caller runs outside the
+        per-check exception handler, so a raise here costs the operator the whole
+        report and leaves a log consumer nothing to grep for.
         """
+        self.probes = {}
         try:
             with open(self.state_file, encoding="utf-8") as handle:
                 state = json.load(handle)
-        except (OSError, ValueError):
-            return False
-        recorded = state.get("probes") or {}
-        self.probes = {}
-        for kind in (_MARKDOWN, _DOCX):
-            entry = recorded.get(kind) or {}
-            try:
+            recorded = state.get("probes") or {}
+            for kind in (_MARKDOWN, _DOCX):
+                entry = recorded.get(kind) or {}
                 content = base64.b64decode(entry.get("content") or "")
-            except ValueError:
-                content = b""
-            probe = _Probe(entry.get("filename") or "", content, entry.get("content_hash") or "")
-            probe.document_id = entry.get("document_id")
-            self.probes[kind] = probe
+                probe = _Probe(
+                    entry.get("filename") or "", content, entry.get("content_hash") or ""
+                )
+                probe.document_id = entry.get("document_id")
+                self.probes[kind] = probe
+        except Exception:  # noqa: BLE001 -- any malformed state is simply no state
+            self.probes = {}
+            return False
         return all(p.document_id and p.content_hash and p.content for p in self.probes.values())
 
     def write_state(self) -> None:
@@ -279,12 +301,18 @@ def _build_docx(nonce: str) -> bytes:
     predecessor under duplicate detection on the second run, and the provenance
     check needs a first ingest that succeeds.
 
-    Five parts is the floor for a package a Word reader will open and a source
-    adapter will project: the content-type map, the package relationships naming
-    the main document part, that part, its own relationships, and a styles part
-    (style resolution is not an optional feature of a WordprocessingML reader,
-    unlike numbering, so an absent styles part is a load error rather than a
-    missing embellishment).
+    Five parts: the content-type map, the package relationships naming the main
+    document part, that part, its own relationships, and a styles part.
+
+    The styles part is the one whose necessity is not obvious, so: it is not
+    needed to *open* the package -- a reader synthesises a default styles part
+    when none is present, and a four-part variant loads and yields both
+    paragraphs. What it is needed for is heading extraction. A paragraph carries
+    a style *id* (``Heading1``); resolving that to the style *name* ("Heading 1")
+    the adapter matches on requires the styles part, and a synthesised default
+    defines no such mapping. Drop it and the package still parses, the text still
+    extracts, and the heading silently disappears -- which is the failure worth
+    naming here, because nothing errors.
     """
     content_types = (
         f"{_XML_DECL}"
@@ -349,8 +377,49 @@ def _build_probes() -> dict[str, _Probe]:
     }
 
 
-def _ingest_probe(ctx: _Context, kind: str, probe: _Probe) -> tuple[int, list[dict[str, Any]]]:
-    """POST one probe to the batch-ingest endpoint. Returns ``(status, events)``."""
+class _IngestOutcome:
+    """What one batch-ingest call reported, parsed once.
+
+    The batch surface answers on an SSE stream whose summary event carries the
+    creation counts and the per-file error envelopes. Both callers need the same
+    fields, and both would otherwise re-derive them from the raw event list --
+    so the parse lives here, where a change to the stream's contract has one
+    place to land rather than two.
+    """
+
+    def __init__(self, status: int, events: list[dict[str, Any]]) -> None:
+        self.status = status
+        self.events = events
+        self.summary: dict[str, Any] | None = next(
+            (e for e in events if e.get("event_type") == "summary"), None
+        )
+        self.completed: dict[str, Any] | None = next(
+            (
+                e
+                for e in events
+                if e.get("event_type") == "progress"
+                and e.get("status") == "completed"
+                and e.get("document_id")
+            ),
+            None,
+        )
+        summary = self.summary or {}
+        created = summary.get("documents_created") or {}
+        self.created = int(created.get("new", 0)) + int(created.get("new_version", 0))
+        self.error_count = int(summary.get("error_count", 0))
+        errors = summary.get("errors") or []
+        self.error_codes = {e.get("code") for e in errors if e.get("code")}
+        self.named_ids = {(e.get("detail") or {}).get("existing_document_id") for e in errors}
+        self.errors = errors
+
+    @property
+    def ok(self) -> bool:
+        """The call reached the endpoint and the endpoint answered in full."""
+        return self.status == 200 and self.summary is not None
+
+
+def _ingest_probe(ctx: _Context, kind: str, probe: _Probe) -> _IngestOutcome:
+    """POST one probe to the batch-ingest endpoint and parse what came back."""
     metadata = json.dumps(
         {
             "infer_edges": False,
@@ -372,7 +441,7 @@ def _ingest_probe(ctx: _Context, kind: str, probe: _Probe) -> tuple[int, list[di
     status, raw = _http(
         ctx, "POST", ctx.vault_url("/documents:batch"), data=body, content_type=content_type
     )
-    return status, _parse_sse_events(raw)
+    return _IngestOutcome(status, _parse_sse_events(raw))
 
 
 # --------------------------------------------------------------------------- #
@@ -388,29 +457,18 @@ def _check_ingest(ctx: _Context) -> tuple[str, str]:
     ctx.probes = _build_probes()
     created_total = 0
     for kind, probe in ctx.probes.items():
-        status, events = _ingest_probe(ctx, kind, probe)
-        if status != 200:
-            return _FAIL, f"{kind} ingest_status={status}"
-        summary = next((e for e in events if e.get("event_type") == "summary"), None)
-        completed = next(
-            (
-                e
-                for e in events
-                if e.get("event_type") == "progress"
-                and e.get("status") == "completed"
-                and e.get("document_id")
-            ),
-            None,
-        )
-        if completed is None or summary is None:
-            return _FAIL, f"{kind} no_completed_event events={len(events)}"
-        error_count = int(summary.get("error_count", 0))
-        created = summary.get("documents_created", {})
-        new = int(created.get("new", 0)) + int(created.get("new_version", 0))
-        if error_count != 0 or new < 1:
-            return _FAIL, f"{kind} error_count={error_count} created={new} {summary.get('errors')}"
-        probe.document_id = completed["document_id"]
-        created_total += new
+        outcome = _ingest_probe(ctx, kind, probe)
+        if outcome.status != 200:
+            return _FAIL, f"{kind} ingest_status={outcome.status}"
+        if outcome.completed is None or outcome.summary is None:
+            return _FAIL, f"{kind} no_completed_event events={len(outcome.events)}"
+        if outcome.error_count != 0 or outcome.created < 1:
+            return _FAIL, (
+                f"{kind} error_count={outcome.error_count} "
+                f"created={outcome.created} {outcome.errors}"
+            )
+        probe.document_id = outcome.completed["document_id"]
+        created_total += outcome.created
     ctx.write_state()
     ids = " ".join(f"{kind}={pid}" for kind, pid in sorted(ctx.probe_ids().items()))
     return _PASS, f"{ids} created={created_total}"
@@ -468,6 +526,15 @@ def _check_provenance(ctx: _Context) -> tuple[str, str]:
        as-stored digest instead it could never fire for a rewritten format,
        because the rewrite is not reproducible.
 
+    Three of those four only bite when the store actually rewrote, so a
+    deployment that quietly stopped rewriting would take most of this check's
+    value with it while every verdict stayed green. Observation alone cannot
+    catch that -- the driver would simply see, and report, the new truth. So the
+    *caller* states what it expects: ``ctx.expect_rewritten`` is ``"any"`` by
+    default, and set to ``"yes"``/``"no"`` by a caller that knows which binding
+    is behind the edge. The check stays binding-agnostic; the expectation is the
+    caller's knowledge, not the driver's assumption.
+
     The retained bytes come from the raw content endpoint rather than inlined
     into the record: a binary container is not scannable text, so inlining it
     into JSON is refused (CAS-ADR-039), and the raw byte channel is the
@@ -496,24 +563,28 @@ def _check_provenance(ctx: _Context) -> tuple[str, str]:
     if not as_stored:
         return _FAIL, "no_stored_content_hash"
     rewritten = retrieved != probe.content_hash
+    observed = "yes" if rewritten else "no"
     if as_stored != retrieved:
         return _FAIL, (
             f"stored_not_retrieved_digest stored={as_stored[:23]}.. "
-            f"retrieved={retrieved[:23]}.. rewritten={'yes' if rewritten else 'no'}"
+            f"retrieved={retrieved[:23]}.. rewritten={observed}"
         )
-    status, events = _ingest_probe(ctx, _DOCX, probe)
-    summary = next((e for e in events if e.get("event_type") == "summary"), None)
-    if status != 200 or summary is None:
-        return _FAIL, f"redeliver_status={status} events={len(events)}"
-    created = summary.get("documents_created", {})
-    new = int(created.get("new", 0)) + int(created.get("new_version", 0))
-    codes = {e.get("code") for e in summary.get("errors", [])}
-    named = {(e.get("detail") or {}).get("existing_document_id") for e in summary.get("errors", [])}
-    if new or "duplicate_content" not in codes or probe.document_id not in named:
+    if ctx.expect_rewritten != _EXPECT_ANY and observed != ctx.expect_rewritten:
+        return _FAIL, f"rewritten={observed} expected={ctx.expect_rewritten}"
+
+    outcome = _ingest_probe(ctx, _DOCX, probe)
+    if not outcome.ok:
+        return _FAIL, f"redeliver_status={outcome.status} events={len(outcome.events)}"
+    if (
+        outcome.created
+        or "duplicate_content" not in outcome.error_codes
+        or probe.document_id not in outcome.named_ids
+    ):
         return _FAIL, (
-            f"redelivery_not_deduplicated created={new} codes={sorted(c for c in codes if c)}"
+            f"redelivery_not_deduplicated created={outcome.created} "
+            f"codes={sorted(c for c in outcome.error_codes if c)}"
         )
-    return _PASS, f"rewritten={'yes' if rewritten else 'no'} provenance_pinned"
+    return _PASS, f"rewritten={observed} expected={ctx.expect_rewritten} provenance_pinned"
 
 
 def _check_source_audit(ctx: _Context) -> tuple[str, str]:
@@ -534,6 +605,16 @@ def _check_source_audit(ctx: _Context) -> tuple[str, str]:
     for every way a retained copy can be wrong; reading named statuses out of
     the summary instead would hold a copy of that list, and would pass silently
     on any status added after this line was written.
+
+    A cost worth knowing before it surprises someone: the *verdict* is scoped to
+    two documents, but the *work* is not. The audit walks every document in the
+    vault, and with hash checking on, each one costs the store a metadata read
+    plus a full streamed download. Each run adds two documents permanently --
+    there is no delete route on this API -- so the walk grows by two per run and
+    is paid twice, once per phase. Far enough out that is a timeout on a healthy
+    deployment, which will read as a store outage rather than as accumulated
+    residue. The request carries no way to scope the work from the client, so
+    bounding it needs a purge capability the store side does not yet offer.
     """
     probe_ids = ctx.probe_ids()
     if len(probe_ids) < len(ctx.probes) or not probe_ids:
@@ -551,11 +632,13 @@ def _check_source_audit(ctx: _Context) -> tuple[str, str]:
     entries = report.get("entries", [])
     checked = int(report.get("total_documents_checked", 0))
     reported = {e.get("document_id"): e.get("integrity_status") for e in entries}
-    # Assert the audit actually examined the corpus -- a 200 carrying an empty
-    # report (zero documents checked) would otherwise pass vacuously, since a
-    # healthy document is reported only by its absence from `entries`.
-    if checked < 1:
-        return _FAIL, "audit_checked_nothing"
+    # Assert the audit examined at least the documents this run is speaking for.
+    # A healthy document is reported only by its absence from `entries`, so a
+    # report that walked fewer records than there are probes would pass
+    # vacuously -- and would do it while claiming, in the PASS detail, to have
+    # found every probe healthy.
+    if checked < len(probe_ids):
+        return _FAIL, f"audit_checked_too_few checked={checked} probes={len(probe_ids)}"
     hits = {kind: reported[pid] for kind, pid in probe_ids.items() if pid in reported}
     if hits:
         detail = " ".join(f"{kind}={status}" for kind, status in sorted(hits.items()))
@@ -629,6 +712,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--timeout", type=float, default=30.0, help="per-request timeout (seconds)")
     parser.add_argument(
+        "--expect-rewritten",
+        choices=_EXPECT_CHOICES,
+        default=_EXPECT_ANY,
+        help=(
+            "whether the vault-source store is expected to rewrite Office packages at "
+            "rest: 'yes' for a tenant document store, 'no' for a store that retains "
+            "verbatim, 'any' (default) to accept either. Several provenance assertions "
+            "only bite where a rewrite occurs, so a caller that knows its binding should "
+            "say so -- otherwise a store that stopped rewriting takes that coverage with "
+            "it and every verdict stays green"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the checks the phase would run and exit, without touching the network",
@@ -642,7 +738,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.base_url:
         parser.error("--base-url (or $SAGE_BASE_URL) is required unless --dry-run")
 
-    ctx = _Context(args.base_url, args.vault_id, args.state_file, args.timeout)
+    ctx = _Context(
+        args.base_url, args.vault_id, args.state_file, args.timeout, args.expect_rewritten
+    )
     return run_phase(ctx, args.phase)
 
 

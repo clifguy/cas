@@ -248,9 +248,26 @@ record's `source_content_hash` is the digest of the bytes the driver *delivered*
 that a separate `stored_content_hash` is recorded, that it is the digest of what
 the raw content endpoint actually serves (and so, where the store rewrote,
 different from provenance), and that re-uploading the identical bytes is refused
-as `duplicate_content` naming that same document. Its detail line reports
-`rewritten=yes` against the tenant store; `rewritten=no` means the store handed
-back exactly what it was given, which is what a filesystem-backed vault does.
+as `duplicate_content` naming that same document.
+
+Three of those only bite where the store actually rewrote, so the caller states
+what it expects: `--expect-rewritten yes` against the tenant store (what the CI
+harness passes), `no` for a filesystem-backed vault, `any` — the default — to
+accept either. Without an expectation a store that quietly stopped rewriting
+would keep every verdict green while most of this check's value went away, so
+run it with the expectation set whenever you know the binding.
+
+**A digest divergence that is only timing.** `stored_content_hash` is captured
+during the ingest, moments after the upload, and the audit compares a later
+re-read against it. That assumes the store's rewrite has landed by the time SAGE
+reads the copy back. If a tenant ever defers part of its post-upload processing,
+a correct deployment would report `check=provenance status=FAIL
+stored_not_retrieved_digest` — or the audit would report the `.docx` probe
+`hash_mismatch` — with nothing actually wrong. The tell is that a re-run against
+the same document passes: real corruption does not settle. Before treating either
+as a fault, re-read the document and re-run the phase; if it clears, the finding
+is a timing artifact and worth a ticket against the ingest-time capture rather
+than an investigation of the store.
 
 `source_audit` runs `verify_vault_source_files` (`POST
 .../admin/verify-source-files`, `check_hashes=true`) and confirms **both probes**
@@ -258,6 +275,17 @@ are healthy — present, not a link, inside the source tree, and hashing to what
 record expects. It is scoped to this run's probes: the validation vault
 accumulates the residue of every previous run, and a whole-vault verdict would
 hand the check a permanent red over a document it neither created nor can repair.
+
+**Residue grows, and the audit's cost grows with it.** The verdict is scoped to
+two documents; the work is not. The audit walks every document in the vault, and
+with `check_hashes=true` each one costs a metadata read plus a full streamed
+download from the library. Each run adds two documents permanently — the API has
+no document delete route — so the walk grows by two per run and is paid twice,
+once per phase. Far enough out that becomes a timeout on a perfectly healthy
+tenant, and it will present as a SharePoint outage rather than as accumulated
+residue. If the audit check starts running long, check the vault's document count
+before suspecting the store. Bounding this needs a purge on the maintenance
+surface, which does not exist yet.
 
 A `result=fail` here means the bytes never reached the library, came back altered,
 or the two digests are no longer telling the truth about each other — stop and

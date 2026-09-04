@@ -185,11 +185,11 @@ def _serve_real(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str) -
 
 @_NEEDS_REAL
 @pytest.mark.parametrize(
-    ("backend", "expected_rewritten"),
-    [("filesystem", "rewritten=no"), ("document_store", "rewritten=yes")],
+    ("backend", "expected"),
+    [("filesystem", "no"), ("document_store", "yes")],
 )
 def test_faithful_pre_then_post_all_pass(
-    backend: str, expected_rewritten: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    backend: str, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Ingest -> readback -> provenance -> audit (pre-restart) then rediscover ->
     readback -> provenance -> audit (post-restart) against the genuine REST app,
@@ -202,24 +202,30 @@ def test_faithful_pre_then_post_all_pass(
     driver must reach ``rewritten=yes`` -- the only leg where the provenance /
     as-stored inequality and the duplicate-rejection assertion have anything to
     bite on.
+
+    Each leg *states* its expectation via ``--expect-rewritten`` rather than only
+    reading the verdict out of stdout, so a wrong observation fails inside the
+    driver -- which is the production behaviour the cloud harness depends on --
+    instead of only failing a string match here.
     """
     state = tmp_path / "state.json"
+    expect = ["--expect-rewritten", expected]
     with _serve_real(tmp_path, monkeypatch, backend) as base:
-        pre = _run_driver(base, "pre-restart", state)
+        pre = _run_driver(base, "pre-restart", state, extra=expect)
         assert pre.returncode == 0, f"stdout={pre.stdout!r} stderr={pre.stderr!r}"
         assert "check=ingest status=PASS" in pre.stdout, pre.stdout
         assert "check=readback status=PASS" in pre.stdout, pre.stdout
         assert "check=provenance status=PASS" in pre.stdout, pre.stdout
-        assert expected_rewritten in pre.stdout, pre.stdout
+        assert f"rewritten={expected}" in pre.stdout, pre.stdout
         assert "check=source_audit status=PASS" in pre.stdout, pre.stdout
         assert "result=pass" in pre.stdout
 
-        post = _run_driver(base, "post-restart", state)
+        post = _run_driver(base, "post-restart", state, extra=expect)
     assert post.returncode == 0, f"stdout={post.stdout!r} stderr={post.stderr!r}"
     assert "check=rediscover status=PASS" in post.stdout, post.stdout
     assert "check=readback status=PASS" in post.stdout, post.stdout
     assert "check=provenance status=PASS" in post.stdout, post.stdout
-    assert expected_rewritten in post.stdout, post.stdout
+    assert f"rewritten={expected}" in post.stdout, post.stdout
     assert "check=source_audit status=PASS" in post.stdout, post.stdout
     assert "result=pass" in post.stdout
 
@@ -331,14 +337,25 @@ _OLDER_DOC_ID = "0f1e2d3c_residue_of_an_earlier_run"
 
 _GOOD = "good"
 _HASH_MISMATCH = "hash_mismatch"
-_MISSING_SOURCE = "missing_source"
+#: An audit mode is "unhealthy:<kind>:<status>" -- the probe to report and the
+#: status to report it under. Spelling the matrix as a parameter is what lets a
+#: test assert that *each* probe is covered under *each* status; a fixed one
+#: status per probe makes the coverage of either half an accident of assignment.
+_UNHEALTHY_PREFIX = "unhealthy:"
+
+
+def _unhealthy(kind: str, status: str) -> str:
+    return f"{_UNHEALTHY_PREFIX}{kind}:{status}"
+
+
+_MISSING_SOURCE = _unhealthy("markdown", "missing")
 _EMPTY_INGEST = "empty_ingest"
-_SYMLINKED_PROBE = "symlinked_probe"
-_OUT_OF_ROOT_PROBE = "out_of_root_probe"
 _UNRELATED_UNHEALTHY = "unrelated_unhealthy"
 _COLLAPSED_DIGESTS = "collapsed_digests"
 _STORED_HASH_ADRIFT = "stored_hash_adrift"
 _DUPLICATE_ACCEPTED = "duplicate_accepted"
+_NO_REWRITE = "no_rewrite"
+_UNDERCOUNTED_AUDIT = "undercounted_audit"
 
 
 @contextmanager
@@ -420,7 +437,8 @@ def rest_stub(mode: str) -> Iterator[str]:
                         ],
                     }
                 ]
-            retained = delivered + _STAMP if filename.endswith(".docx") else delivered
+            rewrites = filename.endswith(".docx") and mode != _NO_REWRITE
+            retained = delivered + _STAMP if rewrites else delivered
             docs[doc_id] = (delivered, retained)
             return [
                 {
@@ -452,17 +470,23 @@ def rest_stub(mode: str) -> Iterator[str]:
                     "observed_content_hash": None,
                 }
 
-            checked = max(len(docs), 1)
-            if mode == _MISSING_SOURCE:
-                return _audit_report([entry(_MARKDOWN_DOC_ID, "missing")], checked)
-            if mode == _SYMLINKED_PROBE:
-                return _audit_report([entry(_MARKDOWN_DOC_ID, "symlinked")], checked)
-            if mode == _OUT_OF_ROOT_PROBE:
-                return _audit_report([entry(_DOCX_DOC_ID, "out_of_root")], checked)
+            checked = max(len(docs), 2)
+            if mode == _UNDERCOUNTED_AUDIT:
+                # A walk that reached fewer records than there are probes, with
+                # nothing in `entries` -- the shape a partial reload or a lagging
+                # store listing produces.
+                return _audit_report([], 1)
             if mode == _UNRELATED_UNHEALTHY:
                 # A document this run neither created nor can repair -- the
                 # validation vault's accumulated residue. Both probes are healthy.
                 return _audit_report([entry(_OLDER_DOC_ID, "missing")], checked + 1)
+            if mode.startswith(_UNHEALTHY_PREFIX):
+                # "<kind>:<status>" -- the probe kind and the status to report it
+                # under, so the matrix is a parameter rather than a fixed
+                # assignment of one status per probe.
+                kind, _, status = mode[len(_UNHEALTHY_PREFIX) :].partition(":")
+                doc_id = _DOCX_DOC_ID if kind == "docx" else _MARKDOWN_DOC_ID
+                return _audit_report([entry(doc_id, status)], checked)
             return _audit_report([], checked)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -519,7 +543,14 @@ def rest_stub(mode: str) -> Iterator[str]:
 
 @pytest.mark.skipif(not _REAL_SERVER, reason="needs the real response model to validate against")
 @pytest.mark.parametrize(
-    "mode", [_GOOD, _MISSING_SOURCE, _SYMLINKED_PROBE, _OUT_OF_ROOT_PROBE, _UNRELATED_UNHEALTHY]
+    "mode",
+    [
+        _GOOD,
+        _MISSING_SOURCE,
+        _unhealthy("markdown", "symlinked"),
+        _unhealthy("docx", "out_of_root"),
+        _UNRELATED_UNHEALTHY,
+    ],
 )
 def test_stub_audit_report_matches_the_real_response_model(mode: str, tmp_path: Path) -> None:
     """Every audit payload the stub can emit validates as a real
@@ -596,34 +627,29 @@ def test_trap_hash_mismatch_fails_readback(tmp_path: Path) -> None:
     assert "check=readback status=FAIL" in proc.stdout, proc.stdout
 
 
-def test_trap_missing_source_fails_audit(tmp_path: Path) -> None:
-    """An audit that reports a probe's source file missing -> the audit check
-    FAILs even though ingest and readback passed.
+@pytest.mark.parametrize("kind", ["markdown", "docx"])
+@pytest.mark.parametrize("status", ["missing", "hash_mismatch", "symlinked", "out_of_root"])
+def test_trap_unhealthy_probe_fails_audit(kind: str, status: str, tmp_path: Path) -> None:
+    """An audit that reports *either* probe under *any* integrity status -> the
+    audit check FAILs.
+
+    Walked as a full ``kind x status`` matrix on purpose. The gate takes its
+    verdict from a document being *named* by the audit, never from a per-status
+    count, so it should cover every status the audit reports today and every one
+    it may later learn to report -- and it should cover both probes. Assigning
+    one status per probe would leave which half of that claim each case actually
+    tests up to the assignment: a driver that audited only the markdown probe
+    would be caught by whichever status happened to land on docx, and by nothing
+    else. `symlinked` and `out_of_root` are additionally the two a count-reading
+    gate silently dropped.
     """
-    with rest_stub(_MISSING_SOURCE) as base:
+    with rest_stub(_unhealthy(kind, status)) as base:
         proc = _run_driver(base, "pre-restart", tmp_path / "state.json")
-    assert proc.returncode != 0, "a missing retained source must fail the driver"
+    assert proc.returncode != 0, f"the {kind} probe reported {status} must fail the driver"
     assert "check=source_audit status=FAIL" in proc.stdout, proc.stdout
-
-
-@pytest.mark.parametrize(
-    ("mode", "status"),
-    [(_SYMLINKED_PROBE, "symlinked"), (_OUT_OF_ROOT_PROBE, "out_of_root")],
-)
-def test_trap_non_hash_integrity_status_fails_audit(mode: str, status: str, tmp_path: Path) -> None:
-    """An audit that reports a probe under an integrity status that is neither
-    ``missing`` nor ``hash_mismatch`` -> the audit check FAILs.
-
-    The gate takes its verdict from a document being *named* by the audit, never
-    from a per-status count, so it covers every status the audit reports today
-    and every status it may later learn to report. These two are the ones a
-    count-reading gate silently dropped.
-    """
-    with rest_stub(mode) as base:
-        proc = _run_driver(base, "pre-restart", tmp_path / "state.json")
-    assert proc.returncode != 0, f"a probe reported {status} must fail the driver"
-    assert "check=source_audit status=FAIL" in proc.stdout, proc.stdout
-    assert status in proc.stdout, f"the verdict must name the status: {proc.stdout}"
+    assert f"{kind}={status}" in proc.stdout, (
+        f"the verdict must name the probe and its status: {proc.stdout}"
+    )
 
 
 def test_trap_unrelated_document_unhealthy_passes_audit(tmp_path: Path) -> None:
@@ -698,3 +724,112 @@ def test_trap_empty_ingest_summary_fails_ingest(tmp_path: Path) -> None:
         proc = _run_driver(base, "pre-restart", tmp_path / "state.json")
     assert proc.returncode != 0, "an empty ingest must fail the driver"
     assert "check=ingest status=FAIL" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("mode", "expect", "passes"),
+    [
+        (_GOOD, "yes", True),
+        (_NO_REWRITE, "yes", False),
+        (_GOOD, "no", False),
+        (_NO_REWRITE, "any", True),
+    ],
+)
+def test_trap_expect_rewritten_is_enforced(
+    mode: str, expect: str, passes: bool, tmp_path: Path
+) -> None:
+    """``--expect-rewritten`` decides the run when the observation contradicts it.
+
+    Three of the provenance check's assertions only bite where the store actually
+    rewrote, so a deployment that stopped rewriting would take that coverage with
+    it and leave every verdict green -- the driver would simply observe, and
+    report, the new truth. The ``(_NO_REWRITE, "yes")`` row is exactly that
+    scenario, and it is the one this flag exists to turn red; the ``(_GOOD,
+    "no")`` row proves the flag is not a one-way ratchet, and ``any`` stays
+    permissive for a caller that does not know its binding.
+    """
+    with rest_stub(mode) as base:
+        proc = _run_driver(
+            base, "pre-restart", tmp_path / "state.json", extra=["--expect-rewritten", expect]
+        )
+    if passes:
+        assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        assert "check=provenance status=PASS" in proc.stdout, proc.stdout
+    else:
+        assert proc.returncode != 0, "a contradicted expectation must fail the driver"
+        assert "check=provenance status=FAIL" in proc.stdout, proc.stdout
+        assert f"expected={expect}" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("json_but_not_an_object", "[]"),
+        (
+            "content_not_a_string",
+            json.dumps(
+                {
+                    "probes": {
+                        "markdown": {
+                            "document_id": "a1b2c3d4_x",
+                            "content_hash": "sha256:aa",
+                            "content": 123,
+                        },
+                        "docx": {
+                            "document_id": "e5f6a7b8_y",
+                            "content_hash": "sha256:bb",
+                            "content": 123,
+                        },
+                    }
+                }
+            ),
+        ),
+        ("half_populated", json.dumps({"probes": {"markdown": {"document_id": "a1b2c3d4_x"}}})),
+        ("not_json_at_all", "{{{"),
+    ],
+)
+def test_malformed_state_file_still_reports_verdicts(
+    label: str, payload: str, tmp_path: Path
+) -> None:
+    """A state file the post-restart phase cannot use degrades to "no state" and
+    the phase reports it -- it never dies before printing a verdict.
+
+    ``load_state`` runs outside ``run_phase``'s per-check exception handler, so a
+    raise there costs the operator the entire report: exit status is still
+    non-zero, but stdout is a traceback and a log consumer grepping for
+    ``result=`` finds nothing. Every check must still emit its line, and the run
+    must still fail -- degrading quietly to a green run would be far worse than
+    the traceback.
+    """
+    state = tmp_path / "state.json"
+    state.write_text(payload, encoding="utf-8")
+    # No server needed: the checks fail on absent probe state before any request
+    # that could succeed, and a refused connection is itself a reported verdict.
+    proc = _run_driver("http://127.0.0.1:9", "post-restart", state, timeout="2")
+    assert proc.returncode != 0, f"{label}: an unusable state file must fail the phase"
+    assert "Traceback" not in proc.stderr, f"{label}: died before reporting: {proc.stderr}"
+    for check in ("rediscover", "readback", "provenance", "source_audit"):
+        assert f"check={check} " in proc.stdout, f"{label}: missing verdict for {check}"
+    assert "result=fail phase=post-restart" in proc.stdout, proc.stdout
+    assert proc.stdout.count("no_probe_state") == 3, (
+        f"{label}: the three probe-dependent checks must each report it: {proc.stdout}"
+    )
+
+
+def test_trap_audit_that_walked_fewer_records_than_probes_fails(tmp_path: Path) -> None:
+    """An audit reporting fewer documents checked than this run has probes -> the
+    audit check FAILs.
+
+    A healthy document is reported only by its *absence* from ``entries``, so an
+    audit that never reached one of the probes is indistinguishable, from the
+    entries alone, from one that reached it and found it healthy. The count is
+    the only thing that separates them. Reported as one document checked against
+    two probes ingested, the driver would otherwise print
+    ``probes_healthy=2 checked=1`` -- claiming two probes were found healthy
+    while naming the number that says only one was examined.
+    """
+    with rest_stub(_UNDERCOUNTED_AUDIT) as base:
+        proc = _run_driver(base, "pre-restart", tmp_path / "state.json")
+    assert proc.returncode != 0, "an audit that walked fewer records than probes must fail"
+    assert "check=source_audit status=FAIL" in proc.stdout, proc.stdout
+    assert "audit_checked_too_few" in proc.stdout, proc.stdout
