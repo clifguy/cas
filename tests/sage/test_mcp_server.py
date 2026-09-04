@@ -1988,6 +1988,38 @@ async def test_reload_vault_closes_old_graph_store(vault_services):
     assert isinstance(await fresh_graph_store.list_all_documents(), list)
 
 
+async def test_reload_vault_settles_dropped_abstraction_work(vault_services, tmp_vault_dir):
+    """Reloading through the MCP tool settles the work the predecessor's worker
+    was carrying, rather than discarding it non-terminal along with that worker.
+
+    Read back through the successor's own store, which the reload builds fresh
+    over the same database, so the assertion is on what was durably written and
+    not on a handle the teardown happened to leave open.
+    """
+    from sage.models.enums import PipelineStatus
+    from tests.sage.test_abstraction_queue import _GatedAbstractionProvider, _seed_indexed_doc
+
+    ingestion = vault_services.ingestion_service
+    doc_id = await _seed_indexed_doc(ingestion, tmp_vault_dir, "samples/mr1.md")
+    gated = _GatedAbstractionProvider()
+    ingestion._abstraction = gated
+    await ingestion.reabstract(doc_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+    assert (
+        await vault_services.graph_store.get_document(doc_id)
+    ).pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS
+
+    try:
+        await reload_vault("test_vault")
+    finally:
+        gated.gate.set()
+
+    fresh = _mcp._vaults["test_vault"].graph_store
+    doc = await fresh.get_document(doc_id)
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED
+    assert doc.pipeline_error
+
+
 async def test_reload_vault_unknown_vault_returns_error(vault_services):
     """Reload on a nonexistent vault returns structured error."""
     result = _parse(await reload_vault("nonexistent_vault"))

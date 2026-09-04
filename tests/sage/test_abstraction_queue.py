@@ -589,6 +589,304 @@ async def test_recover_returns_enqueued_count(tmp_vault_dir, ingestion_service, 
     assert count == len(nonterminal_ids)
 
 
+async def test_recover_re_enqueues_an_interrupted_document(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """abstraction_interrupted is the one terminal status recovery re-runs.
+
+    The seed carries the other three terminal statuses alongside it, and the
+    count is asserted exactly, so the test cannot pass on a stray non-terminal
+    document: it pins that recovery reaches this status and none of its
+    terminal siblings.
+    """
+    seeded = {}
+    for name, status in (
+        ("samples/r1.md", PipelineStatus.ABSTRACTION_INTERRUPTED),
+        ("samples/r2.md", PipelineStatus.ABSTRACTION_SKIPPED),
+        ("samples/r3.md", PipelineStatus.ABSTRACTION_COMPLETE),
+        ("samples/r4.md", PipelineStatus.FAILED),
+    ):
+        did = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, name)
+        await graph_store.update_document(did, {"pipeline_status": status.value})
+        seeded[status] = did
+
+    count = await ingestion_service.recover_incomplete_documents()
+    assert count == 1
+
+    interrupted = seeded[PipelineStatus.ABSTRACTION_INTERRUPTED]
+    assert await _await_terminal(graph_store, interrupted) == PipelineStatus.ABSTRACTION_COMPLETE
+    for status in (
+        PipelineStatus.ABSTRACTION_SKIPPED,
+        PipelineStatus.ABSTRACTION_COMPLETE,
+        PipelineStatus.FAILED,
+    ):
+        doc = await graph_store.get_document(seeded[status])
+        assert doc.pipeline_status == status
+
+
+# ==========================================================================
+# Worker stop settles the work it drops
+# ==========================================================================
+
+
+async def test_stop_worker_restamps_a_queued_job_document(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A job still waiting in the queue when the worker stops is settled at
+    abstraction_interrupted rather than left non-terminal forever.
+
+    The gated provider is what makes the precondition real: it holds the first
+    document inside generate_abstract so the second is provably still queued,
+    and ``calls == 1`` afterwards proves the second never reached the provider.
+    Without that, a document that had simply finished would satisfy the same
+    final assertion.
+    """
+    held_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s1.md")
+    queued_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s2.md")
+    gated = _GatedAbstractionProvider()
+    ingestion_service._abstraction = gated
+
+    await ingestion_service.reabstract(held_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+    await ingestion_service.reabstract(queued_id)
+
+    queued = await graph_store.get_document(queued_id)
+    assert queued.pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS
+    assert queued_id in ingestion_service._inflight
+
+    await ingestion_service.stop_worker()
+
+    queued = await graph_store.get_document(queued_id)
+    assert queued.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED
+    assert queued.pipeline_error
+    assert queued_id not in ingestion_service._inflight
+    assert gated.calls == 1  # the queued job never reached the provider
+
+
+async def test_stop_worker_restamps_the_in_flight_document(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """The document cancelled mid-generation is settled too, not only the ones
+    that never started. Its claim is released by its own unwinding, which is
+    why stop_worker snapshots the claims before it cancels."""
+    doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s3.md")
+    gated = _GatedAbstractionProvider()
+    ingestion_service._abstraction = gated
+
+    await ingestion_service.reabstract(doc_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+    assert doc_id in ingestion_service._inflight
+
+    await ingestion_service.stop_worker()
+
+    doc = await graph_store.get_document(doc_id)
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED
+    assert doc_id not in ingestion_service._inflight
+
+
+async def test_stop_worker_leaves_a_terminal_document_alone(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A document that reached a real outcome is not overwritten by the
+    interruption stamp.
+
+    This is the guard's own test: the claim snapshot names every document the
+    worker was carrying, and one of them may have settled between the snapshot
+    and the cancellation. Against an unconditional stamp this test fails,
+    reporting work that did happen as work that did not.
+
+    Anti-coincidental-pass: the two outcomes are asserted as a pair. The
+    settled document alone leaves the held document's setup inert -- delete
+    the held document and the test still passes -- so the second assertion is
+    what puts that setup in an assertion's causal path.
+
+    What the pair does NOT establish is that a terminal document cannot end
+    the pass for the rest of the batch. The settle pass iterates in sorted id
+    order and the ids are content-derived, so an implementation that stopped
+    at the first terminal document would still stamp the held one whenever it
+    sorted first. The order-independent version of that rival is the store
+    error, pinned in test_stop_worker_survives_a_restamp_write_failure by
+    poisoning whichever document comes first rather than a named one.
+    """
+    settled_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s4.md")
+    held_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s5.md")
+    gated = _GatedAbstractionProvider()
+    ingestion_service._abstraction = gated
+
+    # Claim the settled document by hand and leave the claim in place, so it is
+    # named by the snapshot exactly as a document whose job had just finished.
+    ingestion_service._try_claim(settled_id, "test")
+    await ingestion_service.reabstract(held_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+
+    await ingestion_service.stop_worker()
+
+    settled = await graph_store.get_document(settled_id)
+    assert settled.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert settled.pipeline_error is None
+
+    held = await graph_store.get_document(held_id)
+    assert held.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED
+
+
+async def test_stop_worker_restamp_opt_out_leaves_the_document_non_terminal(
+    tmp_vault_dir, minimal_config, graph_store
+):
+    """restamp=False skips the stamp, for the caller whose documents are about
+    to cease to exist.
+
+    Both arms run the same setup, so the opt-out arm cannot pass merely by
+    having had no pending work to settle.
+    """
+    results = {}
+    for name, restamp in (("samples/s6.md", False), ("samples/s7.md", True)):
+        gated = _GatedAbstractionProvider()
+        service = _build_service(graph_store, minimal_config, _FailNTimesProvider(0))
+        try:
+            doc_id = await _seed_indexed_doc(service, tmp_vault_dir, name)
+            # Swapped in only after the seed: the seed ingest runs inline and
+            # would block on the gate.
+            service._abstraction = gated
+            await service.reabstract(doc_id)
+            await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+            await service.stop_worker(restamp=restamp)
+        finally:
+            gated.gate.set()
+        results[restamp] = (await graph_store.get_document(doc_id)).pipeline_status
+
+    assert results[False] == PipelineStatus.ABSTRACTION_IN_PROGRESS
+    assert results[True] == PipelineStatus.ABSTRACTION_INTERRUPTED
+
+
+async def test_stop_worker_releases_the_claim_of_a_dropped_queued_job(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A queued job never enters the function whose finally releases its claim,
+    so the stop must release it. Left in place, the claim outlives the work it
+    guarded and rejects the next operation on that document."""
+    held_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s8.md")
+    queued_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s9.md")
+    gated = _GatedAbstractionProvider()
+    ingestion_service._abstraction = gated
+
+    await ingestion_service.reabstract(held_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+    await ingestion_service.reabstract(queued_id)
+    assert queued_id in ingestion_service._inflight
+
+    await ingestion_service.stop_worker()
+
+    # Not merely absent from the registry: the next operation is accepted.
+    ingestion_service._abstraction = _FailNTimesProvider(0)
+    result = await ingestion_service.reabstract(queued_id)
+    assert result["status"] == "reabstract_started"
+    assert await _await_terminal(graph_store, queued_id) == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+async def test_stop_worker_with_no_pending_work_writes_no_document(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """An idle stop touches the store not at all.
+
+    stop_worker runs from an autouse test teardown and from every production
+    teardown, each immediately before the storage handle is released. A stop
+    that queried on every call would put a round-trip there.
+
+    Reads are counted alongside writes, because the round-trip is the cost
+    being guarded and a settle pass that reads every document to discover it
+    has nothing to write pays it in full. Asserting on writes alone would
+    pass against that implementation.
+    """
+    doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s10.md")
+    assert doc_id
+    assert not ingestion_service._inflight
+
+    touched = []
+    original_write = graph_store.update_document
+    original_read = graph_store.get_document
+
+    async def _recording_write(document_id, updates):
+        touched.append(("write", document_id))
+        return await original_write(document_id, updates)
+
+    async def _recording_read(document_id):
+        touched.append(("read", document_id))
+        return await original_read(document_id)
+
+    graph_store.update_document = _recording_write
+    graph_store.get_document = _recording_read
+    try:
+        await ingestion_service.stop_worker()
+    finally:
+        graph_store.update_document = original_write
+        graph_store.get_document = original_read
+
+    assert touched == []
+
+
+async def test_stop_worker_survives_a_restamp_write_failure(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A store error while settling strands only the document it belongs to.
+
+    Every caller runs the stop immediately before closing the timing flusher
+    and releasing the storage pool, so an exception escaping here would skip
+    both and leak the pool it was about to close.
+
+    Anti-coincidental-pass: returning normally is not enough on its own, and
+    neither is a single document's outcome. Two documents are settled and only
+    the FIRST read raises, so exactly one must still reach
+    abstraction_interrupted -- which separates per-document isolation from a
+    pass that gives up at the first error and strands the rest.
+
+    The failure is positional rather than keyed to a document id, and that is
+    what makes the assertion independent of batch order. The settle pass
+    iterates its snapshot in sorted id order, and the ids are content-derived,
+    so a test that poisons a *named* document passes against the
+    give-up-at-the-first-error implementation whenever the healthy document
+    happens to sort first. Poisoning whichever document comes first leaves
+    that implementation no ordering to be rescued by.
+
+    Both claims are asserted too, and the queued document is what makes that
+    discriminate: the in-flight one releases its own claim while unwinding, so
+    it reports released whether or not the stop did anything, while a job that
+    never ran depends on the stop to release it.
+    """
+    held_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s11.md")
+    queued_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s12.md")
+    gated = _GatedAbstractionProvider()
+    ingestion_service._abstraction = gated
+
+    await ingestion_service.reabstract(held_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+    await ingestion_service.reabstract(queued_id)
+    assert queued_id in ingestion_service._inflight
+
+    original = graph_store.get_document
+    reads = []
+
+    async def _raising_on_first(document_id):
+        reads.append(document_id)
+        if len(reads) == 1:
+            raise RuntimeError("storage is going away")
+        return await original(document_id)
+
+    graph_store.get_document = _raising_on_first
+    try:
+        await ingestion_service.stop_worker()
+    finally:
+        graph_store.get_document = original
+
+    statuses = [
+        (await graph_store.get_document(did)).pipeline_status for did in (held_id, queued_id)
+    ]
+    assert statuses.count(PipelineStatus.ABSTRACTION_INTERRUPTED) == 1
+    assert statuses.count(PipelineStatus.ABSTRACTION_IN_PROGRESS) == 1
+
+    assert held_id not in ingestion_service._inflight
+    assert queued_id not in ingestion_service._inflight
+
+
 # ==========================================================================
 # Lifecycle + inline-path regression
 # ==========================================================================

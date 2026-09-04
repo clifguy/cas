@@ -132,6 +132,14 @@ class PipelineStatus(StrEnum):
 
     `abstraction_skipped` indicates the vault has abstraction disabled or
     the LLM was unavailable (graceful degradation per CAS-ADR-011).
+
+    `abstraction_interrupted` records abstraction work that was dropped
+    rather than attempted: the queue draining it was stopped before the
+    work ran or finished. It is terminal because nothing is left running
+    to advance the document, and it is not a success -- `pipeline_error`
+    carries the cause. Unlike the other non-success terminal status it
+    says nothing about the document or the provider, so startup recovery
+    re-enqueues it where it leaves `failed` alone.
     """
 
     PROJECTION_COMPLETE = "projection_complete"
@@ -140,6 +148,7 @@ class PipelineStatus(StrEnum):
     ABSTRACTION_IN_PROGRESS = "abstraction_in_progress"
     ABSTRACTION_COMPLETE = "abstraction_complete"
     ABSTRACTION_SKIPPED = "abstraction_skipped"
+    ABSTRACTION_INTERRUPTED = "abstraction_interrupted"
     FAILED = "failed"
 
 
@@ -310,6 +319,7 @@ TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
     {
         PipelineStatus.ABSTRACTION_COMPLETE,
         PipelineStatus.ABSTRACTION_SKIPPED,
+        PipelineStatus.ABSTRACTION_INTERRUPTED,
         PipelineStatus.FAILED,
     }
 )

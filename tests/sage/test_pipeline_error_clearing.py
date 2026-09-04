@@ -352,14 +352,24 @@ async def test_non_terminal_transition_preserves_pipeline_error(
     assert fetched.pipeline_error == STALE_ERROR
 
 
-def test_successful_terminal_statuses_are_the_non_failed_terminals():
-    """The success set is the terminal set minus the one failure state.
+def test_successful_terminal_statuses_are_the_terminals_that_record_no_cause():
+    """The success set is the terminal set minus the states that carry a cause.
 
-    Derived rather than restated, so an eighth pipeline status added as a
-    terminal success cannot quietly sit outside the clearing rule.
+    Derived rather than restated, so a pipeline status added as a terminal
+    success cannot quietly sit outside the clearing rule: a new terminal
+    member lands on the left of this identity unless it is named on the
+    right, which forces the author to decide which side it belongs on.
+
+    ``abstraction_interrupted`` is named alongside ``failed`` because it too
+    records something in ``pipeline_error`` -- which work was dropped, and
+    why -- and clearing the field would erase the only account of it. The
+    two differ in what they say rather than in whether they say it: a
+    failure is about the document or the provider, an interruption about
+    neither.
     """
     assert SUCCESSFUL_TERMINAL_PIPELINE_STATUSES == TERMINAL_PIPELINE_STATUSES - {
-        PipelineStatus.FAILED
+        PipelineStatus.FAILED,
+        PipelineStatus.ABSTRACTION_INTERRUPTED,
     }
 
 

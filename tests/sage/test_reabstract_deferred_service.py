@@ -1044,7 +1044,11 @@ async def test_reabstract_deferred_times_out_on_document_stranded_non_terminal(
     # Wait until the job is genuinely inside the provider before cancelling,
     # so the worker dies mid-generation rather than before it claimed work.
     await asyncio.wait_for(provider.entered.wait(), timeout=10)
-    await ingestion.stop_worker()
+    # restamp=False keeps the document non-terminal, which is the scenario
+    # under test: a document the poll must abandon at its ceiling. The default
+    # stop settles dropped work at abstraction_interrupted, which is terminal,
+    # so the poll would return it as settled and the ceiling never fire.
+    await ingestion.stop_worker(restamp=False)
 
     report = await asyncio.wait_for(sweep, timeout=30)
 
@@ -1294,7 +1298,11 @@ async def test_reabstract_deferred_events_pair_status_and_outcome_for_timeout(
 
     task = asyncio.create_task(drain())
     await asyncio.wait_for(provider.entered.wait(), timeout=10)
-    await ingestion.stop_worker()
+    # restamp=False keeps the document non-terminal, which is the scenario
+    # under test: a document the poll must abandon at its ceiling. The default
+    # stop settles dropped work at abstraction_interrupted, which is terminal,
+    # so the poll would return it as settled and the ceiling never fire.
+    await ingestion.stop_worker(restamp=False)
     await asyncio.wait_for(task, timeout=30)
 
     progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]

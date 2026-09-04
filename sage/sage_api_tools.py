@@ -233,7 +233,10 @@ def register_sage_tools(
         ``abstraction_complete`` (the happy path), ``abstraction_skipped``
         (the vault sets ``abstraction.enabled=false`` or the projection is
         empty, so Stage 3 is bypassed), or ``failed`` (any Stage exception;
-        ``pipeline_error`` is populated). A requested supersede transition
+        ``pipeline_error`` is populated). A wait must also accept
+        ``abstraction_interrupted``, which means the queue draining the work
+        was stopped before it finished and the next server start re-runs it.
+        A requested supersede transition
         runs synchronously, so the version chain is complete on return.
 
         Run that wait on the caller's side, as a single wait that returns
@@ -2374,7 +2377,10 @@ def register_sage_tools(
         the outcome, wait for a terminal ``pipeline_status`` -- a single
         caller-side wait that returns once the status leaves
         ``abstraction_in_progress``, not one status request per unit of
-        caller work. Bound the wait: a document left at
+        caller work. A wait must also accept ``abstraction_interrupted``,
+        which means the queue draining the work was stopped before it
+        finished and the next server start re-runs it. Bound the wait: a
+        document left at
         ``abstraction_in_progress`` with no work in flight (the process
         restarted mid-job) never reaches a terminal status on its own. A
         caller that assumes this tool returns the new abstract in place
@@ -2449,7 +2455,10 @@ def register_sage_tools(
 
         The background task re-indexes the chunks, regenerates the abstract,
         and flips ``pipeline_status`` to ``abstraction_complete`` /
-        ``abstraction_skipped`` (success) or ``failed`` (Stage 2/3 error). To
+        ``abstraction_skipped`` (success), ``failed`` (Stage 2/3 error), or
+        ``abstraction_interrupted`` (the queue draining the work was
+        stopped, so it was dropped rather than attempted; the next server
+        start re-runs it). To
         observe the outcome, wait for a terminal ``pipeline_status`` on the
         document -- a single caller-side wait that returns once the status
         is no longer ``indexing_in_progress`` or ``abstraction_in_progress``,
@@ -2864,21 +2873,20 @@ def register_sage_tools(
         Returns a ReabstractReport with per-document outcomes and aggregate
         counts.
 
-        The per-document poll is bounded. A document can stop advancing
-        toward a terminal status altogether -- the abstraction worker is
-        cancelled on lifespan teardown and on registry reload, which drops
-        queued jobs and strands their documents mid-pipeline -- so a
-        document that has not settled within the server's wait ceiling is
-        abandoned and recorded with outcome ``timeout`` rather than polled
-        indefinitely. Abandoning is a statement about the poll, not about
-        the document: the generation may still complete. It is not,
-        however, self-healing. This operation enumerates
+        The per-document poll is bounded. A generation slow enough outlasts
+        any waiter, so a document that has not settled within the server's
+        wait ceiling is abandoned and recorded with outcome ``timeout``
+        rather than polled indefinitely. Abandoning is a statement about the
+        poll, not about the document: the generation may still complete. It
+        is not, however, self-healing. This operation enumerates
         ``abstraction_skipped`` only, and an abandoned document sits at
         ``abstraction_in_progress``, so a later call reaches it only once
-        something else advances it -- startup recovery, which runs from the
-        server's lifespan hook and so does not fire on a registry reload
-        alone, or the out-of-band bulk sweep with a selector naming that
-        status.
+        something else advances it -- the generation finishing, startup
+        recovery, or the out-of-band bulk sweep with a selector naming that
+        status. Work dropped by a stopped abstraction worker is a separate
+        case and does not land here: stopping the worker settles it at the
+        terminal ``abstraction_interrupted``, which the poll returns and the
+        bulk sweep enumerates by default.
 
         Outcomes beyond ``success`` and ``skipped_pdf`` all count toward
         ``failed_count``, which counts documents that did not reach

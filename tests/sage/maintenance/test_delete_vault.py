@@ -99,9 +99,11 @@ class _SpyDump:
 class _SpyIngestion:
     def __init__(self, log):
         self._log = log
+        self.restamp_arg = None
 
-    async def stop_worker(self):
+    async def stop_worker(self, *, restamp: bool = True):
         self._log.append("stop_worker")
+        self.restamp_arg = restamp
 
 
 class _SpyServices:
@@ -405,6 +407,27 @@ async def test_in_process_eviction_runs_teardown_sequence_before_drop(built_vaul
     # The registry-reload teardown order runs, and the schema drop follows it.
     assert log == ["stop_worker", "close_timing", "close_storage", "drop"]
     assert built_vault.vault_id not in registry  # evicted
+
+
+async def test_in_process_eviction_skips_the_interruption_stamp(built_vault):
+    """The one worker stop that declines to settle the work it drops.
+
+    Everywhere else the stop stamps abstraction_interrupted so nothing is left
+    non-terminal with no worker behind it. Here the schema holding those
+    documents is dropped in the next step, so the stamp would be written to a
+    store about to cease to exist -- as the ordering assertion in the sibling
+    test above shows, `drop` follows `stop_worker` directly.
+    """
+    log = []
+    services = _SpyServices(log)
+    registry = {built_vault.vault_id: services}
+
+    rc = await delete_vault(
+        **_common(built_vault, provisioner=_SpyProvisioner(log=log), registry=registry)
+    )
+
+    assert rc == 0
+    assert services.ingestion_service.restamp_arg is False
 
 
 async def test_registry_without_the_vault_skips_eviction(built_vault):

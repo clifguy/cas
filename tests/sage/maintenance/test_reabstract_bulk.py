@@ -94,9 +94,19 @@ def corpus(make_doc):
 # --- A. Status selector parsing -------------------------------------------
 
 
-def test_selector_defaults_to_the_two_recovery_statuses():
+def test_selector_defaults_to_the_recovery_statuses():
+    """The terminal statuses a document reaches with its abstract missing.
+
+    abstraction_interrupted is among them because this sweep is how an operator
+    reaches interrupted work without waiting for the restart that startup
+    recovery needs.
+    """
     assert rb.parse_status_selector("") == frozenset(
-        {PipelineStatus.FAILED.value, PipelineStatus.ABSTRACTION_SKIPPED.value}
+        {
+            PipelineStatus.FAILED.value,
+            PipelineStatus.ABSTRACTION_SKIPPED.value,
+            PipelineStatus.ABSTRACTION_INTERRUPTED.value,
+        }
     )
     assert rb.parse_status_selector(None) == rb.parse_status_selector("")
 

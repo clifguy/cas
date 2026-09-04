@@ -76,10 +76,11 @@ _POLL_INTERVAL_SECONDS = 0.05
 
 # Ceiling on how long the post-dispatch wait blocks on a single document
 # before abandoning it. The wait polls pipeline_status, and a document can
-# stop advancing toward a terminal one entirely: the abstraction worker is
-# cancelled on lifespan teardown and on registry reload, which drops queued
-# jobs and leaves their documents stranded at `abstraction_in_progress`
-# until the next startup recovery. Without a ceiling the waiter polls that
+# stop advancing toward a terminal one: a generation that runs long enough
+# outlasts any waiter, and the process holding it can go away mid-flight.
+# Stopping the worker is no longer such a case -- it settles the work it
+# drops at `abstraction_interrupted`, which is terminal -- but a ceiling is
+# still what bounds the wait, because without one the waiter polls a slow
 # document forever, holding the SSE response open with no further events
 # and giving the report-and-return MCP caller nothing to time out against.
 #
@@ -1420,10 +1421,8 @@ class MaintenanceService:
         Returns :data:`_WAIT_MISSING` if the document disappears mid-flight,
         and :data:`_WAIT_TIMEOUT` if it has not settled within
         :data:`_WAIT_TIMEOUT_SECONDS`. The ceiling is what makes this
-        bounded: the document may stop advancing altogether -- a cancelled
-        abstraction worker drops its queued jobs and strands them
-        non-terminal -- and an unbounded poll against one of those never
-        returns.
+        bounded: a generation slow enough outlasts any waiter, and an
+        unbounded poll against one never returns.
 
         Both the terminal set and the ceiling are read from module scope
         rather than taken as arguments. A parameter that one production
@@ -1436,9 +1435,12 @@ class MaintenanceService:
         is not self-healing. This sweep enumerates ``abstraction_skipped``
         only, and an abandoned document sits at ``abstraction_in_progress``,
         so a later sweep reaches it only once something else advances it --
-        startup recovery (``recover_incomplete_documents``, which runs from
-        the lifespan hook, so a registry reload alone does not fire it), or
-        the bulk CLI with a selector naming that status.
+        the generation finishing, startup recovery
+        (``recover_incomplete_documents``), or the bulk CLI with a selector
+        naming that status. A document the worker dropped is a separate case
+        and no longer one of these: stopping the worker settles it at
+        ``abstraction_interrupted``, which is terminal, so this wait returns
+        it rather than abandoning it.
         """
         deadline = asyncio.get_running_loop().time() + _WAIT_TIMEOUT_SECONDS
         while True:

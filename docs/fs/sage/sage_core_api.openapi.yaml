@@ -422,7 +422,10 @@ paths:
         `pipeline_status` at a non-terminal value (typically
         `indexing_in_progress`). MCP callers wait for a terminal
         `pipeline_status` on the document to observe the outcome, as a single
-        bounded wait rather than one status read per unit of caller work. This
+        bounded wait rather than one status read per unit of caller work. A
+        wait must also accept `abstraction_interrupted`, which means the queue
+        draining the work was stopped before it finished and the next server
+        start re-runs it. This
         exists because the MCP client transport imposes a 60-second RPC timeout
         that abstraction on large documents can exceed (BH-130).
 
@@ -1911,7 +1914,8 @@ paths:
       description: >-
         Re-runs abstraction on one existing document regardless of its
         current terminal pipeline_status (abstraction_complete,
-        abstraction_skipped, or failed), reusing the shared per-document
+        abstraction_skipped, abstraction_interrupted, or failed),
+        reusing the shared per-document
         queue and single-flight machinery. Fire-and-forget: the call
         validates the document and its stored projection chunks, claims the
         document, flips pipeline_status to abstraction_in_progress,
@@ -1919,7 +1923,10 @@ paths:
         immediately. The regenerated abstract is written by that task, not
         by this call; wait on `GET /documents/{document_id}` for a terminal
         pipeline_status to observe the outcome, as a single bounded wait
-        rather than one status read per unit of caller work. Use this to
+        rather than one status read per unit of caller work. A wait must also
+        accept `abstraction_interrupted`, which means the queue draining the
+        work was stopped before it finished and the next server start re-runs
+        it. Use this to
         refresh a stale-but-complete abstract after an abstraction-provider
         or model swap.
       tags: [Document Metadata]
@@ -2524,24 +2531,23 @@ paths:
         documents whose pipeline_status is 'abstraction_skipped', dispatches a
         reabstract per document, and polls until each
         reaches a terminal pipeline_status (abstraction_complete,
-        abstraction_skipped, or failed).
+        abstraction_skipped, abstraction_interrupted, or failed).
 
 
-        The per-document poll is bounded. A document can stop advancing
-        toward a terminal status altogether -- the abstraction worker is
-        cancelled on lifespan teardown and on registry reload, which drops
-        queued jobs and strands their documents mid-pipeline -- so a
-        document that has not settled within the server's wait ceiling is
-        abandoned and recorded with outcome 'timeout' rather than polled
-        indefinitely. Abandoning is a statement about the poll, not about
-        the document: the generation may still complete. It is not,
-        however, self-healing. This operation enumerates
+        The per-document poll is bounded. A generation slow enough outlasts
+        any waiter, so a document that has not settled within the server's
+        wait ceiling is abandoned and recorded with outcome 'timeout'
+        rather than polled indefinitely. Abandoning is a statement about the
+        poll, not about the document: the generation may still complete. It
+        is not, however, self-healing. This operation enumerates
         'abstraction_skipped' only, and an abandoned document sits at
         'abstraction_in_progress', so a later call reaches it only once
-        something else advances it -- startup recovery, which runs from the
-        server's lifespan hook and so does not fire on a registry reload
-        alone, or the out-of-band bulk sweep with a selector naming that
-        status.
+        something else advances it -- the generation finishing, startup
+        recovery, or the out-of-band bulk sweep with a selector naming that
+        status. Work dropped by a stopped abstraction worker is a separate
+        case and does not land here: stopping the worker settles it at the
+        terminal 'abstraction_interrupted', which the poll returns and the
+        bulk sweep enumerates by default.
 
 
         Outcomes beyond `success` and `skipped_pdf` all count toward
@@ -3073,12 +3079,23 @@ components:
         - abstraction_in_progress
         - abstraction_complete
         - abstraction_skipped
+        - abstraction_interrupted
         - failed
       description: >-
         Tracks progress of the three-stage ingestion pipeline.
         "abstraction_skipped" indicates the vault has abstraction
         disabled or the LLM was unavailable (graceful degradation
         per CAS-ADR-011).
+
+
+        "abstraction_interrupted" records abstraction work that was
+        dropped rather than attempted: the queue draining it was
+        stopped before the work ran or finished. It is terminal
+        because nothing is left running to advance the document, and
+        it is not a success -- pipeline_error carries the cause.
+        Unlike the other non-success terminal status it says nothing
+        about the document or the provider, so startup recovery
+        re-enqueues it where it leaves "failed" alone.
 
     TraversalDirection:
       type: string

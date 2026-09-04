@@ -710,6 +710,7 @@ _ASYNC_DISPATCH_TOOLS: tuple[tuple[str, Any, frozenset[PipelineStatus]], ...] = 
             {
                 PipelineStatus.ABSTRACTION_COMPLETE,
                 PipelineStatus.ABSTRACTION_SKIPPED,
+                PipelineStatus.ABSTRACTION_INTERRUPTED,
                 PipelineStatus.FAILED,
             }
         ),
@@ -717,7 +718,13 @@ _ASYNC_DISPATCH_TOOLS: tuple[tuple[str, Any, frozenset[PipelineStatus]], ...] = 
     (
         "recompute_abstract",
         recompute_abstract,
-        frozenset({PipelineStatus.ABSTRACTION_COMPLETE, PipelineStatus.FAILED}),
+        frozenset(
+            {
+                PipelineStatus.ABSTRACTION_COMPLETE,
+                PipelineStatus.ABSTRACTION_INTERRUPTED,
+                PipelineStatus.FAILED,
+            }
+        ),
     ),
     (
         "recompute_pipeline",
@@ -726,6 +733,7 @@ _ASYNC_DISPATCH_TOOLS: tuple[tuple[str, Any, frozenset[PipelineStatus]], ...] = 
             {
                 PipelineStatus.ABSTRACTION_COMPLETE,
                 PipelineStatus.ABSTRACTION_SKIPPED,
+                PipelineStatus.ABSTRACTION_INTERRUPTED,
                 PipelineStatus.FAILED,
             }
         ),
