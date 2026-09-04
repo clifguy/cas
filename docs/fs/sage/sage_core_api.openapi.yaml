@@ -3001,7 +3001,7 @@ components:
         unset, surfaces that honor this parameter apply their own
         default-resolution rule (search edges and the bulk
         mutation tools both default to "light" when their result/batch
-        size exceeds LIGHT_DEFAULT_THRESHOLD, otherwise "full"). Per-
+        size exceeds five, otherwise "full"). Per-
         surface light-mode shape varies: search(target="edges")
         keeps edge identity columns; the bulk mutation tools drop the
         per-item document body entirely. Failure entries always carry

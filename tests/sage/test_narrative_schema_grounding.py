@@ -23,9 +23,10 @@ assembled from the machine-readable definitions rather than
 hand-maintained, in two tiers:
 
 - The **operation's own** vocabulary: its parameter names, its request
-  schema's properties, its 2xx response schemas' properties, every enum
-  value reachable from those, and the identifiers named in its
-  ``responses[*].description``. All ``$ref``s are followed transitively.
+  schema's properties, its 2xx response schemas' properties, and every
+  enum value reachable from those. All ``$ref``s are followed
+  transitively. Its ``responses[*].description`` is pointedly *not* read
+  here -- see the error-code tier below.
 - The **contract-wide** vocabulary: every operationId and MCP tool name
   on either surface, every MCP tool argument name, every property and
   enum value declared anywhere in either spec's ``components``, every
@@ -61,22 +62,47 @@ what the narratives correctly say. A name is checked for existence, not
 for being current: a field that was removed from the contract is caught,
 one that was renamed while the old spelling survives elsewhere is not.
 
-And **error codes are largely outside the relation**, in both directions
-at once, which is worth stating plainly because ``_error_codes()`` is the
-most elaborate reader in this file and its reach is much narrower than
-its size suggests. The swept surfaces exclude where codes are named:
+**The error-code tier**, closed in a pass of its own after the rest of
+this module landed. It had been outside the relation in both directions
+at once. The swept surfaces excluded where codes are named:
 ``_surfaces_for`` takes summary and description only, and ``_prose_body``
 truncates the docstring at its first structural header, so the whole
-``Error modes:`` block goes unread. Meanwhile ``operation_vocabulary``
-folds every snake_case token in ``responses[*].description`` *into* the
-vocabulary rather than checking it against the raised codes -- so a code
-invented in a response description validates itself, and one both
-surfaces agree on passes every gate here and in the parity module. The
-codes are reached only when a narrative body names one inline. Closing
-this means checking those two surfaces against ``_error_codes()`` instead
-of feeding from them; the measurement is roughly thirty-five names, most
-of them error-*detail* keys that need a pin category this table does not
-have yet, so it is its own pass rather than a note.
+``Error modes:`` block went unread -- on ``chain``, 833 of 2,562
+characters, and where ``document_not_found`` and ``invalid_document_id``
+live. Meanwhile ``operation_vocabulary`` folded every snake_case token in
+``responses[*].description`` *into* the vocabulary rather than checking
+it against the raised codes, so a code invented in a response
+description validated itself, and one both surfaces agreed on -- which
+the parity gate actively drives them toward -- passed every gate in this
+repository. The codes were reached only when a narrative body named one
+inline.
+
+Both halves are now read as prose: ``unresolved_for`` sweeps four
+surfaces rather than two, adding ``_structural_tail`` (the exact
+complement of ``_prose_body``, sharing its header pattern) and
+``_response_prose``. That is an inversion on the response side, not a
+new reader. The defect it was closed for was real and had already
+happened: a replacement written into ``migrate_vault``'s ``Error modes:``
+block invented ``tier3_unique_index_blocked``, a code no caller can ever
+see. It was caught by reading, because nothing mechanical could.
+``test_the_fabricated_error_code_is_reported`` pins it.
+
+Closing the tier also reached back into ``_error_codes()`` itself, whose
+envelope reader was scoped to a single module and so missed both codes
+``sage/app_tools.py`` emits. ``invalid_directory``, named on both
+``list_directory`` narratives, had been reading as an invented name for
+that reason alone -- the reader's own defect class, one level up. It now
+runs four constructions over every package file, and the
+``missing_{field}`` family is synthesized from its call sites. One family
+stays genuinely out of reach and is pinned rather than swept; that
+function's docstring says which and why.
+
+What the pass measured is the residue below: thirty-five names, and
+overwhelmingly one category. ``SAGEError.detail`` is an untyped mapping,
+so a narrative telling a caller which keys to read names something real
+that no contract node declares. Typing the detail envelope per error
+family would resolve every one of them at once, which is the finding
+those pins record.
 
 **The extractor is not the sibling gate's.** The parity module's
 ``_IDENTIFIER`` requires an underscore, and ``linearity`` has none.
@@ -93,7 +119,7 @@ reason the tiers are pinned by a test rather than left to inspection.
 ``test_unresolved_identifier_pins_are_not_stale`` fails on a pinned name
 that has since become resolvable, so the pin set can only shrink. Each
 pin carries the category the name actually belongs to. The categories are
-the audit's record: fourteen mapped pairs resolve completely and appear
+the audit's record: ten mapped pairs resolve completely and appear
 nowhere below, and an operation absent from the table is one the sweep
 found sound rather than one it skipped.
 
@@ -152,7 +178,16 @@ because there the alias *is* the published shape.
 Instances remain on surfaces this module does not sweep -- schema
 property descriptions carry a few, and one was corrected here only
 because this work introduced it. Sweeping that surface is a separate
-pass, for the same reason the error-code tier is.
+pass; it is now the only such surface left, the error-code tier having
+been closed since.
+
+Widening the sweep to the structural tail surfaced three more, on
+surfaces no gate had read: a service class and its dependency in an
+``Error modes:`` bullet describing a wiring failure a caller cannot act
+on, and a module path plus a threshold constant in an ``Args:`` block.
+All three were reworded rather than pinned, on both surfaces together --
+the constant is named in the spec as well, and prose that moves on one
+surface only diverges under the parity gate.
 """
 
 from __future__ import annotations
@@ -167,7 +202,11 @@ from typing import Any, Final
 
 import pytest
 
-from tests.sage.test_mcp_docstring_disclosure_parity import _prose_body, _surfaces_for
+from tests.sage.test_mcp_docstring_disclosure_parity import (
+    _STRUCTURAL_HEADER,
+    _prose_body,
+    _surfaces_for,
+)
 from tests.sage.test_mcp_tool_conformance import (
     _SURFACES_BY_NAME,
     _all_operation_ids,
@@ -291,6 +330,24 @@ def _error_codes() -> set[str]:
     reflecting over the classes yields nothing. Anchoring on that call
     also avoids the over-match a plain text scan makes, where an
     exception's *argument* looks exactly like a code literal.
+
+    Four readers, each anchored on a construction the package actually
+    uses: the ``super().__init__`` call above; a direct ``SAGEError`` or
+    ``PydanticCustomError``; the ``{"error": "<code>"}`` envelope built at
+    a tool boundary without an exception; and the ``missing_{field}``
+    family, whose literal appears nowhere because ``MissingFieldError``
+    builds the code from its argument. All four run over every package
+    file. Scoping the envelope reader to a single module -- which it was,
+    and which cost it both codes ``sage/app_tools.py`` emits -- is the
+    failure mode a reader like this arrives carrying.
+
+    One family stays out of reach. ``ListFieldAddConflictError`` and its
+    remove counterpart build ``{field}_add_conflict`` from a ``field=``
+    argument that is a runtime variable at the only call site, in
+    ``sage/services/metadata.py``. No literal exists for the scan to
+    find, and no call site narrows the field to a closed set, so the
+    concrete codes are pinned in ``UNRESOLVED_IDENTIFIERS`` instead --
+    the honest record being *not swept*, rather than swept and clean.
     """
     codes: set[str] = set()
     for path in _SAGE_PACKAGE.rglob("*.py"):
@@ -299,8 +356,28 @@ def _error_codes() -> set[str]:
         except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
             continue
         for node in ast.walk(tree):
+            # ``{"error": "<code>", ...}`` envelopes built at a tool
+            # boundary, which never construct a SAGEError and so are
+            # invisible to every call-anchored reader below.
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and key.value in {"error", "code"}
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                    ):
+                        codes.add(value.value)
             if not isinstance(node, ast.Call):
                 continue
+            # ``MissingFieldError("<field>", ...)``, which raises
+            # ``missing_{field}``. The code is assembled at the raise
+            # site, so the family is reachable only through its callers --
+            # every one of which passes a literal.
+            if getattr(node.func, "id", "") == "MissingFieldError":
+                field = node.args[0] if node.args else None
+                if isinstance(field, ast.Constant) and isinstance(field.value, str):
+                    codes.add(f"missing_{field.value}")
             # ``super().__init__("<code>", ...)`` inside a SAGEError subclass.
             if (
                 isinstance(node.func, ast.Attribute)
@@ -321,18 +398,6 @@ def _error_codes() -> set[str]:
                 for candidate in (first, keyword):
                     if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
                         codes.add(candidate.value)
-    # ``{"error": "<code>", ...}`` envelopes built at the MCP boundary,
-    # which never construct a SAGEError and so are invisible above.
-    for node in ast.walk(ast.parse((_SAGE_PACKAGE / "mcp_server.py").read_text())):
-        if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values):
-                if (
-                    isinstance(key, ast.Constant)
-                    and key.value in {"error", "code"}
-                    and isinstance(value, ast.Constant)
-                    and isinstance(value.value, str)
-                ):
-                    codes.add(value.value)
     from sage.api.errors import _TYPED_ALIAS_CODES
 
     return codes | set(_TYPED_ALIAS_CODES)
@@ -425,17 +490,57 @@ def operation_vocabulary(spec: dict[str, Any], operation: dict[str, Any]) -> fro
     if body:
         walk(body)
     for status, response in (operation.get("responses") or {}).items():
-        # Error codes are named in the response's own prose rather than
-        # typed, so the description is the only place they are declared.
-        names |= set(_SNAKE_CASE.findall(response.get("description") or ""))
+        # ``responses[*].description`` is deliberately NOT read here. It
+        # is a *narrative* surface, and folding its tokens into the
+        # vocabulary let it validate itself: a code invented in a
+        # response description resolved against its own prose, and one
+        # both surfaces agreed on -- which the disclosure-parity gate
+        # actively drives them toward -- passed every gate. It is swept
+        # as prose in ``unresolved_for`` instead, which is the direction
+        # that can report an invented name.
         schema = (response.get("content") or {}).get("application/json", {}).get("schema")
         if schema:
             walk(schema)
     return frozenset(names - {""})
 
 
+def _structural_tail(text: object) -> str:
+    """The part of a docstring ``_prose_body`` leaves behind.
+
+    Exact complement of the parity module's ``_prose_body``, sharing its
+    ``_STRUCTURAL_HEADER`` rather than restating the header list: a
+    second copy would drift, and a tail cut at a header the other half
+    does not recognize would silently skip a block. Everything from the
+    first structural header on -- ``Args:``, ``Returns:``,
+    ``Error modes:``, the worked examples -- which is where a tool names
+    its error codes and its per-argument vocabulary. A docstring with no
+    structural header has no tail, and yields the empty string.
+    """
+    if not isinstance(text, str):
+        return ""
+    match = _STRUCTURAL_HEADER.search(text)
+    return text[match.start() :] if match else ""
+
+
+def _response_prose(operation: dict[str, Any]) -> str:
+    """Every ``responses[*].description`` on the operation, joined."""
+    return "\n".join(
+        (response.get("description") or "")
+        for response in (operation.get("responses") or {}).values()
+    )
+
+
 def unresolved_for(surface_name: str, tool_name: str) -> list[str]:
-    """Identifiers either narrative names that the contract does not define."""
+    """Identifiers either narrative names that the contract does not define.
+
+    Four surfaces, not two. The docstring's prose body and the
+    operation's summary-plus-description are the narrative proper; the
+    docstring's structural tail and ``responses[*].description`` are
+    where error codes and per-argument vocabulary are named, and both
+    were previously unread -- the tail because ``_prose_body`` truncates
+    at the first structural header, the response descriptions because
+    they fed the vocabulary rather than being checked against it.
+    """
     docstring, narrative, _whole = _surfaces_for(surface_name, tool_name)
     surface = _SURFACES_BY_NAME[surface_name]
     spec = _load_spec(surface.spec_path)
@@ -444,7 +549,12 @@ def unresolved_for(surface_name: str, tool_name: str) -> list[str]:
         f"{surface_name}.{tool_name} resolves to an operationId the spec does "
         "not define; the tool-to-operation mapping gate should catch this first."
     )
-    mentioned = named_identifiers(_prose_body(docstring)) | named_identifiers(narrative)
+    mentioned = (
+        named_identifiers(_prose_body(docstring))
+        | named_identifiers(narrative)
+        | named_identifiers(_structural_tail(docstring))
+        | named_identifiers(_response_prose(operation))
+    )
     known = operation_vocabulary(spec, operation) | contract_vocabulary()
     return sorted(mentioned - known)
 
@@ -462,10 +572,32 @@ def unresolved_for(surface_name: str, tool_name: str) -> list[str]:
 # ``test_unresolved_identifier_pins_are_not_stale`` fails on an entry
 # that has since become resolvable, so this table can only shrink.
 #
-# Fifteen mapped pairs resolve completely and are absent from this table.
+# Ten mapped pairs resolve completely and are absent from this table.
 # Absence means the sweep found the pair sound, not that it skipped it --
 # ``test_narrative_identifiers_resolve_to_the_contract_vocabulary``
 # parametrizes over every mapped pair.
+#
+# Two categories below are named rather than spelled out per entry,
+# because each covers enough names that repeating the sentence would
+# obscure how large the class is.
+
+# Overwhelmingly the largest category, and the one this table did not
+# carry before the structural tail was swept. A SAGEError's ``detail`` is
+# an untyped mapping: no schema declares its keys, so a narrative that
+# tells a caller which keys to read names something real that no
+# contract node defines. The remedy is not a pin but a typed detail
+# envelope per error family, which would resolve every one of these at
+# once; until then the pin records that the key was checked and found to
+# be a genuine detail field rather than an invented one. Each was
+# verified against its construction site in ``sage/api/errors.py``.
+ERROR_DETAIL_KEY: Final[str] = "key of the untyped SAGEError detail mapping"
+
+# A Python builtin an ``Error modes:`` block names because the tool
+# really does raise it rather than a SAGEError. Naming it is accurate
+# disclosure -- the caller sees exactly that class -- and no contract
+# node declares builtins, so it can only ever resolve here.
+BUILTIN_EXCEPTION: Final[str] = "Python builtin exception the tool raises directly"
+
 UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("cas_app", "bulk_ingest_document"): {
         # The closed set of ``EdgeWarning.reason`` values. It is declared
@@ -514,6 +646,52 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "sage_vaults": "on-disk vault directory, not a contract node",
         "ticket_id": "example tier-3 metadata key in a worked example",
         "unique": "prose: the tier-3 uniqueness property, not a field name",
+        "imports": "vault source-tree directory, not a contract node",
+        # Keys of the untyped error ``detail``, named in the
+        # ``Error modes:`` block. See the category note above the table.
+        "allowed_states": ERROR_DETAIL_KEY,
+        "colliding_value": ERROR_DETAIL_KEY,
+        "current_head_version": ERROR_DETAIL_KEY,
+        "current_state": ERROR_DETAIL_KEY,
+        "example": ERROR_DETAIL_KEY,
+        "existing_document_id": ERROR_DETAIL_KEY,
+        "existing_source_path": ERROR_DETAIL_KEY,
+        "fields": ERROR_DETAIL_KEY,
+        "instance": ERROR_DETAIL_KEY,
+        "new_source_path": ERROR_DETAIL_KEY,
+        "recognized": ERROR_DETAIL_KEY,
+        "required_state": ERROR_DETAIL_KEY,
+    },
+    ("sage_core", "optimize_vault_content_store"): {
+        "ValueError": BUILTIN_EXCEPTION,
+    },
+    ("sage_core", "read_section"): {
+        "candidate_matches": ERROR_DETAIL_KEY,
+    },
+    ("sage_core", "restore_vault_source_file"): {
+        "candidate_ids": ERROR_DETAIL_KEY,
+    },
+    ("sage_core", "search"): {
+        "KiB": "prose: the unit the inline budget is stated in",
+        "null": "prose: the JSON literal, in a worked filter example",
+        "failure_record": "example doc_type value in a worked example",
+        "fix_commit": "example tier-3 metadata key in a worked example",
+        "allowed_modes": ERROR_DETAIL_KEY,
+        "constraint": ERROR_DETAIL_KEY,
+        "example": ERROR_DETAIL_KEY,
+        "expected_type": ERROR_DETAIL_KEY,
+        "fields": ERROR_DETAIL_KEY,
+        "forbidden_param": ERROR_DETAIL_KEY,
+        "hint": ERROR_DETAIL_KEY,
+        "key": ERROR_DETAIL_KEY,
+        "operation": ERROR_DETAIL_KEY,
+        "parameter": ERROR_DETAIL_KEY,
+        "received_type": ERROR_DETAIL_KEY,
+        "recognized": ERROR_DETAIL_KEY,
+        "recommended_limit": ERROR_DETAIL_KEY,
+        "valid_keys": ERROR_DETAIL_KEY,
+        "valid_modes": ERROR_DETAIL_KEY,
+        "valid_values": ERROR_DETAIL_KEY,
     },
     ("sage_core", "list_headings"): {
         # Carried on the error envelope's untyped ``detail``, which no
@@ -543,6 +721,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "recompute_deferred_vault_abstracts"): {
         "reabstract_deferred": "operator fallback script under scripts/",
         "start_time": "field of the reabstract_already_in_flight error detail",
+        "RuntimeError": BUILTIN_EXCEPTION,
     },
     ("sage_core", "recompute_views"): {
         # The symlink directory. The response field counting what landed
@@ -552,10 +731,13 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "update_lifecycles"): {
         "cas": "example vault id in a worked example",
         "sage_vaults": "on-disk vault directory, not a contract node",
+        "KiB": "prose: the unit the inline budget is stated in",
     },
     ("sage_core", "update_metadata"): {
         "other_key": "placeholder in a worked example, not a field name",
         "sage_vaults": "on-disk vault directory, not a contract node",
+        "KiB": "prose: the unit the inline budget is stated in",
+        "current_version": ERROR_DETAIL_KEY,
         # Codes built as f"{field}_add_conflict" at the raise site, so
         # the literal never appears in source for the AST scan to find.
         "tags_add_conflict": "error code from a parameterized family",
@@ -593,6 +775,18 @@ MIN_CONTRACT_VOCABULARY: Final[int] = 550
 # something untrue of them; the ceiling instead catches an extraction
 # path that has stopped reaching the spec surface.
 MAX_SILENT_DESCRIPTIONS: Final[int] = 2
+
+# The same floors for the two surfaces added when the error-code tier was
+# closed. They matter more than the ones above, not less: the tail is
+# reached by a slice rather than by a match, and a slice that lands wrong
+# yields the empty string rather than an error -- at which point every
+# pair resolves clean and the whole tier is silently gone. Measured
+# baseline is 242 distinct identifiers across 31 tails (one docstring
+# carries no structural block at all) and 63 across the response
+# descriptions; each floor sits a short step below.
+MIN_TAIL_IDENTIFIERS: Final[int] = 215
+MIN_RESPONSE_IDENTIFIERS: Final[int] = 55
+MIN_PAIRS_WITH_TAIL: Final[int] = 28
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +894,238 @@ def test_the_historical_linearity_divergence_is_reported() -> None:
     assert not named_identifiers(after) - known, (
         "the reconciled narrative is not reported clean, so the first "
         "assertion above proves nothing about the relation"
+    )
+
+
+def test_the_fabricated_error_code_is_reported() -> None:
+    """An invented error code in an ``Error modes:`` bullet is reported.
+
+    The defect that motivated closing this tier. A replacement written
+    into ``migrate_vault``'s ``Error modes:`` block named
+    ``tier3_unique_index_blocked``, which no caller can ever see:
+    ``Tier3UniqueIndexBlockedError`` is a ``RuntimeError`` subclass,
+    caught in the maintenance service and converted to a synthetic
+    collision entry. It was caught by reading; nothing mechanical could,
+    because the block it was written into was the one surface the sweep
+    did not read.
+
+    Both halves are asserted, for the reason the linearity fixture states:
+    the first alone would pass against a gate that reports everything.
+    """
+    surface = _SURFACES_BY_NAME["sage_core"]
+    spec = _load_spec(surface.spec_path)
+    operation = _find_operation(spec, "migrate_vault")
+    assert operation is not None
+    known = operation_vocabulary(spec, operation) | contract_vocabulary()
+
+    # The bullet as it was written, quoted rather than paraphrased. It
+    # sits under an ``Error modes:`` header because that header is what
+    # puts the text in the tail -- without it the sweep would have read
+    # the line all along, and the fixture would prove nothing.
+    fabricated = (
+        "Error modes:\n"
+        "- ``vault_not_found`` (404): no vault registered with that id.\n"
+        "- ``tier3_unique_index_blocked`` (409): a unique_keys declaration\n"
+        "  could not be activated because existing data violates it.\n"
+    )
+    reported = named_identifiers(_structural_tail(fabricated)) - known
+    assert "tier3_unique_index_blocked" in reported, (
+        "the sweep does not report a fabricated error code in an "
+        "Error modes: block -- the tier is not reaching the tail"
+    )
+    # The control, and the reason the first bullet is there: a real code
+    # sits beside the invented one in the same block, and must not be
+    # reported. A sweep that reported the whole block would satisfy the
+    # assertion above while saying nothing about the relation.
+    assert "vault_not_found" not in reported
+    # The header really is what routes the text to the tail: the same
+    # bullet without one is prose body, which the sweep read before this
+    # change and which therefore proves nothing about the new surface.
+    assert not _structural_tail(fabricated[len("Error modes:\n") :])
+
+    # And the corrected text, live, names nothing the contract lacks --
+    # which is what makes the assertion above a measurement.
+    docstring, _narrative, _whole = _surfaces_for("sage_core", "migrate_vault")
+    assert not named_identifiers(_structural_tail(docstring)) - known, (
+        "migrate_vault's live Error modes: block is not reported clean, so "
+        "the first assertion proves nothing about the relation"
+    )
+
+
+def test_error_codes_reaches_every_construction_site() -> None:
+    """``_error_codes()`` finds all four constructions, in every module.
+
+    The reader's own defect class. Its envelope scan was scoped to
+    ``mcp_server.py``, which cost it both codes ``sage/app_tools.py``
+    emits -- and ``invalid_directory``, named on both ``list_directory``
+    narratives, read as an invented name for exactly that reason. A
+    file-scoped reader looks identical to a working one until a second
+    module starts emitting.
+    """
+    codes = _error_codes()
+
+    # Envelope codes built outside mcp_server.py, the gap that motivated
+    # widening the scan.
+    assert {"invalid_directory", "empty_file_list"} <= codes
+    # Envelope codes inside it, which must not have been lost in the move.
+    assert {"unknown_vault", "internal_error"} <= codes
+    # The ``missing_{field}`` family, whose literal exists nowhere: the
+    # code is assembled at the raise site from a call-site argument.
+    assert {"missing_query", "missing_document_id", "missing_heading_path"} <= codes
+    # An ordinary SAGEError subclass, pinning the original reader.
+    assert "vault_not_found" in codes
+
+    # The control. A scan that swallowed every string it walked past
+    # would satisfy every assertion above; this name is written in this
+    # module and in a docstring, and is emitted by nothing.
+    assert "tier3_unique_index_blocked" not in codes
+
+
+def test_the_tail_sweep_is_not_vacuous() -> None:
+    """Floors on the two surfaces the error-code tier added.
+
+    ``_structural_tail`` reaches its text by slicing at a match rather
+    than by matching text. A slice that lands wrong returns the empty
+    string, every pair then resolves clean, and the tier disappears with
+    every assertion still green -- so it is pinned from below here.
+    """
+    pairs = sorted(_mapped_tool_pairs())
+    tail_names: set[str] = set()
+    response_names: set[str] = set()
+    with_tail = 0
+    beyond_body = 0
+    for surface_name, tool_name in pairs:
+        surface = _SURFACES_BY_NAME[surface_name]
+        spec = _load_spec(surface.spec_path)
+        operation = _find_operation(spec, _resolve_expected_operation_id(surface, tool_name))
+        assert operation is not None
+        docstring, _narrative, _whole = _surfaces_for(surface_name, tool_name)
+        tail = named_identifiers(_structural_tail(docstring))
+        if tail:
+            with_tail += 1
+        if tail - named_identifiers(_prose_body(docstring)):
+            beyond_body += 1
+        tail_names |= tail
+        response_names |= named_identifiers(_response_prose(operation))
+
+    # ``_structural_tail`` claims to be the exact complement of
+    # ``_prose_body``, and nothing else here checks it: a tail that
+    # failed to truncate -- returning the whole docstring -- would
+    # satisfy every floor below, because a superset of the body adds
+    # nothing new to ``mentioned`` and so reports identically. The
+    # partition is the claim, so the partition is what is asserted.
+    for surface_name, tool_name in pairs:
+        docstring, _narrative, _whole = _surfaces_for(surface_name, tool_name)
+        assert _prose_body(docstring) + _structural_tail(docstring) == docstring, (
+            f"{surface_name}.{tool_name}: prose body and structural tail do not "
+            "partition the docstring, so one of them is reading the other's text"
+        )
+
+    assert with_tail >= MIN_PAIRS_WITH_TAIL, f"only {with_tail} docstrings yielded a tail"
+    assert len(tail_names) >= MIN_TAIL_IDENTIFIERS, (
+        f"the structural-tail sweep collapsed to {len(tail_names)} identifiers"
+    )
+    assert len(response_names) >= MIN_RESPONSE_IDENTIFIERS, (
+        f"the response-description sweep collapsed to {len(response_names)} identifiers"
+    )
+    # And the tail is genuinely new text rather than a second reading of
+    # the prose body: on nearly every pair it names something the body
+    # does not. A tail that only ever repeated the body would satisfy the
+    # floors above while adding no reach at all.
+    assert beyond_body >= MIN_PAIRS_WITH_TAIL, (
+        f"only {beyond_body} tails name anything their prose body does not"
+    )
+
+
+def test_error_detail_pins_name_real_detail_keys() -> None:
+    """Every ``ERROR_DETAIL_KEY`` pin is a key some error actually sets.
+
+    The category's own claim, gated. A pin asserts that a name the sweep
+    reported is a real thing outside the contract's nodes -- so a name
+    pinned under this category is being certified as a genuine detail
+    field. Certified by hand, that reproduces one level up exactly the
+    defect this module exists to catch: an invented name, pinned as
+    real, reads identically to a real one and the ratchet cannot tell
+    them apart. ``test_unresolved_identifier_pins_are_not_stale`` only
+    asks whether a pin is still unresolvable, which an invented name is
+    forever.
+
+    A detail mapping is built two ways -- as a dict literal passed to
+    ``super().__init__``, and by assigning into one (``detail["k"] =
+    v``) where the key is conditional -- so both forms are read. Three of
+    the pins (``candidate_matches``, ``hint``, ``instance``) exist only
+    in the second, which is why a dict-literal-only scan is not enough.
+    """
+    keys: set[str] = set()
+    for path in _SAGE_PACKAGE.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                keys |= {
+                    key.value
+                    for key in node.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+            ):
+                keys.add(node.slice.value)
+
+    pinned = {
+        name
+        for entries in UNRESOLVED_IDENTIFIERS.values()
+        for name, category in entries.items()
+        if category == ERROR_DETAIL_KEY
+    }
+    assert pinned, "no ERROR_DETAIL_KEY pins found; the category has gone unused"
+    assert not pinned - keys, (
+        f"pinned as error-detail keys but set by no error: {sorted(pinned - keys)}. "
+        "Either the name is invented -- the defect this module catches, pinned "
+        "as though it were real -- or it belongs under a different category."
+    )
+
+    # The control. A scan that collected every string it walked past
+    # would satisfy the assertion above for any pin at all, including an
+    # invented one; this name is written in this module and set by no
+    # error.
+    assert "tier3_unique_index_blocked" not in keys
+
+
+def test_response_descriptions_are_checked_not_folded() -> None:
+    """A response description no longer supplies its own vocabulary.
+
+    The inversion. While ``operation_vocabulary`` folded every snake_case
+    token of ``responses[*].description`` into the operation's own names,
+    a code invented there resolved against its own prose -- and one both
+    surfaces agreed on, which the disclosure-parity gate actively drives
+    them toward, passed every gate in this repository.
+
+    ``candidate_matches`` is the probe because it is the one measured
+    name the fold was supplying to a surface that was *already* swept:
+    with the fold gone it becomes unresolved and is pinned as the error
+    detail key it is. Asserting on the vocabulary's contents rather than
+    on the gate being green is what distinguishes "fold removed" from
+    "fold removed and the name reintroduced by some other route".
+    """
+    surface = _SURFACES_BY_NAME["sage_core"]
+    spec = _load_spec(surface.spec_path)
+    operation = _find_operation(spec, "read_section")
+    assert operation is not None
+
+    # It is named in the operation's own response prose ...
+    assert "candidate_matches" in named_identifiers(_response_prose(operation))
+    # ... and that is no longer enough to make it part of the contract.
+    assert "candidate_matches" not in operation_vocabulary(spec, operation)
+    assert "candidate_matches" not in contract_vocabulary()
+    # So it surfaces as a finding, and carries its category.
+    assert (
+        UNRESOLVED_IDENTIFIERS[("sage_core", "read_section")]["candidate_matches"]
+        == ERROR_DETAIL_KEY
     )
 
 
