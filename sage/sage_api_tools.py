@@ -852,10 +852,8 @@ def register_sage_tools(
                 and ``existing_rationale`` are kept as the only natural-key
                 idempotency signals). Failure entries always carry the full
                 error envelope. When unset, defaults to ``"light"`` for
-                ``len(items) > 5``, else ``"full"`` (threshold
-                ``LIGHT_DEFAULT_THRESHOLD = 5`` in
-                ``sage.services.graph_ops``). Invalid values surface as
-                ``internal_error`` before any per-item work.
+                more than five items, else ``"full"``. Invalid values
+                surface as ``internal_error`` before any per-item work.
             dry_run: When True, every item runs as a dry-run: validators
                 execute, the would-be edge projection is computed, and each
                 ``edge.id`` carries the sentinel (or the existing id on a
@@ -2875,9 +2873,8 @@ def register_sage_tools(
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``reabstract_already_in_flight`` (409): a reabstract is already
           running on this vault.
-        - ``RuntimeError``: the vault's ``MaintenanceService`` was
-          constructed without an ``ingestion_service`` dependency
-          (test-fixture concern; production wiring supplies it).
+        - ``RuntimeError``: the vault is not wired for abstraction. A
+          deployed vault always is, so a caller has nothing to act on.
 
         Args:
             vault_id: Target vault identifier.
