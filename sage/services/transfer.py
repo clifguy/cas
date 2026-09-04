@@ -287,8 +287,10 @@ class TransferStore:
     def consume_upload(self, token: str, vault_id: str) -> PendingTransfer:
         """Redeem an upload token against its staged bytes and pop the entry.
 
-        The caller owns the returned entry's staging directory and must
-        ``cleanup()`` after ingesting the staged file.
+        The caller owns the returned entry's staging directory: it must
+        ``cleanup()`` after ingesting the staged file, or hand the entry back
+        through :meth:`return_upload` if the work it redeemed for did not
+        happen.
         """
         with self._lock:
             self._sweep_locked()
@@ -296,6 +298,26 @@ class TransferStore:
             if entry.state != "bytes_staged":
                 raise TransferNotStagedError(entry.transfer_id)
             return self._entries.pop(entry.transfer_id)
+
+    def return_upload(self, entry: PendingTransfer) -> None:
+        """Put a redeemed entry back, staged bytes intact, so it redeems again.
+
+        The counterpart to :meth:`consume_upload` for work that redeemed a
+        token and then could not complete -- a store that refused the bytes it
+        was handed, a request cancelled mid-flight. Distinct from
+        :meth:`fail_upload`, which rolls a *byte delivery* back: that one
+        deletes the partial staging file and reopens the entry for another
+        ``PUT``, because the bytes are what failed. Here the bytes arrived
+        intact and only the work failed, so the same token redeems the same
+        staged file and the caller repeats no byte leg.
+
+        The entry's ``expires_at`` is deliberately not extended. A returned
+        token is the original one, with the window it was minted for; a
+        failure that kept resetting the clock would let an entry outlive the
+        sweep indefinitely.
+        """
+        with self._lock:
+            self._entries[entry.transfer_id] = entry
 
     # -- download leg ----------------------------------------------------
 
@@ -576,8 +598,11 @@ def caller_local_delivery(
 
     Validates each declaration's delivery shape, decides whether this process
     can reach the caller's filesystem, and either mints an upload recipe or
-    redeems the declared tokens. Redeemed staging directories are reclaimed
-    when the block exits, however it exits.
+    redeems the declared tokens. A redeemed transfer is consumed only if the
+    block completes: its staging directory is reclaimed on the way out of a
+    successful block, and on a failing one the entry goes back to the store
+    with its staged bytes so the same token redeems again. A caller therefore
+    repeats the byte leg only when the bytes themselves were the problem.
 
     An absolute path names a file on the *caller's* machine, readable here
     only when the two are co-located. When they are not, the gate mints a
@@ -635,6 +660,21 @@ def caller_local_delivery(
             else:
                 resolved.append(ResolvedDelivery(path=declaration.source))
         yield DeliveryPlan(resolved=tuple(resolved))
-    finally:
+    except BaseException:
+        # The work the tokens were redeemed for did not happen, so they were
+        # not spent: each entry goes back with its staged bytes, and the same
+        # token redeems again. Otherwise a failure downstream of redemption --
+        # a store refusing the bytes it was handed, most of all -- would make
+        # the caller deliver them a second time to recover from a fault that
+        # was never theirs. ``BaseException`` rather than ``Exception`` so a
+        # cancelled request returns its tokens too.
+        #
+        # The window is the original one: ``return_upload`` does not extend
+        # ``expires_at``, so a call that fails forever still expires on
+        # schedule rather than pinning its staging directory.
+        for entry in consumed:
+            store.return_upload(entry)
+        raise
+    else:
         for entry in consumed:
             entry.cleanup()

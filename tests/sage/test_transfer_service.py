@@ -148,6 +148,49 @@ class TestUploadLifecycle:
         assert consumed.staged_path.read_bytes() == b"complete"
         consumed.cleanup()
 
+    def test_returned_upload_redeems_again_with_its_bytes(self, store):
+        """A redeemed entry handed back redeems again against the same staged
+        file, so work that failed after redemption costs no second byte leg.
+
+        Anti-coincidental-pass: the second consume is asserted to yield the
+        *original* bytes, so a return that reset the entry the way
+        ``fail_upload`` does -- deleting the staged file and reopening the
+        entry for another PUT -- fails on the read rather than on the consume.
+        ``expires_at`` is asserted unchanged so a return that refreshed the
+        window (letting a repeatedly-failing call outlive the sweep) fails.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered")
+        consumed = store.consume_upload(minted.token, _VAULT)
+        expires_at = consumed.expires_at
+        assert minted.transfer_id not in store._entries
+
+        store.return_upload(consumed)
+
+        assert store._entries[minted.transfer_id].expires_at == expires_at
+        again = store.consume_upload(minted.token, _VAULT)
+        assert again.staged_path.read_bytes() == b"delivered"
+        again.cleanup()
+
+    def test_returned_upload_still_expires_on_its_original_schedule(self, store, clock):
+        """A returned token is the one that was minted, not a fresh one: once
+        its original window closes the sweep reclaims it like any other.
+
+        Anti-coincidental-pass: the paired positive above proves the return
+        works at all, so a failure here isolates the clock rather than the
+        mechanism.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered")
+        consumed = store.consume_upload(minted.token, _VAULT)
+        staging_dir = consumed.staging_dir
+        store.return_upload(consumed)
+
+        clock.advance(301)
+        with pytest.raises(TransferTokenInvalidError):
+            store.consume_upload(minted.token, _VAULT)
+        assert not staging_dir.exists()
+
     def test_consume_before_staged(self, store):
         minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
         with pytest.raises(TransferNotStagedError):

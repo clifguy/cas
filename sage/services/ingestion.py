@@ -79,6 +79,7 @@ from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
 from sage.services.metadata import _wire_version
+from sage.services.vault_source_errors import translate_store_refusal
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
@@ -126,11 +127,19 @@ def _translate_vault_source_refusal(source: str) -> Iterator[None]:
     The binding's message travels with the translation. Only the binding knows
     which of its causes fired, and a fixed message here could describe at most
     one of them.
+
+    Nested inside the store-refusal translation, which covers the other way a
+    retain can fail: the target was acceptable and the store declined the bytes
+    anyway. The two are separate refusals with separate remedies -- rewrite the
+    path, or resolve something at the store -- so they carry separate codes, but
+    a retain is only fully typed with both, and typing one without the other
+    would leave a caller a bare 500 on whichever was missed.
     """
     from sage.vault_source_binding import VaultRootEscapeError
 
     try:
-        yield
+        with translate_store_refusal(source):
+            yield
     except VaultRootEscapeError as exc:
         raise VaultSourcePathRefusedError(source, str(exc)) from exc
 

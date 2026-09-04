@@ -35,6 +35,7 @@ from sage.vault_source_binding import (
 )
 from sage.vault_source_document_store import (
     SharePointGraphClient,
+    SourceStoreRefusalError,
     build_sharepoint_graph_client,
 )
 from tests.helpers.bounded_reads import refuse_whole_reads
@@ -709,7 +710,7 @@ def test_vsb_ds_005_list_vault_ids_skips_folders_without_config():
 
 
 def test_vsb_ds_011_fail_closed_and_404_tolerant():
-    """A Graph 4xx/5xx fails closed as a ``RuntimeError`` naming the status; a 404
+    """A Graph 4xx/5xx fails closed as a ``SourceStoreRefusalError`` naming the status; a 404
     on read is the absent case (``None``); a 404 on delete is tolerated.
 
     Anti-coincidental-pass: a client that swallowed errors would pass a naive
@@ -717,7 +718,7 @@ def test_vsb_ds_011_fail_closed_and_404_tolerant():
     operation.
     """
     denied = _client(lambda r: httpx.Response(403, text="denied"))
-    with pytest.raises(RuntimeError, match="403"):
+    with pytest.raises(SourceStoreRefusalError, match="403"):
         denied.read_config_bytes("v")
 
     absent = _client(lambda r: httpx.Response(404))
@@ -725,7 +726,7 @@ def test_vsb_ds_011_fail_closed_and_404_tolerant():
     absent.delete_config("v")  # 404 on delete is tolerated, no raise
 
     broken = _client(lambda r: httpx.Response(500, text="boom"))
-    with pytest.raises(RuntimeError, match="500"):
+    with pytest.raises(SourceStoreRefusalError, match="500"):
         broken.delete_config("v")
 
 
@@ -758,7 +759,7 @@ def test_vsb_ds_012_single_retry_on_throttle():
         return httpx.Response(429, headers={"Retry-After": "0"})
 
     client2 = _client(always_429)
-    with pytest.raises(RuntimeError, match="429"):
+    with pytest.raises(SourceStoreRefusalError, match="429"):
         client2.read_config_bytes("v")
     assert persistent["n"] == 2  # original attempt + one retry, then give up
 
@@ -932,21 +933,21 @@ def test_vsb_ds_040_source_ops_hit_scoped_content_and_item_urls(tmp_path):
 
 
 def test_vsb_ds_041_source_ops_fail_closed_and_404_tolerant(tmp_path):
-    """A Graph 4xx/5xx on a source op fails closed as ``RuntimeError``; a 404 on
+    """A Graph 4xx/5xx on a source op fails closed as ``SourceStoreRefusalError``; a 404 on
     ``source_item`` is the absent case (``None``).
 
     Anti-coincidental-pass: assert the raise on 403/500 *and* the distinct 404
     handling — a client that swallowed errors would pass a naive happy path.
     """
     denied = _client(lambda r: httpx.Response(403, text="denied"))
-    with pytest.raises(RuntimeError, match="403"):
+    with pytest.raises(SourceStoreRefusalError, match="403"):
         denied.read_source_bytes("v", "imports/x.md")
 
     absent = _client(lambda r: httpx.Response(404))
     assert absent.source_item("v", "imports/x.md") is None
 
     broken = _client(lambda r: httpx.Response(500, text="boom"))
-    with pytest.raises(RuntimeError, match="500"):
+    with pytest.raises(SourceStoreRefusalError, match="500"):
         broken.upload_source("v", "imports/x.md", _delivered(tmp_path, "x.md", b"data"))
 
 
@@ -1025,7 +1026,7 @@ def test_vsb_ds_045_stream_source_retries_once_on_throttle():
     ``Retry-After``, and the stream then delivers.
 
     Anti-coincidental-pass: assert exactly two requests and the recorded sleep
-    -- a stream that skipped the retry loop surfaces the 429 as a RuntimeError.
+    -- a stream that skipped the retry loop surfaces the 429 as a refusal.
     """
     calls = {"n": 0}
     slept: list[float] = []
@@ -1043,14 +1044,14 @@ def test_vsb_ds_045_stream_source_retries_once_on_throttle():
 
 
 def test_vsb_ds_046_stream_source_fails_loud_on_error():
-    """A Graph 4xx on the streaming read fails closed as ``RuntimeError`` naming
+    """A Graph 4xx on the streaming read fails closed as ``SourceStoreRefusalError`` naming
     the op and target.
 
     Anti-coincidental-pass: a generator that yielded the error body as content
     would pass a join-only check; the raises-check catches fail-open.
     """
     client = _client(lambda r: httpx.Response(404, text="gone"))
-    with pytest.raises(RuntimeError, match="stream source.*imports/x.md"):
+    with pytest.raises(SourceStoreRefusalError, match="stream source.*imports/x.md"):
         list(client.stream_source_bytes("v", "imports/x.md"))
 
 
@@ -1159,7 +1160,7 @@ def test_vsb_ds_063_delete_tree_is_404_tolerant_and_fails_closed():
     absent.delete_tree("v")  # no raise
 
     denied = _client(lambda r: httpx.Response(403, text="denied"))
-    with pytest.raises(RuntimeError, match="403"):
+    with pytest.raises(SourceStoreRefusalError, match="403"):
         denied.delete_tree("v")
 
 
@@ -1414,7 +1415,7 @@ def test_vsb_ds_078_fragment_geometry_honors_the_store_rules():
 
 
 def test_vsb_ds_079_failed_fragment_cancels_the_session_and_fails_closed(tmp_path, monkeypatch):
-    """A fragment the store refuses fails closed as a ``RuntimeError`` naming
+    """A fragment the store refuses fails closed as a ``SourceStoreRefusalError`` naming
     the op, the target and the status -- after cancelling the session, so no
     half-uploaded temporary lingers until the store expires it.
 
@@ -1434,7 +1435,7 @@ def test_vsb_ds_079_failed_fragment_cancels_the_session_and_fails_closed(tmp_pat
         return _accept_fragments(3)(index, request)
 
     client = _client(_session_handler(seen, fragment_status=refuse_second))
-    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin.*500"):
+    with pytest.raises(SourceStoreRefusalError, match=r"write source.*imports/big\.bin.*500"):
         client.upload_source("vault_a", "imports/big.bin", source)
 
     methods = [(r.method, str(r.url)) for r in seen]
@@ -1494,7 +1495,7 @@ def test_vsb_ds_081_refused_session_creation_fails_closed_before_any_bytes_flow(
         return httpx.Response(507, text="insufficient storage")
 
     client = _client(handler)
-    with pytest.raises(RuntimeError, match="507"):
+    with pytest.raises(SourceStoreRefusalError, match="507"):
         client.upload_source("vault_a", "imports/big.bin", source)
 
     assert [r.method for r in seen] == ["POST"]
@@ -1516,7 +1517,7 @@ def test_vsb_ds_082_premature_completion_is_an_error(tmp_path, monkeypatch):
         return httpx.Response(201, json={"id": "item", "size": 0, "file": {}})
 
     client = _client(_session_handler(seen, fragment_status=complete_early))
-    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin"):
+    with pytest.raises(SourceStoreRefusalError, match=r"write source.*imports/big\.bin"):
         client.upload_source("vault_a", "imports/big.bin", source)
 
     assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)
@@ -1571,7 +1572,7 @@ def test_vsb_ds_084_small_source_put_gives_up_after_one_retry(tmp_path):
         return httpx.Response(429, headers={"Retry-After": "0"})
 
     client = _client(always_429)
-    with pytest.raises(RuntimeError, match=r"write source.*imports/x\.bin.*429"):
+    with pytest.raises(SourceStoreRefusalError, match=r"write source.*imports/x\.bin.*429"):
         client.upload_source("vault_a", "imports/x.bin", source)
 
     assert len(seen) == 2
@@ -1596,10 +1597,178 @@ def test_vsb_ds_085_persistently_throttled_fragment_gives_up_after_one_retry_and
         return httpx.Response(429, headers={"Retry-After": "0"})
 
     client = _client(_session_handler(seen, fragment_status=always_throttled))
-    with pytest.raises(RuntimeError, match=r"write source.*imports/big\.bin.*429"):
+    with pytest.raises(SourceStoreRefusalError, match=r"write source.*imports/big\.bin.*429"):
         client.upload_source("vault_a", "imports/big.bin", source)
 
     puts = _fragment_puts(seen)
     assert len(puts) == 2
     assert puts[0].headers["content-range"] == puts[1].headers["content-range"]
     assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)
+
+
+# --------------------------------------------------------------------------
+# Graph client refusals: the shape a refusal carries upward
+# --------------------------------------------------------------------------
+
+
+def test_vsb_ds_086_a_refused_write_is_a_typed_non_retryable_refusal(tmp_path):
+    """A store that declines the write on its merits refuses non-retryably,
+    naming the operation, the target and the status it answered with.
+
+    Anti-coincidental-pass: ``retryable`` is asserted False against a 403 while
+    VSB-DS-087 asserts True against a 429 through the same call, so a
+    classifier hardcoded either way fails one of the pair. The operation and
+    target are asserted as fields rather than read out of the message, so a
+    refusal that only formatted them into prose fails.
+    """
+    source = _delivered(tmp_path, "x.bin", b"payload")
+
+    client = _client(lambda r: httpx.Response(403, text="permission withdrawn"))
+    with pytest.raises(SourceStoreRefusalError) as excinfo:
+        client.upload_source("vault_a", "imports/x.bin", source)
+
+    exc = excinfo.value
+    assert exc.retryable is False
+    assert exc.status == 403
+    assert exc.operation == "write source"
+    assert exc.target == "vault_a/imports/x.bin"
+
+
+def test_vsb_ds_087_throttling_past_the_single_retry_is_a_typed_transient_refusal(tmp_path):
+    """A store still throttling after the one retry refuses *retryably*: the
+    request was never judged, only deferred.
+
+    Anti-coincidental-pass: the paired negative is VSB-DS-086, and the request
+    count is asserted at two so a refusal raised before the retry (which would
+    also report ``retryable``) fails.
+    """
+    source = _delivered(tmp_path, "x.bin", b"payload")
+    seen: list[httpx.Request] = []
+
+    def always_429(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    client = _client(always_429)
+    with pytest.raises(SourceStoreRefusalError) as excinfo:
+        client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert excinfo.value.retryable is True
+    assert excinfo.value.status == 429
+    assert len(seen) == 2
+
+
+def test_vsb_ds_088_a_session_reply_without_an_upload_url_is_a_refusal_not_a_crash(
+    tmp_path, monkeypatch
+):
+    """A store that answers the session request 2xx and names no ``uploadUrl``
+    has refused to open a session, however it phrased that.
+
+    Anti-coincidental-pass: the raised object is asserted *not* to be a
+    ``KeyError``, which is what indexing the reply produces and what a caller
+    has no way to interpret; ``status`` is asserted None because the store
+    reported no error status, so a classifier reading one off the reply fails.
+    Both shapes of unusable reply are driven -- a well-formed body missing the
+    key, and a body that is not JSON at all -- because a handler catching only
+    the KeyError passes the first while the second still crashes, and the two
+    are indistinguishable from either case alone.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+
+    unusable_replies = (
+        httpx.Response(200, json={"expirationDateTime": "2099-01-01T00:00:00Z"}),
+        httpx.Response(200, text="<html>not the reply the api documents</html>"),
+    )
+    for reply in unusable_replies:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request, _reply=reply) -> httpx.Response:
+            seen.append(request)
+            return _reply
+
+        client = _client(handler)
+        with pytest.raises(SourceStoreRefusalError) as excinfo:
+            client.upload_source("vault_a", "imports/big.bin", source)
+
+        exc = excinfo.value
+        assert not isinstance(exc, KeyError)
+        assert exc.retryable is False
+        assert exc.status is None
+        assert exc.operation == "write source"
+        assert [r.method for r in seen] == ["POST"], (
+            "no fragment may follow a session that never opened"
+        )
+
+
+def test_vsb_ds_089_an_expired_session_fragment_is_a_typed_transient_refusal(tmp_path, monkeypatch):
+    """A fragment answered 404 says the session is gone -- expired by the store
+    or interrupted -- which a fresh session can still satisfy, so the refusal
+    is retryable and the dead session is still cancelled.
+
+    Anti-coincidental-pass: VSB-DS-079 sends the same fragment a 500 and
+    asserts non-retryable, so a classifier that called every fragment failure
+    transient fails there. The trailing ``DELETE`` excludes a give-up that
+    skipped the cancel because it had decided the session was already gone.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+    seen: list[httpx.Request] = []
+
+    def session_expired(index: int, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="session not found")
+
+    client = _client(_session_handler(seen, fragment_status=session_expired))
+    with pytest.raises(SourceStoreRefusalError) as excinfo:
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    assert excinfo.value.retryable is True
+    assert excinfo.value.status == 404
+    assert (seen[-1].method, str(seen[-1].url)) == ("DELETE", _SESSION_URL)
+
+
+def test_vsb_ds_090_session_gone_statuses_are_transient_only_inside_a_session(tmp_path):
+    """A 404 against the item path says the item is not there, which retrying
+    does not change; the same status on a session fragment says the session is
+    gone, which a fresh one can still satisfy. The status alone does not decide
+    it, so where it arrived has to.
+
+    Anti-coincidental-pass: VSB-DS-089 sends the identical status *inside* a
+    session and asserts the opposite classification. The pair is the only thing
+    excluding a classifier that reads the session-gone statuses off the status
+    code wherever they arrive -- which every other test in this file passes
+    against, because none of them sends one outside a session.
+    """
+    source = _delivered(tmp_path, "x.bin", b"payload")
+
+    client = _client(lambda r: httpx.Response(404, text="item not found"))
+    with pytest.raises(SourceStoreRefusalError) as excinfo:
+        client.upload_source("vault_a", "imports/x.bin", source)
+
+    assert excinfo.value.retryable is False
+    assert excinfo.value.status == 404
+
+
+def test_vsb_ds_091_a_refused_fragment_on_its_merits_stays_non_retryable(tmp_path, monkeypatch):
+    """The paired negative for VSB-DS-089: a fragment refused with a status that
+    is not about the session's liveness is not made retryable by having arrived
+    mid-session.
+
+    Anti-coincidental-pass: an implementation that widened "in a session" to
+    "retryable" passes VSB-DS-089 and fails here, which is the only place the
+    two differ inside a session. VSB-DS-090 covers the mirror direction, a
+    session-gone status arriving outside one.
+    """
+    _small_thresholds(monkeypatch)
+    source = _delivered(tmp_path, "big.bin", bytes(2 * _FRAGMENT + 100))
+    seen: list[httpx.Request] = []
+
+    def refused(index: int, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(507, text="insufficient storage")
+
+    client = _client(_session_handler(seen, fragment_status=refused))
+    with pytest.raises(SourceStoreRefusalError) as excinfo:
+        client.upload_source("vault_a", "imports/big.bin", source)
+
+    assert excinfo.value.retryable is False
+    assert excinfo.value.status == 507

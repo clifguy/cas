@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.24",
+      "version": "0.25",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.67",
+  "substrate_version": "1.68",
   "revision_history": [
+    {
+      "version": "1.68",
+      "date": "2026-09-03",
+      "summary": "Declare what the source-file restore returns when the vault-source store refuses it. sage_core_api.openapi.yaml bumped v0.24->v0.25: the restore_vault_source_file operation gains 502 and 503 responses, both $ref'ing the existing ErrorResponse; no schema, no operation shape change, and no new component. The operation already declared its 400 and 404 refusals -- everything decided from the request and the record before the store is touched -- and declared nothing for the store itself declining the write it is handed, which the spec's silence described as a server fault. The two statuses split the refusals the way a caller acts on them: 502 `vault_source_store_refused` for the ones repeating cannot fix (quota, a withdrawn permission, a reply that opens no usable upload session), 503 `vault_source_store_unavailable` for the ones where waiting is the whole remedy (throttling past the binding's one retry, a transient backend signal, an expired upload session). 5xx rather than 4xx because the request that reached SAGE was well formed and the fault is upstream. `detail.store_status` carries the status the store declined with. Code (not in this substrate): the store binding raises a typed refusal carrying that classification instead of an untyped error, one translation at the service boundary turns it into these two codes while keeping the store's own response body in the log rather than on the wire, and the caller-local delivery gate returns a redeemed transfer token when the work it was redeemed for fails, so a refused repair costs no second upload."
+    },
     {
       "version": "1.67",
       "date": "2026-09-03",

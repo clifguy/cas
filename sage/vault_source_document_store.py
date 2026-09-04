@@ -29,6 +29,7 @@ import hashlib
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import NoReturn
 
 import httpx
 
@@ -42,6 +43,19 @@ _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 # is Graph's explicit throttle; 503 is a transient backend signal. A single
 # retry is the thin mechanic; a full backoff curve is deferred (CAS-ADR-043).
 _RETRY_STATUSES = frozenset({429, 503})
+
+# A refusal carrying one of these statuses is worth retrying later: the store
+# did not decline the request on its merits, it declined to serve it now. 504
+# joins the two retried statuses because it says the same thing one hop out; it
+# earns no in-band retry of its own because a gateway timeout has already spent
+# the caller's patience once.
+_TRANSIENT_STATUSES = frozenset({429, 503, 504})
+
+# The statuses that mean an upload session is no longer there to write to --
+# the store expired it, or it was interrupted. Transient only at a fragment
+# ``PUT``: the same codes against an item path say the item is missing or
+# conflicted, which retrying does not fix.
+_SESSION_GONE_STATUSES = frozenset({404, 409, 410})
 
 # The fixed name of every vault's configuration declaration within its folder,
 # identical to the filesystem binding's on-disk name.
@@ -68,6 +82,45 @@ _UPLOAD_SESSION_THRESHOLD_BYTES = 10 * 1024 * 1024
 # 32 quanta, the size the documentation recommends for a stable connection.
 _UPLOAD_FRAGMENT_QUANTUM = 327_680
 _UPLOAD_FRAGMENT_BYTES = 32 * _UPLOAD_FRAGMENT_QUANTUM
+
+
+class SourceStoreRefusalError(Exception):
+    """The document store refused an operation the binding asked of it.
+
+    Raised in place of a bare ``RuntimeError`` so a refusal reaches the service
+    layer as a fact with a shape -- which operation, against what target, under
+    which status, and whether retrying is worth the caller's time -- rather
+    than as a message to be parsed. Deliberately *not* a ``RuntimeError``
+    subclass: this module sits below the API layer and may not import its error
+    hierarchy, so the service boundary has to translate, and a base that an
+    existing ``except RuntimeError`` would swallow would let that translation
+    be skipped without anything noticing.
+
+    ``str(exc)`` carries the store's own response body, which names the cause
+    far more precisely than a fixed message here could. That text is for the
+    log: it is the store's rather than SAGE's, and can carry tenant
+    coordinates, so the translation composes its own public message instead of
+    forwarding this one.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str,
+        target: str,
+        status: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.target = target
+        #: The store's HTTP status, or ``None`` where the refusal carried none
+        #: -- a reply the store answered 2xx for but did not populate, or a
+        #: session it drove outside the protocol.
+        self.status = status
+        #: Whether the same request, sent later, could succeed.
+        self.retryable = retryable
 
 
 def _file_range(source_file: Path, start: int, length: int) -> Iterator[bytes]:
@@ -177,10 +230,44 @@ class SharePointGraphClient:
         # attempt; this line is unreachable and only satisfies the type checker.
         raise RuntimeError("vault-source Graph retry loop produced no response")
 
-    def _fail(self, resp: httpx.Response, op: str, target: str) -> None:
-        raise RuntimeError(
+    def _fail(
+        self, resp: httpx.Response, op: str, target: str, *, in_session: bool = False
+    ) -> NoReturn:
+        """Refuse an operation the store answered with an error status.
+
+        The single funnel every Graph call fails through, so the classification
+        of a refusal as transient or not is made once rather than per call
+        site. ``in_session`` marks a fragment ``PUT``, where the statuses that
+        mean "this session is gone" are worth another attempt from a fresh
+        session; against an item path the same statuses are not.
+        """
+        retryable = resp.status_code in _TRANSIENT_STATUSES or (
+            in_session and resp.status_code in _SESSION_GONE_STATUSES
+        )
+        raise SourceStoreRefusalError(
             f"Microsoft Graph {op} for {target!r} on site "
-            f"{self._site_id}/{self._drive_id} failed: {resp.status_code} {resp.text}"
+            f"{self._site_id}/{self._drive_id} failed: {resp.status_code} {resp.text}",
+            operation=op,
+            target=target,
+            status=resp.status_code,
+            retryable=retryable,
+        )
+
+    def _refuse(self, detail: str, op: str, target: str) -> NoReturn:
+        """Refuse an operation the store answered without an error status.
+
+        The store returned success and then did not behave like it: a session
+        reply carrying no ``uploadUrl``, a session committed at the wrong
+        fragment. Never retryable -- repeating a request the store already
+        answered 2xx for reproduces the same reply.
+        """
+        raise SourceStoreRefusalError(
+            f"Microsoft Graph {op} for {target!r} on site "
+            f"{self._site_id}/{self._drive_id} {detail}",
+            operation=op,
+            target=target,
+            status=None,
+            retryable=False,
         )
 
     # -- operations --------------------------------------------------------
@@ -377,29 +464,42 @@ class SharePointGraphClient:
         )
         if resp.status_code >= 400:
             self._fail(resp, "write source", target)
-        upload_url = resp.json()["uploadUrl"]
+        # A session the store created but did not address is a refusal, not a
+        # crash: read the reply defensively rather than indexing it, so a 2xx
+        # that carries no ``uploadUrl`` (or no JSON at all) reaches the caller
+        # as the store's failure to open a session instead of a ``KeyError``
+        # naming a dictionary key the caller has no way to interpret.
+        try:
+            upload_url = resp.json()["uploadUrl"]
+        except (ValueError, KeyError, TypeError):
+            self._refuse(
+                "accepted the upload session request and returned no uploadUrl.",
+                "write source",
+                target,
+            )
         try:
             for start in range(0, size, _UPLOAD_FRAGMENT_BYTES):
                 end = min(start + _UPLOAD_FRAGMENT_BYTES, size)
                 resp = self._put_fragment(upload_url, source_file, start, end, size)
                 if resp.status_code >= 400:
-                    self._fail(resp, "write source", target)
+                    self._fail(resp, "write source", target, in_session=True)
                 # 202 means the store is waiting for more; 200/201 means it has
                 # committed the item. Each is an error at the other position:
                 # a commit before the last fragment means the store now holds
                 # something that is not the file.
                 completed = resp.status_code in (200, 201)
                 if completed and end < size:
-                    raise RuntimeError(
-                        f"Microsoft Graph write source for {target!r} on site "
-                        f"{self._site_id}/{self._drive_id} completed the upload session "
-                        f"early, after {end} of {size} bytes."
+                    self._refuse(
+                        f"completed the upload session early, after {end} of {size} bytes.",
+                        "write source",
+                        target,
                     )
                 if not completed and end == size:
-                    raise RuntimeError(
-                        f"Microsoft Graph write source for {target!r} on site "
-                        f"{self._site_id}/{self._drive_id} did not complete the upload "
-                        f"session after the final fragment ({size} bytes): {resp.status_code}."
+                    self._refuse(
+                        f"did not complete the upload session after the final "
+                        f"fragment ({size} bytes): {resp.status_code}.",
+                        "write source",
+                        target,
                     )
         except BaseException:
             self._cancel_upload_session(upload_url)

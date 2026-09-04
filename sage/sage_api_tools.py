@@ -2758,6 +2758,17 @@ def register_sage_tools(
         - ``missing_ingest_source`` (400): neither was supplied.
         - ``vault_source_path_refused`` (400): the document's recorded source_path
           cannot be written at the path it names.
+        - ``vault_source_store_refused`` (502): the store declined the operation
+          on its merits -- quota, a permission it withdrew, a reply that opened
+          no usable upload session. Resolve it at the store before retrying;
+          ``detail.store_status`` carries the status it declined with.
+        - ``vault_source_store_unavailable`` (503): the store declined to serve
+          the operation just now -- throttling, a transient backend signal, an
+          upload session it expired. The same call may succeed later.
+
+        Neither store refusal consumes a ``transfer_token``: the bytes arrived
+        intact and only the repair failed, so the token stays redeemable and a
+        retry costs no second upload.
 
         Args:
             vault_id: Target vault identifier.
@@ -2783,6 +2794,13 @@ def register_sage_tools(
             # ``transfer_token``, and an absolute caller path this process
             # cannot reach answers with an upload recipe rather than reading
             # its own tree.
+            #
+            # The gate reclaims a redeemed staging directory only where this
+            # block completes, which is what makes the repair safe to attempt
+            # against a store that may decline it: the refusal leaves the
+            # token redeemable, so a caller retries the repair rather than the
+            # upload -- and a repair's targets are the large binaries whose
+            # retained copies drifted, where the upload is the expensive half.
             with caller_local_delivery(
                 vault_id,
                 [DeliveryDeclaration(source=source, transfer_token=transfer_token)],
