@@ -1041,3 +1041,158 @@ async def test_vsbb_023_ingest_relative_absent_source_still_raises(
         await ingestion_service.ingest(
             IngestRequest(source="imports/nope.md", source_type=SourceType.MARKDOWN)
         )
+
+
+# --------------------------------------------------------------------------- #
+# VSBB-068: adapter projection failures name the caller's own spelling
+# --------------------------------------------------------------------------- #
+
+
+def _adapter_raises_naming_its_path(monkeypatch, ingestion_service) -> None:
+    """Make the wired markdown adapter fail the way the real PDF and PPTX
+    adapters do: a ``ValueError`` whose text embeds the path it was handed.
+
+    Not a hand-written message: the path is read off the argument at raise
+    time, so whatever the service hands the adapter is what the caller would
+    have seen. A fixed string would prove nothing about the substitution.
+    """
+    adapter = ingestion_service._adapters[SourceType.MARKDOWN]
+
+    async def failing_project(source_path, config=None):
+        raise ValueError(f"Failed to open PDF {source_path}: broken header")
+
+    monkeypatch.setattr(adapter, "project", failing_project)
+
+
+async def test_vsbb_068_projection_failure_names_the_callers_spelling(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """An adapter that fails while projecting names the file as the caller
+    named it, not the vault-internal location the bytes were projected from.
+
+    The adapters raise their own ``ValueError`` naming the path they were
+    handed, and that text reaches a caller verbatim -- as an ingest failure
+    here, and through the per-file error summary on the bulk legs. The path
+    they are handed is always server-side: the retained copy under the
+    storage root, or a staging file the port pulled the bytes back into. So
+    the disclosure already closed for the retention refusal's message is
+    open on the projection failure, by the same mechanism and against the
+    same standard.
+
+    Anti-coincidental-pass: both halves are needed. The absolute form ends in
+    the same basename, so the positive assertion alone passes against the
+    disclosing message; the negative -- the vault directory's absolute string
+    is absent -- is the discriminator. VSBB-049 pins the identical pair for
+    the retention refusal's message, and this test is deliberately its twin.
+    The adapter's own diagnostic (``broken header``) is asserted present, so
+    a fix that replaced the message with fixed prose rather than substituting
+    the path fails: only the location may change, not what went wrong.
+    """
+    external = tmp_path / "report.md"
+    external.write_text("# Report\n")
+    _adapter_raises_naming_its_path(monkeypatch, ingestion_service)
+
+    with pytest.raises(ValueError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN),
+            caller_source="report.md",
+        )
+
+    message = str(excinfo.value)
+    assert "report.md" in message, message
+    assert str(tmp_vault_dir) not in message, message
+    assert "broken header" in message, message
+
+
+async def test_vsbb_069_projection_failure_without_a_declared_source_names_the_request(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """A caller that named its own file -- no staged delivery, so no declared
+    source -- still gets its own spelling back, which for this leg is the
+    path it put in the request.
+
+    The companion control to VSBB-068: the substitution is keyed on what the
+    caller would recognize, and ``caller_source`` merely overrides it where a
+    delivery staged the bytes.
+
+    Anti-coincidental-pass: a whole-message equality against the caller's
+    exact absolute string, so nothing short of the intended substitution
+    passes -- an untranslated message names the retained copy, and a
+    translation that reduced the path to a basename or emptied it fails the
+    same equality. The second assertion names the projected subtree rather
+    than the vault directory, which unlike VSBB-068 and VSBB-049 would be
+    self-contradictory here: ``tmp_vault_dir`` *is* ``tmp_path``, so the
+    caller's own path is legitimately under it, and only the storage root
+    the bytes were projected from must be absent.
+    """
+    external = tmp_path / "named_by_caller.md"
+    external.write_text("# Named\n")
+    _adapter_raises_naming_its_path(monkeypatch, ingestion_service)
+
+    with pytest.raises(ValueError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    message = str(excinfo.value)
+    assert f"Failed to open PDF {external}: broken header" == message, message
+    assert str(tmp_vault_dir / "sources") not in message, message
+
+
+async def test_vsbb_070_recompute_projection_failure_names_the_documents_own_path(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """Re-projecting an existing document surfaces an adapter failure by the
+    record's own vault-relative ``source_path``, not by the absolute location
+    the bytes were read from.
+
+    This caller named a document, not a file, so there is no declared source
+    to fall back on -- the spelling it can relate to what it asked for is the
+    one ``get_document`` would have shown it. The path matters because its
+    projection stage runs synchronously precisely so adapter failures reach
+    the caller's response envelope rather than landing as a stamp, which is
+    what makes the disclosure caller-visible here too.
+
+    Anti-coincidental-pass: the positive assertion is a whole-message
+    equality naming the vault-relative path, which excludes both the
+    untranslated absolute form and a basename reduction (``report.md``
+    alone). The negative names the storage root, so a message that kept any
+    absolute prefix fails even if it also gained the relative one.
+    """
+    doc = await _ingest_internal(ingestion_service, tmp_vault_dir, "imports/recompute.md", "# R\n")
+    _adapter_raises_naming_its_path(monkeypatch, ingestion_service)
+
+    with pytest.raises(ValueError) as excinfo:
+        await ingestion_service.recompute_pipeline(doc.id)
+
+    message = str(excinfo.value)
+    assert message == "Failed to open PDF imports/recompute.md: broken header", message
+    assert str(tmp_vault_dir / "sources") not in message, message
+
+
+async def test_vsbb_071_recovery_reprojection_names_the_documents_own_path(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """The startup-recovery re-projection respells its adapter failures too.
+
+    The sibling of VSBB-070 on the path that has no response to carry the
+    message: this one runs under the worker, and what it raises is stamped
+    onto the document as ``pipeline_error`` for a later reader. A stamped
+    message outlives the call that produced it, so leaving the absolute
+    location in it persists the disclosure rather than merely emitting it.
+
+    Anti-coincidental-pass: same whole-message equality as VSBB-070, against
+    a distinct entry point, so it fails if the wrap was added at the
+    caller-facing site alone -- which is the shape this pair exists to
+    exclude, both sites having been reached through the same helper and only
+    one of them being obvious.
+    """
+    doc = await _ingest_internal(ingestion_service, tmp_vault_dir, "imports/recovery.md", "# R\n")
+    _adapter_raises_naming_its_path(monkeypatch, ingestion_service)
+
+    with pytest.raises(ValueError) as excinfo:
+        await ingestion_service._reproject_from_source(doc.id)
+
+    message = str(excinfo.value)
+    assert message == "Failed to open PDF imports/recovery.md: broken header", message
+    assert str(tmp_vault_dir / "sources") not in message, message

@@ -537,6 +537,8 @@ async def resolve_and_execute(
     lifecycle_service: LifecycleService,
     lock_manager: DocumentLockManager,
     content_store: ContentStore | None = None,
+    *,
+    path_to_declared: dict[str, str] | None = None,
 ) -> EdgeResult:
     """Phase 2: resolve file paths to document IDs and execute edges.
 
@@ -612,9 +614,29 @@ async def resolve_and_execute(
         content_store: The vault's content store, for syncing a superseded
             target's chunk-level ``lifecycle_status`` after the document
             write. ``None`` skips the sync (legacy wiring).
+        path_to_declared: Mapping from file_path to the path the caller
+            named, for a caller that put something else in the descriptor's
+            file_path -- a delivery that stages the bytes first substitutes
+            the staging location. Sibling of ``path_to_id``: that one carries
+            what a resolved reference becomes, this one what an unresolved
+            one is called back at the caller. Only the warnings for a file
+            that never resolved read it, since every other warning already
+            names document ids. Omitted where the two spellings coincide,
+            which is what a caller that names its own file wants.
     """
     result = EdgeResult()
     transition_table = lifecycle_service.transition_table
+
+    def _declared(ref: str) -> str:
+        """Spell a file reference as the caller does.
+
+        A refusal must name the caller's spelling and never a resolved one;
+        ``IngestionService.ingest`` is the single home for why. The staged
+        path stays the resolution key -- it is what ``path_to_id`` is keyed
+        by and what the unresolved-reference test below reads -- so the
+        substitution happens at the point of report, not before it.
+        """
+        return path_to_declared.get(ref, ref) if path_to_declared else ref
 
     async def _sync_chunk_lifecycle(
         source_id: str, target_id: str, edge_type_value: str, to_state: str
@@ -673,11 +695,11 @@ async def resolve_and_execute(
                     target_id,
                     _REFUSED,
                     warning=EdgeWarning(
-                        source=planned.source_ref,
-                        target=planned.target_ref,
+                        source=_declared(planned.source_ref),
+                        target=_declared(planned.target_ref),
                         edge_type=planned.edge_type.value,
                         reason="ingestion_failed",
-                        detail=f"Source file failed ingestion: {planned.source_ref}",
+                        detail=f"Source file failed ingestion: {_declared(planned.source_ref)}",
                     ),
                 )
             )
@@ -690,11 +712,11 @@ async def resolve_and_execute(
                     target_id,
                     _REFUSED,
                     warning=EdgeWarning(
-                        source=planned.source_ref,
-                        target=planned.target_ref,
+                        source=_declared(planned.source_ref),
+                        target=_declared(planned.target_ref),
                         edge_type=planned.edge_type.value,
                         reason="ingestion_failed",
-                        detail=f"Target file failed ingestion: {planned.target_ref}",
+                        detail=f"Target file failed ingestion: {_declared(planned.target_ref)}",
                     ),
                 )
             )

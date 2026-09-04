@@ -144,6 +144,48 @@ def _translate_vault_source_refusal(source: str) -> Iterator[None]:
         raise VaultSourcePathRefusedError(source, str(exc)) from exc
 
 
+@contextlib.contextmanager
+def _translate_projection_failure(project_path: Path, reported_source: str) -> Iterator[None]:
+    """Respell a projection failure's file reference as the caller's own.
+
+    A source adapter that cannot read its input raises a ``ValueError``
+    naming the path it was handed, and that text reaches a caller verbatim
+    -- as this call's failure, and through the per-file error summary on the
+    bulk legs. The path is always a location the service chose: the retained
+    copy under the storage root, or a staging file the vault-source port
+    pulled the bytes back into. Neither is anything the caller sent, and
+    under a hosted profile the absolute form discloses the container's
+    filesystem layout to anyone who trips a malformed file.
+
+    A substitution rather than a replacement, for the reason the refusal
+    translation above states: only the adapter knows what went wrong, so a
+    fixed message here could describe at most one of its causes. The
+    location is the only part that changes.
+
+    Scoped to the adapter call alone, not to the projection context that
+    yields the path. The port's own failures name the vault-relative source,
+    which is already the spelling a caller can relate to what it sent.
+
+    Type-preserving, so the error's status and code contract is untouched:
+    what was an untyped adapter failure stays one, respelled. A subclass
+    that cannot be rebuilt from a single message re-raises unchanged, which
+    is no worse than not translating it, and a message that does not name
+    the projected path is left alone rather than guessed at.
+    """
+    try:
+        yield
+    except ValueError as exc:
+        projected = str(project_path)
+        message = str(exc)
+        if projected not in message:
+            raise
+        try:
+            translated = type(exc)(message.replace(projected, reported_source))
+        except Exception:
+            raise exc from None
+        raise translated from exc
+
+
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
     """Recursively merge override into a copy of base.
 
@@ -869,7 +911,8 @@ class IngestionService:
         # per-call escape hatch.
         merged_config = self._merge_adapter_config(request.source_type, request.config)
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
-            projection = await adapter.project(project_path, merged_config)
+            with _translate_projection_failure(project_path, reported_source):
+                projection = await adapter.project(project_path, merged_config)
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
         # opts in to review (CAS-ADR-021). Default ingests are caller-
@@ -1813,7 +1856,11 @@ class IngestionService:
             with self._project_source(
                 vault_source_store, storage_root, doc.source_path
             ) as project_path:
-                projection = await adapter.project(project_path, merged_config)
+                # This caller named a document, not a path, so the record's own
+                # vault-relative source_path is the spelling it can relate to
+                # what it asked for.
+                with _translate_projection_failure(project_path, doc.source_path):
+                    projection = await adapter.project(project_path, merged_config)
             await self._store.update_document(
                 document_id,
                 {
@@ -1867,7 +1914,11 @@ class IngestionService:
         with self._project_source(
             vault_source_store, storage_root, doc.source_path
         ) as project_path:
-            projection = await adapter.project(project_path, merged_config)
+            # Reaches a reader as the document's own ``pipeline_error`` rather
+            # than as a response, which makes the respelling matter more, not
+            # less: a stamped message outlives the call that produced it.
+            with _translate_projection_failure(project_path, doc.source_path):
+                projection = await adapter.project(project_path, merged_config)
         now = datetime.now(timezone.utc)
         await self._store.update_document(
             document_id,
