@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
+import sage.services.maintenance as maintenance_module
 from sage.adapters.interfaces import AbstractionProvider, Chunk
 from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.models.enums import PipelineStatus, ReabstractOutcome, SourceType
@@ -912,3 +914,392 @@ async def test_reabstract_deferred_aggregator_consumes_event_stream(
     assert report.reabstracted_count == 1
     assert report.skipped_pdf_count == 1
     assert report.failed_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Bounded wait: the post-dispatch poll settles on every terminal status and
+# gives up on a document that stops advancing toward one.
+# ---------------------------------------------------------------------------
+
+
+async def test_reabstract_deferred_reports_still_skipped_when_document_lands_back_at_skipped(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """A document that settles back at abstraction_skipped is reported as
+    still_skipped, and the sweep terminates.
+
+    Reachability is narrow and worth stating, because the obvious reading is
+    wrong: reabstract enqueues a job with no projection, and the worker sends
+    that to the abstract-from-chunks path, which consults neither the vault's
+    abstraction.enabled flag nor the empty-text guard. Disabling abstraction
+    vault-wide therefore does NOT strand a reabstract -- the stub provider
+    returns and the document completes. abstraction_skipped is reachable only
+    through the worker's third branch, taken when the chunks that
+    IngestionService.reabstract verified at dispatch are gone by the time the
+    job runs, forcing a reprojection through the full pipeline stages where
+    the skip guards do live. The flaky has_chunks below is that window.
+
+    Anti-coincidental-pass: before the fix this call did not return a wrong
+    outcome, it did not return at all -- abstraction_skipped was absent from
+    the waiter's terminal set, so the poll spun forever. The timeout wrapper
+    is the assertion that the sweep now terminates; the outcome assertion is
+    what distinguishes a real settle from the waiter's own timeout sentinel.
+    """
+    minimal_config.abstraction.enabled = False
+    storage_root = Path(minimal_config.vault.storage_root)
+    storage_root.mkdir(parents=True, exist_ok=True)
+    (storage_root / "still_skipped.md").write_text("# Doc\n\nBody text to project.\n")
+
+    doc = _make_skipped_doc(_id("still_skipped"))
+    doc = doc.model_copy(update={"source_path": "still_skipped.md"})
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    # reabstract() verifies chunks synchronously before enqueue; the worker
+    # re-checks when the job runs. Answering True then False reproduces the
+    # loss of chunks inside that window without reaching into the service.
+    real_has_chunks = stub_content_store.has_chunks
+    calls = {"n": 0}
+
+    async def flaky_has_chunks(document_id: str) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return await real_has_chunks(document_id)
+        return False
+
+    stub_content_store.has_chunks = flaky_has_chunks
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion_service,
+    )
+
+    try:
+        report = await asyncio.wait_for(maintenance.reabstract_deferred(), timeout=30)
+    finally:
+        stub_content_store.has_chunks = real_has_chunks
+
+    assert calls["n"] >= 2, "the worker's has_chunks re-check never ran; window not exercised"
+    assert report.reabstracted_count == 0
+    assert report.failed_count == 1
+    assert len(report.entries) == 1
+    entry = report.entries[0]
+    assert entry.document_id == doc.id
+    assert entry.outcome == ReabstractOutcome.STILL_SKIPPED
+    assert entry.error_message is not None and "abstraction_skipped" in entry.error_message
+
+    refreshed = await graph_store.get_document(doc.id)
+    assert refreshed.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
+
+
+async def test_reabstract_deferred_times_out_on_document_stranded_non_terminal(
+    graph_store,
+    stub_content_store,
+    lock_manager,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+    monkeypatch,
+):
+    """A document that stops advancing is abandoned at the ceiling rather than
+    polled forever.
+
+    Cancelling the abstraction worker mid-job is not a contrived fault: it is
+    what lifespan teardown and registry reload both do, and IngestionService
+    stamps ABSTRACTION_IN_PROGRESS before enqueueing, so the document is left
+    at a NON-terminal status with nothing left running to advance it. That is
+    why widening the terminal set alone cannot bound this wait -- no terminal
+    status is ever reached -- and why the ceiling carries the fix.
+
+    Anti-coincidental-pass: the surviving pipeline_status assertion pins that
+    the document really is stranded off the terminal set, so the test cannot
+    pass by way of the document quietly completing or failing instead.
+    """
+    monkeypatch.setattr(maintenance_module, "_WAIT_TIMEOUT_SECONDS", 0.5)
+
+    provider = _GatedAbstractionProvider()
+    ingestion = _build_ingestion_service(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=provider,
+        config=minimal_config,
+        lifecycle_service=lifecycle_service,
+    )
+    doc = _make_skipped_doc(_id("stranded"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion,
+    )
+
+    sweep = asyncio.create_task(maintenance.reabstract_deferred())
+    # Wait until the job is genuinely inside the provider before cancelling,
+    # so the worker dies mid-generation rather than before it claimed work.
+    await asyncio.wait_for(provider.entered.wait(), timeout=10)
+    await ingestion.stop_worker()
+
+    report = await asyncio.wait_for(sweep, timeout=30)
+
+    assert report.reabstracted_count == 0
+    assert report.failed_count == 1
+    entry = report.entries[0]
+    assert entry.document_id == doc.id
+    assert entry.outcome == ReabstractOutcome.TIMEOUT
+    assert entry.error_message is not None and "terminal pipeline_status" in entry.error_message
+
+    stranded = await graph_store.get_document(doc.id)
+    assert stranded.pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS.value, (
+        "document should still be stranded non-terminal; a settled status would "
+        "mean the timeout was not what ended the wait"
+    )
+
+
+async def test_wait_for_terminal_prefers_a_settled_status_over_an_elapsed_deadline(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+    monkeypatch,
+):
+    """With the ceiling already elapsed, a settled document reports its status
+    and a non-terminal one reports the timeout sentinel.
+
+    The ordering inside the poll is deliberate -- the status is read and
+    matched before the deadline is consulted -- and the two orderings differ
+    only in this window. Deadline-first reports `timeout` for a document that
+    reached a terminal status just as the ceiling elapsed, discarding an answer
+    the store was already holding and, on the SSE stream, mislabeling a
+    completed document as abandoned.
+
+    Anti-coincidental-pass: the two arms are a pair, and neither alone is a
+    gate. The settled arm alone passes against any implementation that never
+    reaches its deadline -- which is how the earlier version of this test was
+    green against a `timeout_seconds or _WAIT_TIMEOUT_SECONDS` rival, where the
+    0.0 it passed was falsy and silently became the 2-hour default. The timeout
+    arm alone passes against a deadline-first ordering. Only both together
+    pin that the ceiling is genuinely elapsed *and* that a settled status still
+    wins. The ceiling is overridden through monkeypatch rather than an
+    argument, so there is no coalesce expression for a falsy value to slip
+    through.
+    """
+    monkeypatch.setattr(maintenance_module, "_WAIT_TIMEOUT_SECONDS", 0.0)
+
+    settled = _make_doc(
+        _id("settled_at_deadline"), pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE
+    )
+    stranded = _make_doc(
+        _id("stranded_at_deadline"), pipeline_status=PipelineStatus.ABSTRACTION_IN_PROGRESS
+    )
+    # Inserted without chunks: _wait_for_terminal reads pipeline_status from
+    # the graph store and nothing else, so seeding a projection here would be
+    # setup no assertion consumes.
+    await graph_store.insert_document(settled)
+    await graph_store.insert_document(stranded)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion_service,
+    )
+
+    settled_status = await asyncio.wait_for(maintenance._wait_for_terminal(settled.id), timeout=10)
+    stranded_status = await asyncio.wait_for(
+        maintenance._wait_for_terminal(stranded.id), timeout=10
+    )
+
+    assert settled_status == PipelineStatus.ABSTRACTION_COMPLETE.value, (
+        "an already-terminal document must be reported settled, not abandoned; "
+        "the timeout sentinel here means the deadline is consulted before the "
+        "status is matched"
+    )
+    assert stranded_status == maintenance_module._WAIT_TIMEOUT, (
+        "a non-terminal document must hit the elapsed ceiling; anything else "
+        "means the ceiling was never actually reached and the settled arm "
+        "proves nothing"
+    )
+
+
+async def test_reabstract_deferred_reports_a_document_deleted_mid_sweep_honestly(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """A document deleted between dispatch and settling is described as deleted.
+
+    The waiter's `missing` sentinel is not a pipeline_status, and the prior
+    fallthrough rendered it as "terminal pipeline_status: missing" -- naming a
+    status that does not exist. The outcome stays `llm_failure` (the document
+    gained no abstract, and no narrower member exists), so the message is the
+    only thing carrying the distinction, which is what this pins.
+
+    The delete is staged at the store boundary rather than by stubbing the
+    waiter's return, so `_wait_for_terminal` still observes the absence and
+    produces `missing` itself: the sentinel stays in the assertion's causal
+    path. `IngestionService.reabstract` reads the document once before
+    enqueueing, so answering the first read normally and every later one with
+    None places the disappearance in exactly the window the sentinel exists
+    for.
+    """
+    doc = _make_skipped_doc(_id("deleted_mid_sweep"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    real_get = graph_store.get_document
+    reads = {"n": 0}
+
+    async def vanishing_get(doc_id: str):
+        if doc_id != doc.id:
+            return await real_get(doc_id)
+        reads["n"] += 1
+        return await real_get(doc_id) if reads["n"] == 1 else None
+
+    graph_store.get_document = vanishing_get
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion_service,
+    )
+
+    try:
+        report = await asyncio.wait_for(maintenance.reabstract_deferred(), timeout=30)
+    finally:
+        graph_store.get_document = real_get
+
+    assert reads["n"] >= 2, "the waiter never re-read the document; window not exercised"
+    assert report.failed_count == 1
+    entry = report.entries[0]
+    assert entry.outcome == ReabstractOutcome.LLM_FAILURE
+    assert "deleted between dispatch and settling" in entry.error_message
+    assert "terminal pipeline_status" not in entry.error_message, (
+        "the missing sentinel must not be rendered as a pipeline_status value"
+    )
+
+
+async def test_reabstract_deferred_events_pair_status_and_outcome_for_still_skipped(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """A still-skipped document surfaces as `skipped`/`still_skipped`, carrying
+    both an error message and an elapsed time.
+
+    Three contract surfaces state this partition -- `skipped` carries
+    `skipped_pdf` or `still_skipped`, `failed` carries `llm_failure` or
+    `timeout` -- and nothing asserted it: the other service tests consume the
+    `reabstract_deferred()` aggregator, which keeps each entry's outcome and
+    discards the event status entirely. Routing `still_skipped` onto `failed`
+    left every one of them green.
+
+    The event's `error` and `elapsed_seconds` are asserted here for the same
+    reason. A still-skipped document rides the `skipped` status but did
+    dispatch and did wait, so it carries both -- which is exactly what the
+    field descriptions denied until they were reconciled, and a claim no test
+    reached is how they stayed wrong.
+    """
+    minimal_config.abstraction.enabled = False
+    storage_root = Path(minimal_config.vault.storage_root)
+    storage_root.mkdir(parents=True, exist_ok=True)
+    (storage_root / "still_skipped_evt.md").write_text("# Doc\n\nBody text to project.\n")
+
+    doc = _make_skipped_doc(_id("still_skipped_evt"))
+    doc = doc.model_copy(update={"source_path": "still_skipped_evt.md"})
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    real_has_chunks = stub_content_store.has_chunks
+    calls = {"n": 0}
+
+    async def flaky_has_chunks(document_id: str) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return await real_has_chunks(document_id)
+        return False
+
+    stub_content_store.has_chunks = flaky_has_chunks
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion_service,
+    )
+
+    events: list = []
+    try:
+
+        async def drain():
+            async for ev in maintenance.reabstract_deferred_events(include_pdf=False):
+                events.append(ev)
+
+        await asyncio.wait_for(drain(), timeout=30)
+    finally:
+        stub_content_store.has_chunks = real_has_chunks
+
+    progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]
+    terminal_events = [e for e in progress if e.status != "started"]
+    assert len(terminal_events) == 1, f"expected one terminal event, got {progress!r}"
+    ev = terminal_events[0]
+    assert (ev.status, ev.outcome) == ("skipped", ReabstractOutcome.STILL_SKIPPED)
+    assert ev.error is not None and "abstraction_skipped" in ev.error
+    assert ev.elapsed_seconds is not None
+
+
+async def test_reabstract_deferred_events_pair_status_and_outcome_for_timeout(
+    graph_store,
+    stub_content_store,
+    lock_manager,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+    monkeypatch,
+):
+    """An abandoned document surfaces as `failed`/`timeout`, the other half of
+    the partition the contract states and nothing asserted."""
+    monkeypatch.setattr(maintenance_module, "_WAIT_TIMEOUT_SECONDS", 0.5)
+
+    provider = _GatedAbstractionProvider()
+    ingestion = _build_ingestion_service(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=provider,
+        config=minimal_config,
+        lifecycle_service=lifecycle_service,
+    )
+    doc = _make_skipped_doc(_id("timeout_evt"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion,
+    )
+
+    events: list = []
+
+    async def drain():
+        async for ev in maintenance.reabstract_deferred_events(include_pdf=False):
+            events.append(ev)
+
+    task = asyncio.create_task(drain())
+    await asyncio.wait_for(provider.entered.wait(), timeout=10)
+    await ingestion.stop_worker()
+    await asyncio.wait_for(task, timeout=30)
+
+    progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]
+    terminal_events = [e for e in progress if e.status != "started"]
+    assert len(terminal_events) == 1, f"expected one terminal event, got {progress!r}"
+    ev = terminal_events[0]
+    assert (ev.status, ev.outcome) == ("failed", ReabstractOutcome.TIMEOUT)
+    assert ev.error is not None and "did not reach a terminal pipeline_status" in ev.error

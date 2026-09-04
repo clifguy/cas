@@ -46,7 +46,11 @@ import sys
 from datetime import datetime, timezone
 
 from sage.adapters.interfaces import GraphStore
-from sage.models.enums import TERMINAL_PIPELINE_STATUSES, PipelineStatus, ReabstractOutcome
+from sage.models.enums import (
+    TERMINAL_PIPELINE_STATUS_VALUES,
+    PipelineStatus,
+    ReabstractOutcome,
+)
 from sage.models.schemas import Document, ReabstractReport, ReabstractReportEntry
 
 # Selector token expanding to the whole pipeline-status vocabulary.
@@ -69,7 +73,6 @@ _PAGE_SIZE = 500
 # polling overhead negligible without adding perceptible latency.
 _POLL_INTERVAL_SECONDS = 0.05
 
-_TERMINAL_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
 # Sentinel returned when a document disappears between dispatch and settling.
 _MISSING = "missing"
@@ -167,7 +170,7 @@ async def _wait_for_terminal(
         if doc is None:
             return _MISSING
         status = str(doc.pipeline_status)
-        if status in _TERMINAL_VALUES:
+        if status in TERMINAL_PIPELINE_STATUS_VALUES:
             return status
         await asyncio.sleep(poll_interval)
 

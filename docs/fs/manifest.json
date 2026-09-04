@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.24",
+      "version": "0.25",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.67",
+  "substrate_version": "1.68",
   "revision_history": [
+    {
+      "version": "1.68",
+      "date": "2026-09-04",
+      "summary": "Bound the reabstract-deferred per-document wait and report how each document settled. sage_core_api.openapi.yaml bumped v0.24->v0.25. ReabstractOutcome gains two members, still_skipped and timeout, taking the enum to success / skipped_pdf / llm_failure / still_skipped / timeout; the widening is the one this revision records, and the v1.22 entry that introduced the enum describes the three it shipped with. The operation description's terminal set widens from (abstraction_complete or failed) to the full vocabulary, matching sage.models.enums.TERMINAL_PIPELINE_STATUSES: the omitted abstraction_skipped left the poller waiting on a document that had already settled. A wait ceiling is added because widening the terminal set cannot bound the reachable stranding -- the abstraction worker is cancelled on lifespan teardown and on registry reload, which drops queued jobs and leaves their documents at the non-terminal abstraction_in_progress -- and a document abandoned at the ceiling is reported outcome=timeout. The recovery contract is stated rather than assumed: this operation enumerates abstraction_skipped only, so an abandoned document is reached by a later call only once startup recovery or the out-of-band bulk sweep advances it. ReabstractProgressEvent's status and outcome descriptions gain the partition (skipped carries skipped_pdf or still_skipped, failed carries llm_failure or timeout), and its error and elapsed_seconds descriptions are reconciled with it -- a still_skipped document rides the skipped status but did dispatch and wait, so it carries both fields that the prior prose said a skipped event omits. The SSE status vocabulary is unchanged, so a client switching on status alone keeps working. Pydantic models in sage/models/schemas.py mirror the description changes verbatim."
+    },
     {
       "version": "1.67",
       "date": "2026-09-03",

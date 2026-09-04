@@ -2816,8 +2816,33 @@ def register_sage_tools(
         Enumerates documents in the named vault at
         ``pipeline_status=abstraction_skipped``, dispatches a reabstract per
         document, and polls until each reaches terminal status
-        (``abstraction_complete`` or ``failed``). Returns a ReabstractReport
-        with per-document outcomes and aggregate counts.
+        (``abstraction_complete``, ``abstraction_skipped``, or ``failed``).
+        Returns a ReabstractReport with per-document outcomes and aggregate
+        counts.
+
+        The per-document poll is bounded. A document can stop advancing
+        toward a terminal status altogether -- the abstraction worker is
+        cancelled on lifespan teardown and on registry reload, which drops
+        queued jobs and strands their documents mid-pipeline -- so a
+        document that has not settled within the server's wait ceiling is
+        abandoned and recorded with outcome ``timeout`` rather than polled
+        indefinitely. Abandoning is a statement about the poll, not about
+        the document: the generation may still complete. It is not,
+        however, self-healing. This operation enumerates
+        ``abstraction_skipped`` only, and an abandoned document sits at
+        ``abstraction_in_progress``, so a later call reaches it only once
+        something else advances it -- startup recovery, which runs from the
+        server's lifespan hook and so does not fire on a registry reload
+        alone, or the out-of-band bulk sweep with a selector naming that
+        status.
+
+        Outcomes beyond ``success`` and ``skipped_pdf`` all count toward
+        ``failed_count``, which counts documents that did not reach
+        ``abstraction_complete``, and are reported apart because only
+        ``llm_failure`` indicates an error the provider actually raised:
+        ``still_skipped`` is a document that settled back at
+        ``abstraction_skipped``, having declined abstraction rather than
+        failed at it, and ``timeout`` is one abandoned at the ceiling.
 
         Reuses the in-process AbstractionProvider this MCP server loaded at
         startup; does NOT spin up a second Qwen3 instance. The standalone

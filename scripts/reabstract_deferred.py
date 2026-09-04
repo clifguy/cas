@@ -81,7 +81,7 @@ from pathlib import Path
 
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.models.enums import PipelineStatus
+from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES, PipelineStatus
 from sage.models.schemas import Document
 from sage.vault_management import config_path_for_vault
 
@@ -176,18 +176,53 @@ def _build_worklist(
     ]
 
 
-async def _wait_for_terminal(graph_store, document_id: str, poll_interval: float) -> str:
-    """Poll the document until pipeline_status is terminal. Returns the
-    final pipeline_status value. Terminal = abstraction_complete or failed.
+# Ceiling on the per-document wait, matching the in-process service path. A
+# document can stop advancing toward a terminal status entirely -- the
+# abstraction worker is cancelled on teardown, which drops queued jobs and
+# leaves their documents stranded mid-pipeline -- and an unbounded poll
+# against one of those never returns, stalling the whole sweep on one
+# document with no output. Sized to clear the slowest legitimate document
+# rather than the typical one: a full-context generation runs roughly 25
+# minutes and the worker spends up to abstraction.max_attempts of them.
+WAIT_TIMEOUT_SECONDS = 7200.0
+
+# Returned when the document disappears between dispatch and settling, and
+# when the ceiling is reached. Neither is a pipeline_status value, so
+# neither can collide with a real one; both are printed in the per-document
+# line, so the operator sees which happened.
+WAIT_MISSING = "missing"
+WAIT_TIMEOUT = "timeout"
+
+
+async def _wait_for_terminal(
+    graph_store,
+    document_id: str,
+    poll_interval: float,
+    timeout_seconds: float = WAIT_TIMEOUT_SECONDS,
+) -> str:
+    """Poll the document until pipeline_status is terminal, then return it.
+
+    Terminal is read from the shared vocabulary rather than restated: this
+    sweep's own worklist is built from ``abstraction_skipped``, so a
+    restatement omitting it would leave the poller waiting on a document
+    that had already settled back where it started.
+
+    Returns :data:`WAIT_MISSING` if the document disappears mid-flight and
+    :data:`WAIT_TIMEOUT` if it has not settled within ``timeout_seconds``.
     """
-    terminal = {PipelineStatus.ABSTRACTION_COMPLETE.value, PipelineStatus.FAILED.value}
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
     while True:
         doc = await graph_store.get_document(document_id)
         if doc is None:
-            return "missing"
+            return WAIT_MISSING
         status = doc.pipeline_status
-        if status in terminal:
+        if status in TERMINAL_PIPELINE_STATUS_VALUES:
             return status
+        # Checked after the status read so a document that settled exactly
+        # at the deadline is reported as settled rather than abandoned one
+        # poll short of its own terminal status.
+        if asyncio.get_running_loop().time() >= deadline:
+            return WAIT_TIMEOUT
         await asyncio.sleep(poll_interval)
 
 
