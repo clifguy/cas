@@ -188,7 +188,7 @@ paths:
           (on success) document_id or (on error) error message.
 
         - `summary` event emitted once at the end, carrying the
-          IngestSummary dict (counts of new docs, edges created/staged/
+          batch summary (counts of new docs, edges created/staged/
           dropped, metadata pending, abstracts generated/deferred, per-file
           errors as BatchIngestFileError entries -- a typed SAGE error
           carrying its code and detail -- and edge warnings when any were

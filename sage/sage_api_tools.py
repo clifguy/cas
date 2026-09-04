@@ -526,7 +526,7 @@ def register_sage_tools(
         filename: str,
         source_type: str,
     ) -> dict:
-        """Parse a filename's basename through the vault's FilenameParser and
+        """Parse a filename's basename through the vault's filename parsing and
         return the extracted metadata. Side-effect free: no document is
         created and vault state is unchanged.
 
@@ -1217,17 +1217,19 @@ def register_sage_tools(
         Follows edges of a single type in both directions from the
         starting document, collecting all reachable nodes into an
         ordered list with positional metadata (head, tail, query
-        position, ``is_linear``). The walk itself is one recursive CTE
-        whatever the chain length, followed by a query for the
-        connecting edges. Three round-trips in total: an existence check
-        on the starting document precedes both. A chain that comes back
-        with a single entry costs two more, because the hint in
-        ``available_edge_types`` is gathered by asking for that
-        document's inbound and outbound edges separately. Designed for
-        version history retrieval on supersedes chains but works with
-        any edge type. A document with no edges of the requested type
-        returns a single-entry chain (the document itself as both head
-        and tail).
+        position, ``is_linear``). Three round-trips for a chain of two
+        or more: an existence check on the starting document, then the
+        walk itself -- one recursive CTE whatever the chain length --
+        then a query for the connecting edges. A chain whose
+        ``total_length`` is 1 skips that edge query and spends two
+        round-trips on the ``available_edge_types`` hint instead, asking
+        for the document's inbound and outbound edges separately: four
+        in all. The hint turns on the whole chain being one document,
+        not on a page of one, so a ``limit`` of 1 over a longer chain
+        does not trigger it. Designed for version history retrieval on
+        supersedes chains but works with any edge type. A document with
+        no edges of the requested type returns a single-entry chain (the
+        document itself as both head and tail).
 
         ``limit`` and ``offset`` page the returned entries without
         changing the walk: ``total_length`` stays the size of the whole
@@ -2535,18 +2537,14 @@ def register_sage_tools(
         vault config is scanned. Clean declarations get partial UNIQUE
         indexes installed; declarations whose existing data violates the
         constraint are recorded in ``tier3_uniqueness_collisions``, the index
-        is not activated (see ``Tier3UniqueIndexBlockedError`` below), and any
-        previously-clean index is preserved (no implicit DROP). Activated
-        declarations are listed in ``tier3_uniqueness_activations``.
+        is not activated, and any previously-clean index is preserved (no
+        implicit DROP). Activated declarations are listed in
+        ``tier3_uniqueness_activations``.
         **Callers must inspect both fields** on every call, no-op or not.
         Query ``get_vault_config`` for the ``unique_keys`` declarations.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
-        - ``Tier3UniqueIndexBlockedError``: a ``unique_keys`` declaration's
-          existing data violates the constraint, so its partial UNIQUE index
-          cannot be installed; the collisions are captured in
-          ``tier3_uniqueness_collisions`` and not auto-resolved.
 
         Args:
             vault_id: Target vault identifier.
@@ -2832,7 +2830,7 @@ def register_sage_tools(
         (``abstraction_complete`` or ``failed``). Returns a ReabstractReport
         with per-document outcomes and aggregate counts.
 
-        Reuses the in-process AbstractionProvider this MCP server loaded at
+        Reuses the in-process abstraction provider this MCP server loaded at
         startup; does NOT spin up a second Qwen3 instance. The standalone
         ``scripts/reabstract_deferred.py`` remains the operator fallback for
         cron-style workflows where no MCP server is running.

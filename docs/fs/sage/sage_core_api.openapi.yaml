@@ -916,13 +916,15 @@ paths:
 
         Designed for version history retrieval (supersedes chains) but
         works with any edge type that forms a linear or near-linear
-        chain. The walk itself is one recursive CTE whatever the chain
-        length, followed by a query for the connecting edges. Three
-        round-trips in total: an existence check on the starting
-        document precedes both. A chain that comes back with a single
-        entry costs two more, because the hint in
-        `available_edge_types` is gathered by asking for that document's
-        inbound and outbound edges separately.
+        chain. Three round-trips for a chain of two or more: an
+        existence check on the starting document, then the walk itself
+        -- one recursive CTE whatever the chain length -- then a query
+        for the connecting edges. A chain whose `total_length` is 1
+        skips that edge query and spends two round-trips on the
+        `available_edge_types` hint instead, asking for the document's
+        inbound and outbound edges separately: four in all. The hint
+        turns on the whole chain being one document, not on a page of
+        one, so a `limit` of 1 over a longer chain does not trigger it.
 
 
         The result is symmetric: any chain member returns the full
@@ -1789,7 +1791,7 @@ paths:
       operationId: get_filename_metadata
       summary: Parse a filename without ingesting.
       description: >-
-        Side-effect-free wrapper over the vault's `FilenameParser`.
+        Side-effect-free wrapper over the vault's filename parsing.
         Returns the metadata fields the parser would extract from the
         supplied filename under the named adapter. No document is
         created; vault state is unchanged. Intended for callers that
@@ -2424,8 +2426,8 @@ paths:
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
-        maintenance surface (CAS-ADR-029). Wraps the
-        GraphStore.initialize(migrate=True) codepath: closes the running
+        maintenance surface (CAS-ADR-029). Runs the graph store's own
+        migrating initialization: closes the running
         vault's graph_store, opens a fresh one to apply ALTER TABLE
         migrations and BACKFILL_PLAN backfills, then reloads the vault in
         the registry so subsequent operations observe the new schema.
@@ -2484,7 +2486,7 @@ paths:
         pipeline_status (abstraction_complete or failed).
 
 
-        Reuses the in-process AbstractionProvider that the running SAGE
+        Reuses the in-process abstraction provider that the running SAGE
         process loaded once at startup; does NOT initialize a second
         provider (the F-8 unified-memory cautionary tale). The
         complementary scripts/reabstract_deferred.py remains as the
@@ -3278,8 +3280,7 @@ components:
             Document.document_date shape — the projection passes the
             string through unchanged so the wire serialization stays a
             bare calendar date. Consumers that need a datetime (e.g.,
-            recency scoring) parse at the use site via
-            sage.utils.date_parsing.parse_document_date.
+            recency scoring) parse it at the use site.
 
     DocumentSummaryLight:
       type: object

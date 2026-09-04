@@ -163,7 +163,7 @@ def register_app_tools(
         lands with ``metadata_confirmed=False`` in the metadata-review queue
         regardless of caller intent (``ingest_document``'s default is the
         opposite). Because ``needs_review=True`` is hard-coded, the vault's
-        ``FilenameParser`` always runs and may populate ``date``,
+        filename parsing always runs and may populate ``date``,
         ``project``, ``codes``, ``version``, and ``doc_type`` from the
         filename when the caller omits them from ``parsed_metadata`` (the
         exact fields are vault-config-defined under
@@ -290,7 +290,7 @@ def register_app_tools(
                 ``date``, ``project``, ``codes``, ``version``, ``doc_type``).
                 When ``parsed_metadata`` is omitted, the stem of the source
                 filename is used as the title and the vault's
-                ``FilenameParser`` still runs on the remaining fields (see
+                filename parsing still runs on the remaining fields (see
                 the divergence note above; ``get_filename_metadata`` to
                 preview).
             infer_edges: When True (default), run two-phase edge inference

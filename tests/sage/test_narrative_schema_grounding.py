@@ -52,20 +52,43 @@ The same boundary makes the type-and-range half of the audit a human
 read. That a narrative calls a field three-valued where the schema
 declares a boolean is not recoverable from either surface's tokens.
 
-**Two further limits, both by construction.** A name that resolves in the
-contract-wide tier but not the operation's own is accepted, so prose that
-names a real field belonging to a *different* operation passes. Narrowing
-that would mean rejecting every legitimate cross-reference -- sibling tool
-names, shared error codes, config keys -- which is most of what the
-narratives correctly say. And a name is checked for existence, not for
-being current: a field that was removed from the contract is caught, one
-that was renamed while the old spelling survives elsewhere is not.
+**Three further limits, all by construction.** A name that resolves in
+the contract-wide tier but not the operation's own is accepted, so prose
+that names a real field belonging to a *different* operation passes.
+Narrowing that would mean rejecting every legitimate cross-reference --
+sibling tool names, shared error codes, config keys -- which is most of
+what the narratives correctly say. A name is checked for existence, not
+for being current: a field that was removed from the contract is caught,
+one that was renamed while the old spelling survives elsewhere is not.
+
+And **error codes are largely outside the relation**, in both directions
+at once, which is worth stating plainly because ``_error_codes()`` is the
+most elaborate reader in this file and its reach is much narrower than
+its size suggests. The swept surfaces exclude where codes are named:
+``_surfaces_for`` takes summary and description only, and ``_prose_body``
+truncates the docstring at its first structural header, so the whole
+``Error modes:`` block goes unread. Meanwhile ``operation_vocabulary``
+folds every snake_case token in ``responses[*].description`` *into* the
+vocabulary rather than checking it against the raised codes -- so a code
+invented in a response description validates itself, and one both
+surfaces agree on passes every gate here and in the parity module. The
+codes are reached only when a narrative body names one inline. Closing
+this means checking those two surfaces against ``_error_codes()`` instead
+of feeding from them; the measurement is roughly thirty-five names, most
+of them error-*detail* keys that need a pin category this table does not
+have yet, so it is its own pass rather than a note.
 
 **The extractor is not the sibling gate's.** The parity module's
 ``_IDENTIFIER`` requires an underscore, and ``linearity`` has none.
-Extraction here is snake_case *union* single-word backticked tokens,
-which is what reaches the defect this module exists for; the union is
-pinned by ``test_extractor_finds_bare_backticked_tokens``.
+Extraction here is three tiers -- snake_case, single-word backticked
+tokens, and interior-capital names -- which together reach the defect
+this module exists for and the shape an invented *schema* name arrives
+as. All three are pinned by
+``test_extractor_finds_bare_backticked_tokens``. The third tier was added
+after the first version of this module shipped with two: its enumeration
+of internal identifiers below was silently bounded by what a
+lowercase-only extractor could see, which is the same class of error the
+module exists to catch, one level up.
 
 **Pins are a ratchet**, on the rule the parity gate established:
 ``test_unresolved_identifier_pins_are_not_stale`` fails on a pinned name
@@ -87,8 +110,11 @@ code. What the pass found, all on ``chain`` and all now corrected:
 
 - The cost claim covered the walk's two statements and omitted the
   existence check preceding them, and the two further edge queries a
-  single-entry chain makes to fill ``available_edge_types``. Three
-  round-trips, five for a singleton, against a sentence that read as two.
+  one-document chain makes to fill ``available_edge_types``. Three
+  round-trips for a chain of two or more, four for a chain of one --
+  which spends the hint's two queries but skips the edge query, the
+  storage walk returning early when the CTE yields a single row --
+  against a sentence that read as two.
 - ``length`` was documented as the chain total on both surfaces and in
   both schemas, where the service assigns it after slicing. A caller
   paging with ``limit`` read the page size as the total, with no error --
@@ -110,14 +136,23 @@ four the schema declares; and the two terminal statuses
 set its poller waits on. Those operations, and the rest of the fifteen,
 are sound on this axis.
 
-Four operations named internal implementation identifiers in prose whose
-readers cannot reach them. Three were removed as telling the caller
-nothing: a service class path on ``bulk_ingest_document``, two internal
-function names on ``batch_ingest_documents``, and a service method on
-``recompute_deferred_vault_abstracts``. The fourth is pinned rather than
-removed -- ``create_vault`` names a Python constructor for a default
+Eight operations named internal implementation identifiers in prose
+whose readers cannot reach them. Seven were reworded as telling the
+caller nothing: a service class path and a summary dataclass on
+``bulk_ingest_document``, two internal function names on
+``batch_ingest_documents``, a service method and a provider class on
+``recompute_deferred_vault_abstracts``, a parser class on
+``get_filename_metadata``, a store class and an exception class on
+``migrate_vault``. Two names are pinned rather than removed:
+``create_vault`` names a Python constructor and its class for a default
 config, and no API route returns one, so the reference is the only
-affordance a caller has.
+affordance a caller has. A third, ``Sha256Str`` on ``verify_hashes``,
+is pinned because there the alias *is* the published shape.
+
+Instances remain on surfaces this module does not sweep -- schema
+property descriptions carry a few, and one was corrected here only
+because this work introduced it. Sweeping that surface is a separate
+pass, for the same reason the error-code tier is.
 """
 
 from __future__ import annotations
@@ -166,17 +201,31 @@ _BACKTICKED: Final[re.Pattern[str]] = re.compile(r"`{1,2}([^`]+)`{1,2}")
 # never sees it.
 _BARE_WORD: Final[re.Pattern[str]] = re.compile(r"[a-z][a-z0-9]*")
 
+# An interior-capital name: the shape a schema, model, or class takes.
+# Requires a lower-then-upper transition, so it matches ``ChainResponse``
+# and ``Sha256Str`` but not a sentence-initial ordinary word, an
+# acronym, or a heading. Without this tier the two lowercase patterns
+# above see nothing at all in "Returns a `ChainResult` object", which is
+# the invented-name defect in the one shape most likely to carry it.
+_CAMEL_CASE: Final[re.Pattern[str]] = re.compile(
+    r"\b[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b"
+)
+
 
 def named_identifiers(text: str) -> frozenset[str]:
     """Every identifier a narrative names.
 
-    The union of snake_case tokens anywhere in the text and single-word
-    lowercase tokens that are backtick-marked. Marked-up single words are
-    included because that is how a narrative points at a field whose name
-    happens to be one word; unmarked ones are not, because at that shape
-    they are ordinary prose.
+    Three tiers: snake_case tokens anywhere in the text, single-word
+    lowercase tokens that are backtick-marked, and interior-capital
+    names anywhere. Marked-up single words are included because that is
+    how a narrative points at a field whose name happens to be one word;
+    unmarked ones are not, because at that shape they are ordinary
+    prose. Interior-capital names need no markup to be unambiguous --
+    ordinary prose does not produce them -- so unlike the bare-word tier
+    they are read from the running text as well.
     """
     found = set(_SNAKE_CASE.findall(text))
+    found |= set(_CAMEL_CASE.findall(text))
     for token in _BACKTICKED.findall(text):
         candidate = token.strip()
         if _BARE_WORD.fullmatch(candidate):
@@ -306,7 +355,13 @@ def contract_vocabulary() -> frozenset[str]:
         surface = _SURFACES_BY_NAME[surface_name]
         spec = _load_spec(surface.spec_path)
         names |= set(_all_operation_ids(spec))
-        _collect(spec.get("components") or {}, "properties", names)
+        components = spec.get("components") or {}
+        # The component *names*, not only their properties: a narrative
+        # that says "returns a ChainResponse" is naming a real contract
+        # type, and the CamelCase tier reads it.
+        for group in ("schemas", "parameters", "responses"):
+            names |= set(components.get(group) or {})
+        _collect(components, "properties", names)
         _collect(spec, "enum", names)
         for tool in _surface_registry(surface).values():
             names |= set(inspect.signature(tool).parameters)
@@ -432,11 +487,12 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "create_vault"): {
         "dict": "prose: the Python type of the config argument",
-        # Kept rather than reworded. It names the only affordance a
-        # caller has for a default config -- no route returns one -- so
-        # unlike the two implementation identifiers removed alongside it,
-        # removing this would cost the reader something.
+        # Kept rather than reworded. Together these name the only
+        # affordance a caller has for a default config -- no route
+        # returns one -- so unlike the implementation identifiers removed
+        # alongside them, removing these would cost the reader something.
         "get_default_config": "Python constructor for a default config; no API route returns one",
+        "VaultRegistryService": "the class holding that constructor; kept for the same reason",
         "sage_vaults": "on-disk vault directory, not a contract node",
         "vault_config": "the per-vault YAML file, not a contract node",
     },
@@ -508,6 +564,12 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "update_vault_config"): {
         "sage_vaults": "on-disk vault directory, not a contract node",
         "vault_config": "the per-vault YAML file, not a contract node",
+    },
+    ("sage_core", "verify_hashes"): {
+        # Names the published shape of the digest a caller sends rather
+        # than an implementation detail: here the alias *is* the
+        # contract, so naming it is disclosure, not leakage.
+        "Sha256Str": "typed alias naming the published digest shape",
     },
 }
 
@@ -591,6 +653,15 @@ def test_extractor_finds_bare_backticked_tokens() -> None:
     # And the sibling gate's pattern really does miss what this one catches.
     assert not _SNAKE_CASE.findall("a `linearity` flag")
 
+    # The interior-capital tier, which the two lowercase patterns cannot
+    # reach, and which an invented schema name arrives as.
+    camel = named_identifiers("Returns a ChainResult carrying a Sha256Str digest.")
+    assert {"ChainResult", "Sha256Str"} <= camel
+    # Its controls: a sentence-initial ordinary word and an all-caps
+    # acronym are not interior-capital names.
+    assert "Returns" not in camel
+    assert "SAGE" not in named_identifiers("SAGE returns the chain.")
+
 
 def test_the_historical_linearity_divergence_is_reported() -> None:
     """The defect that motivated this module is reported, and its fix is clean.
@@ -604,12 +675,21 @@ def test_the_historical_linearity_divergence_is_reported() -> None:
     assert operation is not None
     known = operation_vocabulary(spec, operation) | contract_vocabulary()
 
-    # The narrative as it stood before the fix, verbatim in the shape
-    # that mattered: a response field named `linearity`, described as
-    # three-valued, where the schema declares the boolean `is_linear`.
-    before = (
-        "Returns positional metadata (head, tail, query position) and a "
-        "`linearity` verdict. `linearity` is one of linear, forked, or merged."
+    # The four lines the fix removed, quoted rather than paraphrased --
+    # two from the operation description, two from the tool docstring.
+    # The third is the one that matters here: it names the field
+    # unmarked and in running text, so the bare-word tier does not see
+    # it and this fixture would still pass with that occurrence missed.
+    # The gate catches the historical case on the other three; quoting
+    # all four is what makes that a measurement rather than an
+    # assumption.
+    before = "\n".join(
+        (
+            "position) and a `linearity` flag.",
+            "`linearity` reports whether the chain is strictly linear,",
+            "positional metadata (head, tail, query position, linearity).",
+            "``linearity`` in the response reports whether the chain is",
+        )
     )
     assert "linearity" in named_identifiers(before) - known, (
         "the sweep does not report the divergence it was built for"

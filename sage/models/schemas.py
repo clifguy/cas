@@ -511,8 +511,7 @@ class DocumentSummary(BaseModel):
             "not a UTC-anchored instant). Matches the on-disk Document.document_date "
             "shape — the projection passes the string through unchanged so the wire "
             "serialization stays a bare calendar date. Consumers that need a "
-            "datetime (e.g., recency scoring) parse at the use site via "
-            "sage.utils.date_parsing.parse_document_date."
+            "datetime (e.g., recency scoring) parse it at the use site."
         ),
     )
     source_modified_at: datetime | None = Field(
