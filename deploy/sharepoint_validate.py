@@ -714,14 +714,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--expect-rewritten",
         choices=_EXPECT_CHOICES,
-        default=_EXPECT_ANY,
+        default=os.environ.get("SP_VALIDATE_EXPECT_REWRITTEN", _EXPECT_ANY),
         help=(
             "whether the vault-source store is expected to rewrite Office packages at "
             "rest: 'yes' for a tenant document store, 'no' for a store that retains "
-            "verbatim, 'any' (default) to accept either. Several provenance assertions "
-            "only bite where a rewrite occurs, so a caller that knows its binding should "
-            "say so -- otherwise a store that stopped rewriting takes that coverage with "
-            "it and every verdict stays green"
+            "verbatim, 'any' (default: $SP_VALIDATE_EXPECT_REWRITTEN or 'any') to accept "
+            "either. Several provenance assertions only bite where a rewrite occurs, so a "
+            "caller that knows its binding should say so -- otherwise a store that stopped "
+            "rewriting takes that coverage with it and every verdict stays green"
         ),
     )
     parser.add_argument(
@@ -734,6 +734,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"phase={args.phase} checks={','.join(PHASE_CHECKS[args.phase])}")
         return 0
+
+    # argparse validates `choices` only against a value it parsed off the command
+    # line, never against a default -- so an unrecognized $SP_VALIDATE_EXPECT_REWRITTEN
+    # would arrive here unchallenged and, matching no branch, behave exactly like
+    # "any". That is this option's own failure mode one level down: an operator who
+    # set the expectation and mistyped it would get the unenforced run they were
+    # trying to avoid, and a green one.
+    if args.expect_rewritten not in _EXPECT_CHOICES:
+        parser.error(
+            f"invalid $SP_VALIDATE_EXPECT_REWRITTEN {args.expect_rewritten!r}; "
+            f"expected one of {', '.join(_EXPECT_CHOICES)}"
+        )
 
     if not args.base_url:
         parser.error("--base-url (or $SAGE_BASE_URL) is required unless --dry-run")

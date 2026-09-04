@@ -91,6 +91,7 @@ def _run_driver(
     vault_id: str = "test",
     extra: list[str] | None = None,
     timeout: str = "20",
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the driver under a fresh interpreter with an isolated environment.
 
@@ -118,7 +119,7 @@ def _run_driver(
         args,
         capture_output=True,
         text=True,
-        env={"PATH": os.environ.get("PATH", "")},
+        env={"PATH": os.environ.get("PATH", ""), **(env or {})},
         timeout=int(float(timeout)) + 30,
     )
 
@@ -335,6 +336,19 @@ _MARKDOWN_DOC_ID = "a1b2c3d4_validation_probe_markdown"
 _DOCX_DOC_ID = "e5f6a7b8_validation_probe_docx"
 _OLDER_DOC_ID = "0f1e2d3c_residue_of_an_earlier_run"
 
+#: Probe kind -> the id the stub mints for it. A mapping rather than a
+#: conditional: an unknown kind must raise here, not resolve to whichever probe
+#: sat on the else branch. A third kind added to the driver and to a
+#: parametrize, while this mapping is forgotten, would otherwise test one probe
+#: twice under a case id claiming otherwise.
+_PROBE_DOC_IDS = {"markdown": _MARKDOWN_DOC_ID, "docx": _DOCX_DOC_ID}
+
+#: How many probes a phase ingests. The driver derives the same quantity from
+#: `len(ctx.probes)` and asserts the audit walked at least that many, so a
+#: literal here that fell out of step would red the *positive control* rather
+#: than anything under test -- the most expensive kind of red to diagnose.
+_PROBE_COUNT = len(_PROBE_DOC_IDS)
+
 _GOOD = "good"
 _HASH_MISMATCH = "hash_mismatch"
 #: An audit mode is "unhealthy:<kind>:<status>" -- the probe to report and the
@@ -374,7 +388,7 @@ def rest_stub(mode: str) -> Iterator[str]:
     docs: dict[str, tuple[bytes, bytes]] = {}
 
     def _doc_id(filename: str) -> str:
-        return _DOCX_DOC_ID if filename.endswith(".docx") else _MARKDOWN_DOC_ID
+        return _PROBE_DOC_IDS["docx" if filename.endswith(".docx") else "markdown"]
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_a: object) -> None:
@@ -470,12 +484,12 @@ def rest_stub(mode: str) -> Iterator[str]:
                     "observed_content_hash": None,
                 }
 
-            checked = max(len(docs), 2)
+            checked = max(len(docs), _PROBE_COUNT)
             if mode == _UNDERCOUNTED_AUDIT:
                 # A walk that reached fewer records than there are probes, with
                 # nothing in `entries` -- the shape a partial reload or a lagging
                 # store listing produces.
-                return _audit_report([], 1)
+                return _audit_report([], _PROBE_COUNT - 1)
             if mode == _UNRELATED_UNHEALTHY:
                 # A document this run neither created nor can repair -- the
                 # validation vault's accumulated residue. Both probes are healthy.
@@ -485,8 +499,7 @@ def rest_stub(mode: str) -> Iterator[str]:
                 # under, so the matrix is a parameter rather than a fixed
                 # assignment of one status per probe.
                 kind, _, status = mode[len(_UNHEALTHY_PREFIX) :].partition(":")
-                doc_id = _DOCX_DOC_ID if kind == "docx" else _MARKDOWN_DOC_ID
-                return _audit_report([entry(doc_id, status)], checked)
+                return _audit_report([entry(_PROBE_DOC_IDS[kind], status)], checked)
             return _audit_report([], checked)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -543,16 +556,19 @@ def rest_stub(mode: str) -> Iterator[str]:
 
 @pytest.mark.skipif(not _REAL_SERVER, reason="needs the real response model to validate against")
 @pytest.mark.parametrize(
-    "mode",
+    ("mode", "expected_checked"),
     [
-        _GOOD,
-        _MISSING_SOURCE,
-        _unhealthy("markdown", "symlinked"),
-        _unhealthy("docx", "out_of_root"),
-        _UNRELATED_UNHEALTHY,
+        (_GOOD, _PROBE_COUNT),
+        (_MISSING_SOURCE, _PROBE_COUNT),
+        (_unhealthy("markdown", "symlinked"), _PROBE_COUNT),
+        (_unhealthy("docx", "out_of_root"), _PROBE_COUNT),
+        (_UNRELATED_UNHEALTHY, _PROBE_COUNT + 1),
+        (_UNDERCOUNTED_AUDIT, _PROBE_COUNT - 1),
     ],
 )
-def test_stub_audit_report_matches_the_real_response_model(mode: str, tmp_path: Path) -> None:
+def test_stub_audit_report_matches_the_real_response_model(
+    mode: str, expected_checked: int, tmp_path: Path
+) -> None:
     """Every audit payload the stub can emit validates as a real
     ``SourceFileIntegrityReport`` and carries the whole summary partition.
 
@@ -562,6 +578,14 @@ def test_stub_audit_report_matches_the_real_response_model(mode: str, tmp_path: 
     the service grew to five. The expected key set is derived from the service's
     own ``integrity_status`` literal rather than copied, so a status added there
     fails this test until the stub carries it too.
+
+    The document count is carried per mode rather than as one lower bound. A
+    single ``>= _PROBE_COUNT`` reads fine and excludes the undercounted mode by
+    construction, which would leave the one payload whose whole purpose is to
+    report *too few* documents as the only audit shape never checked against the
+    real model — and it is the fixture the undercounted-walk gate depends on, so
+    that gate would be resting on a payload the service might no longer be able
+    to produce.
     """
     from typing import get_args
 
@@ -580,8 +604,9 @@ def test_stub_audit_report_matches_the_real_response_model(mode: str, tmp_path: 
         raw = _audit_report_for(base)
 
     report = SourceFileIntegrityReport.model_validate(raw)
-    assert report.total_documents_checked >= 2, (
-        "the report must cover the two probes the phase just ingested, not an empty vault"
+    assert report.total_documents_checked == expected_checked, (
+        f"{mode}: expected the stub to report {expected_checked} documents checked, "
+        f"got {report.total_documents_checked}"
     )
     assert set(report.summary) == expected_keys, (
         f"stub summary {sorted(report.summary)} does not partition the report the way the "
@@ -833,3 +858,98 @@ def test_trap_audit_that_walked_fewer_records_than_probes_fails(tmp_path: Path) 
     assert proc.returncode != 0, "an audit that walked fewer records than probes must fail"
     assert "check=source_audit status=FAIL" in proc.stdout, proc.stdout
     assert "audit_checked_too_few" in proc.stdout, proc.stdout
+
+
+def test_expect_rewritten_reads_its_environment_fallback(tmp_path: Path) -> None:
+    """``$SP_VALIDATE_EXPECT_REWRITTEN`` supplies the expectation when no flag is given.
+
+    Every other driver option reads an environment fallback, which is where the
+    operator runbook puts its settings; this one did not, so the runbook's export
+    block structurally could not carry it and the manual path kept running at the
+    permissive default. Exercised against a store that does *not* rewrite while the
+    environment expects one, so a fallback that were silently ignored would leave
+    the run green.
+    """
+    with rest_stub(_NO_REWRITE) as base:
+        proc = _run_driver(
+            base,
+            "pre-restart",
+            tmp_path / "state.json",
+            env={"SP_VALIDATE_EXPECT_REWRITTEN": "yes"},
+        )
+    assert proc.returncode != 0, "the environment expectation must be enforced like the flag"
+    assert "check=provenance status=FAIL" in proc.stdout, proc.stdout
+    assert "expected=yes" in proc.stdout, proc.stdout
+
+
+def test_explicit_flag_overrides_the_environment_fallback(tmp_path: Path) -> None:
+    """An explicit ``--expect-rewritten`` wins over the environment.
+
+    Ordinary argparse precedence, asserted because the runbook now sets both — the
+    export in the prerequisites block and the flag on each command — and an
+    inversion would make the per-command flag decorative.
+
+    On the environment setup here: deleting it leaves this test passing, because
+    the flag alone produces the same verdict. That is unavoidable for a precedence
+    test — when one input always wins, the losing input is unobservable in the
+    result by construction, so no assertion can be made to read it. The setup is
+    load-bearing against the rival rather than against its own removal: swapping
+    the precedence so the environment wins reds this test, and that is the
+    implementation it exists to exclude.
+    """
+    with rest_stub(_NO_REWRITE) as base:
+        proc = _run_driver(
+            base,
+            "pre-restart",
+            tmp_path / "state.json",
+            extra=["--expect-rewritten", "no"],
+            env={"SP_VALIDATE_EXPECT_REWRITTEN": "yes"},
+        )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert "check=provenance status=PASS rewritten=no expected=no" in proc.stdout, proc.stdout
+
+
+def test_malformed_environment_expectation_is_rejected(tmp_path: Path) -> None:
+    """An unrecognised ``$SP_VALIDATE_EXPECT_REWRITTEN`` fails the run, loudly.
+
+    ``argparse`` checks ``choices`` only against a value it parsed off the command
+    line, never against a default — so a mistyped environment value would arrive
+    unchallenged and, matching no branch, behave exactly like ``any``. That is this
+    option's own failure mode one level down: the operator who bothered to set an
+    expectation, and fat-fingered it, would get precisely the unenforced green run
+    they were trying to rule out.
+    """
+    with rest_stub(_GOOD) as base:
+        proc = _run_driver(
+            base,
+            "pre-restart",
+            tmp_path / "state.json",
+            env={"SP_VALIDATE_EXPECT_REWRITTEN": "true"},
+        )
+    assert proc.returncode != 0, "a malformed expectation must not degrade to the default"
+    assert "SP_VALIDATE_EXPECT_REWRITTEN" in proc.stderr, proc.stderr
+    assert "check=" not in proc.stdout, (
+        f"the run must be refused at argument parsing, before any check: {proc.stdout!r}"
+    )
+
+
+def test_stub_refuses_an_unknown_probe_kind_rather_than_substituting(tmp_path: Path) -> None:
+    """An audit mode naming a probe kind the stub does not know fails the request
+    outright, instead of reporting some other probe under that status.
+
+    The mapping replaced a conditional whose else branch was a catch-all, and the
+    catch-all's cost is misattribution rather than a miss: a third probe kind
+    added to the driver and to a parametrize, with this mapping forgotten, would
+    have quietly reported the markdown probe twice while the case id claimed the
+    new kind was under test. Raising turns that into a loud failure at the stub.
+
+    Asserted through the driver's own verdict, since that is where a substitution
+    would have surfaced as a plausible-looking result.
+    """
+    with rest_stub(_unhealthy("no_such_kind", "missing")) as base:
+        proc = _run_driver(base, "pre-restart", tmp_path / "state.json")
+    assert proc.returncode != 0, "an unknown probe kind must not yield a usable report"
+    assert "check=source_audit status=FAIL" in proc.stdout, proc.stdout
+    assert "markdown=missing" not in proc.stdout, (
+        f"the stub substituted the markdown probe for an unknown kind: {proc.stdout!r}"
+    )

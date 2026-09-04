@@ -219,15 +219,25 @@ export AUTH_TOKEN="$(az account get-access-token \
 export SAGE_BASE_URL="https://${SAGE_FQDN}"           # the deployed SAGE host
 export SP_VALIDATE_VAULT_ID=test                      # the seeded validation vault
 export SP_VALIDATE_STATE_FILE="$(mktemp -t spvalidate)"
+export SP_VALIDATE_EXPECT_REWRITTEN=yes               # this tenant's store rewrites at rest
 ```
 
 The `test` vault must already be present (`list_vaults` includes `test`,
 from step 5).
 
+`SP_VALIDATE_EXPECT_REWRITTEN` is not optional decoration here. Several of the
+provenance check's assertions only bite where the store actually rewrote, so a
+run left at the `any` default would report `rewritten=no` and PASS against a
+tenant whose store had stopped rewriting — the exact unenforced-but-green state
+the expectation exists to prevent. Set it to `yes` for any tenant-backed vault;
+`no` is right only for a filesystem-backed one. The commands below also pass
+`--expect-rewritten yes` explicitly, so each block stands alone if copied out of
+context.
+
 ### 6.2 Pre-restart — ingest, readback, provenance, audit
 
 ```bash
-python3 deploy/sharepoint_validate.py --phase pre-restart
+python3 deploy/sharepoint_validate.py --phase pre-restart --expect-rewritten yes
 ```
 
 Expected: a final `result=pass`, with `check=ingest`, `check=readback`,
@@ -251,11 +261,13 @@ different from provenance), and that re-uploading the identical bytes is refused
 as `duplicate_content` naming that same document.
 
 Three of those only bite where the store actually rewrote, so the caller states
-what it expects: `--expect-rewritten yes` against the tenant store (what the CI
-harness passes), `no` for a filesystem-backed vault, `any` — the default — to
-accept either. Without an expectation a store that quietly stopped rewriting
-would keep every verdict green while most of this check's value went away, so
-run it with the expectation set whenever you know the binding.
+what it expects: `--expect-rewritten yes` against the tenant store, `no` for a
+filesystem-backed vault, `any` — the default — to accept either. Without an
+expectation a store that quietly stopped rewriting would keep every verdict green
+while most of this check's value went away. Both the CI harness and the commands
+in this section pass `yes`, and §6.1 exports `SP_VALIDATE_EXPECT_REWRITTEN` so an
+ad-hoc invocation inherits it; the `any` default exists for a caller that genuinely
+does not know its binding, not as a setting to leave alone.
 
 **A digest divergence that is only timing.** `stored_content_hash` is captured
 during the ingest, moments after the upload, and the audit compares a later
@@ -326,7 +338,7 @@ than a leftover local file.
 ### 6.4 Post-restart — rediscover, readback, provenance, audit
 
 ```bash
-python3 deploy/sharepoint_validate.py --phase post-restart
+python3 deploy/sharepoint_validate.py --phase post-restart --expect-rewritten yes
 ```
 
 Expected: a final `result=pass`, with `check=rediscover`, `check=readback`,
