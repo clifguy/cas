@@ -5,7 +5,7 @@
 # driver (deploy/sharepoint_validate.py) cannot run from a workstation. This
 # manually-dispatched workflow gives it a home — it mints an edge token as the
 # deploy identity, runs the pre-restart phase against the deployed disposable
-# `test` vault, rolls the SAGE revision, waits for liveness, then runs the
+# `cloud_validation` vault, rolls the SAGE revision, waits for liveness, then runs the
 # post-restart phase, proving the vault sources survive a restart with no local
 # copy. The operator runbook is docs/process/sharepoint-vault-source.md §6.
 #
@@ -44,7 +44,7 @@ jobs:
       RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
       # The driver reads these from the environment.
       SAGE_BASE_URL: https://sage.${{ vars.BASE_DOMAIN }}
-      SP_VALIDATE_VAULT_ID: test
+      SP_VALIDATE_VAULT_ID: cloud_validation
       # Shared across the two phase steps so post-restart reads the pre-restart probe.
       # github.workspace (not runner.temp, which is step-only) is valid in job env.
       SP_VALIDATE_STATE_FILE: ${{ github.workspace }}/spvalidate-state.json

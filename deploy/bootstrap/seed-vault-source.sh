@@ -50,11 +50,12 @@ az rest --method POST \
   --body "{\"roles\":[\"write\"],\"grantedToIdentities\":[{\"application\":{\"id\":\"${SAGE_MI_CLIENT_ID}\"}}]}" \
   || true
 
-# 4. Seed the test vault's configuration (create-or-replace upload). The
+# 4. Seed the validation vault's configuration (create-or-replace upload). The
 # committed seed is deploy/test-vault/vault_config.yaml; the :/content PUT
-# creates the intermediate folders implicitly.
+# creates the intermediate folders implicitly. The folder name below must match
+# the seed's vault.id — discovery pairs them — and a test holds the two together.
 az rest --method PUT \
-  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/${VAULT_SOURCE_ROOT_PATH}/test/vault_config.yaml:/content" \
+  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/${VAULT_SOURCE_ROOT_PATH}/cloud_validation/vault_config.yaml:/content" \
   --headers "Content-Type=text/yaml" \
   --body "@${repo_root}/deploy/test-vault/vault_config.yaml"
 

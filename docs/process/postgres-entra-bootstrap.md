@@ -88,9 +88,9 @@ to end:
 ```bash
 az containerapp logs show -g "$RG" -n "ca-sage-${ENVIRONMENT_NAME}" --tail 200 \
   | grep -i "vaults loaded"
-# expect: vaults loaded (1): test     — and no OperationalError
+# expect: vaults loaded (1): cloud_validation     — and no OperationalError
 ```
 
-`list_vaults` then includes `test`, and `get_vault_config` returns its
+`list_vaults` then includes `cloud_validation`, and `get_vault_config` returns its
 configuration read back from the document store (CAS-ADR-043). This is the live proof
 the cloud profile authenticates to Postgres and serves the seeded vault.

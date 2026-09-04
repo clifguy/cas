@@ -702,8 +702,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--vault-id",
-        default=os.environ.get("SP_VALIDATE_VAULT_ID", "test"),
-        help="vault to validate against (default: $SP_VALIDATE_VAULT_ID or 'test')",
+        default=os.environ.get("SP_VALIDATE_VAULT_ID", "cloud_validation"),
+        help="vault to validate against (default: $SP_VALIDATE_VAULT_ID or 'cloud_validation')",
     )
     parser.add_argument(
         "--state-file",

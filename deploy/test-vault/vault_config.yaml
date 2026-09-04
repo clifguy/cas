@@ -1,13 +1,19 @@
-# Cloud test-vault seed — the bootstrap vault_config.yaml for the cloud profile.
+# Cloud validation-vault seed — the bootstrap vault_config.yaml for the cloud profile.
 #
 # Under the cloud profile a vault's configuration declaration lives in a
 # SharePoint document library, not on the container filesystem (CAS-ADR-043).
 # The first cloud vault cannot be created through SAGE's maintenance surface
 # (that needs a running SAGE already pointed at a configured library), so this
 # file is seeded directly into the library at
-# <vaultSourceRootPath>/test/vault_config.yaml by an authorized writer; a
-# deployed SAGE discovers and loads it at startup. See
+# <vaultSourceRootPath>/cloud_validation/vault_config.yaml by an authorized
+# writer; a deployed SAGE discovers and loads it at startup. See
 # docs/process/sharepoint-vault-source.md.
+#
+# The id is distinct from the `test` vault on a workstation or a CI runner:
+# `test` denotes an ephemeral, disposable instance, and destructive tooling
+# carves it out of the confirmations it otherwise requires. This vault is
+# persistent and lives in a shared tenant, so it deliberately sits outside that
+# carve-out and its teardown requires a typed confirmation like any other.
 #
 # This is a disposable validation vault. storage_root and brain_root are
 # required by the vault-config schema but inert under the cloud bindings (source
@@ -16,11 +22,11 @@
 # them succeeds. Abstraction is enabled to exercise the
 # hosted-model roundtrip end to end.
 vault:
-  id: test
+  id: cloud_validation
   name: Cloud validation vault
   owner: cas
-  storage_root: /var/lib/sage/vaults/test/sources
-  brain_root: /var/lib/sage/vaults/test/brain
+  storage_root: /var/lib/sage/vaults/cloud_validation/sources
+  brain_root: /var/lib/sage/vaults/cloud_validation/brain
   visibility: personal
 document_types:
   doc_types:

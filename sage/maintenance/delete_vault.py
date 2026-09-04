@@ -33,7 +33,11 @@ Safeguards:
   the receipt -- while the in-root work (schema drop, config and enclosing-directory
   removal) still runs. An out-of-root tree is never deleted.
 - ``--apply`` requires typed confirmation of the vault_id at the prompt. The only
-  auto-confirm carve-out is the literal disposable ``test`` vault.
+  auto-confirm carve-out is the literal ``test`` vault -- the ephemeral, disposable
+  instance a workstation or a CI runner provisions and discards. It is deliberately
+  narrow: a persistent vault in a shared tenant does not qualify however disposable
+  its contents, because the confirmation is what stops a mistyped id from reaching
+  one, and this is the same core the non-interactive callers delegate into.
 - Snapshot-before-destroy is ON by default (``--no-snapshot`` opts out): a
   ``pg_dump`` of the schema plus a source-file manifest to a timestamped archive
   **outside** the vault root. A failed snapshot halts before any destruction.
@@ -241,8 +245,12 @@ async def delete_vault(
             skipped[name] = str(exc)
             print(f"skip {name}: {exc}", file=sys.stderr)
 
-    # Typed vault-id confirmation. The only auto-confirm is the disposable
-    # ``test`` vault.
+    # Typed vault-id confirmation. The only auto-confirm is the ephemeral,
+    # disposable ``test`` vault a workstation or CI runner provisions and
+    # discards. Exact match, never a prefix or substring: the non-interactive
+    # callers delegate into this same core with the confirmation pre-supplied,
+    # so a carve-out that widened here would silently disarm the confirmation
+    # for every vault whose id merely resembles it.
     if vault_id != "test":
         typed = input_fn(f"To confirm PERMANENT deletion, retype the vault_id ({vault_id}): ")
         if typed != vault_id:

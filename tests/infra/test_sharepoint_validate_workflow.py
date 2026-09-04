@@ -6,7 +6,8 @@ SAGE edge is machine-to-machine (CAS-ADR-043): only the OIDC-federated deploy
 identity holds the ``Sage.Access`` grant, so the validation driver cannot run from a
 workstation. This manually-dispatched workflow gives it a home — it mints an edge
 token as the deploy identity, runs the driver's pre-restart phase against the
-deployed disposable ``test`` vault, rolls the SAGE revision, waits for liveness, then
+deployed disposable ``cloud_validation`` vault, rolls the SAGE revision, waits for
+liveness, then
 runs the post-restart phase, proving the vault sources survive a restart with no
 local copy.
 
@@ -216,12 +217,12 @@ def test_phases_run_around_restart_with_liveness_in_order() -> None:
     )
 
 
-def test_targets_disposable_test_vault() -> None:
-    """The harness targets the disposable ``test`` vault, never the canonical ``cas``.
+def test_targets_disposable_validation_vault() -> None:
+    """The harness targets ``cloud_validation``, never the canonical ``cas``.
 
     The driver ingests a probe and runs the source-file audit — it mutates the vault it
-    runs against. It must therefore target the throwaway ``test`` vault, never the
-    canonical corpus.
+    runs against. It must therefore target the throwaway cloud validation vault, never
+    the canonical corpus.
     """
     job = _validation_job(_load())
     env = job.get("env") or {}
@@ -229,8 +230,9 @@ def test_targets_disposable_test_vault() -> None:
     if not vault:
         match = re.search(r"--vault-id\s+(\S+)", _uncommented_run_text(job))
         vault = match.group(1) if match else ""
-    assert vault == "test", (
-        f"the harness must target the disposable `test` vault (it mutates), not {vault!r}"
+    assert vault == "cloud_validation", (
+        "the harness must target the disposable `cloud_validation` vault (it mutates), "
+        f"not {vault!r}"
     )
 
 
