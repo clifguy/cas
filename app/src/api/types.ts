@@ -630,7 +630,22 @@ export interface BulkLinkResponse {
 
 // Per-document outcome classification in a ReabstractReport.
 // Mirrors sage/models/enums.py::ReabstractOutcome.
-export type ReabstractOutcome = 'success' | 'skipped_pdf' | 'llm_failure';
+export type ReabstractOutcome =
+  | 'success'
+  | 'skipped_pdf'
+  | 'llm_failure'
+  | 'still_skipped'
+  | 'timeout';
+
+// The three non-success outcomes that count toward failed_count. Anything
+// rendered as a failure keys on this rather than on 'llm_failure' alone:
+// failed_count counts all three, so filtering to one of them shows a
+// non-zero count above an empty list.
+export const REABSTRACT_FAILURE_OUTCOMES: readonly ReabstractOutcome[] = [
+  'llm_failure',
+  'still_skipped',
+  'timeout',
+];
 
 // Request body for POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
 export interface ReabstractRequest {
@@ -643,7 +658,8 @@ export interface ReabstractRequest {
 export interface ReabstractReportEntry {
   document_id: string;
   outcome: ReabstractOutcome;
-  // Failure description when outcome === 'llm_failure'; null otherwise.
+  // Failure description when outcome is one of REABSTRACT_FAILURE_OUTCOMES;
+  // null otherwise.
   error_message: string | null;
   // Wall-clock seconds from dispatch to terminal status; null for skipped_pdf.
   elapsed_seconds: number | null;

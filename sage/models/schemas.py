@@ -3845,11 +3845,17 @@ class ReabstractReportEntry(BaseModel):
         description="Document id whose reabstract outcome this entry records."
     )
     outcome: ReabstractOutcome = Field(
-        description="Per-document classification (success / skipped_pdf / llm_failure)."
+        description=(
+            "Per-document classification (success / skipped_pdf / "
+            "llm_failure / still_skipped / timeout)."
+        )
     )
     error_message: str | None = Field(
         default=None,
-        description="Failure description when outcome is 'llm_failure'; null otherwise.",
+        description=(
+            "Failure description when outcome is 'llm_failure', "
+            "'still_skipped', or 'timeout'; null otherwise."
+        ),
     )
     elapsed_seconds: float | None = Field(
         default=None,
@@ -4270,10 +4276,16 @@ class ReabstractProgressEvent(BaseModel):
         description=(
             "Per-document status. `started`: dispatch begun, no outcome "
             "yet. `completed`: reabstract reached `abstraction_complete`. "
-            "`failed`: dispatch raised or terminal pipeline_status was "
-            "`failed` (outcome=`llm_failure`). `skipped`: PDF excluded "
+            "`failed`: dispatch raised, terminal pipeline_status was "
+            "`failed` (outcome=`llm_failure`), or the wait ceiling "
+            "elapsed with the document still non-terminal "
+            "(outcome=`timeout`). `skipped`: PDF excluded "
             "from the worklist by `include_pdf=False` "
-            "(outcome=`skipped_pdf`)."
+            "(outcome=`skipped_pdf`), or the document settled back at "
+            "`abstraction_skipped` (outcome=`still_skipped`). Outcomes "
+            "widened without widening this vocabulary, so a client "
+            "switching on `status` alone keeps working and one needing "
+            "the distinction reads `outcome`."
         )
     )
     outcome: ReabstractOutcome | None = Field(
@@ -4281,7 +4293,9 @@ class ReabstractProgressEvent(BaseModel):
         description=(
             "Per-document terminal classification. Set on `completed`, "
             "`failed`, and `skipped` events; omitted on the leading "
-            "`started` event."
+            "`started` event. Discriminates within a status: `failed` "
+            "carries `llm_failure` or `timeout`, and `skipped` carries "
+            "`skipped_pdf` or `still_skipped`."
         ),
     )
     error: str | None = Field(

@@ -15,6 +15,7 @@ import type {
   ReabstractProgressEvent,
   ReabstractSummaryEvent,
 } from '../api/types';
+import { REABSTRACT_FAILURE_OUTCOMES } from '../api/types';
 import { formatBytes } from '../utils/format';
 import {
   startReabstract,
@@ -293,7 +294,7 @@ function ReabstractOperation({ vaultId }: { vaultId: string }) {
                 style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#c62828' }}
               >
                 {summary.entries
-                  .filter((e) => e.outcome === 'llm_failure')
+                  .filter((e) => REABSTRACT_FAILURE_OUTCOMES.includes(e.outcome))
                   .slice(0, 3)
                   .map((e) => (
                     <li key={e.document_id}>
