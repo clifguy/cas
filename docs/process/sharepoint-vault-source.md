@@ -193,8 +193,10 @@ validation: per the CAS-ADR-043 weakest-binding rule it adds no capability;
 `deploy/sharepoint_validate.py` drives only endpoints that already exist.
 
 Run it against the deployed `test` vault — never a canonical vault. The driver is
-standard-library only and phase-aware; it writes the probe document's identity to
-a state file between the two phases, so the restart happens in between.
+standard-library only and phase-aware; it writes both probe documents' identity
+and bytes to a state file between the two phases, so the restart happens in
+between and the post-restart phase can re-deliver the same content to a container
+that has forgotten everything but what the library holds.
 
 **Authorized execution.** The authenticated edge is machine-to-machine
 (CAS-ADR-043): only the OIDC-federated deploy identity can mint the token §6.1
@@ -222,20 +224,44 @@ export SP_VALIDATE_STATE_FILE="$(mktemp -t spvalidate)"
 The `test` vault must already be present (`list_vaults` includes `test`,
 from step 5).
 
-### 6.2 Pre-restart — ingest, readback, audit
+### 6.2 Pre-restart — ingest, readback, provenance, audit
 
 ```bash
 python3 deploy/sharepoint_validate.py --phase pre-restart
 ```
 
-Expected: a final `result=pass`, with `check=ingest`, `check=readback`, and
-`check=source_audit` all `status=PASS`. `ingest` uploads a probe document (its
-bytes are retained to the library as a side effect); `readback` re-reads them
-through the port and confirms they are byte-identical; `source_audit` runs
-`verify_vault_source_files` (`POST .../admin/verify-source-files`,
-`check_hashes=true`) and confirms the probe is healthy. A `result=fail` here means
-the bytes never reached the library or came back altered — stop and investigate
-before restarting.
+Expected: a final `result=pass`, with `check=ingest`, `check=readback`,
+`check=provenance`, and `check=source_audit` all `status=PASS`.
+
+`ingest` uploads **two** probe documents — one markdown, one `.docx` — whose bytes
+are retained to the library as a side effect. The pair is deliberate: SharePoint
+rewrites Office packages at rest and leaves other formats alone, so the two probes
+carry the two different contracts that split at that line (CAS-ADR-043 point 6).
+
+`readback` re-reads the **markdown** probe through the port and confirms the bytes
+are byte-identical to what was ingested. It does not do this for the `.docx`
+probe, and must not: retrieval returns the retained copy, which for a rewritten
+package is legitimately not the file that was uploaded.
+
+`provenance` carries the `.docx` probe's contract instead. It confirms the
+record's `source_content_hash` is the digest of the bytes the driver *delivered*,
+that a separate `stored_content_hash` is recorded, that it is the digest of what
+the raw content endpoint actually serves (and so, where the store rewrote,
+different from provenance), and that re-uploading the identical bytes is refused
+as `duplicate_content` naming that same document. Its detail line reports
+`rewritten=yes` against the tenant store; `rewritten=no` means the store handed
+back exactly what it was given, which is what a filesystem-backed vault does.
+
+`source_audit` runs `verify_vault_source_files` (`POST
+.../admin/verify-source-files`, `check_hashes=true`) and confirms **both probes**
+are healthy — present, not a link, inside the source tree, and hashing to what the
+record expects. It is scoped to this run's probes: the validation vault
+accumulates the residue of every previous run, and a whole-vault verdict would
+hand the check a permanent red over a document it neither created nor can repair.
+
+A `result=fail` here means the bytes never reached the library, came back altered,
+or the two digests are no longer telling the truth about each other — stop and
+investigate before restarting.
 
 Where the investigation finds a retained copy that something other than SAGE
 overwrote, `restore_vault_source_file` (`POST
@@ -269,19 +295,23 @@ Because the new revision starts with no local copy of any source, step 6.4
 succeeding is the live proof the bytes are served from the document store rather
 than a leftover local file.
 
-### 6.4 Post-restart — rediscover, readback, audit
+### 6.4 Post-restart — rediscover, readback, provenance, audit
 
 ```bash
 python3 deploy/sharepoint_validate.py --phase post-restart
 ```
 
-Expected: a final `result=pass`, with `check=rediscover`, `check=readback`, and
-`check=source_audit` all `status=PASS` — the vault reloaded its configuration from
-the library, and the probe's bytes are re-read and re-audited from the document
-store. To confirm the post-restart chunk-repair re-projection stages through the
-port (not a local file), tail the SAGE container log while the document is first
-re-read and look for the port-mediated staging path; running `recompute_pipeline`
-on the probe document id is an explicit way to trigger it.
+Expected: a final `result=pass`, with `check=rediscover`, `check=readback`,
+`check=provenance`, and `check=source_audit` all `status=PASS` — the vault
+reloaded its configuration from the library, and both probes' bytes are re-read,
+re-checked and re-audited from the document store. The `provenance` check earns
+its keep twice here: the digests it reads survived the restart on the record, and
+its re-delivery proves the fresh container still recognises the content as
+already held rather than landing a second copy. To confirm the post-restart
+chunk-repair re-projection stages through the port (not a local file), tail the
+SAGE container log while a document is first re-read and look for the
+port-mediated staging path; running `recompute_pipeline` on a probe document id
+is an explicit way to trigger it.
 
 ### 6.5 Least-privilege probe — an un-granted site is rejected
 
