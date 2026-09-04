@@ -315,6 +315,13 @@ class TransferStore:
         token is the original one, with the window it was minted for; a
         failure that kept resetting the clock would let an entry outlive the
         sweep indefinitely.
+
+        Reclamation is lazy, as it is for an entry that was never redeemed:
+        expiry makes the staging directory *eligible* to be swept, and the
+        next store operation is what sweeps it. A process that takes no
+        further transfer action holds a returned entry's bytes past its
+        window -- the same property an unredeemed entry already has, and the
+        reason the store needs no background task.
         """
         with self._lock:
             self._entries[entry.transfer_id] = entry

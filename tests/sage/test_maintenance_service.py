@@ -3437,3 +3437,80 @@ async def test_restore_source_file_refusal_message_omits_the_store_body(
 
     assert _STORE_BODY not in excinfo.value.message
     assert _STORE_BODY not in json.dumps(excinfo.value.detail)
+
+
+async def test_restore_source_file_transience_follows_the_binding_not_the_status(
+    graph_store, minimal_config, stub_content_store, refusing_source_store, tmp_path
+):
+    """The code a refusal carries upward is the one the *binding* decided, not
+    one re-derived from the status at the boundary.
+
+    The binding deliberately makes transience not a function of status: a 404
+    on an open upload session says the session is gone and a fresh one can
+    still satisfy the write, while the same status against an item path says
+    the item is not there. A translation that re-read the status would answer
+    the expired-session case -- the one the in-session machinery exists for --
+    with "resolve it at the store before retrying", the opposite of what to do.
+
+    Anti-coincidental-pass: every other refusal fixture in this file pairs a
+    status with the classification a status-keyed rival would also produce
+    (403/False, 429/True, 503/True, 507/False), so all of them pass against
+    such a rival. Both arms below carry the *same* status and opposite flags,
+    which is what no single arm can do: a rival reading the status alone must
+    answer them identically and therefore fails one. Excluding only the
+    transient arm would leave a rival that simply adds 404 to its transient
+    set -- which passes a one-armed version of this test and every other test
+    in the file. The status is asserted through to ``detail`` as well, so a
+    translation that read the flag correctly and dropped the status fails too.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    original = b"the bytes the caller delivered"
+    sp = "imports/r.md"
+    await _drifted_doc(gs, refusing_source_store, source_path=sp, original=original)
+
+    # 404 on an open upload session: the session is gone, a fresh one can still
+    # satisfy the write.
+    refusing_source_store.refuse_upload = _refusal(404, retryable=True)
+    with pytest.raises(VaultSourceStoreUnavailableError) as transient:
+        await maint.restore_vault_source_file(_delivered(tmp_path, "r.md", original))
+    assert transient.value.code == "vault_source_store_unavailable"
+    assert transient.value.detail["store_status"] == 404
+
+    # The same 404 against an item path: the item is not there, and repeating
+    # the write does not put it there. Same status, opposite answer.
+    refusing_source_store.refuse_upload = _refusal(404, retryable=False)
+    with pytest.raises(VaultSourceStoreRefusedError) as refused:
+        await maint.restore_vault_source_file(_delivered(tmp_path, "r.md", original))
+    assert refused.value.code == "vault_source_store_refused"
+    assert refused.value.detail["store_status"] == 404
+
+
+async def test_restore_source_file_a_refusal_carrying_no_status_is_not_transient(
+    graph_store, minimal_config, stub_content_store, refusing_source_store, tmp_path
+):
+    """A refusal the store answered 2xx for and did not populate carries no
+    status, and is not transient: repeating a request the store already
+    answered successfully reproduces the same unusable reply.
+
+    Anti-coincidental-pass: a distinct rival from the one above -- a
+    translation that treats an absent status as unknown and therefore
+    retryable, which is a plausible defensive default and which the
+    status-keyed rival does *not* exhibit. Kept as its own test rather than a
+    second arm of that one, because a two-arm test stops at the first failure
+    and would leave this property unexercised whenever the other regressed.
+    ``store_status`` is asserted absent so a translation that invented a
+    placeholder status to classify on also fails.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    original = b"the bytes the caller delivered"
+    sp = "imports/r.md"
+    await _drifted_doc(gs, refusing_source_store, source_path=sp, original=original)
+    refusing_source_store.refuse_upload = _refusal(None, retryable=False)
+
+    with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
+        await maint.restore_vault_source_file(_delivered(tmp_path, "r.md", original))
+
+    assert excinfo.value.code == "vault_source_store_refused"
+    assert "store_status" not in excinfo.value.detail

@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.25",
+      "version": "0.26",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.68",
+  "substrate_version": "1.69",
   "revision_history": [
+    {
+      "version": "1.69",
+      "date": "2026-09-04",
+      "summary": "Declare the vault-source store's refusal on the ingest operation too. sage_core_api.openapi.yaml bumped v0.25->v0.26: ingest_document gains the 502 and 503 responses restore_vault_source_file received in v0.25, with byte-identical descriptions; no schema, no operation shape change, no new component. v0.25 declared the two store-refusal codes on the repair operation only, but the translation that raises them sits on the retention path both operations share, so an ingest caller could already receive a 502 or 503 the spec did not declare -- the same undeclared-status defect v0.25 set out to remove, at a different number. The batch operation is deliberately not given these responses: it collects a per-file failure into its 200 summary as a BatchIngestFileError carrying the error's code, so it cannot emit either status, and declaring one it never returns would be its own divergence. That entry's code vocabulary is enumerated nowhere and is tracked separately; it predates this change. Code (not in this substrate): the ingest tool's error-modes list gains both codes, and both tools now state the redeemed-token guarantee as the delivery gate's own property -- a call that fails after redemption leaves its token redeemable for any reason, not only a store refusal."
+    },
     {
       "version": "1.68",
       "date": "2026-09-03",

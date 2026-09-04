@@ -323,7 +323,11 @@ def register_app_tools(
             # malformed batch consumes no token; it answers an unreachable
             # caller path with one recipe covering every such entry; and it
             # reclaims the per-token staging directories once this block
-            # exits, which the fully-awaited batch run makes safe.
+            # exits *successfully*, which the fully-awaited batch run makes
+            # safe. A batch that fails as a whole returns every token it
+            # redeemed, bytes intact, so recovering from it costs no second
+            # upload -- a per-file failure is collected into the summary and
+            # does not reach that path.
             with caller_local_delivery(
                 vault_id,
                 [
