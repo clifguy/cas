@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.26",
+      "version": "0.27",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -91,7 +91,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "0.5",
+      "version": "0.6",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.69",
+  "substrate_version": "1.70",
   "revision_history": [
+    {
+      "version": "1.70",
+      "date": "2026-09-04",
+      "summary": "Bump the minor version to v2.2. sage_core_api.openapi.yaml bumped v0.26->v0.27 and cas_app_api.openapi.yaml v0.5->v0.6. The minor version had not moved since v2.1.0, 153 commits back, across the body of work that followed from discovering that the document store rewrites Office packages at rest; the bump was intended to land earlier in that work and was missed. The version is VCS-derived and single-sourced: sage/build_info.py resolves RELEASE_VERSION from `git describe --long --tags --match v*` and exposes API_VERSION as its MAJOR.MINOR contract segment, which both FastAPI applications read (sage/app.py, app/backend/asgi.py). Only the two committed specs carry a hand-edited literal, so the bump is a coordinated change rather than a single edit: the annotated tag v2.2.0 anchored on main, plus info.version \"2.1\" -> \"2.2\" in both specs. Sequencing is tag-first rather than tag-the-merge-commit. CI answers pull_request with a full-history, tag-bearing checkout, so a spec-edit branch authored before the tag exists reads API_VERSION 2.1 against specs declaring 2.2 and cannot go green; tagging first inverts the divergence onto main instead, where no workflow observes it, since no trigger fires on a tag push and the next push to main is the merge that closes the window. The gate of record is tests/sage/test_openapi_conformance.py::test_openapi_info_version_matches_api_version, the three-way check across the live /openapi.json and both committed specs. Its per-spec loop was verified by mutation in both arms: each spec reverted alone reddens the gate and names itself, so changing one and not the other fails exactly as changing neither does. A third probe confirmed the live document moved with the constants rather than the two file literals merely agreeing with each other. No schema, route, argument, or model shape changes, and no allowlist entries in any conformance or coverage gate. Downstream of the tag: container images bake SAGE_BUILD_VERSION 2.2.x via the Dockerfile build arg, the health endpoint reports it, and the MCP handshake advertises 2.2.x with the build identity."
+    },
     {
       "version": "1.69",
       "date": "2026-09-04",
