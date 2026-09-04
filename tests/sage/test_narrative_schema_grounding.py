@@ -130,7 +130,7 @@ says a local MLX model, which config chooses and prose need not track.
 The pass also confirmed the enumerations it read. ``StalenessBasis`` does
 carry the four buckets ``verify_vault_drift`` claims; the four
 ``integrity_status`` values ``verify_vault_source_files`` names are the
-four the schema declares; and the two terminal statuses
+four the schema declares; and the three terminal statuses
 ``recompute_deferred_vault_abstracts`` says it polls for are exactly the
 set its poller waits on. Those operations, and the rest of the fifteen,
 are sound on this axis.

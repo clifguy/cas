@@ -270,11 +270,23 @@ class TraversalDirection(StrEnum):
 
 
 class ReabstractOutcome(StrEnum):
-    """Per-document outcome categories in a ReabstractReport."""
+    """Per-document outcome categories in a ReabstractReport.
+
+    `still_skipped` and `timeout` both count toward a report's
+    `failed_count` -- the field counts documents that did not reach
+    `abstraction_complete` -- but neither is an `llm_failure`. A
+    still-skipped document declined abstraction rather than attempting
+    it, and a timed-out one was abandoned by the waiter while the
+    generation it was waiting on may still be running. Folding either
+    into `llm_failure` would send an operator looking for a provider
+    error that never happened.
+    """
 
     SUCCESS = "success"
     SKIPPED_PDF = "skipped_pdf"
     LLM_FAILURE = "llm_failure"
+    STILL_SKIPPED = "still_skipped"
+    TIMEOUT = "timeout"
 
 
 class StalenessBasis(StrEnum):
@@ -300,6 +312,15 @@ TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
         PipelineStatus.ABSTRACTION_SKIPPED,
         PipelineStatus.FAILED,
     }
+)
+
+# The same set as raw ``pipeline_status`` strings. Every consumer that
+# compares against a stored status wants these rather than the enum members,
+# and each one deriving its own frozenset is how a restated subset drifts:
+# a comparison that silently omits a terminal status leaves a poller waiting
+# on a document that has already finished.
+TERMINAL_PIPELINE_STATUS_VALUES: frozenset[str] = frozenset(
+    s.value for s in TERMINAL_PIPELINE_STATUSES
 )
 
 # Terminal pipeline statuses that represent success: the pipeline finished

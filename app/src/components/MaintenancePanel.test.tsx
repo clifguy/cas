@@ -275,6 +275,56 @@ describe('MaintenancePanel — completion', () => {
     );
     expect(screen.getByTestId('reabstract-failure-list')).toHaveTextContent('oom');
   });
+
+  it('B7c: still_skipped and timeout entries appear in the failure list', async () => {
+    // failed_count counts every non-success, non-skipped_pdf outcome, and the
+    // Failures heading is gated on that count. A list filtered to
+    // 'llm_failure' alone would render the heading and a non-zero count above
+    // an empty list for a run whose failures were all of the other two kinds.
+    getDeferredCountMock.mockResolvedValue(2);
+
+    startReabstractMock.mockImplementation(async (_vaultId, onEvent) => {
+      onEvent({
+        event_type: 'summary',
+        vault_id: 'v1',
+        reabstracted_count: 0,
+        skipped_pdf_count: 0,
+        failed_count: 2,
+        entries: [
+          {
+            document_id: 'eeeeeeee_epsilon',
+            outcome: 'still_skipped',
+            error_message: 'settled back at abstraction_skipped',
+            elapsed_seconds: 0.2,
+          },
+          {
+            document_id: 'ffffffff_zeta',
+            outcome: 'timeout',
+            error_message: 'did not reach a terminal pipeline_status',
+            elapsed_seconds: 7200.0,
+          },
+        ],
+      } satisfies ReabstractSummaryEvent);
+    });
+
+    render(<MaintenancePanel />);
+    await waitFor(() => expect(screen.getByTestId('reabstract-count')).toHaveTextContent('2'));
+
+    await userEvent.click(screen.getByTestId('reabstract-button'));
+    await userEvent.click(screen.getByTestId('reabstract-confirm-apply'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('reabstract-failure-list')).toBeInTheDocument(),
+    );
+    const list = screen.getByTestId('reabstract-failure-list');
+    expect(list).toHaveTextContent('eeeeeeee_epsilon');
+    expect(list).toHaveTextContent('settled back at abstraction_skipped');
+    expect(list).toHaveTextContent('ffffffff_zeta');
+    expect(list).toHaveTextContent('did not reach a terminal pipeline_status');
+    // The count and the list must agree: two failures counted, two listed.
+    expect(screen.getByTestId('reabstract-failed-count')).toHaveTextContent('2');
+    expect(list.querySelectorAll('li')).toHaveLength(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

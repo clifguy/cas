@@ -2482,8 +2482,35 @@ paths:
         Graduation of the standalone scripts/reabstract_deferred.py script
         to the maintenance API surface (CAS-ADR-029). Enumerates
         documents whose pipeline_status is 'abstraction_skipped', dispatches a
-        reabstract per document, and polls until each reaches a terminal
-        pipeline_status (abstraction_complete or failed).
+        reabstract per document, and polls until each
+        reaches a terminal pipeline_status (abstraction_complete,
+        abstraction_skipped, or failed).
+
+
+        The per-document poll is bounded. A document can stop advancing
+        toward a terminal status altogether -- the abstraction worker is
+        cancelled on lifespan teardown and on registry reload, which drops
+        queued jobs and strands their documents mid-pipeline -- so a
+        document that has not settled within the server's wait ceiling is
+        abandoned and recorded with outcome 'timeout' rather than polled
+        indefinitely. Abandoning is a statement about the poll, not about
+        the document: the generation may still complete. It is not,
+        however, self-healing. This operation enumerates
+        'abstraction_skipped' only, and an abandoned document sits at
+        'abstraction_in_progress', so a later call reaches it only once
+        something else advances it -- startup recovery, which runs from the
+        server's lifespan hook and so does not fire on a registry reload
+        alone, or the out-of-band bulk sweep with a selector naming that
+        status.
+
+
+        Outcomes beyond `success` and `skipped_pdf` all count toward
+        failed_count, which counts documents that did not reach
+        abstraction_complete, and are reported apart because only
+        `llm_failure` indicates an error the provider actually raised:
+        `still_skipped` is a document that settled back at
+        `abstraction_skipped`, having declined abstraction rather than
+        failed at it, and `timeout` is one abandoned at the ceiling.
 
 
         Reuses the in-process abstraction provider that the running SAGE
@@ -6502,14 +6529,22 @@ components:
 
     ReabstractOutcome:
       type: string
-      enum: [success, skipped_pdf, llm_failure]
+      enum: [success, skipped_pdf, llm_failure, still_skipped, timeout]
       description: >-
         Per-document outcome classification in a ReabstractReport.
         `success`: the document's pipeline_status transitioned to
         abstraction_complete. `skipped_pdf`: the document is source_type=pdf
         and was excluded because include_pdf was False. `llm_failure`:
         dispatch raised, background generation raised, or the document
-        terminated in pipeline_status='failed'.
+        terminated in pipeline_status='failed'. `still_skipped`: the
+        document settled back at pipeline_status='abstraction_skipped',
+        having declined abstraction rather than failed at it. `timeout`:
+        the document had not reached a terminal pipeline_status when the
+        wait ceiling elapsed, and was abandoned while its abstraction may
+        still have been running. The last three all count toward
+        failed_count, which counts documents that did not reach
+        abstraction_complete; they are reported apart because only
+        `llm_failure` indicates an error the provider actually raised.
 
     ReabstractRequest:
       type: object
@@ -6628,11 +6663,15 @@ components:
           description: Document id whose reabstract outcome this entry records.
         outcome:
           $ref: "#/components/schemas/ReabstractOutcome"
-          description: Per-document classification (success / skipped_pdf / llm_failure).
+          description: >-
+            Per-document classification (success / skipped_pdf /
+            llm_failure / still_skipped / timeout).
         error_message:
           type: string
           nullable: true
-          description: Failure description when outcome is 'llm_failure'; null otherwise.
+          description: >-
+            Failure description when outcome is 'llm_failure',
+            'still_skipped', or 'timeout'; null otherwise.
         elapsed_seconds:
           type: number
           nullable: true
@@ -7083,28 +7122,43 @@ components:
           description: >-
             Per-document status. `started`: dispatch begun, no outcome
             yet. `completed`: reabstract reached `abstraction_complete`.
-            `failed`: dispatch raised or terminal pipeline_status was
-            `failed` (outcome=`llm_failure`). `skipped`: PDF excluded
-            from the worklist by `include_pdf=False`
-            (outcome=`skipped_pdf`).
+            `failed`: dispatch raised, terminal pipeline_status was
+            `failed` (outcome=`llm_failure`), or the wait ceiling elapsed
+            with the document still non-terminal (outcome=`timeout`).
+            `skipped`: PDF excluded from the worklist by
+            `include_pdf=False` (outcome=`skipped_pdf`), or the document
+            settled back at `abstraction_skipped`
+            (outcome=`still_skipped`). Outcomes widened without widening
+            this vocabulary, so a client switching on `status` alone
+            keeps working and one needing the distinction reads
+            `outcome`.
         outcome:
           $ref: "#/components/schemas/ReabstractOutcome"
           nullable: true
           description: >-
             Per-document terminal classification. Set on `completed`,
             `failed`, and `skipped` events; omitted on the leading
-            `started` event.
+            `started` event. Discriminates within a status: `failed`
+            carries `llm_failure` or `timeout`, and `skipped` carries
+            `skipped_pdf` or `still_skipped`.
         error:
           type: string
           nullable: true
-          description: Failure description when `status=failed`; omitted otherwise.
+          description: >-
+            Failure description. Set on every `failed` event and on a
+            `skipped` event whose outcome is `still_skipped`, which carries
+            one because a document that declined abstraction has something
+            to report; omitted on `started`, on `completed`, and on the
+            `skipped_pdf` form of `skipped`.
         elapsed_seconds:
           type: number
           nullable: true
           description: >-
-            Wall-clock seconds from dispatch to terminal status, set on
-            `completed` and `failed` events. Omitted on `started` (no
-            work yet) and `skipped` (no work was done).
+            Wall-clock seconds from dispatch to terminal status. Set on
+            `completed`, on `failed`, and on the `still_skipped` form of
+            `skipped`, all of which dispatched and waited. Omitted on
+            `started` (no work yet) and on the `skipped_pdf` form of
+            `skipped` (never dispatched).
 
     ReabstractSummaryEvent:
       type: object

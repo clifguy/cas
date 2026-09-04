@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
@@ -28,6 +28,7 @@ from sage.api.errors import (
 from sage.config import VaultConfig
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
+    TERMINAL_PIPELINE_STATUS_VALUES,
     EdgeType,
     PipelineStatus,
     ReabstractOutcome,
@@ -71,6 +72,91 @@ if TYPE_CHECKING:
 # defaults to 1.0 s because it ran with a TTY in the loop; the
 # in-process service path has no such concern.
 _POLL_INTERVAL_SECONDS = 0.05
+
+# Ceiling on how long the post-dispatch wait blocks on a single document
+# before abandoning it. The wait polls pipeline_status, and a document can
+# stop advancing toward a terminal one entirely: the abstraction worker is
+# cancelled on lifespan teardown and on registry reload, which drops queued
+# jobs and leaves their documents stranded at `abstraction_in_progress`
+# until the next startup recovery. Without a ceiling the waiter polls that
+# document forever, holding the SSE response open with no further events
+# and giving the report-and-return MCP caller nothing to time out against.
+#
+# Sized to clear the slowest legitimate document rather than the typical
+# one, because overshooting costs a stranded sweep an hour it would have
+# spent stuck anyway, while undershooting abandons work that was still
+# progressing: a full-context generation runs roughly 25 minutes, and the
+# worker spends up to `abstraction.max_attempts` of them (3 by default)
+# before it stamps a terminal status of its own.
+_WAIT_TIMEOUT_SECONDS = 7200.0
+
+# Returned by the wait when the document disappears between dispatch and
+# settling, and when the ceiling above is reached. Neither is a
+# pipeline_status value, so neither can collide with a real one.
+_WAIT_MISSING = "missing"
+_WAIT_TIMEOUT = "timeout"
+
+
+class _FailureReport(NamedTuple):
+    """How one non-success document is reported: outcome, event status, message.
+
+    Named rather than positional because the two string slots -- a status
+    drawn from a closed four-value vocabulary and a free-text message --
+    transpose without a type error, and each new arm is another chance to
+    swap them.
+    """
+
+    outcome: ReabstractOutcome
+    event_status: str
+    message: str
+
+
+def _reabstract_failure_report(status: str) -> _FailureReport:
+    """Classify a non-success settled status.
+
+    ``status`` is whatever the post-dispatch wait returned other than
+    ``abstraction_complete``: a terminal pipeline_status, or one of the
+    waiter's own sentinels. The event status stays inside the progress
+    stream's existing vocabulary -- a still-skipped document rides
+    ``skipped`` alongside the excluded PDFs, everything else rides
+    ``failed`` -- so widening the outcomes does not widen the transport.
+
+    ``llm_failure`` is the residual arm rather than the default one. It
+    claims the provider raised, so each status that reaches a terminal
+    state some other way is named before the fallthrough: a document that
+    declined abstraction, one the waiter abandoned, and one that no longer
+    exists. Only a stored ``failed`` should arrive at the last return.
+    """
+    if status == PipelineStatus.ABSTRACTION_SKIPPED.value:
+        return _FailureReport(
+            ReabstractOutcome.STILL_SKIPPED,
+            "skipped",
+            "reabstract settled back at abstraction_skipped; the document "
+            "declined abstraction rather than failing at it",
+        )
+    if status == _WAIT_TIMEOUT:
+        return _FailureReport(
+            ReabstractOutcome.TIMEOUT,
+            "failed",
+            f"document did not reach a terminal pipeline_status within "
+            f"{_WAIT_TIMEOUT_SECONDS:.0f}s; abstraction may still be running",
+        )
+    if status == _WAIT_MISSING:
+        # Reported as a failure because the document did not gain an
+        # abstract, but described for what it was: a concurrent delete
+        # between dispatch and settling, not a provider error. The former
+        # message rendered this sentinel as "terminal pipeline_status:
+        # missing", naming a status that does not exist.
+        return _FailureReport(
+            ReabstractOutcome.LLM_FAILURE,
+            "failed",
+            "document no longer exists; it was deleted between dispatch and settling",
+        )
+    return _FailureReport(
+        ReabstractOutcome.LLM_FAILURE,
+        "failed",
+        f"terminal pipeline_status: {status}",
+    )
 
 
 # Name reported in MigrationReport.backfills_applied when the migration
@@ -1214,10 +1300,6 @@ class MaintenanceService:
                         outcome=ReabstractOutcome.SKIPPED_PDF,
                     )
 
-                terminal = {
-                    PipelineStatus.ABSTRACTION_COMPLETE.value,
-                    PipelineStatus.FAILED.value,
-                }
                 for doc in worklist:
                     # ``started`` event: processed counts terminal events
                     # only, so a started event leaves it unchanged.
@@ -1259,7 +1341,7 @@ class MaintenanceService:
                         )
                         continue
 
-                    status = await self._wait_for_terminal(doc.id, terminal)
+                    status = await self._wait_for_terminal(doc.id)
                     elapsed = (datetime.now(timezone.utc) - doc_started).total_seconds()
                     if status == PipelineStatus.ABSTRACTION_COMPLETE.value:
                         entries.append(
@@ -1282,11 +1364,19 @@ class MaintenanceService:
                             elapsed_seconds=elapsed,
                         )
                     else:
-                        error_message = f"terminal pipeline_status: {status}"
+                        # Every non-success settles into failed_count, but the
+                        # three ways of getting there are different findings
+                        # and are reported apart. A document back at
+                        # abstraction_skipped declined abstraction rather than
+                        # failing at it; a timed-out one was abandoned by the
+                        # waiter and may yet finish. Reporting either as an
+                        # llm_failure sends an operator looking for a provider
+                        # error that was never raised.
+                        outcome, event_status, error_message = _reabstract_failure_report(status)
                         entries.append(
                             ReabstractReportEntry(
                                 document_id=doc.id,
-                                outcome=ReabstractOutcome.LLM_FAILURE,
+                                outcome=outcome,
                                 error_message=error_message,
                                 elapsed_seconds=elapsed,
                             )
@@ -1299,8 +1389,8 @@ class MaintenanceService:
                             total=total,
                             current_document_id=doc.id,
                             current_title=doc.title,
-                            status="failed",
-                            outcome=ReabstractOutcome.LLM_FAILURE,
+                            status=event_status,
+                            outcome=outcome,
                             error=error_message,
                             elapsed_seconds=elapsed,
                         )
@@ -1316,16 +1406,43 @@ class MaintenanceService:
             finally:
                 self._reabstract_started_at = None
 
-    async def _wait_for_terminal(self, document_id: str, terminal: set[str]) -> str:
-        """Poll the document's pipeline_status until it reaches a terminal
-        value, then return it. Returns the sentinel string ``"missing"``
-        if the document disappears mid-flight.
+    async def _wait_for_terminal(self, document_id: str) -> str:
+        """Poll the document's pipeline_status until terminal, then return it.
+
+        Returns :data:`_WAIT_MISSING` if the document disappears mid-flight,
+        and :data:`_WAIT_TIMEOUT` if it has not settled within
+        :data:`_WAIT_TIMEOUT_SECONDS`. The ceiling is what makes this
+        bounded: the document may stop advancing altogether -- a cancelled
+        abstraction worker drops its queued jobs and strands them
+        non-terminal -- and an unbounded poll against one of those never
+        returns.
+
+        Both the terminal set and the ceiling are read from module scope
+        rather than taken as arguments. A parameter that one production
+        caller always passes the same value to is a seam only tests use,
+        and a second way to set the ceiling is a second thing that can
+        disagree with the message reporting it.
+
+        A timeout is a statement about the waiter, not about the document:
+        the generation may still be running and may still complete. But it
+        is not self-healing. This sweep enumerates ``abstraction_skipped``
+        only, and an abandoned document sits at ``abstraction_in_progress``,
+        so a later sweep reaches it only once something else advances it --
+        startup recovery (``recover_incomplete_documents``, which runs from
+        the lifespan hook, so a registry reload alone does not fire it), or
+        the bulk CLI with a selector naming that status.
         """
+        deadline = asyncio.get_running_loop().time() + _WAIT_TIMEOUT_SECONDS
         while True:
             doc = await self._graph_store.get_document(document_id)
             if doc is None:
-                return "missing"
+                return _WAIT_MISSING
             status = doc.pipeline_status
-            if status in terminal:
+            if status in TERMINAL_PIPELINE_STATUS_VALUES:
                 return status
+            # Checked after the status read so a document that settled
+            # exactly at the deadline is reported as settled rather than
+            # abandoned one poll short of its own terminal status.
+            if asyncio.get_running_loop().time() >= deadline:
+                return _WAIT_TIMEOUT
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)

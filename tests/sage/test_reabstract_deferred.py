@@ -10,12 +10,20 @@ isolation -- no async, no service init, no MCP server.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from sage.models.enums import PipelineStatus
-from scripts.reabstract_deferred import _build_parser, _build_worklist, _load_ids_file
+from scripts.reabstract_deferred import (
+    WAIT_MISSING,
+    WAIT_TIMEOUT,
+    _build_parser,
+    _build_worklist,
+    _load_ids_file,
+    _wait_for_terminal,
+)
 
 
 def _doc(doc_id: str, *, status: str, source_type: str = "markdown") -> SimpleNamespace:
@@ -212,3 +220,109 @@ def test_parser_rejects_ids_file_together_with_all():
     """The two modes contradict each other; argparse settles it."""
     with pytest.raises(SystemExit):
         _build_parser().parse_args(["example_vault", "--ids-file", "ids.txt", "--all"])
+
+
+# ---------------------------------------------------------------------------
+# The post-dispatch wait: settles on every terminal status and gives up on a
+# document that stops advancing toward one.
+# ---------------------------------------------------------------------------
+
+
+class _FakeGraphStore:
+    """Graph store stand-in returning a scripted status per get_document call.
+
+    The final entry repeats, so a poll that never settles keeps reading the
+    same non-terminal status rather than exhausting the script.
+    """
+
+    def __init__(self, statuses: list[str | None]) -> None:
+        self._statuses = statuses
+        self.calls = 0
+
+    async def get_document(self, document_id: str):
+        index = min(self.calls, len(self._statuses) - 1)
+        self.calls += 1
+        status = self._statuses[index]
+        return None if status is None else SimpleNamespace(id=document_id, pipeline_status=status)
+
+
+async def test_script_wait_settles_on_abstraction_skipped():
+    """abstraction_skipped is terminal for this wait.
+
+    The sweep's own default worklist is built from abstraction_skipped, so a
+    document that settles back where it started is the likeliest non-success
+    outcome here -- and the restated terminal set this replaced omitted it,
+    which left the poll running forever against a document that had finished.
+
+    Anti-coincidental-pass: the store's scripted second reading is the
+    terminal one, so a wait that ignored the status entirely would hit the
+    ceiling and return the timeout sentinel instead. The ceiling is passed
+    explicitly and small: on the default two-hour one this test would spin
+    against that rival rather than fail, and a gate that hangs where it
+    should redden reports nothing.
+    """
+    store = _FakeGraphStore(
+        [
+            PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+            PipelineStatus.ABSTRACTION_SKIPPED.value,
+        ]
+    )
+
+    status = await asyncio.wait_for(
+        _wait_for_terminal(store, "d1", 0.0, timeout_seconds=1.0), timeout=10
+    )
+
+    assert status == PipelineStatus.ABSTRACTION_SKIPPED.value
+    assert store.calls >= 2
+
+
+async def test_script_wait_gives_up_on_a_document_that_never_settles():
+    """A document stuck non-terminal is abandoned at the ceiling.
+
+    Without one the sweep stalls on a single document with no further output
+    and no way for the operator to tell a slow generation from a dead one --
+    the abstraction worker is cancelled on teardown, which drops queued jobs
+    and leaves their documents stranded mid-pipeline with nothing left to
+    advance them.
+
+    Anti-coincidental-pass: the fixture never yields a terminal status, so a
+    wait that returned early on any reading would fail the sentinel assertion
+    rather than pass by luck.
+    """
+    store = _FakeGraphStore([PipelineStatus.ABSTRACTION_IN_PROGRESS.value])
+
+    status = await asyncio.wait_for(
+        _wait_for_terminal(store, "d1", 0.0, timeout_seconds=0.05), timeout=10
+    )
+
+    assert status == WAIT_TIMEOUT
+
+
+async def test_script_wait_prefers_a_settled_status_over_an_elapsed_deadline():
+    """With the ceiling already elapsed, a settled document still reports its
+    status; only a non-terminal one reports the sentinel.
+
+    The pair is the gate: the settled arm alone passes against any deadline
+    that is never reached, and the timeout arm alone passes against a
+    deadline-first ordering. Together they pin both.
+    """
+    settled = _FakeGraphStore([PipelineStatus.ABSTRACTION_COMPLETE.value])
+    stranded = _FakeGraphStore([PipelineStatus.ABSTRACTION_IN_PROGRESS.value])
+
+    assert (
+        await _wait_for_terminal(settled, "d1", 0.0, timeout_seconds=0.0)
+        == PipelineStatus.ABSTRACTION_COMPLETE.value
+    )
+    assert await _wait_for_terminal(stranded, "d1", 0.0, timeout_seconds=0.0) == WAIT_TIMEOUT
+
+
+async def test_script_wait_reports_a_vanished_document():
+    """A document deleted mid-flight returns its own sentinel, not a status."""
+    store = _FakeGraphStore([None])
+
+    assert (
+        await asyncio.wait_for(
+            _wait_for_terminal(store, "d1", 0.0, timeout_seconds=1.0), timeout=10
+        )
+        == WAIT_MISSING
+    )
