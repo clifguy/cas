@@ -126,9 +126,18 @@ def _reabstract_failure_report(status: str) -> _FailureReport:
     ``llm_failure`` is the residual arm rather than the default one. It
     claims the provider raised, so each status that reaches a terminal
     state some other way is named before the fallthrough: a document that
-    declined abstraction, one the waiter abandoned, and one that no longer
-    exists. Only a stored ``failed`` should arrive at the last return.
+    declined abstraction, one the waiter abandoned, one whose work was
+    dropped by a stopped queue, and one that no longer exists. Only a
+    stored ``failed`` should arrive at the last return.
     """
+    if status == PipelineStatus.ABSTRACTION_INTERRUPTED.value:
+        return _FailureReport(
+            ReabstractOutcome.INTERRUPTED,
+            "failed",
+            "abstraction work was dropped before it completed: the queue "
+            "draining it was stopped. No provider was reached; the next "
+            "server start re-runs it",
+        )
     if status == PipelineStatus.ABSTRACTION_SKIPPED.value:
         return _FailureReport(
             ReabstractOutcome.STILL_SKIPPED,

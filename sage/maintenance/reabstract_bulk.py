@@ -247,6 +247,25 @@ async def run_sweep(
             )
             reabstracted += 1
             print(f"[{index:5d}/{total}]  ok {doc.id}  {elapsed:6.1f}s", flush=True)
+        elif status == PipelineStatus.ABSTRACTION_INTERRUPTED.value:
+            # Named before the residual arm for the same reason the service
+            # sweep names it: the work was dropped by a stopped queue and
+            # never reached a provider, so reporting it as an llm_failure
+            # sends the operator after a fault that did not happen.
+            message = (
+                "abstraction work was dropped before it completed: the queue "
+                "draining it was stopped. No provider was reached"
+            )
+            entries.append(
+                ReabstractReportEntry(
+                    document_id=doc.id,
+                    outcome=ReabstractOutcome.INTERRUPTED,
+                    error_message=message,
+                    elapsed_seconds=elapsed,
+                )
+            )
+            failed += 1
+            print(f"[{index:5d}/{total}]  x  {doc.id}  {message}", flush=True)
         else:
             message = f"terminal pipeline_status: {status}"
             entries.append(

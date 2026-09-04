@@ -3856,14 +3856,14 @@ class ReabstractReportEntry(BaseModel):
     outcome: ReabstractOutcome = Field(
         description=(
             "Per-document classification (success / skipped_pdf / "
-            "llm_failure / still_skipped / timeout)."
+            "llm_failure / still_skipped / timeout / interrupted)."
         )
     )
     error_message: str | None = Field(
         default=None,
         description=(
             "Failure description when outcome is 'llm_failure', "
-            "'still_skipped', or 'timeout'; null otherwise."
+            "'still_skipped', 'timeout', or 'interrupted'; null otherwise."
         ),
     )
     elapsed_seconds: float | None = Field(
@@ -4288,7 +4288,8 @@ class ReabstractProgressEvent(BaseModel):
             "`failed`: dispatch raised, terminal pipeline_status was "
             "`failed` (outcome=`llm_failure`), or the wait ceiling "
             "elapsed with the document still non-terminal "
-            "(outcome=`timeout`). `skipped`: PDF excluded "
+            "(outcome=`timeout`), or the document settled at "
+            "`abstraction_interrupted` (outcome=`interrupted`). `skipped`: PDF excluded "
             "from the worklist by `include_pdf=False` "
             "(outcome=`skipped_pdf`), or the document settled back at "
             "`abstraction_skipped` (outcome=`still_skipped`). Outcomes "
@@ -4303,8 +4304,8 @@ class ReabstractProgressEvent(BaseModel):
             "Per-document terminal classification. Set on `completed`, "
             "`failed`, and `skipped` events; omitted on the leading "
             "`started` event. Discriminates within a status: `failed` "
-            "carries `llm_failure` or `timeout`, and `skipped` carries "
-            "`skipped_pdf` or `still_skipped`."
+            "carries `llm_failure`, `timeout` or `interrupted`, and `skipped` "
+            "carries `skipped_pdf` or `still_skipped`."
         ),
     )
     error: str | None = Field(

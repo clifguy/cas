@@ -2869,7 +2869,8 @@ def register_sage_tools(
         Enumerates documents in the named vault at
         ``pipeline_status=abstraction_skipped``, dispatches a reabstract per
         document, and polls until each reaches terminal status
-        (``abstraction_complete``, ``abstraction_skipped``, or ``failed``).
+        (``abstraction_complete``, ``abstraction_skipped``,
+        ``abstraction_interrupted``, or ``failed``).
         Returns a ReabstractReport with per-document outcomes and aggregate
         counts.
 

@@ -792,55 +792,93 @@ async def test_stop_worker_with_no_pending_work_writes_no_document(
     teardown, each immediately before the storage handle is released. A stop
     that queried on every call would put a round-trip there.
 
-    Reads are counted alongside writes, because the round-trip is the cost
-    being guarded and a settle pass that reads every document to discover it
-    has nothing to write pays it in full. Asserting on writes alone would
-    pass against that implementation.
-
-    The two enumeration entry points are recorded for the same reason one step
-    out: a settle pass could discover its work by scanning the vault rather
-    than by reading each candidate, which is the more expensive shape of the
-    same mistake and invisible to a recorder watching only per-document calls.
+    The store is proxied whole rather than method by method. Reads cost the
+    same round-trip writes do, and a settle pass could discover its work
+    through any of several entry points -- per-document reads, a vault scan, a
+    status count, a filtered query. A recorder that names them one at a time
+    stays one short of whatever the next implementation reaches for, which is
+    the restated-subset shape this suite warns about elsewhere. Recording
+    every attribute access instead closes the entry points that exist and the
+    ones that do not yet.
     """
     doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s10.md")
     assert doc_id
     assert not ingestion_service._inflight
 
-    touched = []
-    original_write = graph_store.update_document
-    original_read = graph_store.get_document
-    original_list = graph_store.list_all_documents
-    original_count = graph_store.count_documents_by_pipeline_status
+    touched: list[str] = []
 
-    async def _recording_write(document_id, updates):
-        touched.append(("write", document_id))
-        return await original_write(document_id, updates)
+    class _RecordingStore:
+        """Forwards everything, recording the name of each attribute reached."""
 
-    async def _recording_read(document_id):
-        touched.append(("read", document_id))
-        return await original_read(document_id)
+        def __init__(self, inner) -> None:
+            object.__setattr__(self, "_inner", inner)
 
-    async def _recording_list():
-        touched.append(("list", None))
-        return await original_list()
+        def __getattr__(self, name: str):
+            touched.append(name)
+            return getattr(object.__getattribute__(self, "_inner"), name)
 
-    async def _recording_count(status):
-        touched.append(("count", status))
-        return await original_count(status)
-
-    graph_store.update_document = _recording_write
-    graph_store.get_document = _recording_read
-    graph_store.list_all_documents = _recording_list
-    graph_store.count_documents_by_pipeline_status = _recording_count
+    original_store = ingestion_service._store
+    ingestion_service._store = _RecordingStore(original_store)
     try:
         await ingestion_service.stop_worker()
     finally:
-        graph_store.update_document = original_write
-        graph_store.get_document = original_read
-        graph_store.list_all_documents = original_list
-        graph_store.count_documents_by_pipeline_status = original_count
+        ingestion_service._store = original_store
 
     assert touched == []
+
+
+async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """The settle stamp's read and write share one hold of the document lock.
+
+    ``_stamp_if_non_terminal`` exists to reconcile state it may have raced, so
+    the guard is only worth what its atomicity is worth: a status read outside
+    the lock can go stale before the write lands, and the document that
+    settled in between is overwritten anyway.
+
+    Anti-coincidental-pass: the discriminating observation is the lock's state
+    *at the moment of each store call*, not the ordering of the calls, which
+    both implementations share. ``DocumentLockManager.lock`` hands back a
+    plain ``asyncio.Lock``, so ``locked()`` answers that directly and
+    deterministically -- no second writer and no chosen interleaving needed.
+    Against a read hoisted above the ``async with``, the first entry records
+    False. The trailing read is ``update_document``'s own re-read, inside the
+    same hold.
+    """
+    doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s13.md")
+    gated = _GatedAbstractionProvider()
+    ingestion_service._abstraction = gated
+
+    await ingestion_service.reabstract(doc_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+
+    lock = ingestion_service._locks.lock(doc_id)
+    observed: list[tuple[str, bool]] = []
+    original_read = graph_store.get_document
+    original_write = graph_store.update_document
+
+    async def _probing_read(document_id):
+        if document_id == doc_id:
+            observed.append(("read", lock.locked()))
+        return await original_read(document_id)
+
+    async def _probing_write(document_id, updates):
+        if document_id == doc_id:
+            observed.append(("write", lock.locked()))
+        return await original_write(document_id, updates)
+
+    graph_store.get_document = _probing_read
+    graph_store.update_document = _probing_write
+    try:
+        await ingestion_service.stop_worker()
+    finally:
+        graph_store.get_document = original_read
+        graph_store.update_document = original_write
+
+    assert observed, "the settle pass made no store call for the stamped document"
+    assert all(held for _, held in observed), observed
+    assert [kind for kind, _ in observed][:2] == ["read", "write"]
 
 
 async def test_stop_worker_survives_a_restamp_store_failure(

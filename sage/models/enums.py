@@ -281,14 +281,16 @@ class TraversalDirection(StrEnum):
 class ReabstractOutcome(StrEnum):
     """Per-document outcome categories in a ReabstractReport.
 
-    `still_skipped` and `timeout` both count toward a report's
-    `failed_count` -- the field counts documents that did not reach
-    `abstraction_complete` -- but neither is an `llm_failure`. A
-    still-skipped document declined abstraction rather than attempting
-    it, and a timed-out one was abandoned by the waiter while the
-    generation it was waiting on may still be running. Folding either
-    into `llm_failure` would send an operator looking for a provider
-    error that never happened.
+    `still_skipped`, `timeout` and `interrupted` all count toward a
+    report's `failed_count` -- the field counts documents that did not
+    reach `abstraction_complete` -- but none of them is an
+    `llm_failure`. A still-skipped document declined abstraction rather
+    than attempting it; a timed-out one was abandoned by the waiter
+    while the generation it was waiting on may still be running; an
+    interrupted one had its work dropped by a stopped queue and never
+    reached a provider at all. Folding any of them into `llm_failure`
+    would send an operator looking for a provider error that never
+    happened.
     """
 
     SUCCESS = "success"
@@ -296,6 +298,7 @@ class ReabstractOutcome(StrEnum):
     LLM_FAILURE = "llm_failure"
     STILL_SKIPPED = "still_skipped"
     TIMEOUT = "timeout"
+    INTERRUPTED = "interrupted"
 
 
 class StalenessBasis(StrEnum):

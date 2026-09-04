@@ -29,7 +29,8 @@ Per-document flow:
    fix), re-embed, and atomically replace stored chunks. The
    synthetic header chunk is rebuilt as part of Stage 2.
 7. Restore the snapshotted ``pipeline_status`` if it was a terminal
-   state (``abstraction_complete``, ``abstraction_skipped``, ``failed``)
+   state (``abstraction_complete``, ``abstraction_skipped``,
+   ``abstraction_interrupted``, ``failed``)
    so docs with existing abstracts keep their reporting status. The
    restore is written through the ingestion service's pipeline-status
    seam, so a restored successful terminal status clears any

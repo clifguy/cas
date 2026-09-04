@@ -6597,7 +6597,7 @@ components:
 
     ReabstractOutcome:
       type: string
-      enum: [success, skipped_pdf, llm_failure, still_skipped, timeout]
+      enum: [success, skipped_pdf, llm_failure, still_skipped, timeout, interrupted]
       description: >-
         Per-document outcome classification in a ReabstractReport.
         `success`: the document's pipeline_status transitioned to
@@ -6609,7 +6609,10 @@ components:
         having declined abstraction rather than failed at it. `timeout`:
         the document had not reached a terminal pipeline_status when the
         wait ceiling elapsed, and was abandoned while its abstraction may
-        still have been running. The last three all count toward
+        still have been running. `interrupted`: the document settled at
+        pipeline_status='abstraction_interrupted', its work dropped by a
+        stopped queue without reaching a provider, and the next server
+        start re-runs it. The last four all count toward
         failed_count, which counts documents that did not reach
         abstraction_complete; they are reported apart because only
         `llm_failure` indicates an error the provider actually raised.
@@ -6733,13 +6736,13 @@ components:
           $ref: "#/components/schemas/ReabstractOutcome"
           description: >-
             Per-document classification (success / skipped_pdf /
-            llm_failure / still_skipped / timeout).
+            llm_failure / still_skipped / timeout / interrupted).
         error_message:
           type: string
           nullable: true
           description: >-
             Failure description when outcome is 'llm_failure',
-            'still_skipped', or 'timeout'; null otherwise.
+            'still_skipped', 'timeout', or 'interrupted'; null otherwise.
         elapsed_seconds:
           type: number
           nullable: true
@@ -7192,8 +7195,9 @@ components:
             yet. `completed`: reabstract reached `abstraction_complete`.
             `failed`: dispatch raised, terminal pipeline_status was
             `failed` (outcome=`llm_failure`), or the wait ceiling elapsed
-            with the document still non-terminal (outcome=`timeout`).
-            `skipped`: PDF excluded from the worklist by
+            with the document still non-terminal (outcome=`timeout`), or
+            the document settled at `abstraction_interrupted`
+            (outcome=`interrupted`). `skipped`: PDF excluded from the worklist by
             `include_pdf=False` (outcome=`skipped_pdf`), or the document
             settled back at `abstraction_skipped`
             (outcome=`still_skipped`). Outcomes widened without widening
@@ -7207,8 +7211,8 @@ components:
             Per-document terminal classification. Set on `completed`,
             `failed`, and `skipped` events; omitted on the leading
             `started` event. Discriminates within a status: `failed`
-            carries `llm_failure` or `timeout`, and `skipped` carries
-            `skipped_pdf` or `still_skipped`.
+            carries `llm_failure`, `timeout` or `interrupted`, and `skipped`
+            carries `skipped_pdf` or `still_skipped`.
         error:
           type: string
           nullable: true

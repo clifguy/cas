@@ -636,16 +636,18 @@ export type ReabstractOutcome =
   | 'skipped_pdf'
   | 'llm_failure'
   | 'still_skipped'
-  | 'timeout';
+  | 'timeout'
+  | 'interrupted';
 
-// The three non-success outcomes that count toward failed_count. Anything
+// The four non-success outcomes that count toward failed_count. Anything
 // rendered as a failure keys on this rather than on 'llm_failure' alone:
-// failed_count counts all three, so filtering to one of them shows a
+// failed_count counts all four, so filtering to one of them shows a
 // non-zero count above an empty list.
 export const REABSTRACT_FAILURE_OUTCOMES: readonly ReabstractOutcome[] = [
   'llm_failure',
   'still_skipped',
   'timeout',
+  'interrupted',
 ];
 
 // Request body for POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
