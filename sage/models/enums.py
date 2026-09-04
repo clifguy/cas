@@ -163,7 +163,8 @@ class RetrievalMode(StrEnum):
     """Retrieval mode.
 
     Semantic returns ranked approximate results via vector + optional BM25
-    fusion. Keyword returns BM25-only results. Catalog returns all documents
+    fusion. Keyword returns BM25-only results, with terms conjunctive: a chunk
+    matches only if it carries every term. Catalog returns all documents
     matching filter predicates via direct SQL query (no vector search, no
     chunk content, supports pagination via offset). Deterministic returns
     exact content by address.

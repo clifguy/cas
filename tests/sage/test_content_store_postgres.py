@@ -487,6 +487,165 @@ async def test_search_bm25_empty_query_returns_empty(store):
     assert await store.search_bm25("   ", limit=10) == []
 
 
+async def test_search_bm25_requires_every_term_in_one_chunk(store):
+    """Multi-term keyword queries are conjunctive: one absent term matches nothing.
+
+    ``websearch_to_tsquery`` joins bare terms with AND, so a query is satisfied
+    only by a chunk carrying *every* term. Nothing else in the suite exercises a
+    multi-term query -- single-term queries behave identically under AND and OR,
+    so they cannot tell the two apart. Green on arrival by design: this pins
+    current behaviour so a change of query builder is a visible decision.
+    """
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword betaword gammaword")])
+
+    present = await store.search_bm25("alphaword betaword gammaword", limit=10)
+    assert [r.document_id for r in present] == ["d1"], "every term present in one chunk must match"
+
+    absent = await store.search_bm25("alphaword betaword gammaword deltaword", limit=10)
+    assert absent == [], (
+        "one absent term must cull the whole match under AND semantics; an OR "
+        "backend would still return d1 on the three terms it does carry"
+    )
+
+
+async def test_search_bm25_terms_must_share_a_chunk_not_a_document(store):
+    """The conjunction is per chunk, not per document."""
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword only here", chunk_index=0),
+            _chunk("d1", content="betaword only here", chunk_index=1),
+        ],
+    )
+
+    assert await store.search_bm25("alphaword betaword", limit=10) == [], (
+        "terms split across two chunks of one document must not match"
+    )
+
+
+async def test_parse_keyword_query_reports_lexemes_not_raw_words(store):
+    """The parse reports what Postgres actually requires, after stopwords and stemming.
+
+    A whitespace split would report ``why``/``did``/``the`` as required terms.
+    They are stopwords: the tsquery drops them, so naming them would misdirect a
+    caller trying to understand an empty result.
+    """
+    parse = await store.parse_keyword_query("Why did the running alphaword?")
+
+    assert "alphaword" in parse.terms
+    assert "run" in parse.terms, "'running' must appear stemmed, as the tsquery holds it"
+    for stopword in ("why", "did", "the"):
+        assert stopword not in parse.terms, f"{stopword!r} is a stopword and is not required"
+    assert parse.all_required
+
+
+async def test_parse_keyword_query_omits_negated_terms(store):
+    """A ``-excluded`` term is not a required term and must not be reported as one."""
+    parse = await store.parse_keyword_query("alphaword -betaword")
+
+    assert "alphaword" in parse.terms
+    assert "betaword" not in parse.terms, "an excluded term is not something the caller must supply"
+
+
+async def test_parse_keyword_query_omits_a_negated_phrase(store):
+    """A negated *phrase* excludes every lexeme in it, not just the first.
+
+    ``-"a b"`` renders ``!( 'a' <-> 'b' )`` -- the negation sits before a
+    parenthesised group rather than before a quote. Matching a ``!`` only where
+    it abuts a quote drops ``'a'`` and keeps ``'b'``, reporting a term the
+    caller explicitly excluded as one they must supply. That rival passes
+    ``test_parse_keyword_query_omits_negated_terms``, whose negation is a bare
+    word; only a phrase separates them.
+    """
+    parse = await store.parse_keyword_query('-"alphaword betaword" gammaword')
+
+    assert parse.terms == ("gammaword",), (
+        "both lexemes of the negated phrase must be absent, and gammaword present"
+    )
+
+
+async def test_parse_keyword_query_reports_an_or_query_as_not_all_required(store):
+    """``or`` renders an alternation, so the query is not conjunctive.
+
+    ``websearch_to_tsquery`` reads ``or`` as ``|``. A chunk satisfies such a
+    query while carrying only one term, so describing it as requiring every
+    term states the opposite of what the caller wrote.
+    """
+    alternation = await store.parse_keyword_query("alphaword or betaword")
+    assert set(alternation.terms) == {"alphaword", "betaword"}
+    assert not alternation.all_required, "an alternation must not report as all-required"
+
+    conjunction = await store.parse_keyword_query("alphaword betaword")
+    assert conjunction.all_required, "a bare-term query is conjunctive"
+
+
+async def test_parse_keyword_query_carries_no_terms_when_every_word_is_a_stopword(store):
+    """A non-blank query can still search for nothing at all."""
+    parse = await store.parse_keyword_query("the a of")
+
+    assert parse.terms == (), "every word is a stopword, so the tsquery is empty"
+    assert parse.excluded == (), "nothing was excluded either -- nothing rendered at all"
+
+
+async def test_parse_keyword_query_separates_exclusion_only_from_discarded_input(store):
+    """An exclusion-only query renders a search; an all-stopword query renders nothing.
+
+    Both carry no required terms, so the term list alone cannot tell them
+    apart -- and a caller told "every word was discarded" when the backend
+    searched for chunks lacking a term has been misinformed. ``excluded`` is
+    what separates them.
+    """
+    exclusion_only = await store.parse_keyword_query("-alphaword")
+    assert exclusion_only.terms == ()
+    assert exclusion_only.excluded == ("alphaword",), (
+        "a rendered negation means a search ran, for chunks lacking the term"
+    )
+
+    discarded = await store.parse_keyword_query("the a of")
+    assert discarded.terms == () and discarded.excluded == (), (
+        "nothing rendered at all -- the two cases must be distinguishable"
+    )
+
+
+async def test_parse_keyword_query_reports_a_quoted_phrase_as_adjacent(store):
+    """A phrase requires adjacency, which is stronger than carrying every term.
+
+    ``"a b"`` renders ``'a' <-> 'b'``. A chunk carrying both terms apart
+    satisfies a conjunction and not this, so a caller told only that every term
+    is required has been told something weaker than the truth.
+    """
+    phrase = await store.parse_keyword_query('"alphaword betaword"')
+    assert phrase.terms == ("alphaword", "betaword")
+    assert phrase.adjacent, "a quoted phrase must report adjacency"
+
+    bare = await store.parse_keyword_query("alphaword betaword")
+    assert bare.terms == ("alphaword", "betaword")
+    assert not bare.adjacent, "the same terms unquoted carry no adjacency requirement"
+
+
+async def test_search_bm25_phrase_requires_adjacency_not_just_presence(store):
+    """The adjacency the parse reports is the one the search enforces."""
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword zzz betaword")])
+
+    assert [r.document_id for r in await store.search_bm25("alphaword betaword", limit=10)] == [
+        "d1"
+    ], "both terms are present, so the bare conjunction matches"
+    assert await store.search_bm25('"alphaword betaword"', limit=10) == [], (
+        "the terms are not adjacent, so the phrase does not match"
+    )
+
+
+async def test_parse_keyword_query_empty_for_blank_query(store):
+    """A blank query carries no required terms.
+
+    Pins the contract, not the guard that implements it: Postgres renders the
+    empty tsquery for ``''`` and ``'   '`` too, so this passes with or without
+    the early return. It is not evidence that branch is reached.
+    """
+    assert (await store.parse_keyword_query("")).terms == ()
+    assert (await store.parse_keyword_query("   ")).terms == ()
+
+
 async def test_search_filter_pushdown_excludes_nonmatching(store):
     """Filter predicates exclude rows that match the query but fail the filter."""
     await store.index_chunks(

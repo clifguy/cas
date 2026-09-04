@@ -179,7 +179,15 @@ paths:
         - **semantic**: Vector similarity search, optionally fused with BM25
           keyword matching. Returns ranked chunks with relevance scores.
 
-        - **keyword**: BM25-only search. No embedding required.
+        - **keyword**: BM25-only search. No embedding required. Terms are
+          conjunctive: a chunk matches only if it carries every term, so each
+          term added narrows the result and can empty it. A quoted phrase
+          matches as a unit; a term prefixed with `-` is excluded; terms joined by
+          or admit either. When a query of bare terms returns nothing,
+          `hints.warnings` names the terms the query parsed to -- stopwords are
+          dropped and the rest stemmed, so they are not the words typed. The
+          other forms carry their own advisory or, where every term is
+          optional, none.
 
         - **catalog**: Filter-only document enumeration via SQL. No vector
           search, no chunk content. Supports pagination via limit + offset.

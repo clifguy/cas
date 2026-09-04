@@ -534,7 +534,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "recompute_deferred_vault_abstracts"): Pin(5, 7),
     ("sage_core", "recompute_views"): Pin(4, 10),
     ("sage_core", "restore_vault_source_file"): Pin(0, 10),
-    ("sage_core", "search"): Pin(3, 12),
+    ("sage_core", "search"): Pin(3, 11),
     ("sage_core", "traverse"): Pin(5, 1),
     ("sage_core", "update_lifecycles"): Pin(9, 7),
     ("sage_core", "update_metadata"): Pin(9, 18),
