@@ -7,14 +7,20 @@ suite guards the committed seed so a config SAGE would reject can never be
 uploaded -- a defect that would otherwise surface only at runtime, in the
 cloud, as a discovery failure.
 
-The seed's ``vault.id`` is also replicated as a bare literal in three other
+The seed's ``vault.id`` is also replicated as a bare literal in four other
 artifacts that no schema check reaches: the document-library folder the
 bootstrap script uploads into, the validation driver's fallback ``--vault-id``,
-and the deploy gate's documented ``PREFLIGHT_EXPECTED_VAULTS`` list. Discovery
-matches the folder name against the config it contains, so a divergence between
-them yields a vault the deployed SAGE never registers -- with no error at seed
-time, and with the deploy still green unless the gate was told to expect it. The
-coupling tests below hold all four literals to the config.
+the CI harness's ``SP_VALIDATE_VAULT_ID``, and the deploy gate's documented
+``PREFLIGHT_EXPECTED_VAULTS`` list. Discovery matches the folder name against
+the config it contains, so a divergence between them yields a vault the deployed
+SAGE never registers -- with no error at seed time, and with the deploy still
+green unless the gate was told to expect it. The coupling tests below hold all
+five literals to the config.
+
+Each replica has its own structural gate elsewhere asserting a different property
+of it -- that the harness targets a disposable vault rather than ``cas``, that
+the seed config is schema-valid. Those answer "is this value acceptable?"; these
+answer "is it the same value?", and a literal-against-literal check cannot.
 """
 
 import re
@@ -32,6 +38,7 @@ SEED_CONFIG_PATH = _REPO_ROOT / "deploy" / "test-vault" / "vault_config.yaml"
 SEED_SCRIPT_PATH = _REPO_ROOT / "deploy" / "bootstrap" / "seed-vault-source.sh"
 VALIDATE_DRIVER_PATH = _REPO_ROOT / "deploy" / "sharepoint_validate.py"
 DEPLOYMENT_DOC_PATH = _REPO_ROOT / "docs" / "process" / "azure-deployment.md"
+VALIDATE_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "sharepoint-validate.yml"
 
 # The folder segment the bootstrap script PUTs the seed config into, anchored on
 # the surrounding URI so the capture cannot drift onto an unrelated path.
@@ -165,6 +172,32 @@ def test_documented_preflight_expectation_covers_the_seeded_vault() -> None:
         assert seeded in ids, (
             f"{DEPLOYMENT_DOC_PATH.name} documents PREFLIGHT_EXPECTED_VAULTS={value!r}, "
             f"which omits the seeded vault {seeded!r}; a deploy would pass without it"
+        )
+
+
+def test_validation_workflow_targets_the_seeded_vault() -> None:
+    """The CI harness's ``SP_VALIDATE_VAULT_ID`` names the seeded vault.
+
+    The workflow's own structural gate asserts this value against a literal, which
+    answers a different question -- *which* vault the harness may mutate, never
+    ``cas``. That check stays green when the seed config's id changes underneath
+    it, so on its own the workflow is a fourth uncoupled replica of the id. This
+    holds it to the config; the two together mean the harness targets a vault that
+    is both disposable and the one actually seeded.
+    """
+    workflow = yaml.safe_load(VALIDATE_WORKFLOW_PATH.read_text())
+    targets = [
+        job["env"]["SP_VALIDATE_VAULT_ID"]
+        for job in (workflow.get("jobs") or {}).values()
+        if isinstance(job, dict) and "SP_VALIDATE_VAULT_ID" in (job.get("env") or {})
+    ]
+    assert targets, f"{VALIDATE_WORKFLOW_PATH.name} must set SP_VALIDATE_VAULT_ID in a job env"
+    seeded = _seeded_vault_id()
+    for target in targets:
+        assert target == seeded, (
+            f"{VALIDATE_WORKFLOW_PATH.name} points the harness at {target!r} but the "
+            f"committed seed declares {seeded!r}; the harness would mutate a vault "
+            "that is not the one this repository seeds"
         )
 
 

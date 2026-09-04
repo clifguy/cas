@@ -257,6 +257,25 @@ async def test_auto_confirm_only_for_literal_test(tmp_path, minimal_vault_config
     assert rc == 3
     assert nv.config_path.exists()
 
+    # A vault whose id *begins* with 'test'. The 'nottest' arm above excludes a
+    # substring-widened carve-out ('test' in vault_id) but not a prefix-widened
+    # one: a startswith check refuses 'nottest' exactly as the correct code does,
+    # so that arm passes against it. Only an id sharing the prefix separates them.
+    pv = _materialize(tmp_path / "pvaults", "test_vault", minimal_vault_config_dict)
+    rc = await delete_vault(
+        vault_id="test_vault",
+        source_store=pv.store,
+        provisioner=_SpyProvisioner(),
+        vault_root=pv.vault_root,
+        snapshot_dir=tmp_path / "del3",
+        reason="r",
+        apply=True,
+        dump_runner=_SpyDump(),
+        input_fn=lambda _p: "",
+    )
+    assert rc == 3
+    assert pv.config_path.exists()
+
 
 # ---------------------------------------------------------------------------
 # D.16 -- per-target root-escape skip: only the escaping tree is left in place;
