@@ -391,11 +391,53 @@ class RetrievalService:
         else:
             response.hints = {**response.hints, **addition}
 
-    def _apply_vocabulary_warnings(
-        self, response: DiscoverResponse, request: DiscoverRequest
-    ) -> None:
-        """Attach vocabulary advisories, if any, to a response."""
+    # A single term carries no conjunction to explain; below this the empty
+    # result is a plain miss and an advisory would misdirect.
+    _MIN_CONJUNCTION_TERMS = 2
+
+    async def _keyword_conjunction_warnings(
+        self, request: DiscoverRequest, response: DiscoverResponse
+    ) -> list[str]:
+        """Advisory for an empty keyword result whose query required several terms.
+
+        Keyword mode is conjunctive: a chunk matches only if it carries every
+        term. An empty result therefore reads two ways -- the vault holds
+        nothing on the subject, or the query asked for too many terms at once
+        -- and nothing in the response distinguishes them, so a caller who did
+        not build a positive control reads it as the former.
+
+        Keyed on the parsed term count rather than on emptiness alone: a
+        single-term miss is a true zero and stays silent. The terms come from
+        the backend's own parse, because the words typed are not the terms
+        required -- stopwords are dropped and the rest stemmed.
+        """
+        if request.mode != RetrievalMode.KEYWORD or response.results:
+            return []
+        query = (request.query or "").strip()
+        # "*" is the filter-only listing form; it never reaches the term search.
+        if not query or query == "*":
+            return []
+        terms = await self._content.parse_keyword_query(query)
+        if len(terms) < self._MIN_CONJUNCTION_TERMS:
+            return []
+        rendered = ", ".join(repr(t) for t in terms)
+        return [
+            f"Keyword mode is conjunctive: this query parsed to {len(terms)} terms "
+            f"({rendered}) and matches only a chunk carrying all of them. No chunk "
+            "does, so the empty result may reflect the query rather than the "
+            "vault's contents. Try fewer or more distinctive terms, quote a phrase "
+            'to match it as a unit, or use mode="semantic".'
+        ]
+
+    async def _apply_warnings(self, response: DiscoverResponse, request: DiscoverRequest) -> None:
+        """Attach every advisory this response warrants, merged as one list.
+
+        Composed rather than merged per source: ``_merge_hints`` overwrites a
+        repeated key, so attaching a second ``warnings`` list would discard the
+        first.
+        """
         warnings = self._vocabulary_warnings(request)
+        warnings += await self._keyword_conjunction_warnings(request, response)
         if warnings:
             self._merge_hints(response, {"warnings": warnings})
 
@@ -429,7 +471,7 @@ class RetrievalService:
             # document-only knobs, so we can route directly.
             if request.target == RetrievalTarget.EDGES:
                 response = await self._catalog_edges(request, phases)
-                self._apply_vocabulary_warnings(response, request)
+                await self._apply_warnings(response, request)
                 _apply_catalog_budget_hint(response)
                 return response
 
@@ -441,7 +483,7 @@ class RetrievalService:
             # validator rejects.
             if request.target == RetrievalTarget.FACETS:
                 response = await self._catalog_facets(request, phases)
-                self._apply_vocabulary_warnings(response, request)
+                await self._apply_warnings(response, request)
                 return response
 
             if request.mode == RetrievalMode.SEMANTIC:
@@ -476,7 +518,7 @@ class RetrievalService:
             # only in semantic and keyword mode and only when the result
             # set is empty, whereas a filter value the vault does not
             # recognize is worth reporting in every mode.
-            self._apply_vocabulary_warnings(response, request)
+            await self._apply_warnings(response, request)
 
             # Surface a recommended_limit hint when a catalog
             # response would bust the Claude Code MCP inline ceiling.

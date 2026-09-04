@@ -86,7 +86,14 @@ class StubContentStore(ContentStore):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """Simple term-frequency keyword search for testing."""
+        """Simple term-frequency keyword search for testing.
+
+        Scores by the fraction of query terms found, so a chunk carrying only
+        some of them still matches. The production binding is conjunctive and
+        returns nothing in that case; a test that turns on multi-term matching
+        is therefore not evidence about production and belongs against a real
+        backend.
+        """
         terms = query.lower().split()
         if not terms:
             return []
@@ -128,6 +135,15 @@ class StubContentStore(ContentStore):
                 chunk.lifecycle_status = metadata["lifecycle_status"]
             if "project" in metadata:
                 chunk.project = metadata["project"]
+
+    async def parse_keyword_query(self, query: str) -> list[str]:
+        """Whitespace terms, lowercased -- no stopword or stemming model.
+
+        The production binding parses through a text-search configuration; this
+        double does not model one, so assertions about stopwords or stemming
+        belong against a real backend rather than here.
+        """
+        return query.lower().split()
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

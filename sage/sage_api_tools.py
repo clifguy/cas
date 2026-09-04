@@ -1354,6 +1354,13 @@ def register_sage_tools(
         Modes:
             semantic: Vector + optional BM25 fusion. Requires query.
             keyword: BM25-only search. Requires query. Use query="*" for filter-only listing.
+                Terms are conjunctive: a chunk matches only if it carries every
+                term, so each term added narrows the result and can empty it.
+                A quoted phrase matches as a unit; a term prefixed with "-" is
+                excluded. When a multi-term query returns nothing,
+                hints.warnings names the terms the query parsed to -- stopwords
+                are dropped and the rest stemmed, so they are not the words
+                typed.
             catalog: Filter-only SQL enumeration -- the canonical way to
                 enumerate documents already in a vault. No query needed. Returns
                 document metadata only (no chunks or scores). Supports pagination

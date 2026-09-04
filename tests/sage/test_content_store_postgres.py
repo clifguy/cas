@@ -487,6 +487,71 @@ async def test_search_bm25_empty_query_returns_empty(store):
     assert await store.search_bm25("   ", limit=10) == []
 
 
+async def test_search_bm25_requires_every_term_in_one_chunk(store):
+    """Multi-term keyword queries are conjunctive: one absent term matches nothing.
+
+    ``websearch_to_tsquery`` joins bare terms with AND, so a query is satisfied
+    only by a chunk carrying *every* term. Nothing else in the suite exercises a
+    multi-term query -- single-term queries behave identically under AND and OR,
+    so they cannot tell the two apart. Green on arrival by design: this pins
+    current behaviour so a change of query builder is a visible decision.
+    """
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword betaword gammaword")])
+
+    present = await store.search_bm25("alphaword betaword gammaword", limit=10)
+    assert [r.document_id for r in present] == ["d1"], "every term present in one chunk must match"
+
+    absent = await store.search_bm25("alphaword betaword gammaword deltaword", limit=10)
+    assert absent == [], (
+        "one absent term must cull the whole match under AND semantics; an OR "
+        "backend would still return d1 on the three terms it does carry"
+    )
+
+
+async def test_search_bm25_terms_must_share_a_chunk_not_a_document(store):
+    """The conjunction is per chunk, not per document."""
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword only here", chunk_index=0),
+            _chunk("d1", content="betaword only here", chunk_index=1),
+        ],
+    )
+
+    assert await store.search_bm25("alphaword betaword", limit=10) == [], (
+        "terms split across two chunks of one document must not match"
+    )
+
+
+async def test_parse_keyword_query_reports_lexemes_not_raw_words(store):
+    """The parse reports what Postgres actually requires, after stopwords and stemming.
+
+    A whitespace split would report ``why``/``did``/``the`` as required terms.
+    They are stopwords: the tsquery drops them, so naming them would misdirect a
+    caller trying to understand an empty result.
+    """
+    lexemes = await store.parse_keyword_query("Why did the running alphaword?")
+
+    assert "alphaword" in lexemes
+    assert "run" in lexemes, "'running' must appear stemmed, as the tsquery holds it"
+    for stopword in ("why", "did", "the"):
+        assert stopword not in lexemes, f"{stopword!r} is a stopword and is not required"
+
+
+async def test_parse_keyword_query_omits_negated_terms(store):
+    """A ``-excluded`` term is not a required term and must not be reported as one."""
+    lexemes = await store.parse_keyword_query("alphaword -betaword")
+
+    assert "alphaword" in lexemes
+    assert "betaword" not in lexemes, "an excluded term is not something the caller must supply"
+
+
+async def test_parse_keyword_query_empty_for_blank_query(store):
+    """A blank query parses to no required terms."""
+    assert await store.parse_keyword_query("") == []
+    assert await store.parse_keyword_query("   ") == []
+
+
 async def test_search_filter_pushdown_excludes_nonmatching(store):
     """Filter predicates exclude rows that match the query but fail the filter."""
     await store.index_chunks(

@@ -21,6 +21,7 @@ plain Python lists.
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -59,6 +60,12 @@ _INSERT_SQL = (
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, content, chunk_index, doc_type, lifecycle_status, project"
 )
+
+
+# A tsquery renders as quoted lexemes joined by operators, with ``!`` marking a
+# negation: ``'alpha' & !'beta'``. Embedded quotes are doubled. Only the
+# un-negated lexemes are terms the caller must supply.
+_TSQUERY_LEXEME = re.compile(r"(!\s*)?'((?:[^']|'')*)'")
 
 
 class PostgresContentStore(ContentStore):
@@ -221,6 +228,35 @@ class PostgresContentStore(ContentStore):
             params.append(limit)
             rows = await self._fetchall(sql, params)
             return [self._row_to_result(r) for r in rows]
+
+    async def parse_keyword_query(self, query: str) -> list[str]:
+        """The lexemes a keyword query requires, as the text-search config parses it.
+
+        ``search_bm25`` builds its query with ``websearch_to_tsquery``, which
+        joins bare terms with AND -- so a chunk matches only if it carries every
+        lexeme. Reporting those lexemes lets a caller see why a query matched
+        nothing, which the raw query text cannot tell them: stopwords are
+        dropped and the rest are stemmed, so the terms actually required are
+        neither the words typed nor a whitespace split of them.
+
+        Negated terms (``-word``) are excluded from the result: they constrain
+        the match but are not something the caller must supply.
+
+        Returns an empty list for a blank query, matching ``search_bm25``.
+        """
+        with self._query_timer.measure("parse_keyword_query"):
+            if not query or not query.strip():
+                return []
+            rows = await self._fetchall(
+                f"SELECT websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text",  # noqa: S608
+                [query],
+            )
+            rendered = rows[0][0] if rows and rows[0][0] else ""
+            return [
+                lexeme.replace("''", "'")
+                for negated, lexeme in _TSQUERY_LEXEME.findall(rendered)
+                if not negated
+            ]
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

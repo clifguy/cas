@@ -5895,6 +5895,195 @@ async def test_defined_lifecycle_status_no_warning(graph_store, retrieval_servic
     assert response.hints is None or "warnings" not in response.hints
 
 
+# --- keyword conjunction advisory ------------------------------------------
+#
+# Keyword mode is conjunctive on the production binding: every term must appear
+# in one chunk. An empty result therefore has two indistinguishable readings --
+# the vault holds nothing, or the query asked for too much at once. These cover
+# the advisory that separates them. The conjunction itself is exercised against
+# a real backend in test_content_store_postgres.py; StubContentStore matches on
+# any term, so it cannot produce the collapse.
+
+
+async def test_keyword_multi_term_empty_result_warns(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A multi-term keyword query matching nothing names its terms and the conjunction."""
+    await graph_store.insert_document(_make_doc(_id("kw_warn_a")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_a"),
+        [("Section 1", "alphaword content only.")],
+    )
+
+    # Positive control: the corpus is reachable in keyword mode, so the empty
+    # result below is the query's doing rather than an empty vault -- which is
+    # the distinction the advisory exists to draw.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    request = DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword")
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is not None, "an empty multi-term keyword result must carry hints"
+    warnings = response.hints.get("warnings")
+    assert warnings, "an empty multi-term keyword result must surface a warning"
+    joined = " ".join(warnings)
+    assert "deltaword" in joined and "epsilonword" in joined, (
+        "the warning must name the terms the query required"
+    )
+
+
+async def test_keyword_single_term_empty_result_stays_silent(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A single-term miss is a true zero and must NOT warn.
+
+    Anti-coincidental trap for "warn on any empty keyword result": with one
+    term there is no conjunction to explain, and a warning would misdirect.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_b")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_b"),
+        [("Section 1", "alphaword content only.")],
+    )
+
+    request = DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword")
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is None or "warnings" not in response.hints
+
+
+async def test_keyword_multi_term_with_hits_has_no_warning(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A multi-term query that matches must NOT warn.
+
+    Anti-coincidental trap for "warn whenever the query is multi-term".
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_c")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_c"),
+        [("Section 1", "alphaword betaword together here.")],
+    )
+
+    request = DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword")
+    response = await retrieval_service.discover(request)
+
+    assert response.results, "precondition: the query must match"
+    assert response.hints is None or "warnings" not in response.hints
+
+
+async def test_semantic_multi_term_empty_result_stays_silent(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """The advisory is keyword-only: semantic mode has no conjunction to explain."""
+    await graph_store.insert_document(_make_doc(_id("kw_warn_d")))
+
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="deltaword epsilonword")
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is None or "warnings" not in response.hints
+
+
+async def test_keyword_warning_reports_the_backend_parse_not_a_word_split(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """The advisory names the terms the backend parsed, not a split of the query text.
+
+    Anti-coincidental trap for computing the terms in the service as
+    ``query.split()``. The double's own parse is a word split, so that rival
+    is indistinguishable from the real one in every other test here; only a
+    parse whose output cannot be confused with a split separates them. What is
+    at stake is the advisory's truthfulness -- a word split would name
+    stopwords as required terms, which is the misdirection the advisory exists
+    to remove.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_f")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_f"),
+        [("Section 1", "alphaword content only.")],
+    )
+
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    async def _parse(query: str) -> list[str]:
+        return ["stemmedlexeme", "otherlexeme"]
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword")
+    )
+
+    assert response.results == []
+    joined = " ".join(response.hints.get("warnings") or [])
+    assert "stemmedlexeme" in joined and "otherlexeme" in joined, (
+        "the advisory must report the backend's parse"
+    )
+    assert "deltaword" not in joined, (
+        "reporting the raw query words means the service split the text itself"
+    )
+
+
+async def test_keyword_term_warning_composes_with_vocabulary_warning(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Both advisories survive together.
+
+    Anti-coincidental trap for merging ``{"warnings": [...]}`` into hints a
+    second time: a dict merge replaces the key, so whichever advisory is
+    attached last would silently discard the other.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_e"), doc_type="note"))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_e"),
+        [("Section 1", "alphaword content only.")],
+        doc_type="note",
+    )
+
+    # Positive control: the corpus is reachable under its real doc_type, so
+    # both advisories below describe the request rather than an empty vault.
+    control = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="alphaword",
+            filters=RetrievalFilters(doc_type="note"),
+        )
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="deltaword epsilonword",
+        filters=RetrievalFilters(doc_type="template"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.results == []
+    assert response.hints is not None
+    joined = " ".join(response.hints.get("warnings") or [])
+    assert "template" in joined, "the out-of-vocabulary doc_type advisory must survive"
+    assert "deltaword" in joined, "the keyword-conjunction advisory must survive"
+
+
 @pytest.mark.parametrize(
     "mode",
     [RetrievalMode.CATALOG, RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD],

@@ -131,6 +131,22 @@ class ContentStore(ABC):
         Values may be a single string (equality) or a list of strings
         (IN clause). When provided, only chunks matching all predicates
         are searched.
+
+        Terms are conjunctive on the production binding: a chunk matches only
+        if it carries every term. ``parse_keyword_query`` reports which terms
+        those are.
+        """
+
+    @abstractmethod
+    async def parse_keyword_query(self, query: str) -> list[str]:
+        """The terms ``search_bm25`` requires of a chunk, as the backend parses them.
+
+        Lets a caller be told why a keyword query matched nothing. The raw query
+        text cannot answer that on the production binding, which drops stopwords
+        and stems the rest, so the required terms are neither the words typed nor
+        a whitespace split of them. Terms the query excludes are omitted.
+
+        Returns an empty list for a blank query, matching ``search_bm25``.
         """
 
     @abstractmethod
