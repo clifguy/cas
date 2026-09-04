@@ -31,7 +31,7 @@ openapi: "3.1.0"
 
 info:
   title: SAGE Core API
-  version: "2.1"
+  version: "2.2"
   description: >-
     Protocol-neutral Core API for SAGE (Salience-Aware Graph Engine). Exposes
     discovery, ingestion, lifecycle management, graph operations, and access
@@ -580,9 +580,9 @@ paths:
         filesystem in the cloud profile, so content is delivered by upload
         rather than by path -- stages each file under the SAGE process with
         its original filename preserved, then runs the same three-phase batch
-        pipeline (plan_batch_edges, per-file ingest, resolve_and_execute) the
-        co-located profile drives in-process. Both profiles therefore produce
-        equivalent ingest summaries.
+        pipeline -- plan the edges, ingest each file, then resolve the planned
+        edges -- that the co-located profile drives in-process. Both profiles
+        therefore produce equivalent ingest summaries.
 
 
         The `metadata` form field is a JSON-encoded BatchIngestUploadMetadata
@@ -936,14 +936,29 @@ paths:
 
         Designed for version history retrieval (supersedes chains) but
         works with any edge type that forms a linear or near-linear
-        chain. The walk itself is one recursive CTE whatever the chain
-        length, followed by a query for the connecting edges.
+        chain. Three round-trips for a chain of two or more: an
+        existence check on the starting document, then the walk itself
+        -- one recursive CTE whatever the chain length -- then a query
+        for the connecting edges. A chain whose `total_length` is 1
+        skips that edge query and spends two round-trips on the
+        `available_edge_types` hint instead, asking for the document's
+        inbound and outbound edges separately: four in all. The hint
+        turns on the whole chain being one document, not on a page of
+        one, so a `limit` of 1 over a longer chain does not trigger it.
 
 
         The result is symmetric: any chain member returns the full
         ordered chain with that member's position indicated. A document
         with no edges of the requested type returns a single-entry
         chain (the document itself as both head and tail).
+
+
+        `limit` and `offset` page the returned entries without changing
+        the walk: `total_length` stays the size of the whole chain,
+        `length` counts what this response carries, and each entry keeps
+        its absolute `position` rather than being renumbered from the
+        start of the page. `head_id` and `tail_id` likewise name the
+        chain's own ends, which a page need not contain.
 
 
         `is_linear` is true when the chain is strictly linear: no
@@ -1796,7 +1811,7 @@ paths:
       operationId: get_filename_metadata
       summary: Parse a filename without ingesting.
       description: >-
-        Side-effect-free wrapper over the vault's `FilenameParser`.
+        Side-effect-free wrapper over the vault's filename parsing.
         Returns the metadata fields the parser would extract from the
         supplied filename under the named adapter. No document is
         created; vault state is unchanged. Intended for callers that
@@ -2451,8 +2466,8 @@ paths:
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
-        maintenance surface (CAS-ADR-029). Wraps the
-        GraphStore.initialize(migrate=True) codepath: closes the running
+        maintenance surface (CAS-ADR-029). Runs the graph store's own
+        migrating initialization: closes the running
         vault's graph_store, opens a fresh one to apply ALTER TABLE
         migrations and BACKFILL_PLAN backfills, then reloads the vault in
         the registry so subsequent operations observe the new schema.
@@ -2506,12 +2521,39 @@ paths:
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
         to the maintenance API surface (CAS-ADR-029). Enumerates
-        documents whose pipeline_status is 'abstraction_skipped', dispatches
-        IngestionService.reabstract per document, and polls until each
-        reaches a terminal pipeline_status (abstraction_complete or failed).
+        documents whose pipeline_status is 'abstraction_skipped', dispatches a
+        reabstract per document, and polls until each
+        reaches a terminal pipeline_status (abstraction_complete,
+        abstraction_skipped, or failed).
 
 
-        Reuses the in-process AbstractionProvider that the running SAGE
+        The per-document poll is bounded. A document can stop advancing
+        toward a terminal status altogether -- the abstraction worker is
+        cancelled on lifespan teardown and on registry reload, which drops
+        queued jobs and strands their documents mid-pipeline -- so a
+        document that has not settled within the server's wait ceiling is
+        abandoned and recorded with outcome 'timeout' rather than polled
+        indefinitely. Abandoning is a statement about the poll, not about
+        the document: the generation may still complete. It is not,
+        however, self-healing. This operation enumerates
+        'abstraction_skipped' only, and an abandoned document sits at
+        'abstraction_in_progress', so a later call reaches it only once
+        something else advances it -- startup recovery, which runs from the
+        server's lifespan hook and so does not fire on a registry reload
+        alone, or the out-of-band bulk sweep with a selector naming that
+        status.
+
+
+        Outcomes beyond `success` and `skipped_pdf` all count toward
+        failed_count, which counts documents that did not reach
+        abstraction_complete, and are reported apart because only
+        `llm_failure` indicates an error the provider actually raised:
+        `still_skipped` is a document that settled back at
+        `abstraction_skipped`, having declined abstraction rather than
+        failed at it, and `timeout` is one abandoned at the ceiling.
+
+
+        Reuses the in-process abstraction provider that the running SAGE
         process loaded once at startup; does NOT initialize a second
         provider (the F-8 unified-memory cautionary tale). The
         complementary scripts/reabstract_deferred.py remains as the
@@ -3044,6 +3086,23 @@ components:
       description: Edge traversal direction relative to the starting document.
 
     # -------------------------------------------------------------------------
+    # Identifiers
+    # -------------------------------------------------------------------------
+    #
+    # The named identifier types that response schemas reference. The
+    # like-named entries under `components/parameters` describe the same
+    # values arriving as path parameters; these describe them appearing
+    # as properties of a response body.
+
+    VaultId:
+      type: string
+      description: Vault identifier. All operations are scoped to a single vault.
+
+    DocumentId:
+      type: string
+      description: Immutable document identifier (short hash + title hint).
+
+    # -------------------------------------------------------------------------
     # Core Entities
     # -------------------------------------------------------------------------
 
@@ -3201,6 +3260,13 @@ components:
           description: >-
             Source-type-specific metadata (Tier 3). Structure varies by
             source_type. Stored as key-value pairs in the graph store.
+        metadata_confirmed:
+          type: boolean
+          description: >-
+            True when the document's metadata has been confirmed (no
+            filename inference needed or inferred values have been
+            reviewed). False marks the document as pending in the
+            metadata-review queue.
 
     DocumentSummary:
       type: object
@@ -3263,6 +3329,25 @@ components:
             so callers can read fields like ticket_priority or
             failure_class from a single catalog/semantic/keyword pass
             without follow-up get_document round-trips.
+        source_path:
+          type: string
+          nullable: true
+          description: Location of the original artifact, when present.
+        source_modified_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Source file modification timestamp at last ingestion.
+        document_date:
+          type: string
+          nullable: true
+          description: >-
+            Authoritative content date in YYYY-MM-DD format (calendar
+            date, not a UTC-anchored instant). Matches the on-disk
+            Document.document_date shape — the projection passes the
+            string through unchanged so the wire serialization stays a
+            bare calendar date. Consumers that need a datetime (e.g.,
+            recency scoring) parse it at the use site.
 
     DocumentSummaryLight:
       type: object
@@ -4740,6 +4825,17 @@ components:
             on real-run responses, error entries, and no-op
             transitions. Preserved under `response_mode=light` (it's
             small and is the most useful summary for dry-run callers).
+        created_edge:
+          $ref: "#/components/schemas/Edge"
+          nullable: true
+          description: >-
+            The atomic supersedes edge produced by the per-item
+            transition, populated only for `action=supersede` items.
+            Carries the real edge id on a successful real run and the
+            nil-UUID sentinel id on a successful dry-run. Null on error
+            entries and on every non-supersede action. Preserved under
+            `response_mode=light` (small; the only signal supersede
+            callers have for the edge's wire shape).
 
     BulkLifecycleResponse:
       type: object
@@ -5503,7 +5599,7 @@ components:
 
     ChainResponse:
       type: object
-      required: [chain, head_id, tail_id, query_position, length, is_linear]
+      required: [chain, head_id, tail_id, query_position, length, total_length, is_linear]
       description: Response body for the chain walk endpoint; carries the ordered chain with head/tail anchors and a fork-detection flag.
       properties:
         chain:
@@ -5512,7 +5608,9 @@ components:
             $ref: "#/components/schemas/ChainEntry"
           description: >-
             Ordered list of documents in the chain, from tail (position 0)
-            to head (position length-1).
+            to head. Each entry's position is its index in the full chain,
+            so a page taken with limit or offset keeps those absolute
+            positions rather than renumbering from zero.
         head_id:
           type: string
           description: Document ID of the chain head (latest version / terminal node).
@@ -5526,14 +5624,29 @@ components:
             Zero-based position of the queried document within the chain.
         length:
           type: integer
+          minimum: 0
+          description: >-
+            Number of entries carried in this response, after limit and
+            offset are applied. Read total_length for the size of the
+            whole chain.
+        total_length:
+          type: integer
           minimum: 1
-          description: Total number of documents in the chain.
+          description: Total number of documents in the full chain.
         is_linear:
           type: boolean
           description: >-
             True if the chain is strictly linear (no forks or merges).
             False indicates a data quality issue where multiple documents
             share a predecessor or successor of the specified edge type.
+        available_edge_types:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >-
+            Other edge types observed on the queried document, surfaced as
+            a hint when the requested edge_type produced no chain.
 
     ChainEntry:
       type: object
@@ -6456,14 +6569,22 @@ components:
 
     ReabstractOutcome:
       type: string
-      enum: [success, skipped_pdf, llm_failure]
+      enum: [success, skipped_pdf, llm_failure, still_skipped, timeout]
       description: >-
         Per-document outcome classification in a ReabstractReport.
         `success`: the document's pipeline_status transitioned to
         abstraction_complete. `skipped_pdf`: the document is source_type=pdf
         and was excluded because include_pdf was False. `llm_failure`:
         dispatch raised, background generation raised, or the document
-        terminated in pipeline_status='failed'.
+        terminated in pipeline_status='failed'. `still_skipped`: the
+        document settled back at pipeline_status='abstraction_skipped',
+        having declined abstraction rather than failed at it. `timeout`:
+        the document had not reached a terminal pipeline_status when the
+        wait ceiling elapsed, and was abandoned while its abstraction may
+        still have been running. The last three all count toward
+        failed_count, which counts documents that did not reach
+        abstraction_complete; they are reported apart because only
+        `llm_failure` indicates an error the provider actually raised.
 
     ReabstractRequest:
       type: object
@@ -6582,11 +6703,15 @@ components:
           description: Document id whose reabstract outcome this entry records.
         outcome:
           $ref: "#/components/schemas/ReabstractOutcome"
-          description: Per-document classification (success / skipped_pdf / llm_failure).
+          description: >-
+            Per-document classification (success / skipped_pdf /
+            llm_failure / still_skipped / timeout).
         error_message:
           type: string
           nullable: true
-          description: Failure description when outcome is 'llm_failure'; null otherwise.
+          description: >-
+            Failure description when outcome is 'llm_failure',
+            'still_skipped', or 'timeout'; null otherwise.
         elapsed_seconds:
           type: number
           nullable: true
@@ -7037,28 +7162,43 @@ components:
           description: >-
             Per-document status. `started`: dispatch begun, no outcome
             yet. `completed`: reabstract reached `abstraction_complete`.
-            `failed`: dispatch raised or terminal pipeline_status was
-            `failed` (outcome=`llm_failure`). `skipped`: PDF excluded
-            from the worklist by `include_pdf=False`
-            (outcome=`skipped_pdf`).
+            `failed`: dispatch raised, terminal pipeline_status was
+            `failed` (outcome=`llm_failure`), or the wait ceiling elapsed
+            with the document still non-terminal (outcome=`timeout`).
+            `skipped`: PDF excluded from the worklist by
+            `include_pdf=False` (outcome=`skipped_pdf`), or the document
+            settled back at `abstraction_skipped`
+            (outcome=`still_skipped`). Outcomes widened without widening
+            this vocabulary, so a client switching on `status` alone
+            keeps working and one needing the distinction reads
+            `outcome`.
         outcome:
           $ref: "#/components/schemas/ReabstractOutcome"
           nullable: true
           description: >-
             Per-document terminal classification. Set on `completed`,
             `failed`, and `skipped` events; omitted on the leading
-            `started` event.
+            `started` event. Discriminates within a status: `failed`
+            carries `llm_failure` or `timeout`, and `skipped` carries
+            `skipped_pdf` or `still_skipped`.
         error:
           type: string
           nullable: true
-          description: Failure description when `status=failed`; omitted otherwise.
+          description: >-
+            Failure description. Set on every `failed` event and on a
+            `skipped` event whose outcome is `still_skipped`, which carries
+            one because a document that declined abstraction has something
+            to report; omitted on `started`, on `completed`, and on the
+            `skipped_pdf` form of `skipped`.
         elapsed_seconds:
           type: number
           nullable: true
           description: >-
-            Wall-clock seconds from dispatch to terminal status, set on
-            `completed` and `failed` events. Omitted on `started` (no
-            work yet) and `skipped` (no work was done).
+            Wall-clock seconds from dispatch to terminal status. Set on
+            `completed`, on `failed`, and on the `still_skipped` form of
+            `skipped`, all of which dispatched and waited. Omitted on
+            `started` (no work yet) and on the `skipped_pdf` form of
+            `skipped` (never dispatched).
 
     ReabstractSummaryEvent:
       type: object

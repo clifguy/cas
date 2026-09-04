@@ -542,7 +542,7 @@ def register_sage_tools(
         filename: str,
         source_type: str,
     ) -> dict:
-        """Parse a filename's basename through the vault's FilenameParser and
+        """Parse a filename's basename through the vault's filename parsing and
         return the extracted metadata. Side-effect free: no document is
         created and vault state is unchanged.
 
@@ -1233,12 +1233,27 @@ def register_sage_tools(
         Follows edges of a single type in both directions from the
         starting document, collecting all reachable nodes into an
         ordered list with positional metadata (head, tail, query
-        position, ``is_linear``). The walk itself is one recursive CTE
-        whatever the chain length, followed by a query for the
-        connecting edges. Designed for version history retrieval on
-        supersedes chains but works with any edge type. A
-        document with no edges of the requested type returns a
-        single-entry chain (the document itself as both head and tail).
+        position, ``is_linear``). Three round-trips for a chain of two
+        or more: an existence check on the starting document, then the
+        walk itself -- one recursive CTE whatever the chain length --
+        then a query for the connecting edges. A chain whose
+        ``total_length`` is 1 skips that edge query and spends two
+        round-trips on the ``available_edge_types`` hint instead, asking
+        for the document's inbound and outbound edges separately: four
+        in all. The hint turns on the whole chain being one document,
+        not on a page of one, so a ``limit`` of 1 over a longer chain
+        does not trigger it. Designed for version history retrieval on
+        supersedes chains but works with any edge type. A document with
+        no edges of the requested type returns a single-entry chain (the
+        document itself as both head and tail).
+
+        ``limit`` and ``offset`` page the returned entries without
+        changing the walk: ``total_length`` stays the size of the whole
+        chain, ``length`` counts what this response carries, and each
+        entry keeps its absolute ``position`` rather than being
+        renumbered from the start of the page. ``head_id`` and
+        ``tail_id`` likewise name the chain's own ends, which a page
+        need not contain.
 
         ``is_linear`` is true when the chain is strictly linear: no
         document shares a predecessor or a successor of the requested
@@ -2538,18 +2553,14 @@ def register_sage_tools(
         vault config is scanned. Clean declarations get partial UNIQUE
         indexes installed; declarations whose existing data violates the
         constraint are recorded in ``tier3_uniqueness_collisions``, the index
-        is not activated (see ``Tier3UniqueIndexBlockedError`` below), and any
-        previously-clean index is preserved (no implicit DROP). Activated
-        declarations are listed in ``tier3_uniqueness_activations``.
+        is not activated, and any previously-clean index is preserved (no
+        implicit DROP). Activated declarations are listed in
+        ``tier3_uniqueness_activations``.
         **Callers must inspect both fields** on every call, no-op or not.
         Query ``get_vault_config`` for the ``unique_keys`` declarations.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
-        - ``Tier3UniqueIndexBlockedError``: a ``unique_keys`` declaration's
-          existing data violates the constraint, so its partial UNIQUE index
-          cannot be installed; the collisions are captured in
-          ``tier3_uniqueness_collisions`` and not auto-resolved.
 
         Args:
             vault_id: Target vault identifier.
@@ -2851,10 +2862,35 @@ def register_sage_tools(
         Enumerates documents in the named vault at
         ``pipeline_status=abstraction_skipped``, dispatches a reabstract per
         document, and polls until each reaches terminal status
-        (``abstraction_complete`` or ``failed``). Returns a ReabstractReport
-        with per-document outcomes and aggregate counts.
+        (``abstraction_complete``, ``abstraction_skipped``, or ``failed``).
+        Returns a ReabstractReport with per-document outcomes and aggregate
+        counts.
 
-        Reuses the in-process AbstractionProvider this MCP server loaded at
+        The per-document poll is bounded. A document can stop advancing
+        toward a terminal status altogether -- the abstraction worker is
+        cancelled on lifespan teardown and on registry reload, which drops
+        queued jobs and strands their documents mid-pipeline -- so a
+        document that has not settled within the server's wait ceiling is
+        abandoned and recorded with outcome ``timeout`` rather than polled
+        indefinitely. Abandoning is a statement about the poll, not about
+        the document: the generation may still complete. It is not,
+        however, self-healing. This operation enumerates
+        ``abstraction_skipped`` only, and an abandoned document sits at
+        ``abstraction_in_progress``, so a later call reaches it only once
+        something else advances it -- startup recovery, which runs from the
+        server's lifespan hook and so does not fire on a registry reload
+        alone, or the out-of-band bulk sweep with a selector naming that
+        status.
+
+        Outcomes beyond ``success`` and ``skipped_pdf`` all count toward
+        ``failed_count``, which counts documents that did not reach
+        ``abstraction_complete``, and are reported apart because only
+        ``llm_failure`` indicates an error the provider actually raised:
+        ``still_skipped`` is a document that settled back at
+        ``abstraction_skipped``, having declined abstraction rather than
+        failed at it, and ``timeout`` is one abandoned at the ceiling.
+
+        Reuses the in-process abstraction provider this MCP server loaded at
         startup; does NOT spin up a second Qwen3 instance. The standalone
         ``scripts/reabstract_deferred.py`` remains the operator fallback for
         cron-style workflows where no MCP server is running.
@@ -2865,7 +2901,7 @@ def register_sage_tools(
 
         Long-running: an N-document pass takes roughly N times the
         per-document abstraction wall-clock (seconds to tens of seconds each
-        against Qwen3-30B MLX, sub-second against the test stub). The tool
+        against a local MLX model, sub-second against the test stub). The tool
         returns a single ReabstractReport once the pass completes; allocate a
         generous client-side timeout. (The HTTP route streams per-document
         SSE progress; the MCP contract is report-and-return.)

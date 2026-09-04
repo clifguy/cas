@@ -142,3 +142,39 @@ def test_live_validation_section_documented() -> None:
     assert "verify_vault_source_files" in text or "verify-source-files" in text, (
         "runbook must name the source-file integrity audit"
     )
+
+
+def test_operator_command_blocks_declare_the_rewrite_expectation() -> None:
+    """Every runbook invocation of the driver passes ``--expect-rewritten``.
+
+    The runbook drives a tenant-backed vault, where several of the provenance
+    check's assertions only bite if the store actually rewrote the retained copy.
+    Left at the ``any`` default, a run against a store that had stopped rewriting
+    reports ``rewritten=no`` and PASSes — unenforced and green, which is the state
+    the expectation exists to prevent.
+
+    Pinned here because its absence is why it went missing: the CI harness gained
+    the flag and a gate to hold it, while the runbook — the path used for exactly
+    the ad-hoc investigation where the answer matters most — kept the older
+    command and nothing noticed.
+    """
+    # Anchored on the command form, not on the filename: the runbook also *names*
+    # the driver in prose, and a gate that could not tell a sentence from a
+    # command would fire on the wrong line — the same conflation of prose with
+    # executable instruction that this test exists to guard against. `--phase` is
+    # required by the driver, so every real invocation carries it.
+    invocations = [
+        stripped
+        for line in _runbook_text().splitlines()
+        if (stripped := line.strip()).startswith("python3 ")
+        and "sharepoint_validate.py" in stripped
+        and "--phase" in stripped
+    ]
+    assert len(invocations) >= 2, (
+        f"expected the pre-restart and post-restart invocations, found {invocations}"
+    )
+    for line in invocations:
+        assert "--expect-rewritten" in line, (
+            "every runbook driver invocation must state the rewrite expectation, or an "
+            f"operator copying it verbatim runs unenforced: {line!r}"
+        )

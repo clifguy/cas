@@ -118,7 +118,20 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     # system -- deliberately not StrEnum members, per sage/models/enums.py.
     "LifecycleAction",
     "LifecycleStatus",
+    # Constrained scalars, carried in Python as validating type aliases
+    # (`DocumentIdStr`, `VaultIdStr` in sage/models/schemas.py) rather
+    # than as BaseModel classes. A model would wrap a bare string in an
+    # object on the wire, which is not the shape either surface sends.
+    "DocumentId",
+    "VaultId",
 }
+
+# Anti-vacuity floor for the field-level Pydantic->YAML direction, which
+# skips any schema with no same-named model and would therefore pass over
+# an empty loop if the reflection helpers returned nothing. 125 schemas
+# pair today, across both specs; the floor sits well below that so
+# ordinary movement does not trip it while a collapse does.
+MIN_SCHEMAS_COMPARED_TO_PYDANTIC: int = 100
 
 
 def _load_spec(path: Path) -> dict | None:
@@ -1681,11 +1694,12 @@ def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
     FastAPI introspection -- BaseModels not referenced by any handler
     still get checked.
 
-    Reverse direction only (Pydantic -> YAML). Class-existence only; the
-    forward-direction test already covers field-level superset, and the
-    reverse direction is intentionally scoped to existence -- comparing
-    Pydantic field sets to YAML property sets in both directions would
-    duplicate the same signal.
+    Reverse direction only (Pydantic -> YAML), and class-existence only.
+    The field-level reverse direction is a separate signal rather than a
+    duplicate of the forward one -- the forward test asserts YAML
+    properties are a subset of the model's fields, which says nothing
+    about a field the model declares and the YAML omits -- and it is
+    asserted by `test_every_pydantic_field_has_a_yaml_property` below.
 
     Scope: SAGE Core API spec only. Parallel parity assertion for
     `docs/fs/cas_app_api.openapi.yaml` is tracked separately by.
@@ -1724,6 +1738,68 @@ def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
             msg_lines.append(f"  {name}")
 
     assert not msg_lines, "Pydantic->YAML parity violations:\n" + "\n".join(msg_lines)
+
+
+# ---------------------------------------------------------------------------
+# Test 6a-ii: Every Pydantic field is declared as a YAML property
+# ---------------------------------------------------------------------------
+
+
+def test_every_pydantic_field_has_a_yaml_property(
+    sage_core_spec: dict | None, cas_app_spec: dict | None
+):
+    """Every field a response model declares is declared in the YAML too.
+
+    The field-level reverse direction. Its sibling asserts the YAML's
+    properties are a subset of the model's fields, which is silent on
+    the mirror case: a field the API really returns and the published
+    contract never mentions. A caller reading the spec does not know to
+    look for it, and the verbatim description-parity gate cannot see it
+    either, because that gate iterates YAML properties and a property
+    that does not exist has no description to compare.
+
+    Found eight such fields when first written, across both specs --
+    among them `Document.metadata_confirmed`, which four caller-facing
+    narratives name while the contract did not declare it, and
+    `ChainResponse.total_length`, the field a caller needs in order to
+    page correctly.
+
+    Class-existence in both directions is covered by the neighbouring
+    tests; this one runs only over schemas that already have a
+    same-named model, so a missing class is reported once, there. That
+    skip is also this test's vacuity risk -- reflection returning
+    nothing would make every schema skip and the assertion pass over an
+    empty loop -- so the count of schemas actually compared is floored
+    below.
+    """
+    violations: list[str] = []
+    compared = 0
+    for label, spec, classes in (
+        ("sage_core", sage_core_spec, _sage_pydantic_classes()),
+        ("cas_app", cas_app_spec, _cas_app_pydantic_classes()),
+    ):
+        if spec is None:
+            continue
+        for schema_name, schema_def in (
+            (spec.get("components") or {}).get("schemas") or {}
+        ).items():
+            model = classes.get(schema_name)
+            if model is None:
+                continue
+            compared += 1
+            undeclared = set(model.model_fields) - set(_flatten_yaml_properties(schema_def, spec))
+            if undeclared:
+                violations.append(f"  {label}: {schema_name} -> {sorted(undeclared)}")
+
+    assert compared >= MIN_SCHEMAS_COMPARED_TO_PYDANTIC, (
+        f"only {compared} schemas were compared against a Pydantic model; "
+        "the reflection helpers returned little or nothing, so this test "
+        "passed over an almost-empty loop rather than finding no violations"
+    )
+    assert not violations, (
+        "Pydantic fields with no YAML property (the API returns these and "
+        "the published contract does not declare them):\n" + "\n".join(sorted(violations))
+    )
 
 
 # ---------------------------------------------------------------------------
