@@ -25,6 +25,21 @@ from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 # marker; backfill and stage-3 refresh match on it via equality.
 SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
 
+
+class KeywordQueryParse(NamedTuple):
+    """How the keyword backend parsed a query.
+
+    ``terms`` are the lexemes a chunk must carry, after the backend's own
+    stopword and stemming treatment and with anything the query excluded
+    removed. ``all_required`` is false when the parse admits alternatives, so
+    a caller cannot describe the query as conjunctive: a chunk can satisfy it
+    while carrying only some of the terms.
+    """
+
+    terms: tuple[str, ...]
+    all_required: bool
+
+
 # The spellings a plain POSIX form reduces: a `.` segment (bounded by a
 # separator or an end, so a dot inside a *filename* is untouched), a doubled
 # separator, and a trailing one. `..` is deliberately absent -- it is preserved
@@ -138,15 +153,19 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
-    async def parse_keyword_query(self, query: str) -> list[str]:
-        """The terms ``search_bm25`` requires of a chunk, as the backend parses them.
+    async def parse_keyword_query(self, query: str) -> KeywordQueryParse:
+        """How ``search_bm25`` read this query, so a caller can be told why it missed.
 
-        Lets a caller be told why a keyword query matched nothing. The raw query
-        text cannot answer that on the production binding, which drops stopwords
-        and stems the rest, so the required terms are neither the words typed nor
-        a whitespace split of them. Terms the query excludes are omitted.
+        The raw query text cannot answer that on the production binding, which
+        drops stopwords and stems the rest, so the required terms are neither
+        the words typed nor a whitespace split of them. Terms the query
+        excludes are omitted, and a query admitting alternatives reports
+        ``all_required=False`` -- describing such a query as conjunctive would
+        state the opposite of what the caller wrote.
 
-        Returns an empty list for a blank query, matching ``search_bm25``.
+        Carries no terms for a blank query, matching ``search_bm25``. A
+        non-blank query can also carry none, when every word in it is a
+        stopword: the backend then searched for nothing at all.
         """
 
     @abstractmethod

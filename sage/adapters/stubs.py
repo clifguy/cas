@@ -18,6 +18,7 @@ from sage.adapters.interfaces import (
     EmbeddingProvider,
     FacetFieldCounts,
     GraphStore,
+    KeywordQueryParse,
     SearchResult,
 )
 from sage.models.enums import ResolutionPolicy
@@ -136,14 +137,16 @@ class StubContentStore(ContentStore):
             if "project" in metadata:
                 chunk.project = metadata["project"]
 
-    async def parse_keyword_query(self, query: str) -> list[str]:
-        """Whitespace terms, lowercased -- no stopword or stemming model.
+    async def parse_keyword_query(self, query: str) -> KeywordQueryParse:
+        """Whitespace terms, lowercased -- no stopword, stemming, or operator model.
 
-        The production binding parses through a text-search configuration; this
-        double does not model one, so assertions about stopwords or stemming
-        belong against a real backend rather than here.
+        The production binding parses through a text-search configuration and
+        recognises exclusion and alternation; this double does none of that, so
+        it always reports ``all_required=True``. Assertions about stopwords,
+        stemming, negation, or ``or`` belong against a real backend rather than
+        here.
         """
-        return query.lower().split()
+        return KeywordQueryParse(terms=tuple(query.lower().split()), all_required=True)
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

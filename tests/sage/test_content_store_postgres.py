@@ -530,26 +530,71 @@ async def test_parse_keyword_query_reports_lexemes_not_raw_words(store):
     They are stopwords: the tsquery drops them, so naming them would misdirect a
     caller trying to understand an empty result.
     """
-    lexemes = await store.parse_keyword_query("Why did the running alphaword?")
+    parse = await store.parse_keyword_query("Why did the running alphaword?")
 
-    assert "alphaword" in lexemes
-    assert "run" in lexemes, "'running' must appear stemmed, as the tsquery holds it"
+    assert "alphaword" in parse.terms
+    assert "run" in parse.terms, "'running' must appear stemmed, as the tsquery holds it"
     for stopword in ("why", "did", "the"):
-        assert stopword not in lexemes, f"{stopword!r} is a stopword and is not required"
+        assert stopword not in parse.terms, f"{stopword!r} is a stopword and is not required"
+    assert parse.all_required
 
 
 async def test_parse_keyword_query_omits_negated_terms(store):
     """A ``-excluded`` term is not a required term and must not be reported as one."""
-    lexemes = await store.parse_keyword_query("alphaword -betaword")
+    parse = await store.parse_keyword_query("alphaword -betaword")
 
-    assert "alphaword" in lexemes
-    assert "betaword" not in lexemes, "an excluded term is not something the caller must supply"
+    assert "alphaword" in parse.terms
+    assert "betaword" not in parse.terms, "an excluded term is not something the caller must supply"
+
+
+async def test_parse_keyword_query_omits_a_negated_phrase(store):
+    """A negated *phrase* excludes every lexeme in it, not just the first.
+
+    ``-"a b"`` renders ``!( 'a' <-> 'b' )`` -- the negation sits before a
+    parenthesised group rather than before a quote. Matching a ``!`` only where
+    it abuts a quote drops ``'a'`` and keeps ``'b'``, reporting a term the
+    caller explicitly excluded as one they must supply. That rival passes
+    ``test_parse_keyword_query_omits_negated_terms``, whose negation is a bare
+    word; only a phrase separates them.
+    """
+    parse = await store.parse_keyword_query('-"alphaword betaword" gammaword')
+
+    assert parse.terms == ("gammaword",), (
+        "both lexemes of the negated phrase must be absent, and gammaword present"
+    )
+
+
+async def test_parse_keyword_query_reports_an_or_query_as_not_all_required(store):
+    """``or`` renders an alternation, so the query is not conjunctive.
+
+    ``websearch_to_tsquery`` reads ``or`` as ``|``. A chunk satisfies such a
+    query while carrying only one term, so describing it as requiring every
+    term states the opposite of what the caller wrote.
+    """
+    alternation = await store.parse_keyword_query("alphaword or betaword")
+    assert set(alternation.terms) == {"alphaword", "betaword"}
+    assert not alternation.all_required, "an alternation must not report as all-required"
+
+    conjunction = await store.parse_keyword_query("alphaword betaword")
+    assert conjunction.all_required, "a bare-term query is conjunctive"
+
+
+async def test_parse_keyword_query_carries_no_terms_when_every_word_is_a_stopword(store):
+    """A non-blank query can still search for nothing at all."""
+    parse = await store.parse_keyword_query("the a of")
+
+    assert parse.terms == (), "every word is a stopword, so the tsquery is empty"
 
 
 async def test_parse_keyword_query_empty_for_blank_query(store):
-    """A blank query parses to no required terms."""
-    assert await store.parse_keyword_query("") == []
-    assert await store.parse_keyword_query("   ") == []
+    """A blank query carries no required terms.
+
+    Pins the contract, not the guard that implements it: Postgres renders the
+    empty tsquery for ``''`` and ``'   '`` too, so this passes with or without
+    the early return. It is not evidence that branch is reached.
+    """
+    assert (await store.parse_keyword_query("")).terms == ()
+    assert (await store.parse_keyword_query("   ")).terms == ()
 
 
 async def test_search_filter_pushdown_excludes_nonmatching(store):

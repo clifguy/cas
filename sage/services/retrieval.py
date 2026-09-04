@@ -387,18 +387,25 @@ class RetrievalService:
     def _merge_hints(response: DiscoverResponse, addition: dict[str, object]) -> None:
         """Fold extra keys into a response's hints without discarding it."""
         if response.hints is None:
-            response.hints = addition
-        else:
-            response.hints = {**response.hints, **addition}
+            response.hints = dict(addition)
+            return
+        merged = {**response.hints, **addition}
+        # Advisories accumulate. Several can apply to one response and they are
+        # attached from different points -- the mode handler knows what its own
+        # search did, the dispatcher knows the request's filter vocabulary --
+        # so a plain key overwrite would keep only whichever ran last.
+        existing_warnings = response.hints.get("warnings")
+        added_warnings = addition.get("warnings")
+        if existing_warnings and added_warnings:
+            merged["warnings"] = [*existing_warnings, *added_warnings]
+        response.hints = merged
 
     # A single term carries no conjunction to explain; below this the empty
     # result is a plain miss and an advisory would misdirect.
     _MIN_CONJUNCTION_TERMS = 2
 
-    async def _keyword_conjunction_warnings(
-        self, request: DiscoverRequest, response: DiscoverResponse
-    ) -> list[str]:
-        """Advisory for an empty keyword result whose query required several terms.
+    async def _keyword_search_warnings(self, request: DiscoverRequest, raw_count: int) -> list[str]:
+        """Advisory for a keyword term search that ran and matched nothing.
 
         Keyword mode is conjunctive: a chunk matches only if it carries every
         term. An empty result therefore reads two ways -- the vault holds
@@ -406,38 +413,64 @@ class RetrievalService:
         -- and nothing in the response distinguishes them, so a caller who did
         not build a positive control reads it as the former.
 
-        Keyed on the parsed term count rather than on emptiness alone: a
-        single-term miss is a true zero and stays silent. The terms come from
-        the backend's own parse, because the words typed are not the terms
-        required -- stopwords are dropped and the rest stemmed.
+        Called only from the term-search path, with the row count that search
+        returned. Both conditions are load-bearing. A caller-supplied filter
+        that resolves to no documents short-circuits before any search runs,
+        and post-filtering (``min_relevance``) can empty a result the search
+        did fill; in either case the response is empty while chunks carrying
+        the terms may well exist, so an advisory keyed on the response would
+        assert a fact about chunk contents that nothing established.
+
+        The terms come from the backend's own parse, because the words typed
+        are not the terms required -- stopwords are dropped and the rest
+        stemmed. Two shapes get their own treatment: a query the backend read
+        as admitting alternatives is not conjunctive and gets no conjunction
+        advisory, and a query whose every word was discarded gets an advisory
+        of its own, since nothing was searched for at all.
         """
-        if request.mode != RetrievalMode.KEYWORD or response.results:
+        if raw_count:
             return []
         query = (request.query or "").strip()
         # "*" is the filter-only listing form; it never reaches the term search.
         if not query or query == "*":
             return []
-        terms = await self._content.parse_keyword_query(query)
-        if len(terms) < self._MIN_CONJUNCTION_TERMS:
+        parse = await self._content.parse_keyword_query(query)
+
+        # Every word discarded: the backend searched for nothing. This is the
+        # emptiest an empty result gets, and the least self-explanatory.
+        if not parse.terms:
+            if not query.split():
+                return []
+            return [
+                "This query carried no searchable terms: every word in it is a stopword "
+                "under the vault's text-search configuration, so nothing was searched "
+                'for. Use a distinctive term, or mode="semantic", which does not drop '
+                "words."
+            ]
+
+        if not parse.all_required or len(parse.terms) < self._MIN_CONJUNCTION_TERMS:
             return []
-        rendered = ", ".join(repr(t) for t in terms)
+
+        rendered = ", ".join(repr(t) for t in parse.terms)
+        # Under an active filter the miss is only established within the slice
+        # the filter selected, so the sentence must not claim more than that.
+        scope = " within the active filters" if request.filters else ""
         return [
-            f"Keyword mode is conjunctive: this query parsed to {len(terms)} terms "
-            f"({rendered}) and matches only a chunk carrying all of them. No chunk "
-            "does, so the empty result may reflect the query rather than the "
+            f"Keyword mode is conjunctive: this query parsed to {len(parse.terms)} terms "
+            f"({rendered}) and matches only a chunk carrying all of them. No chunk"
+            f"{scope} does, so the empty result may reflect the query rather than the "
             "vault's contents. Try fewer or more distinctive terms, quote a phrase "
             'to match it as a unit, or use mode="semantic".'
         ]
 
-    async def _apply_warnings(self, response: DiscoverResponse, request: DiscoverRequest) -> None:
-        """Attach every advisory this response warrants, merged as one list.
+    def _apply_warnings(self, response: DiscoverResponse, request: DiscoverRequest) -> None:
+        """Attach the request-scoped advisories, accumulating onto any already present.
 
-        Composed rather than merged per source: ``_merge_hints`` overwrites a
-        repeated key, so attaching a second ``warnings`` list would discard the
-        first.
+        Search-scoped advisories are attached by the mode handler that ran the
+        search, which is the only place that knows what it did; ``_merge_hints``
+        accumulates the ``warnings`` key so the two do not displace each other.
         """
         warnings = self._vocabulary_warnings(request)
-        warnings += await self._keyword_conjunction_warnings(request, response)
         if warnings:
             self._merge_hints(response, {"warnings": warnings})
 
@@ -471,7 +504,7 @@ class RetrievalService:
             # document-only knobs, so we can route directly.
             if request.target == RetrievalTarget.EDGES:
                 response = await self._catalog_edges(request, phases)
-                await self._apply_warnings(response, request)
+                self._apply_warnings(response, request)
                 _apply_catalog_budget_hint(response)
                 return response
 
@@ -483,7 +516,7 @@ class RetrievalService:
             # validator rejects.
             if request.target == RetrievalTarget.FACETS:
                 response = await self._catalog_facets(request, phases)
-                await self._apply_warnings(response, request)
+                self._apply_warnings(response, request)
                 return response
 
             if request.mode == RetrievalMode.SEMANTIC:
@@ -518,7 +551,7 @@ class RetrievalService:
             # only in semantic and keyword mode and only when the result
             # set is empty, whereas a filter value the vault does not
             # recognize is worth reporting in every mode.
-            await self._apply_warnings(response, request)
+            self._apply_warnings(response, request)
 
             # Surface a recommended_limit hint when a catalog
             # response would bust the Claude Code MCP inline ceiling.
@@ -824,6 +857,7 @@ class RetrievalService:
             raise MissingFieldError("query", "query is required for keyword mode")
 
         raw_count = 0
+        searched = False
         if request.query.strip() == "*":
             with phases.phase("list_filtered"):
                 hits = await self._list_filtered(request)
@@ -848,6 +882,7 @@ class RetrievalService:
                     filters=content_filters,
                 )
             raw_count = len(results)
+            searched = True
             with phases.phase("results_to_hits"):
                 hits = await self._results_to_hits(results, request)
             with phases.phase("metadata_boost"):
@@ -858,12 +893,21 @@ class RetrievalService:
                 hits = await self._rerank_salience(hits)
 
         final = hits[: request.limit]
-        return DiscoverResponse(
+        response = DiscoverResponse(
             mode=RetrievalMode.KEYWORD,
             results=final,
             total_available=len(hits),
             hints=self._build_hints(raw_count, request) if not final else None,
         )
+        # Attached here rather than in the dispatcher: only this scope knows
+        # whether a term search ran and what it returned before post-filtering,
+        # and both facts gate the advisory.
+        if searched:
+            with phases.phase("keyword_search_warnings"):
+                warnings = await self._keyword_search_warnings(request, raw_count)
+            if warnings:
+                self._merge_hints(response, {"warnings": warnings})
+        return response
 
     async def _list_filtered(self, request: DiscoverRequest) -> list[DiscoverHit]:
         """Return all documents matching scope and filter criteria.

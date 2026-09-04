@@ -19,7 +19,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
-from sage.adapters.interfaces import Chunk
+from sage.adapters.interfaces import Chunk, KeywordQueryParse
 from sage.adapters.stubs import SeededEmbeddingProvider, StubContentStore
 from sage.api.errors import (
     DocumentNotFoundError,
@@ -5986,9 +5986,14 @@ async def test_keyword_multi_term_with_hits_has_no_warning(
 async def test_semantic_multi_term_empty_result_stays_silent(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """The advisory is keyword-only: semantic mode has no conjunction to explain."""
-    await graph_store.insert_document(_make_doc(_id("kw_warn_d")))
+    """The advisory is keyword-only: semantic mode has no conjunction to explain.
 
+    Deliberately indexes nothing. Semantic search returns nearest neighbours,
+    so any indexed chunk would answer any query and the empty result this
+    asserts on could not arise. Nothing here stands in for a positive control:
+    what discriminates is the mode, and a rival missing the mode check warns on
+    this same empty response.
+    """
     request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="deltaword epsilonword")
     response = await retrieval_service.discover(request)
 
@@ -6022,8 +6027,8 @@ async def test_keyword_warning_reports_the_backend_parse_not_a_word_split(
     )
     assert control.results, "precondition: the indexed corpus must be searchable"
 
-    async def _parse(query: str) -> list[str]:
-        return ["stemmedlexeme", "otherlexeme"]
+    async def _parse(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(terms=("stemmedlexeme", "otherlexeme"), all_required=True)
 
     monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse)
 
@@ -6038,6 +6043,201 @@ async def test_keyword_warning_reports_the_backend_parse_not_a_word_split(
     )
     assert "deltaword" not in joined, (
         "reporting the raw query words means the service split the text itself"
+    )
+
+
+async def test_keyword_no_advisory_when_post_filtering_emptied_the_result(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A result emptied by min_relevance must not be told no chunk carries the terms.
+
+    The search ran and matched; ``min_relevance`` then dropped what it found. A
+    rival keyed on the response being empty asserts "No chunk does" when a chunk
+    plainly does, and sends the caller to drop a term that was never the problem.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_g")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_g"),
+        [("Section 1", "alphaword betaword together here.")],
+    )
+
+    matched = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword")
+    )
+    assert matched.results, "precondition: the query must match before thresholding"
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword", min_relevance=99.0)
+    )
+
+    assert response.results == [], "precondition: the threshold must empty the result"
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "conjunctive" not in joined, (
+        "the search matched; the threshold emptied it, so the conjunction is not the story"
+    )
+
+
+async def test_keyword_no_advisory_when_filters_short_circuited_the_search(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """No term search ran, so nothing is known about chunk contents.
+
+    A document-level filter resolving to zero documents returns before the
+    content store is touched. A rival keyed on response emptiness asserts a fact
+    about chunks that was never checked.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_h")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_h"),
+        [("Section 1", "alphaword betaword together here.")],
+    )
+
+    # Positive control: unfiltered, this very query matches. The empty result
+    # below is therefore the filter's doing and not the terms'.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword")
+    )
+    assert control.results, "precondition: the query matches when the filter is absent"
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="alphaword betaword",
+            filters=RetrievalFilters(document_ids=[_id("absent_doc")]),
+        )
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "conjunctive" not in joined, "the filter culled every candidate before any search"
+
+
+async def test_keyword_all_stopword_query_gets_its_own_advisory(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """A query whose every word was discarded is the emptiest zero, and must speak.
+
+    The conjunction advisory is gated on two or more terms, so a query parsing to
+    none would fall through it and return the bare ``hints: null`` this work
+    exists to remove -- for the case where the caller's words were never searched
+    for at all.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_i")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_i"),
+        # The double scores on substring containment, so the indexed text must
+        # share no fragment with the query words -- "or" sits inside
+        # "alphaword", and "a" inside almost anything.
+        [("Section 1", "zzz qqq vvv.")],
+    )
+
+    async def _parse_to_nothing(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(terms=(), all_required=True)
+
+    # Positive control, taken before the parse is replaced: the corpus is
+    # searchable, so the empty result below is about the query, not the vault.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zzz")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_to_nothing)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="the a of")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "stopword" in joined, "an all-stopword query must not return a silent zero"
+    assert "conjunctive" not in joined, "there is no conjunction to explain"
+
+
+async def test_keyword_or_query_gets_no_conjunction_advisory(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """An alternation is not conjunctive, and must not be described as one.
+
+    Anti-coincidental trap for reading the parsed terms while ignoring how they
+    are joined: the terms are identical either way, so only the flag separates a
+    conjunction from an alternation.
+    """
+    await graph_store.insert_document(_make_doc(_id("kw_warn_j")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_j"),
+        # The double scores on substring containment, so the indexed text must
+        # share no fragment with the query words -- "or" sits inside
+        # "alphaword", and "a" inside almost anything.
+        [("Section 1", "zzz qqq vvv.")],
+    )
+
+    async def _parse_alternation(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(terms=("deltaword", "epsilonword"), all_required=False)
+
+    # Positive control, taken before the parse is replaced: the corpus is
+    # searchable, so the empty result below is about the query, not the vault.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zzz")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_alternation)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword or epsilonword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "conjunctive" not in joined, "a chunk can satisfy an alternation with one term"
+
+
+async def test_keyword_advisory_scopes_its_claim_to_the_active_filters(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Under a filter the miss holds only within the filtered slice, and says so."""
+    await graph_store.insert_document(_make_doc(_id("kw_warn_k"), doc_type="note"))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_warn_k"),
+        [("Section 1", "alphaword content only.")],
+        doc_type="note",
+    )
+
+    # Positive control: the filtered slice is non-empty, so "within the active
+    # filters" narrows a real slice rather than naming an empty one.
+    control = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="alphaword",
+            filters=RetrievalFilters(doc_type="note"),
+        )
+    )
+    assert control.results, "precondition: the filtered slice must contain the corpus"
+
+    unfiltered = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword")
+    )
+    filtered = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="deltaword epsilonword",
+            filters=RetrievalFilters(doc_type="note"),
+        )
+    )
+
+    assert "within the active filters" not in " ".join(unfiltered.hints["warnings"])
+    assert "within the active filters" in " ".join(filtered.hints["warnings"]), (
+        "an absolute claim overreaches when a filter selected the slice searched"
     )
 
 
