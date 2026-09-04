@@ -487,11 +487,20 @@ class DocxAdapter(SourceAdapter):
             try:
                 return Document(str(shadow))
             except Exception as exc:
-                # Names the caller's own file, never the shadow: the shadow is
-                # a scratch copy this method made, so a reader handed its path
-                # learns a server-side temp location and nothing about the file
-                # they supplied.
-                raise ValueError(f"Failed to open document template {source_path}: {exc}") from exc
+                # Names the caller's own file, never the shadow -- in the
+                # library's text as well as in the prefix. The shadow is a
+                # scratch copy this method just wrote, so a reader handed its
+                # path learns a temp location and nothing about the file they
+                # supplied; and the library names whichever file it was given,
+                # which on this branch is always the shadow. Substituted rather
+                # than dropped, so the library's own diagnosis survives. This
+                # method is the only place that knows the shadow's path, which
+                # is why the substitution belongs here and not at the
+                # projection seam that respells the rest.
+                detail = str(exc).replace(str(shadow), str(source_path))
+                raise ValueError(
+                    f"Failed to open document template {source_path}: {detail}"
+                ) from exc
         finally:
             # python-docx has loaded the file into memory by the time
             # Document() returns, so the temp dir is safe to remove.

@@ -1512,27 +1512,32 @@ class TestDocxAdapterDotxSupport:
 
     async def test_ad_074_unreadable_docx_and_dotx_name_the_source_not_the_shadow(self, tmp_path):
         """A .docx or .dotx the library cannot open fails as a ValueError naming
-        the file the caller supplied.
+        the file the caller supplied -- in the library's own text as well as in
+        the prefix.
 
-        Two properties, and the second is the one only this test reaches. The
-        library's own exception (`PackageNotFoundError`, which is not a
-        `ValueError`) is wrapped, so a corrupt document fails in the same shape
-        the pdf and pptx adapters produce instead of a type peculiar to
-        python-docx. And the .dotx branch opens a *shadow* copy this method
-        writes under a temp directory, so an unwrapped failure there names a
-        scratch location the caller never supplied -- worse than naming the
-        vault copy, since it describes nothing the caller could act on.
+        Two properties. The library's exception (`PackageNotFoundError`, which
+        is not a `ValueError`) is wrapped, so a corrupt document fails in the
+        same shape the pdf and pptx adapters produce. And the .dotx branch
+        opens a *shadow* copy this method writes under a temp directory, so the
+        library names the shadow rather than the caller's file -- a scratch
+        location that describes nothing the caller could act on.
 
-        Anti-coincidental-pass: the `sage_dotx_` assertion is the whole of the
-        second property. Both the shadow and the source end in a name the
-        message could plausibly carry, and the source-path assertion alone
-        passes against an implementation that names the shadow, because the
-        assertion only checks that the source appears. Asserting the absence of
-        the temp prefix is what separates them.
+        Anti-coincidental-pass: the second fixture is the load-bearing one, and
+        it is built to reach the single python-docx failure that names the file
+        it was handed on the shadow branch -- the content-type check, which
+        fires only after the package opens cleanly. A malformed package cannot
+        reach it: python-docx dies earlier with an error naming nothing, so a
+        `sage_dotx_` assertion over that input is satisfied by any
+        implementation, including one that interpolates the shadow verbatim.
+        Hence a real package with its main-part content type rewritten to the
+        macro-enabled-template type and a .dotx suffix, which takes the shadow
+        branch (keyed on suffix) and then fails the content-type check against
+        the shadow's path. Dropping the substitution turns this red; dropping
+        the prefix turns the source assertion red.
         """
         import zipfile as _zipfile
 
-        from sage.source_adapters.docx_adapter import DocxAdapter
+        from sage.source_adapters.docx_adapter import _DOCX_CONTENT_TYPE, DocxAdapter
 
         adapter = DocxAdapter()
 
@@ -1541,18 +1546,30 @@ class TestDocxAdapterDotxSupport:
         with pytest.raises(ValueError) as excinfo:
             await adapter.project(not_a_zip)
         assert str(not_a_zip) in str(excinfo.value), excinfo.value
-        assert "PackageNotFoundError" not in type(excinfo.value).__name__
 
-        # A real zip whose content types mark it a template, but whose body is
-        # not a document: the package read succeeds and the shadow open fails,
-        # which is the branch that would otherwise name the temp copy.
-        bad_template = tmp_path / "corrupt.dotx"
-        with _zipfile.ZipFile(bad_template, "w") as z:
-            z.writestr("[Content_Types].xml", "<Types/>")
-            z.writestr("word/document.xml", "<not-a-document/>")
+        # A well-formed package whose main part is typed as a macro-enabled
+        # template: the shadow rewrite only swaps the plain dotx type, so this
+        # reaches python-docx's content-type check with the shadow's path.
+        built = tmp_path / "built.docx"
+        docx.Document().save(str(built))
+        macro_type = "application/vnd.ms-word.template.macroEnabledTemplate.main+xml"
+        bad_template = tmp_path / "macro_template.dotx"
+        with _zipfile.ZipFile(built) as z_in:
+            with _zipfile.ZipFile(bad_template, "w", _zipfile.ZIP_DEFLATED) as z_out:
+                for item in z_in.namelist():
+                    data = z_in.read(item)
+                    if item == "[Content_Types].xml":
+                        data = data.replace(
+                            _DOCX_CONTENT_TYPE.encode("utf-8"), macro_type.encode("utf-8")
+                        )
+                    z_out.writestr(item, data)
+
         with pytest.raises(ValueError) as excinfo:
             await adapter.project(bad_template)
         message = str(excinfo.value)
+        # The precondition the whole test rests on: this input really did reach
+        # the content-type failure, the only one that names a path here.
+        assert "is not a Word file" in message, message
         assert str(bad_template) in message, message
         assert "sage_dotx_" not in message, message
         assert "shadow.docx" not in message, message
