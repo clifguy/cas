@@ -4467,14 +4467,22 @@ class EdgeWarning(BaseModel):
 
     source: str = Field(
         description=(
-            "Source document id of the affected edge, or the unresolved "
-            "file reference when reason is `ingestion_failed`."
+            "Source document id of the affected edge, or, when reason is "
+            "`ingestion_failed`, the file as the caller named it -- the path "
+            "or filename the caller supplied, never a server-side resolved or "
+            "staging location, the same spelling the `errors` entry for that "
+            "file carries in `source_path`."
         ),
     )
     target: str = Field(
         description=(
-            "Target document id of the affected edge, or the unresolved "
-            "file reference when reason is `ingestion_failed`."
+            "Target document id of the affected edge, or, when reason is "
+            "`ingestion_failed`, the file as the caller named it -- the path "
+            "or filename the caller supplied, never a server-side resolved or "
+            "staging location, the same spelling the `errors` entry for that "
+            "file carries in `source_path`. Both endpoints are reported as "
+            "file references under that reason, including one that did "
+            "resolve."
         ),
     )
     edge_type: str = Field(

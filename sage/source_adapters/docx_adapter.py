@@ -463,22 +463,44 @@ class DocxAdapter(SourceAdapter):
         unchanged, so the rest of the adapter is unaffected.
         """
         if not is_template:
-            return Document(str(source_path))
+            try:
+                return Document(str(source_path))
+            except Exception as exc:
+                raise ValueError(f"Failed to open document {source_path}: {exc}") from exc
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="sage_dotx_"))
         try:
             shadow = tmp_dir / "shadow.docx"
-            with zipfile.ZipFile(source_path, "r") as z_in:
-                with zipfile.ZipFile(shadow, "w", zipfile.ZIP_DEFLATED) as z_out:
-                    for item in z_in.namelist():
-                        data = z_in.read(item)
-                        if item == "[Content_Types].xml":
-                            data = data.replace(
-                                _DOTX_CONTENT_TYPE.encode("utf-8"),
-                                _DOCX_CONTENT_TYPE.encode("utf-8"),
-                            )
-                        z_out.writestr(item, data)
-            return Document(str(shadow))
+            try:
+                with zipfile.ZipFile(source_path, "r") as z_in:
+                    with zipfile.ZipFile(shadow, "w", zipfile.ZIP_DEFLATED) as z_out:
+                        for item in z_in.namelist():
+                            data = z_in.read(item)
+                            if item == "[Content_Types].xml":
+                                data = data.replace(
+                                    _DOTX_CONTENT_TYPE.encode("utf-8"),
+                                    _DOCX_CONTENT_TYPE.encode("utf-8"),
+                                )
+                            z_out.writestr(item, data)
+            except (zipfile.BadZipFile, KeyError, OSError) as exc:
+                raise ValueError(f"Failed to read document package {source_path}: {exc}") from exc
+            try:
+                return Document(str(shadow))
+            except Exception as exc:
+                # Names the caller's own file, never the shadow -- in the
+                # library's text as well as in the prefix. The shadow is a
+                # scratch copy this method just wrote, so a reader handed its
+                # path learns a temp location and nothing about the file they
+                # supplied; and the library names whichever file it was given,
+                # which on this branch is always the shadow. Substituted rather
+                # than dropped, so the library's own diagnosis survives. This
+                # method is the only place that knows the shadow's path, which
+                # is why the substitution belongs here and not at the
+                # projection seam that respells the rest.
+                detail = str(exc).replace(str(shadow), str(source_path))
+                raise ValueError(
+                    f"Failed to open document template {source_path}: {detail}"
+                ) from exc
         finally:
             # python-docx has loaded the file into memory by the time
             # Document() returns, so the temp dir is safe to remove.

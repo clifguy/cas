@@ -37,6 +37,7 @@ from sage.adapters.stubs import StubContentStore
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_init import SAGEServices
+from sage.models.enums import SourceType
 from sage.services import batch_ingest_stream
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
@@ -781,6 +782,174 @@ async def test_b14_degenerate_upload_names_stage_under_a_synthetic_basename(monk
         ("upload_1", b"dotdot", ".."),
         ("upload_2", b"empty", "upload_2"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# B16 -- one summary spells a file one way
+# ---------------------------------------------------------------------------
+
+
+async def test_b16_edge_warning_names_the_upload_by_the_callers_own_filename(batch_app):
+    """An edge dropped because one of its files failed to ingest names that
+    file as the caller uploaded it -- the same spelling the error entry beside
+    it carries, in the same summary.
+
+    Two versions of one chain arrive as uploads; the newer one's source_type
+    has no adapter, so its ingest raises and the ``supersedes`` edge the
+    version_chain rule planned for the pair cannot resolve. The warning that
+    records the drop reports both endpoints as file references, and neither
+    may be the staging location the bytes were written to.
+
+    Anti-coincidental-pass: the parts are staged under a real
+    ``tempfile.mkdtemp`` root, so before the fix every one of these values is
+    an absolute ``/var/folders/.../sage-batch-ingest-<rand>/<i>/`` path and the
+    equality cannot pass by accident. The comparison is a whole-dict equality
+    over all five fields, so a fix that spelled ``source`` and ``target`` but
+    left ``detail`` interpolated from the raw ref still fails. ``target`` is
+    load-bearing beyond ``source``: v1 ingests successfully and its ref *does*
+    resolve, so a fix that only rewrote the unresolved side reports the staged
+    path here. The final assertion is a whole-summary sweep rather than a field
+    list, so a field added later that reintroduces the leak fails without
+    anyone remembering to extend this test.
+    """
+    app, vault_id, _config = batch_app
+    metadata = {
+        "files": [
+            {
+                "source_type": "markdown",
+                "parsed_metadata": {"title": "Report", "version": "v1", "doc_type": "note"},
+            },
+            {
+                "source_type": "not_a_real_adapter",
+                "parsed_metadata": {"title": "Report", "version": "v2", "doc_type": "note"},
+            },
+        ],
+    }
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("report_v1.md", b"# Report\n\nFirst version."),
+                _md_part("report_v2.md", b"# Report\n\nSecond version, which fails."),
+            ],
+            data={"metadata": json.dumps(metadata)},
+        )
+    assert resp.status_code == 200, resp.text
+    summary = next(e for e in _parse_sse_events(resp.text) if e["event_type"] == "summary")
+
+    assert summary["edge_warnings"] == [
+        {
+            "source": "report_v2.md",
+            "target": "report_v1.md",
+            "edge_type": "supersedes",
+            "reason": "ingestion_failed",
+            "detail": "Source file failed ingestion: report_v2.md",
+        }
+    ], summary["edge_warnings"]
+
+    # The other half of the same summary spells the same file the same way.
+    assert [e["source_path"] for e in summary["errors"]] == ["report_v2.md"], summary["errors"]
+
+    assert "sage-batch-ingest-" not in json.dumps(summary), summary
+
+
+async def test_b17_projection_failure_message_names_the_upload_not_the_vault(
+    batch_app, monkeypatch
+):
+    """A file that ingests but cannot be projected reports the failure by the
+    caller's own upload name, with neither the staging root nor the vault's
+    storage root anywhere in the summary.
+
+    The disclosure this closes was observed on exactly this surface: an
+    adapter names the path it was handed, that path is the retained vault
+    copy, and the text reaches the caller verbatim as the per-file
+    ``message``. VSBB-068 pins the substitution at the seam and BIS-023 pins
+    that an upload's declared name reaches the ingest, but neither says the
+    two compose over the wire -- and this envelope has been through that
+    before: an earlier disclosure in it was closed on one field and left
+    standing on its sibling, because no test asked the whole payload.
+
+    Anti-coincidental-pass: the assertion is a whole-summary sweep for both
+    server-side roots plus a positive equality on the message, so it fails
+    against an untranslated message (which names the storage root), against
+    a translation that dropped the adapter's own diagnostic, and against one
+    that substituted the staged path instead of the caller's name. The
+    adapter reads the path off its argument at raise time rather than
+    hard-coding one, so the message can only carry what the service actually
+    handed it.
+    """
+    app, vault_id, config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    adapter = services.ingestion_service._adapters[SourceType.MARKDOWN]
+
+    async def failing_project(source_path, config=None):
+        raise ValueError(f"Failed to open PDF {source_path}: broken header")
+
+    monkeypatch.setattr(adapter, "project", failing_project)
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("quarterly.md", b"# Quarterly\n\nBody.")],
+            data={"metadata": json.dumps({"files": [{"source_type": "markdown"}]})},
+        )
+    assert resp.status_code == 200, resp.text
+    summary = next(e for e in _parse_sse_events(resp.text) if e["event_type"] == "summary")
+
+    assert [e["message"] for e in summary["errors"]] == [
+        "Failed to open PDF quarterly.md: broken header"
+    ], summary["errors"]
+
+    rendered = json.dumps(summary)
+    assert "sage-batch-ingest-" not in rendered, summary
+    assert str(config.vault.storage_root) not in rendered, summary
+
+
+async def test_b18_non_valueerror_adapter_failure_also_names_the_upload(batch_app):
+    """An adapter failure that is not a ``ValueError`` is respelled too.
+
+    The seam cannot key on an exception type. An adapter that wraps its
+    library's failure picks the type; one that lets the library's own
+    exception through does not, and python-docx raises its own
+    ``PackageNotFoundError`` -- naming the absolute path it was handed -- for
+    any input that is not a zip. Typing the seam to the shape the pdf and
+    pptx adapters happen to use leaves that one on the wire.
+
+    Drives the real adapter and the real library: no monkeypatch, no stub
+    exception. The part is genuinely not a zip, so the failure is the one a
+    caller uploading a corrupt file actually gets.
+
+    Anti-coincidental-pass: the positive assertion is a whole-message equality
+    naming the upload, and the sweep is over the entire summary for the vault's
+    own storage root -- which is what an untranslated message contains.
+
+    What this pins, precisely: the **adapter's wrap**, end to end through the
+    real library. It does *not* discriminate the seam's exception breadth,
+    because the wrap makes this failure a ``ValueError`` before the seam sees
+    it -- narrowing the seam back to ``ValueError`` leaves this test green.
+    Two repairs were applied to one defect and they overlap here; VSBB-073 is
+    the one that pins the breadth, using a failure no adapter wraps.
+    """
+    app, vault_id, config = batch_app
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[("files", ("bogus.docx", b"not a zip at all", "application/octet-stream"))],
+            data={"metadata": json.dumps({"files": [{"source_type": "docx"}]})},
+        )
+    assert resp.status_code == 200, resp.text
+    summary = next(e for e in _parse_sse_events(resp.text) if e["event_type"] == "summary")
+
+    assert summary["error_count"] == 1, summary
+    entry = summary["errors"][0]
+    assert entry["source_path"] == "bogus.docx", entry
+    assert entry["message"] == (
+        "Failed to open document bogus.docx: Package not found at 'bogus.docx'"
+    ), entry
+
+    rendered = json.dumps(summary)
+    assert str(config.vault.storage_root) not in rendered, summary
+    assert "sage-batch-ingest-" not in rendered, summary
 
 
 # ---------------------------------------------------------------------------

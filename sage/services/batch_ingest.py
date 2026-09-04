@@ -268,6 +268,10 @@ class BatchIngestService:
         # service retains pre-ingest plan construction (Phase 1) and Tier-2
         # staging-edge orchestration (Phase 3) only.
         path_to_id: dict[str, str] = {}
+        # Built from the descriptors rather than from the loop below: the
+        # files this spelling has to be recovered for are precisely the ones
+        # that fail, so the success path never sees them.
+        path_to_declared = {fd.file_path: fd.declared_source for fd in files if fd.declared_source}
         for i, fd in enumerate(files):
             filename = Path(fd.file_path).name
 
@@ -336,6 +340,10 @@ class BatchIngestService:
                 # For the chunk-store lifecycle sync that follows a
                 # supersede's document write.
                 content_store=vault_services.content_store,
+                # So a warning about a file that never resolved names it the
+                # way the error entry beside it does, rather than by the
+                # staged path the pipeline opened.
+                path_to_declared=path_to_declared,
             )
             summary.edges_created = edge_result.edges_created
             summary.edges_staged = edge_result.edges_staged

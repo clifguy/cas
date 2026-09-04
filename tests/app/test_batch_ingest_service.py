@@ -13,6 +13,7 @@ Covers:
 """
 
 import hashlib
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -1053,6 +1054,76 @@ class TestEdgeExecution:
         event = _summary_event_from(result)
         assert event.edge_warnings is not None
         assert [w.model_dump() for w in event.edge_warnings] == expected
+
+    @pytest.mark.asyncio
+    async def test_bis_026_edge_warning_names_the_declared_source_when_one_is_carried(self):
+        """A descriptor that names its own file separately from where its bytes
+        were staged has that name, not the staging path, in the edge warning
+        the drop produces -- the same guarantee BIS-023 pins for the error
+        entry, on the collection beside it.
+
+        The shape belongs to every delivery that stages bytes server-side, not
+        to the upload endpoint alone: an MCP ``bulk_ingest_document`` that
+        redeems a transfer token against a cloud-hosted vault reaches this same
+        code with the same divergence, and has no endpoint test of its own.
+
+        Anti-coincidental-pass: the staged path and the declared name differ in
+        their **basename**, not merely in their directory, so this test excludes
+        the basename-reduction rival on its own rather than leaning on a control
+        in another class. That distinction is the point: when both spellings end
+        in the same basename -- as they do on the upload leg, where the staged
+        name derives from the caller's -- an implementation that simply returned
+        ``Path(ref).name`` satisfies every assertion here while being wrong for
+        any caller whose declared name is a path. BIS-013 above remains the
+        companion control from the other direction: its descriptors carry no
+        ``declared_source`` and it asserts the raw paths, so an unconditional
+        substitution turns that test red. The ``/staged/`` sweep at the end
+        catches a leak in any field rather than only the three asserted above.
+        """
+        services = _make_services()
+        call_idx = 0
+
+        async def partial_ingest(request, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            if call_idx == 1:
+                return _make_ingest_result("doc-v1")
+            raise RuntimeError("File 2 failed")
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=partial_ingest)
+        svc = BatchIngestService()
+
+        def _staged(index: int, name: str, version: str) -> FileDescriptor:
+            # The staged basename (``part-<i>.bin``) shares nothing with the
+            # declared one, so no reduction of the staged path can produce the
+            # expected spelling by coincidence.
+            return FileDescriptor(
+                file_path=f"/staged/{index}/part-{index}.bin",
+                source_type="markdown",
+                parsed_metadata=ParsedMetadataInput(
+                    title="Doc", version=version, doc_type="design_spec"
+                ),
+                declared_source=name,
+            )
+
+        result = await svc.run(
+            files=[_staged(0, "report_v1.md", "v1"), _staged(1, "report_v2.md", "v2")],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        assert result.error_count == 1
+        assert [w.model_dump() for w in result.edge_warnings] == [
+            {
+                "source": "report_v2.md",
+                "target": "report_v1.md",
+                "edge_type": "supersedes",
+                "reason": "ingestion_failed",
+                "detail": "Source file failed ingestion: report_v2.md",
+            }
+        ], result.edge_warnings
+        assert [e.source_path for e in result.errors] == ["report_v2.md"], result.errors
+        assert "/staged/" not in json.dumps(result.to_dict()), result.to_dict()
 
 
 # ---------------------------------------------------------------------------
