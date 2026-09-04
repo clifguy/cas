@@ -11,11 +11,15 @@ The seed's ``vault.id`` is also replicated as a bare literal in four other
 artifacts that no schema check reaches: the document-library folder the
 bootstrap script uploads into, the validation driver's fallback ``--vault-id``,
 the CI harness's ``SP_VALIDATE_VAULT_ID``, and the deploy gate's documented
-``PREFLIGHT_EXPECTED_VAULTS`` list. Discovery matches the folder name against
-the config it contains, so a divergence between them yields a vault the deployed
-SAGE never registers -- with no error at seed time, and with the deploy still
-green unless the gate was told to expect it. The coupling tests below hold all
-five literals to the config.
+``PREFLIGHT_EXPECTED_VAULTS`` list. Nothing reconciles them at runtime: discovery
+enumerates the library's folder names but registers each vault under the
+``vault.id`` its own config declares (``sage/app.py``), and a vault's sources are
+then addressed at ``<root>/<registered id>/``. A divergence therefore does not
+fail -- it splits. The vault registers and serves normally while its declaration
+sits in one folder and its sources are addressed to another, so the split is
+invisible to discovery, to the preflight vault check, and to any read that only
+asks whether the vault is present. The coupling tests below hold all five
+literals to the config, before that state can be created.
 
 Each replica has its own structural gate elsewhere asserting a different property
 of it -- that the harness targets a disposable vault rather than ``cas``, that
@@ -94,10 +98,11 @@ def test_seed_script_uploads_to_the_folder_the_seed_config_declares() -> None:
     """The bootstrap upload folder and the seed's ``vault.id`` are the same name.
 
     The two are independent literals in different files and different languages,
-    coupled only by the convention that discovery finds a vault by walking the
-    library for folders whose ``vault_config.yaml`` declares them. A divergence
-    seeds a config the deployed SAGE silently never registers, so nothing before
-    this check reports it.
+    held together only by convention. Discovery reads the config out of whatever
+    folder it finds and registers the vault under the id that config declares, so
+    a divergence produces a vault that loads and serves while its declaration and
+    its source tree live at different paths -- not a visible failure, which is why
+    this has to be checked here rather than observed later.
     """
     folders = _SEED_UPLOAD_FOLDER_RE.findall(SEED_SCRIPT_PATH.read_text())
     assert folders, (
@@ -110,8 +115,9 @@ def test_seed_script_uploads_to_the_folder_the_seed_config_declares() -> None:
     for folder in folders:
         assert folder == seeded, (
             f"{SEED_SCRIPT_PATH.name} seeds into folder {folder!r} but "
-            f"{SEED_CONFIG_PATH.name} declares vault.id {seeded!r}; "
-            "discovery would not register the vault"
+            f"{SEED_CONFIG_PATH.name} declares vault.id {seeded!r}; the vault "
+            "would register under the declared id with its declaration left in "
+            "the other folder"
         )
 
 
@@ -148,10 +154,10 @@ def test_documented_preflight_expectation_covers_the_seeded_vault() -> None:
 
     The preflight gate asserts that each id in this comma-list came back from
     ``/sage_vaults``. Omitting the validation vault leaves the deploy green when
-    the vault silently failed to load -- the exact outcome a divergence between
-    the seed config and the upload folder produces, and the one condition the
-    other coupling tests here cannot observe because it is a property of the
-    running tenant rather than of the repository.
+    the vault failed to load for any reason at all -- a seed that never ran, a
+    config the schema rejected, a binding misconfigured for the tenant. That is a
+    property of the running tenant rather than of the repository, so it is the one
+    thing the other coupling tests here cannot observe.
     """
     doc_text = DEPLOYMENT_DOC_PATH.read_text()
     matches = _PREFLIGHT_EXPECTED_RE.findall(doc_text)

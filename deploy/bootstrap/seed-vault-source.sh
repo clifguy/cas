@@ -53,7 +53,10 @@ az rest --method POST \
 # 4. Seed the validation vault's configuration (create-or-replace upload). The
 # committed seed is deploy/test-vault/vault_config.yaml; the :/content PUT
 # creates the intermediate folders implicitly. The folder name below must match
-# the seed's vault.id — discovery pairs them — and a test holds the two together.
+# the seed's vault.id: discovery registers the vault under the id the config
+# declares, not under the folder it was found in, so a mismatch loads a vault
+# whose sources are addressed elsewhere rather than failing. A test holds the two
+# together.
 az rest --method PUT \
   --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/${VAULT_SOURCE_ROOT_PATH}/cloud_validation/vault_config.yaml:/content" \
   --headers "Content-Type=text/yaml" \
