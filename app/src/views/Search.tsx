@@ -652,6 +652,7 @@ function drillDownHeading(pipelineStatus: string, lifecycle: string, docType: st
   if (pipelineStatus) {
     return ({
       abstraction_skipped: 'Deferred Abstracts',
+      abstraction_interrupted: 'Interrupted Abstracts',
       failed: 'Failed Ingestions',
     } as Record<string, string>)[pipelineStatus] ?? pipelineStatus;
   }

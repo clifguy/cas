@@ -76,6 +76,9 @@ class VaultConfigService:
 
         failed_count = await self._store.count_documents_by_pipeline_status("failed")
         deferred_count = await self._store.count_documents_by_pipeline_status("abstraction_skipped")
+        interrupted_count = await self._store.count_documents_by_pipeline_status(
+            "abstraction_interrupted"
+        )
         pending_metadata_docs = await self._store.list_pending_metadata_documents()
         pending_metadata_count = len(pending_metadata_docs)
 
@@ -108,6 +111,7 @@ class VaultConfigService:
                 pending_edge_count=staging_count,
                 deferred_abstract_count=deferred_count if config.abstraction.enabled else None,
                 failed_ingestion_count=failed_count,
+                interrupted_abstract_count=interrupted_count,
             ),
         )
 

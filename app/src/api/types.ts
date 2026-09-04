@@ -55,6 +55,7 @@ export interface HealthIndicators {
   pending_edge_count: number;
   deferred_abstract_count: number | null;
   failed_ingestion_count: number;
+  interrupted_abstract_count: number;
 }
 
 export interface LastOptimizeSummary {

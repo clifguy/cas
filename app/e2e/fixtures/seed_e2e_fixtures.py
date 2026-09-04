@@ -45,7 +45,18 @@ MAINTENANCE_VAULT_ID = "test"
 MAINTENANCE_FIXTURE_DOC_TYPE = "document"
 MAINTENANCE_FIXTURE_TAG = "e2e-maintenance-fixture"
 MAINTENANCE_FIXTURE_TITLE = "e2e-deferred-abstract-fixture"
-TERMINAL_PIPELINE_STATUSES = frozenset({"abstraction_complete", "abstraction_skipped", "failed"})
+# Restated rather than imported: this script runs against a deployed backend
+# over plain urllib and does not import sage. Keep in step with
+# sage.models.enums.TERMINAL_PIPELINE_STATUSES -- a member missing here leaves
+# the seeder polling a document that has already settled, until its ceiling.
+TERMINAL_PIPELINE_STATUSES = frozenset(
+    {
+        "abstraction_complete",
+        "abstraction_skipped",
+        "abstraction_interrupted",
+        "failed",
+    }
+)
 
 
 def http_request(

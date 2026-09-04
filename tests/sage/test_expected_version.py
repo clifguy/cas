@@ -30,6 +30,7 @@ from sage.mcp_server import (
 from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
+from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES
 from tests.sage.conftest import initialize_services_for_test
 
 
@@ -110,7 +111,9 @@ def _parse(result):
     return json.loads(result)
 
 
-_TERMINAL_PIPELINE_STATES = {"abstraction_complete", "abstraction_skipped", "failed"}
+# Derived rather than restated: a terminal status added to the enum and
+# missing here leaves this poll waiting on a document that has settled.
+_TERMINAL_PIPELINE_STATES = set(TERMINAL_PIPELINE_STATUS_VALUES)
 
 
 async def _seed_doc(source_path: str = "test/sample.md") -> tuple[str, str]:

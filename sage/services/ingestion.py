@@ -518,10 +518,20 @@ class IngestionService:
         drops every queued job and interrupts the one in flight, and neither
         stamps a terminal status of its own, so a caller that stopped the
         worker would otherwise leave those documents at a non-terminal status
-        with nothing running to advance them. Each is instead released from
-        its in-flight claim and, unless ``restamp`` is False, stamped
-        ``abstraction_interrupted`` -- terminal, so nothing waits on it
-        forever, and recoverable, so the next startup re-enqueues it.
+        with nothing running to advance them. A dropped queued job is released
+        from its in-flight claim here; the interrupted one releases its own
+        while unwinding. Both are stamped ``abstraction_interrupted`` unless
+        ``restamp`` is False -- terminal, so nothing waits on one forever, and
+        recoverable, so the next startup re-enqueues it.
+
+        The claim snapshot over-approximates "queued or in flight".
+        ``reabstract`` and ``recompute_pipeline`` claim a document before they
+        enqueue and await in between -- ``recompute_pipeline`` for the whole
+        of Stage 1 -- so a stop landing in that window names a document whose
+        owner is still live and about to advance it. The cost is a transient
+        wrong status, not a lost outcome: the owner's own write follows.
+        Narrowing it would mean tracking queued and running job ids apart from
+        the claim registry, which buys precision in a window nothing waits on.
 
         Pass ``restamp=False`` when the documents are about to cease to exist:
         the stamp would be written to a store that is being torn down, and the

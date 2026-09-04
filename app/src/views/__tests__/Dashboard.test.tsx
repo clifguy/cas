@@ -58,6 +58,7 @@ function makeStats(
       pending_edge_count: 0,
       deferred_abstract_count: 0,
       failed_ingestion_count: 0,
+      interrupted_abstract_count: 0,
     },
   };
 }

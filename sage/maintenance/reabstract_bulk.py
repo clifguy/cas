@@ -61,6 +61,16 @@ ALL_SELECTOR = "all"
 # document reaches with its abstract missing. The remaining terminal state
 # already has an abstract, and a non-terminal one is mid-flight and owned by the
 # running worker.
+#
+# Some documents in these states have no stored chunks -- a failure during
+# indexing, or work dropped before it reached that stage -- and the dispatch
+# below refuses those, reporting the refusal per document. That is the intended
+# behavior *here* and not in the deferred sweep, which enumerates
+# `abstraction_skipped` only. The difference is the caller, not the dispatch:
+# this is an attended operator tool whose contract is to report what happened to
+# each document, run against a worklist the operator selected and reads; the
+# deferred sweep is an unattended contract that an automated caller acts on. A
+# refusal is a finding in the first and noise in the second.
 DEFAULT_STATUSES: frozenset[str] = frozenset(
     {
         PipelineStatus.FAILED.value,

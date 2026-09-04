@@ -94,6 +94,7 @@ export default function Dashboard() {
             </div>
           )}
           <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
+          <HealthCard label="Interrupted abstracts" count={stats.health.interrupted_abstract_count} linkTo="/search?pipeline_status=abstraction_interrupted" />
           <BloatIndicator
             deadTuples={stats.content_store_version_count}
             liveChunks={stats.content_store_chunk_count}

@@ -705,7 +705,7 @@ async def test_stop_worker_leaves_a_terminal_document_alone(
     order and the ids are content-derived, so an implementation that stopped
     at the first terminal document would still stamp the held one whenever it
     sorted first. The order-independent version of that rival is the store
-    error, pinned in test_stop_worker_survives_a_restamp_write_failure by
+    error, pinned in test_stop_worker_survives_a_restamp_store_failure by
     poisoning whichever document comes first rather than a named one.
     """
     settled_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s4.md")
@@ -796,6 +796,11 @@ async def test_stop_worker_with_no_pending_work_writes_no_document(
     being guarded and a settle pass that reads every document to discover it
     has nothing to write pays it in full. Asserting on writes alone would
     pass against that implementation.
+
+    The two enumeration entry points are recorded for the same reason one step
+    out: a settle pass could discover its work by scanning the vault rather
+    than by reading each candidate, which is the more expensive shape of the
+    same mistake and invisible to a recorder watching only per-document calls.
     """
     doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s10.md")
     assert doc_id
@@ -804,6 +809,8 @@ async def test_stop_worker_with_no_pending_work_writes_no_document(
     touched = []
     original_write = graph_store.update_document
     original_read = graph_store.get_document
+    original_list = graph_store.list_all_documents
+    original_count = graph_store.count_documents_by_pipeline_status
 
     async def _recording_write(document_id, updates):
         touched.append(("write", document_id))
@@ -813,18 +820,30 @@ async def test_stop_worker_with_no_pending_work_writes_no_document(
         touched.append(("read", document_id))
         return await original_read(document_id)
 
+    async def _recording_list():
+        touched.append(("list", None))
+        return await original_list()
+
+    async def _recording_count(status):
+        touched.append(("count", status))
+        return await original_count(status)
+
     graph_store.update_document = _recording_write
     graph_store.get_document = _recording_read
+    graph_store.list_all_documents = _recording_list
+    graph_store.count_documents_by_pipeline_status = _recording_count
     try:
         await ingestion_service.stop_worker()
     finally:
         graph_store.update_document = original_write
         graph_store.get_document = original_read
+        graph_store.list_all_documents = original_list
+        graph_store.count_documents_by_pipeline_status = original_count
 
     assert touched == []
 
 
-async def test_stop_worker_survives_a_restamp_write_failure(
+async def test_stop_worker_survives_a_restamp_store_failure(
     tmp_vault_dir, ingestion_service, graph_store
 ):
     """A store error while settling strands only the document it belongs to.

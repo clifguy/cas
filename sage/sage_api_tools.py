@@ -3017,6 +3017,13 @@ def register_sage_tools(
         still-functional old services and an error envelope is returned; the
         caller can retry after addressing the cause.
 
+        Abstraction work in flight does not survive the reload. Tearing the
+        old services down stops their queue, so any document being abstracted
+        or waiting to be settles at ``abstraction_interrupted`` rather than
+        finishing. Nothing re-runs it until the next server start; to advance
+        it sooner, use the out-of-band bulk reabstract sweep, whose default
+        selector includes that status.
+
         Error modes (the registry slot is preserved on every failure path;
         the old services stay installed and the caller can retry):
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias

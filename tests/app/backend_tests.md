@@ -97,7 +97,7 @@ ensures statistics are always current.
 
 **Decision:** The stats response includes health indicator counts as a nested
 object: pending_metadata_count, pending_edge_count, deferred_abstract_count,
-and failed_ingestion_count.
+failed_ingestion_count, and interrupted_abstract_count.
 
 **Precondition:** Vault with items in each health category.
 
@@ -109,6 +109,7 @@ and failed_ingestion_count.
   - `pending_edge_count` (integer, equals staging_edge_count)
   - `deferred_abstract_count` (integer)
   - `failed_ingestion_count` (integer)
+  - `interrupted_abstract_count` (integer)
 
 **Rationale:** Health indicators are a Dashboard concern. Including them in
 the stats response avoids a second API call for health status.
