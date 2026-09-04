@@ -84,17 +84,16 @@ Extraction here is three tiers -- snake_case, single-word backticked
 tokens, and interior-capital names -- which together reach the defect
 this module exists for and the shape an invented *schema* name arrives
 as. All three are pinned by
-``test_extractor_finds_bare_backticked_tokens``. The third tier was added
-after the first version of this module shipped with two: its enumeration
-of internal identifiers below was silently bounded by what a
-lowercase-only extractor could see, which is the same class of error the
-module exists to catch, one level up.
+``test_extractor_finds_bare_backticked_tokens``. An extractor that cannot
+see a shape silently bounds every enumeration built from it, the one
+below included -- this module's own defect class, one level up, and the
+reason the tiers are pinned by a test rather than left to inspection.
 
 **Pins are a ratchet**, on the rule the parity gate established:
 ``test_unresolved_identifier_pins_are_not_stale`` fails on a pinned name
 that has since become resolvable, so the pin set can only shrink. Each
 pin carries the category the name actually belongs to. The categories are
-the audit's record: fifteen mapped pairs resolve completely and appear
+the audit's record: fourteen mapped pairs resolve completely and appear
 nowhere below, and an operation absent from the table is one the sweep
 found sound rather than one it skipped.
 
@@ -136,18 +135,19 @@ four the schema declares; and the two terminal statuses
 set its poller waits on. Those operations, and the rest of the fifteen,
 are sound on this axis.
 
-Eight operations named internal implementation identifiers in prose
-whose readers cannot reach them. Seven were reworded as telling the
-caller nothing: a service class path and a summary dataclass on
-``bulk_ingest_document``, two internal function names on
+Seven operations named internal implementation identifiers in prose
+whose readers cannot reach them. Five had them reworded as telling the
+caller nothing -- nine identifiers, one of which appears on two of those
+operations: a service class path, a summary dataclass and a parser class
+on ``bulk_ingest_document``, two internal function names on
 ``batch_ingest_documents``, a service method and a provider class on
-``recompute_deferred_vault_abstracts``, a parser class on
-``get_filename_metadata``, a store class and an exception class on
-``migrate_vault``. Two names are pinned rather than removed:
-``create_vault`` names a Python constructor and its class for a default
-config, and no API route returns one, so the reference is the only
-affordance a caller has. A third, ``Sha256Str`` on ``verify_hashes``,
-is pinned because there the alias *is* the published shape.
+``recompute_deferred_vault_abstracts``, that same parser class on
+``get_filename_metadata``, and a store class and an exception class on
+``migrate_vault``. The remaining two carry pins instead, three names
+between them: ``create_vault`` names a Python constructor and its class
+for a default config, and no API route returns one, so the reference is
+the only affordance a caller has; and ``Sha256Str`` on ``verify_hashes``,
+because there the alias *is* the published shape.
 
 Instances remain on surfaces this module does not sweep -- schema
 property descriptions carry a few, and one was corrected here only
