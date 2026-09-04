@@ -149,15 +149,26 @@ def test_validate_driver_defaults_to_the_seeded_vault() -> None:
     )
 
 
-def test_documented_preflight_expectation_covers_the_seeded_vault() -> None:
-    """Every documented PREFLIGHT_EXPECTED_VAULTS value lists the seeded vault.
+def test_documented_preflight_expectation_names_exactly_the_seeded_vault() -> None:
+    """Every documented PREFLIGHT_EXPECTED_VAULTS value is exactly the seeded vault.
 
     The preflight gate asserts that each id in this comma-list came back from
-    ``/sage_vaults``. Omitting the validation vault leaves the deploy green when
-    the vault failed to load for any reason at all -- a seed that never ran, a
-    config the schema rejected, a binding misconfigured for the tenant. That is a
-    property of the running tenant rather than of the repository, so it is the one
-    thing the other coupling tests here cannot observe.
+    ``/sage_vaults``, and fails closed on any that did not. Two failures are
+    possible and this checks both, which is why it asserts set equality rather
+    than membership:
+
+    - *Omitting* the seeded vault leaves the deploy green when that vault failed
+      to load for any reason at all -- a seed that never ran, a config the schema
+      rejected, a binding misconfigured for the tenant.
+    - *Naming a vault the bootstrap does not create* is worse, because it fails
+      closed forever rather than passing wrongly once. A local-only vault id
+      documented here is unsatisfiable on every real tenant, and an operator
+      following the runbook literally cannot get a green deploy.
+
+    The runbook is bring-up documentation, and at bring-up the tenant has exactly
+    the one vault ``seed-vault-source.sh`` seeds. A tenant that later adds vaults
+    through the maintenance surface can extend its own live variable; the
+    documented example must stay the reproducible minimum.
     """
     doc_text = DEPLOYMENT_DOC_PATH.read_text()
     matches = _PREFLIGHT_EXPECTED_RE.findall(doc_text)
@@ -174,10 +185,12 @@ def test_documented_preflight_expectation_covers_the_seeded_vault() -> None:
     seeded = _seeded_vault_id()
     for body, inline in matches:
         value = body or inline
-        ids = [v.strip() for v in value.split(",") if v.strip()]
-        assert seeded in ids, (
-            f"{DEPLOYMENT_DOC_PATH.name} documents PREFLIGHT_EXPECTED_VAULTS={value!r}, "
-            f"which omits the seeded vault {seeded!r}; a deploy would pass without it"
+        ids = {v.strip() for v in value.split(",") if v.strip()}
+        assert ids == {seeded}, (
+            f"{DEPLOYMENT_DOC_PATH.name} documents PREFLIGHT_EXPECTED_VAULTS={value!r}; "
+            f"the bring-up example must name exactly the seeded vault {seeded!r}. "
+            f"Missing: {sorted({seeded} - ids)}. "
+            f"Not created by the bootstrap: {sorted(ids - {seeded})}"
         )
 
 
