@@ -17,12 +17,14 @@ with the model.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 import psycopg
 from pydantic_core import PydanticUndefined
 
+from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import (
     DocTypeEntry,
     DocumentTypesConfig,
@@ -346,6 +348,7 @@ class _FakeServices:
         storage_present: bool = True,
         total: int = 0,
         total_raises: BaseException | None = None,
+        ingestion_service: Any = None,
     ) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore(
@@ -355,7 +358,10 @@ class _FakeServices:
             total=total,
             total_raises=total_raises,
         )
-        self.ingestion_service = _FakeIngestionService()
+        # A real IngestionService can be supplied where what the eviction does
+        # to the documents its worker was carrying is the assertion; the spy is
+        # enough for the tests that only ask whether the stop ran.
+        self.ingestion_service = ingestion_service or _FakeIngestionService()
         self.close_timing_called = False
         self.close_storage_called = False
 
@@ -483,6 +489,56 @@ async def test_list_vaults_evicts_a_vault_whose_schema_and_config_are_gone(
     assert gone.close_timing_called
     assert gone.close_storage_called
     assert any(r.levelno == logging.WARNING and "gone" in r.getMessage() for r in caplog.records)
+
+
+async def test_list_vaults_eviction_settles_dropped_abstraction_work(
+    monkeypatch: Any, tmp_vault_dir: Any, minimal_config: Any, graph_store: Any
+) -> None:
+    """Eviction tears down a real worker, and the work it was carrying is
+    settled at abstraction_interrupted rather than stranded.
+
+    This path has no successor to recover onto -- the vault is gone from
+    discovery and nothing rebuilds it -- so a recovery keyed to the
+    replacement entry a reload installs would never reach these documents.
+    The reload/hot-swap path is a separate teardown, covered in
+    ``test_mcp_init.py``.
+
+    A real IngestionService stands in for the spy: the assertion is what the
+    document's stored pipeline_status became, which a spy cannot show.
+    """
+    from sage.models.enums import PipelineStatus
+    from tests.sage.test_abstraction_queue import (
+        _build_service,
+        _GatedAbstractionProvider,
+        _seed_indexed_doc,
+    )
+
+    ingestion = _build_service(graph_store, minimal_config, StubAbstractionProvider())
+    doc_id = await _seed_indexed_doc(ingestion, tmp_vault_dir, "samples/ev1.md")
+    gated = _GatedAbstractionProvider()
+    ingestion._abstraction = gated
+    await ingestion.reabstract(doc_id)
+    await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+    assert (
+        await graph_store.get_document(doc_id)
+    ).pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS
+
+    config = _vault_config_with_every_summary_field()
+    gone = _FakeServices(config=config, raises=_undefined_table(), ingestion_service=ingestion)
+    registry: dict[str, Any] = {"gone": gone}
+    svc = VaultRegistryService(registry, _unused_initialize_services)
+    _patch_source_store(monkeypatch, _FakeSourceStore(discovered_ids=[]))
+
+    try:
+        await svc.list_vaults()
+    finally:
+        gated.gate.set()
+
+    assert "gone" not in registry  # the evict actually fired
+    doc = await graph_store.get_document(doc_id)
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED
+    assert doc.pipeline_error
+    assert doc_id not in ingestion._inflight
 
 
 async def test_list_vaults_skips_but_keeps_a_transiently_failing_vault(

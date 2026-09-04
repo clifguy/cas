@@ -51,9 +51,11 @@ class _CredentialCloseRecorder:
 class _FakeIngestion:
     def __init__(self):
         self.stopped = False
+        self.restamp_arg = None
 
-    async def stop_worker(self):
+    async def stop_worker(self, *, restamp: bool = True):
         self.stopped = True
+        self.restamp_arg = restamp
 
 
 class _FakeServices:
@@ -222,7 +224,11 @@ def test_absent_selector_defaults_to_the_recovery_statuses(monkeypatch):
 
     assert rc.main() == 0
     assert captured["statuses"] == frozenset(
-        {PipelineStatus.FAILED.value, PipelineStatus.ABSTRACTION_SKIPPED.value}
+        {
+            PipelineStatus.FAILED.value,
+            PipelineStatus.ABSTRACTION_SKIPPED.value,
+            PipelineStatus.ABSTRACTION_INTERRUPTED.value,
+        }
     )
 
 
@@ -271,6 +277,27 @@ def test_services_are_torn_down_on_a_core_failure(monkeypatch):
         pass
 
     assert _torn_down(fakes)
+
+
+def test_teardown_settles_work_the_sweep_abandoned(monkeypatch):
+    """This job's teardown keeps the interruption stamp; only delete_vault opts
+    out of it.
+
+    A short-lived job, so nothing runs behind it: the sweep abandons a document
+    at its wait ceiling with the job for it still queued, and the process then
+    exits. Without the stamp that document waits for the next server start.
+    """
+    _clear_env(monkeypatch)
+    fakes = _patch_resolution(monkeypatch)
+    _capture_core(monkeypatch, raises=True)
+    _base_env(monkeypatch, SAGE_REABSTRACT_APPLY="1")
+
+    try:
+        rc.main()
+    except RuntimeError:
+        pass
+
+    assert fakes.services.ingestion_service.restamp_arg is True
 
 
 def test_sweep_exit_code_passes_through(monkeypatch):

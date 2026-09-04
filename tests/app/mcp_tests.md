@@ -92,7 +92,8 @@ including health indicator counts. Mirrors the HTTP stats endpoint response.
   - `content_store_size_bytes`, `graph_store_size_bytes` (integers)
   - `last_ingestion_at` (string or null)
   - `health` object with: `pending_metadata_count`, `pending_edge_count`,
-    `deferred_abstract_count`, `failed_ingestion_count`
+    `deferred_abstract_count`, `failed_ingestion_count`,
+    `interrupted_abstract_count`
 
 **Rationale:** MCP clients (e.g., Claude Desktop) need vault health at a glance
 to decide which operations to suggest.

@@ -7,6 +7,8 @@ production providers (NomicEmbeddingProvider ~270 MB, Qwen3 ~16-20 GB).
 Test IDs follow the pattern DI-NNN (Dependency Injection).
 """
 
+import asyncio
+
 import pytest
 
 from sage.adapters.stubs import (
@@ -475,6 +477,65 @@ async def test_reload_vault_in_registry_closes_old_storage_handle(
         finally:
             new_services.close_timing()
             await new_services.close_storage()
+
+
+async def test_reload_vault_in_registry_settles_dropped_abstraction_work(
+    minimal_vault_config_dict, tmp_vault_dir, graph_store
+):
+    """The hot-swap tears down the predecessor's worker, dropping whatever it
+    was carrying. That work is settled at abstraction_interrupted rather than
+    left non-terminal with the predecessor it belonged to discarded.
+
+    The successor is a fresh services object holding no claims, so nothing on
+    it would recover the document: the guarantee has to be discharged by the
+    stop itself. Reached here through ``reload_vault_in_registry`` directly;
+    ``test_reload_vault_tool_settles_dropped_abstraction_work`` covers the MCP
+    entry point onto the same function, and the eviction path is a separate
+    teardown covered in ``test_vault_registry.py``.
+    """
+    from sage.mcp_init import reload_vault_in_registry
+    from sage.models.enums import PipelineStatus
+    from tests.sage.test_abstraction_queue import _GatedAbstractionProvider, _seed_indexed_doc
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    content_store = StubContentStore()
+    async with initialize_services_for_test(
+        config,
+        graph_store_factory=lambda _root: graph_store,
+        content_store=content_store,
+        abstraction_provider=StubAbstractionProvider(),
+    ) as old:
+        doc_id = await _seed_indexed_doc(old.ingestion_service, tmp_vault_dir, "samples/rl1.md")
+        gated = _GatedAbstractionProvider()
+        old.ingestion_service._abstraction = gated
+        await old.ingestion_service.reabstract(doc_id)
+        await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
+        assert (
+            await graph_store.get_document(doc_id)
+        ).pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS
+
+        # Predecessor and successor share one store here, so the teardown's own
+        # close would shut the store the assertions read through. Only that call
+        # is neutralized; the worker stop under test runs unchanged, and the
+        # teardown's release of the predecessor's storage handle is pinned by
+        # test_reload_vault_in_registry_closes_old_storage_handle.
+        async def _keep_shared_store_open() -> None:
+            return None
+
+        old.close_storage = _keep_shared_store_open
+
+        registry = {"test_vault": old}
+        new_services = await reload_vault_in_registry(registry, "test_vault", config)
+        try:
+            doc = await graph_store.get_document(doc_id)
+            assert doc.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED
+            assert doc.pipeline_error
+            assert new_services.ingestion_service is not old.ingestion_service
+            assert not new_services.ingestion_service._inflight
+        finally:
+            gated.gate.set()
+            await new_services.ingestion_service.stop_worker(restamp=False)
+            new_services.close_timing()
 
 
 # ---------------------------------------------------------------------------

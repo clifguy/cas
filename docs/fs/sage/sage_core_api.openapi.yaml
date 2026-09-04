@@ -422,7 +422,10 @@ paths:
         `pipeline_status` at a non-terminal value (typically
         `indexing_in_progress`). MCP callers wait for a terminal
         `pipeline_status` on the document to observe the outcome, as a single
-        bounded wait rather than one status read per unit of caller work. This
+        bounded wait rather than one status read per unit of caller work. A
+        wait must also accept `abstraction_interrupted`, which means the queue
+        draining the work was stopped before it finished and the next server
+        start re-runs it. This
         exists because the MCP client transport imposes a 60-second RPC timeout
         that abstraction on large documents can exceed (BH-130).
 
@@ -1911,7 +1914,8 @@ paths:
       description: >-
         Re-runs abstraction on one existing document regardless of its
         current terminal pipeline_status (abstraction_complete,
-        abstraction_skipped, or failed), reusing the shared per-document
+        abstraction_skipped, abstraction_interrupted, or failed),
+        reusing the shared per-document
         queue and single-flight machinery. Fire-and-forget: the call
         validates the document and its stored projection chunks, claims the
         document, flips pipeline_status to abstraction_in_progress,
@@ -1919,7 +1923,10 @@ paths:
         immediately. The regenerated abstract is written by that task, not
         by this call; wait on `GET /documents/{document_id}` for a terminal
         pipeline_status to observe the outcome, as a single bounded wait
-        rather than one status read per unit of caller work. Use this to
+        rather than one status read per unit of caller work. A wait must also
+        accept `abstraction_interrupted`, which means the queue draining the
+        work was stopped before it finished and the next server start re-runs
+        it. Use this to
         refresh a stale-but-complete abstract after an abstraction-provider
         or model swap.
       tags: [Document Metadata]
@@ -2524,24 +2531,23 @@ paths:
         documents whose pipeline_status is 'abstraction_skipped', dispatches a
         reabstract per document, and polls until each
         reaches a terminal pipeline_status (abstraction_complete,
-        abstraction_skipped, or failed).
+        abstraction_skipped, abstraction_interrupted, or failed).
 
 
-        The per-document poll is bounded. A document can stop advancing
-        toward a terminal status altogether -- the abstraction worker is
-        cancelled on lifespan teardown and on registry reload, which drops
-        queued jobs and strands their documents mid-pipeline -- so a
-        document that has not settled within the server's wait ceiling is
-        abandoned and recorded with outcome 'timeout' rather than polled
-        indefinitely. Abandoning is a statement about the poll, not about
-        the document: the generation may still complete. It is not,
-        however, self-healing. This operation enumerates
+        The per-document poll is bounded. A generation slow enough outlasts
+        any waiter, so a document that has not settled within the server's
+        wait ceiling is abandoned and recorded with outcome 'timeout'
+        rather than polled indefinitely. Abandoning is a statement about the
+        poll, not about the document: the generation may still complete. It
+        is not, however, self-healing. This operation enumerates
         'abstraction_skipped' only, and an abandoned document sits at
         'abstraction_in_progress', so a later call reaches it only once
-        something else advances it -- startup recovery, which runs from the
-        server's lifespan hook and so does not fire on a registry reload
-        alone, or the out-of-band bulk sweep with a selector naming that
-        status.
+        something else advances it -- the generation finishing, startup
+        recovery, or the out-of-band bulk sweep with a selector naming that
+        status. Work dropped by a stopped abstraction worker is a separate
+        case and does not land here: stopping the worker settles it at the
+        terminal 'abstraction_interrupted', which the poll returns and the
+        bulk sweep enumerates by default.
 
 
         Outcomes beyond `success` and `skipped_pdf` all count toward
@@ -2550,7 +2556,9 @@ paths:
         `llm_failure` indicates an error the provider actually raised:
         `still_skipped` is a document that settled back at
         `abstraction_skipped`, having declined abstraction rather than
-        failed at it, and `timeout` is one abandoned at the ceiling.
+        failed at it; `timeout` is one abandoned at the ceiling; and
+        `interrupted` is one whose work a stopped queue dropped before
+        any provider was reached.
 
 
         Reuses the in-process abstraction provider that the running SAGE
@@ -3073,12 +3081,23 @@ components:
         - abstraction_in_progress
         - abstraction_complete
         - abstraction_skipped
+        - abstraction_interrupted
         - failed
       description: >-
         Tracks progress of the three-stage ingestion pipeline.
         "abstraction_skipped" indicates the vault has abstraction
         disabled or the LLM was unavailable (graceful degradation
         per CAS-ADR-011).
+
+
+        "abstraction_interrupted" records abstraction work that was
+        dropped rather than attempted: the queue draining it was
+        stopped before the work ran or finished. It is terminal
+        because nothing is left running to advance the document, and
+        it is not a success -- pipeline_error carries the cause.
+        Unlike the other non-success terminal status it says nothing
+        about the document or the provider, so startup recovery
+        re-enqueues it where it leaves "failed" alone.
 
     TraversalDirection:
       type: string
@@ -3246,13 +3265,14 @@ components:
           type: string
           nullable: true
           description: >-
-            Failure description when pipeline_status is "failed".
-            Contains the error message from the failed pipeline stage
-            (projection, indexing, or abstraction). Null when the
-            pipeline has not failed, and cleared when the document next
-            reaches a successful terminal pipeline_status, so a
-            recovered document carries no record of the failure it
-            recovered from.
+            Why the pipeline did not succeed. When pipeline_status is
+            "failed", the error message from the failing pipeline stage
+            (projection, indexing, or abstraction); when it is
+            "abstraction_interrupted", which work was dropped and why.
+            Null when the pipeline has neither failed nor been
+            interrupted, and cleared when the document next reaches a
+            successful terminal pipeline_status, so a recovered document
+            carries no record of what it recovered from.
         tier3_metadata:
           type: object
           nullable: true
@@ -5873,6 +5893,7 @@ components:
         - pending_metadata_count
         - pending_edge_count
         - failed_ingestion_count
+        - interrupted_abstract_count
       description: Aggregate health signals for a vault, surfaced inside vault-stats responses.
       properties:
         pending_metadata_count:
@@ -5890,6 +5911,15 @@ components:
         failed_ingestion_count:
           type: integer
           description: Documents with pipeline_status=failed.
+        interrupted_abstract_count:
+          type: integer
+          description: >-
+            Documents with pipeline_status=abstraction_interrupted:
+            abstraction work a stopped worker dropped rather than
+            attempted. Counted apart from failed_ingestion_count because
+            no stage failed and nothing is wrong with the document; the
+            next server start re-runs it, and the bulk reabstract sweep
+            reaches it before then.
 
     LastOptimizeSummary:
       type: object
@@ -6569,7 +6599,7 @@ components:
 
     ReabstractOutcome:
       type: string
-      enum: [success, skipped_pdf, llm_failure, still_skipped, timeout]
+      enum: [success, skipped_pdf, llm_failure, still_skipped, timeout, interrupted]
       description: >-
         Per-document outcome classification in a ReabstractReport.
         `success`: the document's pipeline_status transitioned to
@@ -6581,7 +6611,10 @@ components:
         having declined abstraction rather than failed at it. `timeout`:
         the document had not reached a terminal pipeline_status when the
         wait ceiling elapsed, and was abandoned while its abstraction may
-        still have been running. The last three all count toward
+        still have been running. `interrupted`: the document settled at
+        pipeline_status='abstraction_interrupted', its work dropped by a
+        stopped queue without reaching a provider, and the next server
+        start re-runs it. The last four all count toward
         failed_count, which counts documents that did not reach
         abstraction_complete; they are reported apart because only
         `llm_failure` indicates an error the provider actually raised.
@@ -6705,13 +6738,13 @@ components:
           $ref: "#/components/schemas/ReabstractOutcome"
           description: >-
             Per-document classification (success / skipped_pdf /
-            llm_failure / still_skipped / timeout).
+            llm_failure / still_skipped / timeout / interrupted).
         error_message:
           type: string
           nullable: true
           description: >-
             Failure description when outcome is 'llm_failure',
-            'still_skipped', or 'timeout'; null otherwise.
+            'still_skipped', 'timeout', or 'interrupted'; null otherwise.
         elapsed_seconds:
           type: number
           nullable: true
@@ -7164,8 +7197,9 @@ components:
             yet. `completed`: reabstract reached `abstraction_complete`.
             `failed`: dispatch raised, terminal pipeline_status was
             `failed` (outcome=`llm_failure`), or the wait ceiling elapsed
-            with the document still non-terminal (outcome=`timeout`).
-            `skipped`: PDF excluded from the worklist by
+            with the document still non-terminal (outcome=`timeout`), or
+            the document settled at `abstraction_interrupted`
+            (outcome=`interrupted`). `skipped`: PDF excluded from the worklist by
             `include_pdf=False` (outcome=`skipped_pdf`), or the document
             settled back at `abstraction_skipped`
             (outcome=`still_skipped`). Outcomes widened without widening
@@ -7179,8 +7213,8 @@ components:
             Per-document terminal classification. Set on `completed`,
             `failed`, and `skipped` events; omitted on the leading
             `started` event. Discriminates within a status: `failed`
-            carries `llm_failure` or `timeout`, and `skipped` carries
-            `skipped_pdf` or `still_skipped`.
+            carries `llm_failure`, `timeout` or `interrupted`, and `skipped`
+            carries `skipped_pdf` or `still_skipped`.
         error:
           type: string
           nullable: true

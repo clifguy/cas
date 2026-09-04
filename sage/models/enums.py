@@ -132,6 +132,14 @@ class PipelineStatus(StrEnum):
 
     `abstraction_skipped` indicates the vault has abstraction disabled or
     the LLM was unavailable (graceful degradation per CAS-ADR-011).
+
+    `abstraction_interrupted` records abstraction work that was dropped
+    rather than attempted: the queue draining it was stopped before the
+    work ran or finished. It is terminal because nothing is left running
+    to advance the document, and it is not a success -- `pipeline_error`
+    carries the cause. Unlike the other non-success terminal status it
+    says nothing about the document or the provider, so startup recovery
+    re-enqueues it where it leaves `failed` alone.
     """
 
     PROJECTION_COMPLETE = "projection_complete"
@@ -140,6 +148,7 @@ class PipelineStatus(StrEnum):
     ABSTRACTION_IN_PROGRESS = "abstraction_in_progress"
     ABSTRACTION_COMPLETE = "abstraction_complete"
     ABSTRACTION_SKIPPED = "abstraction_skipped"
+    ABSTRACTION_INTERRUPTED = "abstraction_interrupted"
     FAILED = "failed"
 
 
@@ -272,14 +281,16 @@ class TraversalDirection(StrEnum):
 class ReabstractOutcome(StrEnum):
     """Per-document outcome categories in a ReabstractReport.
 
-    `still_skipped` and `timeout` both count toward a report's
-    `failed_count` -- the field counts documents that did not reach
-    `abstraction_complete` -- but neither is an `llm_failure`. A
-    still-skipped document declined abstraction rather than attempting
-    it, and a timed-out one was abandoned by the waiter while the
-    generation it was waiting on may still be running. Folding either
-    into `llm_failure` would send an operator looking for a provider
-    error that never happened.
+    `still_skipped`, `timeout` and `interrupted` all count toward a
+    report's `failed_count` -- the field counts documents that did not
+    reach `abstraction_complete` -- but none of them is an
+    `llm_failure`. A still-skipped document declined abstraction rather
+    than attempting it; a timed-out one was abandoned by the waiter
+    while the generation it was waiting on may still be running; an
+    interrupted one had its work dropped by a stopped queue and never
+    reached a provider at all. Folding any of them into `llm_failure`
+    would send an operator looking for a provider error that never
+    happened.
     """
 
     SUCCESS = "success"
@@ -287,6 +298,7 @@ class ReabstractOutcome(StrEnum):
     LLM_FAILURE = "llm_failure"
     STILL_SKIPPED = "still_skipped"
     TIMEOUT = "timeout"
+    INTERRUPTED = "interrupted"
 
 
 class StalenessBasis(StrEnum):
@@ -310,6 +322,7 @@ TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
     {
         PipelineStatus.ABSTRACTION_COMPLETE,
         PipelineStatus.ABSTRACTION_SKIPPED,
+        PipelineStatus.ABSTRACTION_INTERRUPTED,
         PipelineStatus.FAILED,
     }
 )

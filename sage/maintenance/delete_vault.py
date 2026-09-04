@@ -164,11 +164,16 @@ async def _evict_from_registry(registry: dict[str, Any], vault_id: str) -> None:
     worker outlives the schema drop. Only reached when the delete runs in the same
     process as the server that loaded the vault; the standalone CLI passes no
     registry.
+
+    The one departure from that order is the interruption stamp the worker stop
+    normally writes for the work it drops. It is skipped here, and only here:
+    the schema holding those documents is dropped moments later, so the stamp
+    would be written to a store about to cease to exist and read by nobody.
     """
     services = registry.get(vault_id)
     if services is None:
         return
-    await services.ingestion_service.stop_worker()
+    await services.ingestion_service.stop_worker(restamp=False)
     services.close_timing()
     await services.close_storage()
     registry.pop(vault_id, None)

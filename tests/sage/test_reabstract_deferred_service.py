@@ -1044,7 +1044,11 @@ async def test_reabstract_deferred_times_out_on_document_stranded_non_terminal(
     # Wait until the job is genuinely inside the provider before cancelling,
     # so the worker dies mid-generation rather than before it claimed work.
     await asyncio.wait_for(provider.entered.wait(), timeout=10)
-    await ingestion.stop_worker()
+    # restamp=False keeps the document non-terminal, which is the scenario
+    # under test: a document the poll must abandon at its ceiling. The default
+    # stop settles dropped work at abstraction_interrupted, which is terminal,
+    # so the poll would return it as settled and the ceiling never fire.
+    await ingestion.stop_worker(restamp=False)
 
     report = await asyncio.wait_for(sweep, timeout=30)
 
@@ -1060,6 +1064,68 @@ async def test_reabstract_deferred_times_out_on_document_stranded_non_terminal(
         "document should still be stranded non-terminal; a settled status would "
         "mean the timeout was not what ended the wait"
     )
+
+
+async def test_a_worker_stop_mid_sweep_reports_interrupted_not_llm_failure(
+    graph_store,
+    stub_content_store,
+    stub_embedding_provider,
+    lock_manager,
+    minimal_config,
+    lifecycle_service,
+):
+    """A document the worker dropped is reported as its own outcome.
+
+    The sweep dispatches and waits; a reload or eviction during that wait
+    stops the worker, which settles the document at abstraction_interrupted.
+    That status is terminal, so the poll returns it rather than abandoning it
+    at the ceiling -- and the residual arm would then report it as
+    ``llm_failure``, claiming a provider raised where none was reached.
+
+    Anti-coincidental-pass: the outcome is asserted, not merely the failure
+    count. Against the residual arm the count is identical, both rolling into
+    ``failed_count``; only the outcome separates "the provider failed" from
+    "the queue draining this was stopped". The message is asserted for the
+    same reason -- an operator triaging the report reads it before anything
+    else, and the residual arm's message names a status rather than a cause.
+    """
+    provider = _GatedAbstractionProvider()
+    ingestion = _build_ingestion_service(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=provider,
+        config=minimal_config,
+        lifecycle_service=lifecycle_service,
+    )
+    doc = _make_skipped_doc(_id("interrupted"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion,
+    )
+
+    sweep = asyncio.create_task(maintenance.reabstract_deferred())
+    await asyncio.wait_for(provider.entered.wait(), timeout=10)
+    # The default stop -- the production path a reload or eviction takes.
+    await ingestion.stop_worker()
+
+    report = await asyncio.wait_for(sweep, timeout=30)
+
+    assert report.reabstracted_count == 0
+    assert report.failed_count == 1
+    entry = report.entries[0]
+    assert entry.document_id == doc.id
+    assert entry.outcome == ReabstractOutcome.INTERRUPTED
+    assert entry.error_message is not None
+    assert "No provider was reached" in entry.error_message
+
+    settled = await graph_store.get_document(doc.id)
+    assert settled.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED.value
 
 
 async def test_wait_for_terminal_prefers_a_settled_status_over_an_elapsed_deadline(
@@ -1294,7 +1360,11 @@ async def test_reabstract_deferred_events_pair_status_and_outcome_for_timeout(
 
     task = asyncio.create_task(drain())
     await asyncio.wait_for(provider.entered.wait(), timeout=10)
-    await ingestion.stop_worker()
+    # restamp=False keeps the document non-terminal, which is the scenario
+    # under test: a document the poll must abandon at its ceiling. The default
+    # stop settles dropped work at abstraction_interrupted, which is terminal,
+    # so the poll would return it as settled and the ceiling never fire.
+    await ingestion.stop_worker(restamp=False)
     await asyncio.wait_for(task, timeout=30)
 
     progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]

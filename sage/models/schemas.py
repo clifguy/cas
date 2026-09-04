@@ -443,12 +443,14 @@ class Document(BaseModel):
     pipeline_error: str | None = Field(
         default=None,
         description=(
-            'Failure description when pipeline_status is "failed". Contains '
-            "the error message from the failed pipeline stage (projection, "
-            "indexing, or abstraction). Null when the pipeline has not "
-            "failed, and cleared when the document next reaches a successful "
-            "terminal pipeline_status, so a recovered document carries no "
-            "record of the failure it recovered from."
+            "Why the pipeline did not succeed. When pipeline_status is "
+            '"failed", the error message from the failing pipeline stage '
+            "(projection, indexing, or abstraction); when it is "
+            '"abstraction_interrupted", which work was dropped and why. Null '
+            "when the pipeline has neither failed nor been interrupted, and "
+            "cleared when the document next reaches a successful terminal "
+            "pipeline_status, so a recovered document carries no record of "
+            "what it recovered from."
         ),
     )
     tier3_metadata: dict | None = Field(
@@ -3854,14 +3856,14 @@ class ReabstractReportEntry(BaseModel):
     outcome: ReabstractOutcome = Field(
         description=(
             "Per-document classification (success / skipped_pdf / "
-            "llm_failure / still_skipped / timeout)."
+            "llm_failure / still_skipped / timeout / interrupted)."
         )
     )
     error_message: str | None = Field(
         default=None,
         description=(
             "Failure description when outcome is 'llm_failure', "
-            "'still_skipped', or 'timeout'; null otherwise."
+            "'still_skipped', 'timeout', or 'interrupted'; null otherwise."
         ),
     )
     elapsed_seconds: float | None = Field(
@@ -4286,7 +4288,8 @@ class ReabstractProgressEvent(BaseModel):
             "`failed`: dispatch raised, terminal pipeline_status was "
             "`failed` (outcome=`llm_failure`), or the wait ceiling "
             "elapsed with the document still non-terminal "
-            "(outcome=`timeout`). `skipped`: PDF excluded "
+            "(outcome=`timeout`), or the document settled at "
+            "`abstraction_interrupted` (outcome=`interrupted`). `skipped`: PDF excluded "
             "from the worklist by `include_pdf=False` "
             "(outcome=`skipped_pdf`), or the document settled back at "
             "`abstraction_skipped` (outcome=`still_skipped`). Outcomes "
@@ -4301,8 +4304,8 @@ class ReabstractProgressEvent(BaseModel):
             "Per-document terminal classification. Set on `completed`, "
             "`failed`, and `skipped` events; omitted on the leading "
             "`started` event. Discriminates within a status: `failed` "
-            "carries `llm_failure` or `timeout`, and `skipped` carries "
-            "`skipped_pdf` or `still_skipped`."
+            "carries `llm_failure`, `timeout` or `interrupted`, and `skipped` "
+            "carries `skipped_pdf` or `still_skipped`."
         ),
     )
     error: str | None = Field(
@@ -4734,6 +4737,15 @@ class HealthIndicators(BaseModel):
         )
     )
     failed_ingestion_count: int = Field(description="Documents with pipeline_status=failed.")
+    interrupted_abstract_count: int = Field(
+        description=(
+            "Documents with pipeline_status=abstraction_interrupted: abstraction "
+            "work a stopped worker dropped rather than attempted. Counted apart "
+            "from failed_ingestion_count because no stage failed and nothing is "
+            "wrong with the document; the next server start re-runs it, and the "
+            "bulk reabstract sweep reaches it before then."
+        )
+    )
 
 
 class LastOptimizeSummary(BaseModel):

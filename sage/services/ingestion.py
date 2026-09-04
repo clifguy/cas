@@ -65,6 +65,7 @@ from sage.api.errors import (
 from sage.config import VaultConfig, build_transition_table
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
+    TERMINAL_PIPELINE_STATUS_VALUES,
     PipelineStatus,
     SourceType,
 )
@@ -538,40 +539,171 @@ class IngestionService:
             document_id, PipelineStatus.FAILED, {"pipeline_error": message}
         )
 
-    async def stop_worker(self) -> None:
-        """Cancel and await the drain worker. Safe to call when no worker is
-        running (idempotent). Pending queued jobs are dropped; they are
-        re-derived from pipeline_status on the next recover_incomplete_documents
-        call. Wired into the lifespan teardown and registry reload."""
+    async def _stamp_if_non_terminal(
+        self,
+        document_id: str,
+        status: PipelineStatus,
+        extra: dict | None = None,
+    ) -> bool:
+        """Stamp ``status`` only when the stored status is still non-terminal.
+
+        The read and the write share one hold of the document lock, so a
+        document that reaches a terminal status between them cannot be
+        overwritten. Distinct from ``_stamp_pipeline_status``, whose callers
+        know the transition they are making; this one is for a caller
+        reconciling state it may have raced -- a document it believed pending
+        may have settled on its own.
+
+        Returns True when the stamp was written.
+        """
+        updates: dict = {
+            "pipeline_status": status.value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if extra:
+            updates.update(extra)
+        if status in SUCCESSFUL_TERMINAL_PIPELINE_STATUSES:
+            updates["pipeline_error"] = None
+        async with self._locks.lock(document_id):
+            doc = await self._store.get_document(document_id)
+            if doc is None or doc.pipeline_status in TERMINAL_PIPELINE_STATUS_VALUES:
+                return False
+            await self._store.update_document(document_id, updates)
+        return True
+
+    async def stop_worker(self, *, restamp: bool = True) -> None:
+        """Cancel and await the drain worker, settling the work it was carrying.
+
+        Safe to call when no worker is running (idempotent). Cancellation
+        drops every queued job and interrupts the one in flight, and neither
+        stamps a terminal status of its own, so a caller that stopped the
+        worker would otherwise leave those documents at a non-terminal status
+        with nothing running to advance them. A dropped queued job is released
+        from its in-flight claim here; the interrupted one releases its own
+        while unwinding. Both are stamped ``abstraction_interrupted`` unless
+        ``restamp`` is False -- terminal, so nothing waits on one forever, and
+        recoverable, so the next startup re-enqueues it.
+
+        The claim snapshot over-approximates "queued or in flight".
+        ``reabstract`` and ``recompute_pipeline`` claim a document before they
+        enqueue and await in between -- ``recompute_pipeline`` for the whole
+        of Stage 1 -- so a stop landing in that window names a document whose
+        owner is still live and about to advance it. The cost is a transient
+        wrong status, not a lost outcome: the owner's own write follows.
+        Narrowing it would mean tracking queued and running job ids apart from
+        the claim registry, which buys precision in a window nothing waits on.
+
+        Pass ``restamp=False`` when the documents are about to cease to exist:
+        the stamp would be written to a store that is being torn down, and the
+        record it leaves would never be read.
+
+        Stamping is best-effort. Callers run this immediately before releasing
+        the storage handle, so an error escaping here would leak the pool it
+        was about to close; the cause is logged instead.
+        """
         task = self._worker_task
         self._worker_task = None
-        if task is None or task.done():
+        # Snapshot before cancelling: an interrupted job releases its own claim
+        # while unwinding, so a claim read afterwards no longer names it.
+        pending = set(self._inflight)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._drain_abandoned_jobs()
+        if not restamp or not pending:
             return
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            await self._restamp_interrupted(pending)
+        except Exception:
+            logger.exception("abstraction worker: could not settle interrupted work")
+
+    def _drain_abandoned_jobs(self) -> None:
+        """Empty the queue of jobs no worker will run, releasing their claims.
+
+        A queued job never enters ``_process_abstraction_job``, so it never
+        reaches the ``finally`` that releases its claim. Left in place the
+        claim outlives the work it guarded and rejects the next operation on
+        that document as already in flight.
+        """
+        queue = self._abstraction_queue
+        if queue is None:
+            return
+        while True:
+            try:
+                job = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            queue.task_done()
+            self._release_claim(job.document_id)
+
+    async def _restamp_interrupted(self, document_ids: set[str]) -> None:
+        """Settle each document whose abstraction work was dropped.
+
+        Only documents still non-terminal are stamped: one that finished
+        between the snapshot and the cancellation carries a real outcome, and
+        replacing it with an interruption would report work that did happen as
+        work that did not.
+
+        Each document is settled independently. One that cannot be written --
+        its row already gone, its lock held elsewhere -- strands only itself;
+        letting it end the pass would make the number of documents settled
+        depend on where in the batch the first bad one happened to fall.
+        """
+        message = (
+            "abstraction work was dropped before it completed: the queue draining it was stopped"
+        )
+        settled = 0
+        for document_id in sorted(document_ids):
+            try:
+                stamped = await self._stamp_if_non_terminal(
+                    document_id,
+                    PipelineStatus.ABSTRACTION_INTERRUPTED,
+                    {"pipeline_error": message},
+                )
+            except Exception:
+                logger.exception(
+                    "abstraction worker: could not settle interrupted document %s",
+                    document_id,
+                )
+                continue
+            if stamped:
+                settled += 1
+        if settled:
+            logger.info(
+                "abstraction worker stopped: settled %d document(s) as interrupted",
+                settled,
+            )
 
     async def recover_incomplete_documents(self) -> int:
         """Re-derive pending abstraction work from pipeline_status and enqueue it.
 
-        Called at process startup (the standalone MCP and FastAPI lifespans)
-        so a document left non-terminal by a crash or a stopped worker is
-        recovered rather than stranded. Terminal states (abstraction_complete,
-        abstraction_skipped, failed) are left alone: skip and failed are
-        deliberate operator territory. Returns the number of documents enqueued.
+        Called at process startup (from the FastAPI lifespan, which owns the
+        vault lifecycle) so a document left mid-pipeline by a crash is
+        recovered rather than stranded. ``abstraction_complete``,
+        ``abstraction_skipped`` and ``failed`` are left alone: each records
+        an outcome the pipeline actually reached, and skip and failed are
+        deliberate operator territory.
+
+        ``abstraction_interrupted`` is the exception among terminal statuses,
+        and the reason this set is spelled out rather than derived as the
+        complement of the terminal ones. It records only that work was
+        dropped, so re-running it neither repeats a decision nor overrides
+        one. Returns the number of documents enqueued.
         """
-        non_terminal = {
+        recoverable = {
             PipelineStatus.PROJECTION_COMPLETE.value,
             PipelineStatus.INDEXING_IN_PROGRESS.value,
             PipelineStatus.INDEXING_COMPLETE.value,
             PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+            PipelineStatus.ABSTRACTION_INTERRUPTED.value,
         }
         documents = await self._store.list_all_documents()
         enqueued = 0
         for doc in documents:
-            if doc.pipeline_status not in non_terminal:
+            if doc.pipeline_status not in recoverable:
                 continue
             # Skip documents a live operation already claimed.
             if self._try_claim(doc.id, "recovery") is not None:

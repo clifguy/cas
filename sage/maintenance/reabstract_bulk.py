@@ -8,10 +8,11 @@ missing -- but a failed-pipeline document is excluded from scoring retrieval, so
 the records go silently absent while the vault keeps answering queries normally.
 
 No existing lever covers the case. The deferred-abstract sweep enumerates
-``abstraction_skipped`` only; startup recovery deliberately leaves every terminal
-status alone, treating skip and failure as operator territory. This module is
-that operator lever: a status-selected sweep that re-dispatches abstraction
-per document and reports what happened to each one.
+``abstraction_skipped`` only; startup recovery leaves skip and failure alone as
+operator territory, and reaches ``abstraction_interrupted`` only at the next
+process start. This module is that operator lever: a status-selected sweep that
+re-dispatches abstraction per document and reports what happened to each one,
+without waiting for a restart.
 
 Safeguards:
 - Dry-run is the default. The caller must pass ``apply=True`` for any dispatch,
@@ -56,11 +57,26 @@ from sage.models.schemas import Document, ReabstractReport, ReabstractReportEntr
 # Selector token expanding to the whole pipeline-status vocabulary.
 ALL_SELECTOR = "all"
 
-# Statuses swept when the caller supplies no selector: the two terminal states a
-# document reaches with its abstract missing. Every other terminal state either
-# already has an abstract or is mid-flight and owned by the running worker.
+# Statuses swept when the caller supplies no selector: the terminal states a
+# document reaches with its abstract missing. The remaining terminal state
+# already has an abstract, and a non-terminal one is mid-flight and owned by the
+# running worker.
+#
+# Some documents in these states have no stored chunks -- a failure during
+# indexing, or work dropped before it reached that stage -- and the dispatch
+# below refuses those, reporting the refusal per document. That is the intended
+# behavior *here* and not in the deferred sweep, which enumerates
+# `abstraction_skipped` only. The difference is the caller, not the dispatch:
+# this is an attended operator tool whose contract is to report what happened to
+# each document, run against a worklist the operator selected and reads; the
+# deferred sweep is an unattended contract that an automated caller acts on. A
+# refusal is a finding in the first and noise in the second.
 DEFAULT_STATUSES: frozenset[str] = frozenset(
-    {PipelineStatus.FAILED.value, PipelineStatus.ABSTRACTION_SKIPPED.value}
+    {
+        PipelineStatus.FAILED.value,
+        PipelineStatus.ABSTRACTION_SKIPPED.value,
+        PipelineStatus.ABSTRACTION_INTERRUPTED.value,
+    }
 )
 
 # Rows fetched per enumeration query. The predicate is pushed into the indexed
@@ -231,6 +247,25 @@ async def run_sweep(
             )
             reabstracted += 1
             print(f"[{index:5d}/{total}]  ok {doc.id}  {elapsed:6.1f}s", flush=True)
+        elif status == PipelineStatus.ABSTRACTION_INTERRUPTED.value:
+            # Named before the residual arm for the same reason the service
+            # sweep names it: the work was dropped by a stopped queue and
+            # never reached a provider, so reporting it as an llm_failure
+            # sends the operator after a fault that did not happen.
+            message = (
+                "abstraction work was dropped before it completed: the queue "
+                "draining it was stopped. No provider was reached"
+            )
+            entries.append(
+                ReabstractReportEntry(
+                    document_id=doc.id,
+                    outcome=ReabstractOutcome.INTERRUPTED,
+                    error_message=message,
+                    elapsed_seconds=elapsed,
+                )
+            )
+            failed += 1
+            print(f"[{index:5d}/{total}]  x  {doc.id}  {message}", flush=True)
         else:
             message = f"terminal pipeline_status: {status}"
             entries.append(
@@ -310,7 +345,19 @@ async def reabstract_bulk(
     if report.failed_count:
         print("Failures:", file=sys.stderr)
         for entry in report.entries:
-            if entry.outcome == ReabstractOutcome.LLM_FAILURE:
-                print(f"  {entry.document_id}: {entry.error_message}", file=sys.stderr)
+            # Everything the count counts, listed. Keyed on "did not succeed"
+            # rather than on the failure outcomes by name: naming them here
+            # restates a set that goes stale the next time one is added -- as
+            # it did when `interrupted` joined and this listing kept printing
+            # a header over an empty set while the count above said one
+            # failed. Safe as the complement of SUCCESS because this sweep
+            # emits no skipped_pdf entries (skipped_pdf_count is always zero
+            # here, for the reason the module docstring gives), so every
+            # entry either succeeded or counted toward failed_count.
+            if entry.outcome != ReabstractOutcome.SUCCESS:
+                print(
+                    f"  {entry.document_id}: [{entry.outcome.value}] {entry.error_message}",
+                    file=sys.stderr,
+                )
         return 1
     return 0
