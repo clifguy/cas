@@ -178,10 +178,12 @@ gh variable set POSTGRES_AAD_ADMIN_PRINCIPAL_NAME --env "$ENVIRONMENT" --body "<
 gh variable set SHAREPOINT_SITE_ID    --env "$ENVIRONMENT" --body "<site-id>"
 gh variable set SHAREPOINT_DRIVE_ID   --env "$ENVIRONMENT" --body "<drive-id>"
 # Preflight expectations. The list names every vault the deploy gate requires
-# discovery to have loaded; `cloud_validation` is the disposable validation vault
-# that seed-vault-source.sh uploads, so set this only once that script has run —
-# it seeds the vault before it emits the SHAREPOINT_* coordinates above, so
-# having those coordinates means the vault is already in place.
+# discovery to have loaded, and the gate fails closed on a missing one. Set this
+# only after the validation vault's config has actually been seeded into the
+# document library (sharepoint-vault-source.md §4). Knowing the SHAREPOINT_*
+# coordinates above is a weaker condition and does not imply it: the bootstrap
+# script seeds before emitting them, but the manual runbook resolves them three
+# steps earlier, at §1.
 gh variable set PREFLIGHT_EXPECTED_VAULTS --env "$ENVIRONMENT" --body "cas,cloud_validation"
 gh variable set PREFLIGHT_VAULT_SOURCE    --env "$ENVIRONMENT" --body "document_store"
 ```

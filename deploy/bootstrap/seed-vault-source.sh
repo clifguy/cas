@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Grant the SAGE managed identity the least-privilege, site-scoped Microsoft
-# Graph permission and seed the test vault's configuration into the document
-# library (CAS-ADR-043). This is the executable substance of
+# Graph permission and seed the validation vault's configuration into the
+# document library (CAS-ADR-043). This is the executable substance of
 # docs/process/sharepoint-vault-source.md — the one-time vault-source bootstrap
 # for the stateless cloud compute.
 #
