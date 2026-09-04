@@ -183,7 +183,9 @@ gh variable set SHAREPOINT_DRIVE_ID   --env "$ENVIRONMENT" --body "<drive-id>"
 # the one vault seed-vault-source.sh creates. Vaults added later through the
 # maintenance surface can be appended once they exist; a vault that only exists in
 # a local development environment must never appear here, because the gate would
-# then fail closed on every deploy forever.
+# then fail closed on every deploy forever. Separate appended ids with a bare
+# comma and no spaces -- the gate splits on the comma alone, so a leading space
+# becomes part of the id and the vault reads as missing.
 # Set this only after the validation vault's config has actually been seeded into
 # the document library (sharepoint-vault-source.md §4). Knowing the SHAREPOINT_*
 # coordinates above is a weaker condition and does not imply it: the bootstrap

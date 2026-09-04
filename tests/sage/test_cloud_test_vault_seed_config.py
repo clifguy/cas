@@ -169,6 +169,13 @@ def test_documented_preflight_expectation_names_exactly_the_seeded_vault() -> No
     the one vault ``seed-vault-source.sh`` seeds. A tenant that later adds vaults
     through the maintenance surface can extend its own live variable; the
     documented example must stay the reproducible minimum.
+
+    That argument is strongest for the ``gh variable set`` line, which an operator
+    copies verbatim during bring-up. It is applied to the hand-run preflight
+    example too, where the value is illustrative rather than prescriptive: pinning
+    both keeps one answer to "what does this repository claim a tenant has", and an
+    example naming a vault the reader's tenant lacks teaches the wrong shape even
+    where nothing enforces it.
     """
     doc_text = DEPLOYMENT_DOC_PATH.read_text()
     matches = _PREFLIGHT_EXPECTED_RE.findall(doc_text)
@@ -185,12 +192,20 @@ def test_documented_preflight_expectation_names_exactly_the_seeded_vault() -> No
     seeded = _seeded_vault_id()
     for body, inline in matches:
         value = body or inline
-        ids = {v.strip() for v in value.split(",") if v.strip()}
+        # Split exactly as the consumer does. deploy/cloud-preflight.sh sets
+        # `local IFS=','` and iterates unquoted, which skips empty elements but
+        # does NOT trim: with IFS holding only a comma, whitespace is not a
+        # delimiter, so " cloud_validation" stays a distinct id and the gate's
+        # grep for it fails. Trimming here would make this check more permissive
+        # than the thing it checks -- it would pass a documented value the deploy
+        # then rejects, which is the one outcome a documentation gate must not have.
+        ids = {v for v in value.split(",") if v}
         assert ids == {seeded}, (
             f"{DEPLOYMENT_DOC_PATH.name} documents PREFLIGHT_EXPECTED_VAULTS={value!r}; "
-            f"the bring-up example must name exactly the seeded vault {seeded!r}. "
+            f"the bring-up example must name exactly the seeded vault {seeded!r}, "
+            "comma-separated with no surrounding whitespace. "
             f"Missing: {sorted({seeded} - ids)}. "
-            f"Not created by the bootstrap: {sorted(ids - {seeded})}"
+            f"Not created by the bootstrap, or mis-spaced: {sorted(ids - {seeded})}"
         )
 
 
