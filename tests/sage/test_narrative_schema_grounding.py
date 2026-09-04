@@ -661,6 +661,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "new_source_path": ERROR_DETAIL_KEY,
         "recognized": ERROR_DETAIL_KEY,
         "required_state": ERROR_DETAIL_KEY,
+        "store_status": ERROR_DETAIL_KEY,
     },
     ("sage_core", "optimize_vault_content_store"): {
         "ValueError": BUILTIN_EXCEPTION,
@@ -670,6 +671,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "restore_vault_source_file"): {
         "candidate_ids": ERROR_DETAIL_KEY,
+        "store_status": ERROR_DETAIL_KEY,
     },
     ("sage_core", "search"): {
         "KiB": "prose: the unit the inline budget is stated in",
