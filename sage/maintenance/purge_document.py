@@ -38,12 +38,10 @@ from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.maintenance import _internal
-from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES
 
 if TYPE_CHECKING:
     from sage.storage_binding import PurgeAuditSink
-
-_TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
 
 async def purge_document(
@@ -100,11 +98,11 @@ async def purge_document(
         )
         return 3
 
-    if doc.pipeline_status not in TERMINAL_PIPELINE_STATUSES:
+    if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
         print(
             f"refuse: pipeline_status {doc.pipeline_status!s} is non-terminal for "
             f"document {document_id!r}. Wait for a terminal status "
-            f"({sorted(_TERMINAL_STATUS_VALUES)}) before purging.",
+            f"({sorted(TERMINAL_PIPELINE_STATUS_VALUES)}) before purging.",
             file=sys.stderr,
         )
         return 3

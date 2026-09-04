@@ -4300,14 +4300,20 @@ class ReabstractProgressEvent(BaseModel):
     )
     error: str | None = Field(
         default=None,
-        description="Failure description when `status=failed`; omitted otherwise.",
+        description=(
+            "Failure description. Set on every `failed` event and on a `skipped` event "
+            "whose outcome is `still_skipped`, which carries one because a document "
+            "that declined abstraction has something to report; omitted on `started`, "
+            "on `completed`, and on the `skipped_pdf` form of `skipped`."
+        ),
     )
     elapsed_seconds: float | None = Field(
         default=None,
         description=(
-            "Wall-clock seconds from dispatch to terminal status, set on "
-            "`completed` and `failed` events. Omitted on `started` (no "
-            "work yet) and `skipped` (no work was done)."
+            "Wall-clock seconds from dispatch to terminal status. Set on `completed`, "
+            "on `failed`, and on the `still_skipped` form of `skipped`, all of which "
+            "dispatched and waited. Omitted on `started` (no work yet) and on the "
+            "`skipped_pdf` form of `skipped` (never dispatched)."
         ),
     )
 

@@ -2827,9 +2827,14 @@ def register_sage_tools(
         document that has not settled within the server's wait ceiling is
         abandoned and recorded with outcome ``timeout`` rather than polled
         indefinitely. Abandoning is a statement about the poll, not about
-        the document: the generation may still complete, and because each
-        run recomputes its worklist from live pipeline_status, a later call
-        picks up whatever settled in the meantime.
+        the document: the generation may still complete. It is not,
+        however, self-healing. This operation enumerates
+        ``abstraction_skipped`` only, and an abandoned document sits at
+        ``abstraction_in_progress``, so a later call reaches it only once
+        something else advances it -- startup recovery, which runs from the
+        server's lifespan hook and so does not fire on a registry reload
+        alone, or the out-of-band bulk sweep with a selector naming that
+        status.
 
         Outcomes beyond ``success`` and ``skipped_pdf`` all count toward
         ``failed_count``, which counts documents that did not reach

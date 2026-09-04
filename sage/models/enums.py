@@ -314,6 +314,15 @@ TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
     }
 )
 
+# The same set as raw ``pipeline_status`` strings. Every consumer that
+# compares against a stored status wants these rather than the enum members,
+# and each one deriving its own frozenset is how a restated subset drifts:
+# a comparison that silently omits a terminal status leaves a poller waiting
+# on a document that has already finished.
+TERMINAL_PIPELINE_STATUS_VALUES: frozenset[str] = frozenset(
+    s.value for s in TERMINAL_PIPELINE_STATUSES
+)
+
 # Terminal pipeline statuses that represent success: the pipeline finished
 # without an error. ``pipeline_error`` records the most recent failure, so a
 # document that reaches one of these carries no failure and the field must be

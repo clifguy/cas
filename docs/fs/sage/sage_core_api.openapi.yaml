@@ -2479,9 +2479,14 @@ paths:
         document that has not settled within the server's wait ceiling is
         abandoned and recorded with outcome 'timeout' rather than polled
         indefinitely. Abandoning is a statement about the poll, not about
-        the document: the generation may still complete, and because each
-        run recomputes its worklist from live pipeline_status, a later
-        call picks up whatever settled in the meantime.
+        the document: the generation may still complete. It is not,
+        however, self-healing. This operation enumerates
+        'abstraction_skipped' only, and an abandoned document sits at
+        'abstraction_in_progress', so a later call reaches it only once
+        something else advances it -- startup recovery, which runs from the
+        server's lifespan hook and so does not fire on a registry reload
+        alone, or the out-of-band bulk sweep with a selector naming that
+        status.
 
 
         Outcomes beyond `success` and `skipped_pdf` all count toward
@@ -7053,14 +7058,21 @@ components:
         error:
           type: string
           nullable: true
-          description: Failure description when `status=failed`; omitted otherwise.
+          description: >-
+            Failure description. Set on every `failed` event and on a
+            `skipped` event whose outcome is `still_skipped`, which carries
+            one because a document that declined abstraction has something
+            to report; omitted on `started`, on `completed`, and on the
+            `skipped_pdf` form of `skipped`.
         elapsed_seconds:
           type: number
           nullable: true
           description: >-
-            Wall-clock seconds from dispatch to terminal status, set on
-            `completed` and `failed` events. Omitted on `started` (no
-            work yet) and `skipped` (no work was done).
+            Wall-clock seconds from dispatch to terminal status. Set on
+            `completed`, on `failed`, and on the `still_skipped` form of
+            `skipped`, all of which dispatched and waited. Omitted on
+            `started` (no work yet) and on the `skipped_pdf` form of
+            `skipped` (never dispatched).
 
     ReabstractSummaryEvent:
       type: object

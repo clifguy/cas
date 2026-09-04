@@ -691,9 +691,11 @@ export interface ReabstractProgressEvent {
   status: 'started' | 'completed' | 'failed' | 'skipped';
   // Set on 'completed' / 'failed' / 'skipped'; omitted on 'started'.
   outcome?: ReabstractOutcome | null;
-  // Set only on 'failed'.
+  // Set on every 'failed' event and on a 'skipped' event whose outcome is
+  // 'still_skipped'; omitted on 'started', 'completed', and skipped_pdf.
   error?: string | null;
-  // Set on 'completed' / 'failed'; omitted on 'started' and 'skipped'.
+  // Set on 'completed', 'failed', and the 'still_skipped' form of 'skipped';
+  // omitted on 'started' and on skipped_pdf (never dispatched).
   elapsed_seconds?: number | null;
 }
 

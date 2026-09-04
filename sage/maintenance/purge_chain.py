@@ -44,12 +44,10 @@ from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.maintenance import _internal
-from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES
 
 if TYPE_CHECKING:
     from sage.storage_binding import PurgeAuditSink
-
-_TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
 
 async def purge_chain(
@@ -103,7 +101,7 @@ async def purge_chain(
         if await _internal.list_staging_edge_ids_for(graph_store, doc_id):
             members_with_staging.append(doc_id)
         status = member_docs[doc_id].pipeline_status
-        if status not in TERMINAL_PIPELINE_STATUSES:
+        if status not in TERMINAL_PIPELINE_STATUS_VALUES:
             members_with_nonterminal.append((doc_id, str(status)))
         total_chunks += len(await content_store.get_all_chunks(doc_id))
 
@@ -138,7 +136,7 @@ async def purge_chain(
         details = ", ".join(f"{doc_id}={status}" for doc_id, status in members_with_nonterminal)
         print(
             f"refuse: chain member(s) have non-terminal pipeline_status: {details}. "
-            f"Terminal statuses are {sorted(_TERMINAL_STATUS_VALUES)}.",
+            f"Terminal statuses are {sorted(TERMINAL_PIPELINE_STATUS_VALUES)}.",
             file=sys.stderr,
         )
 

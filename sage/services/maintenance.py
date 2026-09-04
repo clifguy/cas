@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
@@ -28,7 +28,7 @@ from sage.api.errors import (
 from sage.config import VaultConfig
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
-    TERMINAL_PIPELINE_STATUSES,
+    TERMINAL_PIPELINE_STATUS_VALUES,
     EdgeType,
     PipelineStatus,
     ReabstractOutcome,
@@ -96,14 +96,23 @@ _WAIT_TIMEOUT_SECONDS = 7200.0
 _WAIT_MISSING = "missing"
 _WAIT_TIMEOUT = "timeout"
 
-# Terminal statuses the post-dispatch wait settles on, read off the shared
-# vocabulary rather than restated. A restated set that omits one leaves the
-# waiter polling a document that has already finished.
-_TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
+
+class _FailureReport(NamedTuple):
+    """How one non-success document is reported: outcome, event status, message.
+
+    Named rather than positional because the two string slots -- a status
+    drawn from a closed four-value vocabulary and a free-text message --
+    transpose without a type error, and each new arm is another chance to
+    swap them.
+    """
+
+    outcome: ReabstractOutcome
+    event_status: str
+    message: str
 
 
-def _reabstract_failure_report(status: str) -> tuple[ReabstractOutcome, str, str]:
-    """Classify a non-success settled status into (outcome, event status, message).
+def _reabstract_failure_report(status: str) -> _FailureReport:
+    """Classify a non-success settled status.
 
     ``status`` is whatever the post-dispatch wait returned other than
     ``abstraction_complete``: a terminal pipeline_status, or one of the
@@ -111,22 +120,39 @@ def _reabstract_failure_report(status: str) -> tuple[ReabstractOutcome, str, str
     stream's existing vocabulary -- a still-skipped document rides
     ``skipped`` alongside the excluded PDFs, everything else rides
     ``failed`` -- so widening the outcomes does not widen the transport.
+
+    ``llm_failure`` is the residual arm rather than the default one. It
+    claims the provider raised, so each status that reaches a terminal
+    state some other way is named before the fallthrough: a document that
+    declined abstraction, one the waiter abandoned, and one that no longer
+    exists. Only a stored ``failed`` should arrive at the last return.
     """
     if status == PipelineStatus.ABSTRACTION_SKIPPED.value:
-        return (
+        return _FailureReport(
             ReabstractOutcome.STILL_SKIPPED,
             "skipped",
             "reabstract settled back at abstraction_skipped; the document "
             "declined abstraction rather than failing at it",
         )
     if status == _WAIT_TIMEOUT:
-        return (
+        return _FailureReport(
             ReabstractOutcome.TIMEOUT,
             "failed",
             f"document did not reach a terminal pipeline_status within "
             f"{_WAIT_TIMEOUT_SECONDS:.0f}s; abstraction may still be running",
         )
-    return (
+    if status == _WAIT_MISSING:
+        # Reported as a failure because the document did not gain an
+        # abstract, but described for what it was: a concurrent delete
+        # between dispatch and settling, not a provider error. The former
+        # message rendered this sentinel as "terminal pipeline_status:
+        # missing", naming a status that does not exist.
+        return _FailureReport(
+            ReabstractOutcome.LLM_FAILURE,
+            "failed",
+            "document no longer exists; it was deleted between dispatch and settling",
+        )
+    return _FailureReport(
         ReabstractOutcome.LLM_FAILURE,
         "failed",
         f"terminal pipeline_status: {status}",
@@ -1315,7 +1341,7 @@ class MaintenanceService:
                         )
                         continue
 
-                    status = await self._wait_for_terminal(doc.id, _TERMINAL_STATUS_VALUES)
+                    status = await self._wait_for_terminal(doc.id)
                     elapsed = (datetime.now(timezone.utc) - doc_started).total_seconds()
                     if status == PipelineStatus.ABSTRACTION_COMPLETE.value:
                         entries.append(
@@ -1380,39 +1406,39 @@ class MaintenanceService:
             finally:
                 self._reabstract_started_at = None
 
-    async def _wait_for_terminal(
-        self,
-        document_id: str,
-        terminal: frozenset[str] | set[str],
-        timeout_seconds: float | None = None,
-    ) -> str:
-        """Poll the document's pipeline_status until it reaches a terminal
-        value, then return it.
+    async def _wait_for_terminal(self, document_id: str) -> str:
+        """Poll the document's pipeline_status until terminal, then return it.
 
         Returns :data:`_WAIT_MISSING` if the document disappears mid-flight,
         and :data:`_WAIT_TIMEOUT` if it has not settled within
-        ``timeout_seconds`` (defaulting to :data:`_WAIT_TIMEOUT_SECONDS`).
-        The ceiling is what makes this bounded: the document may stop
-        advancing altogether -- a cancelled abstraction worker drops its
-        queued jobs and strands them non-terminal -- and an unbounded poll
-        against one of those never returns.
+        :data:`_WAIT_TIMEOUT_SECONDS`. The ceiling is what makes this
+        bounded: the document may stop advancing altogether -- a cancelled
+        abstraction worker drops its queued jobs and strands them
+        non-terminal -- and an unbounded poll against one of those never
+        returns.
+
+        Both the terminal set and the ceiling are read from module scope
+        rather than taken as arguments. A parameter that one production
+        caller always passes the same value to is a seam only tests use,
+        and a second way to set the ceiling is a second thing that can
+        disagree with the message reporting it.
 
         A timeout is a statement about the waiter, not about the document:
-        the generation may still be running and may still complete. The
-        caller reports it as its own outcome for that reason, and a later
-        sweep re-derives its worklist from live pipeline_status, so a
-        document that settles after being abandoned is picked up rather
-        than lost.
+        the generation may still be running and may still complete. But it
+        is not self-healing. This sweep enumerates ``abstraction_skipped``
+        only, and an abandoned document sits at ``abstraction_in_progress``,
+        so a later sweep reaches it only once something else advances it --
+        startup recovery (``recover_incomplete_documents``, which runs from
+        the lifespan hook, so a registry reload alone does not fire it), or
+        the bulk CLI with a selector naming that status.
         """
-        deadline = asyncio.get_running_loop().time() + (
-            _WAIT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
-        )
+        deadline = asyncio.get_running_loop().time() + _WAIT_TIMEOUT_SECONDS
         while True:
             doc = await self._graph_store.get_document(document_id)
             if doc is None:
                 return _WAIT_MISSING
             status = doc.pipeline_status
-            if status in terminal:
+            if status in TERMINAL_PIPELINE_STATUS_VALUES:
                 return status
             # Checked after the status read so a document that settled
             # exactly at the deadline is reported as settled rather than

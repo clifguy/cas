@@ -41,12 +41,10 @@ from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.maintenance import _internal
-from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES
 
 if TYPE_CHECKING:
     from sage.storage_binding import PurgeAuditSink
-
-_TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
 
 async def purge_batch(
@@ -103,7 +101,7 @@ async def purge_batch(
         staging_ids = await _internal.list_staging_edge_ids_for(graph_store, doc.id)
         if staging_ids:
             staging_violations.append(f"{doc.id}: staging edges {', '.join(staging_ids)}")
-        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUSES:
+        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
             pipeline_violations.append(f"{doc.id}: pipeline_status={doc.pipeline_status!s}")
 
     if staging_violations or pipeline_violations:
