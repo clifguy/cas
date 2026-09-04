@@ -1219,10 +1219,23 @@ def register_sage_tools(
         ordered list with positional metadata (head, tail, query
         position, ``is_linear``). The walk itself is one recursive CTE
         whatever the chain length, followed by a query for the
-        connecting edges. Designed for version history retrieval on
-        supersedes chains but works with any edge type. A
-        document with no edges of the requested type returns a
-        single-entry chain (the document itself as both head and tail).
+        connecting edges. Three round-trips in total: an existence check
+        on the starting document precedes both. A chain that comes back
+        with a single entry costs two more, because the hint in
+        ``available_edge_types`` is gathered by asking for that
+        document's inbound and outbound edges separately. Designed for
+        version history retrieval on supersedes chains but works with
+        any edge type. A document with no edges of the requested type
+        returns a single-entry chain (the document itself as both head
+        and tail).
+
+        ``limit`` and ``offset`` page the returned entries without
+        changing the walk: ``total_length`` stays the size of the whole
+        chain, ``length`` counts what this response carries, and each
+        entry keeps its absolute ``position`` rather than being
+        renumbered from the start of the page. ``head_id`` and
+        ``tail_id`` likewise name the chain's own ends, which a page
+        need not contain.
 
         ``is_linear`` is true when the chain is strictly linear: no
         document shares a predecessor or a successor of the requested
@@ -2830,7 +2843,7 @@ def register_sage_tools(
 
         Long-running: an N-document pass takes roughly N times the
         per-document abstraction wall-clock (seconds to tens of seconds each
-        against Qwen3-30B MLX, sub-second against the test stub). The tool
+        against a local MLX model, sub-second against the test stub). The tool
         returns a single ReabstractReport once the pass completes; allocate a
         generous client-side timeout. (The HTTP route streams per-document
         SSE progress; the MCP contract is report-and-return.)

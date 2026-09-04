@@ -2636,7 +2636,9 @@ class ChainResponse(BaseModel):
     chain: list[ChainEntry] = Field(
         description=(
             "Ordered list of documents in the chain, from tail (position 0) "
-            "to head (position length-1)."
+            "to head. Each entry's position is its index in the full chain, "
+            "so a page taken with limit or offset keeps those absolute "
+            "positions rather than renumbering from zero."
         )
     )
     head_id: DocumentIdStr = Field(
@@ -2648,7 +2650,13 @@ class ChainResponse(BaseModel):
     query_position: int = Field(
         description="Zero-based position of the queried document within the chain."
     )
-    length: int = Field(description="Total number of documents in the chain.")
+    length: int = Field(
+        description=(
+            "Number of entries carried in this response, after limit and "
+            "offset are applied. Read total_length for the size of the "
+            "whole chain."
+        )
+    )
     total_length: int = Field(description="Total number of documents in the full chain.")
     is_linear: bool = Field(
         description=(
