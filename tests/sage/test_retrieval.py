@@ -809,13 +809,14 @@ async def test_camelcase_title_searchable_via_split_tokens(
         [("Section 1", "Discusses cryptographic accumulator seals.")],
     )
 
-    # The diagnostic query: should land doc_portfolio in BM25, semantic,
-    # and hybrid modes.
+    # The diagnostic query: should land doc_portfolio in semantic and hybrid
+    # modes. No keyword arm here: the case-split identifier line is derived
+    # text, which ranks and orients but never satisfies a keyword match
+    # (CAS-ADR-049), and "dashboard" also sits in the title, so the metadata
+    # boost would surface the document whatever the keyword arm did. The
+    # refusal is asserted where nothing else can supply the term, in
+    # test_semantic_abstract_drives_a_semantic_match below.
     for mode_kwargs in (
-        # No keyword arm: the case-split identifier line is derived text, which
-        # ranks and orients but never satisfies a keyword match (CAS-ADR-049).
-        # StubContentStore is header-blind, so asserting either way here would
-        # be evidence about the double rather than about a binding.
         {
             "mode": RetrievalMode.SEMANTIC,
             "query": "dashboard template",
@@ -843,10 +844,11 @@ async def test_semantic_abstract_drives_a_semantic_match(
     the synthetic header chunk's indexed content.
 
     Semantic, not keyword. A generated abstract is derived text: it ranks and
-    orients a document but never satisfies a keyword match (CAS-ADR-049), and
-    that refusal is pinned against a real backend in
-    test_content_store_postgres.py. StubContentStore is header-blind, so a
-    keyword assertion here would pass whatever the binding does."""
+    orients a document but never satisfies a keyword match (CAS-ADR-049). The
+    keyword arm below asserts that refusal end to end. The terms live in the
+    abstract alone -- the title is a bare year-suffixed word and the tags and
+    source are empty -- so nothing but the header could supply them, and the
+    metadata boost has nothing to find either."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 
     doc = _make_doc(_id("doc_abstract_only"))
@@ -880,6 +882,14 @@ async def test_semantic_abstract_drives_a_semantic_match(
     response = await retrieval_service.discover(request)
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_abstract_only") in doc_ids
+
+    keyword = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="cryptographic accumulator")
+    )
+    assert _id("doc_abstract_only") not in [h.document.id for h in keyword.results], (
+        "the abstract orients the document but does not make it match; only "
+        "the header carries these terms"
+    )
 
 
 async def test_hit_heading_path_masks_synthetic_marker(
@@ -5910,13 +5920,14 @@ async def test_defined_lifecycle_status_no_warning(graph_store, retrieval_servic
 
 # --- keyword conjunction advisory ------------------------------------------
 #
-# Keyword mode is conjunctive on the production binding: every term must appear
-# somewhere in the document, though not necessarily together in one passage
-# (CAS-ADR-048). An empty result therefore has two indistinguishable readings
-# -- the vault holds nothing, or the query asked for too much at once. These
-# cover the advisory that separates them. The conjunction itself is exercised
-# against a real backend in test_content_store_postgres.py; StubContentStore
-# matches on any term, so it cannot produce the collapse.
+# Keyword mode is conjunctive at the port: every term must appear somewhere in
+# the document, though not necessarily together in one passage (CAS-ADR-048).
+# An empty result therefore has two indistinguishable readings -- the vault
+# holds nothing, or the query asked for too much at once. These cover the
+# advisory that separates them. The conjunction itself is pinned per binding,
+# against Postgres in test_content_store_postgres.py and against the double in
+# test_stub_content_store.py; what these turn on is the sentence the service
+# attaches once a search has come back empty.
 
 
 async def test_keyword_multi_term_empty_result_warns(

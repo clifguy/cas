@@ -564,6 +564,31 @@ async def test_search_bm25_returns_one_row_per_matching_document(store):
     )
 
 
+async def test_search_bm25_limit_is_a_document_budget(store):
+    """``limit`` bounds documents, not rows.
+
+    The row-per-document shape is pinned above, but only at a limit no result
+    reaches; that leaves what ``limit`` counts unasserted. Each document here
+    carries three matching chunks, so a row budget spends the whole of
+    ``limit=2`` inside one document. Both budgets return two rows, so the
+    assertion is on the count of *distinct* document ids.
+    """
+    for doc_id in ("d1", "d2", "d3"):
+        await store.index_chunks(
+            doc_id,
+            [
+                _chunk(doc_id, content="alphaword first", chunk_index=0),
+                _chunk(doc_id, content="alphaword second", chunk_index=1),
+                _chunk(doc_id, content="alphaword third", chunk_index=2),
+            ],
+        )
+
+    res = await store.search_bm25("alphaword", limit=2)
+    assert len({r.document_id for r in res}) == 2, (
+        "two documents, not two chunks of one; a row budget answers with one id"
+    )
+
+
 async def test_search_bm25_excerpt_is_the_best_matching_chunk(store):
     """Co-occurrence within a chunk is a ranking signal, not a matching one.
 
@@ -589,20 +614,28 @@ async def test_search_bm25_excerpt_is_the_best_matching_chunk(store):
 
 
 async def test_search_bm25_ranks_a_co_occurring_document_above_a_split_one(store):
-    """Both documents match; the one whose chunk carries both terms ranks first."""
-    await store.index_chunks("d1", [_chunk("d1", content="alphaword betaword together")])
+    """Both documents match; the one whose chunk carries both terms ranks first.
+
+    The co-occurring document is ``d2`` deliberately. Document id is the
+    tiebreak within an equal score (``ORDER BY doc_score DESC, document_id``),
+    so seeding it as ``d1`` would put the expected winner first under
+    alphabetical order as well, and a binding that ranked on nothing at all
+    would pass -- which is the whole of what this test is for.
+    """
+    await store.index_chunks("d2", [_chunk("d2", content="alphaword betaword together")])
     await store.index_chunks(
-        "d2",
+        "d1",
         [
-            _chunk("d2", content="alphaword only here", chunk_index=0),
-            _chunk("d2", content="betaword only here", chunk_index=1),
+            _chunk("d1", content="alphaword only here", chunk_index=0),
+            _chunk("d1", content="betaword only here", chunk_index=1),
         ],
     )
 
     res = await store.search_bm25("alphaword betaword", limit=10)
     assert {r.document_id for r in res} == {"d1", "d2"}, "both documents match under document scope"
-    assert res[0].document_id == "d1", (
-        "co-occurrence within one chunk outranks the same terms split apart"
+    assert res[0].document_id == "d2", (
+        "co-occurrence within one chunk outranks the same terms split apart, "
+        "against the alphabetical order of the ids"
     )
 
 
