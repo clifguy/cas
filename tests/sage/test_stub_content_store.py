@@ -17,6 +17,12 @@ The mirror is not total, and the inventory below is the whole of what it omits
 -- read as a complete list, because that is how a name-for-name claim will be
 read. The claim is bidirectional, so the inventory is too.
 
+Both the mirror and the inventory are bounded to the keyword contract: the
+``search_bm25`` and ``parse_keyword_query`` rules CAS-ADR-048 and CAS-ADR-049
+settle. The Postgres module also covers indexing, statistics, bloat and fusion,
+some of which reach ``search_bm25`` incidentally; those are outside what this
+module claims to mirror and are not enumerated below.
+
 **Postgres rules with no counterpart here.** Quoted-phrase adjacency and the
 within-chunk fallback path, because the double parses no operators, so neither
 shape exists. Title matchability, a property of the ingestion projection rather
@@ -293,16 +299,43 @@ async def test_stub_search_bm25_excerpt_is_the_best_matching_chunk(store):
     )
 
 
+async def test_stub_search_bm25_excerpt_breaks_a_score_tie_on_document_order(store):
+    """Equal-scoring chunks are separated by document order, earliest first.
+
+    The rule the excerpt key states after the authored-first and score keys,
+    and the only fixture that can see it: with a unique best chunk the tiebreak
+    never runs, so the test above passes whatever it does. Here two chunks
+    carry the whole query and are indexed out of document order, so returning
+    the list's first element answers ``S9`` and only the ``chunk_index`` key
+    answers ``S2``.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword betaword here", heading_path="S9", chunk_index=9),
+            _chunk("d1", content="alphaword betaword also here", heading_path="S2", chunk_index=2),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword betaword", limit=10)
+    assert res[0].heading_path == "S2", (
+        "both chunks score 1.0, so document order decides; the list order says S9"
+    )
+
+
 async def test_stub_search_bm25_ranks_a_co_occurring_document_above_a_split_one(store):
     """Both documents match; the one whose chunk carries both terms ranks first.
 
-    The co-occurring document is ``d2`` deliberately. Document id is the
-    tiebreak within an equal score, so seeding it as ``d1`` would put the
-    expected winner first under alphabetical order as well, and a double that
-    ignored score entirely would pass -- which is the whole of what this test
-    is for.
+    The expected winner is both indexed second and alphabetically second, and
+    both halves of that are deliberate. There are three ways to answer this
+    fixture without ranking on score: sort on the document id, return documents
+    in the order they were indexed, or do not sort at all -- and the last two
+    are the same rival, because the store iterates its documents in insertion
+    order. Making the winner last under *both* orderings is what leaves the
+    score as the only thing that can put it first. An earlier revision of this
+    test moved it off the alphabetical order alone, which closed one rival and
+    left the fixture agreeing with the other two.
     """
-    await store.index_chunks("d2", [_chunk("d2", content="alphaword betaword together")])
     await store.index_chunks(
         "d1",
         [
@@ -310,12 +343,14 @@ async def test_stub_search_bm25_ranks_a_co_occurring_document_above_a_split_one(
             _chunk("d1", content="betaword only here", chunk_index=1),
         ],
     )
+    await store.index_chunks("d2", [_chunk("d2", content="alphaword betaword together")])
 
     res = await store.search_bm25("alphaword betaword", limit=10)
     assert {r.document_id for r in res} == {"d1", "d2"}, "both documents match under document scope"
     assert res[0].document_id == "d2", (
         "co-occurrence within one chunk outranks the same terms split apart, "
-        "against the alphabetical order of the ids"
+        "against both the alphabetical order of the ids and the order the "
+        "documents were indexed in"
     )
 
 
