@@ -204,8 +204,8 @@ def _install_source_byte_delegates(cls: type) -> type:
     walk reaches the right answer, and anything that recomputes later reaches it
     too. Subtracting the names by hand would leave the delegates still claiming
     to be abstract, and the next recompute -- ``abc.update_abstractmethods``,
-    which several stdlib decorators call -- would undo the subtraction and take
-    the class back to uninstantiable.
+    which ``dataclasses`` calls when it decorates a class -- would undo the
+    subtraction and take the class back to uninstantiable.
     """
     for name in sorted(SOURCE_BYTE_METHOD_NAMES):
         factory = _make_streaming_delegate if name in _STREAMING_METHOD_NAMES else _make_delegate

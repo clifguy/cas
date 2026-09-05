@@ -16,6 +16,7 @@ Test IDs follow VSST-NNN (Vault-Source Store Translation).
 
 from __future__ import annotations
 
+import abc
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ from sage.config import StackDocumentStoreConfig
 from sage.services.vault_source_errors import (
     CONFIG_METHOD_NAMES,
     SOURCE_BYTE_METHOD_NAMES,
+    _TranslatingVaultSourceStore,
+    _TranslatingVaultSourceStoreWithDownloadUrl,
     wrap_vault_source_store,
 )
 from sage.vault_source_binding import (
@@ -384,3 +387,44 @@ def test_vsst_010_the_covered_set_is_the_ports_source_byte_half():
     assert SOURCE_BYTE_METHOD_NAMES | CONFIG_METHOD_NAMES == set(
         VaultSourceStore.__abstractmethods__
     )
+
+
+# --------------------------------------------------------------------------- #
+# VSST-011: the wrapper stays concrete across an abstract-method recompute
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "wrapper_cls", [_TranslatingVaultSourceStore, _TranslatingVaultSourceStoreWithDownloadUrl]
+)
+def test_vsst_011_the_wrapper_survives_an_abstractmethod_recompute(wrapper_cls):
+    """A recompute of the abstract set leaves the wrapper instantiable.
+
+    ``functools.wraps`` copies the wrapped function's ``__dict__``, and
+    ``@abstractmethod`` records itself there. A delegate built from a port method
+    therefore inherits the claim to be abstract unless the factory clears it, and
+    a class whose delegates all make that claim is instantiable only for as long
+    as nobody recomputes the set -- which ``dataclasses`` does to any class it
+    decorates.
+
+    Anti-coincidental-pass: the discriminating step is the recompute, not the
+    instantiation. Subtracting the names from ``__abstractmethods__`` by hand
+    leaves every delegate still claiming to be abstract, and a wrapper built that
+    way instantiates, wraps, translates, and passes all 138 tests across the five
+    suites that touch it -- the whole rest of this file included. It fails only
+    here, because only here is the set recomputed from what the delegates
+    actually say about themselves before the class is used.
+
+    Both wrapper classes are covered: the subclass computes its own abstract set
+    at creation from its base's, so a base whose set is right by hand rather than
+    right by construction propagates the same latent defect one level down.
+    """
+    for name in sorted(SOURCE_BYTE_METHOD_NAMES):
+        delegate = getattr(wrapper_cls, name)
+        assert delegate.__isabstractmethod__ is False, (
+            f"{name} claims to be abstract while being the concrete implementation"
+        )
+
+    abc.update_abstractmethods(wrapper_cls)
+    assert wrapper_cls.__abstractmethods__ == frozenset()
+    wrapper_cls(FilesystemVaultSourceStore(Path("/unused")))  # must not raise
