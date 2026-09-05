@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.20",
-  "manifest_date": "2026-08-29",
+  "manifest_version": "0.9.21",
+  "manifest_date": "2026-09-05",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -24,7 +24,7 @@
         "docs/fs/sage/decision_log.schema.json",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 59
+      "test_count": 62
     },
     {
       "path": "tests/root_harness/contract_tests.md",
@@ -372,6 +372,11 @@
       "version": "0.9.20",
       "date": "2026-08-29",
       "summary": "Review follow-up on the table-derived supersede transition. EI-037's expected warning reason changed from supersede_target_not_transitionable to supersede_target_missing, and EI-040 was added for supersede_target_read_failed: one reason had been carrying three conditions that leave the graph in different states (no edge because the target's state forbids supersede, no edge because the target does not exist, and no edge because the read raised), which a caller triaging warnings cannot separate. Edge inference test count: 40 -> 41. Not specified here: TEST-BIS-CR-005, which pins that a chain repair whose replacement add is refused withholds its removals rather than severing the chain -- the chain-repair tests CR-001..005 live in pytest without markdown specifications, a pre-existing gap this change did not widen."
+    },
+    {
+      "version": "0.9.21",
+      "date": "2026-09-05",
+      "summary": "Retired TEST-SAGE-API-002 in tests/sage/contract_tests.md, which asserted an exhaustive hand-maintained list of fourteen path/method pairs against a spec that now declares forty-three operations, two of the listed shapes having been collapsed by the CAS-ADR-029 plural-noun rename. The section keeps its id as a RETIRED stub and names tests/sage/test_openapi_conformance.py::test_spec_covers_all_app_operations as the surface that carries operation coverage in both directions with SPEC_FORWARD_DECLARATIONS as the only allowlist; an exhaustive enumeration of the surface no longer lives in markdown. The whole-file sweep restated three more claims that the spec had outgrown: API-003 now asserts that delete is declared only on the edge-unlink path (the single DELETE, on edges/{edge_id}, is outside the no-delete invariant, which covers documents only); API-004 enumerates the three paths outside /sage_vaults/{vault_id}/ (the vault collection and the two process-scoped transfer endpoints); API-007 records resolution_policy as nullable and absent from Edge.required, matching the spec. Contract test count corrected: 59 -> 62, counted as live specifications with the RETIRED stub excluded (the file carried 63 headings against a recorded 59 before this change). API-003 and API-004 each name a pytest gate added alongside them in tests/sage/test_openapi_conformance.py (test_delete_is_declared_only_on_the_edge_unlink_path; test_only_the_vault_collection_and_transfer_paths_sit_outside_vault_scope, with a teeth test over a violating spec), so neither invariant is markdown-only. The spec's own header comment, which made the same every-endpoint-is-vault-scoped claim, now states the three exceptions. tests/root_harness/contract_tests.md TEST-RH-API-002 rewritten from an exhaustive claim (exactly these nine pairs) to a coverage claim (each Section 2.5 operation exists; operations beyond the table are not a failure), since ROOT Harness has no implementation and therefore no mechanical gate to retire it toward. ROOT Harness contract test count unchanged."
     }
   ]
 }

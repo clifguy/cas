@@ -992,43 +992,31 @@ entries:
 **Expected:** `openapi` == `"3.1.0"`, `info.title` == `"SAGE Core API"`
 **Rationale:** Basic structural validity.
 
-### TEST-SAGE-API-002: All 14 operations present
+### TEST-SAGE-API-002: RETIRED (was: All 14 operations present)
+
+Asserted an exhaustive, hand-maintained list of fourteen path/method pairs.
+The list duplicated a mechanical gate and drifted: the spec declares
+forty-three operations, and two of the fourteen named per-document shapes
+that the CAS-ADR-029 plural-noun rename collapsed into
+`POST /sage_vaults/{vault_id}/lifecycles` and
+`POST /sage_vaults/{vault_id}/metadata`. Operation coverage is carried by
+`tests/sage/test_openapi_conformance.py::test_spec_covers_all_app_operations`,
+which asserts that the spec's path/method set equals the FastAPI route set in
+both directions, with `SPEC_FORWARD_DECLARATIONS` as the only allowlist. Any
+future enumeration of the surface belongs in that module, never here.
+
+### TEST-SAGE-API-003: DELETE declared only on the edge-unlink path
 
 **Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml`
 **Category:** valid
-**Constraint:** All operations defined in SAGE Architecture Reference Section 7
+**Constraint:** No-delete invariant for documents (SAGE Architecture Reference §6.4)
 
-**Input:** Load and enumerate all path+method combinations.
+**Input:** Scan all paths for the `delete` method.
 
-**Expected:** Exactly these path/method pairs exist:
-- `POST /sage_vaults/{vault_id}/discover`
-- `POST /sage_vaults/{vault_id}/documents/{document_id}/lifecycle`
-- `PATCH /sage_vaults/{vault_id}/documents/{document_id}/metadata`
-- `POST /sage_vaults/{vault_id}/documents`
-- `GET /sage_vaults/{vault_id}/documents/{document_id}`
-- `POST /sage_vaults/{vault_id}/edges`
-- `POST /sage_vaults/{vault_id}/traverse`
-- `GET /sage_vaults/{vault_id}/preconditions/{function_id}`
-- `POST /sage_vaults/{vault_id}/users`
-- `PUT /sage_vaults/{vault_id}/documents/{document_id}/editors`
-- `GET /sage_vaults/{vault_id}/documents/{document_id}/editors`
-- `POST /sage_vaults/{vault_id}/documents/{document_id}/export`
-- `POST /sage_vaults/{vault_id}/eval-retrieval`
-- `POST /sage_vaults/{vault_id}/refresh-views`
-**Rationale:** Every operation in the architecture reference must have an API endpoint.
+**Expected:** The only operation using `delete` is `DELETE /sage_vaults/{vault_id}/edges/{edge_id}`. No path under `/sage_vaults/{vault_id}/documents` declares `delete`.
+**Rationale:** The no-delete invariant applies to documents, which are superseded or archived, never destroyed. Edges are not documents: an edge whose relationship is no longer correct is unlinked, and the spec header states the invariant in exactly those terms. `tests/sage/test_openapi_conformance.py::test_delete_is_declared_only_on_the_edge_unlink_path` pins the set of paths declaring `delete` to exactly that one, so a DELETE introduced on any other subtree fails the gate.
 
-### TEST-SAGE-API-003: No DELETE endpoints exist
-
-**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml`
-**Category:** valid
-**Constraint:** No-delete invariant per SAGE architecture
-
-**Input:** Scan all paths for `delete` method.
-
-**Expected:** Zero DELETE methods found.
-**Rationale:** SAGE enforces a no-delete invariant; documents are archived, never destroyed.
-
-### TEST-SAGE-API-004: All paths are vault-scoped
+### TEST-SAGE-API-004: Vault-scoped paths, with the process-scoped exceptions enumerated
 
 **Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml`
 **Category:** valid
@@ -1036,8 +1024,8 @@ entries:
 
 **Input:** Scan all path keys.
 
-**Expected:** Every path starts with `/sage_vaults/{vault_id}/`
-**Rationale:** Every operation is scoped to a single vault.
+**Expected:** All paths but three start with `/sage_vaults/{vault_id}/`. The exceptions are `/sage_vaults` (the vault collection: list and create) and the transfer endpoints `/upload` and `/download/{transfer_id}`, whose vault binding lives in the one-time transfer token rather than in the URL.
+**Rationale:** Every document, graph, and maintenance operation is scoped to a single vault. `tests/sage/test_openapi_conformance.py::test_only_the_vault_collection_and_transfer_paths_sit_outside_vault_scope` asserts that the set of paths outside the prefix equals exactly these three, so a new top-level path and a dropped exception both fail that gate; `test_specs_respect_url_prefix_boundaries` separately keeps the transfer paths from migrating out of the SAGE Core API spec.
 
 ### TEST-SAGE-API-005: EdgeType enum includes chain-resolution meta-edges
 
@@ -1065,12 +1053,12 @@ entries:
 
 **Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (Edge schema)
 **Category:** valid
-**Constraint:** Edge defines `resolution_policy` (required), `source_valid_from_version`, `target_valid_from_version`, `valid_until_version`, `retracted_edge_id` (all nullable), and `target_id` is nullable.
+**Constraint:** Edge defines `resolution_policy` (nullable, not required), `source_valid_from_version`, `target_valid_from_version`, `valid_until_version`, `retracted_edge_id` (all nullable), and `target_id` is nullable.
 
 **Input:** Load `components.schemas.Edge`.
 
 **Expected:**
-- `required` contains `resolution_policy`.
+- `resolution_policy` exists, references `ResolutionPolicy`, and has `nullable: true`; it is absent from `required`. The row carries a frozen copy of the registry's policy at creation time, and the traversal-node Edge views are constructed without one.
 - Properties `source_valid_from_version`, `target_valid_from_version`, `valid_until_version`, `retracted_edge_id` exist with `nullable: true`.
 - `target_id` has `nullable: true`.
 

@@ -126,6 +126,18 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "VaultId",
 }
 
+# The transfer endpoints are process-scoped, not vault-scoped: the vault
+# binding lives inside the one-time token, and the recipe embeds the URL
+# verbatim, so the paths stay top-level by design. They remain part of
+# the SAGE Core API surface.
+SAGE_NON_VAULT_PATHS: set[str] = {"/upload", "/download/{transfer_id}"}
+
+# Prefix every vault-scoped path carries. The vault collection itself sits
+# one level up by construction (list and create), and SAGE_NON_VAULT_PATHS
+# holds the transfer endpoints; nothing else is expected outside the prefix.
+_VAULT_SCOPED_PREFIX = "/sage_vaults/{vault_id}/"
+_VAULT_COLLECTION_PATH = "/sage_vaults"
+
 # Anti-vacuity floor for the field-level Pydantic->YAML direction, which
 # skips any schema with no same-named model and would therefore pass over
 # an empty loop if the reflection helpers returned nothing. 125 schemas
@@ -1896,14 +1908,8 @@ def test_specs_respect_url_prefix_boundaries(
 
     issues: list[str] = []
 
-    # The transfer endpoints are process-scoped, not vault-scoped: the vault
-    # binding lives inside the one-time token, and the recipe embeds the URL
-    # verbatim, so the paths stay top-level by design. They remain part of
-    # the SAGE Core API surface.
-    sage_non_vault_paths = {"/upload", "/download/{transfer_id}"}
-
     sage_misplaced = [
-        p for p in sage_paths if not p.startswith("/sage_vaults") and p not in sage_non_vault_paths
+        p for p in sage_paths if not p.startswith("/sage_vaults") and p not in SAGE_NON_VAULT_PATHS
     ]
     if sage_misplaced:
         issues.append("sage_core_api.openapi.yaml contains paths outside /sage_vaults/*:")
@@ -1923,6 +1929,114 @@ def test_specs_respect_url_prefix_boundaries(
             issues.append(f"  {p}")
 
     assert not issues, "\n".join(issues)
+
+
+# ---------------------------------------------------------------------------
+# Path-shape invariants: DELETE placement and vault scoping
+# ---------------------------------------------------------------------------
+
+
+# The one path on which ``delete`` is declared. The no-delete invariant
+# (SAGE Architecture Reference §6.4) covers documents, which are superseded
+# or archived rather than destroyed; an edge whose relationship is no longer
+# correct may be unlinked, which is why this set is not empty. Pinned to
+# equality rather than scanned for a documents-only violation, so a DELETE
+# introduced anywhere on the surface forces a deliberate edit here.
+_EXPECTED_DELETE_PATHS: set[str] = {"/sage_vaults/{vault_id}/edges/{edge_id}"}
+
+
+def _spec_declared_operations(spec: dict | None) -> set[tuple[str, str]]:
+    """Every ``(path, method)`` the spec declares, infra paths included.
+
+    ``_operations`` drops ``_INFRA_PATHS`` because the code-vs-spec coverage
+    comparison must ignore routes that are ``include_in_schema=False`` in code
+    and so legitimately absent from the YAML. The two gates below read the
+    spec alone and pin their sets to equality, and a hand-written ``/health``
+    or ``DELETE /docs`` in the spec is itself the drift such a pin exists to
+    make deliberate -- so they do not inherit that skip.
+    """
+    if spec is None:
+        return set()
+    return {
+        (path, method.lower())
+        for path, path_item in (spec.get("paths") or {}).items()
+        for method in (path_item or {})
+        if method.lower() in _HTTP_METHODS
+    }
+
+
+def _delete_operations(spec: dict | None) -> set[str]:
+    """Every path in ``spec`` that declares the ``delete`` method."""
+    return {path for path, method in _spec_declared_operations(spec) if method == "delete"}
+
+
+def _paths_outside_vault_scope(spec: dict | None) -> set[str]:
+    """Spec paths that do not carry the vault-scoped prefix."""
+    return {
+        path
+        for path, _ in _spec_declared_operations(spec)
+        if not path.startswith(_VAULT_SCOPED_PREFIX)
+    }
+
+
+def test_delete_is_declared_only_on_the_edge_unlink_path(sage_core_spec: dict | None):
+    """``delete`` appears on the edge-unlink path and on no other.
+
+    Equality rather than a documents-only scan: the weaker form stays green
+    while a DELETE appears on any other subtree, which falsifies the claim
+    this gate carries. Anchored on a non-empty operation set so a missing or
+    empty spec cannot pass it vacuously.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    assert _operations(sage_core_spec), "spec declares no operations; nothing to scan"
+    declared = _delete_operations(sage_core_spec)
+    assert declared == _EXPECTED_DELETE_PATHS, (
+        f"paths declaring delete: {sorted(declared)}; "
+        f"expected exactly {sorted(_EXPECTED_DELETE_PATHS)}"
+    )
+
+
+def test_only_the_vault_collection_and_transfer_paths_sit_outside_vault_scope(
+    sage_core_spec: dict | None,
+):
+    """Every path carries ``/sage_vaults/{vault_id}/`` except the vault
+    collection and the process-scoped transfer endpoints -- exactly those,
+    so a new top-level path and a lost exception both fail here.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    expected = {_VAULT_COLLECTION_PATH} | SAGE_NON_VAULT_PATHS
+    outside = _paths_outside_vault_scope(sage_core_spec)
+    assert outside == expected, (
+        f"paths outside {_VAULT_SCOPED_PREFIX}: {sorted(outside)}; "
+        f"expected exactly {sorted(expected)}"
+    )
+
+
+def test_path_shape_detectors_have_teeth():
+    """The two detectors report a violating spec rather than passing over it.
+
+    The mutant carries ``/health`` deliberately. It is one of the
+    ``_INFRA_PATHS`` that ``_operations`` skips, so a detector built on that
+    helper reports neither the top-level path nor its ``delete`` -- staying
+    green while an "exactly these" pin has become false. Reading the rivals
+    off the implementation cannot reach that case, because it turns on an
+    input no other fixture here carries.
+    """
+    mutant = {
+        "paths": {
+            "/sage_vaults/{vault_id}/documents/{document_id}": {"delete": {}},
+            "/sage_vaults/{vault_id}/edges/{edge_id}": {"delete": {}},
+            "/orphan": {"get": {}},
+            "/health": {"delete": {}},
+        }
+    }
+    assert "/health" in _INFRA_PATHS, "the exemption probe needs an infra-listed path"
+    assert _delete_operations(mutant) == {
+        "/sage_vaults/{vault_id}/documents/{document_id}",
+        "/sage_vaults/{vault_id}/edges/{edge_id}",
+        "/health",
+    }
+    assert _paths_outside_vault_scope(mutant) == {"/orphan", "/health"}
 
 
 # ---------------------------------------------------------------------------
