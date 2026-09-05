@@ -119,6 +119,23 @@ async def recompute_abstract(
                 "URL)."
             ),
         },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
+            ),
+        },
     },
 )
 async def get_document_download_url(
@@ -140,6 +157,23 @@ async def get_document_download_url(
                 "absent from the vault-source store."
             ),
         },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
+            ),
+        },
     },
 )
 async def get_document_content(
@@ -154,9 +188,11 @@ async def get_document_content(
     whole file and the inline-content size ceiling does not apply.
     Binary-container sources are served raw with their correct media type --
     the CAS-ADR-039 refusal guards text-scanning of container bytes inlined
-    into JSON, and this raw byte channel is the sanctioned alternative. Every
-    failure mode resolves before the stream opens, so errors arrive as
-    structured JSON envelopes, never a truncated byte stream.
+    into JSON, and this raw byte channel is the sanctioned alternative. The
+    source's presence and size are resolved before the stream opens, so those
+    failures arrive as structured JSON envelopes; a vault-source store refusal
+    raised once the bytes are already flowing ends the body short of the
+    promised Content-Length instead.
     """
     delivery = await service.get_document_content(document_id)
     filename = delivery.filename.replace("\\", "_").replace('"', "_")
@@ -217,6 +253,23 @@ async def get_document_content(
                 "via `SAGE_MAX_INLINE_CONTENT_BYTES`). Does not apply to "
                 "`write_to_path` delivery. Use `write_to_path` or a "
                 "filesystem-based workflow for files above the ceiling."
+            ),
+        },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
             ),
         },
     },

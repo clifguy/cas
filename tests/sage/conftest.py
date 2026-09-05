@@ -597,3 +597,24 @@ def stub_stream_generate(*segments: str, **stats):
             yield FakeGenerationResponse(text=segment, **stats)
 
     return _stream
+
+
+@pytest.fixture
+def refusing_source_store(monkeypatch):
+    """A document-store vault-source binding whose Graph client can be told to refuse.
+
+    Pins the stack's binding through the same env override the shared
+    ``vault_source_backend`` fixture uses, so the real
+    ``DocumentStoreVaultSourceStore`` and the real dispatch both run and only
+    the Graph transport is faked. Returned so a test can install a refusal on
+    the operation it is about.
+    """
+    from tests.helpers.fake_graph_client import FakeGraphClient
+
+    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
+    fake = FakeGraphClient()
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client",
+        lambda *args, **kwargs: fake,
+    )
+    return fake

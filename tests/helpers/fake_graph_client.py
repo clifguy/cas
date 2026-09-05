@@ -11,7 +11,7 @@ per-call store constructions the stack resolver performs.
 import hashlib
 import io
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 # Chunk size for the fake's streamed reads. Small enough that modest test
@@ -53,8 +53,25 @@ class FakeGraphClient:
         # Refusals a test installs to drive the store-refusal paths: an
         # exception raised in place of the operation, the way the real client
         # raises when the store declines. Left None, every operation behaves.
+        #
+        # The three source-read slots also accept a callable taking
+        # ``(vault_id, source_path)`` and returning an exception or None, so a
+        # test can refuse one path, or the Nth call, while the rest of a walk
+        # succeeds -- which is what lets an assertion distinguish a run that
+        # aborted from one that never got started.
         self.refuse_upload: Exception | None = None
         self.refuse_hash: Exception | None = None
+        self.refuse_stat: Exception | Callable | None = None
+        self.refuse_read: Exception | Callable | None = None
+        self.refuse_stream: Exception | Callable | None = None
+        self.refuse_download_url: Exception | Callable | None = None
+
+    @staticmethod
+    def _refusal_for(slot, vault_id: str, source_path: str) -> Exception | None:
+        """The exception ``slot`` calls for on this operation, if any."""
+        if slot is None or isinstance(slot, Exception):
+            return slot
+        return slot(vault_id, source_path)
 
     def list_vault_ids(self) -> list[str]:
         return sorted(self.store)
@@ -86,6 +103,12 @@ class FakeGraphClient:
     # -- source-byte half --------------------------------------------------
 
     def source_item(self, vault_id: str, source_path: str) -> dict | None:
+        # Refused before the counter moves, so a test can prove the refusal
+        # fired in place of the stat rather than after it -- and can count the
+        # stats that did succeed before it.
+        refusal = self._refusal_for(self.refuse_stat, vault_id, source_path)
+        if refusal is not None:
+            raise refusal
         self.source_stats += 1
         data = self.sources.get(source_path)
         if data is None:
@@ -93,6 +116,9 @@ class FakeGraphClient:
         return {"name": source_path.rsplit("/", 1)[-1], "size": len(data)}
 
     def read_source_bytes(self, vault_id: str, source_path: str) -> bytes:
+        refusal = self._refusal_for(self.refuse_read, vault_id, source_path)
+        if refusal is not None:
+            raise refusal
         self.source_reads += 1
         return self.sources[source_path]
 
@@ -155,12 +181,20 @@ class FakeGraphClient:
         # recording the call, so a consumer test can assert both the
         # delivered content and that delivery went through the streaming
         # channel rather than a whole-file read.
+        refusal = self._refusal_for(self.refuse_stream, vault_id, source_path)
+        if refusal is not None:
+            raise refusal
         self.source_streams.append((vault_id, source_path))
         data = self.sources[source_path]
         for offset in range(0, len(data), STREAM_CHUNK_BYTES):
             yield data[offset : offset + STREAM_CHUNK_BYTES]
 
     def source_download_url(self, vault_id: str, source_path: str) -> str | None:
+        # A URL mint is a store read like any other and can be declined; a fake
+        # that could only ever answer it cannot express the refusal at all.
+        refusal = self._refusal_for(self.refuse_download_url, vault_id, source_path)
+        if refusal is not None:
+            raise refusal
         if source_path not in self.sources:
             return None
         return f"https://sp.example/download/{source_path}?t=fake"

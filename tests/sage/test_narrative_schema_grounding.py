@@ -628,6 +628,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "sage_vaults": "on-disk vault directory, not a contract node",
         "vault_config": "the per-vault YAML file, not a contract node",
     },
+    ("sage_core", "get_document"): {
+        "store_status": ERROR_DETAIL_KEY,
+    },
     ("sage_core", "get_filename_metadata"): {
         "cas": "example vault id in a worked example",
         "doc_code": "example filename segment field, defined per vault",
@@ -754,6 +757,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # than an implementation detail: here the alias *is* the
         # contract, so naming it is disclosure, not leakage.
         "Sha256Str": "typed alias naming the published digest shape",
+    },
+    ("sage_core", "verify_vault_source_files"): {
+        "store_status": ERROR_DETAIL_KEY,
     },
 }
 

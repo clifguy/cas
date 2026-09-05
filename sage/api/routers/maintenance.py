@@ -163,6 +163,23 @@ async def optimize_content_store(
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
         },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
+            ),
+        },
     },
 )
 async def verify_vault_source_files(

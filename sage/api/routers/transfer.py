@@ -31,6 +31,7 @@ from sage.services.transfer import (
     TransferStore,
     max_transfer_bytes,
 )
+from sage.services.vault_source_errors import translate_store_refusal
 
 router = APIRouter(tags=["Transfer"])
 
@@ -125,6 +126,23 @@ def _spool_chunks(entry: PendingTransfer) -> Iterator[bytes]:
                 "scoped to a different direction)."
             ),
         },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
+            ),
+        },
     },
 )
 async def transfer_download(
@@ -135,11 +153,18 @@ async def transfer_download(
 ) -> StreamingResponse:
     """Fetch a pending transfer's bytes against a one-time download token.
 
-    Redemption is one-time and happens before any bytes flow, so every
-    failure mode arrives as a structured JSON envelope, never a truncated
-    stream. Source downloads chunk straight from the vault-source store;
-    projection downloads stream the spool written at mint time. The response
-    carries the exact Content-Length the recipe promised.
+    Redemption is one-time and happens before any bytes flow, as does the
+    source's presence check, so those failures arrive as a structured JSON
+    envelope. A store refusal raised once the bytes are already flowing ends
+    the body short of the promised Content-Length instead. Source downloads
+    chunk straight from the vault-source store; projection downloads stream
+    the spool written at mint time, and reach no store at all.
+
+    A refusal spends the token, which the contract already answers for: a
+    failed fetch is retried by re-issuing the originating call. There is
+    nothing to hand back the way a refused *upload* returns its token -- that
+    one protects bytes the caller already paid to send, where a download
+    token is re-minted for free and, on this leg, spools nothing.
     """
     entry = store.redeem_download(x_download_token, transfer_id=transfer_id)
 
@@ -155,9 +180,10 @@ async def transfer_download(
 
         source_store = resolve_stack_vault_source_store(get_stack_config())
         storage_root = Path(services.config.vault.storage_root).expanduser().resolve()
-        if not source_store.source_exists(entry.vault_id, storage_root, entry.source_path):
-            raise ContentFileMissingError(entry.document_id, entry.source_path)
-        chunks = source_store.iter_source(entry.vault_id, storage_root, entry.source_path)
+        with translate_store_refusal(entry.source_path):
+            if not source_store.source_exists(entry.vault_id, storage_root, entry.source_path):
+                raise ContentFileMissingError(entry.document_id, entry.source_path)
+            chunks = source_store.iter_source(entry.vault_id, storage_root, entry.source_path)
 
     filename = entry.filename.replace("\\", "_").replace('"', "_")
     disposition = f'attachment; filename="{filename}"'

@@ -20,6 +20,7 @@ These tests catch drift in either direction:
 Run via: pytest tests/sage/test_openapi_conformance.py
 """
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -1923,3 +1924,176 @@ def test_specs_respect_url_prefix_boundaries(
             issues.append(f"  {p}")
 
     assert not issues, "\n".join(issues)
+
+
+# ---------------------------------------------------------------------------
+# Test 2c: every operation that can emit the store-refusal codes declares them
+# ---------------------------------------------------------------------------
+
+
+#: Where the vault-source store's refusal is translated, and which documented
+#: operations can surface the result. Keyed by ``<module>::<function>``, the
+#: function being the one whose body opens the translation. An empty value
+#: means no documented HTTP operation reaches that site -- an MCP-only tool, or
+#: a background worker, neither of which has a spec operation to declare on.
+#:
+#: The keys are *checked against the code*, not trusted: the test below walks
+#: every module under ``sage/`` for **bare-name** calls to
+#: ``translate_store_refusal`` and requires this mapping to name exactly the
+#: sites it finds. A wrap added to a new function under that spelling fails
+#: here by name, which is a direction a spec-driven gate cannot see.
+#:
+#: **What it does not reach.** Only ``translate_store_refusal(...)`` written as
+#: a bare name. A translation opened through a module-local wrapper -- such as
+#: ``_translate_vault_source_refusal`` in the ingest service -- or called
+#: attribute-style or under an import alias is invisible to the walk, and a
+#: site added that way passes silently. Teaching the walk to chase those
+#: spellings was deliberately not done: it is scaffolding for a design in
+#: which translation is placed by hand at each site, and the intended
+#: replacement is a translating wrapper around the store binding itself, which
+#: covers every call by construction and removes the need for this gate. The
+#: limit is stated here rather than papered over so the next sweep through the
+#: ingest service -- where the wrapper *is* the idiom -- knows it is unguarded.
+TRANSLATION_SITE_OPERATIONS: dict[str, frozenset[str]] = {
+    "sage/api/routers/transfer.py::transfer_download": frozenset({"transfer_download"}),
+    "sage/services/documents.py::DocumentsService.get_document_with_content": frozenset(
+        {"get_document"}
+    ),
+    "sage/services/documents.py::DocumentsService.get_document_content": frozenset(
+        {"get_document_content"}
+    ),
+    "sage/services/documents.py::DocumentsService.get_document_download_url": frozenset(
+        {"get_document_download_url"}
+    ),
+    "sage/services/ingestion.py::_translate_vault_source_refusal": frozenset({"ingest_document"}),
+    # Re-projection's read-back. Reached by the ingest pipeline's projection
+    # stage, by the operator-facing recompute (an MCP tool with no HTTP
+    # operation), and by the worker's re-projection (no caller to answer).
+    "sage/services/ingestion.py::IngestionService._project_source": frozenset({"ingest_document"}),
+    "sage/services/maintenance.py::MaintenanceService.verify_vault_source_files": frozenset(
+        {"verify_vault_source_files"}
+    ),
+    "sage/services/maintenance.py::MaintenanceService.restore_vault_source_file": frozenset(
+        {"restore_vault_source_file"}
+    ),
+}
+
+#: The module that defines the translation; its own use is the definition.
+_TRANSLATION_DEFINITION = "sage/services/vault_source_errors.py"
+
+
+def _translation_sites() -> set[str]:
+    """Every ``<module>::<function>`` under sage/ whose body translates a refusal."""
+    repo_root = Path(__file__).resolve().parents[2]
+    found: set[str] = set()
+    for path in sorted((repo_root / "sage").rglob("*.py")):
+        rel = path.relative_to(repo_root).as_posix()
+        if rel == _TRANSLATION_DEFINITION:
+            continue
+        tree = ast.parse(path.read_text())
+
+        def walk(node: ast.AST, stack: tuple[str, ...]) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                    walk(child, stack + (child.name,))
+                    continue
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id == "translate_store_refusal"
+                    and stack
+                ):
+                    found.add(f"{rel}::{'.'.join(stack)}")
+                walk(child, stack)
+
+        walk(tree, ())
+    return found
+
+
+def test_translation_site_mapping_is_total():
+    """The mapping names exactly the bare-name translation sites the code contains.
+
+    This is what makes the coverage test below a gate on the *code* rather than
+    on a hand-kept list, for the spelling it can see. A wrap added to a function
+    absent from the mapping fails here by name, and a mapping entry whose
+    function no longer translates fails here too, so the table cannot drift
+    silently in either direction -- within that spelling. See the note on
+    ``TRANSLATION_SITE_OPERATIONS`` for what the walk does not reach, and why
+    extending it was declined.
+
+    Anti-coincidental-pass: the discovered set is asserted non-empty first. A
+    walk that silently found nothing -- a renamed helper, a changed import
+    shape -- would otherwise make this test and the one below pass against any
+    mapping at all, which is the failure mode this pair exists to prevent.
+    """
+    found = _translation_sites()
+    assert found, "the walk found no translation sites at all; it is not looking where it thinks"
+
+    mapped = set(TRANSLATION_SITE_OPERATIONS)
+    assert found == mapped, (
+        "translation-site drift\n"
+        f"  translate but are unmapped: {sorted(found - mapped)}\n"
+        f"  mapped but no longer translate: {sorted(mapped - found)}"
+    )
+
+
+def test_store_refusal_operations_declare_both_codes(live_openapi: dict):
+    """Every documented operation that can raise a store refusal declares both
+    statuses, and no other operation declares them.
+
+    The envelope gate above is driven from the committed spec, so it catches a
+    router that dropped a declared status but not an operation that can emit a
+    status it never declared. The expectation here is derived from the
+    translation sites the code contains, by way of a mapping the test above
+    proves total -- so adding a bare-name wrap without the declaration fails,
+    which is a direction the spec-driven gate is blind to. It is not a complete
+    guard: the walk sees one spelling, and the mapping's *values* are hand-kept,
+    so an operation newly routed to an already-mapped service method does not
+    move the expectation.
+
+    Pinned as an equality so the reverse drift fails too: a declaration left on
+    an operation whose translation was removed documents a status the operation
+    can no longer return.
+    """
+    expected = {
+        operation_id
+        for site in _translation_sites()
+        for operation_id in TRANSLATION_SITE_OPERATIONS.get(site, frozenset())
+    }
+
+    declaring = {
+        operation.get("operationId")
+        for methods in (live_openapi.get("paths") or {}).values()
+        for operation in methods.values()
+        if isinstance(operation, dict)
+        for responses in [operation.get("responses") or {}]
+        if "502" in responses and "503" in responses
+    }
+
+    assert declaring == expected, (
+        "store-refusal declaration drift\n"
+        f"  declared but no translation reaches them: {sorted(declaring - expected)}\n"
+        f"  translate but do not declare: {sorted(expected - declaring)}"
+    )
+
+
+def test_store_refusal_operations_each_declare_both_not_one(live_openapi: dict):
+    """No operation declares one of the pair without the other.
+
+    Anti-coincidental-pass: the equality above matches on operations carrying
+    *both* statuses, so an operation that declared only the 502 would drop out
+    of ``declaring`` and be reported as a missing expectation -- a message that
+    points at the wrong fix. This separates the two failures.
+    """
+    lopsided = [
+        (operation.get("operationId"), sorted(set(responses) & {"502", "503"}))
+        for methods in (live_openapi.get("paths") or {}).values()
+        for operation in methods.values()
+        if isinstance(operation, dict)
+        for responses in [operation.get("responses") or {}]
+        if len(set(responses) & {"502", "503"}) == 1
+    ]
+
+    assert not lopsided, (
+        f"operations declaring one store-refusal status but not the pair: {lopsided}"
+    )

@@ -800,6 +800,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   # ---------------------------------------------------------------------------
   # Graph Operations
@@ -2004,6 +2023,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /sage_vaults/{vault_id}/documents/{document_id}/content:
     get:
@@ -2015,11 +2053,13 @@ paths:
         file and the inline-content size ceiling does not apply.
         Binary-container sources are served raw with their correct media
         type -- the refusal that guards text-scanning of container bytes
-        inlined into JSON does not apply to this raw byte channel. Every
-        failure mode resolves before the stream opens, so errors arrive as
-        structured JSON envelopes, never a truncated byte stream. The
-        response carries a derived `Content-Type` and an `attachment`
-        `Content-Disposition`.
+        inlined into JSON does not apply to this raw byte channel. The
+        source's presence and size are resolved before the stream opens, so
+        those failures arrive as structured JSON envelopes; a vault-source
+        store refusal raised once the bytes are already flowing ends the body
+        short of the promised `Content-Length` instead, which is what a
+        caller checks the delivery against. The response carries a derived
+        `Content-Type` and an `attachment` `Content-Disposition`.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2041,6 +2081,25 @@ paths:
             Vault or document not found. Also returned with
             `content_file_missing` when the retained source file is absent
             from the vault-source store.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
           content:
             application/json:
               schema:
@@ -2369,6 +2428,26 @@ paths:
                 $ref: "#/components/schemas/SourceFileIntegrityReport"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
           content:
             application/json:
               schema:
@@ -2817,6 +2896,25 @@ paths:
             `transfer_token_invalid`: the token names no redeemable pending
             transfer (unknown, expired, already redeemed, or scoped to a
             different direction).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
           content:
             application/json:
               schema:

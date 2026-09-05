@@ -2201,9 +2201,14 @@ class IngestionService:
             yield local
             return
         vault_id = self._config.vault.id
-        if not store.source_exists(vault_id, storage_root, source_path):
-            raise SourceFileNotFoundError(source_path)
-        data = store.read_source(vault_id, storage_root, source_path)
+        # At the read rather than at any one caller: three reach here -- the
+        # ingest pipeline's projection stage, the operator-facing recompute,
+        # and the worker's re-projection -- and only the innermost placement
+        # types the refusal for all of them.
+        with translate_store_refusal(source_path):
+            if not store.source_exists(vault_id, storage_root, source_path):
+                raise SourceFileNotFoundError(source_path)
+            data = store.read_source(vault_id, storage_root, source_path)
         staging = Path(tempfile.mkdtemp(prefix="sage-project-"))
         try:
             staged = staging / Path(source_path).name
