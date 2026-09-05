@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 
 from sage.adapters.interfaces import (
     DOCUMENT_FACET_FIELDS,
-    SYNTHETIC_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
     FacetFieldCounts,
@@ -1186,13 +1185,10 @@ class RetrievalService:
             # this matched" context. When response_mode is unset, default
             # is full-equivalent (chunk content included).
             include_content = request.response_mode != ResponseMode.LIGHT
-            # Mask the synthetic header chunk's marker heading_path
-            # so users never see the internal sentinel string.
-            visible_heading_path = (
-                None
-                if result.heading_path == SYNTHETIC_HEADER_HEADING_PATH
-                else (result.heading_path or None)
-            )
+            # A document matched only through its document surface carries no
+            # excerpt, so its heading path is empty rather than a sentinel
+            # needing masking (CAS-ADR-049).
+            visible_heading_path = result.heading_path or None
             hit = DiscoverHit.from_summary(
                 summary,
                 chunk_content=result.content if include_content else None,

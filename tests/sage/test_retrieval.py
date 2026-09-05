@@ -19,7 +19,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
-from sage.adapters.interfaces import Chunk, KeywordQueryParse
+from sage.adapters.interfaces import Chunk, DocumentSurface, KeywordQueryParse
 from sage.adapters.stubs import SeededEmbeddingProvider, StubContentStore
 from sage.api.errors import (
     DocumentNotFoundError,
@@ -47,6 +47,7 @@ from sage.models.schemas import (
     RetrievalFilters,
     UpdateMetadataRequest,
 )
+from sage.services.document_surface import compose_document_surface, embedding_text
 from sage.services.retrieval import RetrievalService
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -138,6 +139,37 @@ def retrieval_service(graph_store, stub_content_store, seeded_embedding_provider
         embedding_provider=seeded_embedding_provider,
         config=minimal_config,
     )
+
+
+def _document_level_hit(response, document_id):
+    """The response's document-level hit for a document, or ``None``.
+
+    A hit is document-level when it carries no heading path: a passage always
+    has one, and the document surface never does. Naming it this way is what
+    makes the assertions below discriminating -- a document with a body chunk
+    is returned whether or not its surface was ever written, so asserting only
+    that the document came back says nothing about the surface.
+    """
+    for hit in response.results:
+        if hit.document.id == document_id and hit.heading_path is None:
+            return hit
+    return None
+
+
+async def _index_document_surface(
+    content_store: StubContentStore,
+    embedding_provider,
+    document_id: str,
+    doc,
+) -> None:
+    """Helper: compose and index a document's document-level row.
+
+    Uses the production composition so a test seeds the same text ingest
+    would, rather than a hand-written approximation of it.
+    """
+    surface = compose_document_surface(document_id, doc)
+    [surface.embedding] = await embedding_provider.embed([embedding_text(surface)])
+    await content_store.upsert_document_surface(surface)
 
 
 async def _index_doc_chunks(
@@ -529,27 +561,29 @@ async def test_get_heading_paths_returns_distinct_ordered(
     ]
 
 
-async def test_get_heading_paths_excludes_synthetic_header(
+async def test_get_heading_paths_returns_only_authored_headings(
     stub_content_store, seeded_embedding_provider
 ):
-    """The synthetic header chunk's marker heading_path must
-    not appear in get_heading_paths output — it is an internal
-    retrieval surface, not a real heading."""
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+    """Document-level text cannot reach heading enumeration.
 
+    It lives on its own surface (CAS-ADR-049), so the enumeration carries no
+    exclusion and there is nothing for one to catch.
+    """
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_hp_synth"),
-        [
-            (SYNTHETIC_HEADER_HEADING_PATH, "Title: X\nSource: x\n"),
-            ("Overview", "Intro."),
-            ("Conclusion", "End."),
-        ],
+        [("Overview", "Intro."), ("Conclusion", "End.")],
+    )
+    await stub_content_store.upsert_document_surface(
+        DocumentSurface(
+            document_id=_id("doc_hp_synth"),
+            matchable="Some Title",
+            orienting="Abstract: prose",
+        )
     )
 
     paths = await stub_content_store.get_heading_paths(_id("doc_hp_synth"))
-    assert SYNTHETIC_HEADER_HEADING_PATH not in paths
     assert paths == ["Overview", "Conclusion"]
 
 
@@ -762,10 +796,9 @@ async def test_camelcase_title_searchable_via_split_tokens(
 ):
     """A document whose title is a CamelCase compound and whose body is
     sparse placeholder content is retrievable by natural-language queries
-    against the constituent words. The synthetic header chunk carries a
-    case-split identifier-token line that unblocks BM25 matching."""
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
-
+    against the constituent words. The document surface's authored half
+    carries the compound's case-split expansion, which is what lets
+    "dashboard" reach "PortfolioDashboard" (CAS-ADR-049)."""
     doc = _make_doc(_id("doc_portfolio"))
     doc.title = "PortfolioDashboard_Template"
     doc.source_path = "imports/2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3.xlsx"
@@ -776,26 +809,19 @@ async def test_camelcase_title_searchable_via_split_tokens(
     )
     await graph_store.insert_document(doc)
 
-    # Synthetic header chunk content mirrors what _build_header_chunk_content
-    # produces in production. The case-split identifier line is what makes
-    # "dashboard" match against "PortfolioDashboard".
-    header_content = (
-        "Title: PortfolioDashboard_Template\n"
-        "Source: 2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3\n"
-        "Tags: REF, template\n"
-        "Abstract: " + doc.semantic_abstract + "\n\n"
-        "Identifier tokens: portfolio dashboard template v3 example ref\n"
-    )
     body_content = "[Placeholder content. Template body is structurally minimal.]"
 
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_portfolio"),
-        [
-            (SYNTHETIC_HEADER_HEADING_PATH, header_content),
-            ("Sheet1", body_content),
-        ],
+        [("Sheet1", body_content)],
+    )
+    # Document-level text lives on the document surface. Its authored half
+    # carries the case-split expansion of the compound title, which is what
+    # makes "dashboard" reach "PortfolioDashboard".
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("doc_portfolio"), doc
     )
 
     # Add a noise document so the assertion is non-trivial.
@@ -834,23 +860,33 @@ async def test_camelcase_title_searchable_via_split_tokens(
         assert _id("doc_portfolio") in doc_ids, (
             f"doc_portfolio missing from top 5 for {mode_kwargs!r}; got {doc_ids}"
         )
+        # The case-split expansion of the compound title lives only on the
+        # document surface, so a document-level hit is what shows the surface
+        # was actually consulted. Without it the body chunk alone would return
+        # the document and the assertion above would pass unchanged.
+        hit = _document_level_hit(response, _id("doc_portfolio"))
+        assert hit is not None, (
+            f"no document-level hit for {mode_kwargs!r}; the document surface "
+            "contributed nothing to this result"
+        )
+        assert "dashboard" in (hit.chunk_content or "").lower(), (
+            "the document-level hit does not carry the title's expansion"
+        )
 
 
 async def test_semantic_abstract_drives_a_semantic_match(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """A document with sparse body but a descriptive semantic_abstract is
-    retrievable against the abstract's terms — because the abstract lives in
-    the synthetic header chunk's indexed content.
+    retrievable against the abstract's terms -- because the abstract is
+    carried by the document surface, which the semantic arm covers.
 
     Semantic, not keyword. A generated abstract is derived text: it ranks and
     orients a document but never satisfies a keyword match (CAS-ADR-049). The
     keyword arm below asserts that refusal end to end. The terms live in the
     abstract alone -- the title is a bare year-suffixed word and the tags and
-    source are empty -- so nothing but the header could supply them, and the
-    metadata boost has nothing to find either."""
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
-
+    source are empty -- so nothing but the document surface's derived half
+    could supply them, and the metadata boost has nothing to find either."""
     doc = _make_doc(_id("doc_abstract_only"))
     doc.title = "Catalog_2026"
     doc.semantic_abstract = (
@@ -858,21 +894,14 @@ async def test_semantic_abstract_drives_a_semantic_match(
     )
     await graph_store.insert_document(doc)
 
-    header_content = (
-        "Title: Catalog_2026\n"
-        "Source: \n"
-        "Tags: \n"
-        "Abstract: " + doc.semantic_abstract + "\n\n"
-        "Identifier tokens: catalog 2026\n"
-    )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_abstract_only"),
-        [
-            (SYNTHETIC_HEADER_HEADING_PATH, header_content),
-            ("Sheet1", "[empty]"),
-        ],
+        [("Sheet1", "[empty]")],
+    )
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("doc_abstract_only"), doc
     )
 
     request = DiscoverRequest(
@@ -882,6 +911,16 @@ async def test_semantic_abstract_drives_a_semantic_match(
     response = await retrieval_service.discover(request)
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_abstract_only") in doc_ids
+
+    # The abstract is carried by the document surface and nowhere else, so the
+    # hit that carries it must be the document-level one. Asserting only that
+    # the document was returned would pass against a store that never stored a
+    # surface at all, since the body chunk returns it either way.
+    hit = _document_level_hit(response, _id("doc_abstract_only"))
+    assert hit is not None, "the abstract's document-level hit is absent"
+    assert "accumulator" in (hit.chunk_content or "").lower(), (
+        "the document-level hit does not carry the generated abstract"
+    )
 
     # A sibling whose authored body carries the same terms, so the refusal
     # below is a statement about provenance rather than about a keyword arm
@@ -903,50 +942,53 @@ async def test_semantic_abstract_drives_a_semantic_match(
         "positive control: the same terms in authored text do match"
     )
     assert _id("doc_abstract_only") not in keyword_ids, (
-        "the abstract orients the document but does not make it match; only "
-        "the header carries these terms"
+        "the abstract orients the document but does not make it match; these "
+        "terms are carried only by the document surface's derived half"
     )
 
 
-async def test_hit_heading_path_masks_synthetic_marker(
+async def test_document_level_hit_carries_no_heading_path(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """When a hit's winning chunk is the synthetic header, the
-    hit's user-visible heading_path is None — never the internal
-    ``__document_header__`` sentinel.
+    """A hit won by document-level text reports no heading path.
 
-    Exercised in semantic mode: the keyword binding now draws its excerpt from
-    an authored passage, so the header cannot be the winning chunk there. The
-    masking still matters wherever it can win."""
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
-
+    There is no internal sentinel to mask any more: document-level text is not
+    a passage and carries no heading, so the hit's heading_path is simply
+    absent rather than a marker string a caller must never see
+    (CAS-ADR-049). Exercised in semantic mode, the arm where a document-level
+    row can outrank a passage.
+    """
     doc = _make_doc(_id("doc_mask"))
     doc.title = "MaskProbe_Template"
+    doc.semantic_abstract = "probe content"
     await graph_store.insert_document(doc)
 
-    header_content = (
-        "Title: MaskProbe_Template\n"
-        "Source: maskprobe\n"
-        "Tags: \n"
-        "Abstract: probe content\n\n"
-        "Identifier tokens: mask probe template\n"
-    )
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_mask"),
-        [
-            (SYNTHETIC_HEADER_HEADING_PATH, header_content),
-            ("Sheet1", "[empty body]"),
-        ],
+    # No passages: the document's only indexed text is document-level, so the
+    # hit under test can only be the document-level one. With a body chunk the
+    # service's per-document dedup may return the passage instead, and the
+    # assertion would then say nothing about how a document-level hit reports
+    # its heading path.
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("doc_mask"), doc
     )
 
     request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="probe template")
     response = await retrieval_service.discover(request)
 
-    masked = [hit for hit in response.results if hit.document.id == _id("doc_mask")]
-    assert masked, "doc_mask was not in results"
-    assert masked[0].heading_path != SYNTHETIC_HEADER_HEADING_PATH
+    hits = [hit for hit in response.results if hit.document.id == _id("doc_mask")]
+    assert hits, "doc_mask was not in results"
+    assert _document_level_hit(response, _id("doc_mask")) is not None, (
+        "no document-level hit was returned, so this asserts nothing about how "
+        "one reports its heading path"
+    )
+    # Asserted as a property rather than as a set of permitted values: which
+    # surface wins this query is a ranking outcome, and enumerating both
+    # outcomes would pass against an implementation that leaked a marker on
+    # either one. What must hold on every outcome is that nothing internal
+    # reaches the caller.
+    assert not (hits[0].heading_path or "").startswith("__"), (
+        f"internal marker {hits[0].heading_path!r} reached a caller"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -46,7 +46,6 @@ from sage.adapters.abstraction_utils import (
     trim_to_sentence_boundary,
 )
 from sage.adapters.interfaces import (
-    SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
 )
 from sage.config import VaultAbstractionConfig as AbstractionConfig
@@ -686,7 +685,7 @@ async def run_benchmark(
     # doc's text so the warmup work is representative of real input.
     if warmup_calls > 0 and corpus:
         warmup_chunks = await services.content_store.get_all_chunks(corpus[0].doc_id)
-        warmup_body = [c for c in warmup_chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        warmup_body = list(warmup_chunks)
         warmup_text = "\n\n".join(c.content for c in warmup_body)
         warmup_word_count = len(warmup_text.split())
         warmup_max_tokens = compute_max_tokens(warmup_word_count, abstraction_config)
@@ -695,7 +694,7 @@ async def run_benchmark(
 
     for entry in corpus:
         chunks = await services.content_store.get_all_chunks(entry.doc_id)
-        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        body_chunks = list(chunks)
         projection_text = "\n\n".join(c.content for c in body_chunks)
 
         record, verdict, outputs = await measure_with_determinism_check(
@@ -807,7 +806,7 @@ async def _assemble_probe_text(services, corpus: list[CatalogEntry], target_char
     while total < target_chars:
         entry = corpus[index % len(corpus)]
         chunks = await services.content_store.get_all_chunks(entry.doc_id)
-        body = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        body = list(chunks)
         text = "\n\n".join(c.content for c in body)
         index += 1
         if not text:

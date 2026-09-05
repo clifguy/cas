@@ -57,7 +57,7 @@ from __future__ import annotations
 import pytest
 
 from sage.adapters.interfaces import (
-    SYNTHETIC_HEADER_HEADING_PATH,
+    LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     Chunk,
     KeywordQueryParse,
 )
@@ -95,7 +95,7 @@ def _header(document_id: str, *, content: str) -> Chunk:
     return _chunk(
         document_id,
         content=content,
-        heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+        heading_path=LEGACY_DOCUMENT_HEADER_HEADING_PATH,
         chunk_index=-1,
     )
 
@@ -692,6 +692,6 @@ async def test_stub_search_bm25_header_still_ranks_a_matched_document(store):
         "so the header is still in the ranking pool"
     )
     assert res[0].score > res[1].score
-    assert res[0].heading_path != SYNTHETIC_HEADER_HEADING_PATH, (
+    assert res[0].heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH, (
         "the header set the score without becoming the excerpt"
     )

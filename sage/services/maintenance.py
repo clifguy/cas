@@ -52,6 +52,7 @@ from sage.models.schemas import (
     Tier3UniquenessCollision,
     canonicalize_sha256,
 )
+from sage.services.document_surface import compose_document_surface
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
@@ -176,6 +177,10 @@ BACKFILL_STALE_PIPELINE_ERROR = "clear_pipeline_error_on_successful_terminal_sta
 # Name reported in MigrationReport.backfills_applied when the migration reduced
 # stored source paths to the single spelling ingest records.
 BACKFILL_NON_CANONICAL_SOURCE_PATH = "normalize_non_canonical_source_paths"
+
+# Name reported in MigrationReport.backfills_applied when the migration moved a
+# vault's document-level text off the passage surface onto its own.
+BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
 
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
@@ -357,6 +362,9 @@ class MaintenanceService:
         if normalized:
             backfills_applied.append(BACKFILL_NON_CANONICAL_SOURCE_PATH)
 
+        if await self._migrate_to_document_surface():
+            backfills_applied.append(BACKFILL_DOCUMENT_SURFACE)
+
         activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
@@ -367,6 +375,56 @@ class MaintenanceService:
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
         )
+
+    async def _migrate_to_document_surface(self) -> int:
+        """Move document-level text onto its own surface (CAS-ADR-049).
+
+        A vault provisioned before that decision holds a synthetic header row
+        per document on the passage surface. The pass is driven by those rows
+        rather than by the document catalog, because their presence is exactly
+        the condition being repaired.
+
+        Each document's row is recomposed from its stored record rather than
+        parsed out of the header's composed text: the record is the authority
+        for title, tags, abstract and source path, and recomposing keeps a
+        migrated vault identical to a freshly ingested one. The legacy row's
+        embedding is carried forward, so a corpus is not re-embedded to change
+        where its text is stored.
+
+        The legacy rows are deleted last. A pass interrupted part-way leaves
+        them in place, so the next run repeats the whole repair rather than
+        resuming into a half-migrated vault. Re-running a completed migration
+        finds no legacy rows and does nothing, which is what makes it
+        idempotent.
+
+        Stored heading paths are left as they are. CAS-ADR-049 also places a
+        passage's structure relative to its document, but for a source whose
+        title is also its top-level heading the two clauses of that decision
+        name the same string, and rewriting the paths changes how every
+        section of such a document is addressed. That is tracked separately.
+
+        Returns:
+            The number of documents relocated -- zero on a vault with nothing
+            to repair, so the backfill does not name itself in the report.
+        """
+        legacy = await self._content_store.legacy_document_header_rows()
+        if not legacy:
+            return 0
+
+        relocated = 0
+        for document_id, embedding in legacy:
+            doc = await self._graph_store.get_document(document_id)
+            if doc is None:
+                # A header row whose document is gone has nothing to compose
+                # from; the delete below reclaims it.
+                continue
+            await self._content_store.upsert_document_surface(
+                compose_document_surface(document_id, doc, embedding)
+            )
+            relocated += 1
+
+        await self._content_store.delete_legacy_document_header_rows()
+        return relocated
 
     async def _normalize_source_paths(self) -> list[SourcePathNormalization]:
         """Rewrite each stored source path that is not already in plain form.

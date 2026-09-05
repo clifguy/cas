@@ -9,12 +9,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sage.adapters.interfaces import (
+    LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     NON_CANONICAL_SOURCE_PATH_PATTERN,
-    SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
     Chunk,
     ContentStore,
     ContentStoreOptimizeSnapshot,
+    DocumentSurface,
     EmbeddingProvider,
     FacetFieldCounts,
     GraphStore,
@@ -36,23 +37,49 @@ class StubContentStore(ContentStore):
 
     def __init__(self) -> None:
         self._store: dict[str, list[Chunk]] = {}
+        self._surfaces: dict[str, DocumentSurface] = {}
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         self._store[document_id] = chunks
 
-    async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
-        """Replace the synthetic header chunk for a document.
+    async def upsert_document_surface(self, surface: DocumentSurface) -> None:
+        """Write a document's document-level row; its passages are untouched.
 
-        Drops any existing chunk with
-        ``heading_path == SYNTHETIC_HEADER_HEADING_PATH`` and inserts the
-        new one; body chunks are left in place.
+        Stored, but deliberately not consulted by this stub's ``search_bm25``,
+        which models neither the two-surface union nor the provenance bar. A
+        test about either is not evidence about any binding and belongs against
+        a real backend.
         """
-        existing = self._store.get(document_id, [])
-        body = [c for c in existing if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
-        self._store[document_id] = [chunk, *body]
+        self._surfaces[surface.document_id] = surface
+
+    async def remove_document_surface(self, document_id: str) -> None:
+        self._surfaces.pop(document_id, None)
+
+    def stored_document_surface(self, document_id: str) -> DocumentSurface | None:
+        """Return the stored document-level row, for assertions in tests."""
+        return self._surfaces.get(document_id)
 
     async def remove_document(self, document_id: str) -> None:
         self._store.pop(document_id, None)
+        self._surfaces.pop(document_id, None)
+
+    # -- migration off the single-surface layout (CAS-ADR-049) ---------------
+
+    async def legacy_document_header_rows(self) -> list[tuple[str, list[float] | None]]:
+        return [
+            (document_id, chunk.embedding)
+            for document_id, chunks in self._store.items()
+            for chunk in chunks
+            if chunk.heading_path == LEGACY_DOCUMENT_HEADER_HEADING_PATH
+        ]
+
+    async def delete_legacy_document_header_rows(self) -> int:
+        removed = 0
+        for document_id, chunks in self._store.items():
+            kept = [c for c in chunks if c.heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH]
+            removed += len(chunks) - len(kept)
+            self._store[document_id] = kept
+        return removed
 
     async def search_semantic(
         self,
@@ -60,26 +87,51 @@ class StubContentStore(ContentStore):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """Cosine similarity search across all indexed chunks."""
-        scored: list[tuple[float, Chunk]] = []
+        """Cosine similarity search across passages and document surfaces.
+
+        Both surfaces compete in one ranking, as the real binding does
+        (CAS-ADR-049). Similarity is not matching, so the provenance bar does
+        not apply here and this double can model the union faithfully -- unlike
+        ``search_bm25``, where it deliberately does not.
+        """
+        scored: list[tuple[float, SearchResult]] = []
         for chunks in self._store.values():
             for chunk in chunks:
                 if not _chunk_matches_filters(chunk, filters):
                     continue
                 if chunk.embedding is not None:
                     sim = _cosine_similarity(query_embedding, chunk.embedding)
-                    scored.append((sim, chunk))
+                    scored.append(
+                        (
+                            sim,
+                            SearchResult(
+                                document_id=chunk.document_id,
+                                heading_path=chunk.heading_path,
+                                content=chunk.content,
+                                score=sim,
+                            ),
+                        )
+                    )
+
+        for surface in self._surfaces.values():
+            if not _chunk_matches_filters(surface, filters):
+                continue
+            if surface.embedding is not None:
+                sim = _cosine_similarity(query_embedding, surface.embedding)
+                scored.append(
+                    (
+                        sim,
+                        SearchResult(
+                            document_id=surface.document_id,
+                            heading_path="",
+                            content=f"{surface.matchable} {surface.orienting}",
+                            score=sim,
+                        ),
+                    )
+                )
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [
-            SearchResult(
-                document_id=chunk.document_id,
-                heading_path=chunk.heading_path,
-                content=chunk.content,
-                score=score,
-            )
-            for score, chunk in scored[:limit]
-        ]
+        return [result for _, result in scored[:limit]]
 
     async def search_bm25(
         self,
@@ -103,11 +155,19 @@ class StubContentStore(ContentStore):
         budget. Filter predicates select the slice before the union is taken,
         so a filter only ever narrows.
 
-        The synthetic document-header row is barred from the match union and
-        from the count: it carries machine-generated and incidental text, which
+        A legacy document-header row is barred from the match union and from
+        the count: it carries machine-generated and incidental text, which
         ranks and orients but never satisfies a match (CAS-ADR-049). It stays
         in the ranking pool, so a document's score still reflects it, while an
-        authored chunk always supplies the excerpt.
+        authored passage always supplies the excerpt. Nothing writes such a row
+        any more -- document-level text has a surface of its own -- but a vault
+        awaiting its migration still holds one per document, and this is what
+        keeps it out of a match until then.
+
+        The document surface itself is stored by this double and never
+        consulted here, so the two-surface match union is not modelled: a test
+        turning on a title or a tag satisfying a match, or on derived text
+        failing to, belongs against a real backend.
 
         A chunk's indexed text is its heading path and its content, so a term
         present only in a heading is findable. The two are not weighted apart
@@ -128,10 +188,10 @@ class StubContentStore(ContentStore):
         def _searchable(chunk: Chunk) -> str:
             """The chunk's indexed text: its heading path and its content.
 
-            The header row is the exception. Its ``heading_path`` is an
-            internal sentinel rather than a heading someone wrote, so including
-            it would let a query for one of the sentinel's own words score
-            every header row in the store.
+            A legacy document-header row is the exception. Its
+            ``heading_path`` is an internal sentinel rather than a heading
+            someone wrote, so including it would let a query for one of the
+            sentinel's own words score every such row in the store.
 
             This carve-out is not parity: the Postgres binding indexes the
             marker today, because its generated column weights ``heading_path``
@@ -143,7 +203,7 @@ class StubContentStore(ContentStore):
             rather than this double's licence, and a test turning on it is
             evidence about the double alone.
             """
-            if chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH:
+            if chunk.heading_path == LEGACY_DOCUMENT_HEADER_HEADING_PATH:
                 return chunk.content.lower()
             return f"{chunk.heading_path} {chunk.content}".lower()
 
@@ -159,7 +219,9 @@ class StubContentStore(ContentStore):
                 if _chunk_matches_filters(c, filters)
             ]
             authored = [
-                (c, hits) for c, hits in scored if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH
+                (c, hits)
+                for c, hits in scored
+                if c.heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH
             ]
 
             # The match is decided on the union of the authored slice, so a
@@ -179,7 +241,7 @@ class StubContentStore(ContentStore):
             _, excerpt = min(
                 pool,
                 key=lambda ranked: (
-                    ranked[1].heading_path == SYNTHETIC_HEADER_HEADING_PATH,
+                    ranked[1].heading_path == LEGACY_DOCUMENT_HEADER_HEADING_PATH,
                     -ranked[0],
                     ranked[1].chunk_index,
                 ),
@@ -202,15 +264,23 @@ class StubContentStore(ContentStore):
         document_id: str,
         metadata: dict[str, str | None],
     ) -> None:
-        """Update metadata on stored chunks for a document."""
-        chunks = self._store.get(document_id, [])
-        for chunk in chunks:
+        """Update metadata on both of a document's surfaces.
+
+        Both carry the same filter columns, so updating passages alone would
+        leave the document matchable by its title under the values it had
+        before the change.
+        """
+        targets = [*self._store.get(document_id, [])]
+        surface = self._surfaces.get(document_id)
+        if surface is not None:
+            targets.append(surface)
+        for target in targets:
             if "doc_type" in metadata:
-                chunk.doc_type = metadata["doc_type"]
+                target.doc_type = metadata["doc_type"]
             if "lifecycle_status" in metadata:
-                chunk.lifecycle_status = metadata["lifecycle_status"]
+                target.lifecycle_status = metadata["lifecycle_status"]
             if "project" in metadata:
-                chunk.project = metadata["project"]
+                target.project = metadata["project"]
 
     async def parse_keyword_query(self, query: str) -> KeywordQueryParse:
         """Whitespace terms, lowercased -- no stopword, stemming, or operator model.
@@ -249,15 +319,13 @@ class StubContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        Excludes the synthetic header chunk marker; that chunk
-        is an internal retrieval surface and is not a real heading.
+        No exclusion is needed: the passage surface holds authored passages
+        only, so every path here is a real heading.
         """
         chunks = self._store.get(document_id, [])
         seen: set[str] = set()
         paths: list[str] = []
         for chunk in sorted(chunks, key=lambda c: c.chunk_index):
-            if chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH:
-                continue
             if chunk.heading_path not in seen:
                 seen.add(chunk.heading_path)
                 paths.append(chunk.heading_path)

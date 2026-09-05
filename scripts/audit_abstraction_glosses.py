@@ -29,7 +29,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from sage.adapters.abstraction_utils import AcronymGloss, find_unattested_acronym_glosses
-from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
@@ -95,7 +94,7 @@ async def build_entries(services) -> list[AuditEntry]:
         if not abstract:
             continue
         chunks = await services.content_store.get_all_chunks(doc.id)
-        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        body_chunks = list(chunks)
         source_text = "\n\n".join(chunk.content for chunk in body_chunks)
         if not source_text.strip():
             continue
