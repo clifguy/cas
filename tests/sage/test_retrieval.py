@@ -835,13 +835,14 @@ async def test_camelcase_title_searchable_via_split_tokens(
         [("Section 1", "Discusses cryptographic accumulator seals.")],
     )
 
-    # The diagnostic query: should land doc_portfolio in BM25, semantic,
-    # and hybrid modes.
+    # The diagnostic query: should land doc_portfolio in semantic and hybrid
+    # modes. No keyword arm here: the case-split identifier line is derived
+    # text, which ranks and orients but never satisfies a keyword match
+    # (CAS-ADR-049), and "dashboard" also sits in the title, so the metadata
+    # boost would surface the document whatever the keyword arm did. The
+    # refusal is asserted where nothing else can supply the term, in
+    # test_semantic_abstract_drives_a_semantic_match below.
     for mode_kwargs in (
-        # No keyword arm: the case-split identifier line is derived text, which
-        # ranks and orients but never satisfies a keyword match (CAS-ADR-049).
-        # StubContentStore is header-blind, so asserting either way here would
-        # be evidence about the double rather than about a binding.
         {
             "mode": RetrievalMode.SEMANTIC,
             "query": "dashboard template",
@@ -881,10 +882,11 @@ async def test_semantic_abstract_drives_a_semantic_match(
     carried by the document surface, which the semantic arm covers.
 
     Semantic, not keyword. A generated abstract is derived text: it ranks and
-    orients a document but never satisfies a keyword match (CAS-ADR-049), and
-    that refusal is pinned against a real backend in
-    test_content_store_postgres.py. StubContentStore is header-blind, so a
-    keyword assertion here would pass whatever the binding does."""
+    orients a document but never satisfies a keyword match (CAS-ADR-049). The
+    keyword arm below asserts that refusal end to end. The terms live in the
+    abstract alone -- the title is a bare year-suffixed word and the tags and
+    source are empty -- so nothing but the document surface's derived half
+    could supply them, and the metadata boost has nothing to find either."""
     doc = _make_doc(_id("doc_abstract_only"))
     doc.title = "Catalog_2026"
     doc.semantic_abstract = (
@@ -918,6 +920,30 @@ async def test_semantic_abstract_drives_a_semantic_match(
     assert hit is not None, "the abstract's document-level hit is absent"
     assert "accumulator" in (hit.chunk_content or "").lower(), (
         "the document-level hit does not carry the generated abstract"
+    )
+
+    # A sibling whose authored body carries the same terms, so the refusal
+    # below is a statement about provenance rather than about a keyword arm
+    # that answers nothing for this fixture.
+    doc_authored = _make_doc(_id("doc_authored_seals"))
+    await graph_store.insert_document(doc_authored)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_authored_seals"),
+        [("Section 1", "Cryptographic accumulator seals in the body text.")],
+    )
+
+    keyword = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="cryptographic accumulator")
+    )
+    keyword_ids = [h.document.id for h in keyword.results]
+    assert _id("doc_authored_seals") in keyword_ids, (
+        "positive control: the same terms in authored text do match"
+    )
+    assert _id("doc_abstract_only") not in keyword_ids, (
+        "the abstract orients the document but does not make it match; these "
+        "terms are carried only by the document surface's derived half"
     )
 
 
@@ -5952,13 +5978,14 @@ async def test_defined_lifecycle_status_no_warning(graph_store, retrieval_servic
 
 # --- keyword conjunction advisory ------------------------------------------
 #
-# Keyword mode is conjunctive on the production binding: every term must appear
-# somewhere in the document, though not necessarily together in one passage
-# (CAS-ADR-048). An empty result therefore has two indistinguishable readings
-# -- the vault holds nothing, or the query asked for too much at once. These
-# cover the advisory that separates them. The conjunction itself is exercised
-# against a real backend in test_content_store_postgres.py; StubContentStore
-# matches on any term, so it cannot produce the collapse.
+# Keyword mode is conjunctive at the port: every term must appear somewhere in
+# the document, though not necessarily together in one passage (CAS-ADR-048).
+# An empty result therefore has two indistinguishable readings -- the vault
+# holds nothing, or the query asked for too much at once. These cover the
+# advisory that separates them. The conjunction itself is pinned per binding,
+# against Postgres in test_content_store_postgres.py and against the double in
+# test_stub_content_store.py; what these turn on is the sentence the service
+# attaches once a search has come back empty.
 
 
 async def test_keyword_multi_term_empty_result_warns(
