@@ -546,13 +546,23 @@ async def test_download_source_store_refusal_is_typed(
         )
         assert recipe.get("status") == "download_required", recipe
 
+        # Wrapped as the resolver wraps it (CAS-ADR-043): the translation lives
+        # on the binding, so a fake installed raw would reach the route untyped
+        # and prove only that this test bypassed the mechanism under test.
+        from sage.services.vault_source_errors import wrap_vault_source_store
+
         monkeypatch.setattr(
             "sage.mcp_init.resolve_stack_vault_source_store",
-            lambda *a, **k: _RefusingSourceStore(
-                tmp_path,
-                store_refusal(
-                    409, retryable=retryable, operation="stat source", target=recipe["transfer_id"]
-                ),
+            lambda *a, **k: wrap_vault_source_store(
+                _RefusingSourceStore(
+                    tmp_path,
+                    store_refusal(
+                        409,
+                        retryable=retryable,
+                        operation="stat source",
+                        target=recipe["transfer_id"],
+                    ),
+                )
             ),
         )
         resp = await client.get(

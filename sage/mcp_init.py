@@ -849,11 +849,24 @@ def resolve_stack_vault_source_store(
     injected-config paths, or a non-filesystem backend such as the cloud document
     store, which has no filesystem root), the binding resolves through the profile
     seam with the default root.
+
+    Both branches return the binding wrapped so its source-byte refusals reach
+    a caller as typed errors (CAS-ADR-043). Here rather than at each call site:
+    resolution is the one thing every caller of the store does, so wrapping it
+    covers them all, including a caller added later that would not have known
+    to translate. The config half is deliberately left untranslated -- see
+    :mod:`sage.services.vault_source_errors` for that scope decision.
     """
+    from sage.services.vault_source_errors import wrap_vault_source_store
+
     if vault_root is not None:
-        return build_stack_vault_source_store(stack_config, vault_root=vault_root)
+        return wrap_vault_source_store(
+            build_stack_vault_source_store(stack_config, vault_root=vault_root)
+        )
     resolved = resolve_stack_profile(stack_config)
-    return cast(VaultSourceStore, resolved.binding(profiles.VAULT_SOURCE_SEAM))
+    return wrap_vault_source_store(
+        cast(VaultSourceStore, resolved.binding(profiles.VAULT_SOURCE_SEAM))
+    )
 
 
 def resolve_stack_auth_validator(stack_config: SageCoreConfig) -> TokenValidator:

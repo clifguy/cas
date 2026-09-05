@@ -25,6 +25,8 @@ from sage.api.errors import (
     ForceReingestPathMismatchError,
     SourceFileNotFoundError,
     VaultSourcePathRefusedError,
+    VaultSourceStoreRefusedError,
+    VaultSourceStoreUnavailableError,
 )
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
@@ -36,10 +38,18 @@ _UNUSED_ROOT = Path("/unused/vault_root")
 
 
 def _patch_store(monkeypatch, store) -> None:
-    """Make the lazily-resolved stack vault-source store be ``store``."""
+    """Make the lazily-resolved stack vault-source store be ``store``.
+
+    Wrapped as the resolver wraps it (CAS-ADR-043), so a fake reaches the
+    services under the same translation a real binding does. Patching the
+    resolver replaces the wrap along with it; a fake installed raw would have
+    its refusals reach a service untyped, which no deployment produces.
+    """
+    from sage.services.vault_source_errors import wrap_vault_source_store
+
     monkeypatch.setattr(
         "sage.mcp_init.resolve_stack_vault_source_store",
-        lambda *args, **kwargs: store,
+        lambda *args, **kwargs: wrap_vault_source_store(store),
     )
 
 
@@ -383,6 +393,87 @@ async def test_vsbb_046_refusal_detail_carries_the_external_path_as_supplied(
         )
 
     assert excinfo.value.detail == {"source_path": supplied}
+
+
+class _RefusingRetainStore(FilesystemVaultSourceStore):
+    """A binding whose retention the store declines."""
+
+    def __init__(self, root, refusal):
+        super().__init__(root)
+        self._refusal = refusal
+
+    def retain_source(self, vault_id, storage_root, source_path, delivered_hash=None):
+        raise self._refusal
+
+
+@pytest.mark.parametrize(
+    ("retryable", "expected_error"),
+    [(False, VaultSourceStoreRefusedError), (True, VaultSourceStoreUnavailableError)],
+    ids=["not-retryable", "retryable"],
+)
+async def test_vsbb_047_store_refusal_on_retention_carries_the_callers_spelling(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch, retryable, expected_error
+):
+    """A refused *retention* names the source as the caller spelled it.
+
+    VSBB-045/046's counterpart for the other way a retention fails. Those pin
+    the path refusal, where the binding rejects the target; this pins the store
+    refusal, where the target was fine and the store declined the bytes. A
+    caller cannot act on either without knowing which of the paths it named was
+    refused, so both owe it the same spelling.
+
+    The translation is applied at the binding, which is called with a path the
+    caller never chose -- two-phase delivery stages the upload under this
+    process's temp tree and hands retention that copy. So the wrapper's own
+    answer is wrong here by construction, and the ingest corrects it.
+
+    Anti-coincidental-pass: three spellings, all distinct -- the caller's, the
+    staged path the binding is called with, and the vault-relative target the
+    store's own refusal names. Both wrong answers are asserted against, because
+    each is one a plausible implementation reaches for: the wrapper reports the
+    argument, and a re-label reading ``exc.target`` would report the store's.
+
+    Anti-coincidental-pass: run on both arms of the transience split. Correcting
+    the path means rebuilding the error, and a rebuild naming one of the two
+    classes outright rather than carrying the one the binding chose reports every
+    refused retention as permanent -- passing the non-retryable arm alone, and
+    telling a caller to escalate where the remedy was to retry.
+
+    Anti-coincidental-pass: the chain is asserted to reach the binding's own
+    refusal in one hop. Re-labelling means raising a second typed error, and a
+    rebuild chaining from the error it replaces rather than from that error's
+    cause satisfies every other assertion here while putting the store's own
+    text -- the only text naming what the store actually objected to -- two hops
+    from the exception a log walks.
+    """
+    from tests.helpers.store_refusal import store_refusal
+
+    staged = tmp_path / "staged" / "upload-xyz.md"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text("# body\n")
+
+    caller_spelling = "~/Documents/quarterly report.md"
+    store_target = "imports/quarterly report.md"
+    assert len({caller_spelling, str(staged), store_target}) == 3, (
+        "the fixture must separate the caller's spelling from both rivals"
+    )
+
+    refusal = store_refusal(403, retryable=retryable, operation="write source", target=store_target)
+    _patch_store(monkeypatch, _RefusingRetainStore(_UNUSED_ROOT, refusal))
+
+    with pytest.raises(expected_error) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(staged), source_type=SourceType.MARKDOWN),
+            caller_source=caller_spelling,
+        )
+
+    assert excinfo.value.detail["source_path"] == caller_spelling
+    assert excinfo.value.detail["source_path"] != str(staged)
+    assert excinfo.value.detail["source_path"] != store_target
+    # The binding's own decision still picks the code and names the operation.
+    assert excinfo.value.detail["operation"] == "write source"
+    assert excinfo.value.detail["store_status"] == 403
+    assert excinfo.value.__cause__ is refusal
 
 
 async def test_vsbb_045_refusal_detail_carries_a_relative_source_as_supplied(

@@ -220,6 +220,11 @@ def test_document_store_backend_ignores_vault_root(tmp_path, monkeypatch):
 
     The env override selects the document-store backend with a lazy client, so
     no Azure/managed-identity resolution occurs.
+
+    Asserted against the resolved store's binding rather than the store itself:
+    the resolver returns it wrapped in the source-byte refusal translation
+    (CAS-ADR-043), and the claim here is about which backend dispatch chose,
+    which the wrapper does not participate in.
     """
     monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
     cfg = SageCoreConfig()
@@ -227,8 +232,8 @@ def test_document_store_backend_ignores_vault_root(tmp_path, monkeypatch):
     via_none = mcp_init.resolve_stack_vault_source_store(cfg, vault_root=None)
     via_path = mcp_init.resolve_stack_vault_source_store(cfg, vault_root=tmp_path)
 
-    assert isinstance(via_none, DocumentStoreVaultSourceStore)
-    assert isinstance(via_path, DocumentStoreVaultSourceStore)
+    assert isinstance(via_none.binding, DocumentStoreVaultSourceStore)
+    assert isinstance(via_path.binding, DocumentStoreVaultSourceStore)
 
 
 # ---------------------------------------------------------------------------
