@@ -249,13 +249,25 @@ def test_images_pinned_to_immutable_tag() -> None:
 def test_registry_pull_authenticates_by_identity() -> None:
     """The registry pull authenticates by managed identity — a ``registries`` block
     binding the app identity, never a username/password credential.
+
+    Asserted on every container app, as the message says. The module declares two
+    with identical shapes, so read once over the module each check is satisfied by
+    whichever app still has it: either could lose its whole ``registries`` block
+    with the module still compiling and every gate green, and the image pull would
+    fail only at deploy. The credential absences stay module-wide — a stored
+    credential is wrong wherever it appears.
     """
     text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
-    assert re.search(r"registries:\s*\[", text), "each app must declare a registries block"
-    assert re.search(r"server:\s*acrLoginServer", text), (
-        "the registries block must point at the ACR login server"
-    )
-    assert "IdentityId" in text, "the registries block must authenticate by the app's identity"
+    apps = _resource_blocks(text, _CONTAINER_APP_TYPE)
+    assert len(apps) >= 2, f"expected >=2 container apps (SAGE + BFF); found {len(apps)}"
+    for i, app in enumerate(apps):
+        assert re.search(r"registries:\s*\[", app), f"app {i} must declare a registries block"
+        assert re.search(r"server:\s*acrLoginServer", app), (
+            f"app {i}'s registries block must point at the ACR login server"
+        )
+        assert re.search(r"identity:\s*\w*IdentityId\b", app), (
+            f"app {i}'s registries block must authenticate by that app's identity"
+        )
     assert "passwordSecretRef" not in text and "username:" not in text, (
         "the registry pull must use managed identity, not a stored credential"
     )
@@ -302,10 +314,22 @@ def test_acrpull_role_assignments_present() -> None:
 def test_sage_ingress_is_external_on_8000() -> None:
     """SAGE takes external container ingress on its service port 8000 (the APIM
     facade routes to its resulting FQDN).
+
+    ``external`` is asserted on every app, as the message says: read once over a
+    module declaring two, the check is satisfied by whichever app still has it, so
+    either could fall to internal ingress with every gate green. SAGE's port is
+    read from SAGE's own block rather than anywhere in the module.
     """
     text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
-    assert re.search(r"targetPort:\s*8000", text), "SAGE ingress must target port 8000"
-    assert re.search(r"external:\s*true", text), "the apps must take external ingress"
+    assert re.search(r"targetPort:\s*8000", _sage_app_block(text)), (
+        "SAGE ingress must target port 8000"
+    )
+    apps = _resource_blocks(text, _CONTAINER_APP_TYPE)
+    assert len(apps) >= 2, f"expected >=2 container apps (SAGE + BFF); found {len(apps)}"
+    internal = [i for i, app in enumerate(apps) if not re.search(r"external:\s*true", app)]
+    assert not internal, (
+        f"every app must take external ingress; app(s) {internal} of {len(apps)} do not"
+    )
 
 
 def test_bff_ingress_binds_custom_domain() -> None:

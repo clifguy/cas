@@ -485,29 +485,34 @@ def test_resource_blocks_detector_controls() -> None:
     anywhere in the module says nothing about which resource carries it, and a
     single match says nothing about the other three assignments.
 
-    The clean sibling is declared *after* the one carrying the marker: a helper
-    that finds a declaration but never truncates would report the marker on both,
-    and only this ordering catches that.
+    A plural slicer leaks *forward*: with the truncation gone, every block runs to
+    end of text and swallows each later declaration, while no block ever acquires
+    an earlier one's content. So the marker must sit on the *later* declaration
+    and the assertion must read the *earlier* block. The inverse arrangement —
+    marking the first block and asserting the second is clean — is green whether
+    the helper truncates or not, and is inert as a control.
     """
     sample = (
         "resource a 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n"
-        "  properties: {\n    principalType: 'ServicePrincipal'\n  }\n}\n"
+        "  properties: {\n    principalId: sagePrincipalId\n  }\n}\n"
         "resource b 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n"
-        "  properties: {\n    principalId: bffPrincipalId\n  }\n}\n"
+        "  properties: {\n    principalType: 'ServicePrincipal'\n  }\n}\n"
         "resource v 'Microsoft.KeyVault/vaults@2023-07-01' = {\n"
         "  properties: {\n    enableSoftDelete: true\n  }\n}\n"
     )
     blocks = _resource_blocks(sample, _ROLE_ASSIGNMENT_TYPE)
     assert len(blocks) == 2, f"expected one block per assignment; got {len(blocks)}"
-    assert "principalType" in blocks[0], "the first block must carry its own properties"
-    assert "principalType" not in blocks[1], (
-        "the second block must not borrow the first assignment's principalType — this is "
-        "the coincidence the every-assignment gate exists to defeat"
+    assert "sagePrincipalId" in blocks[0], "the first block must carry its own properties"
+    assert "principalType" not in blocks[0], (
+        "the first block must truncate at the next declaration, not borrow the second "
+        "assignment's principalType — the coincidence the every-assignment gate defeats"
     )
+    assert "principalType" in blocks[1], "the second block must carry its own properties"
+    # Cross-type contaminant: an assignment block must also stop before a
+    # declaration of a *different* type that follows it.
     assert "enableSoftDelete" not in blocks[1], (
         "an assignment block must truncate before the vault declaration"
     )
     vault = _resource_blocks(sample, _KV_TYPE)
     assert len(vault) == 1 and "enableSoftDelete" in vault[0]
-    assert "principalType" not in vault[0], "the vault block must not carry an assignment's posture"
     assert _resource_blocks(sample, "Microsoft.Absent/things") == []
