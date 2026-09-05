@@ -1,5 +1,11 @@
 import { apiGet, apiPost, apiPut } from './client';
-import type { VaultSummary, VaultStats, VaultConfig, UpdateConfigResponse } from './types';
+import type {
+  VaultSummary,
+  VaultStats,
+  VaultConfig,
+  DefaultVaultConfig,
+  UpdateConfigResponse,
+} from './types';
 
 export async function listVaults(): Promise<VaultSummary[]> {
   return apiGet<VaultSummary[]>('/sage_vaults');
@@ -18,6 +24,15 @@ export async function updateVaultConfig(
   sections: Partial<VaultConfig>,
 ): Promise<UpdateConfigResponse> {
   return apiPut<UpdateConfigResponse>(`/sage_vaults/${vaultId}/config`, sections);
+}
+
+// The scaffold a vault with this id would be created with. Served rather
+// than assembled here: the storage and brain roots resolve against the
+// server's vault root, and a second copy of the rest drifts from the first.
+export async function getDefaultVaultConfig(vaultId: string): Promise<DefaultVaultConfig> {
+  return apiGet<DefaultVaultConfig>(
+    `/sage_vaults/default-config?vault_id=${encodeURIComponent(vaultId)}`,
+  );
 }
 
 export async function createVault(config: Record<string, unknown>): Promise<VaultSummary> {

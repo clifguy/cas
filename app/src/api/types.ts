@@ -504,6 +504,15 @@ export interface VaultConfig {
   retrieval_health?: Record<string, unknown> | null;
 }
 
+// The creation-time scaffold, as served by the default-config endpoint. The
+// client fills the two identity fields the server cannot know and forwards
+// the rest untouched, so the type says only that much: a structural mirror
+// of the scaffold here would be the second copy that endpoint removes.
+export type DefaultVaultConfig = {
+  vault: { name: string; owner: string; [key: string]: unknown };
+  [key: string]: unknown;
+};
+
 export interface UpdateConfigResponse {
   status: string;
   vault_id: string;

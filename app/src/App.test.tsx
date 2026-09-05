@@ -14,6 +14,7 @@ const pending = <T,>(): Promise<T> => new Promise<T>(() => {});
 vi.mock('./api/vaults', () => ({
   listVaults: vi.fn(),
   createVault: vi.fn(() => pending()),
+  getDefaultVaultConfig: vi.fn(() => pending()),
   getVaultStats: vi.fn(() => pending()),
   getVaultConfig: vi.fn(() => pending()),
   updateVaultConfig: vi.fn(() => pending()),

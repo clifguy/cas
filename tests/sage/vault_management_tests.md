@@ -15,12 +15,21 @@ Design decisions encoded here:
 - **No delete tool.** Destroying vaults is out of scope for agentic callers.
 - **Single-shape create.** `create_vault` takes a
   single `config` argument that mirrors `CreateVaultRequest` exactly.
-  Callers that want a vault with sensible defaults call
-  `VaultRegistryService.get_default_config(vault_id, name, owner)` and
-  pass the result through; there is no convenience-kwargs branch on the
-  tool itself. The earlier two-mode design (convenience triple xor config
-  dict) was removed when the MCP-OpenAPI conformance gate (T-0059) flagged
-  the asymmetry, since the spec only ever declared the config-dict shape.
+  Callers that want a vault with sensible defaults obtain the scaffold
+  separately and pass the result through; there is no convenience-kwargs
+  branch on the tool itself. The earlier two-mode design (convenience
+  triple xor config dict) was removed when the MCP-OpenAPI conformance
+  gate (T-0059) flagged the asymmetry, since the spec only ever declared
+  the config-dict shape.
+- **The scaffold is served, not restated.** An in-process caller reaches
+  `VaultRegistryService.get_default_config(vault_id, name, owner)`
+  directly; an off-process one reads
+  `GET /sage_vaults/default-config?vault_id=...`, which returns the same
+  document with `vault.name` and `vault.owner` left empty. Single-shape
+  create is unchanged by this — the scaffold is still assembled before
+  the call, never synthesized inside it. What changed is that a caller
+  with no Python seam no longer has to carry its own copy of the
+  scaffold, and a copy is a thing that drifts.
 - **Echo-back on create.** The tool return value includes the full written
   config. This eliminates an extra read round-trip when an agent wants to
   follow up with `update_vault_config` to adjust specific sections.
@@ -82,9 +91,9 @@ vaults-root override in place so the test does not touch the real
 - A subsequent `list_vaults()` includes the new vault.
 - The file `vault_config.yaml` exists at the vault directory and matches the echoed config.
 
-**Rationale:** Agents that just want a scratch vault build the dict via
-the default-config helper rather than hand-assembling the nested
-structure; the helper is the seam, not a tool-level shortcut. Keeping
+**Rationale:** Agents that just want a scratch vault build the dict from
+the default-config scaffold rather than hand-assembling the nested
+structure; the scaffold is the seam, not a tool-level shortcut. Keeping
 the MCP signature symmetric with the OpenAPI `CreateVaultRequest`
 preserves the substrate-as-source-of-truth invariant.
 
@@ -375,3 +384,38 @@ both with body renaming the vault.
 
 **Rationale:** `force` is ignored when there is nothing destructive to
 force.
+
+### TEST-SAGE-VM-REST-004: default-config read serves the creation scaffold
+
+**Artifact:** `sage/api/routers/vaults.py`
+**Category:** rest_api, sage_api
+
+**Decision:** `GET /sage_vaults/default-config?vault_id=...` returns the
+document `VaultRegistryService.get_default_config` builds for that id,
+with `vault.name` and `vault.owner` empty. The vault need not exist and
+none is created: the id is an argument to the scaffold, not a lookup
+key, so the route resolves nothing through the vault registry. A
+malformed id is rejected on shape at request binding.
+
+**Precondition:** No vault `brand_new` is registered.
+
+**Input:** `GET /sage_vaults/default-config?vault_id=brand_new`, then
+the same with `vault_id=Not-A-Vault!`.
+
+**Expected:**
+- First call returns 200 with a body equal to
+  `VaultRegistryService.get_default_config("brand_new")` — compared
+  against the builder, never against a config transcribed into the test.
+- `vault.id == "brand_new"`; `vault.name` and `vault.owner` are `""`;
+  `storage_root` ends in `/brand_new/sources`.
+- Second call returns 400 with `code == "invalid_vault_id"`, and
+  omitting the parameter entirely reports a different code.
+- Filling the two identity fields and posting the result to
+  `POST /sage_vaults` returns 201, and the stored config's lifecycle
+  transitions match the served ones position for position.
+
+**Rationale:** The scaffold had two copies, one of them a TypeScript
+literal in the web client, and they drifted. Serving it leaves one. The
+round-trip assertion is the load-bearing one: it holds the served
+document to being directly postable, which is the only property a
+client that no longer knows the scaffold's shape can rely on.

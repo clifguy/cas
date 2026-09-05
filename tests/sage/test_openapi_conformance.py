@@ -130,7 +130,18 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
 # binding lives inside the one-time token, and the recipe embeds the URL
 # verbatim, so the paths stay top-level by design. They remain part of
 # the SAGE Core API surface.
-SAGE_NON_VAULT_PATHS: set[str] = {"/upload", "/download/{transfer_id}"}
+#
+# The default-config read is pre-vault rather than cross-vault: it serves
+# the scaffold a vault would be created with, so there is no vault to scope
+# it to and a {vault_id} segment would promise a resolution the operation
+# must not perform. It sits under /sage_vaults/ all the same, because the
+# CAS Application reaches SAGE through a backend-for-frontend that proxies
+# that subtree and nothing else.
+SAGE_NON_VAULT_PATHS: set[str] = {
+    "/upload",
+    "/download/{transfer_id}",
+    "/sage_vaults/default-config",
+}
 
 # Prefix every vault-scoped path carries. The vault collection itself sits
 # one level up by construction (list and create), and SAGE_NON_VAULT_PATHS

@@ -1,6 +1,7 @@
 """Vault listing, statistics, hash-check, and configuration endpoints.
 
 GET /sage_vaults -- list all configured vaults (BE-001, BE-002)
+GET /sage_vaults/default-config -- the scaffold a new vault would be created with
 GET /sage_vaults/{vault_id}/stats -- vault statistics (BE-003 through BE-006)
 POST /sage_vaults/{vault_id}/hash-check -- bulk hash check (BE-007 through BE-009)
 GET /sage_vaults/{vault_id}/config -- read vault configuration
@@ -38,6 +39,29 @@ async def list_vaults(
 ) -> list[VaultSummary]:
     """Return all vaults registered with the running SAGE instance."""
     return await service.list_vaults()
+
+
+# Declared ahead of the vault-scoped routes: the literal segment must be
+# matched before any future /sage_vaults/{vault_id} pattern could shadow it.
+@router.get(
+    "/sage_vaults/default-config",
+    operation_id="get_default_vault_config",
+    summary="Return the default configuration a new vault would be created with.",
+)
+async def get_default_vault_config(
+    vault_id: VaultIdStr,
+    service: VaultRegistryService = Depends(get_vault_registry_service),
+) -> dict:
+    """Return the default vault configuration scaffold for a vault id.
+
+    The scaffold precedes the vault: no vault with this id need exist, and
+    none is created. The id is required because it shapes the storage and
+    brain roots, which resolve against the server's vault root rather than
+    anything a caller can know. The display name and owner come back empty
+    for the caller to fill before posting the result to the create-vault
+    endpoint.
+    """
+    return service.get_default_config(vault_id)
 
 
 @router.get(
