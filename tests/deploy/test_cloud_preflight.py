@@ -1948,8 +1948,10 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
 # --------------------------------------------------------------------------- #
 #: One case per inventoried interpreter, named by the version it proves rather
 #: than by a filesystem path that says nothing about the floor. A label can repeat
-#: -- two installs may report the same major.minor -- so a repeat is suffixed by
-#: position, keeping every case id distinct without renaming the first of a pair.
+#: -- two installs may report the same major.minor -- so when it does, *every*
+#: case sharing it takes a positional suffix (``bash5.2#0``, ``bash5.2#1``), which
+#: keeps the ids distinct and keeps the pair visibly a pair. A lone label is left
+#: bare, so the ordinary single-interpreter host reads as ``bash3.2``.
 _BASH_BIN_PARAMS: Final[list[pytest.param]] = [
     pytest.param(
         path,
@@ -2177,24 +2179,30 @@ def test_vault_load_does_not_trim_whitespace_around_ids(expected: str, bash_bin:
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
-@pytest.mark.parametrize("expected", ["ca", "as"], ids=["prefix", "suffix"])
+@pytest.mark.parametrize("expected", ["ca", "as", "Test"], ids=["prefix", "suffix", "name"])
 def test_vault_load_requires_a_whole_id_not_a_substring(expected: str, bash_bin: str) -> None:
-    """Neither a prefix nor a suffix of an advertised id satisfies the gate.
+    """Only a whole advertised *id* satisfies the gate.
 
-    ``ca`` and ``as`` are a prefix and a suffix of the advertised ``cas``. The
-    lookup pattern bounds the id on the left with ``"id"…:"`` and on the right
-    with a closing quote, so the comparison is against the whole JSON value rather
-    than any substring of it. Both ends are exercised because each is held by a
-    different part of the pattern and each fails independently -- measured, not
-    assumed: dropping the closing quote admits the prefix while the suffix case
-    stays green, and reducing the pattern to a bare ``$v"`` admits the suffix while
-    the prefix case stays green.
+    Three shapes that must not be credited, each pinning a different part of the
+    lookup pattern, and each verified by the mutation that admits it:
 
-    Note which rival the suffix case does *not* exclude. Dropping only the opening
-    quote (``…:[[:space:]]*$v"``) still leaves the literal quote that opens the
-    advertised value in the way, so ``as"`` cannot match ``"cas"`` and every
-    scenario here stays green. That mutation is unpinned by this suite; what the
-    suffix case buys is the left anchor as a whole, not that one character.
+    * ``ca``, a prefix of the advertised ``cas`` -- held by the closing quote.
+      Dropping it admits the prefix while the other two shapes stay green.
+    * ``as``, a suffix of the same id -- held by the left bound as a whole.
+      Reducing the pattern to a bare ``$v"`` admits the suffix while the prefix
+      stays green.
+    * ``Test``, which is no id at all: it is the *name* of the advertised ``test``
+      vault. Held by the pattern being keyed on ``"id"``. A rival matching any
+      quoted value, ``grep -qE "\\"$v\\""``, passes every other scenario in this
+      section and credits this expectation through ``"name":"Test"`` -- so without
+      this shape nothing pins that the gate reads ids rather than whatever the
+      registry happens to quote.
+
+    One rival is deliberately *not* claimed as excluded by any single shape here.
+    Dropping only the opening quote (``…:[[:space:]]*$v"``) leaves a pattern that
+    cannot match any JSON string value, since the quote opening the advertised
+    value still sits between the colon and the id; it is caught by the happy-path
+    and null-element scenarios above rather than by this one.
     """
     with serve(_green) as url:
         proc = _run(
