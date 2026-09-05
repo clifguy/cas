@@ -23,7 +23,6 @@ tests pure text arithmetic with no inference runtime.
 from types import SimpleNamespace
 
 from sage.adapters.abstraction_utils import TypeRestatingOpener, find_type_restating_opener
-from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from scripts.audit_abstraction_glosses import AuditEntry, build_entries
 from scripts.audit_abstraction_type_openers import (
     TypeOpenerAuditFinding,
@@ -297,10 +296,7 @@ class TestAuditTypeOpenerEntries:
             lifecycle_status="active",
             doc_type="adr",
         )
-        chunks = [
-            SimpleNamespace(heading_path=SYNTHETIC_HEADER_HEADING_PATH, content="Header."),
-            SimpleNamespace(heading_path=["Body"], content="Body text."),
-        ]
+        chunks = [SimpleNamespace(heading_path=["Body"], content="Body text.")]
 
         class _GraphStore:
             async def list_all_documents(self):

@@ -19,7 +19,7 @@ import pytest
 
 import sage.utils.abstraction_benchmark as benchmark_module
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
-from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, AbstractionProvider, Chunk
+from sage.adapters.interfaces import AbstractionProvider, Chunk
 from sage.config import VaultAbstractionConfig as AbstractionConfig
 from sage.utils import abstraction_benchmark, unified_memory
 from sage.utils.abstraction_benchmark import (
@@ -674,12 +674,6 @@ async def test_harness_does_not_invoke_ingestion_reabstract():
         f"doc-{i}": [
             Chunk(
                 document_id=f"doc-{i}",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                content="header chunk that should be filtered out",
-                chunk_index=0,
-            ),
-            Chunk(
-                document_id=f"doc-{i}",
                 heading_path="Body",
                 content=f"body of doc {i}.",
                 chunk_index=1,
@@ -713,9 +707,10 @@ async def test_harness_does_not_invoke_ingestion_reabstract():
     services.ingestion_service.reabstract.assert_not_called()
     services.ingestion_service._reabstract_background.assert_not_called()
 
-    # Synthetic-header chunks must be filtered out before joining.
+    # The passage surface holds authored passages only (CAS-ADR-049), so the
+    # benchmark's input is the body text and nothing else.
     for call in provider.calls:
-        assert "header chunk that should be filtered out" not in call["text"]
+        assert call["text"].startswith("body of doc ")
 
     # Result captures one record per doc.
     assert isinstance(result, BenchmarkResult)

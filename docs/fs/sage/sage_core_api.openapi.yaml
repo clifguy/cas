@@ -2270,9 +2270,8 @@ paths:
         `heading_not_found` error response.
 
 
-        The synthetic header chunk is excluded from the
-        result, so heading paths in this response are exactly those a
-        caller may pass to `read_section`.
+        Every returned path is an authored heading, so heading paths in
+        this response are exactly those a caller may pass to `read_section`.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -4655,12 +4654,14 @@ components:
         matched_chunk_count:
           type: integer
           nullable: true
-          minimum: 1
+          minimum: 0
           description: >-
-            Number of chunks from this document that matched the query.
+            Number of passages of this document that matched the query.
             Present in semantic and keyword modes. A document with many
-            matching chunks is a stronger hit than one with a single match
-            at a similar peak score. Useful as a reranking signal.
+            matching passages is a stronger hit than one with a single match
+            at a similar peak score. Useful as a reranking signal. Zero when
+            the document matched through its document-level text alone, which
+            is not a passage.
 
     EdgeHit:
       type: object
@@ -6539,7 +6540,7 @@ components:
       description: >-
         Response body for the list-headings endpoint; returns the distinct
         heading paths of a document in document order. Body content is not
-        included. The synthetic header chunk is excluded.
+        included; every path is an authored heading.
       properties:
         document_id:
           type: string

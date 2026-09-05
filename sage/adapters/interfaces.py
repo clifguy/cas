@@ -19,11 +19,13 @@ from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 
-# Reserved heading_path marker for the per-document synthetic header chunk
-# carrying title, source filename stem, tags, semantic_abstract, and
-# case-split identifier tokens (F9). Body chunks never use this
-# marker; backfill and stage-3 refresh match on it via equality.
-SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
+# Legacy marker, retained for migration only. It identified a per-document
+# synthetic header row on the passage surface, carrying the title, source
+# filename stem, tags, semantic abstract, and case-split identifier tokens.
+# Document-level text now has a surface of its own (CAS-ADR-049) and nothing
+# writes this marker; the migration matches on it to relocate rows a vault
+# provisioned before that change still holds.
+LEGACY_DOCUMENT_HEADER_HEADING_PATH = "__document_header__"
 
 
 class KeywordQueryParse(NamedTuple):
@@ -72,6 +74,35 @@ class Chunk:
     content: str
     embedding: list[float] | None = None
     chunk_index: int = 0
+    doc_type: str | None = None
+    lifecycle_status: str | None = None
+    project: str | None = None
+
+
+@dataclass
+class DocumentSurface:
+    """Document-level text for one document, split by provenance.
+
+    CAS-ADR-049 carries document-level text on a retrieval surface of its own
+    and makes matchability a function of provenance. The split is expressed as
+    two fields rather than one blob so a binding cannot accidentally admit
+    derived text to a match:
+
+    ``matchable``
+        Authored text -- the document's title and tags, together with the
+        normalized renderings that let a caller reach them without reproducing
+        the author's separators or word boundaries. May satisfy a match.
+
+    ``orienting``
+        Derived text -- the generated semantic abstract, the source filename
+        stem, and that stem's expansion. Contributes to ranking and to
+        orientation surfaces, and never satisfies a match.
+    """
+
+    document_id: str
+    matchable: str
+    orienting: str
+    embedding: list[float] | None = None
     doc_type: str | None = None
     lifecycle_status: str | None = None
     project: str | None = None
@@ -139,19 +170,54 @@ class ContentStore(ABC):
         """Store embedded chunks for a document."""
 
     @abstractmethod
-    async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
-        """Replace the synthetic document-header chunk for a document.
+    async def upsert_document_surface(self, surface: DocumentSurface) -> None:
+        """Write a document's document-level text, replacing any prior row.
 
-        Targeted delete-where + insert + FTS rebuild scoped to the chunk
-        with ``heading_path == SYNTHETIC_HEADER_HEADING_PATH``. Body chunks
-        for the document are not touched. Used by Stage 3 abstraction
-        completion and reabstract to refresh the header once
-        ``semantic_abstract`` is populated.
+        Scoped to the document surface; the document's passages are not
+        touched. Called at indexing time and again once the generated abstract
+        is populated, so the derived half stays current without disturbing
+        authored passages.
         """
 
     @abstractmethod
+    async def remove_document_surface(self, document_id: str) -> None:
+        """Remove a document's document-level row (idempotent)."""
+
+    @abstractmethod
     async def remove_document(self, document_id: str) -> None:
-        """Remove all chunks for a document (used in force re-ingestion)."""
+        """Remove a document's passages and its document surface (idempotent).
+
+        Used in force re-ingestion. Both surfaces are cleared, so a re-ingest
+        cannot leave a stale document-level row behind a rebuilt passage set.
+        """
+
+    # -- migration off the single-surface layout (CAS-ADR-049) ---------------
+    # A vault provisioned before document-level text had a surface of its own
+    # still holds a synthetic header row per document on the passage surface,
+    # and heading paths rooted at the document title. These three exist to
+    # relocate that state, and have no caller outside the migration.
+
+    @abstractmethod
+    async def legacy_document_header_rows(self) -> list[tuple[str, list[float] | None]]:
+        """Return ``(document_id, embedding)`` for each legacy header row.
+
+        The embedding is carried forward to the relocated document-level row
+        so a migration need not re-embed the corpus.
+        """
+
+    @abstractmethod
+    async def delete_legacy_document_header_rows(self) -> int:
+        """Delete every legacy header row; returns the number removed."""
+
+    @abstractmethod
+    async def strip_heading_path_root(self, document_id: str, root: str) -> int:
+        """Drop ``root`` from the front of this document's heading paths.
+
+        Only paths whose first element is exactly ``root`` are rewritten, and a
+        path equal to ``root`` alone becomes empty. Returns the number of rows
+        changed, so a caller can tell a repair from a no-op. Idempotent: a
+        second call finds no path still rooted at ``root``.
+        """
 
     @abstractmethod
     async def search_semantic(

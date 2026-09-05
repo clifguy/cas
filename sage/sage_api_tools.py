@@ -1872,8 +1872,8 @@ def register_sage_tools(
         Replaces the antipattern of calling read_section with a
         deliberately wrong heading path to harvest ``available_headings``
         from the resulting ``heading_not_found`` error response. The
-        synthetic header chunk is excluded, so the returned paths
-        are exactly those a caller may pass to read_section.
+        Every returned path is an authored heading, so the returned
+        paths are exactly those a caller may pass to read_section.
 
         Args:
             vault_id: Target vault identifier.

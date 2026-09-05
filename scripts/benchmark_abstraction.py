@@ -59,7 +59,6 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services, load_stack_config_or_default
@@ -119,7 +118,7 @@ async def _build_catalog(services) -> list[CatalogEntry]:
         if doc.doc_type is None:
             continue
         chunks = await services.content_store.get_all_chunks(doc.id)
-        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        body_chunks = list(chunks)
         length_bytes = sum(len(c.content) for c in body_chunks)
         if length_bytes == 0:
             continue

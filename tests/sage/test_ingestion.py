@@ -16,10 +16,12 @@ from pathlib import Path
 
 import pytest
 
+from sage.adapters.interfaces import Chunk, DocumentSurface
 from sage.api.errors import DuplicateContentError, ForceReingestPathMismatchError
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
+from sage.services.document_surface import compose_document_surface
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -711,131 +713,152 @@ def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
     assert all(not c.content.startswith("Title:") for c in chunks)
 
 
-def test_build_header_chunk_content_includes_all_identity_fields(ingestion_service):
-    """The synthetic header chunk body covers title, source filename
-    stem, tags, semantic_abstract, and a case-split identifier-token
-    line."""
-    from sage.services.ingestion import IngestionService
-
+def _document_for_surface(
+    *,
+    title: str,
+    tags: list[str],
+    semantic_abstract: str | None,
+    source_path: str,
+) -> Document:
+    """A stored document record carrying only what surface composition reads."""
     now = datetime.now(timezone.utc)
-    doc = Document(
-        id=_id("test_doc"),
-        title="ClinicalNormalization",
+    return Document(
+        id="00000001_doc",
+        title=title,
         source_type=SourceType.MARKDOWN,
-        source_path="imports/EXAMPLE_PV07_ClinicalNormalization_v1_0.md",
+        source_path=source_path,
         lifecycle_status="active",
-        source_content_hash=_sha("test"),
-        adapter_version="0.1.0",
-        created_by="test",
+        source_content_hash=f"sha256:{0:064x}",
+        adapter_version="1",
+        created_by="t",
         created_at=now,
-        last_modified_by="test",
+        last_modified_by="t",
         updated_at=now,
-        tags=["PV07"],
-        semantic_abstract="A canonical definition of clinical normalization.",
+        doc_type="adr",
+        tags=tags,
+        semantic_abstract=semantic_abstract,
     )
 
-    content = IngestionService._build_header_chunk_content(doc)
 
-    assert "Title: ClinicalNormalization" in content
-    assert "Source: EXAMPLE_PV07_ClinicalNormalization_v1_0" in content
-    assert "Tags: PV07" in content
-    assert "Abstract: A canonical definition of clinical normalization." in content
-    assert "Identifier tokens:" in content
-    # CamelCase split: ClinicalNormalization → clinical, normalization
-    assert "clinical" in content
-    assert "normalization" in content
+def test_document_surface_splits_authored_text_from_derived(ingestion_service):
+    """Composition routes each kind of text to the half that governs it.
+
+    CAS-ADR-049 makes matchability a function of provenance. The split is a
+    property of the composed row rather than of any query, so it is asserted
+    on the row itself: the title and tags reach ``matchable``, the generated
+    abstract and the source filename stem reach ``orienting``, and neither
+    crosses.
+    """
+    doc = _document_for_surface(
+        title="Portfolio Dashboard",
+        tags=["retrieval", "content-store"],
+        semantic_abstract="A generated summary sentence.",
+        source_path="imports/2026-01-01_quarterly-review.md",
+    )
+
+    surface = compose_document_surface("00000001_doc", doc)
+
+    assert "Portfolio" in surface.matchable and "Dashboard" in surface.matchable
+    assert "retrieval" in surface.matchable and "content" in surface.matchable
+    assert "generated summary" in surface.orienting
+    assert "quarterly-review" in surface.orienting
+
+    assert "generated summary" not in surface.matchable, (
+        "a generated abstract is derived text and must not become matchable"
+    )
+    assert "quarterly" not in surface.matchable, (
+        "a filename is an artifact of how the document arrived, not content"
+    )
 
 
-def test_build_header_chunk_content_empty_abstract_when_unset(ingestion_service):
-    """Header chunk shape stays stable when semantic_abstract is None;
-    Stage 3 rebuilds the chunk once abstraction completes."""
-    from sage.services.ingestion import IngestionService
+def test_document_surface_expands_compound_identifiers_in_authored_text_only(
+    ingestion_service,
+):
+    """An expansion inherits the provenance of the text it expands.
 
-    now = datetime.now(timezone.utc)
-    doc = Document(
-        id=_id("test_doc"),
-        title="PortfolioDashboard_Template",
-        source_type=SourceType.XLSX,
-        source_path="imports/2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3.xlsx",
-        lifecycle_status="active",
-        source_content_hash=_sha("test"),
-        adapter_version="0.1.0",
-        created_by="test",
-        created_at=now,
-        last_modified_by="test",
-        updated_at=now,
-        tags=["REF", "template"],
+    A case-split of the title is still the title, so it belongs with the
+    authored half. A case-split of the filename stem is still the filename,
+    so it stays derived -- otherwise normalization would quietly hand derived
+    text the matchability its raw form is denied.
+    """
+    doc = _document_for_surface(
+        title="PortfolioDashboard",
+        tags=[],
+        semantic_abstract="",
+        source_path="imports/QuarterlyReview.md",
+    )
+
+    surface = compose_document_surface("00000001_doc", doc)
+
+    assert "Portfolio" in surface.matchable and "Dashboard" in surface.matchable
+    assert "Quarterly" in surface.orienting and "Review" in surface.orienting
+    assert "Quarterly" not in surface.matchable
+    assert "Review" not in surface.matchable
+
+
+def test_document_surface_is_stable_when_the_abstract_is_unset(ingestion_service):
+    """A document indexed before abstraction still composes a valid row.
+
+    Stage 2 writes this row while ``semantic_abstract`` is still unset, so the
+    composition has to tolerate it rather than depend on Stage 3 having run.
+    """
+    doc = _document_for_surface(
+        title="Some Title",
+        tags=["alpha"],
         semantic_abstract=None,
+        source_path="imports/some-title.md",
     )
 
-    content = IngestionService._build_header_chunk_content(doc)
+    surface = compose_document_surface("00000001_doc", doc)
 
-    assert "Abstract: \n\n" in content  # blank abstract line, stable shape
-    # CamelCase split unblocks BM25 'dashboard' query
-    assert "portfolio" in content
-    assert "dashboard" in content
-    assert "template" in content
+    assert surface.matchable, "authored text is available before abstraction"
+    assert "some-title" in surface.orienting
+    assert surface.orienting.strip() == surface.orienting.strip()
 
 
-def test_build_header_chunk_marker_and_index(ingestion_service):
-    """The standalone synthetic header chunk uses the reserved heading
-    path marker and a chunk_index that sorts before body chunks."""
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+async def test_abstraction_input_cannot_carry_a_generated_abstract(ingestion_service):
+    """Stage 3 cannot be fed its own prior output.
 
-    now = datetime.now(timezone.utc)
-    doc = Document(
-        id=_id("test_doc"),
-        title="HeaderMarkerProbe",
-        source_type=SourceType.MARKDOWN,
-        source_path="imports/HeaderMarkerProbe.md",
-        lifecycle_status="active",
-        source_content_hash=_sha("test"),
-        adapter_version="0.1.0",
-        created_by="test",
-        created_at=now,
-        last_modified_by="test",
-        updated_at=now,
-        doc_type="ticket",
-        tags=["probe"],
+    While document-level text shared the passage surface, a single filter at
+    one call site was the only thing keeping a document's own abstract out of
+    the text used to regenerate it; drop the filter and every reabstraction
+    after the first read its predecessor. The guard is now structural -- the
+    abstract is not a passage, and this method reads passages -- so it holds
+    without anything remembering to exclude it.
+
+    Asserted by reading what the abstraction stage would receive rather than
+    by trusting the absence of a filter, so a future change that puts derived
+    text back among the passages fails here.
+    """
+    store = ingestion_service._content_store
+    document_id = "00000001_doc"
+    await store.index_chunks(
+        document_id,
+        [
+            Chunk(
+                document_id=document_id,
+                heading_path="Body",
+                content="The authored body of the document.",
+                chunk_index=0,
+            )
+        ],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id=document_id,
+            matchable="Some Title",
+            orienting="A previously generated abstract sentence.",
+        )
     )
 
-    chunk = ingestion_service._build_header_chunk(doc.id, doc)
+    passages = await store.get_all_chunks(document_id)
+    abstraction_input = "\n\n".join(chunk.content for chunk in passages)
 
-    assert chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH
-    assert chunk.chunk_index == -1
-    assert chunk.doc_type == "ticket"
-    assert chunk.document_id == doc.id
-
-
-def test_case_split_identifiers_handles_camelcase_and_underscores():
-    """_case_split_identifiers lowercases, splits CamelCase compounds and
-    underscored compounds, and dedupes."""
-    from sage.services.ingestion import IngestionService
-
-    out = IngestionService._case_split_identifiers(
-        "PortfolioDashboard_Template_v3",
-        "NPScopeManifest_Template",
-        "XLSX",
-        "PV07",
+    assert "authored body" in abstraction_input, "positive control: passages are read"
+    assert "previously generated abstract" not in abstraction_input, (
+        "the abstraction input reached derived text; the derivation-loop guard "
+        "is no longer structural"
     )
-    tokens = set(out.split())
-    # CamelCase splits
-    assert {"portfolio", "dashboard", "template", "scope", "manifest"} <= tokens
-    # All-uppercase and mixed-alphanum tokens pass through (lowercased)
-    assert "xlsx" in tokens
-    assert "pv07" in tokens
-    # Version token
-    assert "v3" in tokens
-    # No duplicates: 'template' appears in both source strings but once in output
-    assert out.split().count("template") == 1
-
-
-def test_case_split_identifiers_empty_sources_returns_empty():
-    """No sources → empty string."""
-    from sage.services.ingestion import IngestionService
-
-    assert IngestionService._case_split_identifiers() == ""
-    assert IngestionService._case_split_identifiers("", "  ", None or "") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -2978,15 +3001,14 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     )
 
     chunks = await stub_content_store.get_all_chunks(result.document.id)
-    # Body chunks carry the ATX heading line plus body content;
-    # the synthetic header chunk lives separately under
-    # heading_path SYNTHETIC_HEADER_HEADING_PATH.
+    # Passages carry the ATX heading line plus body content; document-level
+    # text lives on its own surface and is not among them (CAS-ADR-049).
     assert len(chunks) >= 2
     second = next(c for c in chunks if c.heading_path == second_heading)
     assert second.content == f"# {second_heading}\n\n{body_second}", (
         "Stored chunk.content must be ATX heading line + body; got: " + repr(second.content)
     )
-    # Synthetic-header preamble fields must not leak into body chunks.
+    # Document-level preamble fields must not leak into passages.
     assert not second.content.startswith("Title:")
 
 
@@ -3048,9 +3070,8 @@ async def test_empty_content_heading_still_emits_chunk(
     chunks = await stub_content_store.get_all_chunks(result.document.id)
     by_path = {c.heading_path: c for c in chunks}
     assert "EMPTY PARENT" in by_path
-    # Body chunks carry projected content only — the synthetic header
-    # chunk lives under SYNTHETIC_HEADER_HEADING_PATH and does
-    # not touch the per-heading chunks.
+    # Passages carry projected content only; document-level text lives on
+    # its own surface and does not touch the per-heading chunks.
     parent = by_path["EMPTY PARENT"]
     assert "Some body content" not in parent.content, (
         "Body of FIRST CHILD must not leak into the EMPTY PARENT chunk."

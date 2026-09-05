@@ -201,6 +201,39 @@ CREATE TABLE IF NOT EXISTS chunks (
 """
 
 # ---------------------------------------------------------------------------
+# Document surface (CAS-ADR-049): document-level text as its own retrieval
+# surface, one row per document, carrying the same filter columns as chunks so
+# a caller's predicates apply identically to both.
+# ---------------------------------------------------------------------------
+# Provenance is expressed as two generated columns rather than as a convention
+# each consumer must remember. ``matchable`` holds authored text -- the title
+# and tags, plus their normalized renderings -- and is the only column the
+# match arm may read, so derived text cannot satisfy a caller's term.
+# ``orienting`` holds derived text -- the generated abstract, the source
+# filename stem, and that stem's expansion -- and reaches only ``tsv_rank``, so
+# it still ranks and orients. A consumer added later cannot forget the rule:
+# the match arm has no column to read derived text from.
+
+DOCUMENT_SURFACE_TABLE = f"""\
+CREATE TABLE IF NOT EXISTS document_surface (
+    document_id text NOT NULL,
+    matchable text NOT NULL,
+    orienting text NOT NULL,
+    embedding vector({EMBEDDING_DIM}),
+    doc_type text,
+    lifecycle_status text,
+    project text,
+    tsv_match tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', matchable), 'A')
+    ) STORED,
+    tsv_rank tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', matchable), 'A')
+        || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', orienting), 'D')
+    ) STORED
+);
+"""
+
+# ---------------------------------------------------------------------------
 # Indexes
 # ---------------------------------------------------------------------------
 
@@ -249,6 +282,14 @@ CONTENT_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_chunks_tsv_gin ON chunks USING GIN (tsv);",
     "CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw "
     "ON chunks USING hnsw (embedding vector_cosine_ops);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_document_surface_document_id "
+    "ON document_surface(document_id);",
+    "CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_match_gin "
+    "ON document_surface USING GIN (tsv_match);",
+    "CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_rank_gin "
+    "ON document_surface USING GIN (tsv_rank);",
+    "CREATE INDEX IF NOT EXISTS idx_document_surface_embedding_hnsw "
+    "ON document_surface USING hnsw (embedding vector_cosine_ops);",
 )
 
 _TABLES: tuple[str, ...] = (
@@ -258,6 +299,7 @@ _TABLES: tuple[str, ...] = (
     STAGING_EDGES_TABLE,
     DOCUMENT_TAGS_TABLE,
     CHUNKS_TABLE,
+    DOCUMENT_SURFACE_TABLE,
 )
 
 # Columns added to a table after its first release. ``CREATE TABLE IF NOT

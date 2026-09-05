@@ -3247,10 +3247,12 @@ class DiscoverHit(BaseModel):
     matched_chunk_count: int | None = Field(
         default=None,
         description=(
-            "Number of chunks from this document that matched the query. "
+            "Number of passages of this document that matched the query. "
             "Present in semantic and keyword modes. A document with many "
-            "matching chunks is a stronger hit than one with a single match "
-            "at a similar peak score. Useful as a reranking signal."
+            "matching passages is a stronger hit than one with a single match "
+            "at a similar peak score. Useful as a reranking signal. Zero when "
+            "the document matched through its document-level text alone, which "
+            "is not a passage."
         ),
     )
 

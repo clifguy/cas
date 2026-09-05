@@ -52,6 +52,7 @@ from sage.models.schemas import (
     Tier3UniquenessCollision,
     canonicalize_sha256,
 )
+from sage.services.document_surface import compose_document_surface
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
@@ -176,6 +177,14 @@ BACKFILL_STALE_PIPELINE_ERROR = "clear_pipeline_error_on_successful_terminal_sta
 # Name reported in MigrationReport.backfills_applied when the migration reduced
 # stored source paths to the single spelling ingest records.
 BACKFILL_NON_CANONICAL_SOURCE_PATH = "normalize_non_canonical_source_paths"
+
+# Name reported in MigrationReport.backfills_applied when the migration moved a
+# vault's document-level text off the passage surface onto its own.
+BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
+
+# Name reported in MigrationReport.backfills_applied when the migration dropped
+# the document title from the front of a document's passage heading paths.
+BACKFILL_HEADING_PATH_TITLE_ROOT = "strip_document_title_from_passage_heading_paths"
 
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
@@ -357,6 +366,12 @@ class MaintenanceService:
         if normalized:
             backfills_applied.append(BACKFILL_NON_CANONICAL_SOURCE_PATH)
 
+        relocated, stripped = await self._migrate_to_document_surface()
+        if relocated:
+            backfills_applied.append(BACKFILL_DOCUMENT_SURFACE)
+        if stripped:
+            backfills_applied.append(BACKFILL_HEADING_PATH_TITLE_ROOT)
+
         activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
@@ -367,6 +382,66 @@ class MaintenanceService:
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
         )
+
+    async def _migrate_to_document_surface(self) -> tuple[int, int]:
+        """Move document-level text onto its own surface (CAS-ADR-049).
+
+        A vault provisioned before that decision holds two pieces of legacy
+        state: a synthetic header row per document on the passage surface, and
+        -- for a source format whose title is also its top-level heading --
+        passage heading paths rooted at the document title. Both are repaired
+        here.
+
+        The pass is driven by the legacy header rows rather than by the
+        document catalog, because their presence is exactly the condition
+        being repaired. Each document's row is recomposed from its stored
+        record rather than parsed out of the header's composed text: the record
+        is the authority for title, tags, abstract and source path, and
+        recomposing keeps a migrated vault identical to a freshly ingested one.
+        The legacy row's embedding is carried forward, so a corpus is not
+        re-embedded to change where its text is stored.
+
+        The title is stripped from a heading path only where the path's first
+        element is exactly the document's title. The title is not a prefix any
+        adapter adds -- for markdown it coincides with the document's own
+        top-level heading, and for other formats it is absent -- so an
+        unconditional strip would take a real section or sheet name off every
+        document that never carried the title there.
+
+        Ordering is deliberate: relocate, then strip, then delete the legacy
+        rows last. A pass interrupted part-way leaves the legacy rows in place,
+        so the next run repeats the whole repair rather than resuming into a
+        half-migrated vault. Re-running a completed migration finds no legacy
+        rows and does nothing, which is what makes it idempotent.
+
+        Returns:
+            ``(documents relocated, documents whose heading paths changed)``.
+            Both are zero on a vault that has nothing to repair, so neither
+            backfill names itself in the report.
+        """
+        legacy = await self._content_store.legacy_document_header_rows()
+        if not legacy:
+            return (0, 0)
+
+        relocated = 0
+        stripped = 0
+        for document_id, embedding in legacy:
+            doc = await self._graph_store.get_document(document_id)
+            if doc is None:
+                # A header row whose document is gone has nothing to compose
+                # from; the delete below reclaims it.
+                continue
+            await self._content_store.upsert_document_surface(
+                compose_document_surface(document_id, doc, embedding)
+            )
+            relocated += 1
+            if doc.title and await self._content_store.strip_heading_path_root(
+                document_id, doc.title
+            ):
+                stripped += 1
+
+        await self._content_store.delete_legacy_document_header_rows()
+        return (relocated, stripped)
 
     async def _normalize_source_paths(self) -> list[SourcePathNormalization]:
         """Rewrite each stored source path that is not already in plain form.

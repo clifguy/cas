@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from sage.adapters.content_store_postgres import PostgresContentStore
-from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, Chunk
+from sage.adapters.interfaces import Chunk, DocumentSurface
 from sage.storage.postgres.schema import EMBEDDING_DIM
 from sage.utils.rrf import rrf_fuse
 
@@ -382,15 +382,26 @@ async def test_get_chunks_by_heading_prefix_exact_child_not_partial(store):
     assert {c.heading_path for c in got} == {"Method", "Method > Data"}
 
 
-async def test_get_heading_paths_excludes_synthetic_header(store):
-    """The synthetic header marker is not a real heading and is omitted."""
+async def test_get_heading_paths_needs_no_exclusion(store):
+    """Every path on the passage surface is a real heading.
+
+    The passage surface holds authored passages only (CAS-ADR-049), so the
+    enumeration carries no exclusion and a document-level row cannot reach it.
+    """
     await store.index_chunks(
         "d1",
         [
-            _chunk("d1", content="hdr", heading_path=SYNTHETIC_HEADER_HEADING_PATH, chunk_index=0),
-            _chunk("d1", content="intro", heading_path="Intro", chunk_index=1),
-            _chunk("d1", content="body", heading_path="Body", chunk_index=2),
+            _chunk("d1", content="intro", heading_path="Intro", chunk_index=0),
+            _chunk("d1", content="body", heading_path="Body", chunk_index=1),
         ],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="d1",
+            matchable="Some Title",
+            orienting="Abstract: prose",
+            embedding=[0.0] * EMBEDDING_DIM,
+        )
     )
     assert await store.get_heading_paths("d1") == ["Intro", "Body"]
 
@@ -411,24 +422,46 @@ async def test_remove_document_idempotent(store):
     await store.remove_document("never")
 
 
-async def test_replace_synthetic_header_preserves_body(store):
-    """Header replacement swaps only the marker chunk; body chunks survive."""
+async def test_upsert_document_surface_preserves_passages(store):
+    """Rewriting document-level text leaves the document's passages alone."""
     await store.index_chunks(
-        "d1",
-        [
-            _chunk("d1", content="old header", heading_path=SYNTHETIC_HEADER_HEADING_PATH),
-            _chunk("d1", content="body one", heading_path="Body", chunk_index=1),
-        ],
+        "d1", [_chunk("d1", content="body one", heading_path="Body", chunk_index=0)]
     )
-    await store.replace_synthetic_header_chunk(
-        "d1",
-        _chunk("d1", content="new header", heading_path=SYNTHETIC_HEADER_HEADING_PATH),
+    for orienting in ("old abstract", "new abstract"):
+        await store.upsert_document_surface(
+            DocumentSurface(
+                document_id="d1",
+                matchable="Title",
+                orienting=orienting,
+                embedding=[0.0] * EMBEDDING_DIM,
+            )
+        )
+
+    assert [c.content for c in await store.get_all_chunks("d1")] == ["body one"], (
+        "passages are untouched by a document-surface rewrite"
     )
-    all_chunks = await store.get_all_chunks("d1")
-    bodies = [c.content for c in all_chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
-    headers = [c.content for c in all_chunks if c.heading_path == SYNTHETIC_HEADER_HEADING_PATH]
-    assert bodies == ["body one"]
-    assert headers == ["new header"]
+    assert [r.document_id for r in await store.search_bm25("title", limit=10)] == ["d1"], (
+        "the rewrite replaced the prior row rather than duplicating it"
+    )
+
+
+async def test_remove_document_clears_the_document_surface(store):
+    """A removed document leaves no document-level row behind."""
+    await store.index_chunks("d1", [_chunk("d1", content="body")])
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="d1",
+            matchable="Etaword Catalog",
+            orienting="",
+            embedding=[0.0] * EMBEDDING_DIM,
+        )
+    )
+    assert [r.document_id for r in await store.search_bm25("etaword", limit=10)] == ["d1"]
+
+    await store.remove_document("d1")
+    assert await store.search_bm25("etaword", limit=10) == [], (
+        "a stale document-level row would keep answering for a removed document"
+    )
 
 
 async def test_update_chunk_metadata_keeps_content_searchable(store):
@@ -908,231 +941,178 @@ async def test_search_bm25_mixed_phrase_and_bare_term(store):
 
 # ---------------------------------------------------------------------------
 # Provenance: derived text ranks and orients, but never satisfies a match
-# (CAS-ADR-049 point 4). The synthetic header row carries the generated
-# abstract, the source filename stem, and a lexical identifier expansion
-# alongside authored title and tags; it leaves the match union whole.
+# (CAS-ADR-049 point 4). Authored text -- a document's passages, their
+# headings, its title and tags -- may satisfy a match wherever it lives. The
+# generated abstract, the source filename stem, and that stem's expansion are
+# derived: they reach ranking and never the match union.
 # ---------------------------------------------------------------------------
 
 
-async def test_search_bm25_header_only_term_does_not_match(store):
+async def _surface(store, document_id, *, matchable="", orienting="", **kw):
+    """Write a document-level row, defaulting both halves to empty."""
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id=document_id,
+            matchable=matchable,
+            orienting=orienting,
+            embedding=[0.0] * EMBEDDING_DIM,
+            **kw,
+        )
+    )
+
+
+async def test_derived_text_alone_does_not_satisfy_a_match(store):
     """A term present only in derived text cannot make a document match."""
-    await store.index_chunks(
+    await store.index_chunks("d1", [_chunk("d1", content="ordinary body prose")])
+    await _surface(
+        store,
         "d1",
-        [
-            _chunk(
-                "d1",
-                content="Abstract: zzabstractterm governs every boundary",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk("d1", content="ordinary body prose", chunk_index=0),
-        ],
+        matchable="Ordinary Document",
+        orienting="Abstract: zzabstractterm governs every boundary",
     )
 
     assert await store.search_bm25("zzabstractterm", limit=10) == [], (
         "a generated abstract is evidence about a document, not content of it"
     )
+    assert [r.document_id for r in await store.search_bm25("ordinary", limit=10)] == ["d1"], (
+        "positive control: the same store answers an authored term, so the "
+        "empty result above is the provenance rule and not an unindexed row"
+    )
 
 
-async def test_search_bm25_header_term_cannot_complete_a_conjunction(store):
+async def test_filename_stem_does_not_satisfy_a_match(store):
+    """Text incidental to how a document arrived does not match either."""
+    await store.index_chunks("d1", [_chunk("d1", content="ordinary body prose")])
+    await _surface(
+        store, "d1", matchable="Ordinary Document", orienting="zzstemword-v2 zzstemword v2"
+    )
+
+    assert await store.search_bm25("zzstemword", limit=10) == [], (
+        "a filename is an artifact of how the document arrived, not content"
+    )
+
+
+async def test_derived_text_cannot_complete_a_conjunction(store):
     """Derived text cannot supply the term the authored text is missing.
 
     The sharper form of the rule: document scope lets terms combine freely
-    across a document, so without this the header would silently become a
-    universal donor for any conjunction it happens to complete.
+    across a document, so without this the document surface's derived half
+    would silently become a universal donor for any conjunction it completes.
     """
-    await store.index_chunks(
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword appears in the body")])
+    await _surface(
+        store,
         "d1",
-        [
-            _chunk(
-                "d1",
-                content="Abstract: betaword appears only in the generated summary",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk("d1", content="alphaword appears in the body", chunk_index=0),
-        ],
+        matchable="Some Title",
+        orienting="Abstract: betaword appears only in the generated summary",
     )
 
     assert await store.search_bm25("alphaword betaword", limit=10) == [], (
-        "the header may not complete a conjunction the authored text leaves open"
+        "derived text may not complete a conjunction the authored text leaves open"
     )
     assert [r.document_id for r in await store.search_bm25("alphaword", limit=10)] == ["d1"], (
-        "the authored term alone still matches -- the header is excluded from "
-        "matching, not the document"
+        "positive control: the authored term alone still matches, so the empty "
+        "result above is the missing term and not a broken conjunction"
     )
 
 
-async def test_search_bm25_header_still_ranks_a_matched_document(store):
+async def test_derived_text_still_ranks_a_matched_document(store):
     """Derived text keeps its ranking value on a document that does match.
 
-    The control against excluding the header outright: it is barred from
+    The control against excluding derived text outright: it is barred from
     satisfying a match, not removed from the store or from ranking. The two
     documents carry identical authored text, so the only thing separating
-    their scores is the header.
+    their scores is the derived half of the document surface.
     """
-    await store.index_chunks(
-        "d1",
-        [
-            _chunk(
-                "d1",
-                content="Abstract: alphaword alphaword alphaword densely restated",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk("d1", content="alphaword mentioned once in passing", chunk_index=0),
-        ],
-    )
-    await store.index_chunks(
-        "d2",
-        [
-            _chunk(
-                "d2",
-                content="Abstract: nothing of relevance to the query",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk("d2", content="alphaword mentioned once in passing", chunk_index=0),
-        ],
-    )
+    for doc_id in ("d1", "d2"):
+        await store.index_chunks(doc_id, [_chunk(doc_id, content="alphaword body prose")])
+    await _surface(store, "d1", matchable="Title One", orienting="alphaword " * 20)
+    await _surface(store, "d2", matchable="Title Two", orienting="unrelated summary")
 
     res = await store.search_bm25("alphaword", limit=10)
     assert [r.document_id for r in res] == ["d1", "d2"], (
-        "both match on authored text; the richer header outranks the barer one, "
-        "so the header is still in the ranking pool"
+        "both match on authored text; the richer derived text outranks the "
+        "barer one, so derived text is still in the ranking pool"
     )
     assert res[0].score > res[1].score
 
 
-async def test_search_bm25_header_never_matches_on_the_within_chunk_path_either(store):
-    """Provenance holds whatever form the query takes.
+async def test_title_satisfies_a_match(store):
+    """A document's title is authored text and may satisfy a match.
 
-    A negation sends the query down the within-chunk path, where the document
-    scope is unsettled -- but provenance is not. Without the bar there, adding
-    an exclusion *widens* the result: ``deltaword -zzz`` would match a document
-    that ``deltaword`` alone does not, on a term carried only by text no author
-    wrote, and the header would come back as the excerpt.
+    Inverts the behaviour that stood while document-level text shared the
+    passage surface, where a title matched only where an authored heading
+    path happened to restate it.
     """
+    await store.index_chunks(
+        "titled",
+        [_chunk("titled", content="body prose sharing no term with the title")],
+    )
+    await _surface(store, "titled", matchable="Deltaword Catalog", orienting="unrelated")
+
+    assert [r.document_id for r in await store.search_bm25("deltaword", limit=10)] == ["titled"], (
+        "the title is authored text and matches from the document surface, "
+        "whether or not a heading path restates it"
+    )
+
+
+async def test_tags_satisfy_a_match(store):
+    """A document's tags are authored text and may satisfy a match."""
+    await store.index_chunks("tagged", [_chunk("tagged", content="unrelated body prose")])
+    await _surface(store, "tagged", matchable="Some Title epsilonword", orienting="")
+
+    assert [r.document_id for r in await store.search_bm25("epsilonword", limit=10)] == ["tagged"]
+
+
+async def test_a_conjunction_spans_the_title_and_the_body(store):
+    """Authored text is one union across both surfaces.
+
+    CAS-ADR-049 makes a document match when *its authored text* carries every
+    required term -- its passages, their headings, its title, its tags. A
+    query splitting its terms between a title and a body must therefore
+    match, which independently-ranked surfaces could not express.
+    """
+    await store.index_chunks("split", [_chunk("split", content="bodyword in the prose")])
+    await _surface(store, "split", matchable="Titleword Catalog", orienting="")
+
+    assert [r.document_id for r in await store.search_bm25("titleword bodyword", limit=10)] == [
+        "split"
+    ], "one term from the title and one from a passage still make the document match"
+
+
+async def test_document_surface_hit_reports_no_matched_passages(store):
+    """The matched-passage count names passages and nothing else.
+
+    A document matched only through its document surface has no passage
+    carrying the term, so the count is zero rather than one -- the count is a
+    statement about the document's own text.
+    """
+    await store.index_chunks("titled", [_chunk("titled", content="unrelated body prose")])
+    await _surface(store, "titled", matchable="Zetaword Catalog", orienting="")
+
+    [hit] = await store.search_bm25("zetaword", limit=10)
+    assert hit.matched_chunk_count is not None
+    assert hit.matched_chunk_count == 0, (
+        "a document-level hit is not a passage and must not be counted as one"
+    )
+    assert hit.heading_path == "", "a document-level hit carries no passage excerpt"
+
+
+async def test_matched_passage_count_counts_only_passages(store):
+    """Passages carrying a term are counted; the document surface is not."""
     await store.index_chunks(
         "d1",
         [
-            _chunk(
-                "d1",
-                content="Abstract: deltaword appears only in the generated summary",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk("d1", content="ordinary body prose", chunk_index=0),
+            _chunk("d1", content="alphaword here", chunk_index=0),
+            _chunk("d1", content="alphaword again", chunk_index=1),
+            _chunk("d1", content="nothing relevant", chunk_index=2),
         ],
     )
+    await _surface(store, "d1", matchable="alphaword Catalog", orienting="alphaword summary")
 
-    assert [
-        r.document_id for r in await store.search_bm25("ordinary -zzznotpresent", limit=10)
-    ] == ["d1"], (
-        "positive control: the fallback path returns authored matches, so the two "
-        "empty results below are the provenance bar and not a dead code path"
-    )
-    assert await store.search_bm25("deltaword", limit=10) == [], (
-        "precondition: the term is derived-only, so the document-scoped path refuses it"
-    )
-    assert await store.search_bm25("deltaword -zzznotpresent", limit=10) == [], (
-        "the negation changes the match scope, not what may satisfy a match"
-    )
-
-
-async def test_search_bm25_header_is_never_the_excerpt(store):
-    """Derived text ranks and orients; the excerpt is an authored passage.
-
-    The query is the failure's own shape rather than a neutral term: the
-    header's literal scaffolding is ``Title:``, ``Source:``, ``Tags:`` and
-    ``Abstract:``, so a caller searching for ``abstract`` collides with words
-    the system composed. Sampled against a real vault this is not a corner --
-    the header wins the excerpt for roughly a third of documents on that one
-    query. The document still matches, because its authored text carries the
-    term too; what must not happen is that the answer is the preamble.
-    """
-    await store.index_chunks(
-        "d1",
-        [
-            _chunk(
-                "d1",
-                content="Title: T\nSource: s\nTags: t\nAbstract: a composed restatement",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk(
-                "d1",
-                content="the abstract is discussed once in this passage",
-                heading_path="Body",
-                chunk_index=0,
-            ),
-        ],
-    )
-
-    res = await store.search_bm25("abstract", limit=10)
-    assert [r.document_id for r in res] == ["d1"], "the authored passage carries the term"
-    assert [r.heading_path for r in res] == ["Body"], (
-        "the header outranks the body chunk on this query, yet the body supplies the excerpt"
-    )
-
-
-async def test_search_bm25_title_matches_only_where_authored_text_carries_it(store):
-    """A title term reaches matching through authored text or not at all.
-
-    The two documents differ only in whether an authored heading path happens
-    to carry the title, and that is not a property ingestion guarantees:
-    ``heading_path`` is the projection's own heading hierarchy, so a document
-    whose headings do not restate its title -- a word-processor document, or
-    one with no headings at all -- carries the title only in the header row,
-    which no longer matches. On the vaults this repository builds against, the
-    share of documents in that position runs from a handful to a majority.
-
-    Stated as the accepted consequence rather than as a caveat, because the
-    earlier form of this test asserted the reassuring half and supplied the
-    reassurance itself: it hand-wrote a title-rooted heading path and read it
-    back, so no ingestion could turn it red. CAS-ADR-049's document surface is
-    what restores the title to the authored side; until it lands, this is the
-    behaviour, and the test that says so is the one that will notice when it
-    changes.
-    """
-    await store.index_chunks(
-        "rooted",
-        [
-            _chunk(
-                "rooted",
-                content="Title: Deltaword Catalog\nAbstract: unrelated",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk(
-                "rooted",
-                content="body prose sharing no term with the title",
-                heading_path="Deltaword Catalog > Section 1",
-                chunk_index=0,
-            ),
-        ],
-    )
-    await store.index_chunks(
-        "unrooted",
-        [
-            _chunk(
-                "unrooted",
-                content="Title: Deltaword Catalog\nAbstract: unrelated",
-                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-                chunk_index=-1,
-            ),
-            _chunk(
-                "unrooted",
-                content="body prose sharing no term with the title",
-                heading_path="System Architecture > Storage",
-                chunk_index=0,
-            ),
-        ],
-    )
-
-    assert [r.document_id for r in await store.search_bm25("deltaword", limit=10)] == ["rooted"], (
-        "the title matches only where an authored heading path restates it; carried "
-        "in the header row alone it is derived text and does not match"
+    [hit] = await store.search_bm25("alphaword", limit=10)
+    assert hit.matched_chunk_count == 2, (
+        "two passages carry the term; neither half of the document surface counts"
     )
 
 

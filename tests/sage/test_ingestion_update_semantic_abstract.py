@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from sage.api.errors import DocumentNotFoundError
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
@@ -46,10 +45,14 @@ async def test_update_semantic_abstract_persists_and_refreshes_header_chunk(
 
     doc = await graph_store.get_document(document_id)
     assert doc.semantic_abstract == "A repaired abstract."
-    chunks = await ingestion_service._content_store.get_all_chunks(document_id)
-    header_chunks = [c for c in chunks if c.heading_path == SYNTHETIC_HEADER_HEADING_PATH]
-    assert len(header_chunks) == 1
-    assert "A repaired abstract." in header_chunks[0].content
+    # The abstract is derived text and lives on the document surface, where
+    # it orients and ranks without becoming matchable (CAS-ADR-049).
+    surface = ingestion_service._content_store.stored_document_surface(document_id)
+    assert surface is not None, "the repair must refresh the document surface"
+    assert "A repaired abstract." in surface.orienting
+    assert "A repaired abstract." not in surface.matchable, (
+        "a generated abstract must not reach the matchable half"
+    )
 
 
 async def test_update_semantic_abstract_missing_document_raises(ingestion_service):

@@ -194,7 +194,15 @@ def test_drop_schema_statement_rejects_bad_id():
 # PG-touching (skip without SAGE_TEST_PG_DSN)
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TABLES = {"documents", "edges", "staging_edges", "users", "document_tags", "chunks"}
+_EXPECTED_TABLES = {
+    "documents",
+    "edges",
+    "staging_edges",
+    "users",
+    "document_tags",
+    "chunks",
+    "document_surface",
+}
 
 
 async def test_bootstrap_provisions_schema(pg_dsn):
@@ -462,3 +470,66 @@ async def test_schema_exists_reflects_bootstrap_and_drop(pg_dsn):
         finally:
             await drop_schema(conn, schema)
         assert await schema_exists(conn, schema) is False
+
+
+# ---------------------------------------------------------------------------
+# Document surface (CAS-ADR-049)
+# ---------------------------------------------------------------------------
+
+
+def test_document_surface_table_carries_both_generated_vectors():
+    """The document surface has a match vector and a rank vector.
+
+    The two are what make provenance structural: only ``matchable`` reaches
+    ``tsv_match``, while ``tsv_rank`` weaves both. Asserted on the DDL text
+    here; the behaviour that actually matters is pinned against a live
+    backend by ``test_document_surface_match_vector_excludes_derived_text``.
+    """
+    ddl = pgschema.DOCUMENT_SURFACE_TABLE
+    assert "vector(768)" in ddl
+    assert "tsv_match" in ddl and "tsv_rank" in ddl
+    for column in ("doc_type", "lifecycle_status", "project"):
+        assert column in ddl, f"filter column {column} must mirror chunks"
+    idx = "\n".join(pgschema.CONTENT_INDEXES)
+    assert "idx_document_surface_tsv_match_gin" in idx
+    assert "idx_document_surface_tsv_rank_gin" in idx
+    assert "idx_document_surface_embedding_hnsw" in idx
+
+
+@pytest.mark.asyncio
+async def test_document_surface_match_vector_excludes_derived_text(pg_pool):
+    """Derived text reaches ranking and never matching.
+
+    This is the structural expression of CAS-ADR-049's provenance rule. A term
+    written only to ``orienting`` must be absent from ``tsv_match`` and present
+    in ``tsv_rank``; a term in ``matchable`` must be in both. Verified by
+    querying the generated columns directly, so it holds regardless of what any
+    search binding later does with them.
+    """
+    async with pg_pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO document_surface"
+            " (document_id, matchable, orienting, doc_type,"
+            "  lifecycle_status, project)"
+            " VALUES (%s, %s, %s, %s, %s, %s)",
+            ("d1", "alphaword", "betaword", "adr", "active", "CAS"),
+        )
+        row = await (
+            await conn.execute(
+                "SELECT tsv_match @@ to_tsquery('english', 'alphaword'),"
+                "       tsv_match @@ to_tsquery('english', 'betaword'),"
+                "       tsv_rank  @@ to_tsquery('english', 'alphaword'),"
+                "       tsv_rank  @@ to_tsquery('english', 'betaword')"
+                " FROM document_surface WHERE document_id = %s",
+                ("d1",),
+            )
+        ).fetchone()
+
+    authored_matches, derived_matches, authored_ranks, derived_ranks = row
+    assert authored_matches is True, "authored text must satisfy a match"
+    assert derived_matches is False, (
+        "derived text reached tsv_match -- the provenance rule is not structural"
+    )
+    assert authored_ranks is True and derived_ranks is True, (
+        "both kinds of text must remain available to ranking"
+    )

@@ -26,15 +26,17 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import (
-    SYNTHETIC_HEADER_HEADING_PATH,
+    LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     Chunk,
     ContentStore,
     ContentStoreOptimizeSnapshot,
+    DocumentSurface,
     KeywordQueryParse,
     SearchResult,
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.storage.postgres.schema import EMBEDDING_DIM, TEXT_SEARCH_CONFIG
+from sage.utils.text_normalization import fold_for_query
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from psycopg import AsyncConnection
@@ -57,6 +59,10 @@ _INSERT_SQL = (
     f"INSERT INTO chunks ({_INSERT_COLUMNS}) "  # noqa: S608 -- fixed column constant
     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
 )
+
+# Separator between elements of a heading path, as every source adapter
+# joins them.
+_HEADING_PATH_SEPARATOR = " > "
 
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, content, chunk_index, doc_type, lifecycle_status, project"
@@ -291,21 +297,93 @@ class PostgresContentStore(ContentStore):
                     async with conn.cursor() as cur:
                         await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
 
-    async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
-        """Swap only the synthetic header chunk; body chunks are untouched."""
-        with self._query_timer.measure("replace_synthetic_header_chunk"):
+    async def upsert_document_surface(self, surface: DocumentSurface) -> None:
+        """Write a document's document-level row; its passages are untouched."""
+        with self._query_timer.measure("upsert_document_surface"):
             async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute(
-                    "DELETE FROM chunks WHERE document_id = %s AND heading_path = %s",
-                    (document_id, SYNTHETIC_HEADER_HEADING_PATH),
+                    "DELETE FROM document_surface WHERE document_id = %s",
+                    (surface.document_id,),
                 )
-                await conn.execute(_INSERT_SQL, self._chunk_row(chunk))
+                await conn.execute(
+                    "INSERT INTO document_surface"
+                    " (document_id, matchable, orienting, embedding,"
+                    "  doc_type, lifecycle_status, project)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        surface.document_id,
+                        surface.matchable,
+                        surface.orienting,
+                        surface.embedding,
+                        surface.doc_type,
+                        surface.lifecycle_status,
+                        surface.project,
+                    ),
+                )
+
+    async def remove_document_surface(self, document_id: str) -> None:
+        """Remove a document's document-level row (idempotent)."""
+        with self._query_timer.measure("remove_document_surface"):
+            async with self._pool.connection() as conn:
+                await conn.execute(
+                    "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
+                )
 
     async def remove_document(self, document_id: str) -> None:
-        """Remove all chunks for a document (idempotent)."""
+        """Remove a document's passages and document surface (idempotent)."""
         with self._query_timer.measure("remove_document"):
-            async with self._pool.connection() as conn:
+            async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+                await conn.execute(
+                    "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
+                )
+
+    # -- migration off the single-surface layout (CAS-ADR-049) ---------------
+
+    async def legacy_document_header_rows(self) -> list[tuple[str, list[float] | None]]:
+        """Return ``(document_id, embedding)`` for each legacy header row."""
+        with self._query_timer.measure("legacy_document_header_rows"):
+            rows = await self._fetchall(
+                "SELECT document_id, embedding FROM chunks WHERE heading_path = %s",
+                (LEGACY_DOCUMENT_HEADER_HEADING_PATH,),
+            )
+            return [(r[0], list(r[1]) if r[1] is not None else None) for r in rows]
+
+    async def delete_legacy_document_header_rows(self) -> int:
+        """Delete every legacy header row; returns the number removed."""
+        with self._query_timer.measure("delete_legacy_document_header_rows"):
+            async with self._pool.connection() as conn:
+                cur = await conn.execute(
+                    "DELETE FROM chunks WHERE heading_path = %s",
+                    (LEGACY_DOCUMENT_HEADER_HEADING_PATH,),
+                )
+                return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    async def strip_heading_path_root(self, document_id: str, root: str) -> int:
+        """Drop ``root`` from the front of this document's heading paths.
+
+        Matching on the full root plus its separator, rather than on a bare
+        prefix, so a sibling heading that merely starts with the same
+        characters is left alone. ``tsv`` is a generated column, so the
+        full-text index follows the rewrite without a second write.
+        """
+        with self._query_timer.measure("strip_heading_path_root"):
+            async with self._pool.connection() as conn:
+                cur = await conn.execute(
+                    "UPDATE chunks SET heading_path = CASE"
+                    " WHEN heading_path = %s THEN ''"
+                    " ELSE substring(heading_path from %s) END"
+                    " WHERE document_id = %s"
+                    " AND (heading_path = %s OR heading_path LIKE %s)",
+                    (
+                        root,
+                        len(root) + len(_HEADING_PATH_SEPARATOR) + 1,
+                        document_id,
+                        root,
+                        self._escape_like(root) + _HEADING_PATH_SEPARATOR + "%",
+                    ),
+                )
+                return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     async def update_chunk_metadata(
         self,
@@ -334,22 +412,39 @@ class PostgresContentStore(ContentStore):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """Vector similarity search; score is ``1 - cosine_distance``."""
+        """Vector similarity search; score is ``1 - cosine_distance``.
+
+        Covers both retrieval surfaces (CAS-ADR-049): a document's passages and
+        its document-level row compete in one ranking. Similarity is not
+        matching, so derived text is in scope here -- it exists to make a
+        document findable and triageable, which is a ranking and orientation
+        value this preserves. A document-level hit carries an empty heading
+        path, marking it as document-level rather than a passage.
+        """
         with self._query_timer.measure(
             "search_semantic", params={"limit": limit, "filtered": bool(filters)}
         ):
             where, where_params = self._build_where(filters)
+            predicate = f" WHERE {where}" if where else ""
             sql = (
-                "SELECT document_id, heading_path, content, "
-                "1 - (embedding <=> %s::vector) AS score FROM chunks"
+                "SELECT document_id, heading_path, content, score FROM ("  # noqa: S608
+                " SELECT document_id, heading_path, content,"
+                " 1 - (embedding <=> %s::vector) AS score FROM chunks"
+                f"{predicate}"
+                " UNION ALL"
+                " SELECT document_id, '' AS heading_path,"
+                " matchable || ' ' || orienting AS content,"
+                " 1 - (embedding <=> %s::vector) AS score FROM document_surface"
+                f"{predicate}"
+                " ) s WHERE score IS NOT NULL ORDER BY score DESC LIMIT %s"
             )
-            params: list[object] = [query_embedding]
-            if where:
-                sql += f" WHERE {where}"
-                params += where_params
-            sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
-            params.append(query_embedding)
-            params.append(limit)
+            params: list[object] = [
+                query_embedding,
+                *where_params,
+                query_embedding,
+                *where_params,
+                limit,
+            ]
             rows = await self._fetchall(sql, params)
             return [self._row_to_result(r) for r in rows]
 
@@ -375,12 +470,20 @@ class PostgresContentStore(ContentStore):
         present only in a heading is findable. Queries whose shape does not
         decompose fall back to evaluating the whole query against one chunk.
 
-        The synthetic document-header row is barred from the arms: it carries
-        machine-generated and incidental text, which ranks and orients but
-        never satisfies a match (CAS-ADR-049). It stays in the ranking pool, so
-        a document's score still reflects it, but the excerpt is drawn from an
-        authored passage -- otherwise a query for a word in the header's own
-        scaffolding would answer with that scaffolding.
+        Each operand is satisfied by the document's *authored* text wherever it
+        lives: a passage, or the document surface carrying its title and tags
+        (CAS-ADR-049). The arm is therefore a union of the two surfaces, and
+        the intersection across operands runs over that union -- so a query
+        whose terms are split between a title and a body still matches, which a
+        pair of independently-ranked surfaces could not express. Derived text
+        reaches only the document surface's ranking vector and so can never
+        satisfy an operand.
+
+        A separate union arm matches the whole query, normalized, against the
+        document surface alone. That is what lets a caller reach a document by
+        its title without reproducing the author's separators or word
+        boundaries; it is confined to the document surface so passage matching
+        keeps its literal tokenization.
         """
         with self._query_timer.measure(
             "search_bm25", params={"limit": limit, "filtered": bool(filters)}
@@ -398,8 +501,25 @@ class PostgresContentStore(ContentStore):
             if operands is None:
                 return await self._search_bm25_within_chunk(query, limit, filters)
             return await self._search_bm25_across_document(
-                operands, _or_form(parse.terms), limit, filters
+                operands,
+                _or_form(parse.terms),
+                limit,
+                filters,
+                await self._render_folded_tsquery(query),
             )
+
+    async def _render_folded_tsquery(self, query: str) -> str | None:
+        """Render the separator-folded form of ``query``, or ``None``.
+
+        Returns ``None`` when folding changes nothing or leaves no lexemes, so
+        the caller can drop the extra union arm rather than repeat one it
+        already has.
+        """
+        folded = fold_for_query(query)
+        if not folded.strip() or folded == query:
+            return None
+        rendered = await self._render_tsquery(folded)
+        return rendered or None
 
     async def _search_bm25_across_document(
         self,
@@ -407,12 +527,16 @@ class PostgresContentStore(ContentStore):
         or_form: str,
         limit: int,
         filters: dict[str, str | list[str]] | None,
+        folded: str | None = None,
     ) -> list[SearchResult]:
-        """Resolve each operand to document ids, intersect, then rank chunks.
+        """Resolve each operand across both surfaces, intersect, then rank.
 
         ``limit`` bounds documents rather than rows: a matching document is
-        returned once, carrying its best-ranking authored chunk as the excerpt
-        and a count of how many of its chunks carry a query term.
+        returned once, carrying its best-ranking passage as the excerpt and a
+        count of how many of its passages carry a query term. A document
+        matched only through its document surface is returned with no excerpt
+        and a passage count of zero -- the count names passages, so a
+        document-level hit must not inflate it.
         """
         where, where_params = self._build_where(filters)
         # Interpolated into the fragments below. Column names come from a fixed
@@ -420,43 +544,56 @@ class PostgresContentStore(ContentStore):
         # cover a clause with nothing caller-supplied in its text.
         predicate = f" AND {where}" if where else ""
 
-        # DISTINCT rather than relying on INTERSECT to deduplicate: a
+        # One arm per operand, each spanning both authored surfaces. DISTINCT
+        # rather than relying on the set operators to deduplicate: a
         # single-operand query has no INTERSECT, and duplicate document ids
         # would multiply every row the ranking join produces.
         arm = (
-            "SELECT DISTINCT document_id FROM chunks"  # noqa: S608
-            f" WHERE heading_path <> %s AND tsv @@ %s::tsquery{predicate}"
+            "(SELECT DISTINCT document_id FROM chunks"  # noqa: S608
+            f" WHERE chunk_index >= 0 AND tsv @@ %s::tsquery{predicate}"
+            " UNION"
+            " SELECT DISTINCT document_id FROM document_surface"
+            f" WHERE tsv_match @@ %s::tsquery{predicate})"
         )
         params: list[object] = []
         for operand in operands:
-            params += [SYNTHETIC_HEADER_HEADING_PATH, operand, *where_params]
+            params += [operand, *where_params, operand, *where_params]
         matched = "\nINTERSECT\n".join([arm] * len(operands))
 
-        # The header is excluded from the arms above but present here, so it
-        # lifts a document's score without being eligible as its excerpt --
-        # ``rn`` orders authored chunks ahead of it.
+        # The normalized whole-query arm, document surface only.
+        if folded:
+            # ``predicate`` is built from a fixed column allowlist and every
+            # value stays bound, so nothing caller-supplied reaches the text.
+            matched = (
+                f"({matched})\nUNION\n"  # noqa: S608
+                "(SELECT DISTINCT document_id FROM document_surface"
+                f" WHERE tsv_match @@ %s::tsquery{predicate})"
+            )
+            params += [folded, *where_params]
+
         sql = (
-            f"WITH matched AS (\n{matched}\n), ranked AS ("  # noqa: S608
+            f"WITH matched AS (\n{matched}\n),"  # noqa: S608
+            " surf AS ("
+            " SELECT document_id, ts_rank(tsv_rank, %s::tsquery) AS surf_score"
+            " FROM document_surface WHERE document_id IN (SELECT document_id FROM matched)"
+            " ), ranked AS ("
             " SELECT c.document_id, c.heading_path, c.content,"
-            " max(ts_rank(c.tsv, %s::tsquery)) OVER (PARTITION BY c.document_id) AS doc_score,"
-            " count(*) FILTER (WHERE c.heading_path <> %s)"
-            " OVER (PARTITION BY c.document_id) AS matched_chunks,"
+            " max(ts_rank(c.tsv, %s::tsquery)) OVER (PARTITION BY c.document_id) AS chunk_score,"
+            " count(*) OVER (PARTITION BY c.document_id) AS matched_chunks,"
             " row_number() OVER (PARTITION BY c.document_id ORDER BY"
-            " (c.heading_path = %s), ts_rank(c.tsv, %s::tsquery) DESC, c.chunk_index) AS rn"
+            " ts_rank(c.tsv, %s::tsquery) DESC, c.chunk_index) AS rn"
             " FROM chunks c JOIN matched USING (document_id)"
-            f" WHERE c.tsv @@ %s::tsquery{predicate}"
-            ") SELECT document_id, heading_path, content, doc_score, matched_chunks"
-            " FROM ranked WHERE rn = 1 ORDER BY doc_score DESC, document_id LIMIT %s"
+            f" WHERE c.chunk_index >= 0 AND c.tsv @@ %s::tsquery{predicate}"
+            " ) SELECT m.document_id,"
+            " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
+            " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
+            " COALESCE(r.matched_chunks, 0) AS matched_chunks"
+            " FROM matched m"
+            " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
+            " LEFT JOIN surf s USING (document_id)"
+            " ORDER BY doc_score DESC, m.document_id LIMIT %s"
         )
-        params += [
-            or_form,
-            SYNTHETIC_HEADER_HEADING_PATH,
-            SYNTHETIC_HEADER_HEADING_PATH,
-            or_form,
-            or_form,
-            *where_params,
-            limit,
-        ]
+        params += [or_form, or_form, or_form, or_form, *where_params, limit]
         rows = await self._fetchall(sql, params)
         return [
             SearchResult(
@@ -482,19 +619,17 @@ class PostgresContentStore(ContentStore):
         for those is the *scope* of the match, so this keeps the scope they
         already had rather than inventing one.
 
-        Provenance is not unsettled and does not lapse here: the synthetic
-        header row is barred on this path too. Leaving it in would make the
-        rule a property of the query's form rather than of the text, so adding
-        an exclusion could *widen* a result -- ``alpha -zzz`` would match a
-        document that ``alpha`` alone does not, on a term no author wrote.
+        Provenance is not unsettled and does not lapse here: this path reads
+        the passage surface, which holds authored passages only, so derived
+        text is out of reach by construction rather than by an exclusion.
         """
         where, where_params = self._build_where(filters)
         sql = (
             "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score "  # noqa: S608
             f"FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q "
-            "WHERE tsv @@ q AND heading_path <> %s"
+            "WHERE tsv @@ q AND chunk_index >= 0"
         )
-        params: list[object] = [query, SYNTHETIC_HEADER_HEADING_PATH]
+        params: list[object] = [query]
         if where:
             sql += f" AND {where}"
             params += where_params
@@ -571,12 +706,16 @@ class PostgresContentStore(ContentStore):
             return [self._row_to_chunk(r) for r in rows]
 
     async def get_heading_paths(self, document_id: str) -> list[str]:
-        """Return distinct heading paths in document order (marker excluded)."""
+        """Return distinct heading paths in document order.
+
+        No exclusion is needed: the passage surface holds authored passages
+        only, so every path here is one a caller may pass to a section read.
+        """
         with self._query_timer.measure("get_heading_paths"):
             rows = await self._fetchall(
-                "SELECT heading_path FROM chunks WHERE document_id = %s AND heading_path <> %s "
+                "SELECT heading_path FROM chunks WHERE document_id = %s "
                 "GROUP BY heading_path ORDER BY MIN(chunk_index)",
-                (document_id, SYNTHETIC_HEADER_HEADING_PATH),
+                (document_id,),
             )
             return [r[0] for r in rows]
 

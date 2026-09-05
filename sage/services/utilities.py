@@ -28,7 +28,6 @@ from typing import Literal
 import yaml
 
 from sage.adapters.interfaces import (
-    SYNTHETIC_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
     GraphStore,
@@ -45,8 +44,10 @@ from sage.api.errors import (
     WritePathInvalidError,
 )
 from sage.config import VaultConfig
+from sage.models.enums import RetrievalMode
 from sage.models.schemas import (
     AssertionFailure,
+    DiscoverRequest,
     Document,
     DownloadRecipe,
     EvalRetrievalResult,
@@ -181,12 +182,10 @@ class UtilitiesService:
         if not chunks:
             raise NoProjectionError(document_id)
 
-        # Exclude the synthetic header chunk so exported/read
-        # projection text reflects only the body content the source
-        # adapter produced — not the synthetic title/source/tags/abstract
-        # surface added for retrieval.
-        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
-        projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
+        # No exclusion is needed: the passage surface holds authored
+        # passages only, so reconstructed projection text is exactly the body
+        # content the source adapter produced (CAS-ADR-049).
+        projection_text = "\n\n".join(chunk.content for chunk in chunks)
         return doc, projection_text
 
     # ------------------------------------------------------------------
@@ -423,11 +422,40 @@ class UtilitiesService:
     # eval_retrieval (BH-041, BH-042)
     # ------------------------------------------------------------------
 
+    async def _eval_ranked_document_ids(self, query: str, limit: int) -> list[str]:
+        """Document ids a caller's own query would return, best first.
+
+        Runs the assertion through the discover path rather than through one
+        arm of it, so a health check reports on the retrieval a caller gets:
+        the vector and keyword arms fused, with the metadata and abstract
+        boosts and the salience rerank applied. Measured on the vector arm
+        alone the check stays green through any keyword-side regression, which
+        is most of what it exists to catch.
+        """
+        from sage.services.retrieval import RetrievalService
+
+        service = RetrievalService(
+            graph_store=self._graph,
+            content_store=self._content,
+            embedding_provider=self._embedding,
+            config=self._config,
+        )
+        response = await service.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.SEMANTIC,
+                query=query,
+                limit=limit,
+                use_hybrid=True,
+            )
+        )
+        return [hit.document.id for hit in response.results]
+
     async def eval_retrieval(self) -> EvalRetrievalResult:
         """Run retrieval health assertions against the vault.
 
-        Loads assertions from the YAML file referenced in vault config,
-        executes each as a semantic search, and returns a pass/fail report.
+        Loads assertions from the YAML file referenced in vault config, runs
+        each through the discover path a caller uses, and returns a pass/fail
+        report.
 
         Raises:
             AssertionsNotConfiguredError: No assertions_file in vault config.
@@ -462,7 +490,7 @@ class UtilitiesService:
         if not isinstance(assertions, list):
             raise AssertionsFileInvalidError(assertions_path, "'assertions' must be a list")
 
-        # Run each assertion
+        # Run each assertion against the retrieval a caller actually gets.
         failures: list[AssertionFailure] = []
         for assertion in assertions:
             query = assertion.get("query")
@@ -475,24 +503,22 @@ class UtilitiesService:
                     "Each assertion requires 'query' and 'expected_document_id'",
                 )
 
-            # Run semantic search
-            embeddings = await self._embedding.embed([query])
-            results = await self._content.search_semantic(embeddings[0], top_k)
+            document_ids = await self._eval_ranked_document_ids(query, top_k)
 
             # Check if expected document is in results
             found = False
             actual_rank = None
-            for rank, result in enumerate(results):
-                if result.document_id == expected_id:
+            for rank, document_id in enumerate(document_ids):
+                if document_id == expected_id:
                     found = True
                     actual_rank = rank + 1
                     break
 
             if not found:
                 # Check beyond top_k for diagnostic rank
-                extended = await self._content.search_semantic(embeddings[0], top_k * 5)
-                for rank, result in enumerate(extended):
-                    if result.document_id == expected_id:
+                extended = await self._eval_ranked_document_ids(query, top_k * 5)
+                for rank, document_id in enumerate(extended):
+                    if document_id == expected_id:
                         actual_rank = rank + 1
                         break
 

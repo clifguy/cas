@@ -442,7 +442,15 @@ def ingestion_service_failing_llm(
 # a pool bound to that schema. Per-test isolation is a truncation at pool setup.
 # ---------------------------------------------------------------------------
 
-_PG_TABLES = ("documents", "edges", "staging_edges", "users", "document_tags", "chunks")
+_PG_TABLES = (
+    "documents",
+    "edges",
+    "staging_edges",
+    "users",
+    "document_tags",
+    "chunks",
+    "document_surface",
+)
 
 
 @pytest.fixture(scope="session")

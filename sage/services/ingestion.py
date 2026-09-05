@@ -36,7 +36,6 @@ from sage.adapters.abstraction_utils import (
     trim_to_sentence_boundary,
 )
 from sage.adapters.interfaces import (
-    SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
     Chunk,
     ContentStore,
@@ -76,6 +75,7 @@ from sage.models.schemas import (
     SetLifecycleRequest,
     canonicalize_sha256,
 )
+from sage.services.document_surface import compose_document_surface, embedding_text
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
@@ -1548,13 +1548,9 @@ class IngestionService:
                 chunk.lifecycle_status = doc.lifecycle_status
                 chunk.project = doc.project
 
-        # Prepend the synthetic header chunk. ``semantic_abstract`` is
-        # still ``None`` at this point in the pipeline; Stage 3 will
-        # rebuild this chunk once abstraction completes.
-        chunks: list[Chunk] = []
-        if doc is not None:
-            chunks.append(self._build_header_chunk(document_id, doc))
-        chunks.extend(body_chunks)
+        # The passage surface holds authored passages only (CAS-ADR-049);
+        # document-level text goes to its own surface, written below.
+        chunks: list[Chunk] = list(body_chunks)
 
         # Embed all chunks. Combine heading_path with content so that
         # semantic search can reach chunks via heading-text-only queries
@@ -1571,6 +1567,11 @@ class IngestionService:
         # Store in content store
         await self._content_store.index_chunks(document_id, chunks)
 
+        # Document-level text. ``semantic_abstract`` is still ``None`` here;
+        # Stage 3 rewrites this row once abstraction completes.
+        if doc is not None:
+            await self._write_document_surface(document_id, doc)
+
         # Mark indexing complete (BH-008)
         await self._stamp_pipeline_status(
             document_id,
@@ -1579,12 +1580,10 @@ class IngestionService:
         )
 
     async def _refresh_header_chunk(self, document_id: str) -> None:
-        """Rebuild the synthetic header chunk after metadata changes.
+        """Rewrite the document surface after metadata changes.
 
-        Loads the current document, rebuilds the header chunk content
-        (now potentially with ``semantic_abstract``), re-embeds, and
-        writes via the content store's targeted replace method. Body
-        chunks are not touched.
+        Loads the current document and rewrites its document-level row (now
+        potentially carrying ``semantic_abstract``). Passages are not touched.
 
         Silently no-ops when the document is missing — the caller is
         expected to have already validated existence (Stage 3 and
@@ -1593,17 +1592,17 @@ class IngestionService:
         doc = await self._store.get_document(document_id)
         if doc is None:
             return
+        await self._write_document_surface(document_id, doc)
 
-        chunk = self._build_header_chunk(document_id, doc)
-        # Embed with heading_path prepended, matching the body-chunk
-        # embed convention in _stage2_indexing so similarity scores are
-        # comparable across the synthetic and body chunks.
-        text_for_embedding = (
-            f"{chunk.heading_path}\n\n{chunk.content}" if chunk.heading_path else chunk.content
-        )
-        [embedding] = await self._embedding.embed([text_for_embedding])
-        chunk.embedding = embedding
-        await self._content_store.replace_synthetic_header_chunk(document_id, chunk)
+    async def _write_document_surface(self, document_id: str, doc: Document) -> None:
+        """Compose, embed, and store a document's document-level row.
+
+        Composition lives in ``sage.services.document_surface`` so this writer
+        and the migration cannot drift apart (CAS-ADR-049).
+        """
+        surface = compose_document_surface(document_id, doc)
+        [surface.embedding] = await self._embedding.embed([embedding_text(surface)])
+        await self._content_store.upsert_document_surface(surface)
 
     async def _generate_abstract_text(
         self, text: str, doc_type: str | None, document_id: str = ""
@@ -1927,17 +1926,20 @@ class IngestionService:
         await self._refresh_header_chunk(document_id)
 
     async def _execute_abstract_from_chunks(self, document_id: str, doc_type: str | None) -> None:
-        """Stage 3 from stored chunks, raising on failure.
+        """Stage 3 from stored passages, raising on failure.
 
-        Reconstructs the projection text from body chunks (excluding the
-        synthetic header so its title/source/tags restatement does not feed
-        the abstraction prompt), regenerates the abstract, and refreshes the
-        header chunk for retrieval. Used by the worker for reabstract jobs and
-        for startup recovery of documents that still have chunks.
+        Reconstructs the projection text from the document's passages,
+        regenerates the abstract, and rewrites the document surface for
+        retrieval. Used by the worker for reabstract jobs and for startup
+        recovery of documents that still have chunks.
+
+        The abstraction input cannot include a previously generated abstract:
+        that text lives on the document surface, not among these passages, so
+        the guard against abstracting an abstract is structural rather than an
+        exclusion this method has to remember (CAS-ADR-049).
         """
         chunks = await self._content_store.get_all_chunks(document_id)
-        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
-        projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
+        projection_text = "\n\n".join(chunk.content for chunk in chunks)
         abstract = await self._generate_abstract_text(
             projection_text, doc_type, document_id=document_id
         )
@@ -2506,10 +2508,9 @@ class IngestionService:
         text find the document, matching the behavior of Word's Find on
         a heading paragraph.
 
-        Body chunks carry projected content only. Document-identity
-        signals (title, source filename, tags, semantic_abstract,
-        case-split identifier tokens) live in the standalone synthetic
-        header chunk built by ``_build_header_chunk`` (F9).
+        Passages carry projected content only. Document-identity signals
+        (title, source filename, tags, semantic abstract, and their
+        expansions) live on the document surface (CAS-ADR-049).
         """
         chunks: list[Chunk] = []
         for i, heading in enumerate(projection.headings):
@@ -2540,91 +2541,3 @@ class IngestionService:
             )
 
         return chunks
-
-    @staticmethod
-    def _build_header_chunk_content(doc: Document) -> str:
-        """Build the synthetic document-header chunk's content.
-
-        Composes a single text body covering title, source filename stem,
-        tags, semantic_abstract, and a case-split identifier-token line.
-        The abstract line is included even when ``semantic_abstract`` is
-        unset (with an empty value) so the chunk has a stable shape;
-        Stage 3 refreshes the chunk once abstraction completes.
-
-        The identifier-token line carries lowercased case-split forms of
-        compound identifiers (e.g. ``PortfolioDashboard`` →
-        ``portfolio dashboard``) so the BM25 leg can match natural-
-        language queries against camelcased identifiers that the
-        text-search tokenizer leaves intact.
-        """
-        title = doc.title or ""
-        stem = ""
-        if doc.source_path:
-            filename = doc.source_path.rsplit("/", 1)[-1]
-            stem = filename.rsplit(".", 1)[0] if "." in filename else filename
-        tags_line = ", ".join(doc.tags) if doc.tags else ""
-        abstract = doc.semantic_abstract or ""
-        identifier_tokens = IngestionService._case_split_identifiers(title, stem, *(doc.tags or []))
-
-        return (
-            f"Title: {title}\n"
-            f"Source: {stem}\n"
-            f"Tags: {tags_line}\n"
-            f"Abstract: {abstract}\n\n"
-            f"Identifier tokens: {identifier_tokens}\n"
-        )
-
-    @staticmethod
-    def _case_split_identifiers(*sources: str) -> str:
-        """Return a deduplicated, lowercased space-separated string of
-        case-split identifier tokens drawn from the given source strings
-        .
-
-        For each whitespace/punctuation-bounded token in the sources:
-        - All-alpha CamelCase compounds with at least two title-cased
-          parts (``PortfolioDashboard``, ``NanoBanana``) are split into
-          their constituent words and lowercased.
-        - Underscored compounds are also split on the underscore.
-        - Other tokens (``XLSX``, ``PV07``, single words) are not
-          split; they appear lowercased.
-
-        Output preserves first-seen order and is deduplicated. Returns
-        an empty string when no sources contribute any tokens.
-        """
-        import re
-
-        camel_split = re.compile(r"[A-Z][a-z]+|[A-Z]+(?=[A-Z]|$)|[a-z]+|[0-9]+")
-        seen: dict[str, None] = {}
-        for source in sources:
-            if not source:
-                continue
-            # Split on whitespace and underscore first.
-            for raw in re.split(r"[\s_]+", source):
-                if not raw:
-                    continue
-                # Try CamelCase split when there are 2+ uppercase boundaries
-                # in an otherwise alphabetic token.
-                if raw.isalpha() and sum(1 for ch in raw if ch.isupper()) >= 2:
-                    parts = camel_split.findall(raw)
-                    if len(parts) >= 2:
-                        for part in parts:
-                            key = part.lower()
-                            if key:
-                                seen.setdefault(key, None)
-                        continue
-                key = raw.lower()
-                if key:
-                    seen.setdefault(key, None)
-        return " ".join(seen.keys())
-
-    def _build_header_chunk(self, document_id: str, doc: Document) -> Chunk:
-        """Build the standalone synthetic document-header chunk."""
-        return Chunk(
-            document_id=document_id,
-            heading_path=SYNTHETIC_HEADER_HEADING_PATH,
-            content=self._build_header_chunk_content(doc),
-            chunk_index=-1,
-            doc_type=doc.doc_type,
-            lifecycle_status=doc.lifecycle_status,
-            project=doc.project,
-        )

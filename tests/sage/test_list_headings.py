@@ -154,14 +154,22 @@ async def test_list_headings_dedupes(listing_services, multi_section_doc):
     assert len(result.headings) == len(set(result.headings))
 
 
-async def test_list_headings_excludes_synthetic_header(listing_services, multi_section_doc):
-    """The synthetic header chunk must not appear in the listing."""
-    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+async def test_list_headings_returns_only_authored_headings(listing_services, multi_section_doc):
+    """Nothing but authored headings can reach the listing.
 
+    Document-level text lives on its own surface (CAS-ADR-049), so the
+    enumeration needs no exclusion and no internal marker exists to leak.
+    Asserted as a property of every returned path rather than against one
+    known sentinel string, so a marker introduced later is caught too.
+    """
     utilities, _ = listing_services
     result = await utilities.list_headings(multi_section_doc.id)
 
-    assert SYNTHETIC_HEADER_HEADING_PATH not in result.headings
+    assert result.headings, "positive control: the document has headings to list"
+    for heading in result.headings:
+        assert not heading.startswith("__"), (
+            f"{heading!r} looks like an internal marker, not an authored heading"
+        )
 
 
 # ---------------------------------------------------------------------------
