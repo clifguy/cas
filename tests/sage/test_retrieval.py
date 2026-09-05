@@ -883,10 +883,26 @@ async def test_semantic_abstract_drives_a_semantic_match(
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_abstract_only") in doc_ids
 
+    # A sibling whose authored body carries the same terms, so the refusal
+    # below is a statement about provenance rather than about a keyword arm
+    # that answers nothing for this fixture.
+    doc_authored = _make_doc(_id("doc_authored_seals"))
+    await graph_store.insert_document(doc_authored)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_authored_seals"),
+        [("Section 1", "Cryptographic accumulator seals in the body text.")],
+    )
+
     keyword = await retrieval_service.discover(
         DiscoverRequest(mode=RetrievalMode.KEYWORD, query="cryptographic accumulator")
     )
-    assert _id("doc_abstract_only") not in [h.document.id for h in keyword.results], (
+    keyword_ids = [h.document.id for h in keyword.results]
+    assert _id("doc_authored_seals") in keyword_ids, (
+        "positive control: the same terms in authored text do match"
+    )
+    assert _id("doc_abstract_only") not in keyword_ids, (
         "the abstract orients the document but does not make it match; only "
         "the header carries these terms"
     )

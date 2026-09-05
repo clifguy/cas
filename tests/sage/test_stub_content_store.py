@@ -13,16 +13,24 @@ those, nothing here needs a server: the double is the point, and a pin that
 skipped when Postgres was unconfigured would be absent from exactly the runs
 meant to catch drift.
 
-Three rules the Postgres suite pins have no counterpart here, and their absence
-is a property of the double rather than a gap: quoted-phrase adjacency and the
-within-chunk fallback path (the double parses no operators, so neither shape
-exists), and title matchability (a property of the ingestion projection, not of
-a store). A fourth is pinned here in a weaker form: a heading-only term is
+The mirror is not total, and the inventory below is the whole of what it omits
+-- read as a complete list, because that is how a name-for-name claim will be
+read. Four Postgres rules have no counterpart here, and their absence is a
+property of the double rather than a gap:
+
+- quoted-phrase adjacency and the within-chunk fallback path, because the
+  double parses no operators, so neither shape exists;
+- title matchability, a property of the ingestion projection rather than of a
+  store;
+- the scalar and IN-list filter forms. ``_chunk_matches_filters`` handles both,
+  and the filter tests here exercise the scalar form only.
+
+Two more are pinned in a weaker form than the binding's. A heading-only term is
 findable against both, but only the binding ranks a heading match above a body
-one, so the ordering belongs against a real backend. What the double models of
-the query is a whitespace split -- no stopwords, no stemming, no exclusion, no
-alternation -- and its parse reports that rather than pretending otherwise, so
-assertions about any of it belong against a real backend.
+one, so that ordering belongs against a real backend. And the parse is pinned
+for its shape rather than its content: the double's is a whitespace split, so
+the stopword, stemming, negation and alternation cases the Postgres parse tests
+cover have nothing to assert against here.
 """
 
 from __future__ import annotations
@@ -374,6 +382,36 @@ async def test_stub_search_bm25_requires_the_terms_its_own_parse_reports(store, 
     )
 
 
+async def test_stub_search_bm25_matches_a_parsed_term_the_query_text_lacks(store, monkeypatch):
+    """The parse is the whole of what the search requires, not an addition to it.
+
+    The positive half of the pin above, and the two are not redundant: that one
+    reds a search reading the query text *instead of* the parse, and this one
+    reds a search reading both. A rival taking the union of the two --
+    ``(*parse.terms, *query.lower().split())``, the belt-and-braces shape a
+    later edit reaches for -- satisfies the negative direction, because the
+    absent term culls the match there either way. Here the union rival requires
+    ``zzz`` on top of the reported term and matches nothing, while a search
+    reading only the query text has no reported term to look for at all. One
+    fixture, both rivals.
+    """
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword only here")])
+
+    async def _parse(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword",), excluded=(), all_required=True, adjacent=False
+        )
+
+    monkeypatch.setattr(store, "parse_keyword_query", _parse)
+
+    res = await store.search_bm25("zzz", limit=10)
+    assert [r.document_id for r in res] == ["d1"], (
+        "the reported term is present and is the only requirement; a search "
+        "that also required the typed word would match nothing"
+    )
+    assert res[0].score == 1.0, "the ranking pool reads the reported term too, not the typed one"
+
+
 async def test_stub_search_bm25_honours_a_parse_that_does_not_require_every_term(
     store, monkeypatch
 ):
@@ -429,6 +467,65 @@ async def test_stub_filter_applies_to_the_match_union_not_just_the_ranking_pool(
         "alphaword betaword", limit=10, filters={"lifecycle_status": "active"}
     )
     assert filtered == [], "the archived chunk is outside the slice, so it cannot supply betaword"
+
+
+async def test_stub_filtered_keyword_search_admits_no_document_the_unfiltered_one_excludes(store):
+    """The narrowing direction: a filter subtracts documents, it never adds one.
+
+    The test above pins that a filter must not admit a document whose terms are
+    spread across chunks it did not select. This is the other half of "a filter
+    only narrows", and it is a different rival: one whose predicates reach the
+    match union but not the ranking pool, or that applies the slice to one and
+    the whole document to the other, can return a document under a filter that
+    the unfiltered search never returned. Both filter values are exercised, so
+    a predicate ignored outright is caught too -- it would return both
+    documents each time.
+    """
+    await store.index_chunks(
+        "d1", [_chunk("d1", content="alphaword here", lifecycle_status="active")]
+    )
+    await store.index_chunks(
+        "d2", [_chunk("d2", content="alphaword here", lifecycle_status="archived")]
+    )
+
+    unfiltered = {r.document_id for r in await store.search_bm25("alphaword", limit=10)}
+    assert unfiltered == {"d1", "d2"}, "precondition: both documents match unfiltered"
+
+    for value, expected in (("active", {"d1"}), ("archived", {"d2"})):
+        filtered = {
+            r.document_id
+            for r in await store.search_bm25(
+                "alphaword", limit=10, filters={"lifecycle_status": value}
+            )
+        }
+        assert filtered <= unfiltered, "a filter may not admit what the unfiltered search excluded"
+        assert filtered == expected, f"the {value} slice holds exactly one of the two"
+
+
+async def test_stub_parse_keyword_query_reports_a_whitespace_split_and_models_nothing_else(store):
+    """The double's parse shape is load-bearing, so it is pinned rather than assumed.
+
+    The retrieval service reads all four fields to build its keyword
+    advisories, and every advisory test in the suite runs against this parse.
+    What the double reports is therefore a property callers depend on, not an
+    implementation detail: the terms are the query lowercased and split on
+    whitespace -- no stopword removal, no stemming -- with no exclusions, every
+    term required, and no adjacency.
+    """
+    parse = await store.parse_keyword_query("The Running AlphaWord")
+
+    assert parse.terms == ("the", "running", "alphaword"), (
+        "a whitespace split, lowercased; a stopword filter would drop 'the' "
+        "and a stemmer would report 'run'"
+    )
+    assert parse.excluded == ()
+    assert parse.all_required is True
+    assert parse.adjacent is False
+
+    blank = await store.parse_keyword_query("   ")
+    assert blank.terms == (), (
+        "a blank query carries no terms, matching what the search does with it"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -137,19 +137,24 @@ class StubContentStore(ContentStore):
                 return chunk.content.lower()
             return f"{chunk.heading_path} {chunk.content}".lower()
 
-        def _hits(chunk: Chunk) -> int:
-            """How many of the query's terms this chunk carries."""
-            searchable = _searchable(chunk)
-            return sum(1 for t in terms if t in searchable)
-
         results: list[SearchResult] = []
         for document_id, chunks in self._store.items():
-            slice_ = [c for c in chunks if _chunk_matches_filters(c, filters)]
-            authored = [c for c in slice_ if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+            # One pass over the filtered slice. The match, the ranking, the
+            # excerpt and the count are four readings of the same per-chunk
+            # term hits, and deriving them from one list is what makes that a
+            # single computation rather than four parallel ones.
+            scored = [
+                (c, [t for t in terms if t in _searchable(c)])
+                for c in chunks
+                if _chunk_matches_filters(c, filters)
+            ]
+            authored = [
+                (c, hits) for c, hits in scored if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH
+            ]
 
             # The match is decided on the union of the authored slice, so a
             # term carried only by the header never enters it.
-            satisfied = sum(1 for t in terms if any(t in _searchable(c) for c in authored))
+            satisfied = sum(1 for t in terms if any(t in hits for _, hits in authored))
             if not (satisfied == len(terms) if parse.all_required else satisfied):
                 continue
 
@@ -158,15 +163,15 @@ class StubContentStore(ContentStore):
             # text. A chunk scores by the fraction of the query's terms it
             # carries, which makes co-occurrence a ranking signal rather than
             # a matching one.
-            pool = [(_hits(c) / len(terms), c) for c in slice_ if _hits(c)]
+            pool = [(len(hits) / len(terms), c) for c, hits in scored if hits]
             # An authored chunk always wins the excerpt; among equals, the one
             # earliest in document order.
             _, excerpt = min(
                 pool,
-                key=lambda scored: (
-                    scored[1].heading_path == SYNTHETIC_HEADER_HEADING_PATH,
-                    -scored[0],
-                    scored[1].chunk_index,
+                key=lambda ranked: (
+                    ranked[1].heading_path == SYNTHETIC_HEADER_HEADING_PATH,
+                    -ranked[0],
+                    ranked[1].chunk_index,
                 ),
             )
             results.append(
@@ -175,7 +180,7 @@ class StubContentStore(ContentStore):
                     heading_path=excerpt.heading_path,
                     content=excerpt.content,
                     score=max(score for score, _ in pool),
-                    matched_chunk_count=sum(1 for c in authored if _hits(c)),
+                    matched_chunk_count=sum(1 for _, hits in authored if hits),
                 )
             )
 
@@ -206,9 +211,13 @@ class StubContentStore(ContentStore):
         adjacency. Assertions about stopwords, stemming, negation, ``or``, or
         quoted phrases belong against a real backend rather than here.
 
-        ``search_bm25`` matches on what this returns, so the two agree by
-        construction: whatever a substituted parse reports required is what the
-        search requires.
+        ``search_bm25`` reads ``terms`` and ``all_required`` from what this
+        returns, so those two agree by construction: whatever a substituted
+        parse reports required is what the search requires. It reads neither
+        ``excluded`` nor ``adjacent``, because it models neither. The agreement
+        therefore spans two of the four fields, and a parse that began
+        reporting the other two would widen the search silently -- extend the
+        search alongside the parse, not the parse alone.
         """
         return KeywordQueryParse(
             terms=tuple(query.lower().split()), excluded=(), all_required=True, adjacent=False
