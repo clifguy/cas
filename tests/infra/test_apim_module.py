@@ -461,12 +461,15 @@ def test_apim_module_exists() -> None:
 
 
 def test_main_bicep_wires_apim_module() -> None:
-    """The orchestrator wires the APIM module live and scopes it to the rg."""
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/apim\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/apim.bicep"
-    )
-    assert re.search(r"scope:\s*rg", text), "the apim module must be scoped to rg"
+    """The orchestrator wires the APIM module live and scopes it to the rg.
+
+    The scope assertion reads this module's own call body: every module in the
+    orchestrator carries ``scope: rg``, so a whole-file search stays green even
+    when this one has lost the line.
+    """
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/apim.bicep")
+    assert block, "main.bicep must wire a live module from modules/apim.bicep"
+    assert re.search(r"scope:\s*rg\b", block), "the apim module must be scoped to rg"
 
 
 def test_apim_declares_apim_service() -> None:
@@ -1416,10 +1419,13 @@ def test_apim_defines_cas_app_url_named_value() -> None:
 
 def test_main_bicep_passes_cas_app_url_to_apim() -> None:
     """main.bicep passes the CAS app URL to the apim module, interpolated from the cas
-    custom-domain hostname — tenant-agnostic, never a literal domain.
+    custom-domain hostname — tenant-agnostic, never a literal domain. Read within
+    the apim call body, so the assertion cannot be satisfied by another module
+    that happens to take a parameter of the same name.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    match = re.search(r"casAppUrl:\s*([^\n]+)", text)
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/apim.bicep")
+    assert block, "main.bicep must wire a live module from modules/apim.bicep"
+    match = re.search(r"casAppUrl:\s*([^\n]+)", block)
     assert match, "main.bicep must pass `casAppUrl:` to the apim module"
     rhs = match.group(1)
     assert "${casHostname}" in rhs, (
@@ -2475,3 +2481,36 @@ def test_apim_transfer_operation_policy_routes_to_backend_unauthenticated(
     assert "return-response" not in inbound, (
         f"{policy_path.name}: must be a real backend passthrough, not a canned edge response"
     )
+
+
+def test_module_block_isolation_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the orchestrator-wiring gates load-bearing: every module
+    in the orchestrator carries ``scope: rg``, so a whole-file search is
+    satisfied by a neighbour even when the apim call has lost the line.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module apim 'modules/apim.bicep' = {\n"
+        "  params: {\n    publisherEmail: publisherEmail\n  }\n}\n"
+        "module other 'modules/other.bicep' = {\n"
+        "  scope: rg\n"
+        "  params: {\n    casAppUrl: 'https://${casHostname}'\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/apim.bicep")
+    assert block, "the detector must find the apim module call"
+    assert "publisherEmail" in block, "the block must carry the call's own parameters"
+    assert "scope: rg" not in block, (
+        "the block must truncate at the next declaration, not borrow the following "
+        "module's scope line"
+    )
+    assert "casAppUrl" not in block, (
+        "the block must truncate at the next declaration, not leak the following "
+        "module's parameter list"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""

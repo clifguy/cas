@@ -91,6 +91,43 @@ def _references_existing_type(text: str, resource_type: str) -> bool:
     return pattern.search(_strip_line_comments(text)) is not None
 
 
+def _resource_block(text: str, symbol: str) -> str:
+    """Return the body of the ``resource <symbol> '...' = {...}`` declaration.
+
+    Slices to the next top-level declaration. The module declares the ACA
+    environment as ``existing`` alongside the certificate it binds, so a property
+    asserted over the whole module can be satisfied by the wrong resource; the
+    certificate gates below must read the certificate's own body. Returns ``""``
+    when the symbol is not declared.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(rf"^resource\s+{re.escape(symbol)}\b", stripped, re.MULTILINE)
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _module_block(text: str, module_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
+
+    Slices from the module declaration to the next top-level declaration. The
+    orchestrator wires nine modules and every one is scoped to the resource
+    group, so an assertion made over the whole file is satisfied by any one of
+    them; the wiring gate below must read this module's own call body.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_path) + r"'\s*=", stripped, re.MULTILINE
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
 def _output_lines(text: str) -> list[tuple[str, str]]:
     """Return ``(name, rhs)`` for every ``output <name> <type> = <rhs>`` line."""
     pattern = re.compile(r"^\s*output\s+(\w+)\s+\w+\s*=\s*(.+?)\s*$", re.MULTILINE)
@@ -132,19 +169,21 @@ def test_main_bicep_wires_custom_domains_module() -> None:
     """The orchestrator wires the module live, scopes it to the rg, and feeds it
     the ACA environment name, the cert Key Vault secret URI, the certificate
     name, and the BFF managed identity — all composed through module outputs.
+
+    Every assertion reads this module's own call body. Read over the whole file
+    they would be satisfied by a neighbour: every module is scoped to the rg,
+    and the BFF identity id is passed to three other modules besides this one.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/custom-domains\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/custom-domains.bicep"
-    )
-    assert re.search(r"scope:\s*rg", text), "the custom-domains module must be scoped to rg"
-    assert "foundation.outputs.acaEnvironmentName" in text, (
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/custom-domains.bicep")
+    assert block, "main.bicep must wire a live module from modules/custom-domains.bicep"
+    assert re.search(r"scope:\s*rg\b", block), "the custom-domains module must be scoped to rg"
+    assert "foundation.outputs.acaEnvironmentName" in block, (
         "custom-domains must receive the ACA environment name from foundation.outputs"
     )
-    assert "identity.outputs.bffIdentityId" in text, (
+    assert "identity.outputs.bffIdentityId" in block, (
         "custom-domains must receive the BFF identity id from identity.outputs"
     )
-    assert "keyvault.outputs.tlsCertificateName" in text, (
+    assert "keyvault.outputs.tlsCertificateName" in block, (
         "custom-domains must receive the TLS certificate name from keyvault.outputs"
     )
 
@@ -163,13 +202,19 @@ def test_custom_domains_cert_sources_from_keyvault() -> None:
     """The certificate is sourced from Key Vault by reference: it carries
     ``certificateKeyVaultProperties`` with a ``keyVaultUrl`` from a parameter
     (no literal host) and an ``identity`` from the BFF-identity parameter.
+
+    Read out of the certificate's own body: the module also declares the ACA
+    environment, so a property found anywhere in the module says nothing about
+    which resource carries it.
     """
     text = _strip_line_comments(CUSTOM_DOMAINS.read_text(encoding="utf-8"))
-    assert "certificateKeyVaultProperties" in text, (
+    cert = _resource_block(text, "wildcardCertificate")
+    assert cert, "custom-domains.bicep must declare the wildcardCertificate resource"
+    assert "certificateKeyVaultProperties" in cert, (
         "the certificate must use certificateKeyVaultProperties (Key Vault reference)"
     )
-    assert re.search(r"keyVaultUrl:\s*\S", text), "the cert must set keyVaultUrl"
-    assert re.search(r"identity:\s*\w*[Ii]dentity", text), (
+    assert re.search(r"keyVaultUrl:\s*\S", cert), "the cert must set keyVaultUrl"
+    assert re.search(r"identity:\s*\w*[Ii]dentity", cert), (
         "certificateKeyVaultProperties.identity must reference an identity parameter"
     )
     assert not _hardcoded_https_hosts(text), (
@@ -402,3 +447,68 @@ def test_comment_stripper_controls() -> None:
     stripped = _strip_line_comments(url_line)
     assert "https://kv.vault.azure.net" in stripped
     assert "the cert" not in stripped
+
+
+def test_module_block_detector_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the wiring gate load-bearing: every module in the
+    orchestrator carries ``scope: rg`` and three of them are handed the same BFF
+    identity id, so a whole-file search is satisfied by a neighbour even when
+    this module's own call has lost the line.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module customDomains 'modules/custom-domains.bicep' = {\n"
+        "  scope: rg\n"
+        "  params: {\n    acaEnvironmentName: foundation.outputs.acaEnvironmentName\n  }\n}\n"
+        "module other 'modules/other.bicep' = {\n"
+        "  scope: rg\n"
+        "  params: {\n    sentinel: true\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/custom-domains.bicep")
+    assert block, "the detector must find the custom-domains module call"
+    assert "acaEnvironmentName" in block, "the block must carry the call's own parameters"
+    assert "sentinel" not in block, (
+        "the block must truncate at the next declaration, not leak the following "
+        "module's parameter list"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""
+
+
+def test_resource_block_detector_controls() -> None:
+    """``_resource_block`` returns only the named resource's own body.
+
+    This is what makes the certificate gates load-bearing: the module declares
+    the ACA environment beside the certificate, so a property found anywhere in
+    the module could belong to either resource.
+
+    The neighbouring resource is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    sample = (
+        f"resource wildcardCertificate '{_ACA_CERT_TYPE}@2025-01-01' = {{\n"
+        "  properties: {\n"
+        "    certificateKeyVaultProperties: {\n"
+        "      keyVaultUrl: tlsCertSecretUri\n"
+        "    }\n  }\n}\n"
+        f"resource acaEnvironment '{_ACA_ENV_TYPE}@2024-03-01' existing = {{\n"
+        "  identity: bffIdentityId\n"
+        "  sentinel: true\n"
+        "}\n"
+    )
+    block = _resource_block(sample, "wildcardCertificate")
+    assert block, "the detector must find the wildcardCertificate declaration"
+    assert "keyVaultUrl" in block, "the block must carry the certificate's own properties"
+    assert "identity:" not in block, (
+        "the block must truncate at the next declaration, not borrow the environment's "
+        "identity binding"
+    )
+    assert "sentinel" not in block, "the block must not bleed into the following resource"
+    assert _resource_block(sample, "absentSymbol") == ""

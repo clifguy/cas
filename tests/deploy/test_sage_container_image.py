@@ -61,9 +61,15 @@ def test_pg_client_major_matches_flexible_server() -> None:
     # Anti-drift: the client major must equal the Flexible Server major so pg_dump
     # never refuses a newer-server dump. A future server bump that forgets the
     # image, or a client pinned to the older Debian stock major, reds this gate.
+    #
+    # Read from the runtime stage, not the whole file. Pairing a whole-file
+    # version check with the sibling gate's unversioned runtime-stage check
+    # leaves a gap between them: a matching major installed in the builder and a
+    # stale one in the runtime stage satisfies both, and the shipped image is the
+    # runtime stage.
     major = _flexible_server_major()
-    assert f"postgresql-client-{major}" in _dockerfile_text(), (
-        f"the image must install postgresql-client-{major} to match the Flexible "
+    assert f"postgresql-client-{major}" in _runtime_stage_text(), (
+        f"the runtime stage must install postgresql-client-{major} to match the Flexible "
         f"Server major {major} (infra/modules/postgres.bicep)"
     )
 

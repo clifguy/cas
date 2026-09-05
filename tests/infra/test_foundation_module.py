@@ -335,12 +335,14 @@ def test_foundation_is_not_subscription_scoped() -> None:
 def test_main_bicep_wires_foundation_module() -> None:
     """The orchestrator wires the foundation module live (not the commented
     stub) and scopes it to the resource group.
+
+    The scope assertion reads this module's own call body: every module in the
+    orchestrator carries ``scope: rg``, so a whole-file search stays green even
+    when this one has lost the line.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/foundation\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/foundation.bicep"
-    )
-    assert re.search(r"scope:\s*rg", text), "the foundation module must be scoped to rg"
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/foundation.bicep")
+    assert block, "main.bicep must wire a live module from modules/foundation.bicep"
+    assert re.search(r"scope:\s*rg\b", block), "the foundation module must be scoped to rg"
 
 
 def test_foundation_aca_environment_registers_bff_identity() -> None:
@@ -463,6 +465,10 @@ def test_module_block_detector_controls() -> None:
     """``_module_block`` isolates one module call from another that shares a param
     expression — the foundation-vs-custom-domains coincidence the wiring gate must
     defeat; returns "" for an unwired path.
+
+    The neighbour also carries ``scope: rg``, which every module in the
+    orchestrator does: the wiring gate reads that line out of this slice, so the
+    slice must not borrow it from the module declared next.
     """
     sample = (
         "module foundation 'modules/foundation.bicep' = {\n"
@@ -471,6 +477,7 @@ def test_module_block_detector_controls() -> None:
         "  }\n"
         "}\n"
         "module customDomains 'modules/custom-domains.bicep' = {\n"
+        "  scope: rg\n"
         "  params: {\n"
         "    bffIdentityId: identity.outputs.bffIdentityId\n"
         "    sentinel: true\n"
@@ -480,4 +487,5 @@ def test_module_block_detector_controls() -> None:
     fb = _module_block(sample, "modules/foundation.bicep")
     assert "bffIdentityId" in fb, "the slice must contain the foundation params"
     assert "sentinel" not in fb, "the slice must not bleed into the custom-domains block"
+    assert "scope: rg" not in fb, "the slice must not borrow the custom-domains block's scope line"
     assert _module_block(sample, "modules/missing.bicep") == ""

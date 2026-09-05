@@ -90,6 +90,26 @@ def _output_lines(text: str) -> list[tuple[str, str]]:
     return [(m.group(1), m.group(2)) for m in pattern.finditer(_strip_line_comments(text))]
 
 
+def _module_block(text: str, module_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
+
+    Slices from the module declaration to the next top-level declaration. The
+    orchestrator wires nine modules and hands several of them the same
+    parameters — the SharePoint coordinates go to the maintenance job as well —
+    so an assertion made over the whole file is satisfied by a neighbour; the
+    orchestrator-wiring gates below must read one module's own call body.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_path) + r"'\s*=", stripped, re.MULTILINE
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
 def _injected_env_names(text: str) -> set[str]:
     """Names of the environment variables the module injects into the containers.
 
@@ -341,10 +361,15 @@ def test_sage_config_selects_document_store_vault_source() -> None:
 def test_main_threads_sharepoint_coordinates_into_container_apps() -> None:
     """main.bicep wires the SharePoint coordinate params into the container-apps
     module, so the single source of each coordinate flows end-to-end.
+
+    Read within this module's own call body: the maintenance job is handed all
+    three coordinates identically, so a whole-file search stays green even when
+    the container-apps call has dropped them.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/container-apps.bicep")
+    assert block, "main.bicep must wire a live module from modules/container-apps.bicep"
     for param in ("sharepointSiteId", "sharepointDriveId", "vaultSourceRootPath"):
-        assert re.search(rf"{param}:\s*{param}", text), (
+        assert re.search(rf"{param}:\s*{param}", block), (
             f"main.bicep must thread {param} into the container-apps module"
         )
 
@@ -404,10 +429,12 @@ def test_bff_client_secret_url_built_from_param() -> None:
 def test_main_threads_bff_client_secret_name() -> None:
     """The orchestrator threads the keyvault module's ``bffClientSecretName`` output
     into the container-apps module, so the single source of the secret name flows
-    end-to-end.
+    end-to-end. Read within this module's own call body, so the assertion cannot
+    be satisfied by another module picking the output up later.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"bffClientSecretName:\s*keyvault\.outputs\.bffClientSecretName", text), (
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/container-apps.bicep")
+    assert block, "main.bicep must wire a live module from modules/container-apps.bicep"
+    assert re.search(r"bffClientSecretName:\s*keyvault\.outputs\.bffClientSecretName", block), (
         "main.bicep must thread keyvault.outputs.bffClientSecretName into container-apps"
     )
 
@@ -540,12 +567,18 @@ def test_main_wires_container_apps_and_resolves_apim_backend() -> None:
     """The orchestrator wires the module live (scoped to rg), resolves the APIM
     backend from the SAGE container-app FQDN rather than a hand-substituted
     placeholder param, and exposes that FQDN as an orchestrator output.
+
+    The backend resolution is ``apim``'s parameter, so it is read within the apim
+    call body rather than anywhere in the file. The output and absent-parameter
+    claims are genuinely file-level and stay that way.
     """
     text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/container-apps\.bicep'\s*=", text), (
+    assert _module_block(text, "modules/container-apps.bicep"), (
         "main.bicep must wire a live module from modules/container-apps.bicep"
     )
-    assert re.search(r"sageBackendHostname:\s*containerApps\.outputs\.\w+", text), (
+    apim_block = _module_block(text, "modules/apim.bicep")
+    assert apim_block, "main.bicep must wire a live module from modules/apim.bicep"
+    assert re.search(r"sageBackendHostname:\s*containerApps\.outputs\.\w+", apim_block), (
         "apim's sageBackendHostname must resolve from the container-apps SAGE FQDN output"
     )
     assert not re.search(r"param\s+sageBackendHostname\s+string", text), (
@@ -711,3 +744,32 @@ def test_sage_scale_pinned_to_single_replica() -> None:
     assert re.search(r"maxReplicas:\s*1", sage_block), (
         "the maxReplicas: 1 pin must live in the SAGE app's scale block"
     )
+
+
+def test_module_block_detector_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the orchestrator-wiring gates load-bearing. The
+    maintenance job is handed the SharePoint coordinates in exactly the shape
+    the container-apps call uses, so a whole-file search would be satisfied by
+    that neighbour even after the container-apps call has dropped them.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module containerApps 'modules/container-apps.bicep' = {\n"
+        "  params: {\n    acrName: foundation.outputs.acrName\n  }\n}\n"
+        "module maintenanceJob 'modules/maintenance-job.bicep' = {\n"
+        "  params: {\n    sharepointSiteId: sharepointSiteId\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/container-apps.bicep")
+    assert block, "the detector must find the container-apps module call"
+    assert "acrName" in block, "the block must carry the call's own parameters"
+    assert "sharepointSiteId" not in block, (
+        "the block must truncate at the next declaration, not borrow the maintenance "
+        "job's identical coordinate threading"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""

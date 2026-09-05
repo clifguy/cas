@@ -84,6 +84,27 @@ def _count_resource_type(text: str, resource_type: str) -> int:
     return len(pattern.findall(_strip_line_comments(text)))
 
 
+def _resource_blocks(text: str, resource_type: str) -> list[str]:
+    """Return the body of every ``resource <symbol> '<resource_type>@…'`` block.
+
+    Keyed by resource *type* rather than by symbol, so a symbol rename cannot
+    silently blank the list and pass a gate vacuously. Each body runs to the next
+    top-level declaration. The module declares four role assignments, so a
+    posture asserted over the whole module is satisfied when only one of the four
+    carries it; the grant gates below must read each assignment's own body.
+    """
+    stripped = _strip_line_comments(text)
+    pattern = re.compile(
+        r"^resource\s+\w+\s+'" + re.escape(resource_type) + r"@[0-9A-Za-z-]+'", re.MULTILINE
+    )
+    blocks: list[str] = []
+    for m in pattern.finditer(stripped):
+        rest = stripped[m.end() :]
+        nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+        blocks.append(rest[: nxt.start()] if nxt else rest)
+    return blocks
+
+
 def _module_block(text: str, module_path: str) -> str:
     """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
 
@@ -142,9 +163,16 @@ def test_keyvault_declares_vault() -> None:
 def test_keyvault_uses_rbac_authorization() -> None:
     """The access model is Azure RBAC (``enableRbacAuthorization: true``), not the
     legacy vault access-policy array — the no-stored-credential posture.
+
+    The positive claim is read out of the vault's own body; the module declares
+    four role assignments beside it, so a property found anywhere in the module
+    says nothing about which resource carries it. The negative claim stays
+    module-wide: a populated accessPolicies array is wrong wherever it appears.
     """
     text = _strip_line_comments(KEYVAULT.read_text(encoding="utf-8"))
-    assert re.search(r"enableRbacAuthorization:\s*true", text), (
+    vault = _resource_blocks(text, _KV_TYPE)
+    assert len(vault) == 1, f"keyvault.bicep must declare exactly one vault; found {len(vault)}"
+    assert re.search(r"enableRbacAuthorization:\s*true", vault[0]), (
         "the vault must set enableRbacAuthorization: true"
     )
     assert not re.search(r"accessPolicies:\s*\[\s*\{", text), (
@@ -155,15 +183,32 @@ def test_keyvault_uses_rbac_authorization() -> None:
 def test_keyvault_grants_secrets_user_to_both_identities() -> None:
     """The vault grants the SAGE and CAS BFF identities data-plane read through
     Azure role assignments referencing the Key Vault Secrets User role.
+
+    Both halves of the docstring's claim are asserted per assignment. A count plus
+    a whole-module containment check says only that *something* references the
+    role and that *some* assignment sets each property; either identity could
+    lose its secrets-read grant with that shape green. The role id is held in a
+    module-level ``var``, so containment is satisfied by the declaration alone
+    even when no assignment binds it.
     """
     text = KEYVAULT.read_text(encoding="utf-8")
     count = _count_resource_type(text, _ROLE_ASSIGNMENT_TYPE)
     assert count >= 2, f"expected >=2 role assignments (SAGE + BFF); found {count}"
-    assert _KV_SECRETS_USER_ROLE in text, (
-        "a role assignment must reference the Key Vault Secrets User role id"
+    blocks = _resource_blocks(text, _ROLE_ASSIGNMENT_TYPE)
+    assert len(blocks) == count, "the role-assignment slicer lost a declaration"
+    role_var = re.search(rf"var\s+(\w+)\s*=\s*'{re.escape(_KV_SECRETS_USER_ROLE)}'", text)
+    assert role_var, (
+        f"keyvault.bicep must declare the Key Vault Secrets User role id {_KV_SECRETS_USER_ROLE}"
     )
-    assert re.search(r"principalType:\s*'ServicePrincipal'", _strip_line_comments(text)), (
-        "role assignments must set principalType: 'ServicePrincipal'"
+    granting = [b for b in blocks if re.search(rf"roleDefinitionId:.*\b{role_var.group(1)}\b", b)]
+    for principal in ("sagePrincipalId", "bffPrincipalId"):
+        assert any(re.search(rf"principalId:\s*{principal}\b", b) for b in granting), (
+            f"a Key Vault Secrets User assignment must grant {principal}"
+        )
+    missing = [b for b in blocks if not re.search(r"principalType:\s*'ServicePrincipal'", b)]
+    assert not missing, (
+        f"every role assignment must set principalType: 'ServicePrincipal'; "
+        f"{len(missing)} of {count} do not"
     )
 
 
@@ -253,15 +298,17 @@ def test_main_bicep_wires_keyvault_module() -> None:
     """The orchestrator wires the Key Vault module live, scopes it to the resource
     group, and feeds it the identity module's principal ids through the
     orchestrator (composed through outputs, not a cross-module reach).
+
+    Every assertion reads this module's own call body. Read over the whole file
+    they would be satisfied by a neighbour: every module is scoped to the rg, and
+    nearly every one composes against ``identity.outputs``.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/keyvault\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/keyvault.bicep"
-    )
-    assert re.search(r"scope:\s*rg", text), "the keyvault module must be scoped to rg"
-    assert re.search(r"sagePrincipalId:", text), "main.bicep must pass sagePrincipalId to keyvault"
-    assert re.search(r"bffPrincipalId:", text), "main.bicep must pass bffPrincipalId to keyvault"
-    assert "identity.outputs" in text, (
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/keyvault.bicep")
+    assert block, "main.bicep must wire a live module from modules/keyvault.bicep"
+    assert re.search(r"scope:\s*rg\b", block), "the keyvault module must be scoped to rg"
+    assert re.search(r"sagePrincipalId:", block), "main.bicep must pass sagePrincipalId to keyvault"
+    assert re.search(r"bffPrincipalId:", block), "main.bicep must pass bffPrincipalId to keyvault"
+    assert "identity.outputs" in block, (
         "keyvault must consume the identity module's principal ids through the orchestrator"
     )
 
@@ -330,9 +377,15 @@ def test_keyvault_soft_delete_is_unconditional() -> None:
     With purge protection off by decision, soft delete is the only remaining
     recovery window for a deleted vault. Parameterizing it would turn a
     considered trade-off into a posture that can be switched to unrecoverable.
+
+    Read out of the vault's own body: over the whole module the first match wins
+    wherever it sits, so the property could migrate to a role assignment — where
+    it does nothing — with the gate green.
     """
     text = _strip_line_comments(KEYVAULT.read_text(encoding="utf-8"))
-    m = re.search(r"enableSoftDelete:\s*(.+)", text)
+    vault = _resource_blocks(text, _KV_TYPE)
+    assert len(vault) == 1, f"keyvault.bicep must declare exactly one vault; found {len(vault)}"
+    m = re.search(r"enableSoftDelete:\s*(.+)", vault[0])
     assert m is not None, "keyvault.bicep must set enableSoftDelete"
     assert m.group(1).strip() == "true", (
         f"enableSoftDelete must be the literal true, not {m.group(1).strip()!r}"
@@ -406,13 +459,55 @@ def test_module_block_isolation_controls() -> None:
         "module keyvault 'modules/keyvault.bicep' = {\n"
         "  params: {\n    sagePrincipalId: identity.outputs.sageIdentityPrincipalId\n  }\n}\n"
         "module other 'modules/other.bicep' = {\n"
+        "  scope: rg\n"
         "  params: {\n    enablePurgeProtection: enableKeyVaultPurgeProtection\n  }\n}\n"
     )
     block = _module_block(two_modules, "modules/keyvault.bicep")
     assert block, "the detector must find the keyvault module call"
     assert "sagePrincipalId" in block, "the block must carry the keyvault call's own parameters"
+    assert "scope: rg" not in block, (
+        "the block must truncate at the next declaration, not borrow the following "
+        "module's scope line — every module in the orchestrator carries one"
+    )
     assert "enablePurgeProtection" not in block, (
         "the block must truncate at the next declaration, not leak the following "
         "module's parameter list"
     )
     assert _module_block(two_modules, "modules/absent.bicep") == ""
+
+
+def test_resource_blocks_detector_controls() -> None:
+    """``_resource_blocks`` returns one body per declaration of a type, each
+    truncated at the next declaration.
+
+    This is what makes the vault-posture and per-grant gates load-bearing: the
+    module declares one vault and four role assignments, so a property found
+    anywhere in the module says nothing about which resource carries it, and a
+    single match says nothing about the other three assignments.
+
+    The clean sibling is declared *after* the one carrying the marker: a helper
+    that finds a declaration but never truncates would report the marker on both,
+    and only this ordering catches that.
+    """
+    sample = (
+        "resource a 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n"
+        "  properties: {\n    principalType: 'ServicePrincipal'\n  }\n}\n"
+        "resource b 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n"
+        "  properties: {\n    principalId: bffPrincipalId\n  }\n}\n"
+        "resource v 'Microsoft.KeyVault/vaults@2023-07-01' = {\n"
+        "  properties: {\n    enableSoftDelete: true\n  }\n}\n"
+    )
+    blocks = _resource_blocks(sample, _ROLE_ASSIGNMENT_TYPE)
+    assert len(blocks) == 2, f"expected one block per assignment; got {len(blocks)}"
+    assert "principalType" in blocks[0], "the first block must carry its own properties"
+    assert "principalType" not in blocks[1], (
+        "the second block must not borrow the first assignment's principalType — this is "
+        "the coincidence the every-assignment gate exists to defeat"
+    )
+    assert "enableSoftDelete" not in blocks[1], (
+        "an assignment block must truncate before the vault declaration"
+    )
+    vault = _resource_blocks(sample, _KV_TYPE)
+    assert len(vault) == 1 and "enableSoftDelete" in vault[0]
+    assert "principalType" not in vault[0], "the vault block must not carry an assignment's posture"
+    assert _resource_blocks(sample, "Microsoft.Absent/things") == []
