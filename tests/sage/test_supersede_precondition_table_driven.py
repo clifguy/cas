@@ -306,7 +306,7 @@ async def test_fail_fast_short_circuits_before_projection(
     assert spy.project_calls == calls_before, "the rejected supersede must not have run projection"
 
 
-async def test_rejection_reports_table_derived_allowed_states_default_table(
+async def test_rejection_reports_table_derived_allowed_states_single_state_table(
     tmp_vault_dir,
     graph_store,
     lock_manager,
