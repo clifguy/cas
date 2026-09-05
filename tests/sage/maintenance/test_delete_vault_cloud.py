@@ -252,19 +252,30 @@ def test_cloud_binds_document_store_and_cloud_provisioner(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_cloud_typed_confirm_mismatch_refuses(monkeypatch):
+@pytest.mark.parametrize("vault_id", ["cas_smoke", "test"])
+def test_cloud_typed_confirm_mismatch_refuses(monkeypatch, vault_id):
     """A confirmation that does not equal the vault id refuses (exit 3) and destroys
-    nothing -- the typed-confirm envelope is live even without interactive stdin.
+    nothing -- for every id, the core's auto-confirm carve-out ``test`` included.
 
-    Anti-coincidental-pass: runs the *real* core; a wiring that bypassed the prompt
-    (e.g. auto-confirming) would drop the schema and delete the tree.
+    The core skips its prompt entirely for the literal id ``test``, which is right
+    for the interactive local path it was written for. This arm reaches
+    deployed-tenant state, so it refuses on its own rather than inheriting that
+    answer; before it did, the ``test`` case here returned 0 with the schema
+    dropped and the source tree deleted.
+
+    Anti-coincidental-pass: the recorder assertions go unexercised under the
+    correct implementation, which refuses before the stores are built -- they are
+    a regression guard rather than a live probe, and they do fire (a populated
+    ``dropped``) if the refusal is removed. That the refusal is *this arm's own*
+    is proven by the sentinel test below, not here: the ``cas_smoke`` case passes
+    against a delegated refusal too, which is exactly why it could not catch this.
     """
     _clear_env(monkeypatch)
     store = _FakeSourceStore()
     prov = _FakeProvisioner()
     _patch_resolvers(monkeypatch, source_store=store, provisioner=prov)
 
-    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", vault_id)
     monkeypatch.setenv("SAGE_DELETE_CONFIRM", "WRONG")
     monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
     monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")  # no dump/sink -> no Azure
@@ -272,6 +283,129 @@ def test_cloud_typed_confirm_mismatch_refuses(monkeypatch):
     rc = main()
 
     assert rc == 3
+    assert prov.dropped == []
+    assert store.deleted_trees == []
+    assert store.deleted_configs == []
+
+
+@pytest.mark.parametrize(
+    ("vault_id", "confirm"),
+    [
+        ("cas_smoke", "WRONG"),
+        ("test", "WRONG"),
+        # Near misses on the id the core carves out of its own prompt, where a
+        # compare looser than exact has nothing downstream to catch it. Each is a
+        # substring, a proper prefix, or a case fold of the id; the empty confirm
+        # is the value this arm exists to refuse.
+        ("test", ""),
+        ("test", "tes"),
+        ("test", "tests"),
+        ("test", "TEST"),
+    ],
+)
+def test_cloud_confirm_mismatch_refuses_before_binding_anything(monkeypatch, vault_id, confirm):
+    """The mismatch is refused by this arm before any binding is built or the core
+    is entered -- no Entra token, no Graph client, no Postgres resolution.
+
+    Anti-coincidental-pass: every collaborator is a sentinel that raises if called,
+    which separates the candidate implementations on two axes. On *where* the
+    decision is taken: leaving it to the core builds the stores and enters it,
+    firing the sentinels on every case, and a check special-cased to ``test``
+    fires them on the ``cas_smoke`` case. On *how strictly* it compares: a
+    disjoint confirm like ``"WRONG"`` is refused by any compare looser than
+    exact, so the near-miss cases carry the discrimination -- a substring-tolerant
+    compare accepts ``""`` and ``"tes"``, a prefix-tolerant one accepts ``"tes"``,
+    a superstring-tolerant one accepts ``"tests"``, a case-insensitive one accepts
+    ``"TEST"``. The near misses run shorter *and* longer than the id because a
+    compare can be loose in either direction. The empty confirm on ``test`` is the
+    original defect exactly: the value that passed when this arm had no check of
+    its own.
+    """
+    _clear_env(monkeypatch)
+
+    def _must_not_call(*args, **kwargs):
+        raise AssertionError("the refusal must precede every binding and the core")
+
+    monkeypatch.setattr(dvc, "_config_from_env", _must_not_call)
+    monkeypatch.setattr("sage.vault_source_binding.build_stack_vault_source_store", _must_not_call)
+    monkeypatch.setattr("sage.storage_binding.build_stack_storage_provisioner", _must_not_call)
+    monkeypatch.setattr(
+        "sage.vault_source_document_store.build_sharepoint_graph_client", _must_not_call
+    )
+    monkeypatch.setattr(dvc, "delete_vault", _must_not_call)
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", vault_id)
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", confirm)
+    monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
+
+    assert main() == 3
+
+
+@pytest.mark.parametrize("confirm", ["cas_smoke", " cas_smoke ", "cas_smoke\n"])
+def test_cloud_matching_confirm_is_normalized_like_the_vault_id(monkeypatch, confirm):
+    """A matching confirm is accepted with surrounding whitespace stripped, the way
+    this arm already strips the vault id it compares it against.
+
+    Both reach the job as environment variables carrying an operator-typed workflow
+    input, where a trailing space or newline is invisible and survives a paste. The
+    other cloud arm that owns its confirm check normalizes the same way; refusing
+    here on whitespace alone would refuse a correct answer and diverge from it.
+
+    Anti-coincidental-pass: the teardown is asserted to have *completed* rather than
+    merely to have returned 0. A compare that skipped the confirmation entirely also
+    returns 0, so the exit code alone does not separate "accepted the padded confirm"
+    from "never checked"; the dropped schema and the removed source tree do. Drop the
+    normalization and the padded cases refuse instead, leaving both empty.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+    prov = _FakeProvisioner()
+    _patch_resolvers(monkeypatch, source_store=store, provisioner=prov)
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", confirm)
+    monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
+
+    rc = main()
+
+    assert rc == 0
+    assert prov.dropped == ["cas_smoke"]
+    assert store.deleted_trees == [("cas_smoke", None)]
+
+
+@pytest.mark.parametrize("vault_id", ["cas_smoke", "test"])
+@pytest.mark.parametrize("apply_env", [None, "false", "0"])
+def test_cloud_dry_run_does_not_require_a_matching_confirm(monkeypatch, vault_id, apply_env):
+    """A dry-run returns 0 on a mismatched confirmation, destroying nothing.
+
+    The confirmation gates destruction, not the preview: the core consults it only
+    under apply, and this arm's own check is gated the same way, so reading the
+    plan for a vault does not require retyping its id.
+
+    Anti-coincidental-pass: an arm-side check written without the apply guard
+    refuses here, making the exit code 3 rather than 0 -- so this pins the gating
+    rather than restating the code the destructive path already asserts. The
+    falsey spellings are driven alongside the absent variable because the workflow
+    sends the flag as the literal string a dry run selects, never by omitting it: a
+    guard written on the raw value rather than the parsed one reads ``"false"`` as
+    true, refuses, and is invisible to a fixture that only ever leaves it unset.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+    prov = _FakeProvisioner()
+    _patch_resolvers(monkeypatch, source_store=store, provisioner=prov)
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", vault_id)
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", "WRONG")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
+    if apply_env is not None:
+        monkeypatch.setenv("SAGE_DELETE_APPLY", apply_env)
+
+    rc = main()
+
+    assert rc == 0
     assert prov.dropped == []
     assert store.deleted_trees == []
 
