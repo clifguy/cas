@@ -8,8 +8,9 @@ first run). Abstraction tests require mlx-lm and the weights of the model
 real-model tier, skipped unless ``SAGE_TEST_REAL_MODELS=1`` (see
 ``tests/helpers/real_models.py``), which keeps the default run fast and
 light. Markdown adapter tests have no external dependencies. Content-store
-adapter tests live in
-tests/sage/test_content_store_postgres.py.
+adapter tests live in tests/sage/test_content_store_postgres.py for the
+Postgres binding and tests/sage/test_stub_content_store.py for the in-memory
+double.
 
 Tests are organized in implementation dependency order: embedding provider
 first, then abstraction provider, then markdown adapter.

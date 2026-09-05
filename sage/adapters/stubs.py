@@ -87,43 +87,115 @@ class StubContentStore(ContentStore):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """Simple term-frequency keyword search for testing.
+        """Substring keyword search scoped to the document (CAS-ADR-048).
 
-        Scores by the fraction of query terms found, so a document carrying
-        only some of the query's terms still matches. The contract is
-        conjunctive over the document (CAS-ADR-048) and returns nothing in that
-        case, and it matches only authored text (CAS-ADR-049), which this
-        double does not model either. A test that turns on multi-term matching,
-        on where a term sits within a document, or on the provenance of the
-        text carrying it, is therefore not evidence about any binding and
-        belongs against a real backend.
+        The terms come from this store's own ``parse_keyword_query`` rather
+        than from a second split of the query text, so the two cannot drift
+        into stating one matching rule and applying another. A document matches
+        when the union of its authored chunks carries every reported term --
+        the terms need not co-occur in any one of them -- and a parse reporting
+        alternatives is applied as one.
+
+        The chunk stays the ranking and excerpt unit: a matching document is
+        returned once, scored by its best chunk and carrying that chunk's
+        ``heading_path`` and ``content``, with ``matched_chunk_count`` counting
+        the authored chunks bearing on the query. ``limit`` is a document
+        budget. Filter predicates select the slice before the union is taken,
+        so a filter only ever narrows.
+
+        The synthetic document-header row is barred from the match union and
+        from the count: it carries machine-generated and incidental text, which
+        ranks and orients but never satisfies a match (CAS-ADR-049). It stays
+        in the ranking pool, so a document's score still reflects it, while an
+        authored chunk always supplies the excerpt.
+
+        A chunk's indexed text is its heading path and its content, so a term
+        present only in a heading is findable. The two are not weighted apart
+        here; the production binding ranks a heading match above a body one,
+        which a test turning on that ordering must be written against.
+
+        Matching is substring containment over lowercased text, and the parse
+        splits the query on whitespace. Stopwords, stemming, exclusion,
+        alternation and phrase adjacency are not modelled -- the parse reports
+        their absence rather than pretending otherwise -- so a test turning on
+        any of those belongs against a real backend.
         """
-        terms = query.lower().split()
+        parse = await self.parse_keyword_query(query)
+        terms = parse.terms
         if not terms:
             return []
 
-        scored: list[tuple[float, Chunk]] = []
-        for chunks in self._store.values():
-            for chunk in chunks:
-                if not _chunk_matches_filters(chunk, filters):
-                    continue
-                content_lower = chunk.content.lower()
-                # Score = fraction of query terms found in content
-                matches = sum(1 for t in terms if t in content_lower)
-                if matches > 0:
-                    score = matches / len(terms)
-                    scored.append((score, chunk))
+        def _searchable(chunk: Chunk) -> str:
+            """The chunk's indexed text: its heading path and its content.
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [
-            SearchResult(
-                document_id=chunk.document_id,
-                heading_path=chunk.heading_path,
-                content=chunk.content,
-                score=score,
+            The header row is the exception. Its ``heading_path`` is an
+            internal sentinel rather than a heading someone wrote, so including
+            it would let a query for one of the sentinel's own words score
+            every header row in the store.
+
+            This carve-out is not parity: the Postgres binding indexes the
+            marker today, because its generated column weights ``heading_path``
+            whole and the text-search configuration reads the sentinel's
+            underscores as separators, leaving two ordinary lexemes at the
+            heading weight. The rule here is the one CAS-ADR-049 supports --
+            headings *within* a document rank, and a marker no author wrote is
+            not one of them -- so the divergence is the binding's artefact
+            rather than this double's licence, and a test turning on it is
+            evidence about the double alone.
+            """
+            if chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH:
+                return chunk.content.lower()
+            return f"{chunk.heading_path} {chunk.content}".lower()
+
+        results: list[SearchResult] = []
+        for document_id, chunks in self._store.items():
+            # One pass over the filtered slice. The match, the ranking, the
+            # excerpt and the count are four readings of the same per-chunk
+            # term hits, and deriving them from one list is what makes that a
+            # single computation rather than four parallel ones.
+            scored = [
+                (c, [t for t in terms if t in _searchable(c)])
+                for c in chunks
+                if _chunk_matches_filters(c, filters)
+            ]
+            authored = [
+                (c, hits) for c, hits in scored if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH
+            ]
+
+            # The match is decided on the union of the authored slice, so a
+            # term carried only by the header never enters it.
+            satisfied = sum(1 for t in terms if any(t in hits for _, hits in authored))
+            if not (satisfied == len(terms) if parse.all_required else satisfied):
+                continue
+
+            # The ranking pool spans the whole slice, header included, so
+            # derived text lifts a document that matched on its own authored
+            # text. A chunk scores by the fraction of the query's terms it
+            # carries, which makes co-occurrence a ranking signal rather than
+            # a matching one.
+            pool = [(len(hits) / len(terms), c) for c, hits in scored if hits]
+            # An authored chunk always wins the excerpt; among equals, the one
+            # earliest in document order.
+            _, excerpt = min(
+                pool,
+                key=lambda ranked: (
+                    ranked[1].heading_path == SYNTHETIC_HEADER_HEADING_PATH,
+                    -ranked[0],
+                    ranked[1].chunk_index,
+                ),
             )
-            for score, chunk in scored[:limit]
-        ]
+            results.append(
+                SearchResult(
+                    document_id=document_id,
+                    heading_path=excerpt.heading_path,
+                    content=excerpt.content,
+                    score=max(score for score, _ in pool),
+                    matched_chunk_count=sum(1 for _, hits in authored if hits),
+                )
+            )
+
+        results.sort(key=lambda r: (-r.score, r.document_id))
+        return results[:limit]
 
     async def update_chunk_metadata(
         self,
@@ -148,6 +220,14 @@ class StubContentStore(ContentStore):
         that, so it reports no exclusions, ``all_required=True``, and no
         adjacency. Assertions about stopwords, stemming, negation, ``or``, or
         quoted phrases belong against a real backend rather than here.
+
+        ``search_bm25`` reads ``terms`` and ``all_required`` from what this
+        returns, so those two agree by construction: whatever a substituted
+        parse reports required is what the search requires. It reads neither
+        ``excluded`` nor ``adjacent``, because it models neither. The agreement
+        therefore spans two of the four fields, and a parse that began
+        reporting the other two would widen the search silently -- extend the
+        search alongside the parse, not the parse alone.
         """
         return KeywordQueryParse(
             terms=tuple(query.lower().split()), excluded=(), all_required=True, adjacent=False
