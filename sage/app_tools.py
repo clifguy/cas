@@ -192,8 +192,9 @@ def register_app_tools(
         edge via version chain, the target transitions as part of edge
         execution — no explicit ``update_lifecycles(action="supersede")``
         is required. Both the states the transition may be taken from and
-        the state it lands in come from the vault's lifecycle table
-        (``active -> archived`` in the create-vault scaffold). A target already
+        the state it lands in come from the vault's lifecycle table (in
+        the create-vault scaffold, from ``active`` or ``completed``,
+        landing in ``archived``). A target already
         holding a state a supersession lands in gets the edge and no write.
         A target in any other state is not superseded at all: no edge is
         created, ``edges_dropped`` advances, and a

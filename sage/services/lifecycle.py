@@ -224,12 +224,17 @@ class LifecycleService:
         batch.
 
         Per-item validation surface:
-        Each item inherits the full ``LifecycleService._set_lifecycle``
-        precondition surface — ``DocumentNotFoundError`` for the item's
-        document, ``InvalidActionError`` for an action outside the
-        vault-config vocabulary, ``InvalidLifecycleTransitionError``
-        when the table does not permit the action from the current
-        state, and, for ``supersede``, ``MissingFieldError`` and
+        Each item resolves its identifier through
+        ``resolve_item_document_id`` inside the per-item ``try``, so
+        ``MissingDocumentIdentifierError`` and
+        ``AmbiguousDocumentIdentifierError`` land in the item's error
+        envelope having mutated nothing. It then inherits the full
+        ``LifecycleService._set_lifecycle`` precondition surface —
+        ``DocumentNotFoundError`` for the item's document,
+        ``InvalidActionError`` for an action outside the vault-config
+        vocabulary, ``InvalidLifecycleTransitionError`` when the table
+        does not permit the action from the current state, and, for
+        ``supersede``, ``MissingFieldError`` and
         ``DocumentNotFoundError`` on the successor. See
         ``LifecycleService._set_lifecycle`` for the full enumeration.
 

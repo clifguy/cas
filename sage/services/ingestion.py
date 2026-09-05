@@ -881,8 +881,9 @@ class IngestionService:
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: the vault's lifecycle
                 transition table does not permit ``supersede`` from the
-                predecessor's current state. Under the base lifecycle
-                that is any state other than ``active``.
+                predecessor's current state. Which states it does permit
+                is the table's to say, and is carried on the error as
+                ``allowed_states``.
             IdenticalContentSupersedeError: new content matches predecessor.
             SourceFileNotFoundError: ``request.source`` does not resolve to
                 a readable source on the vault-source store -- neither on the

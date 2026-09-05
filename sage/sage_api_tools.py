@@ -727,7 +727,10 @@ def register_sage_tools(
         (``create_edges`` does NOT auto-transition the predecessor's
         lifecycle).
 
-        Per-item error codes: ``document_not_found`` (the item's own
+        Per-item error codes: ``missing_document_identifier`` and
+        ``ambiguous_document_identifier`` (neither or both of
+        ``document_id`` and ``doc_id`` supplied — resolved per item,
+        before any mutation), ``document_not_found`` (the item's own
         document, or a ``supersede`` successor that does not exist),
         ``invalid_action``, ``invalid_lifecycle_transition`` (carrying
         the ``valid_actions`` for the state the document is in), and
