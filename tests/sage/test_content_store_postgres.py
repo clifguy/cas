@@ -1410,3 +1410,111 @@ async def test_retrieval_service_runs_unchanged_on_postgres(
     )
     results = await service._hybrid_rrf(_emb(0), "alpha", 10)
     assert any(r.document_id == "d0" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Both surfaces carry the same filter columns, so both must stay current
+# ---------------------------------------------------------------------------
+
+
+async def test_metadata_update_reaches_the_document_surface(store):
+    """A lifecycle change stops the title matching under the old predicate.
+
+    Both arms push a caller's predicates down to both surfaces, so a document
+    whose passages were re-stamped but whose document-level row was not would
+    keep answering an ``active``-filtered query through its title after being
+    archived. The existing metadata test covers passages only, which is
+    exactly the gap: the surface is the second site and shares no writer.
+    """
+    await store.index_chunks(
+        "d1", [_chunk("d1", content="ordinary body prose", lifecycle_status="active")]
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="d1",
+            matchable="Zetaword Catalog",
+            orienting="",
+            embedding=[0.0] * EMBEDDING_DIM,
+            lifecycle_status="active",
+        )
+    )
+    active = {"lifecycle_status": "active"}
+    assert [
+        r.document_id for r in await store.search_bm25("zetaword", limit=10, filters=active)
+    ] == ["d1"], "precondition: the title matches under the filter before the change"
+
+    await store.update_chunk_metadata("d1", {"lifecycle_status": "archived"})
+
+    assert await store.search_bm25("zetaword", limit=10, filters=active) == [], (
+        "an archived document still answered an active-filtered query by its title"
+    )
+    assert [
+        r.document_id
+        for r in await store.search_bm25(
+            "zetaword", limit=10, filters={"lifecycle_status": "archived"}
+        )
+    ] == ["d1"], "positive control: it matches under its new lifecycle_status"
+
+
+async def test_semantic_arm_applies_the_updated_filter_to_both_surfaces(store):
+    """The same gap on the vector arm, which pushes the predicate down too."""
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="body",
+                lifecycle_status="active",
+                embedding=[1.0] + [0.0] * (EMBEDDING_DIM - 1),
+            )
+        ],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="d1",
+            matchable="Title",
+            orienting="",
+            embedding=[1.0] + [0.0] * (EMBEDDING_DIM - 1),
+            lifecycle_status="active",
+        )
+    )
+    await store.update_chunk_metadata("d1", {"lifecycle_status": "archived"})
+
+    hits = await store.search_semantic(
+        [1.0] + [0.0] * (EMBEDDING_DIM - 1), limit=10, filters={"lifecycle_status": "active"}
+    )
+    assert hits == [], "an archived document's surface row survived an active filter"
+
+
+# ---------------------------------------------------------------------------
+# Passage reads see passages only, including on a vault awaiting migration
+# ---------------------------------------------------------------------------
+
+
+async def test_passage_reads_exclude_a_legacy_document_level_row(store):
+    """A vault that has not run its migration cannot leak its legacy rows.
+
+    The per-consumer exclusions are gone, so between deploying this code and
+    running the migration the only thing keeping a legacy row out of heading
+    enumeration, reconstructed projection text and the abstraction input is
+    the passage surface's own definition.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Title: T\nAbstract: a previously generated abstract",
+                heading_path="__document_header__",
+                chunk_index=-1,
+            ),
+            _chunk("d1", content="authored body", heading_path="Body", chunk_index=0),
+        ],
+    )
+
+    assert await store.get_heading_paths("d1") == ["Body"]
+    assert [c.content for c in await store.get_all_chunks("d1")] == ["authored body"]
+    hits = await store.search_semantic([0.0] * EMBEDDING_DIM, limit=10)
+    assert all(h.heading_path != "__document_header__" for h in hits), (
+        "a legacy row reached a caller through the semantic arm"
+    )

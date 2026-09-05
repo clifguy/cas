@@ -65,6 +65,14 @@ logger = logging.getLogger(__name__)
 
 _MAX_CANDIDATE_MATCHES = 10
 
+# Ceiling on a retrieval-health assertion's ``top_k``, and on the wider
+# lookup that reports a missed document's actual rank. Both run through
+# ``DiscoverRequest``, whose ``limit`` is capped, so a larger value would
+# raise a validation error from inside the health check instead of
+# reporting the failure the check exists to report.
+_EVAL_MAX_LIMIT = 100
+_EVAL_DIAGNOSTIC_FACTOR = 5
+
 # Inline-vs-spill delivery selector for content read tools.
 #   - "inline": force the body into the response.
 #   - "spill":  force write-to-path delivery (requires write_to_path).
@@ -503,6 +511,11 @@ class UtilitiesService:
                     "Each assertion requires 'query' and 'expected_document_id'",
                 )
 
+            if top_k > _EVAL_MAX_LIMIT:
+                raise AssertionsFileInvalidError(
+                    assertions_path,
+                    f"'top_k' must be at most {_EVAL_MAX_LIMIT}; got {top_k}",
+                )
             document_ids = await self._eval_ranked_document_ids(query, top_k)
 
             # Check if expected document is in results
@@ -516,7 +529,9 @@ class UtilitiesService:
 
             if not found:
                 # Check beyond top_k for diagnostic rank
-                extended = await self._eval_ranked_document_ids(query, top_k * 5)
+                extended = await self._eval_ranked_document_ids(
+                    query, min(top_k * _EVAL_DIAGNOSTIC_FACTOR, _EVAL_MAX_LIMIT)
+                )
                 for rank, document_id in enumerate(extended):
                     if document_id == expected_id:
                         actual_rank = rank + 1

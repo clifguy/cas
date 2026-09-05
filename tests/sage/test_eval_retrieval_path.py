@@ -15,7 +15,7 @@ import yaml
 
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubContentStore
-from sage.api.errors import AssertionsNotConfiguredError
+from sage.api.errors import AssertionsFileInvalidError, AssertionsNotConfiguredError
 from sage.models.enums import SourceType
 from sage.models.schemas import Document
 from sage.services.utilities import UtilitiesService
@@ -24,6 +24,7 @@ pytestmark = pytest.mark.asyncio
 
 _TARGET = "00000001_target"
 _DECOY = "00000002_decoy"
+_ABSENT = "00000003_absent"
 
 
 def _doc(document_id: str, title: str) -> Document:
@@ -170,4 +171,46 @@ async def test_unconfigured_assertions_still_raise(graph_store, minimal_config):
     minimal_config.retrieval_health = None
 
     with pytest.raises(AssertionsNotConfiguredError):
+        await utilities.eval_retrieval()
+
+
+async def test_a_missed_assertion_reports_its_rank_rather_than_raising(graph_store, minimal_config):
+    """The diagnostic lookup stays inside the request contract's ceiling.
+
+    On a miss the check looks further down the ranking to report where the
+    expected document actually landed. That wider lookup runs through the same
+    request model, whose limit is capped, so an unclamped multiple would raise
+    a validation error from inside the health check instead of reporting the
+    failure the check exists to report.
+    """
+    utilities = await _utilities_with_corpus(graph_store, minimal_config)
+    filename = _write_assertions(
+        minimal_config,
+        [{"query": "zephyrword", "expected_document_id": _ABSENT, "top_k": 40}],
+    )
+    _with_assertions_file(minimal_config, filename)
+
+    result = await utilities.eval_retrieval()
+
+    assert not result.passed
+    assert result.failure_count == 1, "the miss was reported rather than raised"
+
+
+async def test_a_top_k_above_the_ceiling_is_rejected_as_a_malformed_assertion(
+    graph_store, minimal_config
+):
+    """A ``top_k`` the request model cannot express is a file error.
+
+    Reported at load as a malformed assertion rather than surfacing as a
+    validation error from deep inside the run, so the operator is told which
+    file is wrong.
+    """
+    utilities = await _utilities_with_corpus(graph_store, minimal_config)
+    filename = _write_assertions(
+        minimal_config,
+        [{"query": "zephyrword", "expected_document_id": _TARGET, "top_k": 500}],
+    )
+    _with_assertions_file(minimal_config, filename)
+
+    with pytest.raises(AssertionsFileInvalidError):
         await utilities.eval_retrieval()

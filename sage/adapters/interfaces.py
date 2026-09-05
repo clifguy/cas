@@ -210,16 +210,6 @@ class ContentStore(ABC):
         """Delete every legacy header row; returns the number removed."""
 
     @abstractmethod
-    async def strip_heading_path_root(self, document_id: str, root: str) -> int:
-        """Drop ``root`` from the front of this document's heading paths.
-
-        Only paths whose first element is exactly ``root`` are rewritten, and a
-        path equal to ``root`` alone becomes empty. Returns the number of rows
-        changed, so a caller can tell a repair from a no-op. Idempotent: a
-        second call finds no path still rooted at ``root``.
-        """
-
-    @abstractmethod
     async def search_semantic(
         self,
         query_embedding: list[float],

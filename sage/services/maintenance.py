@@ -182,10 +182,6 @@ BACKFILL_NON_CANONICAL_SOURCE_PATH = "normalize_non_canonical_source_paths"
 # vault's document-level text off the passage surface onto its own.
 BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
 
-# Name reported in MigrationReport.backfills_applied when the migration dropped
-# the document title from the front of a document's passage heading paths.
-BACKFILL_HEADING_PATH_TITLE_ROOT = "strip_document_title_from_passage_heading_paths"
-
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
     """Canonicalize a content hash, preserving null.
@@ -366,11 +362,8 @@ class MaintenanceService:
         if normalized:
             backfills_applied.append(BACKFILL_NON_CANONICAL_SOURCE_PATH)
 
-        relocated, stripped = await self._migrate_to_document_surface()
-        if relocated:
+        if await self._migrate_to_document_surface():
             backfills_applied.append(BACKFILL_DOCUMENT_SURFACE)
-        if stripped:
-            backfills_applied.append(BACKFILL_HEADING_PATH_TITLE_ROOT)
 
         activations, collisions = await self._activate_tier3_uniqueness()
 
@@ -383,48 +376,42 @@ class MaintenanceService:
             tier3_uniqueness_collisions=collisions,
         )
 
-    async def _migrate_to_document_surface(self) -> tuple[int, int]:
+    async def _migrate_to_document_surface(self) -> int:
         """Move document-level text onto its own surface (CAS-ADR-049).
 
-        A vault provisioned before that decision holds two pieces of legacy
-        state: a synthetic header row per document on the passage surface, and
-        -- for a source format whose title is also its top-level heading --
-        passage heading paths rooted at the document title. Both are repaired
-        here.
+        A vault provisioned before that decision holds a synthetic header row
+        per document on the passage surface. The pass is driven by those rows
+        rather than by the document catalog, because their presence is exactly
+        the condition being repaired.
 
-        The pass is driven by the legacy header rows rather than by the
-        document catalog, because their presence is exactly the condition
-        being repaired. Each document's row is recomposed from its stored
-        record rather than parsed out of the header's composed text: the record
-        is the authority for title, tags, abstract and source path, and
-        recomposing keeps a migrated vault identical to a freshly ingested one.
-        The legacy row's embedding is carried forward, so a corpus is not
-        re-embedded to change where its text is stored.
+        Each document's row is recomposed from its stored record rather than
+        parsed out of the header's composed text: the record is the authority
+        for title, tags, abstract and source path, and recomposing keeps a
+        migrated vault identical to a freshly ingested one. The legacy row's
+        embedding is carried forward, so a corpus is not re-embedded to change
+        where its text is stored.
 
-        The title is stripped from a heading path only where the path's first
-        element is exactly the document's title. The title is not a prefix any
-        adapter adds -- for markdown it coincides with the document's own
-        top-level heading, and for other formats it is absent -- so an
-        unconditional strip would take a real section or sheet name off every
-        document that never carried the title there.
+        The legacy rows are deleted last. A pass interrupted part-way leaves
+        them in place, so the next run repeats the whole repair rather than
+        resuming into a half-migrated vault. Re-running a completed migration
+        finds no legacy rows and does nothing, which is what makes it
+        idempotent.
 
-        Ordering is deliberate: relocate, then strip, then delete the legacy
-        rows last. A pass interrupted part-way leaves the legacy rows in place,
-        so the next run repeats the whole repair rather than resuming into a
-        half-migrated vault. Re-running a completed migration finds no legacy
-        rows and does nothing, which is what makes it idempotent.
+        Stored heading paths are left as they are. CAS-ADR-049 also places a
+        passage's structure relative to its document, but for a source whose
+        title is also its top-level heading the two clauses of that decision
+        name the same string, and rewriting the paths changes how every
+        section of such a document is addressed. That is tracked separately.
 
         Returns:
-            ``(documents relocated, documents whose heading paths changed)``.
-            Both are zero on a vault that has nothing to repair, so neither
-            backfill names itself in the report.
+            The number of documents relocated -- zero on a vault with nothing
+            to repair, so the backfill does not name itself in the report.
         """
         legacy = await self._content_store.legacy_document_header_rows()
         if not legacy:
-            return (0, 0)
+            return 0
 
         relocated = 0
-        stripped = 0
         for document_id, embedding in legacy:
             doc = await self._graph_store.get_document(document_id)
             if doc is None:
@@ -435,13 +422,9 @@ class MaintenanceService:
                 compose_document_surface(document_id, doc, embedding)
             )
             relocated += 1
-            if doc.title and await self._content_store.strip_heading_path_root(
-                document_id, doc.title
-            ):
-                stripped += 1
 
         await self._content_store.delete_legacy_document_header_rows()
-        return (relocated, stripped)
+        return relocated
 
     async def _normalize_source_paths(self) -> list[SourcePathNormalization]:
         """Rewrite each stored source path that is not already in plain form.

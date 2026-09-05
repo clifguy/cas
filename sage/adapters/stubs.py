@@ -81,18 +81,6 @@ class StubContentStore(ContentStore):
             self._store[document_id] = kept
         return removed
 
-    async def strip_heading_path_root(self, document_id: str, root: str) -> int:
-        changed = 0
-        prefix = f"{root} > "
-        for chunk in self._store.get(document_id, []):
-            if chunk.heading_path == root:
-                chunk.heading_path = ""
-                changed += 1
-            elif chunk.heading_path.startswith(prefix):
-                chunk.heading_path = chunk.heading_path[len(prefix) :]
-                changed += 1
-        return changed
-
     async def search_semantic(
         self,
         query_embedding: list[float],
@@ -194,15 +182,23 @@ class StubContentStore(ContentStore):
         document_id: str,
         metadata: dict[str, str | None],
     ) -> None:
-        """Update metadata on stored chunks for a document."""
-        chunks = self._store.get(document_id, [])
-        for chunk in chunks:
+        """Update metadata on both of a document's surfaces.
+
+        Both carry the same filter columns, so updating passages alone would
+        leave the document matchable by its title under the values it had
+        before the change.
+        """
+        targets = [*self._store.get(document_id, [])]
+        surface = self._surfaces.get(document_id)
+        if surface is not None:
+            targets.append(surface)
+        for target in targets:
             if "doc_type" in metadata:
-                chunk.doc_type = metadata["doc_type"]
+                target.doc_type = metadata["doc_type"]
             if "lifecycle_status" in metadata:
-                chunk.lifecycle_status = metadata["lifecycle_status"]
+                target.lifecycle_status = metadata["lifecycle_status"]
             if "project" in metadata:
-                chunk.project = metadata["project"]
+                target.project = metadata["project"]
 
     async def parse_keyword_query(self, query: str) -> KeywordQueryParse:
         """Whitespace terms, lowercased -- no stopword, stemming, or operator model.

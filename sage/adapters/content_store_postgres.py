@@ -60,10 +60,6 @@ _INSERT_SQL = (
     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
-# Separator between elements of a heading path, as every source adapter
-# joins them.
-_HEADING_PATH_SEPARATOR = " > "
-
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, content, chunk_index, doc_type, lifecycle_status, project"
 )
@@ -359,38 +355,23 @@ class PostgresContentStore(ContentStore):
                 )
                 return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
-    async def strip_heading_path_root(self, document_id: str, root: str) -> int:
-        """Drop ``root`` from the front of this document's heading paths.
-
-        Matching on the full root plus its separator, rather than on a bare
-        prefix, so a sibling heading that merely starts with the same
-        characters is left alone. ``tsv`` is a generated column, so the
-        full-text index follows the rewrite without a second write.
-        """
-        with self._query_timer.measure("strip_heading_path_root"):
-            async with self._pool.connection() as conn:
-                cur = await conn.execute(
-                    "UPDATE chunks SET heading_path = CASE"
-                    " WHEN heading_path = %s THEN ''"
-                    " ELSE substring(heading_path from %s) END"
-                    " WHERE document_id = %s"
-                    " AND (heading_path = %s OR heading_path LIKE %s)",
-                    (
-                        root,
-                        len(root) + len(_HEADING_PATH_SEPARATOR) + 1,
-                        document_id,
-                        root,
-                        self._escape_like(root) + _HEADING_PATH_SEPARATOR + "%",
-                    ),
-                )
-                return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
-
     async def update_chunk_metadata(
         self,
         document_id: str,
         metadata: dict[str, str | None],
     ) -> None:
-        """Update metadata columns on all of a document's chunks."""
+        """Update metadata columns on both of a document's retrieval surfaces.
+
+        Both surfaces carry the same filter columns so a caller's predicates
+        apply identically to each (CAS-ADR-049), which holds only while both
+        are kept current. Updating passages alone would leave a document
+        matchable by its title under the lifecycle, doc_type or project it had
+        before the change -- archiving a document would not stop it answering
+        an ``active``-filtered query. Both writes share one transaction, so the
+        two surfaces cannot disagree even if the second fails.
+
+        Content, and hence every generated vector, is never rewritten here.
+        """
         with self._query_timer.measure("update_chunk_metadata"):
             cols = [c for c in _METADATA_COLUMNS if c in metadata]
             if not cols:
@@ -398,9 +379,13 @@ class PostgresContentStore(ContentStore):
             set_clause = ", ".join(f"{c} = %s" for c in cols)
             params: list[object] = [metadata[c] for c in cols]
             params.append(document_id)
-            async with self._pool.connection() as conn:
+            async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute(
                     f"UPDATE chunks SET {set_clause} WHERE document_id = %s",  # noqa: S608
+                    params,
+                )
+                await conn.execute(
+                    f"UPDATE document_surface SET {set_clause} WHERE document_id = %s",  # noqa: S608
                     params,
                 )
 
@@ -420,6 +405,16 @@ class PostgresContentStore(ContentStore):
         document findable and triageable, which is a ranking and orientation
         value this preserves. A document-level hit carries an empty heading
         path, marking it as document-level rather than a passage.
+
+        Each arm orders by distance and takes its own ``limit`` *before* the
+        union, and the outer query sorts the survivors. Two properties depend
+        on that shape. It is the form pgvector's HNSW index serves -- ordering
+        the union by a computed score instead makes the planner scan both
+        tables in full, since neither index can supply that order. And a row
+        with no embedding yields a NaN distance, which sorts above every real
+        number under ``score DESC`` but below every real distance under the
+        ascending order used here, so an unembedded row stays last rather than
+        displacing the best matches.
         """
         with self._query_timer.measure(
             "search_semantic", params={"limit": limit, "filtered": bool(filters)}
@@ -428,21 +423,27 @@ class PostgresContentStore(ContentStore):
             predicate = f" WHERE {where}" if where else ""
             sql = (
                 "SELECT document_id, heading_path, content, score FROM ("  # noqa: S608
-                " SELECT document_id, heading_path, content,"
+                " (SELECT document_id, heading_path, content,"
                 " 1 - (embedding <=> %s::vector) AS score FROM chunks"
-                f"{predicate}"
+                f" WHERE chunk_index >= 0{' AND ' + where if where else ''}"
+                " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " UNION ALL"
-                " SELECT document_id, '' AS heading_path,"
+                " (SELECT document_id, '' AS heading_path,"
                 " matchable || ' ' || orienting AS content,"
                 " 1 - (embedding <=> %s::vector) AS score FROM document_surface"
                 f"{predicate}"
+                " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " ) s WHERE score IS NOT NULL ORDER BY score DESC LIMIT %s"
             )
             params: list[object] = [
                 query_embedding,
                 *where_params,
                 query_embedding,
+                limit,
+                query_embedding,
                 *where_params,
+                query_embedding,
+                limit,
                 limit,
             ]
             rows = await self._fetchall(sql, params)
@@ -708,12 +709,17 @@ class PostgresContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        No exclusion is needed: the passage surface holds authored passages
-        only, so every path here is one a caller may pass to a section read.
+        Scoped to passages by ``chunk_index >= 0``, which is the passage
+        surface's own definition rather than a per-consumer exclusion of some
+        particular row: nothing writes a negative index any more. It is kept
+        because a vault provisioned before CAS-ADR-049 still holds one
+        document-level row per document until its migration runs, and between
+        those two moments this is what stops that row reaching a caller.
         """
         with self._query_timer.measure("get_heading_paths"):
             rows = await self._fetchall(
-                "SELECT heading_path FROM chunks WHERE document_id = %s "
+                "SELECT heading_path FROM chunks "
+                "WHERE document_id = %s AND chunk_index >= 0 "
                 "GROUP BY heading_path ORDER BY MIN(chunk_index)",
                 (document_id,),
             )
@@ -728,11 +734,18 @@ class PostgresContentStore(ContentStore):
             return bool(rows)
 
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
-        """Return all chunks for a document in document order."""
+        """Return a document's passages in document order.
+
+        Scoped by ``chunk_index >= 0`` for the reason ``get_heading_paths``
+        gives: nothing writes a negative index any more, but a vault whose
+        migration has not yet run still holds one document-level row per
+        document, and this is what keeps it out of reconstructed projection
+        text and out of the abstraction stage's input in the meantime.
+        """
         with self._query_timer.measure("get_all_chunks"):
             rows = await self._fetchall(
                 f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed column constant
-                "WHERE document_id = %s ORDER BY chunk_index",
+                "WHERE document_id = %s AND chunk_index >= 0 ORDER BY chunk_index",
                 (document_id,),
             )
             return [self._row_to_chunk(r) for r in rows]

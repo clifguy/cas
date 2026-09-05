@@ -1531,8 +1531,8 @@ class IngestionService:
         await self._stamp_pipeline_status(document_id, PipelineStatus.INDEXING_IN_PROGRESS)
 
         # Build body chunks from the projection. Document-identity signals
-        # live in a standalone synthetic header chunk (F9) — not
-        # inlined into chunk[0].
+        # live on the document surface (CAS-ADR-049), not inlined into
+        # chunk[0].
         doc = await self._store.get_document(document_id)
         body_chunks = self._chunk_projection(document_id, projection)
 

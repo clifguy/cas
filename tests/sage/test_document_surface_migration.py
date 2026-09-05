@@ -1,17 +1,15 @@
 """Relocating document-level text off the passage surface (CAS-ADR-049).
 
-A vault provisioned before document-level text had a surface of its own holds
-two pieces of legacy state: a synthetic header row per document among its
-passages, and -- for a source format whose title is also its top-level heading
--- passage heading paths rooted at the document title. The migration repairs
-both, and must be safe to run again on a vault it has already repaired.
+A vault provisioned before document-level text had a surface of its own holds a
+synthetic header row per document among its passages. The migration moves that
+text to the new surface, and must be safe to run again on a vault it has
+already repaired.
 
-The heading-path half carries the sharper risk. The title is not a prefix any
-adapter adds; for markdown it *coincides* with the document's own top-level
-heading, and for a word processor or spreadsheet it is absent entirely. An
-unconditional strip would therefore take a real section or sheet name off every
-document that never carried its title there, which
-``test_migration_leaves_a_heading_path_that_is_not_the_title_alone`` pins.
+Stored heading paths are deliberately not rewritten here. CAS-ADR-049 also
+places a passage's structure relative to its document, but for a source whose
+title is also its top-level heading the two clauses of that decision name the
+same string, and rewriting the paths changes how every section of such a
+document is addressed. That half is tracked separately.
 """
 
 from datetime import datetime, timezone
@@ -25,7 +23,6 @@ from sage.models.enums import SourceType
 from sage.models.schemas import Document
 from sage.services.maintenance import (
     BACKFILL_DOCUMENT_SURFACE,
-    BACKFILL_HEADING_PATH_TITLE_ROOT,
     MaintenanceService,
 )
 from sage.storage.postgres.schema import EMBEDDING_DIM
@@ -160,109 +157,6 @@ async def test_migration_preserves_provenance_of_relocated_text(
     ], "positive control: the authored title is matchable after migration"
 
 
-async def test_migration_carries_the_legacy_embedding_forward(
-    store, postgres_graph_store, minimal_config, tmp_vault_dir
-):
-    """The relocated row keeps a vector, so the corpus is not re-embedded.
-
-    A migration that dropped the embedding would leave every document
-    unreachable on the semantic arm until an operator reabstracted the vault.
-    """
-    await _seed_legacy(store, postgres_graph_store, "00000001_doc", "Some Title", ["Body"])
-
-    await _maintenance(postgres_graph_store, store, minimal_config, tmp_vault_dir).migrate_vault()
-
-    hits = await store.search_semantic([0.25] * EMBEDDING_DIM, limit=10)
-    assert any(h.document_id == "00000001_doc" and h.heading_path == "" for h in hits), (
-        "the relocated document-level row did not reach the semantic arm"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Heading-path rewrite
-# ---------------------------------------------------------------------------
-
-
-async def test_migration_strips_the_title_root_from_heading_paths(
-    store, postgres_graph_store, minimal_config, tmp_vault_dir
-):
-    """A path rooted at the document title becomes relative to the document."""
-    title = "Deltaword Catalog"
-    await _seed_legacy(
-        store,
-        postgres_graph_store,
-        "00000001_doc",
-        title,
-        [title, f"{title} > Overview", f"{title} > Overview > Detail"],
-    )
-
-    report = await _maintenance(
-        postgres_graph_store, store, minimal_config, tmp_vault_dir
-    ).migrate_vault()
-
-    assert BACKFILL_HEADING_PATH_TITLE_ROOT in report.backfills_applied
-    assert [c.heading_path for c in await store.get_all_chunks("00000001_doc")] == [
-        "",
-        "Overview",
-        "Overview > Detail",
-    ]
-
-
-async def test_migration_leaves_a_heading_path_that_is_not_the_title_alone(
-    store, postgres_graph_store, minimal_config, tmp_vault_dir
-):
-    """A document whose paths never carried its title is left untouched.
-
-    The case an unconditional strip would corrupt: a word processor or
-    spreadsheet source roots its paths at a real section or sheet name, and
-    removing that first element would destroy authored structure rather than
-    repair anything.
-    """
-    await _seed_legacy(
-        store,
-        postgres_graph_store,
-        "00000001_doc",
-        "Quarterly Review",
-        ["Table of Contents", "Table of Contents > Summary"],
-    )
-
-    report = await _maintenance(
-        postgres_graph_store, store, minimal_config, tmp_vault_dir
-    ).migrate_vault()
-
-    assert BACKFILL_HEADING_PATH_TITLE_ROOT not in report.backfills_applied
-    assert [c.heading_path for c in await store.get_all_chunks("00000001_doc")] == [
-        "Table of Contents",
-        "Table of Contents > Summary",
-    ]
-
-
-async def test_migration_does_not_strip_a_heading_that_merely_starts_alike(
-    store, postgres_graph_store, minimal_config, tmp_vault_dir
-):
-    """Matching is on the whole root element, not a bare string prefix.
-
-    ``Deltaword Catalog Appendix`` starts with the title's characters but is a
-    different heading; a prefix match would silently truncate it.
-    """
-    title = "Deltaword Catalog"
-    await _seed_legacy(
-        store,
-        postgres_graph_store,
-        "00000001_doc",
-        title,
-        ["Deltaword Catalog Appendix", f"{title} > Overview"],
-    )
-
-    await _maintenance(postgres_graph_store, store, minimal_config, tmp_vault_dir).migrate_vault()
-
-    paths = [c.heading_path for c in await store.get_all_chunks("00000001_doc")]
-    assert "Deltaword Catalog Appendix" in paths, (
-        "a heading that merely shares the title's opening characters was truncated"
-    )
-    assert "Overview" in paths
-
-
 # ---------------------------------------------------------------------------
 # Idempotence
 # ---------------------------------------------------------------------------
@@ -289,7 +183,6 @@ async def test_migration_is_idempotent(store, postgres_graph_store, minimal_conf
     second = await service.migrate_vault()
 
     assert BACKFILL_DOCUMENT_SURFACE not in second.backfills_applied
-    assert BACKFILL_HEADING_PATH_TITLE_ROOT not in second.backfills_applied
     assert [c.heading_path for c in await store.get_all_chunks("00000001_doc")] == after_first
     assert [r.document_id for r in await store.search_bm25("deltaword", limit=10)] == [
         "00000001_doc"
@@ -320,7 +213,6 @@ async def test_migration_reports_nothing_on_a_clean_vault(
     ).migrate_vault()
 
     assert BACKFILL_DOCUMENT_SURFACE not in report.backfills_applied
-    assert BACKFILL_HEADING_PATH_TITLE_ROOT not in report.backfills_applied
 
 
 async def test_migration_reclaims_a_header_row_whose_document_is_gone(
