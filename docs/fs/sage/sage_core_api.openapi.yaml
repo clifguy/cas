@@ -20,7 +20,11 @@
 #     mechanisms. Edges may be removed via DELETE /sage_vaults/{vault_id}/
 #     edges/{edge_id} (unlink) since the no-delete invariant applies to
 #     documents only.
-#   - Vault isolation: every endpoint is scoped to a single vault.
+#   - Vault isolation: every document, graph, and maintenance endpoint is
+#     scoped to a single vault. The vault collection (GET/POST /sage_vaults)
+#     and the process-scoped transfer endpoints (PUT /upload, GET
+#     /download/{transfer_id}) are the only paths outside
+#     /sage_vaults/{vault_id}/.
 #   - Named operations: set_lifecycle and update_metadata are separate
 #     endpoints per CAS-ADR-014.
 #

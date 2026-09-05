@@ -126,6 +126,18 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "VaultId",
 }
 
+# The transfer endpoints are process-scoped, not vault-scoped: the vault
+# binding lives inside the one-time token, and the recipe embeds the URL
+# verbatim, so the paths stay top-level by design. They remain part of
+# the SAGE Core API surface.
+SAGE_NON_VAULT_PATHS: set[str] = {"/upload", "/download/{transfer_id}"}
+
+# Prefix every vault-scoped path carries. The vault collection itself sits
+# one level up by construction (list and create), and SAGE_NON_VAULT_PATHS
+# holds the transfer endpoints; nothing else is expected outside the prefix.
+_VAULT_SCOPED_PREFIX = "/sage_vaults/{vault_id}/"
+_VAULT_COLLECTION_PATH = "/sage_vaults"
+
 # Anti-vacuity floor for the field-level Pydantic->YAML direction, which
 # skips any schema with no same-named model and would therefore pass over
 # an empty loop if the reflection helpers returned nothing. 125 schemas
@@ -1896,14 +1908,8 @@ def test_specs_respect_url_prefix_boundaries(
 
     issues: list[str] = []
 
-    # The transfer endpoints are process-scoped, not vault-scoped: the vault
-    # binding lives inside the one-time token, and the recipe embeds the URL
-    # verbatim, so the paths stay top-level by design. They remain part of
-    # the SAGE Core API surface.
-    sage_non_vault_paths = {"/upload", "/download/{transfer_id}"}
-
     sage_misplaced = [
-        p for p in sage_paths if not p.startswith("/sage_vaults") and p not in sage_non_vault_paths
+        p for p in sage_paths if not p.startswith("/sage_vaults") and p not in SAGE_NON_VAULT_PATHS
     ]
     if sage_misplaced:
         issues.append("sage_core_api.openapi.yaml contains paths outside /sage_vaults/*:")
@@ -1923,6 +1929,77 @@ def test_specs_respect_url_prefix_boundaries(
             issues.append(f"  {p}")
 
     assert not issues, "\n".join(issues)
+
+
+# ---------------------------------------------------------------------------
+# Test 2b: the path-shape invariants the spec header declares
+# ---------------------------------------------------------------------------
+
+
+def _document_delete_operations(spec: dict | None) -> set[str]:
+    """Paths under a vault's ``/documents`` subtree that declare ``delete``.
+
+    The no-delete invariant (SAGE Architecture Reference §6.4) covers
+    documents only: an edge whose relationship is no longer correct may be
+    unlinked, so ``DELETE .../edges/{edge_id}`` is not reported here.
+    """
+    documents_prefix = f"{_VAULT_SCOPED_PREFIX}documents"
+    return {
+        path
+        for path, method in _operations(spec)
+        if method == "delete" and path.startswith(documents_prefix)
+    }
+
+
+def _paths_outside_vault_scope(spec: dict | None) -> set[str]:
+    """Spec paths that do not carry the vault-scoped prefix."""
+    return {path for path, _ in _operations(spec) if not path.startswith(_VAULT_SCOPED_PREFIX)}
+
+
+def test_no_delete_method_on_a_document_path(sage_core_spec: dict | None):
+    """No path under ``/sage_vaults/{vault_id}/documents`` declares ``delete``.
+
+    Documents are superseded or archived, never destroyed. The scan is
+    anchored on a non-empty operation set so a missing or empty spec cannot
+    pass it vacuously.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    assert _operations(sage_core_spec), "spec declares no operations; nothing to scan"
+    offenders = _document_delete_operations(sage_core_spec)
+    assert not offenders, "DELETE declared on a document path:\n" + "\n".join(
+        f"  {p}" for p in sorted(offenders)
+    )
+
+
+def test_only_the_vault_collection_and_transfer_paths_sit_outside_vault_scope(
+    sage_core_spec: dict | None,
+):
+    """Every path carries ``/sage_vaults/{vault_id}/`` except the vault
+    collection and the process-scoped transfer endpoints -- exactly those,
+    so a new top-level path and a lost exception both fail here.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    expected = {_VAULT_COLLECTION_PATH} | SAGE_NON_VAULT_PATHS
+    outside = _paths_outside_vault_scope(sage_core_spec)
+    assert outside == expected, (
+        f"paths outside {_VAULT_SCOPED_PREFIX}: {sorted(outside)}; "
+        f"expected exactly {sorted(expected)}"
+    )
+
+
+def test_path_shape_detectors_have_teeth():
+    """The two detectors report a violating spec rather than passing over it."""
+    mutant = {
+        "paths": {
+            "/sage_vaults/{vault_id}/documents/{document_id}": {"delete": {}},
+            "/sage_vaults/{vault_id}/edges/{edge_id}": {"delete": {}},
+            "/orphan": {"get": {}},
+        }
+    }
+    assert _document_delete_operations(mutant) == {
+        "/sage_vaults/{vault_id}/documents/{document_id}"
+    }
+    assert _paths_outside_vault_scope(mutant) == {"/orphan"}
 
 
 # ---------------------------------------------------------------------------

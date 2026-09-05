@@ -1071,15 +1071,15 @@ Note: This schema uses `$defs` only. Tests use `validate_sub_schema()`.
 **Expected:** `openapi` == `"3.1.0"`, `info.title` == `"ROOT Harness Orchestration API"`
 **Rationale:** Basic structural validity.
 
-### TEST-RH-API-002: All 9 operations present
+### TEST-RH-API-002: Architecture Reference operations present
 
 **Artifact:** `docs/fs/root_harness/orchestration_api.openapi.yaml`
 **Category:** valid
-**Constraint:** All operations defined in ROOT Harness Architecture Reference Section 2.5
+**Constraint:** Every operation defined in ROOT Harness Architecture Reference Section 2.5 has an endpoint
 
 **Input:** Load and enumerate all path+method combinations.
 
-**Expected:** Exactly these path/method pairs exist:
+**Expected:** Each of these path/method pairs exists. The list is the Section 2.5 operation table, not an exhaustive inventory of the spec: an operation the spec declares beyond it is not a failure here.
 - `POST /workflows`
 - `GET /workflows/{execution_id}`
 - `POST /workflows/{execution_id}/approve`
@@ -1089,7 +1089,7 @@ Note: This schema uses `$defs` only. Tests use `validate_sub_schema()`.
 - `GET /agents/{agent_id}`
 - `GET /agents/{agent_id}/history`
 - `GET /pipelines/{pipeline_id}/status`
-**Rationale:** Every operation in the architecture reference must have an API endpoint.
+**Rationale:** Every operation in the architecture reference must have an API endpoint. Nothing mechanical keeps this list current; once ROOT Harness has an implementation, a spec-vs-code conformance gate on the pattern of `tests/sage/test_openapi_conformance.py` carries operation coverage and this section retires in its favour.
 
 ### TEST-RH-API-003: SSE event stream endpoint documented
 
