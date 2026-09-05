@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-04",
+  "manifest_date": "2026-09-05",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.30",
+      "version": "0.31",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.73",
+  "substrate_version": "1.74",
   "revision_history": [
+    {
+      "version": "1.74",
+      "date": "2026-09-05",
+      "summary": "State the keyword match unit on the caller-facing surfaces. sage_core_api.openapi.yaml bumped v0.30->v0.31: two description edits, no schema, operation, or response-shape change. The discover operation's keyword-mode bullet and the RetrievalMode enum description both now say a document matches when it carries every term -- not necessarily together in one passage -- that the document is ranked by its best-matching passage, which is the excerpt returned, and that a quoted phrase is the exception and must be satisfied within a single passage (CAS-ADR-048). The enum description previously carried no conjunction clause at all and was the stalest of the four copies; it is not gated against the Python RetrievalMode docstring, since RetrievalMode sits in YAML_ONLY_FORWARD_DECLARATIONS in test_openapi_conformance.py, so the two were reconciled by hand. The MCP search docstring in sage/sage_api_tools.py is reworded to the same claims in the same change: test_mcp_docstring_disclosure_parity.py asserts the (3, 11) spec-only / doc-only divergence for the pair as an equality, so rewording one surface alone reddens it. Behaviour behind the prose changes with the PostgresContentStore keyword binding, which now resolves each top-level query operand to document ids and intersects them, leaving phrase adjacency chunk-scoped and barring the synthetic document-header row from the match union per CAS-ADR-049."
+    },
     {
       "version": "1.73",
       "date": "2026-09-04",

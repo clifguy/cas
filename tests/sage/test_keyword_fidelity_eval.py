@@ -19,11 +19,9 @@ from sage.utils.keyword_fidelity_eval import (
     REC_BORDERLINE,
     REC_MANAGED,
     REC_NATIVE,
-    _build_index_sql,
-    _build_search_sql,
-    _row_to_result,
+    PostgresFTSBackend,
     _validate_config,
-    _validate_table,
+    _validate_schema,
     overlap_at_k,
     rbo,
     recommend,
@@ -63,22 +61,42 @@ def test_rbo_is_order_sensitive() -> None:
 
 
 def test_recommend_thresholds() -> None:
-    assert recommend(0.95) == REC_NATIVE
-    assert recommend(0.90) == REC_NATIVE  # boundary is inclusive
-    assert recommend(0.80) == REC_BORDERLINE
-    assert recommend(0.75) == REC_BORDERLINE  # >= low is not "managed"
-    assert recommend(0.50) == REC_MANAGED
+    """Both metrics gate the verdict, on both sides of both thresholds."""
+    assert recommend(0.95, 0.95) == REC_NATIVE
+    assert recommend(0.90, 0.90) == REC_NATIVE  # boundary is inclusive
+    assert recommend(0.80, 0.95) == REC_BORDERLINE
+    assert recommend(0.95, 0.80) == REC_BORDERLINE  # the raw metric can hold it back
+    assert recommend(0.75, 0.75) == REC_BORDERLINE  # >= low is not "managed"
+    assert recommend(0.50, 0.95) == REC_MANAGED
+    assert recommend(0.95, 0.50) == REC_MANAGED  # and it can escalate on its own
+
+
+def test_recommend_escalates_when_the_unfused_arms_diverge() -> None:
+    """The verdict reads the metric that discriminates the candidates.
+
+    Fusing both keyword arms against a shared vector ranking masks an arm that
+    returns nothing: the fused result degenerates to the vector result and
+    agreement stays perfect. A recommendation keyed on fused output alone
+    therefore cannot see the divergence the evaluation exists to detect, and
+    would qualify a backend whose keyword semantics are inverted (CAS-ADR-048
+    consequences).
+    """
+    assert recommend(1.0, 0.0) == REC_MANAGED, (
+        "perfect fused agreement with zero unfused agreement is the masking "
+        "case, not a passing grade"
+    )
 
 
 # --- fuse-then-compare -----------------------------------------------------
 
 
 def test_run_fidelity_eval_fuses_then_compares() -> None:
-    """Keyword arms differ, but fused top-K converges -> high agreement.
+    """Keyword arms differ, but fused top-K converges -> fusion masks the gap.
 
     The vector arm dominates; BM25 boosts a doc already in the top-5 (v2) and
     ts_rank boosts a different in-top-5 doc (v4). The fused top-5 SET is the same
-    {v1..v5} for both arms even though the raw keyword arms share nothing.
+    {v1..v5} for both arms even though the raw keyword arms share nothing --
+    which is exactly why the fused figure cannot carry the verdict alone.
     """
     vector = _ranking("v1", "v2", "v3", "v4", "v5", "v6", "v7")
     bm25 = _ranking("v2")
@@ -94,11 +112,14 @@ def test_run_fidelity_eval_fuses_then_compares() -> None:
 
     (c,) = result.per_query
     assert c.fused_overlap_at_k == pytest.approx(1.0)
-    assert result.recommendation == REC_NATIVE
     # The harness must report the raw divergence too, else it could be ignoring
     # the keyword arm and trivially reporting agreement everywhere.
     assert c.raw_keyword_overlap_at_k < 1.0
     assert c.raw_keyword_overlap_at_k == pytest.approx(0.0)
+    assert result.recommendation == REC_MANAGED, (
+        "the arms agree only after fusion; the recommendation must read the "
+        "unfused comparison it already computes"
+    )
 
 
 def test_run_fidelity_eval_detects_divergence() -> None:
@@ -153,37 +174,56 @@ def test_render_scorecard_contains_required_sections() -> None:
     assert "## Per-query" in card
     assert "| Query |" in card
     assert "## Recommendation" in card
-    assert "native Postgres `ts_rank`" in card  # the go/no-go prose
+    assert "Escalate to a managed search service" in card, (
+        "these arms agree only after fusion, so the rendered verdict must be "
+        "the escalation the unfused comparison calls for"
+    )
+    # The raw-vs-fused narrative must not read a gap as reassurance: it is the
+    # measure of how far fusion hides a divergent keyword arm.
+    assert "not reassurance" in card, (
+        "prose that presents the raw-to-fused gap as evidence for native FTS "
+        "states the masking effect backwards"
+    )
 
 
 # --- Postgres pure helpers (no DB) -----------------------------------------
 
 
 def test_postgres_helpers_pure() -> None:
-    ddl = _build_index_sql("eval_chunks", "english")
-    joined = "\n".join(ddl)
-    assert "eval_chunks" in joined
-    assert "tsvector" in joined
-    assert "GENERATED ALWAYS" in joined
-    assert "to_tsvector('english'" in joined
-    assert "USING GIN" in joined
-
-    sql = _build_search_sql("eval_chunks", "english")
-    assert "websearch_to_tsquery('english'" in sql
-    assert "ts_rank(" in sql
-    assert "ORDER BY score DESC" in sql
-    assert "%s" in sql
-
-    res = _row_to_result({"document_id": "d1", "heading_path": "h", "content": "c", "score": 0.5})
-    assert res == SearchResult(document_id="d1", heading_path="h", content="c", score=0.5)
-
     with pytest.raises(ValueError):
         _validate_config("'; DROP TABLE x; --")
     with pytest.raises(ValueError):
-        _validate_table("bad name!")
+        _validate_schema("bad name!")
+
+
+def test_postgres_backend_refuses_a_config_production_does_not_use() -> None:
+    """A backend indexed differently from production measures something else.
+
+    ``simple`` is an allowed text-search config, so it clears the injection
+    allowlist -- but it neither drops stopwords nor stems, and a keyword arm
+    built on it would be qualified against a corpus the substrate would never
+    produce.
+    """
+    with pytest.raises(ValueError, match="does not match the production"):
+        PostgresFTSBackend("postgresql://unused/db", config="simple")
 
 
 # --- Postgres integration (gated) ------------------------------------------
+
+
+def _eval_backend(schema: str) -> PostgresFTSBackend:
+    """A harness backend over a throwaway schema on the suite's own Postgres.
+
+    Gated on ``SAGE_TEST_PG_DSN`` rather than a separate variable: the arm now
+    runs the production binding, so leaving it behind a gate the suite does not
+    set would leave the qualification harness's only real coverage skipped in
+    exactly the runs meant to catch drift in it.
+    """
+    pytest.importorskip("psycopg")
+    dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set SAGE_TEST_PG_DSN to a throwaway Postgres to run the keyword arm")
+    return PostgresFTSBackend(dsn, schema=schema)
 
 
 def test_pg_ts_rank_orders_by_relevance() -> None:
@@ -194,14 +234,7 @@ def test_pg_ts_rank_orders_by_relevance() -> None:
     return docA first. docC has no match and must be excluded by the
     ``tsv @@ query`` predicate.
     """
-    pytest.importorskip("psycopg")
-    dsn = os.environ.get("SAGE_EVAL_PG_DSN")
-    if not dsn:
-        pytest.skip("set SAGE_EVAL_PG_DSN to a throwaway Postgres to run the ts_rank arm")
-
-    from sage.utils.keyword_fidelity_eval import PostgresFTSBackend
-
-    backend = PostgresFTSBackend(dsn, table="eval_chunks_fidelity_test", config="english")
+    backend = _eval_backend("eval_chunks_relevance")
     try:
         backend.index(
             [
@@ -217,5 +250,39 @@ def test_pg_ts_rank_orders_by_relevance() -> None:
         assert "docA" in ids
         assert ids.index("docB") < ids.index("docA")
         assert "docC" not in ids
+    finally:
+        backend.close()
+
+
+def test_pg_backend_answers_with_the_production_match_semantics() -> None:
+    """The eval's keyword arm is the binding, not a restatement of it.
+
+    A qualification harness that carries its own copy of the search query
+    measures whatever that copy does. Here the arm is asked the one question
+    that separates the contract from the behaviour it replaced: two chunks of
+    one document, each holding one of the query's terms. Document-scoped
+    conjunction matches it; the chunk-scoped query the harness used to restate
+    does not, and a candidate backend judged against that restatement would be
+    judged against a substrate that no longer exists.
+    """
+    backend = _eval_backend("eval_chunks_semantics")
+    try:
+        backend.index(
+            [
+                ("split", "S1", "alphaword only here"),
+                ("split", "S2", "betaword only here"),
+                ("partial", "S1", "alphaword only, with no partner term"),
+            ]
+        )
+
+        ids = [r.document_id for r in backend.search_bm25("alphaword betaword", limit=10)]
+        assert ids == ["split"], (
+            "the terms span two chunks of one document, which the contract matches"
+        )
+
+        both = [r.document_id for r in backend.search_bm25("alphaword", limit=10)]
+        assert set(both) == {"split", "partial"}, (
+            "positive control: strictness, not an empty backend, culled the partial match"
+        )
     finally:
         backend.close()

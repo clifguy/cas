@@ -1366,14 +1366,19 @@ def register_sage_tools(
         Modes:
             semantic: Vector + optional BM25 fusion. Requires query.
             keyword: BM25-only search. Requires query. Use query="*" for filter-only listing.
-                Terms are conjunctive: a chunk matches only if it carries every
-                term, so each term added narrows the result and can empty it.
-                A quoted phrase matches as a unit; a term prefixed with "-" is
-                excluded; terms joined by or admit either. When a query of
-                bare terms returns nothing, hints.warnings names the terms the
-                query parsed to -- stopwords are dropped and the rest stemmed,
-                so they are not the words typed. The other forms carry their
-                own advisory or, where every term is optional, none.
+                Terms are conjunctive: a document matches only if it carries
+                every term, so each term added narrows the result and can
+                empty it. The terms need not appear together in one passage --
+                a document developing a subject across its sections matches --
+                but the document is ranked by its best-matching passage, which
+                is the excerpt returned. A quoted phrase is the exception and
+                must be satisfied within a single passage, since adjacency
+                across a passage boundary is not meaningful. A term prefixed
+                with "-" is excluded; terms joined by or admit either. When a
+                query of bare terms returns nothing, hints.warnings names the
+                terms the query parsed to -- stopwords are dropped and the
+                rest stemmed, so they are not the words typed. The other forms
+                carry their own advisory or, where every term is optional, none.
             catalog: Filter-only SQL enumeration -- the canonical way to
                 enumerate documents already in a vault. No query needed. Returns
                 document metadata only (no chunks or scores). Supports pagination

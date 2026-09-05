@@ -52,6 +52,36 @@ def test_rrf_fuse_hand_computed_scores() -> None:
         assert r.score == pytest.approx(expected[r.document_id])
 
 
+def test_rrf_fuse_keys_on_the_document_not_the_chunk() -> None:
+    """The two arms must fuse on the entity they both rank: the document.
+
+    The arms rank different things. The semantic arm returns one row per chunk,
+    while the keyword arm's match unit is the document and it returns one row
+    per document. Keyed on ``(document_id, heading_path)`` the two would almost
+    never collide, so a document both arms agree on would receive one
+    contribution instead of two and fusion would degenerate into an interleave
+    of two independent rankings.
+
+    Here ``d1`` holds the vector arm's ranks 0 and 1 and the keyword arm's rank
+    0. It must appear once, scored from its *best* rank in each arm, so it
+    outranks ``d2`` -- which a chunk-keyed fusion would not guarantee, because
+    ``d1``'s two chunks would split its contributions across two keys.
+    """
+    vector = [_result("d1", heading_path="S1"), _result("d1", heading_path="S2"), _result("d2")]
+    keyword = [_result("d1", heading_path="S2")]
+
+    fused = rrf_fuse(vector, keyword, limit=10)
+
+    assert [r.document_id for r in fused] == ["d1", "d2"], "one entry per document"
+    assert fused[0].score == pytest.approx(1 / (K + 0 + 1) + 1 / (K + 0 + 1)), (
+        "best rank from each arm, accumulated -- not the chunk's own rank"
+    )
+    assert fused[0].matched_chunk_count == 2, (
+        "collapsing chunks must carry how many the document contributed, or the "
+        "reranking signal downstream is silently lost"
+    )
+
+
 def test_rrf_fuse_uses_rank_not_score() -> None:
     """Fusion ranks by list position, ignoring the per-result score magnitude.
 

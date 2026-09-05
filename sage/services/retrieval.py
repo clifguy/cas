@@ -422,19 +422,20 @@ class RetrievalService:
     async def _keyword_search_warnings(self, request: DiscoverRequest, raw_count: int) -> list[str]:
         """Advisory for a keyword term search that ran and matched nothing.
 
-        Keyword mode is conjunctive: a chunk matches only if it carries every
-        term. An empty result therefore reads two ways -- the vault holds
-        nothing on the subject, or the query asked for too many terms at once
-        -- and nothing in the response distinguishes them, so a caller who did
-        not build a positive control reads it as the former.
+        Keyword mode is conjunctive: a document matches only if its text
+        carries every term. An empty result therefore reads two ways -- the
+        vault holds nothing on the subject, or the query asked for too many
+        terms at once -- and nothing in the response distinguishes them, so a
+        caller who did not build a positive control reads it as the former.
 
         Called only from the term-search path, with the row count that search
         returned. Both conditions are load-bearing. A caller-supplied filter
         that resolves to no documents short-circuits before any search runs,
         and post-filtering (``min_relevance``) can empty a result the search
-        did fill; in either case the response is empty while chunks carrying
-        the terms may well exist, so an advisory keyed on the response would
-        assert a fact about chunk contents that nothing established.
+        did fill; in either case the response is empty while documents
+        carrying the terms may well exist, so an advisory keyed on the
+        response would assert a fact about the corpus that nothing
+        established.
 
         The terms come from the backend's own parse, because the words typed
         are not the terms required -- stopwords are dropped and the rest
@@ -461,9 +462,10 @@ class RetrievalService:
             if parse.excluded:
                 rendered = ", ".join(repr(t) for t in parse.excluded)
                 return [
-                    f"This query asked only for absences ({rendered}) and matched no "
-                    f"chunk{scope}, which means every chunk carries at least one of "
-                    "them. Add a term to search for, rather than only terms to avoid."
+                    f"This query asked only for absences ({rendered}) and matched "
+                    f"nothing{scope}, which means the terms it asked to avoid are "
+                    "everywhere. Add a term to search for, rather than only terms "
+                    "to avoid."
                 ]
             return [
                 "This query carried no searchable terms: every word in it was discarded "
@@ -477,22 +479,29 @@ class RetrievalService:
 
         rendered = ", ".join(repr(t) for t in parse.terms)
         if parse.adjacent:
-            # A phrase is stricter than a conjunction: a chunk can carry every
-            # term and still miss. Telling such a caller to quote a phrase
-            # would name the thing they already did.
+            # The chunk is named here and nowhere else: a phrase is the one
+            # predicate still scoped to a single passage, because adjacency
+            # across a passage boundary is not meaningful. It is also stricter
+            # than a conjunction -- a passage can carry every term and still
+            # miss -- so telling such a caller to quote a phrase would name
+            # the thing they already did.
             return [
-                f"This query parsed to {len(parse.terms)} terms ({rendered}) that a chunk "
-                f"must carry adjacently, in that order, because the query contains a "
-                f"phrase. No chunk does{scope} -- a chunk holding the same terms apart "
-                "does not match. Try unquoting the phrase, using fewer terms, or "
-                'mode="semantic".'
+                f"This query parsed to {len(parse.terms)} terms ({rendered}) that a single "
+                f"passage must carry adjacently, in that order, because the query "
+                f"contains a phrase. No passage does{scope} -- terms held apart, or "
+                "split across two passages of one document, do not match. Try "
+                'unquoting the phrase, using fewer terms, or mode="semantic".'
             ]
+        # No remedy here may make the query stricter. The match is already
+        # over the whole document, so quoting a phrase -- which adds an
+        # adjacency requirement inside a single chunk -- can only narrow a
+        # result that is already empty.
         return [
             f"Keyword mode is conjunctive: this query parsed to {len(parse.terms)} terms "
-            f"({rendered}) and matches only a chunk carrying all of them. No chunk"
-            f"{scope} does, so the empty result may reflect the query rather than the "
-            "vault's contents. Try fewer or more distinctive terms, quote a phrase "
-            'to match it as a unit, or use mode="semantic".'
+            f"({rendered}) and matches only a document carrying all of them, though "
+            f"not necessarily together in one passage. No document{scope} does, so "
+            "the empty result may reflect the query rather than the vault's "
+            'contents. Try fewer or more distinctive terms, or use mode="semantic".'
         ]
 
     def _apply_warnings(self, response: DiscoverResponse, request: DiscoverRequest) -> None:
@@ -1127,12 +1136,20 @@ class RetrievalService:
         """Convert SearchResults to DiscoverHits, applying pipeline and scope filters.
 
         Deduplicates by document ID, keeping only the highest-scoring chunk
-        per document. Counts additional matching chunks per document for
-        matched_chunk_count (useful reranking signal). This prevents a single
-        document with many matching chunks from crowding out other documents.
+        per document. This prevents a single document with many matching
+        chunks from crowding out other documents.
+
+        ``matched_chunk_count`` (a useful reranking signal) is the larger of
+        the rows tallied here and the count the row itself carries. A binding
+        that ranks chunk by chunk reports one row per chunk and leaves the
+        carried count at 1, so the tally is the answer. A binding whose match
+        unit is the document reports one row per document and cannot be
+        tallied, so it counts its own chunks and the carried value is the
+        answer. Taking the larger reads both without asking which is which.
         """
         seen_docs: dict[str, DiscoverHit] = {}
         chunk_counts: dict[str, int] = {}
+        carried_counts: dict[str, int] = {}
         doc_cache: dict[str, object | None] = {}
 
         for result in results:
@@ -1184,10 +1201,11 @@ class RetrievalService:
             )
             seen_docs[result.document_id] = hit
             chunk_counts[result.document_id] = 1
+            carried_counts[result.document_id] = result.matched_chunk_count
 
         # Stamp matched_chunk_count on each hit
         for doc_id, hit in seen_docs.items():
-            hit.matched_chunk_count = chunk_counts[doc_id]
+            hit.matched_chunk_count = max(chunk_counts[doc_id], carried_counts[doc_id])
 
         return list(seen_docs.values())
 

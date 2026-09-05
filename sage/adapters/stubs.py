@@ -89,11 +89,14 @@ class StubContentStore(ContentStore):
     ) -> list[SearchResult]:
         """Simple term-frequency keyword search for testing.
 
-        Scores by the fraction of query terms found, so a chunk carrying only
-        some of them still matches. The production binding is conjunctive and
-        returns nothing in that case; a test that turns on multi-term matching
-        is therefore not evidence about production and belongs against a real
-        backend.
+        Scores by the fraction of query terms found, so a document carrying
+        only some of the query's terms still matches. The contract is
+        conjunctive over the document (CAS-ADR-048) and returns nothing in that
+        case, and it matches only authored text (CAS-ADR-049), which this
+        double does not model either. A test that turns on multi-term matching,
+        on where a term sits within a document, or on the provenance of the
+        text carrying it, is therefore not evidence about any binding and
+        belongs against a real backend.
         """
         terms = query.lower().split()
         if not terms:
