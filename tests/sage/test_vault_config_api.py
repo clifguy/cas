@@ -821,3 +821,118 @@ def test_default_config_validates():
     assert config.vault.id == "test_default"
     assert len(config.document_types.doc_types) == 2
     assert config.abstraction.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# GET /sage_vaults/default-config
+#
+# The scaffold a new vault would get, served rather than restated by every
+# caller that wants one. The web client posts what this returns; the
+# expectations below compare against the live builder rather than a config
+# transcribed into the test, so a scaffold change moves one copy, not three.
+# ---------------------------------------------------------------------------
+
+
+async def test_default_config_endpoint_serves_the_registry_scaffold(client):
+    """The route returns exactly what the registry builder returns.
+
+    Compared against the builder itself, not a literal: a literal here
+    would be the third copy of the scaffold, which is the thing this
+    endpoint exists to prevent.
+    """
+    resp = await client.get("/sage_vaults/default-config", params={"vault_id": "brand_new"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == VaultRegistryService.get_default_config("brand_new")
+
+
+async def test_default_config_endpoint_leaves_name_and_owner_to_the_caller(client):
+    """Identity fields the server cannot know come back empty.
+
+    The vault id shapes the storage roots, so the server derives those;
+    the display name and owner are the caller's to supply.
+
+    The root assertions pin that the supplied id reaches the derived paths.
+    They do not pin the prefix ahead of it: that is the server's vault root,
+    and a suffix match holds against a correct one and a stale one alike.
+    Nothing here distinguishes the two, and this is not the test that would.
+    """
+    body = (
+        await client.get("/sage_vaults/default-config", params={"vault_id": "brand_new"})
+    ).json()
+
+    assert body["vault"]["id"] == "brand_new"
+    assert body["vault"]["name"] == ""
+    assert body["vault"]["owner"] == ""
+    assert body["vault"]["storage_root"].endswith("/brand_new/sources")
+    assert body["vault"]["brain_root"].endswith("/brand_new/brain")
+
+
+async def test_default_config_endpoint_does_not_require_the_vault_to_exist(app, client):
+    """An unregistered vault id is served, not 404'd.
+
+    The scaffold precedes creation by construction, so the route must not
+    resolve its argument through the vault registry. Anchored on an id the
+    registry demonstrably lacks, so a route wired to ``get_vault_id`` fails
+    here rather than passing on an incidentally-registered id.
+    """
+    assert "brand_new" not in app.state.vault_registry
+
+    resp = await client.get("/sage_vaults/default-config", params={"vault_id": "brand_new"})
+
+    assert resp.status_code == 200, resp.text
+
+
+async def test_default_config_endpoint_rejects_a_malformed_vault_id(client):
+    """A vault id that violates the shape is rejected at request binding.
+
+    Pins that ``VaultIdStr`` sits on the handler's own annotation. A
+    ``Query(...)`` factory default would strip the validator and this
+    would come back 200. Renaming the parameter away is excluded by the
+    same assertion, not by the second one: the call then carries no
+    ``vault_id`` at all, and an omitted argument answers 422
+    ``invalid_parameter``, which ``status_code == 400`` already rejects.
+
+    The second assertion excludes a different rival -- a defaulted
+    parameter (``vault_id: VaultIdStr = ""``), whose default runs through
+    the same ``AfterValidator`` and so answers an omitted argument with
+    the very 400 ``invalid_vault_id`` this test reads as evidence of a
+    rejected shape. Against that rival the two assertions disagree, which
+    is the whole of what pins them apart.
+    """
+    resp = await client.get("/sage_vaults/default-config", params={"vault_id": "Not-A-Vault!"})
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "invalid_vault_id"
+
+    omitted = await client.get("/sage_vaults/default-config")
+    assert omitted.json().get("code") != "invalid_vault_id"
+
+
+async def test_the_served_scaffold_creates_a_vault_verbatim(client):
+    """The served document is directly postable to the create endpoint.
+
+    The round trip the web client depends on: fetch, fill the two identity
+    fields, post. Nothing else is substituted, so a scaffold the create
+    endpoint would reject fails here rather than in the browser.
+    """
+    config = (
+        await client.get("/sage_vaults/default-config", params={"vault_id": "round_trip"})
+    ).json()
+    config["vault"]["name"] = "Round Trip"
+    config["vault"]["owner"] = "testuser"
+
+    created = await client.post("/sage_vaults", json={"config": config})
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "Round Trip"
+
+    # The stored config round-trips through VaultConfig, which materializes
+    # the optional transition fields the scaffold omits. Compare the keys the
+    # scaffold actually carried, positionally, so a reordered or rewritten
+    # table fails while an added default does not.
+    stored = (await client.get("/sage_vaults/round_trip/config")).json()
+    served_rows = config["lifecycle"]["transitions"]
+    stored_rows = stored["lifecycle"]["transitions"]
+    assert len(stored_rows) == len(served_rows)
+    for served_row, stored_row in zip(served_rows, stored_rows, strict=True):
+        assert {key: stored_row[key] for key in served_row} == served_row

@@ -1470,6 +1470,48 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/default-config:
+    get:
+      operationId: get_default_vault_config
+      summary: Return the default configuration a new vault would be created with.
+      description: >-
+        Returns the creation-time scaffold as a JSON object conforming to
+        `docs/fs/sage/vault_config.schema.json`: two doc types, the three
+        base lifecycle states with their transition table, filename
+        metadata extraction, tier-1 supersedes inference, and abstraction
+        disabled.
+
+
+        The scaffold precedes the vault. No vault with the supplied id
+        need exist, none is created, and the response is not persisted.
+        The id is required because it shapes `storage_root` and
+        `brain_root`, which the server derives rather than anything a
+        caller can compute. `vault.name` and `vault.owner` come back
+        empty for the caller to fill.
+
+
+        Used by the CAS Application's create-vault form, which posts the
+        completed object straight back to the create endpoint rather than
+        carrying a second copy of the scaffold.
+      tags: [Vault Management]
+      parameters:
+        - name: vault_id
+          in: query
+          required: true
+          description: >-
+            Identifier the new vault would carry. Shapes the storage and
+            brain roots in the returned scaffold.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Default vault configuration scaffold.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /sage_vaults/{vault_id}/stats:
     get:
       operationId: get_vault_stats
@@ -6182,9 +6224,9 @@ components:
         Request body for the create-vault endpoint. The single `config`
         field carries the complete vault configuration; SAGE does not
         synthesize defaults at this boundary. Callers that want a vault
-        with sensible defaults should construct the dict via
-        ``sage.services.vault_registry.VaultRegistryService.get_default_config(vault_id, name, owner)``
-        and pass the result through.
+        with sensible defaults read the scaffold from
+        `get_default_vault_config`, fill in `vault.name` and
+        `vault.owner`, and pass the result through.
       properties:
         config:
           type: object

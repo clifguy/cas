@@ -619,12 +619,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "create_vault"): {
         "dict": "prose: the Python type of the config argument",
-        # Kept rather than reworded. Together these name the only
-        # affordance a caller has for a default config -- no route
-        # returns one -- so unlike the implementation identifiers removed
-        # alongside them, removing these would cost the reader something.
-        "get_default_config": "Python constructor for a default config; no API route returns one",
-        "VaultRegistryService": "the class holding that constructor; kept for the same reason",
         "sage_vaults": "on-disk vault directory, not a contract node",
         "vault_config": "the per-vault YAML file, not a contract node",
     },

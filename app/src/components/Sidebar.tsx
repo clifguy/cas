@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 import type { VaultSummary } from '../api/types';
-import { createVault } from '../api/vaults';
+import { createVault, getDefaultVaultConfig } from '../api/vaults';
 
 interface SidebarProps {
   activeVault: string;
@@ -47,54 +47,16 @@ export default function Sidebar({ activeVault, onVaultChange, onVaultCreated, va
     setCreating(true);
     setCreateError('');
     try {
-      // Fetch the default config from the backend by sending a minimal config
-      // that will be validated. We build it client-side matching the backend's
-      // default structure.
-      const defaultConfig: Record<string, unknown> = {
-        vault: {
-          id: newId,
-          name: newName.trim(),
-          owner: newOwner.trim(),
-          storage_root: `~/sage_vaults/${newId}/sources`,
-          brain_root: `~/sage_vaults/${newId}/brain`,
-          visibility: 'personal',
-        },
-        document_types: {
-          doc_types: [
-            { value: 'document', label: 'Document', description: 'General-purpose document type.' },
-            { value: 'reference', label: 'Reference', description: 'Reference material and supporting documents.' },
-          ],
-        },
-        lifecycle: {
-          base_states_required: true,
-          states: [
-            { value: 'active', label: 'Active' },
-            { value: 'completed', label: 'Completed' },
-            { value: 'archived', label: 'Archived', is_terminal: true },
-          ],
-          transitions: [
-            { from_state: '(new)', action: 'ingest', to_state: 'active' },
-            { from_state: 'active', action: 'supersede', to_state: 'archived', creates_edge: 'supersedes' },
-            { from_state: 'completed', action: 'supersede', to_state: 'archived', creates_edge: 'supersedes' },
-            { from_state: 'active', action: 'complete', to_state: 'completed' },
-            { from_state: 'active', action: 'archive', to_state: 'archived' },
-            { from_state: 'completed', action: 'archive', to_state: 'archived' },
-            { from_state: 'completed', action: 'reactivate', to_state: 'active' },
-            { from_state: 'archived', action: 'reactivate', to_state: 'active' },
-          ],
-        },
-        metadata_extraction: {
-          filename_extraction: { separator: '_' },
-        },
-        edge_inference: {
-          tier_assignments: [
-            { edge_type: 'supersedes', tier: 1, inference_rules: [{ method: 'version_chain' }] },
-          ],
-        },
-        abstraction: { enabled: false },
-      };
+      // The server owns the scaffold; this form supplies only the two
+      // identity fields the server cannot know. Fetching on submit rather
+      // than on panel open because the scaffold is keyed on the vault id,
+      // which is still being typed until now.
+      const scaffold = await getDefaultVaultConfig(newId);
 
-      await createVault(defaultConfig);
+      await createVault({
+        ...scaffold,
+        vault: { ...scaffold.vault, name: newName.trim(), owner: newOwner.trim() },
+      });
       setShowCreate(false);
       setNewId('');
       setNewName('');

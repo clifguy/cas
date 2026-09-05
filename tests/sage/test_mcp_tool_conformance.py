@@ -274,6 +274,16 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ("sage_core", "eval_retrieval"): "HTTP-only retrieval evaluation harness.",
     (
         "sage_core",
+        "get_default_vault_config",
+    ): (
+        "REST-only per the SAGE MCP Tool Surface enumeration discipline "
+        "(CAS-ADR-035): the operation exists so a browser client can read "
+        "the creation-time scaffold it cannot construct. An in-process "
+        "caller reaches the same builder directly, so a tool would add a "
+        "name to the surface without adding an affordance."
+    ),
+    (
+        "sage_core",
         "register_user",
     ): (
         "REST-only per the SAGE MCP Tool Surface enumeration discipline "

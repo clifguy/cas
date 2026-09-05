@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.31",
+      "version": "0.32",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.74",
+  "substrate_version": "1.75",
   "revision_history": [
+    {
+      "version": "1.75",
+      "date": "2026-09-05",
+      "summary": "Serve the default vault-config scaffold instead of restating it per caller. sage_core_api.openapi.yaml bumped v0.31->v0.32: one new operation, get_default_vault_config on GET /sage_vaults/default-config, taking the prospective vault id as a required query parameter and returning the creation-time scaffold as an untyped config object -- the same inline {type: object, additionalProperties: true} schema the per-vault config read already returns, so no components/schemas entry and no Pydantic counterpart. The scaffold had two copies. VaultRegistryService.get_default_config built one; the CAS Application's create-vault form restated the whole of it -- doc types, lifecycle states and transitions, edge inference, abstraction toggle -- as a TypeScript literal and posted that. They drifted: when the Python scaffold gained completed --supersede--> archived and completed --reactivate--> active, the client kept the old six-row table, so a vault created through the UI inherited exactly the gap that change closed. A second divergence was live and unnoticed: the client wrote storage_root as a tilde string where the scaffold writes the expanded absolute path the identity schema documents. Both end here. The operation is deliberately not vault-scoped and is pinned as such in SAGE_NON_VAULT_PATHS: the scaffold precedes the vault, so a {vault_id} segment would promise a registry resolution the route must not perform -- an unregistered id is served, not 404'd. It sits under /sage_vaults/ all the same, because the CAS Application reaches SAGE through a backend-for-frontend that proxies that subtree and nothing else. It is REST-only, allowlisted in HTTP_ONLY_OPERATIONS: the operation exists so a browser client can read a scaffold it cannot construct, and an in-process caller reaches the same builder directly. Two narrative pins drain against that one addition. The create_vault prose on both surfaces named VaultRegistryService.get_default_config as the only affordance for a default config, justified in UNRESOLVED_IDENTIFIERS by no API route returning one; the prose now names the operation, whose id is in the contract vocabulary, and the two pins come out. Code (not in this substrate): get_default_config's name and owner parameters default to empty strings, the two identity fields the server cannot know, which the caller fills before posting; the web client fetches the scaffold on submit rather than on panel open, the vault id being still in flight until then. Tests: five REST cases in test_vault_config_api.py compare the served document against the builder rather than a transcribed config and hold the round trip to creating a vault verbatim, recorded as TEST-SAGE-VM-REST-004; three component cases pin that the client posts what it was served, built in the test from the served object, so a reintroduced literal fails on the comparison rather than on a restated expectation."
+    },
     {
       "version": "1.74",
       "date": "2026-09-05",

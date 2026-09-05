@@ -50,12 +50,18 @@ class VaultRegistryService:
         self._initialize_services = initialize_services
 
     @staticmethod
-    def get_default_config(vault_id: str, name: str, owner: str) -> dict:
+    def get_default_config(vault_id: str, name: str = "", owner: str = "") -> dict:
         """Build a minimal valid default config dict for a new vault.
 
         Callers that want to spin up a vault with sensible defaults pass
         the result of this method as the ``config`` argument to
         ``create_vault`` (or to the REST create-vault endpoint).
+
+        ``vault_id`` shapes the storage roots and so must be supplied.
+        The display name and owner default to empty strings for callers
+        that do not have them yet -- the read endpoint serving this
+        scaffold over HTTP fills neither, leaving both to whoever
+        completes the config before creating the vault.
         """
         return {
             "vault": {
