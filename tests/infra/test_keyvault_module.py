@@ -302,9 +302,10 @@ def test_purge_protection_defaults_off_on_both_surfaces() -> None:
 
 
 def test_purge_protection_rationale_is_current() -> None:
-    """The parameter's description states the real constraint. The vault is shared
-    with a co-tenant workload, so the older "recreatable" rationale does not hold:
-    enabling purge protection is irreversible and binds the other workload too.
+    """The parameter's description states the real constraint: enabling purge
+    protection is irreversible and vault-wide, so on a vault whose secrets are
+    shared with another workload it binds that workload too. The older
+    "recreatable" rationale does not survive that case and must not return.
     """
     text = KEYVAULT.read_text(encoding="utf-8")
     m = re.search(r"@description\('([^']*)'\)\s*\nparam\s+enablePurgeProtection\b", text)

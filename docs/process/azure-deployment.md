@@ -340,13 +340,20 @@ the delete verb — ARM updates and the in-VNet bootstrap job run unaffected, so
 re-deploying stays idempotent. Deleting the server is therefore a deliberate two
 steps: remove the lock, then delete.
 
+The block reaches the whole group. A `CanNotDelete` lock on any resource refuses
+deletion of its containing resource group too, so `az group delete` fails with
+`ScopeLocked` while any lock in the group stands — including the rebuild-from-clean
+case this section exists for, which begins with exactly that operation. Removing
+one lock is not enough: clear every lock the group holds first.
+
 ```bash
 az lock list --resource-group "$RESOURCE_GROUP_NAME" -o table
 ```
 
-A lock applied by hand before the declaration existed will not be adopted by the
-deployment: lock names are not derived from the tenant coordinates, so a
-hand-made lock and the declared one are two separate child resources. Both are
+A lock applied by hand before the declaration existed is adopted only if its name
+happens to match. The declared lock's name derives from `environmentName`, while a
+hand-applied lock carries whatever the operator typed; unless the two coincide,
+they are separate child resources and the deployment creates its own. Both are
 `CanNotDelete` and the stricter wins, so the state is safe but divergent —
 confirm the declared lock exists, then delete the hand-made one so the live
 resource group matches the template.
