@@ -193,9 +193,9 @@ class ContentStore(ABC):
 
     # -- migration off the single-surface layout (CAS-ADR-049) ---------------
     # A vault provisioned before document-level text had a surface of its own
-    # still holds a synthetic header row per document on the passage surface,
-    # and heading paths rooted at the document title. These three exist to
-    # relocate that state, and have no caller outside the migration.
+    # still holds a synthetic header row per document on the passage surface.
+    # These two exist to relocate that text, and have no caller outside the
+    # migration.
 
     @abstractmethod
     async def legacy_document_header_rows(self) -> list[tuple[str, list[float] | None]]:

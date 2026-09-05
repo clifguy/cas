@@ -65,11 +65,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_CANDIDATE_MATCHES = 10
 
-# Ceiling on a retrieval-health assertion's ``top_k``, and on the wider
-# lookup that reports a missed document's actual rank. Both run through
-# ``DiscoverRequest``, whose ``limit`` is capped, so a larger value would
-# raise a validation error from inside the health check instead of
-# reporting the failure the check exists to report.
+# Bounds on a retrieval-health assertion's ``top_k``, and the multiple
+# used for the wider lookup that reports a missed document's actual rank.
+# Both run through ``DiscoverRequest``, whose ``limit`` is bounded at both
+# ends, so a value outside them would raise a validation error from inside
+# the health check instead of reporting the failure it exists to report.
+_EVAL_MIN_LIMIT = 1
 _EVAL_MAX_LIMIT = 100
 _EVAL_DIAGNOSTIC_FACTOR = 5
 
@@ -498,24 +499,34 @@ class UtilitiesService:
         if not isinstance(assertions, list):
             raise AssertionsFileInvalidError(assertions_path, "'assertions' must be a list")
 
-        # Run each assertion against the retrieval a caller actually gets.
-        failures: list[AssertionFailure] = []
+        # Validate the whole file before running any of it, so a malformed
+        # assertion is reported as a file error naming what is wrong rather
+        # than surfacing part-way through a run that has already reported
+        # results for the assertions ahead of it.
         for assertion in assertions:
-            query = assertion.get("query")
-            expected_id = assertion.get("expected_document_id")
-            top_k = assertion.get("top_k", 10)
-
-            if not query or not expected_id:
+            if not assertion.get("query") or not assertion.get("expected_document_id"):
                 raise AssertionsFileInvalidError(
                     assertions_path,
                     "Each assertion requires 'query' and 'expected_document_id'",
                 )
-
-            if top_k > _EVAL_MAX_LIMIT:
+            top_k = assertion.get("top_k", 10)
+            if not isinstance(top_k, int) or isinstance(top_k, bool):
+                raise AssertionsFileInvalidError(
+                    assertions_path, f"'top_k' must be an integer; got {top_k!r}"
+                )
+            if not _EVAL_MIN_LIMIT <= top_k <= _EVAL_MAX_LIMIT:
                 raise AssertionsFileInvalidError(
                     assertions_path,
-                    f"'top_k' must be at most {_EVAL_MAX_LIMIT}; got {top_k}",
+                    f"'top_k' must be between {_EVAL_MIN_LIMIT} and {_EVAL_MAX_LIMIT}; got {top_k}",
                 )
+
+        # Run each assertion against the retrieval a caller actually gets.
+        failures: list[AssertionFailure] = []
+        for assertion in assertions:
+            query = assertion["query"]
+            expected_id = assertion["expected_document_id"]
+            top_k = assertion.get("top_k", 10)
+
             document_ids = await self._eval_ranked_document_ids(query, top_k)
 
             # Check if expected document is in results

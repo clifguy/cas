@@ -413,8 +413,11 @@ class PostgresContentStore(ContentStore):
         tables in full, since neither index can supply that order. And a row
         with no embedding yields a NaN distance, which sorts above every real
         number under ``score DESC`` but below every real distance under the
-        ascending order used here, so an unembedded row stays last rather than
-        displacing the best matches.
+        ascending order each arm uses, so an unembedded row is the last thing
+        an arm keeps rather than the first. It can still reach the result when
+        an arm returns fewer rows than its limit -- there is then nothing for
+        the ordering to displace it behind -- which is why nothing writes a
+        row without an embedding.
         """
         with self._query_timer.measure(
             "search_semantic", params={"limit": limit, "filtered": bool(filters)}

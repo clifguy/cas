@@ -141,6 +141,21 @@ def retrieval_service(graph_store, stub_content_store, seeded_embedding_provider
     )
 
 
+def _document_level_hit(response, document_id):
+    """The response's document-level hit for a document, or ``None``.
+
+    A hit is document-level when it carries no heading path: a passage always
+    has one, and the document surface never does. Naming it this way is what
+    makes the assertions below discriminating -- a document with a body chunk
+    is returned whether or not its surface was ever written, so asserting only
+    that the document came back says nothing about the surface.
+    """
+    for hit in response.results:
+        if hit.document.id == document_id and hit.heading_path is None:
+            return hit
+    return None
+
+
 async def _index_document_surface(
     content_store: StubContentStore,
     embedding_provider,
@@ -781,8 +796,9 @@ async def test_camelcase_title_searchable_via_split_tokens(
 ):
     """A document whose title is a CamelCase compound and whose body is
     sparse placeholder content is retrievable by natural-language queries
-    against the constituent words. The synthetic header chunk carries a
-    case-split identifier-token line that unblocks BM25 matching."""
+    against the constituent words. The document surface's authored half
+    carries the compound's case-split expansion, which is what lets
+    "dashboard" reach "PortfolioDashboard" (CAS-ADR-049)."""
     doc = _make_doc(_id("doc_portfolio"))
     doc.title = "PortfolioDashboard_Template"
     doc.source_path = "imports/2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3.xlsx"
@@ -843,6 +859,18 @@ async def test_camelcase_title_searchable_via_split_tokens(
         assert _id("doc_portfolio") in doc_ids, (
             f"doc_portfolio missing from top 5 for {mode_kwargs!r}; got {doc_ids}"
         )
+        # The case-split expansion of the compound title lives only on the
+        # document surface, so a document-level hit is what shows the surface
+        # was actually consulted. Without it the body chunk alone would return
+        # the document and the assertion above would pass unchanged.
+        hit = _document_level_hit(response, _id("doc_portfolio"))
+        assert hit is not None, (
+            f"no document-level hit for {mode_kwargs!r}; the document surface "
+            "contributed nothing to this result"
+        )
+        assert "dashboard" in (hit.chunk_content or "").lower(), (
+            "the document-level hit does not carry the title's expansion"
+        )
 
 
 async def test_semantic_abstract_drives_a_semantic_match(
@@ -882,6 +910,16 @@ async def test_semantic_abstract_drives_a_semantic_match(
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_abstract_only") in doc_ids
 
+    # The abstract is carried by the document surface and nowhere else, so the
+    # hit that carries it must be the document-level one. Asserting only that
+    # the document was returned would pass against a store that never stored a
+    # surface at all, since the body chunk returns it either way.
+    hit = _document_level_hit(response, _id("doc_abstract_only"))
+    assert hit is not None, "the abstract's document-level hit is absent"
+    assert "accumulator" in (hit.chunk_content or "").lower(), (
+        "the document-level hit does not carry the generated abstract"
+    )
+
 
 async def test_document_level_hit_carries_no_heading_path(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -899,12 +937,11 @@ async def test_document_level_hit_carries_no_heading_path(
     doc.semantic_abstract = "probe content"
     await graph_store.insert_document(doc)
 
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_mask"),
-        [("Sheet1", "[empty body]")],
-    )
+    # No passages: the document's only indexed text is document-level, so the
+    # hit under test can only be the document-level one. With a body chunk the
+    # service's per-document dedup may return the passage instead, and the
+    # assertion would then say nothing about how a document-level hit reports
+    # its heading path.
     await _index_document_surface(
         stub_content_store, seeded_embedding_provider, _id("doc_mask"), doc
     )
@@ -914,6 +951,10 @@ async def test_document_level_hit_carries_no_heading_path(
 
     hits = [hit for hit in response.results if hit.document.id == _id("doc_mask")]
     assert hits, "doc_mask was not in results"
+    assert _document_level_hit(response, _id("doc_mask")) is not None, (
+        "no document-level hit was returned, so this asserts nothing about how "
+        "one reports its heading path"
+    )
     # Asserted as a property rather than as a set of permitted values: which
     # surface wins this query is a ranking outcome, and enumerating both
     # outcomes would pass against an implementation that leaked a marker on

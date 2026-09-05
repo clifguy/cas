@@ -812,8 +812,10 @@ def test_document_surface_is_stable_when_the_abstract_is_unset(ingestion_service
     surface = compose_document_surface("00000001_doc", doc)
 
     assert surface.matchable, "authored text is available before abstraction"
-    assert "some-title" in surface.orienting
-    assert surface.orienting.strip() == surface.orienting.strip()
+    assert "some-title" in surface.orienting, "the filename stem still reaches the derived half"
+    assert not surface.orienting.startswith(" "), (
+        "an unset abstract must not leave a leading blank where its text would go"
+    )
 
 
 async def test_abstraction_input_cannot_carry_a_generated_abstract(ingestion_service):

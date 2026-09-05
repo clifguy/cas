@@ -196,19 +196,44 @@ async def test_a_missed_assertion_reports_its_rank_rather_than_raising(graph_sto
     assert result.failure_count == 1, "the miss was reported rather than raised"
 
 
-async def test_a_top_k_above_the_ceiling_is_rejected_as_a_malformed_assertion(
-    graph_store, minimal_config
+@pytest.mark.parametrize("bad_top_k", [500, 0, -1, "ten", 2.5])
+async def test_a_top_k_outside_the_bounds_is_rejected_as_a_malformed_assertion(
+    graph_store, minimal_config, bad_top_k
 ):
     """A ``top_k`` the request model cannot express is a file error.
 
-    Reported at load as a malformed assertion rather than surfacing as a
-    validation error from deep inside the run, so the operator is told which
-    file is wrong.
+    Both bounds, because the underlying limit is bounded at both ends: a
+    ceiling-only guard leaves zero and negative values raising from inside the
+    run. Reported before any assertion runs, so the operator is told which file
+    is wrong rather than receiving results for the assertions ahead of it.
     """
     utilities = await _utilities_with_corpus(graph_store, minimal_config)
     filename = _write_assertions(
         minimal_config,
-        [{"query": "zephyrword", "expected_document_id": _TARGET, "top_k": 500}],
+        [{"query": "zephyrword", "expected_document_id": _TARGET, "top_k": bad_top_k}],
+    )
+    _with_assertions_file(minimal_config, filename)
+
+    with pytest.raises(AssertionsFileInvalidError):
+        await utilities.eval_retrieval()
+
+
+async def test_a_malformed_assertion_is_refused_before_any_assertion_runs(
+    graph_store, minimal_config
+):
+    """Validation covers the whole file, not each assertion as it is reached.
+
+    A file whose first assertion is sound and whose second is not must be
+    refused outright. Validating mid-loop would report a result for the first
+    and then raise, leaving the caller a partial answer it cannot interpret.
+    """
+    utilities = await _utilities_with_corpus(graph_store, minimal_config)
+    filename = _write_assertions(
+        minimal_config,
+        [
+            {"query": "zephyrword", "expected_document_id": _TARGET, "top_k": 1},
+            {"query": "zephyrword", "expected_document_id": _TARGET, "top_k": 500},
+        ],
     )
     _with_assertions_file(minimal_config, filename)
 

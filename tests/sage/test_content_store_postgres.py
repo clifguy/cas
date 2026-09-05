@@ -1480,10 +1480,20 @@ async def test_semantic_arm_applies_the_updated_filter_to_both_surfaces(store):
     )
     await store.update_chunk_metadata("d1", {"lifecycle_status": "archived"})
 
-    hits = await store.search_semantic(
-        [1.0] + [0.0] * (EMBEDDING_DIM - 1), limit=10, filters={"lifecycle_status": "active"}
+    query = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    assert (
+        await store.search_semantic(query, limit=10, filters={"lifecycle_status": "active"})
+    ) == [], "an archived document's surface row survived an active filter"
+
+    # The control: an implementation that simply stopped returning surface rows
+    # under any filter would satisfy the assertion above. This separates
+    # "filtered correctly" from "filtered out entirely".
+    archived = await store.search_semantic(
+        query, limit=10, filters={"lifecycle_status": "archived"}
     )
-    assert hits == [], "an archived document's surface row survived an active filter"
+    assert any(h.heading_path == "" for h in archived), (
+        "the surface row is filtered out under every predicate, not re-stamped"
+    )
 
 
 # ---------------------------------------------------------------------------
