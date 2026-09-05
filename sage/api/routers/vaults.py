@@ -56,10 +56,9 @@ async def get_default_vault_config(
 
     The scaffold precedes the vault: no vault with this id need exist, and
     none is created. The id is required because it shapes the storage and
-    brain roots, which resolve against the server's vault root rather than
-    anything a caller can know. The display name and owner come back empty
-    for the caller to fill before posting the result to the create-vault
-    endpoint.
+    brain roots, which the server derives rather than anything a caller can
+    compute. The display name and owner come back empty for the caller to
+    fill before posting the result to the create-vault endpoint.
     """
     return service.get_default_config(vault_id)
 

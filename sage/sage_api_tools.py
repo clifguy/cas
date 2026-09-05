@@ -2001,9 +2001,10 @@ def register_sage_tools(
         are required (``vault``, ``document_types``, ``lifecycle``,
         ``metadata_extraction``, ``edge_inference``) and four optional
         (``adapter_defaults``, ``abstraction``, ``access_control_defaults``,
-        ``retrieval_health``). A minimal default is served by
-        ``get_default_vault_config``, which returns the scaffold for a
-        vault id with ``vault.name`` and ``vault.owner`` left empty.
+        ``retrieval_health``). A minimal default is served by the REST
+        operation ``get_default_vault_config`` -- there is no tool of that
+        name on this surface -- which returns the scaffold for a vault id
+        with ``vault.name`` and ``vault.owner`` left empty.
 
         The new vault inherits the running process's stack-wide
         abstraction-provider singleton (built once at startup); the vault

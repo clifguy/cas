@@ -1485,9 +1485,9 @@ paths:
         The scaffold precedes the vault. No vault with the supplied id
         need exist, none is created, and the response is not persisted.
         The id is required because it shapes `storage_root` and
-        `brain_root`, which resolve against the server's vault root
-        rather than anything a caller can compute. `vault.name` and
-        `vault.owner` come back empty for the caller to fill.
+        `brain_root`, which the server derives rather than anything a
+        caller can compute. `vault.name` and `vault.owner` come back
+        empty for the caller to fill.
 
 
         Used by the CAS Application's create-vault form, which posts the

@@ -888,9 +888,17 @@ async def test_default_config_endpoint_rejects_a_malformed_vault_id(client):
 
     Pins that ``VaultIdStr`` sits on the handler's own annotation. A
     ``Query(...)`` factory default would strip the validator and this
-    would come back 200. The typed code separates a rejected shape from
-    an absent argument, which the second assertion holds apart: without
-    it, renaming the parameter away would leave this test green.
+    would come back 200. Renaming the parameter away is excluded by the
+    same assertion, not by the second one: the call then carries no
+    ``vault_id`` at all, and an omitted argument answers 422
+    ``invalid_parameter``, which ``status_code == 400`` already rejects.
+
+    The second assertion excludes a different rival -- a defaulted
+    parameter (``vault_id: VaultIdStr = ""``), whose default runs through
+    the same ``AfterValidator`` and so answers an omitted argument with
+    the very 400 ``invalid_vault_id`` this test reads as evidence of a
+    rejected shape. Against that rival the two assertions disagree, which
+    is the whole of what pins them apart.
     """
     resp = await client.get("/sage_vaults/default-config", params={"vault_id": "Not-A-Vault!"})
 
