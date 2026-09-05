@@ -487,19 +487,18 @@ async def test_search_bm25_empty_query_returns_empty(store):
     assert await store.search_bm25("   ", limit=10) == []
 
 
-async def test_search_bm25_requires_every_term_in_one_chunk(store):
-    """Multi-term keyword queries are conjunctive: one absent term matches nothing.
+async def test_search_bm25_requires_every_term_across_the_document(store):
+    """Multi-term keyword queries stay conjunctive: one absent term matches nothing.
 
-    ``websearch_to_tsquery`` joins bare terms with AND, so a query is satisfied
-    only by a chunk carrying *every* term. Nothing else in the suite exercises a
-    multi-term query -- single-term queries behave identically under AND and OR,
-    so they cannot tell the two apart. Green on arrival by design: this pins
-    current behaviour so a change of query builder is a visible decision.
+    CAS-ADR-048 moves the matching unit from the chunk to the document but keeps
+    full-term strictness, so widening the scope must not weaken the predicate.
+    Single-term queries behave identically under AND and OR and so cannot tell
+    the two apart; this is the case that can.
     """
     await store.index_chunks("d1", [_chunk("d1", content="alphaword betaword gammaword")])
 
     present = await store.search_bm25("alphaword betaword gammaword", limit=10)
-    assert [r.document_id for r in present] == ["d1"], "every term present in one chunk must match"
+    assert [r.document_id for r in present] == ["d1"], "every term present must match"
 
     absent = await store.search_bm25("alphaword betaword gammaword deltaword", limit=10)
     assert absent == [], (
@@ -508,8 +507,14 @@ async def test_search_bm25_requires_every_term_in_one_chunk(store):
     )
 
 
-async def test_search_bm25_terms_must_share_a_chunk_not_a_document(store):
-    """The conjunction is per chunk, not per document."""
+async def test_search_bm25_terms_may_span_chunks_of_one_document(store):
+    """The conjunction is per document, not per chunk (CAS-ADR-048).
+
+    The union of a document's chunks carries both terms, so the document
+    matches even though no single chunk does. Under the chunk-scoped predicate
+    this returned nothing, which made retrieval a function of where the
+    projection happened to place a boundary.
+    """
     await store.index_chunks(
         "d1",
         [
@@ -518,8 +523,133 @@ async def test_search_bm25_terms_must_share_a_chunk_not_a_document(store):
         ],
     )
 
+    assert [r.document_id for r in await store.search_bm25("alphaword betaword", limit=10)] == [
+        "d1"
+    ], "terms split across two chunks of one document must match the document"
+
+
+async def test_search_bm25_does_not_match_across_documents(store):
+    """The union is per document, not corpus-wide.
+
+    The sharper control on the scope move: a disjunctive regression returns
+    both documents here, where the split-across-chunks case alone would not
+    distinguish one.
+    """
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword only here")])
+    await store.index_chunks("d2", [_chunk("d2", content="betaword only here")])
+
     assert await store.search_bm25("alphaword betaword", limit=10) == [], (
-        "terms split across two chunks of one document must not match"
+        "one term in each of two documents must not match either of them"
+    )
+
+
+async def test_search_bm25_returns_one_row_per_matching_document(store):
+    """A matching document is represented once, by its best-matching chunk.
+
+    Three chunks all carry the term, so a row-per-chunk binding returns three
+    rows and this fails; ``limit`` is a document budget, not a row budget.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword first", chunk_index=0),
+            _chunk("d1", content="alphaword second", chunk_index=1),
+            _chunk("d1", content="alphaword third", chunk_index=2),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword", limit=10)
+    assert [r.document_id for r in res] == ["d1"], (
+        "one row per matching document; a row-per-chunk binding returns three"
+    )
+
+
+async def test_search_bm25_excerpt_is_the_best_matching_chunk(store):
+    """Co-occurrence within a chunk is a ranking signal, not a matching one.
+
+    The co-occurring chunk sits in the *middle*, so neither end of document
+    order is the answer: a binding that returns the first chunk fails, and so
+    does one that returns the last. Two chunks cannot separate those two
+    rivals, because with two the best chunk is always at one end or the other.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword alone", heading_path="S1", chunk_index=0),
+            _chunk("d1", content="alphaword betaword together", heading_path="S2", chunk_index=1),
+            _chunk("d1", content="alphaword again alone", heading_path="S3", chunk_index=2),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword betaword", limit=10)
+    assert [r.document_id for r in res] == ["d1"]
+    assert res[0].heading_path == "S2", (
+        "the excerpt is the chunk carrying both terms, not the first chunk in document order"
+    )
+
+
+async def test_search_bm25_ranks_a_co_occurring_document_above_a_split_one(store):
+    """Both documents match; the one whose chunk carries both terms ranks first."""
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword betaword together")])
+    await store.index_chunks(
+        "d2",
+        [
+            _chunk("d2", content="alphaword only here", chunk_index=0),
+            _chunk("d2", content="betaword only here", chunk_index=1),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword betaword", limit=10)
+    assert {r.document_id for r in res} == {"d1", "d2"}, "both documents match under document scope"
+    assert res[0].document_id == "d1", (
+        "co-occurrence within one chunk outranks the same terms split apart"
+    )
+
+
+async def test_search_bm25_reports_the_count_of_chunks_carrying_query_terms(store):
+    """``matched_chunk_count`` counts the document's chunks carrying a query term.
+
+    Two of three chunks carry the term, so the expected value distinguishes a
+    hard-coded 1 from a count of every chunk in the document.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword first", chunk_index=0),
+            _chunk("d1", content="alphaword second", chunk_index=1),
+            _chunk("d1", content="nothing relevant", chunk_index=2),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword", limit=10)
+    assert [r.matched_chunk_count for r in res] == [2], (
+        "two of three chunks carry the term; neither 1 nor 3 is the answer"
+    )
+
+
+async def test_search_bm25_counts_chunks_carrying_any_term_not_the_whole_query(store):
+    """The count is of chunks carrying *a* query term, not chunks that match.
+
+    A single-term query cannot tell those apart -- there, a chunk carrying a
+    term and a chunk satisfying the query are the same chunk. Under the
+    document-scoped match they part company: here no chunk carries both terms,
+    so a count of chunks satisfying the whole query is zero while the count of
+    chunks carrying one is two. The signal is meant to say how much of the
+    document bears on the query, so zero would be the wrong answer on exactly
+    the queries the scope move exists to serve.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword only here", chunk_index=0),
+            _chunk("d1", content="betaword only here", chunk_index=1),
+            _chunk("d1", content="nothing relevant", chunk_index=2),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword betaword", limit=10)
+    assert [r.matched_chunk_count for r in res] == [2], (
+        "both term-bearing chunks count, though neither satisfies the query alone"
     )
 
 
@@ -618,9 +748,91 @@ async def test_parse_keyword_query_reports_a_quoted_phrase_as_adjacent(store):
     assert phrase.terms == ("alphaword", "betaword")
     assert phrase.adjacent, "a quoted phrase must report adjacency"
 
+
+async def test_parse_keyword_query_reports_a_phrase_holding_a_stopword_as_adjacent(store):
+    """A phrase's stopwords are dropped but keep their positions.
+
+    ``"alphaword the betaword"`` renders ``'alphaword' <2> 'betaword'`` rather
+    than ``<->``, because the discarded stopword still consumed a position.
+    Reading adjacency off the ``<->`` spelling alone misses every phrase that
+    contains one, which is most prose phrases.
+    """
+    phrase = await store.parse_keyword_query('"alphaword the betaword"')
+    assert phrase.terms == ("alphaword", "betaword")
+    assert phrase.adjacent, "a distance of two is still an adjacency requirement"
+
+
+async def test_parse_keyword_query_does_not_report_a_compound_token_as_adjacent(store):
+    """A compound the tokenizer split is not a phrase the caller wrote.
+
+    ``CAS-ADR-048`` renders ``'cas-adr' <-> 'cas' <-> 'adr' <-> '048'`` -- the
+    tokenizer's own model of a hyphenated identifier, not a quotation. Reading
+    adjacency off the rendered operator alone reports every identifier as a
+    phrase, and the empty-result advisory then tells a caller who quoted
+    nothing to try unquoting it. Identifiers are the query shape this vault
+    sees most.
+    """
+    identifier = await store.parse_keyword_query("CAS-ADR-048 governance")
+    assert "cas-adr" in identifier.terms, "precondition: the compound splits into lexemes"
+    assert not identifier.adjacent, "a tokenizer-produced adjacency is not a caller-written phrase"
+
+
+async def test_parse_keyword_query_does_not_report_an_excluded_phrase_as_adjacent(store):
+    """An excluded phrase imposes no adjacency the caller must satisfy.
+
+    The compound in the second query is the discriminating half. Reading the
+    caller's quotes and the rendered operator as two independent conditions
+    lets each be satisfied by a different part of the query -- the excluded
+    span supplies the quotes, the split identifier supplies the adjacency --
+    and neither is a phrase the caller required.
+    """
+    excluded = await store.parse_keyword_query('alphaword -"beta gamma"')
+    assert not excluded.adjacent, "the quoted span is a thing to avoid, not a requirement to meet"
+
+    with_compound = await store.parse_keyword_query('CAS-ADR-048 -"beta gamma"')
+    assert not with_compound.adjacent, (
+        "the identifier's own adjacency must not stand in for the excluded phrase's"
+    )
+
     bare = await store.parse_keyword_query("alphaword betaword")
     assert bare.terms == ("alphaword", "betaword")
     assert not bare.adjacent, "the same terms unquoted carry no adjacency requirement"
+
+
+async def test_parse_keyword_query_does_not_report_a_quoted_single_word_as_adjacent(store):
+    """One quoted word is not a phrase: there is nothing for it to be adjacent to.
+
+    Paired with a hyphenated identifier, which is the query shape this vault
+    sees most. The quotes and the rendered adjacency arrive from different
+    halves of the query, so treating their co-occurrence as a phrase advises
+    the caller to unquote something that imposes no adjacency at all.
+    """
+    single = await store.parse_keyword_query('"alphaword" CAS-ADR-048')
+    assert not single.adjacent, "a single quoted word carries no adjacency requirement"
+
+    two_singles = await store.parse_keyword_query('"alphaword" "betaword" CAS-ADR-048')
+    assert not two_singles.adjacent, (
+        "two singly-quoted words are two spans, not one phrase spanning the gap "
+        "between them; a pattern read across that gap sees a phrase in the space"
+    )
+
+    real_phrase = await store.parse_keyword_query('"alphaword betaword" CAS-ADR-048')
+    assert real_phrase.adjacent, (
+        "positive control: a genuine phrase alongside the same compound still reports"
+    )
+
+
+async def test_parse_keyword_query_reports_an_unclosed_quote_as_adjacent(store):
+    """An unclosed quote opens a phrase, and the search enforces one.
+
+    ``alpha "beta gamma`` renders ``'alpha' & 'beta' <-> 'gamma'``: the
+    tokenizer runs the span to the end of the query rather than discarding it.
+    Reporting no adjacency here would leave the caller of an empty result
+    reading the bare-conjunction advisory while the thing that actually failed
+    was an adjacency they did not realize they had asked for.
+    """
+    unclosed = await store.parse_keyword_query('alphaword "betaword gammaword')
+    assert unclosed.adjacent, "the trailing span is a phrase the search will enforce"
 
 
 async def test_search_bm25_phrase_requires_adjacency_not_just_presence(store):
@@ -633,6 +845,352 @@ async def test_search_bm25_phrase_requires_adjacency_not_just_presence(store):
     assert await store.search_bm25('"alphaword betaword"', limit=10) == [], (
         "the terms are not adjacent, so the phrase does not match"
     )
+
+
+async def test_search_bm25_phrase_matches_within_one_chunk(store):
+    """The positive control for the phrase exception.
+
+    Without it, a binding that stopped matching phrases *altogether* would pass
+    the chunk-scoping test below; neither case is evidence on its own.
+    """
+    await store.index_chunks("d1", [_chunk("d1", content="alphaword betaword together")])
+
+    assert [r.document_id for r in await store.search_bm25('"alphaword betaword"', limit=10)] == [
+        "d1"
+    ], "adjacent terms within one chunk must match the phrase"
+
+
+async def test_search_bm25_phrase_stays_chunk_scoped(store):
+    """A quoted phrase is the one deliberate exception to document scope.
+
+    CAS-ADR-048 point 3: adjacency across a chunk boundary is not meaningful.
+    The terms are adjacent only if the two chunks are read as one run of text,
+    which they are not.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="something ending in alphaword", chunk_index=0),
+            _chunk("d1", content="betaword opening the next section", chunk_index=1),
+        ],
+    )
+
+    assert await store.search_bm25('"alphaword betaword"', limit=10) == [], (
+        "adjacency across a chunk boundary is not a phrase match"
+    )
+    assert [r.document_id for r in await store.search_bm25("alphaword betaword", limit=10)] == [
+        "d1"
+    ], "the same terms unquoted match at document scope"
+
+
+async def test_search_bm25_mixed_phrase_and_bare_term(store):
+    """One query can carry both scopes: the phrase chunk-scoped, the term not.
+
+    The bare term sits in a different chunk from the phrase, so a binding that
+    collapses the whole query back to chunk scope returns nothing.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword betaword together", chunk_index=0),
+            _chunk("d1", content="gammaword elsewhere entirely", chunk_index=1),
+        ],
+    )
+
+    assert [
+        r.document_id for r in await store.search_bm25('"alphaword betaword" gammaword', limit=10)
+    ] == ["d1"], "phrase satisfied within a chunk, bare term satisfied across the document"
+
+    assert await store.search_bm25('"alphaword gammaword" betaword', limit=10) == [], (
+        "a phrase whose terms never sit adjacent in any one chunk still fails"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Provenance: derived text ranks and orients, but never satisfies a match
+# (CAS-ADR-049 point 4). The synthetic header row carries the generated
+# abstract, the source filename stem, and a lexical identifier expansion
+# alongside authored title and tags; it leaves the match union whole.
+# ---------------------------------------------------------------------------
+
+
+async def test_search_bm25_header_only_term_does_not_match(store):
+    """A term present only in derived text cannot make a document match."""
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Abstract: zzabstractterm governs every boundary",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk("d1", content="ordinary body prose", chunk_index=0),
+        ],
+    )
+
+    assert await store.search_bm25("zzabstractterm", limit=10) == [], (
+        "a generated abstract is evidence about a document, not content of it"
+    )
+
+
+async def test_search_bm25_header_term_cannot_complete_a_conjunction(store):
+    """Derived text cannot supply the term the authored text is missing.
+
+    The sharper form of the rule: document scope lets terms combine freely
+    across a document, so without this the header would silently become a
+    universal donor for any conjunction it happens to complete.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Abstract: betaword appears only in the generated summary",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk("d1", content="alphaword appears in the body", chunk_index=0),
+        ],
+    )
+
+    assert await store.search_bm25("alphaword betaword", limit=10) == [], (
+        "the header may not complete a conjunction the authored text leaves open"
+    )
+    assert [r.document_id for r in await store.search_bm25("alphaword", limit=10)] == ["d1"], (
+        "the authored term alone still matches -- the header is excluded from "
+        "matching, not the document"
+    )
+
+
+async def test_search_bm25_header_still_ranks_a_matched_document(store):
+    """Derived text keeps its ranking value on a document that does match.
+
+    The control against excluding the header outright: it is barred from
+    satisfying a match, not removed from the store or from ranking. The two
+    documents carry identical authored text, so the only thing separating
+    their scores is the header.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Abstract: alphaword alphaword alphaword densely restated",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk("d1", content="alphaword mentioned once in passing", chunk_index=0),
+        ],
+    )
+    await store.index_chunks(
+        "d2",
+        [
+            _chunk(
+                "d2",
+                content="Abstract: nothing of relevance to the query",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk("d2", content="alphaword mentioned once in passing", chunk_index=0),
+        ],
+    )
+
+    res = await store.search_bm25("alphaword", limit=10)
+    assert [r.document_id for r in res] == ["d1", "d2"], (
+        "both match on authored text; the richer header outranks the barer one, "
+        "so the header is still in the ranking pool"
+    )
+    assert res[0].score > res[1].score
+
+
+async def test_search_bm25_header_never_matches_on_the_within_chunk_path_either(store):
+    """Provenance holds whatever form the query takes.
+
+    A negation sends the query down the within-chunk path, where the document
+    scope is unsettled -- but provenance is not. Without the bar there, adding
+    an exclusion *widens* the result: ``deltaword -zzz`` would match a document
+    that ``deltaword`` alone does not, on a term carried only by text no author
+    wrote, and the header would come back as the excerpt.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Abstract: deltaword appears only in the generated summary",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk("d1", content="ordinary body prose", chunk_index=0),
+        ],
+    )
+
+    assert [
+        r.document_id for r in await store.search_bm25("ordinary -zzznotpresent", limit=10)
+    ] == ["d1"], (
+        "positive control: the fallback path returns authored matches, so the two "
+        "empty results below are the provenance bar and not a dead code path"
+    )
+    assert await store.search_bm25("deltaword", limit=10) == [], (
+        "precondition: the term is derived-only, so the document-scoped path refuses it"
+    )
+    assert await store.search_bm25("deltaword -zzznotpresent", limit=10) == [], (
+        "the negation changes the match scope, not what may satisfy a match"
+    )
+
+
+async def test_search_bm25_header_is_never_the_excerpt(store):
+    """Derived text ranks and orients; the excerpt is an authored passage.
+
+    The query is the failure's own shape rather than a neutral term: the
+    header's literal scaffolding is ``Title:``, ``Source:``, ``Tags:`` and
+    ``Abstract:``, so a caller searching for ``abstract`` collides with words
+    the system composed. Sampled against a real vault this is not a corner --
+    the header wins the excerpt for roughly a third of documents on that one
+    query. The document still matches, because its authored text carries the
+    term too; what must not happen is that the answer is the preamble.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Title: T\nSource: s\nTags: t\nAbstract: a composed restatement",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk(
+                "d1",
+                content="the abstract is discussed once in this passage",
+                heading_path="Body",
+                chunk_index=0,
+            ),
+        ],
+    )
+
+    res = await store.search_bm25("abstract", limit=10)
+    assert [r.document_id for r in res] == ["d1"], "the authored passage carries the term"
+    assert [r.heading_path for r in res] == ["Body"], (
+        "the header outranks the body chunk on this query, yet the body supplies the excerpt"
+    )
+
+
+async def test_search_bm25_title_matches_only_where_authored_text_carries_it(store):
+    """A title term reaches matching through authored text or not at all.
+
+    The two documents differ only in whether an authored heading path happens
+    to carry the title, and that is not a property ingestion guarantees:
+    ``heading_path`` is the projection's own heading hierarchy, so a document
+    whose headings do not restate its title -- a word-processor document, or
+    one with no headings at all -- carries the title only in the header row,
+    which no longer matches. On the vaults this repository builds against, the
+    share of documents in that position runs from a handful to a majority.
+
+    Stated as the accepted consequence rather than as a caveat, because the
+    earlier form of this test asserted the reassuring half and supplied the
+    reassurance itself: it hand-wrote a title-rooted heading path and read it
+    back, so no ingestion could turn it red. CAS-ADR-049's document surface is
+    what restores the title to the authored side; until it lands, this is the
+    behaviour, and the test that says so is the one that will notice when it
+    changes.
+    """
+    await store.index_chunks(
+        "rooted",
+        [
+            _chunk(
+                "rooted",
+                content="Title: Deltaword Catalog\nAbstract: unrelated",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk(
+                "rooted",
+                content="body prose sharing no term with the title",
+                heading_path="Deltaword Catalog > Section 1",
+                chunk_index=0,
+            ),
+        ],
+    )
+    await store.index_chunks(
+        "unrooted",
+        [
+            _chunk(
+                "unrooted",
+                content="Title: Deltaword Catalog\nAbstract: unrelated",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk(
+                "unrooted",
+                content="body prose sharing no term with the title",
+                heading_path="System Architecture > Storage",
+                chunk_index=0,
+            ),
+        ],
+    )
+
+    assert [r.document_id for r in await store.search_bm25("deltaword", limit=10)] == ["rooted"], (
+        "the title matches only where an authored heading path restates it; carried "
+        "in the header row alone it is derived text and does not match"
+    )
+
+
+async def test_filtered_keyword_search_admits_no_document_the_unfiltered_one_excludes(store):
+    """A filtered keyword search is the unfiltered one restricted, nothing else."""
+    await store.index_chunks(
+        "adr1",
+        [
+            _chunk("adr1", content="alphaword here", chunk_index=0, doc_type="adr"),
+            _chunk("adr1", content="betaword there", chunk_index=1, doc_type="adr"),
+        ],
+    )
+    await store.index_chunks(
+        "tic1",
+        [
+            _chunk("tic1", content="alphaword here", chunk_index=0, doc_type="ticket"),
+            _chunk("tic1", content="betaword there", chunk_index=1, doc_type="ticket"),
+        ],
+    )
+    await store.index_chunks(
+        "adr2", [_chunk("adr2", content="alphaword only, no partner", doc_type="adr")]
+    )
+
+    unfiltered = {r.document_id for r in await store.search_bm25("alphaword betaword", limit=10)}
+    filtered = {
+        r.document_id
+        for r in await store.search_bm25(
+            "alphaword betaword", limit=10, filters={"doc_type": "adr"}
+        )
+    }
+
+    assert unfiltered == {"adr1", "tic1"}
+    assert filtered <= unfiltered, "a filter may only narrow"
+    assert filtered == {"adr1"}, "and it narrows to exactly the slice it names"
+
+
+async def test_filter_applies_to_the_match_union_not_just_the_ranking_pool(store):
+    """Filter predicates apply at the matching unit (CAS-ADR-048 consequences).
+
+    The chunk metadata is deliberately skewed -- a state ordinary ingest never
+    produces, since the columns are document properties denormalized onto every
+    chunk. It is the only way to tell a union computed inside the filtered
+    slice from one computed over all chunks and filtered afterwards.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="alphaword here", chunk_index=0, doc_type="adr"),
+            _chunk("d1", content="betaword there", chunk_index=1, doc_type="ticket"),
+        ],
+    )
+
+    assert (
+        await store.search_bm25("alphaword betaword", limit=10, filters={"doc_type": "adr"}) == []
+    ), "only one term survives the filter, so the conjunction is unsatisfied within it"
+    assert [r.document_id for r in await store.search_bm25("alphaword betaword", limit=10)] == [
+        "d1"
+    ], "unfiltered, the union carries both terms"
 
 
 async def test_parse_keyword_query_empty_for_blank_query(store):

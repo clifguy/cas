@@ -22,13 +22,22 @@ without a live server.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, TypeVar
 
-from sage.adapters.interfaces import SearchResult
+from sage.adapters.content_store_postgres import PostgresContentStore
+from sage.adapters.interfaces import Chunk, SearchResult
+from sage.storage.postgres.schema import TEXT_SEARCH_CONFIG, bootstrap_schema
 from sage.utils.rrf import rrf_fuse
+
+if TYPE_CHECKING:
+    from psycopg_pool import AsyncConnectionPool
+
+_T = TypeVar("_T")
 
 # Default recommendation thresholds on the mean fused overlap@K across the query
 # set. At or above HIGH the backends agree closely enough to default to native
@@ -192,14 +201,29 @@ def compare_query(
 
 def recommend(
     mean_fused_overlap_at_k: float,
+    mean_raw_keyword_overlap_at_k: float,
     *,
     high: float = DEFAULT_HIGH_THRESHOLD,
     low: float = DEFAULT_LOW_THRESHOLD,
 ) -> str:
-    """Map the mean fused overlap@K to a go/no-go token."""
-    if mean_fused_overlap_at_k >= high:
+    """Map the fused *and* unfused mean overlap@K to a go/no-go token.
+
+    Both arms fuse against the same vector ranking, so the fused figure cannot
+    see a keyword arm that returns nothing: the fusion degenerates to the
+    vector result and agreement stays high. It measures how far fusion washes
+    the keyword arm out, not whether the candidates agree. Only the unfused
+    comparison discriminates them on keyword semantics, which is what a
+    keyword backend is being qualified on, so it gates the verdict alongside
+    the fused figure rather than being reported next to it (CAS-ADR-048).
+
+    Native is recommended only when both figures clear ``high``; either one
+    below ``low`` escalates. A qualification that consults the fused figure
+    alone will pass a backend whose match semantics are inverted.
+    """
+    worst = min(mean_fused_overlap_at_k, mean_raw_keyword_overlap_at_k)
+    if worst >= high:
         return REC_NATIVE
-    if mean_fused_overlap_at_k < low:
+    if worst < low:
         return REC_MANAGED
     return REC_BORDERLINE
 
@@ -251,7 +275,7 @@ def run_fidelity_eval(
         mean_fused_rbo=mean_rbo,
         pct_identical_topk=pct_identical,
         mean_raw_keyword_overlap_at_k=mean_raw,
-        recommendation=recommend(mean_overlap, high=high, low=low),
+        recommendation=recommend(mean_overlap, mean_raw, high=high, low=low),
         per_query=comparisons,
     )
 
@@ -262,18 +286,21 @@ def run_fidelity_eval(
 
 _RECOMMENDATION_PROSE = {
     REC_NATIVE: (
-        "**Default to native Postgres `ts_rank`.** The fused top-K agrees closely "
-        "with LanceDB BM25 across the query set; an external managed search "
-        "service is not warranted for the keyword arm."
+        "**Default to native Postgres `ts_rank`.** Both the unfused keyword "
+        "rankings and the fused top-K agree closely with LanceDB BM25 across "
+        "the query set; an external managed search service is not warranted "
+        "for the keyword arm."
     ),
     REC_MANAGED: (
         "**Escalate to a managed search service (Azure AI Search).** Native "
-        "`ts_rank` diverges from LanceDB BM25 enough after fusion that the "
-        "keyword arm would degrade under a native-FTS cloud content store."
+        "`ts_rank` diverges from LanceDB BM25 -- on the unfused keyword "
+        "rankings, after fusion, or both -- enough that the keyword arm would "
+        "degrade under a native-FTS cloud content store."
     ),
     REC_BORDERLINE: (
-        "**Borderline.** Fused agreement sits between the thresholds; weigh the "
-        "per-query divergences and the cost of a managed service before deciding."
+        "**Borderline.** The weaker of the unfused and fused agreement figures "
+        "sits between the thresholds; weigh the per-query divergences and the "
+        "cost of a managed service before deciding."
     ),
 }
 
@@ -308,9 +335,13 @@ def render_scorecard(result: FidelityResult) -> str:
     lines.append("")
     lines.append(
         "Reciprocal Rank Fusion consumes only **rank order**, not the raw BM25 or "
-        "`ts_rank` score magnitudes. The gap between the raw and fused figures "
-        "above is the degree to which fusion washes out the two backends' "
-        "scoring differences -- the structural reason native FTS may suffice."
+        "`ts_rank` score magnitudes, and both arms fuse against the same vector "
+        "ranking. A gap between the raw and fused figures above is therefore not "
+        "reassurance: it is the degree to which fusion hides a keyword arm that "
+        "disagrees, up to and including one that returns nothing, whose fused "
+        "result is simply the vector result. The raw figure is the one that "
+        "discriminates the backends on keyword semantics, so the recommendation "
+        "below reads the weaker of the two rather than the fused figure alone."
     )
     lines.append("")
     lines.append("## Per-query")
@@ -711,108 +742,106 @@ def _validate_config(config: str) -> str:
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
-def _validate_table(table: str) -> str:
-    """Return ``table`` if it is a safe lowercase SQL identifier."""
-    if not _IDENT_RE.match(table):
-        raise ValueError(f"table name {table!r} is not a safe identifier")
-    return table
-
-
-def _build_index_sql(table: str, config: str) -> list[str]:
-    """DDL to (re)create the eval chunk table with a GIN-indexed tsvector.
-
-    ``tsv`` is a stored generated column over ``to_tsvector(config, content)``
-    so the index stays in sync with content without a trigger; the GIN index
-    over it is what ``ts_rank`` queries hit.
-    """
-    table = _validate_table(table)
-    config = _validate_config(config)
-    return [
-        f"DROP TABLE IF EXISTS {table}",
-        (
-            f"CREATE TABLE {table} ("
-            "document_id text NOT NULL, "
-            "heading_path text NOT NULL, "
-            "content text NOT NULL, "
-            f"tsv tsvector GENERATED ALWAYS AS (to_tsvector('{config}', content)) STORED"
-            ")"
-        ),
-        f"CREATE INDEX {table}_tsv_gin ON {table} USING GIN (tsv)",
-    ]
-
-
-def _build_search_sql(table: str, config: str) -> str:
-    """Parameterized ``ts_rank`` search ordered by descending relevance.
-
-    The query text is a bind parameter (``%s``); the regconfig is a validated
-    literal. Returns rows ordered by ``ts_rank`` so the ordering is the
-    backend's, not physical row order.
-    """
-    table = _validate_table(table)
-    config = _validate_config(config)
-    # table and config are interpolated only after allowlist validation above;
-    # the query text is a bind parameter. Not a SQL-injection vector.
-    return (
-        f"SELECT document_id, heading_path, content, "  # noqa: S608
-        f"ts_rank(tsv, websearch_to_tsquery('{config}', %s)) AS score "
-        f"FROM {table} "
-        f"WHERE tsv @@ websearch_to_tsquery('{config}', %s) "
-        f"ORDER BY score DESC, document_id ASC "
-        f"LIMIT %s"
-    )
-
-
-def _row_to_result(row: dict[str, object]) -> SearchResult:
-    """Map a search row (document_id, heading_path, content, score) to SearchResult."""
-    return SearchResult(
-        document_id=str(row["document_id"]),
-        heading_path=str(row["heading_path"]),
-        content=str(row["content"]),
-        score=float(row["score"]),  # type: ignore[arg-type]
-    )
+def _validate_schema(schema: str) -> str:
+    """Return ``schema`` if it is a safe lowercase SQL identifier."""
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"schema name {schema!r} is not a safe identifier")
+    return schema
 
 
 class PostgresFTSBackend:
     """Postgres native full-text-search keyword backend for the eval.
 
-    Indexes the eval corpus into a throwaway table and ranks by ``ts_rank``.
+    Loads the eval corpus into a throwaway schema carrying the production
+    content-store tables, then answers through ``PostgresContentStore`` itself.
+    The delegation is the point: an evaluation that qualifies a keyword backend
+    has to exercise the query the substrate actually runs. Restating that query
+    here would let the two drift, and a harness measuring a backend production
+    no longer runs cannot qualify anything -- least of all the match semantics
+    the contract turns on, which is what a candidate backend is judged against.
+
     Requires ``psycopg`` (the ``eval`` extra) and a reachable Postgres named by
-    ``dsn``. The harness owns the table end-to-end; nothing here touches a SAGE
-    vault store.
+    ``dsn``. The harness owns the schema end-to-end; nothing here touches a
+    SAGE vault store.
     """
 
-    def __init__(self, dsn: str, *, table: str = "eval_chunks", config: str = "english") -> None:
-        import psycopg  # lazy: keeps the module importable without the eval extra
-
-        self._table = _validate_table(table)
+    def __init__(self, dsn: str, *, schema: str = "eval_chunks", config: str = "english") -> None:
+        self._schema = _validate_schema(schema)
         self._config = _validate_config(config)
-        self._conn = psycopg.connect(dsn, autocommit=True)
+        if self._config != TEXT_SEARCH_CONFIG:
+            raise ValueError(
+                f"text-search config {config!r} does not match the production "
+                f"content store's {TEXT_SEARCH_CONFIG!r}; the eval must index and "
+                "query exactly as production does or it measures something else"
+            )
+        self._dsn = dsn
+
+    def _run(self, coro_fn: Callable[[AsyncConnectionPool], Awaitable[_T]]) -> _T:
+        """Bridge the harness's synchronous surface onto the async store.
+
+        The pool is opened and closed inside each call rather than held on the
+        instance: ``asyncio.run`` builds a fresh event loop every time, and a
+        pool carries worker tasks bound to the loop that opened it.
+        """
+        from psycopg_pool import AsyncConnectionPool as Pool
+
+        async def _inner() -> _T:
+            pool = Pool(
+                self._dsn,
+                kwargs={"options": f"-c search_path={self._schema},public"},
+                open=False,
+                min_size=1,
+                max_size=2,
+            )
+            await pool.open()
+            try:
+                return await coro_fn(pool)
+            finally:
+                await pool.close()
+
+        return asyncio.run(_inner())
 
     def index(self, chunks: Iterable[tuple[str, str, str]]) -> int:
-        """Recreate the table and bulk-load ``(document_id, heading_path, content)`` rows.
+        """Recreate the schema and load ``(document_id, heading_path, content)`` rows.
 
-        Returns the number of rows loaded.
+        Rows are grouped by document and written through the store's own
+        ``index_chunks``, so the corpus is laid down exactly as an ingest would
+        lay it down. Returns the number of rows loaded.
         """
         rows = list(chunks)
-        with self._conn.cursor() as cur:
-            for stmt in _build_index_sql(self._table, self._config):
-                cur.execute(stmt)  # type: ignore[arg-type]
-            if rows:
-                cur.executemany(
-                    # self._table is allowlist-validated in __init__; no injection vector.
-                    f"INSERT INTO {self._table} (document_id, heading_path, content) "  # noqa: S608
-                    "VALUES (%s, %s, %s)",  # type: ignore[arg-type]
-                    rows,
+        grouped: dict[str, list[Chunk]] = {}
+        for document_id, heading_path, content in rows:
+            per_doc = grouped.setdefault(document_id, [])
+            per_doc.append(
+                Chunk(
+                    document_id=document_id,
+                    heading_path=heading_path,
+                    content=content,
+                    chunk_index=len(per_doc),
                 )
+            )
+
+        async def _load(pool: AsyncConnectionPool) -> None:
+            async with pool.connection() as conn:
+                await conn.execute(f"DROP SCHEMA IF EXISTS {self._schema} CASCADE")  # noqa: S608
+                await conn.execute(f"CREATE SCHEMA {self._schema}")  # noqa: S608
+                await bootstrap_schema(conn, schema=self._schema, create_extensions=False)
+            store = PostgresContentStore(pool)
+            for document_id, doc_chunks in grouped.items():
+                await store.index_chunks(document_id, doc_chunks)
+
+        self._run(_load)
         return len(rows)
 
     def search_bm25(self, query: str, limit: int = 10) -> list[SearchResult]:
-        """Rank the corpus by ``ts_rank`` for ``query`` (keyword arm B)."""
-        sql = _build_search_sql(self._table, self._config)
-        with self._conn.cursor() as cur:
-            cur.execute(sql, (query, query, limit))  # type: ignore[arg-type]
-            columns = [d.name for d in cur.description or []]
-            return [_row_to_result(dict(zip(columns, row, strict=True))) for row in cur.fetchall()]
+        """Rank the corpus for ``query`` through the production binding (keyword arm B)."""
+        return self._run(lambda pool: PostgresContentStore(pool).search_bm25(query, limit=limit))
 
     def close(self) -> None:
-        self._conn.close()
+        """Drop the throwaway schema. Pools are per-call and already closed."""
+
+        async def _drop(pool: AsyncConnectionPool) -> None:
+            async with pool.connection() as conn:
+                await conn.execute(f"DROP SCHEMA IF EXISTS {self._schema} CASCADE")  # noqa: S608
+
+        self._run(_drop)

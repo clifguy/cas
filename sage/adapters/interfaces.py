@@ -29,7 +29,7 @@ SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
 class KeywordQueryParse(NamedTuple):
     """How the keyword backend parsed a query.
 
-    ``terms`` are the lexemes a chunk must carry, after the backend's own
+    ``terms`` are the lexemes a document must carry, after the backend's own
     stopword and stemming treatment and with anything the query excluded
     removed. ``excluded`` are the lexemes the query rules out; they are not
     something the caller must supply, but their presence means a search ran
@@ -37,11 +37,12 @@ class KeywordQueryParse(NamedTuple):
     only for absences from one whose every word the backend discarded.
 
     ``all_required`` is false when the parse admits alternatives, so a caller
-    cannot describe the query as conjunctive: a chunk can satisfy it while
+    cannot describe the query as conjunctive: a document can satisfy it while
     carrying only some of the terms. ``adjacent`` is true when the parse
-    contains a phrase, whose terms must appear together and in order -- a
-    stronger condition than carrying them all, so a chunk can hold every term
-    and still not match.
+    contains a phrase, whose terms must appear together and in order within a
+    single passage -- a stronger condition than carrying them all, and the one
+    predicate still scoped below the document, so a document can hold every
+    term and still not match.
     """
 
     terms: tuple[str, ...]
@@ -78,12 +79,21 @@ class Chunk:
 
 @dataclass
 class SearchResult:
-    """A result from content store search."""
+    """A result from content store search.
+
+    One row per chunk on the semantic arm. On the keyword arm the match unit
+    is the document, so a row stands for a whole document: ``heading_path``
+    and ``content`` carry its best-ranking chunk, and ``matched_chunk_count``
+    reports how many of its chunks carry a query term. A binding that ranks
+    chunk-by-chunk leaves the count at its default of 1, and the caller
+    tallies duplicate ``document_id`` rows itself.
+    """
 
     document_id: str
     heading_path: str
     content: str
     score: float
+    matched_chunk_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -156,10 +166,6 @@ class ContentStore(ABC):
         Values may be a single string (equality) or a list of strings
         (IN clause). When provided, only chunks matching all predicates
         are searched.
-
-        Terms are conjunctive on the production binding: a chunk matches only
-        if it carries every term. ``parse_keyword_query`` reports which terms
-        those are.
         """
 
     @abstractmethod
@@ -185,12 +191,51 @@ class ContentStore(ABC):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """BM25 keyword search.
+        """Keyword search. The match unit is the document (CAS-ADR-048).
+
+        A document matches when the union of its chunks carries every required
+        term; the terms need not co-occur in any one of them. Scoping the
+        conjunction to a chunk instead would make retrieval a function of
+        projection -- a change of chunking strategy would alter which queries
+        match, with no change to the corpus or the query -- and would scope the
+        match to a unit the caller cannot see or predict, while the result this
+        returns is document-shaped. ``parse_keyword_query`` reports which terms
+        the backend actually required, which the raw query text cannot.
+
+        The chunk remains the ranking and excerpt unit: a matching document is
+        returned once, ranked by its best-matching chunk and carrying that
+        chunk's ``heading_path`` and ``content``. Co-occurrence within a single
+        chunk is a ranking signal, not a matching precondition. ``limit`` is
+        therefore a document budget, and ``matched_chunk_count`` reports how
+        many of the document's chunks carry a query term.
+
+        A quoted phrase is the one exception: adjacency across a chunk boundary
+        is not meaningful, so a phrase must be satisfied within a single chunk.
+        A query may mix the two -- its phrases chunk-scoped, its bare terms not.
+
+        Only authored text satisfies a match (CAS-ADR-049). Machine-generated
+        and incidental text -- a generated abstract, a source filename, a
+        lexical identifier expansion -- contributes to ranking and orientation,
+        but a term appearing only there does not make a document match.
+
+        How the union is computed is a binding concern the contract does not
+        constrain: an aggregate index, a per-term intersection, and a two-pass
+        resolution are all admissible. A binding may also decline a query whose
+        form it cannot express at document scope and evaluate it against a
+        single chunk instead, in which case it returns one row per matching
+        chunk with ``matched_chunk_count`` left at its default and the caller
+        tallies. The row shape a keyword search returns therefore follows the
+        query's form as well as the binding.
 
         filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings
-        (IN clause). When provided, only chunks matching all predicates
-        are searched.
+        (IN clause). Predicates apply at the matching unit: they select a slice
+        of each document's chunks and the union is computed inside that slice,
+        rather than over every chunk and filtered afterwards. A filter only
+        narrows -- it admits no document the equivalent unfiltered search
+        excludes -- and computing the union inside the slice is what keeps the
+        two consistent, since a document whose terms are spread across chunks
+        the filter does not select no longer carries them all.
         """
 
     @abstractmethod

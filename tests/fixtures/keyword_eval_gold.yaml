@@ -52,8 +52,9 @@ queries:
   - query: "verb naming convention for MCP tools"
     primary: "adr:033"
   # "vs", not "versus": the corpus writes the former, and the keyword arm is
-  # conjunctive, so the spelled-out form required a term no chunk carries and
-  # scored this query a zero for the keyword backend rather than measuring it.
+  # conjunctive, so the spelled-out form required a term no document carries
+  # and scored this query a zero for the keyword backend rather than measuring
+  # it.
   - query: "ordinary vs maintenance MCP surface roles"
     primary: "adr:034"
   - query: "terminal lifecycle states are barriers not labels"

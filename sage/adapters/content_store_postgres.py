@@ -69,6 +69,31 @@ _SELECT_CHUNK_COLUMNS = (
 # negated phrase produces). Embedded quotes are doubled.
 _TSQUERY_LEXEME = re.compile(r"'((?:[^']|'')*)'")
 
+# A quoted span the query excludes. Removed before the required spans are read:
+# a span the query asks to avoid imposes no adjacency the caller has to satisfy,
+# and leaving it in would let it stand in for a required one.
+_EXCLUDED_QUOTED_SPAN = re.compile(r'-"[^"]*"')
+
+
+def _required_phrase_spans(query: str) -> list[str]:
+    """The phrase spans the caller's own text requires, in order.
+
+    Adjacency has to be recognized from the query text rather than from the
+    rendered operator, because the tokenizer emits adjacency of its own for any
+    compound it splits -- so a hyphenated identifier would otherwise read as a
+    phrase the caller never wrote.
+
+    Quotes are paired sequentially rather than matched by a pattern. A pattern
+    looking for a quote, a word, whitespace and a closing quote will happily
+    match from one span's *closing* quote to the next span's, so ``"a" "b"``
+    reads as the phrase ``" "`` -- two single quoted words reported as one
+    phrase. Splitting on the quote character makes the pairing positional and
+    cannot make that mistake. A trailing unpaired quote still opens a span,
+    which is how ``websearch_to_tsquery`` reads it: ``alpha "beta gamma``
+    renders ``'alpha' & 'beta' <-> 'gamma'``, adjacency and all.
+    """
+    return _EXCLUDED_QUOTED_SPAN.sub("", query).split('"')[1::2]
+
 
 def _skip_quoted(rendered: str, i: int) -> int:
     """Index just past the quoted lexeme starting at ``i``, doubled quotes included."""
@@ -81,6 +106,68 @@ def _skip_quoted(rendered: str, i: int) -> int:
             return i + 1
         i += 1
     return i
+
+
+def _split_conjuncts(rendered: str) -> list[str] | None:
+    """The top-level AND operands of a rendered tsquery, or None if it has none.
+
+    Each operand becomes one document-id arm of the intersection that computes
+    a document-scoped match, so the split has to be exact. ``None`` means the
+    query's shape does not admit the decomposition and the caller must fall
+    back to evaluating it against a single chunk.
+
+    Two shapes are refused. A negation asks whether text is *absent*, and
+    absence from one chunk is not absence from the document, so the two scopes
+    genuinely disagree and no decision governs which one a caller means. A
+    top-level alternation cannot be split at all: ``&`` binds tighter than
+    ``|``, so ``a | b & c`` is ``a OR (b AND c)`` and cutting it at the ``&``
+    would rewrite the query. An alternation nested *inside* an operand is fine
+    -- a chunk satisfies ``a | b`` exactly when the document does -- so only
+    the top level is checked.
+
+    Lexemes are returned as rendered, including their quotes, because they are
+    already stemmed: re-parsing them through ``to_tsquery`` would stem them a
+    second time, and the English stemmer is not idempotent (``univers``, the
+    lexeme for "university", stems again to ``univ`` and matches nothing).
+    Casting the rendered text to ``tsquery`` takes it verbatim.
+    """
+    if "!" in rendered:
+        return None
+    operands: list[str] = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(rendered):
+        char = rendered[i]
+        if char == "'":
+            i = _skip_quoted(rendered, i)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and char == "|":
+            return None
+        elif depth == 0 and char == "&":
+            operands.append(rendered[start:i])
+            start = i + 1
+        i += 1
+    operands.append(rendered[start:])
+    trimmed = [operand.strip() for operand in operands]
+    return trimmed if all(trimmed) else None
+
+
+def _or_form(terms: tuple[str, ...]) -> str:
+    """The query's required lexemes as a tsquery alternation, for ranking.
+
+    Ranking cannot use the query itself: ``ts_rank`` against a conjunction a
+    chunk does not satisfy returns a floor value, so every chunk of a document
+    that matched across its chunks would tie at effectively zero. Against the
+    alternation, a chunk scores by how much of the query it carries, which is
+    the signal the ranking wants -- a chunk holding every term outranks one
+    holding a subset.
+    """
+    return " | ".join("'" + term.replace("'", "''") + "'" for term in terms)
 
 
 def _split_negation(rendered: str) -> tuple[str, list[str]]:
@@ -272,40 +359,168 @@ class PostgresContentStore(ContentStore):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """Keyword search via native ``ts_rank`` over the generated tsvector.
+        """Keyword search scoped to the document (CAS-ADR-048).
 
-        The tsvector covers heading_path (weight A) and content (weight D), so
-        a term present only in a heading is findable.
+        The match unit is the document: one intersected arm per top-level
+        operand of the parsed query, each asking whether *some* chunk of the
+        document satisfies that operand. Intersecting on document id makes the
+        conjunction hold across the document's chunks rather than within any
+        one of them, which is what the document-shaped result already claims.
+        The shape also carries the phrase exception without a special case: an
+        operand that is a phrase is satisfied only by a chunk holding its terms
+        adjacently, so adjacency stays chunk-scoped while bare terms do not.
+
+        Each arm is an indexed predicate over the generated tsvector, which
+        covers heading_path (weight A) and content (weight D), so a term
+        present only in a heading is findable. Queries whose shape does not
+        decompose fall back to evaluating the whole query against one chunk.
+
+        The synthetic document-header row is barred from the arms: it carries
+        machine-generated and incidental text, which ranks and orients but
+        never satisfies a match (CAS-ADR-049). It stays in the ranking pool, so
+        a document's score still reflects it, but the excerpt is drawn from an
+        authored passage -- otherwise a query for a word in the header's own
+        scaffolding would answer with that scaffolding.
         """
         with self._query_timer.measure(
             "search_bm25", params={"limit": limit, "filtered": bool(filters)}
         ):
             if not query or not query.strip():
                 return []
-            where, where_params = self._build_where(filters)
-            sql = (
-                "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score "  # noqa: S608
-                f"FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q "
-                "WHERE tsv @@ q"
+            parse = await self.parse_keyword_query(query)
+            if not parse.terms:
+                # Nothing to rank against, and nothing to intersect on: either
+                # every word was discarded, or the query asked only for
+                # absences, which the decomposition refuses.
+                return await self._search_bm25_within_chunk(query, limit, filters)
+            rendered = await self._render_tsquery(query)
+            operands = _split_conjuncts(rendered)
+            if operands is None:
+                return await self._search_bm25_within_chunk(query, limit, filters)
+            return await self._search_bm25_across_document(
+                operands, _or_form(parse.terms), limit, filters
             )
-            params: list[object] = [query]
-            if where:
-                sql += f" AND {where}"
-                params += where_params
-            sql += " ORDER BY score DESC LIMIT %s"
-            params.append(limit)
-            rows = await self._fetchall(sql, params)
-            return [self._row_to_result(r) for r in rows]
+
+    async def _search_bm25_across_document(
+        self,
+        operands: list[str],
+        or_form: str,
+        limit: int,
+        filters: dict[str, str | list[str]] | None,
+    ) -> list[SearchResult]:
+        """Resolve each operand to document ids, intersect, then rank chunks.
+
+        ``limit`` bounds documents rather than rows: a matching document is
+        returned once, carrying its best-ranking authored chunk as the excerpt
+        and a count of how many of its chunks carry a query term.
+        """
+        where, where_params = self._build_where(filters)
+        # Interpolated into the fragments below. Column names come from a fixed
+        # allowlist and every value stays bound, so the S608 suppressions below
+        # cover a clause with nothing caller-supplied in its text.
+        predicate = f" AND {where}" if where else ""
+
+        # DISTINCT rather than relying on INTERSECT to deduplicate: a
+        # single-operand query has no INTERSECT, and duplicate document ids
+        # would multiply every row the ranking join produces.
+        arm = (
+            "SELECT DISTINCT document_id FROM chunks"  # noqa: S608
+            f" WHERE heading_path <> %s AND tsv @@ %s::tsquery{predicate}"
+        )
+        params: list[object] = []
+        for operand in operands:
+            params += [SYNTHETIC_HEADER_HEADING_PATH, operand, *where_params]
+        matched = "\nINTERSECT\n".join([arm] * len(operands))
+
+        # The header is excluded from the arms above but present here, so it
+        # lifts a document's score without being eligible as its excerpt --
+        # ``rn`` orders authored chunks ahead of it.
+        sql = (
+            f"WITH matched AS (\n{matched}\n), ranked AS ("  # noqa: S608
+            " SELECT c.document_id, c.heading_path, c.content,"
+            " max(ts_rank(c.tsv, %s::tsquery)) OVER (PARTITION BY c.document_id) AS doc_score,"
+            " count(*) FILTER (WHERE c.heading_path <> %s)"
+            " OVER (PARTITION BY c.document_id) AS matched_chunks,"
+            " row_number() OVER (PARTITION BY c.document_id ORDER BY"
+            " (c.heading_path = %s), ts_rank(c.tsv, %s::tsquery) DESC, c.chunk_index) AS rn"
+            " FROM chunks c JOIN matched USING (document_id)"
+            f" WHERE c.tsv @@ %s::tsquery{predicate}"
+            ") SELECT document_id, heading_path, content, doc_score, matched_chunks"
+            " FROM ranked WHERE rn = 1 ORDER BY doc_score DESC, document_id LIMIT %s"
+        )
+        params += [
+            or_form,
+            SYNTHETIC_HEADER_HEADING_PATH,
+            SYNTHETIC_HEADER_HEADING_PATH,
+            or_form,
+            or_form,
+            *where_params,
+            limit,
+        ]
+        rows = await self._fetchall(sql, params)
+        return [
+            SearchResult(
+                document_id=row[0],
+                heading_path=row[1],
+                content=row[2],
+                score=float(row[3]),
+                matched_chunk_count=int(row[4]),
+            )
+            for row in rows
+        ]
+
+    async def _search_bm25_within_chunk(
+        self,
+        query: str,
+        limit: int,
+        filters: dict[str, str | list[str]] | None,
+    ) -> list[SearchResult]:
+        """Evaluate the whole query against a single chunk.
+
+        The fallback for queries the document-scoped decomposition refuses --
+        those carrying a negation or a top-level alternation. What is unsettled
+        for those is the *scope* of the match, so this keeps the scope they
+        already had rather than inventing one.
+
+        Provenance is not unsettled and does not lapse here: the synthetic
+        header row is barred on this path too. Leaving it in would make the
+        rule a property of the query's form rather than of the text, so adding
+        an exclusion could *widen* a result -- ``alpha -zzz`` would match a
+        document that ``alpha`` alone does not, on a term no author wrote.
+        """
+        where, where_params = self._build_where(filters)
+        sql = (
+            "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score "  # noqa: S608
+            f"FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q "
+            "WHERE tsv @@ q AND heading_path <> %s"
+        )
+        params: list[object] = [query, SYNTHETIC_HEADER_HEADING_PATH]
+        if where:
+            sql += f" AND {where}"
+            params += where_params
+        sql += " ORDER BY score DESC LIMIT %s"
+        params.append(limit)
+        rows = await self._fetchall(sql, params)
+        return [self._row_to_result(r) for r in rows]
+
+    async def _render_tsquery(self, query: str) -> str:
+        """The query as the text-search configuration parses it."""
+        rows = await self._fetchall(
+            f"SELECT websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text",  # noqa: S608
+            [query],
+        )
+        return rows[0][0] if rows and rows[0][0] else ""
 
     async def parse_keyword_query(self, query: str) -> KeywordQueryParse:
         """How the text-search configuration read this query.
 
         ``search_bm25`` builds its query with ``websearch_to_tsquery``, which
-        joins bare terms with AND -- so a chunk matches only if it carries
-        every lexeme. Reporting those lexemes lets a caller see why a query
-        matched nothing, which the raw query text cannot tell them: stopwords
-        are dropped and the rest are stemmed, so the terms actually required
-        are neither the words typed nor a whitespace split of them.
+        joins bare terms with AND -- so a document matches only if its chunks
+        between them carry every lexeme. Reporting those lexemes lets a caller
+        see why a query matched nothing, which the raw query text cannot tell
+        them: stopwords are dropped and the rest are stemmed, so the terms
+        actually required are neither the words typed nor a whitespace split
+        of them.
 
         The forms the query language admits beyond bare terms are reported
         rather than assumed away, because each makes a different sentence true
@@ -313,25 +528,32 @@ class PostgresContentStore(ContentStore):
         phrase"``) are not something the caller must supply, so they leave
         ``terms`` and are reported in ``excluded``. A query using ``or``
         renders an alternation, which makes it non-conjunctive. A quoted
-        phrase renders adjacency, which is stronger than carrying every term:
-        a chunk can hold them all, apart, and still not match.
+        phrase renders adjacency, which is stronger than carrying every term
+        and is the one predicate still scoped to a single chunk: a document
+        can hold them all, apart, and still not match.
         """
         with self._query_timer.measure("parse_keyword_query"):
             if not query or not query.strip():
                 return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
-            rows = await self._fetchall(
-                f"SELECT websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text",  # noqa: S608
-                [query],
-            )
-            rendered = rows[0][0] if rows and rows[0][0] else ""
+            rendered = await self._render_tsquery(query)
             required, excluded = _split_negation(rendered)
+            spans = _required_phrase_spans(query)
             return KeywordQueryParse(
                 terms=tuple(
                     lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required)
                 ),
                 excluded=tuple(excluded),
                 all_required="|" not in required,
-                adjacent="<->" in required,
+                # Both halves are load-bearing, and each is read from its own
+                # source. The rendered operator alone over-reports: the
+                # tokenizer emits adjacency for every compound it splits, so
+                # "CAS-ADR-048" would read as a phrase. The caller's quotes
+                # alone over-report too: a quoted span that rendered nothing
+                # imposes no adjacency. A span counts only if it holds more
+                # than one word, since a single quoted word has nothing to be
+                # adjacent to. Matching on "<" rather than "<->" catches the
+                # distances a dropped stopword produces.
+                adjacent=any(len(span.split()) > 1 for span in spans) and "<" in required,
             )
 
     async def get_chunks_by_heading_prefix(

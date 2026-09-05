@@ -812,7 +812,10 @@ async def test_camelcase_title_searchable_via_split_tokens(
     # The diagnostic query: should land doc_portfolio in BM25, semantic,
     # and hybrid modes.
     for mode_kwargs in (
-        {"mode": RetrievalMode.KEYWORD, "query": "dashboard template"},
+        # No keyword arm: the case-split identifier line is derived text, which
+        # ranks and orients but never satisfies a keyword match (CAS-ADR-049).
+        # StubContentStore is header-blind, so asserting either way here would
+        # be evidence about the double rather than about a binding.
         {
             "mode": RetrievalMode.SEMANTIC,
             "query": "dashboard template",
@@ -832,12 +835,18 @@ async def test_camelcase_title_searchable_via_split_tokens(
         )
 
 
-async def test_semantic_abstract_drives_keyword_match(
+async def test_semantic_abstract_drives_a_semantic_match(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """A document with sparse body but a descriptive semantic_abstract is
-    retrievable by BM25 queries against the abstract's terms — because the
-    abstract lives in the synthetic header chunk's indexed content."""
+    retrievable against the abstract's terms — because the abstract lives in
+    the synthetic header chunk's indexed content.
+
+    Semantic, not keyword. A generated abstract is derived text: it ranks and
+    orients a document but never satisfies a keyword match (CAS-ADR-049), and
+    that refusal is pinned against a real backend in
+    test_content_store_postgres.py. StubContentStore is header-blind, so a
+    keyword assertion here would pass whatever the binding does."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 
     doc = _make_doc(_id("doc_abstract_only"))
@@ -865,7 +874,7 @@ async def test_semantic_abstract_drives_keyword_match(
     )
 
     request = DiscoverRequest(
-        mode=RetrievalMode.KEYWORD,
+        mode=RetrievalMode.SEMANTIC,
         query="cryptographic accumulator",
     )
     response = await retrieval_service.discover(request)
@@ -878,7 +887,11 @@ async def test_hit_heading_path_masks_synthetic_marker(
 ):
     """When a hit's winning chunk is the synthetic header, the
     hit's user-visible heading_path is None — never the internal
-    ``__document_header__`` sentinel."""
+    ``__document_header__`` sentinel.
+
+    Exercised in semantic mode: the keyword binding now draws its excerpt from
+    an authored passage, so the header cannot be the winning chunk there. The
+    masking still matters wherever it can win."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 
     doc = _make_doc(_id("doc_mask"))
@@ -902,7 +915,7 @@ async def test_hit_heading_path_masks_synthetic_marker(
         ],
     )
 
-    request = DiscoverRequest(mode=RetrievalMode.KEYWORD, query="probe template")
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="probe template")
     response = await retrieval_service.discover(request)
 
     masked = [hit for hit in response.results if hit.document.id == _id("doc_mask")]
@@ -5898,11 +5911,12 @@ async def test_defined_lifecycle_status_no_warning(graph_store, retrieval_servic
 # --- keyword conjunction advisory ------------------------------------------
 #
 # Keyword mode is conjunctive on the production binding: every term must appear
-# in one chunk. An empty result therefore has two indistinguishable readings --
-# the vault holds nothing, or the query asked for too much at once. These cover
-# the advisory that separates them. The conjunction itself is exercised against
-# a real backend in test_content_store_postgres.py; StubContentStore matches on
-# any term, so it cannot produce the collapse.
+# somewhere in the document, though not necessarily together in one passage
+# (CAS-ADR-048). An empty result therefore has two indistinguishable readings
+# -- the vault holds nothing, or the query asked for too much at once. These
+# cover the advisory that separates them. The conjunction itself is exercised
+# against a real backend in test_content_store_postgres.py; StubContentStore
+# matches on any term, so it cannot produce the collapse.
 
 
 async def test_keyword_multi_term_empty_result_warns(
@@ -5935,6 +5949,19 @@ async def test_keyword_multi_term_empty_result_warns(
     joined = " ".join(warnings)
     assert "deltaword" in joined and "epsilonword" in joined, (
         "the warning must name the terms the query required"
+    )
+    assert "document" in joined, "and must name the unit the conjunction is scoped to"
+    # Paired with the positive assertion above so the two absence checks below
+    # cannot be satisfied by an advisory that simply says less.
+    assert "chunk" not in joined.lower(), (
+        "the advisory must not claim the terms had to share a chunk; the match "
+        "is over the document, and a sentence asserting otherwise sends the "
+        "caller looking for a constraint that is not there"
+    )
+    assert "quote a phrase" not in joined, (
+        "a phrase adds an adjacency requirement inside one passage, so it can "
+        "only narrow an already-empty result; no remedy offered here may make "
+        "the query stricter"
     )
 
 
@@ -6214,7 +6241,7 @@ async def test_keyword_or_query_gets_no_conjunction_advisory(
 
     assert response.results == []
     joined = " ".join((response.hints or {}).get("warnings") or [])
-    assert "conjunctive" not in joined, "a chunk can satisfy an alternation with one term"
+    assert "conjunctive" not in joined, "a document can satisfy an alternation with one term"
 
 
 async def test_keyword_exclusion_only_query_is_not_called_all_stopwords(
