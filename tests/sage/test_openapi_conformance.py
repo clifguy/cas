@@ -1932,7 +1932,7 @@ def test_specs_respect_url_prefix_boundaries(
 
 
 # ---------------------------------------------------------------------------
-# Test 2b: the path-shape invariants the spec header declares
+# Path-shape invariants: DELETE placement and vault scoping
 # ---------------------------------------------------------------------------
 
 
@@ -1945,14 +1945,38 @@ def test_specs_respect_url_prefix_boundaries(
 _EXPECTED_DELETE_PATHS: set[str] = {"/sage_vaults/{vault_id}/edges/{edge_id}"}
 
 
+def _spec_declared_operations(spec: dict | None) -> set[tuple[str, str]]:
+    """Every ``(path, method)`` the spec declares, infra paths included.
+
+    ``_operations`` drops ``_INFRA_PATHS`` because the code-vs-spec coverage
+    comparison must ignore routes that are ``include_in_schema=False`` in code
+    and so legitimately absent from the YAML. The two gates below read the
+    spec alone and pin their sets to equality, and a hand-written ``/health``
+    or ``DELETE /docs`` in the spec is itself the drift such a pin exists to
+    make deliberate -- so they do not inherit that skip.
+    """
+    if spec is None:
+        return set()
+    return {
+        (path, method.lower())
+        for path, path_item in (spec.get("paths") or {}).items()
+        for method in (path_item or {})
+        if method.lower() in _HTTP_METHODS
+    }
+
+
 def _delete_operations(spec: dict | None) -> set[str]:
     """Every path in ``spec`` that declares the ``delete`` method."""
-    return {path for path, method in _operations(spec) if method == "delete"}
+    return {path for path, method in _spec_declared_operations(spec) if method == "delete"}
 
 
 def _paths_outside_vault_scope(spec: dict | None) -> set[str]:
     """Spec paths that do not carry the vault-scoped prefix."""
-    return {path for path, _ in _operations(spec) if not path.startswith(_VAULT_SCOPED_PREFIX)}
+    return {
+        path
+        for path, _ in _spec_declared_operations(spec)
+        if not path.startswith(_VAULT_SCOPED_PREFIX)
+    }
 
 
 def test_delete_is_declared_only_on_the_edge_unlink_path(sage_core_spec: dict | None):
@@ -1989,19 +2013,30 @@ def test_only_the_vault_collection_and_transfer_paths_sit_outside_vault_scope(
 
 
 def test_path_shape_detectors_have_teeth():
-    """The two detectors report a violating spec rather than passing over it."""
+    """The two detectors report a violating spec rather than passing over it.
+
+    The mutant carries ``/health`` deliberately. It is one of the
+    ``_INFRA_PATHS`` that ``_operations`` skips, so a detector built on that
+    helper reports neither the top-level path nor its ``delete`` -- staying
+    green while an "exactly these" pin has become false. Reading the rivals
+    off the implementation cannot reach that case, because it turns on an
+    input no other fixture here carries.
+    """
     mutant = {
         "paths": {
             "/sage_vaults/{vault_id}/documents/{document_id}": {"delete": {}},
             "/sage_vaults/{vault_id}/edges/{edge_id}": {"delete": {}},
             "/orphan": {"get": {}},
+            "/health": {"delete": {}},
         }
     }
+    assert "/health" in _INFRA_PATHS, "the exemption probe needs an infra-listed path"
     assert _delete_operations(mutant) == {
         "/sage_vaults/{vault_id}/documents/{document_id}",
         "/sage_vaults/{vault_id}/edges/{edge_id}",
+        "/health",
     }
-    assert _paths_outside_vault_scope(mutant) == {"/orphan"}
+    assert _paths_outside_vault_scope(mutant) == {"/orphan", "/health"}
 
 
 # ---------------------------------------------------------------------------
