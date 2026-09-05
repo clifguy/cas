@@ -567,14 +567,17 @@ async def test_search_bm25_returns_one_row_per_matching_document(store):
 async def test_search_bm25_excerpt_is_the_best_matching_chunk(store):
     """Co-occurrence within a chunk is a ranking signal, not a matching one.
 
-    The co-occurring chunk sits *second*, so a binding that returns the
-    document-order-first chunk instead of the best-ranking one fails here.
+    The co-occurring chunk sits in the *middle*, so neither end of document
+    order is the answer: a binding that returns the first chunk fails, and so
+    does one that returns the last. Two chunks cannot separate those two
+    rivals, because with two the best chunk is always at one end or the other.
     """
     await store.index_chunks(
         "d1",
         [
             _chunk("d1", content="alphaword alone", heading_path="S1", chunk_index=0),
             _chunk("d1", content="alphaword betaword together", heading_path="S2", chunk_index=1),
+            _chunk("d1", content="alphaword again alone", heading_path="S3", chunk_index=2),
         ],
     )
 
@@ -775,13 +778,42 @@ async def test_parse_keyword_query_does_not_report_a_compound_token_as_adjacent(
 
 
 async def test_parse_keyword_query_does_not_report_an_excluded_phrase_as_adjacent(store):
-    """An excluded phrase imposes no adjacency the caller must satisfy."""
+    """An excluded phrase imposes no adjacency the caller must satisfy.
+
+    The compound in the second query is the discriminating half. Reading the
+    caller's quotes and the rendered operator as two independent conditions
+    lets each be satisfied by a different part of the query -- the excluded
+    span supplies the quotes, the split identifier supplies the adjacency --
+    and neither is a phrase the caller required.
+    """
     excluded = await store.parse_keyword_query('alphaword -"beta gamma"')
     assert not excluded.adjacent, "the quoted span is a thing to avoid, not a requirement to meet"
+
+    with_compound = await store.parse_keyword_query('CAS-ADR-048 -"beta gamma"')
+    assert not with_compound.adjacent, (
+        "the identifier's own adjacency must not stand in for the excluded phrase's"
+    )
 
     bare = await store.parse_keyword_query("alphaword betaword")
     assert bare.terms == ("alphaword", "betaword")
     assert not bare.adjacent, "the same terms unquoted carry no adjacency requirement"
+
+
+async def test_parse_keyword_query_does_not_report_a_quoted_single_word_as_adjacent(store):
+    """One quoted word is not a phrase: there is nothing for it to be adjacent to.
+
+    Paired with a hyphenated identifier, which is the query shape this vault
+    sees most. The quotes and the rendered adjacency arrive from different
+    halves of the query, so treating their co-occurrence as a phrase advises
+    the caller to unquote something that imposes no adjacency at all.
+    """
+    single = await store.parse_keyword_query('"alphaword" CAS-ADR-048')
+    assert not single.adjacent, "a single quoted word carries no adjacency requirement"
+
+    real_phrase = await store.parse_keyword_query('"alphaword betaword" CAS-ADR-048')
+    assert real_phrase.adjacent, (
+        "positive control: a genuine phrase alongside the same compound still reports"
+    )
 
 
 async def test_search_bm25_phrase_requires_adjacency_not_just_presence(store):
@@ -989,32 +1021,63 @@ async def test_search_bm25_header_is_never_the_excerpt(store):
     )
 
 
-async def test_search_bm25_title_still_matches_through_heading_path(store):
-    """The title keeps matching while it is replicated into every heading path.
+async def test_search_bm25_title_matches_only_where_authored_text_carries_it(store):
+    """A title term reaches matching through authored text or not at all.
 
-    Its own home moves to a document surface under CAS-ADR-049; until then the
-    heading path carries it, so barring the header does not cost title matching.
+    The two documents differ only in whether an authored heading path happens
+    to carry the title, and that is not a property ingestion guarantees:
+    ``heading_path`` is the projection's own heading hierarchy, so a document
+    whose headings do not restate its title -- a word-processor document, or
+    one with no headings at all -- carries the title only in the header row,
+    which no longer matches. On the vaults this repository builds against, the
+    share of documents in that position runs from a handful to a majority.
+
+    Stated as the accepted consequence rather than as a caveat, because the
+    earlier form of this test asserted the reassuring half and supplied the
+    reassurance itself: it hand-wrote a title-rooted heading path and read it
+    back, so no ingestion could turn it red. CAS-ADR-049's document surface is
+    what restores the title to the authored side; until it lands, this is the
+    behaviour, and the test that says so is the one that will notice when it
+    changes.
     """
     await store.index_chunks(
-        "d1",
+        "rooted",
         [
             _chunk(
-                "d1",
+                "rooted",
                 content="Title: Deltaword Catalog\nAbstract: unrelated",
                 heading_path=SYNTHETIC_HEADER_HEADING_PATH,
                 chunk_index=-1,
             ),
             _chunk(
-                "d1",
+                "rooted",
                 content="body prose sharing no term with the title",
                 heading_path="Deltaword Catalog > Section 1",
                 chunk_index=0,
             ),
         ],
     )
+    await store.index_chunks(
+        "unrooted",
+        [
+            _chunk(
+                "unrooted",
+                content="Title: Deltaword Catalog\nAbstract: unrelated",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk(
+                "unrooted",
+                content="body prose sharing no term with the title",
+                heading_path="System Architecture > Storage",
+                chunk_index=0,
+            ),
+        ],
+    )
 
-    assert [r.document_id for r in await store.search_bm25("deltaword", limit=10)] == ["d1"], (
-        "the title reaches matching through the authored heading path"
+    assert [r.document_id for r in await store.search_bm25("deltaword", limit=10)] == ["rooted"], (
+        "the title matches only where an authored heading path restates it; carried "
+        "in the header row alone it is derived text and does not match"
     )
 
 

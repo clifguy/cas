@@ -219,14 +219,22 @@ class ContentStore(ABC):
 
         How the union is computed is a binding concern the contract does not
         constrain: an aggregate index, a per-term intersection, and a two-pass
-        resolution are all admissible.
+        resolution are all admissible. A binding may also decline a query whose
+        form it cannot express at document scope and evaluate it against a
+        single chunk instead, in which case it returns one row per matching
+        chunk with ``matched_chunk_count`` left at its default and the caller
+        tallies. The row shape a keyword search returns therefore follows the
+        query's form as well as the binding.
 
         filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings
-        (IN clause). Predicates apply at the matching unit, so the union is
-        computed within the slice they select rather than over every chunk and
-        filtered afterwards; a filtered search admits no document the
-        equivalent unfiltered search would exclude, nor the reverse.
+        (IN clause). Predicates apply at the matching unit: they select a slice
+        of each document's chunks and the union is computed inside that slice,
+        rather than over every chunk and filtered afterwards. A filter only
+        narrows -- it admits no document the equivalent unfiltered search
+        excludes -- and computing the union inside the slice is what keeps the
+        two consistent, since a document whose terms are spread across chunks
+        the filter does not select no longer carries them all.
         """
 
     @abstractmethod

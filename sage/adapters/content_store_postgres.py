@@ -69,11 +69,17 @@ _SELECT_CHUNK_COLUMNS = (
 # negated phrase produces). Embedded quotes are doubled.
 _TSQUERY_LEXEME = re.compile(r"'((?:[^']|'')*)'")
 
-# A closed double-quoted span in the caller's own query text: what
-# ``websearch_to_tsquery`` reads as a phrase. Adjacency has to be recognized
-# from the input rather than from the rendered operator, because the tokenizer
-# emits adjacency of its own for any compound it splits.
-_QUOTED_SPAN = re.compile(r'"[^"]+"')
+# A quoted span the query excludes, and one it requires. Adjacency has to be
+# recognized from the caller's own text rather than from the rendered operator,
+# because the tokenizer emits adjacency of its own for any compound it splits.
+# The excluded spans come out first: a span the query asks to avoid imposes no
+# adjacency the caller has to satisfy, and leaving it in would let it stand in
+# for a required one. A surviving span counts only if it holds more than one
+# word -- a single quoted word carries no adjacency, and reading it as a phrase
+# is how a query pairing one with a hyphenated identifier reported adjacency
+# neither of them asked for.
+_EXCLUDED_QUOTED_SPAN = re.compile(r'-"[^"]*"')
+_REQUIRED_PHRASE_SPAN = re.compile(r'"[^"\s]*\s[^"]*"')
 
 
 def _skip_quoted(rendered: str, i: int) -> int:
@@ -518,14 +524,15 @@ class PostgresContentStore(ContentStore):
                 ),
                 excluded=tuple(excluded),
                 all_required="|" not in required,
-                # Both halves are load-bearing. The rendered operator alone
-                # over-reports: the tokenizer emits adjacency for every
-                # compound it splits, so "CAS-ADR-048" would read as a phrase.
-                # The caller's quotes alone over-report too: a quoted span that
-                # rendered nothing, or that the query excludes, imposes no
-                # adjacency the caller has to satisfy. Matching on "<" rather
-                # than "<->" catches the distances a dropped stopword produces.
-                adjacent=bool(_QUOTED_SPAN.search(query)) and "<" in required,
+                # Both halves are load-bearing, and each is read from its own
+                # source. The rendered operator alone over-reports: the
+                # tokenizer emits adjacency for every compound it splits, so
+                # "CAS-ADR-048" would read as a phrase. The caller's quotes
+                # alone over-report too: a quoted span that rendered nothing
+                # imposes no adjacency. Matching on "<" rather than "<->"
+                # catches the distances a dropped stopword produces.
+                adjacent=bool(_REQUIRED_PHRASE_SPAN.search(_EXCLUDED_QUOTED_SPAN.sub("", query)))
+                and "<" in required,
             )
 
     async def get_chunks_by_heading_prefix(

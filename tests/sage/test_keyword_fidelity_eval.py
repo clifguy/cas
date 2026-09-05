@@ -71,6 +71,26 @@ def test_recommend_thresholds() -> None:
     assert recommend(0.95, 0.50) == REC_MANAGED  # and it can escalate on its own
 
 
+def test_recommend_takes_the_weaker_metric_rather_than_averaging_them() -> None:
+    """The rule is "both must clear high; either below low escalates".
+
+    Averaging satisfies every case above -- including the (1.0, 0.0) masking
+    case, whose mean is 0.5 and escalates either way -- so those cases pin the
+    stated contract only against a fused-only or raw-only verdict, not against
+    a symmetric aggregate. These two separate them, and they are the natural
+    shape a later "why not average them" edit would take. Averaging is wrong
+    for the same reason the fused figure alone was: a strong showing on one
+    metric must not buy off a weak one on the other, because the weak one is
+    the evidence that the arms disagree.
+    """
+    assert recommend(0.95, 0.86) == REC_BORDERLINE, (
+        "mean 0.905 would clear high and qualify the backend outright"
+    )
+    assert recommend(0.95, 0.70) == REC_MANAGED, (
+        "mean 0.825 would sit between the thresholds and merely hesitate"
+    )
+
+
 def test_recommend_escalates_when_the_unfused_arms_diverge() -> None:
     """The verdict reads the metric that discriminates the candidates.
 
