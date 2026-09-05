@@ -1678,6 +1678,7 @@ def _advertised_resources_stub(
     discovery_status: int = 200,
     maint_doc_status: int = 200,
     admin_advertises_maint: bool = False,
+    root_resource_suffix: str = "",
 ) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
     """A stub for the advertised-resources registration check: the root and the
     three per-mount metadata documents each 200 and advertise a ``{{BASE_URL}}``
@@ -1689,6 +1690,9 @@ def _advertised_resources_stub(
     canonical maintenance resource instead of its own path form, so a check
     that constructs the probe set from the known mount paths -- rather than
     reading it out of the documents -- can be told apart.
+    ``root_resource_suffix`` appends to the root document's advertised
+    resource, so a scenario can advertise a URI the edge would never mean --
+    one carrying a shell metacharacter -- without disturbing the mounts.
     """
 
     def stub(method: str, path: str, _body: bytes) -> tuple[int, str, dict[str, str]]:
@@ -1696,7 +1700,8 @@ def _advertised_resources_stub(
         if p == "/.well-known/oauth-protected-resource":
             if discovery_status != 200:
                 return discovery_status, "{}", {}
-            return 200, '{"resource": "{{BASE_URL}}", "scopes_supported": ["offline_access"]}', {}
+            root = "{{BASE_URL}}" + root_resource_suffix
+            return 200, f'{{"resource": "{root}", "scopes_supported": ["offline_access"]}}', {}
         for mount in ("/mcp_maint", "/mcp_admin", "/mcp"):
             if p == f"/.well-known/oauth-protected-resource{mount}":
                 if mount == "/mcp_maint" and maint_doc_status != 200:
@@ -1813,6 +1818,49 @@ def test_advertised_resources_registered_probes_what_documents_advertise(
     assert sorted(probed) == sorted(expected), (
         f"probed set must be the documents' distinct advertised set: {probed}"
     )
+
+
+@_NEEDS_RUNTIME
+def test_advertised_resources_registered_probes_the_uri_not_a_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probed URI is the one the document advertised, never one assembled
+    from the working directory.
+
+    The accumulated resource set is read back through an *unquoted* expansion,
+    which is how the set is split into words -- and pathname expansion applies
+    to that same expansion. A resource carrying a glob character is therefore
+    replaced by whatever matches it on disk, so the check mints for a URI no
+    document advertised and credits (or refuses) the wrong identity.
+
+    A URL is not obviously a glob pattern, which is what makes the defect easy
+    to miss, but it is one: the shell reads ``//`` as a single separator and the
+    trailing component as a pattern, so ``<base>/mcp?`` matches a file at
+    ``./http:/<host>:<port>/mcpX``. The bait is planted here for exactly that
+    reason -- without it the pattern matches nothing, stays literal, and the
+    scenario would be satisfied by the very expansion it is meant to exclude.
+
+    The advertised suffix is deliberate rather than realistic: the shape has to
+    be one the runner's directory can satisfy. What is realistic is the
+    surrounding condition, since the harness runs from a checkout and probes
+    whatever URIs the tenant happens to advertise.
+    """
+    record = tmp_path / "probed.txt"
+    probe = _write_stub_cmd(tmp_path, "resprobe", f"printf '%s\\n' \"$1\" >> {record}\nexit 0\n")
+    with serve(_advertised_resources_stub(root_resource_suffix="/mcp?")) as url:
+        scheme, host_port = url.split("://", 1)
+        bait = tmp_path / f"{scheme}:" / host_port
+        bait.mkdir(parents=True)
+        (bait / "mcpX").touch()
+        monkeypatch.chdir(tmp_path)
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
+        )
+        advertised, expanded = f"{url}/mcp?", f"{url}/mcpX"
+    assert _verdicts(proc.stdout).get(_ARR_CHECK) == "PASS", (proc.stdout, proc.stderr)
+    probed = record.read_text(encoding="utf-8").split()
+    assert advertised in probed, f"the advertised URI was not the one probed: {probed}"
+    assert expanded not in probed, f"a filename beside the run reached the probe: {probed}"
 
 
 @_NEEDS_RUNTIME
@@ -1937,11 +1985,13 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
 # and asserts each id came back from /sage_vaults. A tenant starts life with one
 # vault and grows: the deploy variable is operator-edited, and the multi-id path
 # is the one an operator reaches first when adding the second vault. These
-# scenarios hold the split's five decided behaviours -- iterate every id, skip a
+# scenarios hold the split's seven decided behaviours -- iterate every id, skip a
 # null element, name only the absent id, treat surrounding whitespace as part of
-# the id, and match a whole id rather than a substring of one -- and they run
-# under each interpreter the host offers, because the split's semantics are a
-# property of the shell rather than of the script.
+# the id, match a whole id rather than a substring of one, compare an id
+# literally rather than as a pattern, and take an id as written rather than as a
+# pattern over the working directory -- and they run under each interpreter the
+# host offers, because the split's semantics are a property of the shell rather
+# than of the script.
 #
 # The stub advertises two vaults (``_VAULTS_BODY``), so a multi-id expectation is
 # satisfiable without a bespoke responder.
@@ -1974,6 +2024,20 @@ def _green_one_vault(method: str, path: str, body: bytes) -> tuple[int, str, dic
     """
     if path.split("?", 1)[0] == "/sage_vaults":
         return 200, '[{"id":"cas","name":"CAS"}]', {}
+    return _green(method, path, body)
+
+
+def _green_metacharacter_vault(
+    method: str, path: str, body: bytes
+) -> tuple[int, str, dict[str, str]]:
+    """``_green`` with a vault whose id carries a regex metacharacter.
+
+    The only fixture in which an *advertised* id is not slug-shaped, and the
+    only one that can separate comparing an id literally from refusing to
+    compare a metacharacter-bearing one at all.
+    """
+    if path.split("?", 1)[0] == "/sage_vaults":
+        return 200, '[{"id":"c.s","name":"CAS"},{"id":"test","name":"Test"}]', {}
     return _green(method, path, body)
 
 
@@ -2217,6 +2281,139 @@ def test_vault_load_requires_a_whole_id_not_a_substring(expected: str, bash_bin:
     # by a run that reported the advertised `cas` missing, which is a different
     # defect entirely and must not be credited as this one.
     assert detail.endswith(f"missing expected id(s): {expected}"), detail
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    "expected",
+    ["c.s", ".*", "cas|test", "ca[s]"],
+    ids=["dot", "wildcard", "alternation", "bracket"],
+)
+def test_vault_load_treats_a_metacharacter_id_as_a_literal(expected: str, bash_bin: str) -> None:
+    """An expected id is compared as a string, never evaluated as a pattern.
+
+    The lookup has to assert the surrounding JSON shape, and a regular
+    expression is how it does so -- but an expected id interpolated into that
+    expression is read as pattern syntax too. An id carrying a metacharacter
+    then matches an advertised id it is not equal to, and the gate credits a
+    vault that never loaded. That is the one direction of error a preflight
+    cannot afford: an operator reads a green vault_load as proof the named vault
+    is serving.
+
+    None of these shapes is an id anyone means to type; they are what an
+    operator-edited list can acquire by accident. Each pins a different escape
+    class, so no partial fix passes the set:
+
+    * ``c.s`` -- an unescaped ``.`` spans the advertised ``cas``. Excluded by
+      escaping ``.`` alone.
+    * ``.*`` -- the same defect at its widest: satisfied by *whatever* loaded,
+      so a gate naming a specific vault stops naming one at all. Also excluded
+      by escaping ``.``, and carried because it shows the severity rather than
+      the mechanism.
+    * ``cas|test`` -- alternation, whose left branch matches through the
+      advertised ``cas``. Survives an escape covering only ``.`` and ``*``, so
+      it separates a partial escape from a literal comparison.
+    * ``ca[s]`` -- a bracket expression. Survives an escape covering ``.``,
+      ``*`` and ``|``, and is the shape a hand-rolled character-class escape is
+      likeliest to mangle.
+
+    Every shape is credited by an unescaped interpolation, so the set is red
+    against a pattern-matching lookup and green only once the comparison is
+    literal. The scenario is a differential in the same sense as its siblings:
+    a lookup that simply failed everything would satisfy it, and what excludes
+    that is the happy-path scenario above, which can only stay green if a
+    genuine id still resolves.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_EXPECTED_VAULTS=expected, PREFLIGHT_CHECKS="vault_load"),
+            bash_bin=bash_bin,
+        )
+    verdicts = _verdicts(proc.stdout)
+    detail = _detail(proc.stdout, "vault_load")
+    assert proc.returncode != 0, (
+        f"a metacharacter id must not be credited by the ids it patterns over:\n{proc.stdout}"
+    )
+    assert verdicts.get("vault_load") == "FAIL", verdicts
+    # The rendered id, as in the sibling scenario: a bare containment check is
+    # also satisfied by a run that reported some *other* id missing, which is a
+    # different defect and must not be credited as this one.
+    assert detail.endswith(f"missing expected id(s): {expected}"), detail
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+def test_vault_load_credits_an_advertised_id_that_carries_a_metacharacter(bash_bin: str) -> None:
+    """A metacharacter in an id is not itself disqualifying: an id equal to one
+    the registry advertises is satisfied, whatever characters it holds.
+
+    The guard against over-correcting the scenario above. Refusing any id
+    carrying a metacharacter would fail every shape that one asserts, and pass
+    every other scenario in this section, because no other fixture advertises an
+    id that is not slug-shaped -- so the two rules are indistinguishable across
+    the whole suite without this case. They part here, on the one input that
+    separates them, and they part in the direction that matters: a rule keyed on
+    the characters in an id reports a vault absent while it is serving.
+
+    Unlike its siblings this scenario is not red against the pattern-matching
+    lookup it replaces -- a regular expression also matches its own literal
+    text. It is a guard rather than a detector, and the mutation it answers is
+    a comparison narrowed to slug-shaped ids rather than one made literal.
+    """
+    with serve(_green_metacharacter_vault) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_EXPECTED_VAULTS="c.s", PREFLIGHT_CHECKS="vault_load"),
+            bash_bin=bash_bin,
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode == 0, f"an advertised id must be credited as written:\n{proc.stdout}"
+    assert verdicts.get("vault_load") == "PASS", verdicts
+    assert _detail(proc.stdout, "vault_load") == _VAULT_LOAD_CLEAN_DETAIL, proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+def test_vault_load_does_not_expand_an_id_against_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bash_bin: str
+) -> None:
+    """An expected id is never replaced by a filename.
+
+    The split reads the list through an *unquoted* expansion, which is how the
+    comma split is obtained -- and pathname expansion applies to that same
+    expansion. An id carrying a glob character is therefore replaced by whatever
+    the deploy runner's working directory holds, so the ids the loop looks up
+    are not the ids the operator wrote.
+
+    That reverses the gate's direction of error. Here ``ca?`` is no vault, but a
+    file named ``cas`` sits beside the run, so an expanding split hands the loop
+    the advertised ``cas`` and reports every expected vault present -- a green
+    vault_load standing on a filename. The failure needs no adversary: the
+    variable is operator-edited, and CI runs the harness from a checkout full of
+    short slug-shaped names.
+
+    The file is what makes the scenario load-bearing. Without it ``ca?`` matches
+    nothing on disk, stays literal, and fails for a reason that has nothing to
+    do with expansion -- so the run must happen in a directory that contains the
+    bait, which is what ``monkeypatch.chdir`` supplies.
+    """
+    (tmp_path / "cas").touch()
+    monkeypatch.chdir(tmp_path)
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_EXPECTED_VAULTS="ca?", PREFLIGHT_CHECKS="vault_load"),
+            bash_bin=bash_bin,
+        )
+    verdicts = _verdicts(proc.stdout)
+    detail = _detail(proc.stdout, "vault_load")
+    assert proc.returncode != 0, (
+        f"a filename beside the run must not satisfy an expected id:\n{proc.stdout}"
+    )
+    assert verdicts.get("vault_load") == "FAIL", verdicts
+    # The id as written, not the filename it would have expanded to: a detail
+    # naming `cas` would mean the expansion happened and the loop merely failed
+    # to find it, which is a different script than the one this pins.
+    assert detail.endswith("missing expected id(s): ca?"), detail
 
 
 @_NEEDS_RUNTIME
