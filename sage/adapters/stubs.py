@@ -132,6 +132,16 @@ class StubContentStore(ContentStore):
             internal sentinel rather than a heading someone wrote, so including
             it would let a query for one of the sentinel's own words score
             every header row in the store.
+
+            This carve-out is not parity: the Postgres binding indexes the
+            marker today, because its generated column weights ``heading_path``
+            whole and the text-search configuration reads the sentinel's
+            underscores as separators, leaving two ordinary lexemes at the
+            heading weight. The rule here is the one CAS-ADR-049 supports --
+            headings *within* a document rank, and a marker no author wrote is
+            not one of them -- so the divergence is the binding's artefact
+            rather than this double's licence, and a test turning on it is
+            evidence about the double alone.
             """
             if chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH:
                 return chunk.content.lower()

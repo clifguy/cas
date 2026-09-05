@@ -15,22 +15,35 @@ meant to catch drift.
 
 The mirror is not total, and the inventory below is the whole of what it omits
 -- read as a complete list, because that is how a name-for-name claim will be
-read. Four Postgres rules have no counterpart here, and their absence is a
-property of the double rather than a gap:
+read. The claim is bidirectional, so the inventory is too.
 
-- quoted-phrase adjacency and the within-chunk fallback path, because the
-  double parses no operators, so neither shape exists;
-- title matchability, a property of the ingestion projection rather than of a
-  store;
-- the scalar and IN-list filter forms. ``_chunk_matches_filters`` handles both,
-  and the filter tests here exercise the scalar form only.
+**Postgres rules with no counterpart here.** Quoted-phrase adjacency and the
+within-chunk fallback path, because the double parses no operators, so neither
+shape exists. Title matchability, a property of the ingestion projection rather
+than of a store. The IN-list filter form: ``_chunk_matches_filters`` handles it
+and nothing here exercises it, which is a gap rather than a property of the
+double. And ``finds_content_term``, a single-term smoke assertion every other
+test in this module subsumes.
 
-Two more are pinned in a weaker form than the binding's. A heading-only term is
-findable against both, but only the binding ranks a heading match above a body
-one, so that ordering belongs against a real backend. And the parse is pinned
-for its shape rather than its content: the double's is a whitespace split, so
-the stopword, stemming, negation and alternation cases the Postgres parse tests
-cover have nothing to assert against here.
+**Rules pinned here in a weaker form.** A heading-only term is findable against
+both, but only the binding ranks a heading match above a body one, so that
+ordering belongs against a real backend. And the parse is pinned for its shape
+rather than its content: the double's is a whitespace split, so the stopword,
+stemming, negation and alternation cases the Postgres parse tests cover have
+nothing to assert against here.
+
+**Rules pinned here and nowhere else.** The four parse pins -- the two
+directions of the agreement, the alternation flag, and the parse's own shape --
+have no meaning against a binding whose parse *is* the text-search
+configuration. ``header_sentinel_is_not_searchable_text`` is a genuine
+divergence rather than an absence: the binding indexes the marker at the
+heading weight today, so the rule holds for this double alone, and
+``StubContentStore.search_bm25`` carries the reasoning. And the pin that the
+header is not counted as a matched chunk is a contract rule that could carry a
+Postgres twin and does not yet.
+
+The scalar filter form is a naming gap rather than either: both filter tests
+here exercise it, under names that do not match the Postgres ones.
 """
 
 from __future__ import annotations
@@ -121,8 +134,11 @@ async def test_stub_search_bm25_header_sentinel_is_not_searchable_text(store):
     """The header row's heading path is a marker, not a heading someone wrote.
 
     A rival that indexes every chunk's heading path uniformly makes the
-    sentinel's own words searchable, and ``document`` is one of them. Only the
-    score can see that: the sentinel cannot change what matches, because the
+    sentinel's own words searchable, and ``document`` is one of them. The
+    Postgres binding is that rival today, so this pin is stub-only by
+    construction rather than by omission; the reasoning for keeping it that way
+    is in ``StubContentStore.search_bm25``. Only the score can see it: the
+    sentinel cannot change what matches, because the
     header is already barred from the match union, and it cannot take the
     excerpt, because an authored chunk always outranks it in that tiebreak. So
     the terms are split one per authored chunk, leaving no chunk that carries
