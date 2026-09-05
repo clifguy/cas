@@ -37,7 +37,9 @@ Safeguards:
   instance a workstation or a CI runner provisions and discards. It is deliberately
   narrow: a persistent vault in a shared tenant does not qualify however disposable
   its contents, because the confirmation is what stops a mistyped id from reaching
-  one, and this is the same core the non-interactive callers delegate into.
+  one. The carve-out is scoped to this interactive path -- a non-interactive caller
+  that delegates in here enforces its own confirmation first, rather than relying
+  on this one.
 - Snapshot-before-destroy is ON by default (``--no-snapshot`` opts out): a
   ``pg_dump`` of the schema plus a source-file manifest to a timestamped archive
   **outside** the vault root. A failed snapshot halts before any destruction.
@@ -252,10 +254,11 @@ async def delete_vault(
 
     # Typed vault-id confirmation. The only auto-confirm is the ephemeral,
     # disposable ``test`` vault a workstation or CI runner provisions and
-    # discards. Exact match, never a prefix or substring: the non-interactive
-    # callers delegate into this same core with the confirmation pre-supplied,
-    # so a carve-out that widened here would silently disarm the confirmation
-    # for every vault whose id merely resembles it.
+    # discards. Exact match, never a prefix or substring: a carve-out widened
+    # here would disarm the confirmation for every vault whose id merely
+    # resembles it. The carve-out is this interactive path's own -- a
+    # non-interactive caller that delegates in here confirms before it does, so
+    # widening this one no longer reaches such a caller silently.
     if vault_id != "test":
         typed = input_fn(f"To confirm PERMANENT deletion, retype the vault_id ({vault_id}): ")
         if typed != vault_id:

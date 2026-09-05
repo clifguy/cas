@@ -288,16 +288,35 @@ def test_cloud_typed_confirm_mismatch_refuses(monkeypatch, vault_id):
     assert store.deleted_configs == []
 
 
-@pytest.mark.parametrize("vault_id", ["cas_smoke", "test"])
-def test_cloud_confirm_mismatch_refuses_before_binding_anything(monkeypatch, vault_id):
+@pytest.mark.parametrize(
+    ("vault_id", "confirm"),
+    [
+        ("cas_smoke", "WRONG"),
+        ("test", "WRONG"),
+        # Near misses on the id the core carves out of its own prompt, where a
+        # compare looser than exact has nothing downstream to catch it. Each is a
+        # substring, a proper prefix, or a case fold of the id; the empty confirm
+        # is the value this arm exists to refuse.
+        ("test", ""),
+        ("test", "tes"),
+        ("test", "TEST"),
+    ],
+)
+def test_cloud_confirm_mismatch_refuses_before_binding_anything(monkeypatch, vault_id, confirm):
     """The mismatch is refused by this arm before any binding is built or the core
     is entered -- no Entra token, no Graph client, no Postgres resolution.
 
     Anti-coincidental-pass: every collaborator is a sentinel that raises if called,
-    which separates the three candidate implementations. Leaving the decision to
-    the core builds the stores and enters it, firing the sentinels on both cases;
-    a check special-cased to ``test`` fires them on the ``cas_smoke`` case. Only
-    an unconditional refusal taken here passes both.
+    which separates the candidate implementations on two axes. On *where* the
+    decision is taken: leaving it to the core builds the stores and enters it,
+    firing the sentinels on every case, and a check special-cased to ``test``
+    fires them on the ``cas_smoke`` case. On *how strictly* it compares: a
+    disjoint confirm like ``"WRONG"`` is refused by any compare looser than
+    exact, so the near-miss cases carry the discrimination -- a substring-tolerant
+    compare accepts ``""`` and ``"tes"``, a prefix-tolerant one accepts ``"tes"``,
+    a case-insensitive one accepts ``"TEST"``. The empty confirm on ``test`` is
+    the original defect exactly: the value that passed when this arm had no check
+    of its own.
     """
     _clear_env(monkeypatch)
 
@@ -313,11 +332,44 @@ def test_cloud_confirm_mismatch_refuses_before_binding_anything(monkeypatch, vau
     monkeypatch.setattr(dvc, "delete_vault", _must_not_call)
 
     monkeypatch.setenv("SAGE_DELETE_VAULT_ID", vault_id)
-    monkeypatch.setenv("SAGE_DELETE_CONFIRM", "WRONG")
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", confirm)
     monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
     monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
 
     assert main() == 3
+
+
+@pytest.mark.parametrize("confirm", ["cas_smoke", " cas_smoke ", "cas_smoke\n"])
+def test_cloud_matching_confirm_is_normalized_like_the_vault_id(monkeypatch, confirm):
+    """A matching confirm is accepted with surrounding whitespace stripped, the way
+    this arm already strips the vault id it compares it against.
+
+    Both reach the job as environment variables carrying an operator-typed workflow
+    input, where a trailing space or newline is invisible and survives a paste. The
+    other cloud arm that owns its confirm check normalizes the same way; refusing
+    here on whitespace alone would refuse a correct answer and diverge from it.
+
+    Anti-coincidental-pass: the teardown is asserted to have *completed* rather than
+    merely to have returned 0. A compare that skipped the confirmation entirely also
+    returns 0, so the exit code alone does not separate "accepted the padded confirm"
+    from "never checked"; the dropped schema and the removed source tree do. Drop the
+    normalization and the padded cases refuse instead, leaving both empty.
+    """
+    _clear_env(monkeypatch)
+    store = _FakeSourceStore()
+    prov = _FakeProvisioner()
+    _patch_resolvers(monkeypatch, source_store=store, provisioner=prov)
+
+    monkeypatch.setenv("SAGE_DELETE_VAULT_ID", "cas_smoke")
+    monkeypatch.setenv("SAGE_DELETE_CONFIRM", confirm)
+    monkeypatch.setenv("SAGE_DELETE_APPLY", "1")
+    monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
+
+    rc = main()
+
+    assert rc == 0
+    assert prov.dropped == ["cas_smoke"]
+    assert store.deleted_trees == [("cas_smoke", None)]
 
 
 @pytest.mark.parametrize("vault_id", ["cas_smoke", "test"])

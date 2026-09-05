@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refuse: {_ENV_VAULT_ID} is required.", file=sys.stderr)
         return 2
     apply = _truthy(env.get(_ENV_APPLY), default=False)
-    confirm = env.get(_ENV_CONFIRM, "")
+    confirm = env.get(_ENV_CONFIRM, "").strip()
     # Typed confirmation, decided here rather than inherited from the shared core.
     # The core carves the literal id ``test`` out of its prompt -- right for the
     # interactive local path, where retyping an ephemeral workstation or CI vault

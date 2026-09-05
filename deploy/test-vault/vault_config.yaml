@@ -10,10 +10,12 @@
 # docs/process/sharepoint-vault-source.md.
 #
 # The id is distinct from the `test` vault on a workstation or a CI runner:
-# `test` denotes an ephemeral, disposable instance, and destructive tooling
-# carves it out of the confirmations it otherwise requires. This vault is
-# persistent and lives in a shared tenant, so it deliberately sits outside that
-# carve-out and its teardown requires a typed confirmation like any other.
+# `test` denotes an ephemeral, disposable instance, which the local teardown CLI
+# carves out of the confirmation it otherwise requires. This vault is persistent
+# and lives in a shared tenant, so it deliberately sits outside that carve-out.
+# The cloud teardown that governs it confirms every id regardless, so the naming
+# is defence in depth rather than the one thing standing between this vault and
+# an unconfirmed delete.
 #
 # This is a disposable validation vault. storage_root and brain_root are
 # required by the vault-config schema but inert under the cloud bindings (source
