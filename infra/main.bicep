@@ -46,6 +46,9 @@ param mcpClientId string
 @description('Claude model identifier the hosted abstraction provider generates abstracts with.')
 param abstractionModel string = 'claude-haiku-4-5'
 
+@description('Enable Key Vault purge protection. Off by default; the setting is irreversible once applied and vault-wide, so enable it per tenant only where every workload sharing the vault can accept a deletion block for the full soft-delete window.')
+param enableKeyVaultPurgeProtection bool = false
+
 @description('Owned base domain the custom hostnames derive from (e.g. example.com). The wildcard certificate *.<base-domain> covers both the cas and sage hostnames.')
 param baseDomain string
 
@@ -174,6 +177,7 @@ module keyvault 'modules/keyvault.bicep' = {
     tags: tags
     sagePrincipalId: identity.outputs.sageIdentityPrincipalId
     bffPrincipalId: identity.outputs.bffIdentityPrincipalId
+    enablePurgeProtection: enableKeyVaultPurgeProtection
   }
 }
 

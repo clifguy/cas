@@ -48,7 +48,12 @@ facade, …) to consume.
 
 The relational-store module (`postgres.bicep`) deploys into the delegated
 Postgres subnet and exposes `postgresServerFqdn`, `postgresDatabaseName`, and
-`postgresServerName` for the cloud profile configuration to consume.
+`postgresServerName` for the cloud profile configuration to consume. It also
+declares the server's `CanNotDelete` lock: the vault store's durable state lives
+here and nothing else in the profile can reconstruct it, so the protection is
+template state rather than an out-of-band action, and a group rebuilt from a
+clean checkout comes up protected. The lock blocks only the delete verb, leaving
+ARM updates and the in-VNet bootstrap job — and so a re-deploy — unaffected.
 
 The identity module (`identity.bicep`) provisions the two user-assigned managed
 identities the container apps run as (SAGE and the CAS BFF) and exposes, for
@@ -63,7 +68,10 @@ certificates they consume, and exposes `keyVaultUri`, `keyVaultName`, and the
 canonical `anthropicSecretName` / `tlsCertificateName` / `bffClientSecretName`.
 Secret values and the wildcard TLS certificate are loaded out of band per
 [`../../docs/process/key-vault-secrets.md`](../../docs/process/key-vault-secrets.md);
-no secret material is committed.
+no secret material is committed. Soft delete is on unconditionally; purge
+protection is a per-tenant parameter that defaults to off, because the setting is
+irreversible and vault-wide — it binds every workload whose secrets share the
+vault, so it is the operator's call per tenant, not the module's.
 
 ## The API facade
 

@@ -84,6 +84,25 @@ def _count_resource_type(text: str, resource_type: str) -> int:
     return len(pattern.findall(_strip_line_comments(text)))
 
 
+def _module_block(text: str, module_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
+
+    Slices from the module declaration to the next top-level declaration. The
+    orchestrator wires nine modules, so an assertion made over the whole file
+    is satisfied by any one of them; the argument-threading gates below must
+    read this module's own parameter list.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_path) + r"'\s*=", stripped, re.MULTILINE
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
 def _output_lines(text: str) -> list[tuple[str, str]]:
     """Return ``(name, rhs)`` for every ``output <name> <type> = <rhs>`` line."""
     pattern = re.compile(r"^\s*output\s+(\w+)\s+\w+\s*=\s*(.+?)\s*$", re.MULTILINE)
@@ -247,6 +266,79 @@ def test_main_bicep_wires_keyvault_module() -> None:
     )
 
 
+def test_main_bicep_threads_purge_protection_to_keyvault() -> None:
+    """Purge protection is reachable from the deployment surface: the orchestrator
+    declares the parameter and passes it into the module. Declared but unpassed,
+    the setting can only be changed by editing the module — which is a stack edit,
+    not the per-tenant parameter change it ought to be.
+    """
+    text = MAIN_BICEP.read_text(encoding="utf-8")
+    assert re.search(
+        r"param\s+enableKeyVaultPurgeProtection\s+bool\b", _strip_line_comments(text)
+    ), "main.bicep must declare an `enableKeyVaultPurgeProtection bool` parameter"
+    block = _module_block(text, "modules/keyvault.bicep")
+    assert block, "main.bicep must wire a live module from modules/keyvault.bicep"
+    assert re.search(r"enablePurgeProtection:\s*enableKeyVaultPurgeProtection\b", block), (
+        "the keyvault module call must pass enablePurgeProtection: enableKeyVaultPurgeProtection"
+    )
+
+
+def test_purge_protection_defaults_off_on_both_surfaces() -> None:
+    """Both the orchestrator parameter and the module parameter default to false.
+
+    Azure refuses ``false`` for purge protection once the setting is applied and
+    the setting is vault-wide, so a silent flip to ``true`` is irreversible and
+    binds every workload sharing the vault. A default is the only mechanical
+    guard against that.
+    """
+    main_text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    module_text = _strip_line_comments(KEYVAULT.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+enableKeyVaultPurgeProtection\s+bool\s*=\s*false", main_text), (
+        "main.bicep's enableKeyVaultPurgeProtection must default to false"
+    )
+    assert re.search(r"param\s+enablePurgeProtection\s+bool\s*=\s*false", module_text), (
+        "keyvault.bicep's enablePurgeProtection must default to false"
+    )
+
+
+def test_purge_protection_rationale_is_current() -> None:
+    """The parameter's description states the real constraint: enabling purge
+    protection is irreversible and vault-wide, so on a vault whose secrets are
+    shared with another workload it binds that workload too. The older
+    "recreatable" rationale does not survive that case and must not return.
+    """
+    text = KEYVAULT.read_text(encoding="utf-8")
+    m = re.search(r"@description\('([^']*)'\)\s*\nparam\s+enablePurgeProtection\b", text)
+    assert m is not None, "enablePurgeProtection must carry an @description"
+    description = m.group(1).lower()
+    assert "recreatable" not in description, (
+        "the 'recreatable in the experimental profile' rationale does not hold for a "
+        "vault shared with another workload"
+    )
+    assert "irreversible" in description, (
+        "the description must state that enabling purge protection is irreversible"
+    )
+    assert "vault-wide" in description, (
+        "the description must state that the setting is vault-wide, so it binds every "
+        "workload sharing the vault and not only this one"
+    )
+
+
+def test_keyvault_soft_delete_is_unconditional() -> None:
+    """Soft delete is bound to the literal ``true``, never to a parameter.
+
+    With purge protection off by decision, soft delete is the only remaining
+    recovery window for a deleted vault. Parameterizing it would turn a
+    considered trade-off into a posture that can be switched to unrecoverable.
+    """
+    text = _strip_line_comments(KEYVAULT.read_text(encoding="utf-8"))
+    m = re.search(r"enableSoftDelete:\s*(.+)", text)
+    assert m is not None, "keyvault.bicep must set enableSoftDelete"
+    assert m.group(1).strip() == "true", (
+        f"enableSoftDelete must be the literal true, not {m.group(1).strip()!r}"
+    )
+
+
 @pytest.mark.skipif(
     shutil.which("bicep") is None and shutil.which("az") is None,
     reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
@@ -295,3 +387,32 @@ def test_secret_output_detector_controls() -> None:
     clean = "output u string = kv.properties.vaultUri\n"
     assert _output_secret_violations(leak), "secret detector failed to flag a listKeys output"
     assert not _output_secret_violations(clean), "secret detector false-positived on a clean output"
+
+
+def test_module_block_isolation_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the argument-threading gate load-bearing. A whole-file
+    search would be satisfied by a neighbouring module's parameter list, or by
+    the parameter merely being declared and never passed — exactly the shape the
+    threading gate exists to reject.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module keyvault 'modules/keyvault.bicep' = {\n"
+        "  params: {\n    sagePrincipalId: identity.outputs.sageIdentityPrincipalId\n  }\n}\n"
+        "module other 'modules/other.bicep' = {\n"
+        "  params: {\n    enablePurgeProtection: enableKeyVaultPurgeProtection\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/keyvault.bicep")
+    assert block, "the detector must find the keyvault module call"
+    assert "sagePrincipalId" in block, "the block must carry the keyvault call's own parameters"
+    assert "enablePurgeProtection" not in block, (
+        "the block must truncate at the next declaration, not leak the following "
+        "module's parameter list"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""

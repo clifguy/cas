@@ -163,6 +163,22 @@ resource aadAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024
   ]
 }
 
+// Deletion protection for the durable store. The server holds the vault state,
+// which no other resource in the profile can reconstruct, so the protection is
+// declared here rather than applied out of band: a resource group rebuilt from a
+// clean checkout comes up protected. CanNotDelete blocks only the delete verb —
+// ARM updates and the in-VNet bootstrap job run unaffected, so re-deploying the
+// stack stays idempotent. (A ReadOnly lock would block both and is never right
+// here.) Removing the lock is a deliberate out-of-band act, which is the point.
+resource serverDeleteLock 'Microsoft.Authorization/locks@2020-05-01' = {
+  scope: server
+  name: '${environmentName}-db-no-delete'
+  properties: {
+    level: 'CanNotDelete'
+    notes: 'Protects the SAGE vault store from accidental deletion. Blocks delete only; ARM updates and the in-VNet bootstrap job are unaffected.'
+  }
+}
+
 @description('Fully qualified domain name of the Postgres Flexible Server.')
 output postgresServerFqdn string = server.properties.fullyQualifiedDomainName
 

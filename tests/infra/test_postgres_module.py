@@ -39,6 +39,12 @@ _CONFIG_TYPE: Final[str] = "Microsoft.DBforPostgreSQL/flexibleServers/configurat
 _ADMIN_TYPE: Final[str] = "Microsoft.DBforPostgreSQL/flexibleServers/administrators"
 _DNS_ZONE_TYPE: Final[str] = "Microsoft.Network/privateDnsZones"
 _DNS_LINK_TYPE: Final[str] = "Microsoft.Network/privateDnsZones/virtualNetworkLinks"
+_LOCK_TYPE: Final[str] = "Microsoft.Authorization/locks"
+
+# Words the delete lock's name may carry as literal text. Anything outside this set
+# is a tenant coordinate baked into a template every tenant deploys. Extend it only
+# with words that stay true for every tenant.
+_GENERIC_LOCK_NAME_WORDS: Final[frozenset[str]] = frozenset({"db", "no", "delete"})
 
 # The database SAGE connects to (StackPostgresConfig.database default) and the
 # extensions the schema bootstrap enables (StackPostgresConfig.extensions). The
@@ -130,6 +136,69 @@ def _depends_on_targets(block: str) -> set[str]:
     """Return the set of symbols named in a resource block's ``dependsOn: [...]``."""
     m = re.search(r"dependsOn\s*:\s*\[([^\]]*)\]", block)
     return set(re.findall(r"\w+", m.group(1))) if m else set()
+
+
+def _count_resource_type(text: str, resource_type: str) -> int:
+    """Number of ``resource <symbol> '<type>@<version>'`` declarations of a type."""
+    pattern = re.compile(r"resource\s+\w+\s+'" + re.escape(resource_type) + r"@[0-9A-Za-z-]+'")
+    return len(pattern.findall(_strip_line_comments(text)))
+
+
+def _lock_block(text: str) -> str:
+    """Return the body of the ``Microsoft.Authorization/locks`` resource declaration.
+
+    Found by resource *type* rather than by symbol so a rename of the symbol
+    cannot silently blank the block and pass the gates below vacuously. Slices
+    to the next top-level declaration, mirroring :func:`_resource_block`.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^resource\s+\w+\s+'" + re.escape(_LOCK_TYPE) + r"@[0-9A-Za-z-]+'",
+        stripped,
+        re.MULTILINE,
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|output|module)\s+\w+", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _lock_declaration_is_conditional(text: str) -> bool:
+    """True iff the lock resource is declared with a ``= if (...)`` condition.
+
+    Reads the declaration *head* — the span between the resource type and the
+    opening brace — which is the only place a Bicep deployment condition can sit
+    and the one part of the declaration the body-shape gates never look at.
+    """
+    m = re.search(
+        r"^resource\s+\w+\s+'" + re.escape(_LOCK_TYPE) + r"@[0-9A-Za-z-]+'\s*=([^{]*)\{",
+        _strip_line_comments(text),
+        re.MULTILINE,
+    )
+    return m is not None and "if" in m.group(1)
+
+
+def _lock_name_expression(block: str) -> str:
+    """Return the right-hand side of the lock block's ``name:`` line."""
+    m = re.search(r"name:\s*(.+)", block)
+    return m.group(1).strip() if m else ""
+
+
+def _lock_name_interpolates_environment(block: str) -> bool:
+    """True iff the lock's name interpolates the ``environmentName`` parameter."""
+    return "${environmentName}" in _lock_name_expression(block)
+
+
+def _lock_name_literal_words(block: str) -> list[str]:
+    """Return the alphanumeric words in the lock name that are *not* interpolated.
+
+    Interpolated spans carry the tenant's own coordinates and are the point; what
+    is left over is literal text baked into every tenant's template, so it must be
+    generic. Returns an empty list when no lock name is present.
+    """
+    literal = re.sub(r"\$\{[^}]*\}", " ", _lock_name_expression(block))
+    return re.findall(r"[A-Za-z0-9]+", literal)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +324,97 @@ def test_postgres_aad_admin_serialized_after_config() -> None:
         "aadAdmin must declare dependsOn: [extensions, database] so the Entra-admin "
         f"write is serialized after the config/database writes; got {targets}"
     )
+
+
+def test_postgres_declares_a_delete_lock() -> None:
+    """The module declares exactly one resource lock. The server holds the vault
+    store's durable state, so its protection against an accidental delete must be
+    template state — a resource group rebuilt from a clean checkout comes up
+    protected rather than depending on an out-of-band action.
+    """
+    text = POSTGRES.read_text(encoding="utf-8")
+    count = _count_resource_type(text, _LOCK_TYPE)
+    assert count == 1, f"postgres.bicep must declare exactly one {_LOCK_TYPE}; found {count}"
+
+
+def test_postgres_lock_is_declared_unconditionally() -> None:
+    """The lock carries no deployment condition.
+
+    "Unconditionally" is the claim the module comment, the modules README, and the
+    operator runbook all make, and it is the whole of the protection: a lock behind
+    ``= if (<expr>)`` deploys for some tenants and not others, and the tenant it
+    silently skips is indistinguishable from one that never declared a lock. The
+    body-shape gates below all read the declaration's *body*, so a condition in its
+    head passes every one of them.
+    """
+    text = POSTGRES.read_text(encoding="utf-8")
+    assert _lock_block(text), "postgres.bicep must declare a resource lock"
+    assert not _lock_declaration_is_conditional(text), (
+        "the delete lock must be declared unconditionally; a `= if (...)` condition "
+        "would make the durable store's protection tenant-dependent"
+    )
+
+
+def test_postgres_lock_is_scoped_to_the_server() -> None:
+    """The lock binds the flexible server itself, not the resource group or the
+    private DNS zone the module also owns. A lock at the wrong scope either
+    protects nothing that matters or freezes resources it was never meant to.
+    """
+    block = _lock_block(POSTGRES.read_text(encoding="utf-8"))
+    assert block, "postgres.bicep must declare a resource lock"
+    assert re.search(r"scope:\s*server\b", block), (
+        "the lock must carry `scope: server` so it binds the flexible server"
+    )
+
+
+def test_postgres_lock_blocks_delete_only() -> None:
+    """The lock is ``CanNotDelete``, never ``ReadOnly``. ``ReadOnly`` would block
+    ARM updates and the in-VNet bootstrap job as well as deletes, turning a
+    protection into an outage on the next deploy.
+    """
+    block = _lock_block(POSTGRES.read_text(encoding="utf-8"))
+    assert block, "postgres.bicep must declare a resource lock"
+    assert re.search(r"level:\s*'CanNotDelete'", block), (
+        "the lock's level must be 'CanNotDelete' (delete-only protection)"
+    )
+    assert "ReadOnly" not in block, (
+        "a 'ReadOnly' lock would block ARM updates and the in-VNet bootstrap job"
+    )
+
+
+def test_postgres_lock_name_is_tenant_parameterized() -> None:
+    """The lock's name varies by tenant through ``environmentName``, and its literal
+    remainder names no tenant.
+
+    One tenant = one parameter set. Interpolating something is not sufficient on its
+    own: a name like ``'cas-prod-${environmentName}-db-no-delete'`` interpolates and
+    still ships one environment's spelling to every other. So the literal words left
+    after the interpolations are removed must all be generic.
+    """
+    block = _lock_block(POSTGRES.read_text(encoding="utf-8"))
+    assert block, "postgres.bicep must declare a resource lock"
+    words = _lock_name_literal_words(block)
+    assert _lock_name_interpolates_environment(block), (
+        "the lock name must interpolate ${environmentName} so it varies by tenant"
+    )
+    stray = sorted(set(words) - _GENERIC_LOCK_NAME_WORDS)
+    assert not stray, (
+        f"the lock name's literal words must be tenant-independent; {stray} is not in "
+        f"{sorted(_GENERIC_LOCK_NAME_WORDS)}. Add a genuinely generic word to that set "
+        "deliberately; never add a tenant coordinate."
+    )
+
+
+def test_postgres_lock_states_its_intent() -> None:
+    """The lock carries a non-empty ``notes`` value. The note is the only in-band
+    explanation an operator reading ``az lock list`` gets for why a delete is
+    refused; a note-less lock is an unexplained obstacle.
+    """
+    block = _lock_block(POSTGRES.read_text(encoding="utf-8"))
+    assert block, "postgres.bicep must declare a resource lock"
+    m = re.search(r"notes:\s*'([^']*)'", block)
+    assert m is not None, "the lock must declare a notes value"
+    assert m.group(1).strip(), "the lock's notes value must not be empty"
 
 
 def test_postgres_exposes_required_outputs() -> None:
@@ -393,3 +553,103 @@ def test_depends_on_detector_controls() -> None:
     )
     assert _depends_on_targets(_resource_block(with_dep, "aadAdmin")) == {"extensions", "database"}
     assert _depends_on_targets(_resource_block(without_dep, "aadAdmin")) == set()
+
+
+def test_lock_detector_controls() -> None:
+    """``_count_resource_type`` and ``_lock_block`` find a real lock and return
+    nothing for a module without one — the basis for the deletion-protection
+    gates. Without this, a typo in the resource-type string would let all five
+    lock gates pass on a file that declares no lock at all.
+
+    The trailing declaration carries a token the block must not contain: a
+    helper that finds the lock but never truncates would leak it, and only a
+    contaminant placed *after* the lock catches that.
+    """
+    with_lock = (
+        "resource serverDeleteLock 'Microsoft.Authorization/locks@2020-05-01' = {\n"
+        "  scope: server\n  name: 'x-no-delete'\n"
+        "  properties: {\n    level: 'CanNotDelete'\n  }\n}\n"
+        "output leakedSentinel string = y\n"
+    )
+    without_lock = (
+        "resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {\n}\n"
+        "output leakedSentinel string = y\n"
+    )
+    assert _count_resource_type(with_lock, _LOCK_TYPE) == 1
+    assert _count_resource_type(without_lock, _LOCK_TYPE) == 0
+    block = _lock_block(with_lock)
+    assert "level: 'CanNotDelete'" in block
+    assert "leakedSentinel" not in block, (
+        "the block must truncate at the next declaration, not run to end of file"
+    )
+    assert _lock_block(without_lock) == ""
+
+
+def test_lock_conditionality_detector_controls() -> None:
+    """``_lock_declaration_is_conditional`` separates a conditional declaration from
+    an unconditional one, and reads the head rather than the body.
+
+    The body-carrying fixtures are the point: a conditional lock whose body is
+    otherwise perfect is exactly the rival every other lock gate passes, so the
+    detector must fire on the head alone.
+    """
+    body = "  scope: server\n  properties: {\n    level: 'CanNotDelete'\n  }\n}\n"
+    unconditional = f"resource l 'Microsoft.Authorization/locks@2020-05-01' = {{\n{body}"
+    conditional = (
+        f"resource l 'Microsoft.Authorization/locks@2020-05-01' = if (enableLock) {{\n{body}"
+    )
+    assert not _lock_declaration_is_conditional(unconditional)
+    assert _lock_declaration_is_conditional(conditional)
+
+    # Every signal the body-shape gates read is present and identical in both, which
+    # is why none of them separates the two and the head check has to.
+    for block in (_lock_block(unconditional), _lock_block(conditional)):
+        assert re.search(r"scope:\s*server\b", block)
+        assert re.search(r"level:\s*'CanNotDelete'", block)
+
+    # A declaration of some other type is not the lock, conditional or not.
+    assert _lock_declaration_is_conditional("resource s 'Other/type@2024-01-01' = {\n}\n") is False
+
+
+def test_lock_name_detector_controls() -> None:
+    """The name detectors separate a tenant-parameterized name from one that
+    interpolates *and* hardcodes a tenant.
+
+    Interpolation alone is the rival: ``'cas-prod-${environmentName}-db-no-delete'``
+    varies by tenant and still carries one environment's spelling, so a check that
+    only looks for ``${`` passes it. The literal-word residue is what excludes it.
+    """
+
+    def lock_with(name: str) -> str:
+        return f"resource l 'Microsoft.Authorization/locks@2020-05-01' = {{\n  name: {name}\n}}\n"
+
+    good = lock_with("'${environmentName}-db-no-delete'")
+    tenant_baked = lock_with("'cas-prod-${environmentName}-db-no-delete'")
+    unparameterized = lock_with("'cas-prod-db-no-delete'")
+
+    assert _lock_name_interpolates_environment(_lock_block(good))
+    assert set(_lock_name_literal_words(_lock_block(good))) <= _GENERIC_LOCK_NAME_WORDS
+
+    # Interpolates, so the ${ check alone would pass it; the residue catches it.
+    assert _lock_name_interpolates_environment(_lock_block(tenant_baked))
+    assert set(_lock_name_literal_words(_lock_block(tenant_baked))) - _GENERIC_LOCK_NAME_WORDS == {
+        "cas",
+        "prod",
+    }
+
+    assert not _lock_name_interpolates_environment(_lock_block(unparameterized))
+
+
+def test_lock_level_detector_controls() -> None:
+    """The level assertion distinguishes the two lock levels: a ``ReadOnly`` lock
+    must not satisfy the ``CanNotDelete`` gate, and must be visible to the
+    ``ReadOnly`` rejection.
+    """
+    read_only = (
+        "resource l 'Microsoft.Authorization/locks@2020-05-01' = {\n"
+        "  properties: {\n    level: 'ReadOnly'\n  }\n}\n"
+    )
+    block = _lock_block(read_only)
+    assert block, "the detector must find a ReadOnly lock declaration"
+    assert not re.search(r"level:\s*'CanNotDelete'", block)
+    assert "ReadOnly" in block

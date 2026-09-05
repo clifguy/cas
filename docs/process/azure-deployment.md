@@ -119,11 +119,13 @@ The subject, shown as a placeholder, is `repo:<OWNER>/<REPO>:environment:<env>`.
 The deploy identity creates the resource group and the resources within it —
 **and** the role assignments those resources carry (the Key Vault module grants
 the SAGE and CAS BFF managed identities data-plane read on the vault, and the
-container-app module grants them `AcrPull`). Creating a resource needs
-`Contributor`; creating a role assignment needs
-`Microsoft.Authorization/roleAssignments/write`, which `Contributor` does **not**
-include. The deploy therefore needs both capabilities, or it fails with
-`AuthorizationFailed` on the first module that assigns a role.
+container-app module grants them `AcrPull`) **and** the relational store's
+`CanNotDelete` lock. Creating a resource needs `Contributor`; creating a role
+assignment needs `Microsoft.Authorization/roleAssignments/write` and creating the
+lock needs `Microsoft.Authorization/locks/write`, neither of which `Contributor`
+includes — its `notActions` exclude `Microsoft.Authorization/*/Write` wholesale.
+The deploy therefore needs both capabilities, or it fails with
+`AuthorizationFailed` on the first module that assigns a role or declares a lock.
 
 Grant `Contributor` **and** `User Access Administrator` at the subscription
 scope — the least-privilege built-in pair that can both create the resource
@@ -327,6 +329,45 @@ inventory (each check's prediction and its anti-coincidental control) without
 touching the network; the script header documents every parameter and seam. A
 non-zero exit means at least one layer failed — read the matrix, fix the layer,
 redeploy, and re-run.
+
+## Deletion protection
+
+The durable state the profile cannot reconstruct is the Postgres server's. The
+relational-store module declares its `CanNotDelete` lock unconditionally, so the
+protection is template state: a resource group rebuilt from a clean checkout
+comes up protected, with no out-of-band step to remember. The lock blocks only
+the delete verb — ARM updates and the in-VNet bootstrap job run unaffected, so
+re-deploying stays idempotent. Deleting the server is therefore a deliberate two
+steps: remove the lock, then delete.
+
+The block reaches the whole group. A `CanNotDelete` lock on any resource refuses
+deletion of its containing resource group too, so `az group delete` fails with
+`ScopeLocked` while any lock in the group stands — including the rebuild-from-clean
+case this section exists for, which begins with exactly that operation. Removing
+one lock is not enough: clear every lock the group holds first.
+
+```bash
+az lock list --resource-group "$RESOURCE_GROUP_NAME" -o table
+```
+
+A lock applied by hand before the declaration existed is adopted only if it sits at
+the same scope *and* carries the same name — ARM identifies a lock by both, so a
+same-named lock on the resource group is a different resource from one on the
+server. The declared lock is scoped to the server and its name derives from
+`environmentName`, while a hand-applied lock sits wherever the operator put it under
+whatever name they typed; unless both coincide, the two are separate child resources
+and the deployment creates its own. Both are
+`CanNotDelete` and the stricter wins, so the state is safe but divergent —
+confirm the declared lock exists, then delete the hand-made one so the live
+resource group matches the template.
+
+The Key Vault has no lock. Its protection is soft delete, which is on
+unconditionally; purge protection is the `enableKeyVaultPurgeProtection`
+parameter, off by default. That default is a decision, not an oversight: the
+setting is irreversible (Azure refuses `false` once it is applied) and
+vault-wide, so on a vault whose secrets are shared with another workload,
+enabling it commits that workload to a deletion block for the full soft-delete
+window. Enable it for a tenant whose vault holds CAS secrets alone.
 
 ## Adding a tenant
 
