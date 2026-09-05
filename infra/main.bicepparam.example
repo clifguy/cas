@@ -52,6 +52,16 @@ param mcpClientId = 'REPLACE-WITH-MCP-CLIENT-ID'
 param imageTag = 'REPLACE-WITH-IMAGE-TAG'
 param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
 
+// --- Key Vault protection --------------------------------------------
+// enableKeyVaultPurgeProtection defaults to false. Purge protection is
+// irreversible — Azure refuses false once it has been applied — and it is
+// vault-wide, so it binds every workload whose secrets share the vault, not
+// only CAS. Turn it on for a tenant whose vault holds CAS secrets alone and
+// whose operator accepts that the vault cannot be deleted for the full
+// soft-delete window. While it is off, soft delete (always on) is the
+// recovery path. Deletion protection for the durable store is not a parameter:
+// the relational-store module declares a CanNotDelete lock unconditionally.
+
 // --- Custom domains --------------------------------------------------
 // baseDomain is the owned zone the cas/sage hostnames derive from; the
 // wildcard certificate *.<baseDomain> (loaded as wildcard-tls) covers both.

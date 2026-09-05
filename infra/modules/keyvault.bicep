@@ -27,7 +27,7 @@ param sagePrincipalId string
 @description('Principal id of the CAS BFF managed identity granted secret/certificate read.')
 param bffPrincipalId string
 
-@description('Enable purge protection. Off by default (the vault is recreatable in the experimental profile); on hardens against secret loss but blocks deletion for the soft-delete window.')
+@description('Enable purge protection. Off by default: the setting is irreversible — Azure refuses false once it has been applied — and vault-wide, so it binds every workload whose secrets share the vault rather than only this one. On, it hardens against secret loss but blocks deletion for the full soft-delete window. While it is off, soft delete is the recovery path.')
 param enablePurgeProtection bool = false
 
 // Key Vault names are globally unique and alphanumeric; derive a stable one from
