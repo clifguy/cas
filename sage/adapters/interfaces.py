@@ -29,7 +29,7 @@ SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
 class KeywordQueryParse(NamedTuple):
     """How the keyword backend parsed a query.
 
-    ``terms`` are the lexemes a chunk must carry, after the backend's own
+    ``terms`` are the lexemes a document must carry, after the backend's own
     stopword and stemming treatment and with anything the query excluded
     removed. ``excluded`` are the lexemes the query rules out; they are not
     something the caller must supply, but their presence means a search ran
@@ -37,11 +37,12 @@ class KeywordQueryParse(NamedTuple):
     only for absences from one whose every word the backend discarded.
 
     ``all_required`` is false when the parse admits alternatives, so a caller
-    cannot describe the query as conjunctive: a chunk can satisfy it while
+    cannot describe the query as conjunctive: a document can satisfy it while
     carrying only some of the terms. ``adjacent`` is true when the parse
-    contains a phrase, whose terms must appear together and in order -- a
-    stronger condition than carrying them all, so a chunk can hold every term
-    and still not match.
+    contains a phrase, whose terms must appear together and in order within a
+    single passage -- a stronger condition than carrying them all, and the one
+    predicate still scoped below the document, so a document can hold every
+    term and still not match.
     """
 
     terms: tuple[str, ...]

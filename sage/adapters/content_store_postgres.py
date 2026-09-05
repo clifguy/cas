@@ -69,17 +69,30 @@ _SELECT_CHUNK_COLUMNS = (
 # negated phrase produces). Embedded quotes are doubled.
 _TSQUERY_LEXEME = re.compile(r"'((?:[^']|'')*)'")
 
-# A quoted span the query excludes, and one it requires. Adjacency has to be
-# recognized from the caller's own text rather than from the rendered operator,
-# because the tokenizer emits adjacency of its own for any compound it splits.
-# The excluded spans come out first: a span the query asks to avoid imposes no
-# adjacency the caller has to satisfy, and leaving it in would let it stand in
-# for a required one. A surviving span counts only if it holds more than one
-# word -- a single quoted word carries no adjacency, and reading it as a phrase
-# is how a query pairing one with a hyphenated identifier reported adjacency
-# neither of them asked for.
+# A quoted span the query excludes. Removed before the required spans are read:
+# a span the query asks to avoid imposes no adjacency the caller has to satisfy,
+# and leaving it in would let it stand in for a required one.
 _EXCLUDED_QUOTED_SPAN = re.compile(r'-"[^"]*"')
-_REQUIRED_PHRASE_SPAN = re.compile(r'"[^"\s]*\s[^"]*"')
+
+
+def _required_phrase_spans(query: str) -> list[str]:
+    """The phrase spans the caller's own text requires, in order.
+
+    Adjacency has to be recognized from the query text rather than from the
+    rendered operator, because the tokenizer emits adjacency of its own for any
+    compound it splits -- so a hyphenated identifier would otherwise read as a
+    phrase the caller never wrote.
+
+    Quotes are paired sequentially rather than matched by a pattern. A pattern
+    looking for a quote, a word, whitespace and a closing quote will happily
+    match from one span's *closing* quote to the next span's, so ``"a" "b"``
+    reads as the phrase ``" "`` -- two single quoted words reported as one
+    phrase. Splitting on the quote character makes the pairing positional and
+    cannot make that mistake. A trailing unpaired quote still opens a span,
+    which is how ``websearch_to_tsquery`` reads it: ``alpha "beta gamma``
+    renders ``'alpha' & 'beta' <-> 'gamma'``, adjacency and all.
+    """
+    return _EXCLUDED_QUOTED_SPAN.sub("", query).split('"')[1::2]
 
 
 def _skip_quoted(rendered: str, i: int) -> int:
@@ -465,17 +478,23 @@ class PostgresContentStore(ContentStore):
         """Evaluate the whole query against a single chunk.
 
         The fallback for queries the document-scoped decomposition refuses --
-        those carrying a negation or a top-level alternation. Neither scope is
-        settled for them, so this keeps the behaviour they already had rather
-        than inventing one.
+        those carrying a negation or a top-level alternation. What is unsettled
+        for those is the *scope* of the match, so this keeps the scope they
+        already had rather than inventing one.
+
+        Provenance is not unsettled and does not lapse here: the synthetic
+        header row is barred on this path too. Leaving it in would make the
+        rule a property of the query's form rather than of the text, so adding
+        an exclusion could *widen* a result -- ``alpha -zzz`` would match a
+        document that ``alpha`` alone does not, on a term no author wrote.
         """
         where, where_params = self._build_where(filters)
         sql = (
             "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score "  # noqa: S608
             f"FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q "
-            "WHERE tsv @@ q"
+            "WHERE tsv @@ q AND heading_path <> %s"
         )
-        params: list[object] = [query]
+        params: list[object] = [query, SYNTHETIC_HEADER_HEADING_PATH]
         if where:
             sql += f" AND {where}"
             params += where_params
@@ -518,6 +537,7 @@ class PostgresContentStore(ContentStore):
                 return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
             rendered = await self._render_tsquery(query)
             required, excluded = _split_negation(rendered)
+            spans = _required_phrase_spans(query)
             return KeywordQueryParse(
                 terms=tuple(
                     lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required)
@@ -529,10 +549,11 @@ class PostgresContentStore(ContentStore):
                 # tokenizer emits adjacency for every compound it splits, so
                 # "CAS-ADR-048" would read as a phrase. The caller's quotes
                 # alone over-report too: a quoted span that rendered nothing
-                # imposes no adjacency. Matching on "<" rather than "<->"
-                # catches the distances a dropped stopword produces.
-                adjacent=bool(_REQUIRED_PHRASE_SPAN.search(_EXCLUDED_QUOTED_SPAN.sub("", query)))
-                and "<" in required,
+                # imposes no adjacency. A span counts only if it holds more
+                # than one word, since a single quoted word has nothing to be
+                # adjacent to. Matching on "<" rather than "<->" catches the
+                # distances a dropped stopword produces.
+                adjacent=any(len(span.split()) > 1 for span in spans) and "<" in required,
             )
 
     async def get_chunks_by_heading_prefix(

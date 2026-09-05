@@ -810,10 +810,29 @@ async def test_parse_keyword_query_does_not_report_a_quoted_single_word_as_adjac
     single = await store.parse_keyword_query('"alphaword" CAS-ADR-048')
     assert not single.adjacent, "a single quoted word carries no adjacency requirement"
 
+    two_singles = await store.parse_keyword_query('"alphaword" "betaword" CAS-ADR-048')
+    assert not two_singles.adjacent, (
+        "two singly-quoted words are two spans, not one phrase spanning the gap "
+        "between them; a pattern read across that gap sees a phrase in the space"
+    )
+
     real_phrase = await store.parse_keyword_query('"alphaword betaword" CAS-ADR-048')
     assert real_phrase.adjacent, (
         "positive control: a genuine phrase alongside the same compound still reports"
     )
+
+
+async def test_parse_keyword_query_reports_an_unclosed_quote_as_adjacent(store):
+    """An unclosed quote opens a phrase, and the search enforces one.
+
+    ``alpha "beta gamma`` renders ``'alpha' & 'beta' <-> 'gamma'``: the
+    tokenizer runs the span to the end of the query rather than discarding it.
+    Reporting no adjacency here would leave the caller of an empty result
+    reading the bare-conjunction advisory while the thing that actually failed
+    was an adjacency they did not realize they had asked for.
+    """
+    unclosed = await store.parse_keyword_query('alphaword "betaword gammaword')
+    assert unclosed.adjacent, "the trailing span is a phrase the search will enforce"
 
 
 async def test_search_bm25_phrase_requires_adjacency_not_just_presence(store):
@@ -983,6 +1002,42 @@ async def test_search_bm25_header_still_ranks_a_matched_document(store):
         "so the header is still in the ranking pool"
     )
     assert res[0].score > res[1].score
+
+
+async def test_search_bm25_header_never_matches_on_the_within_chunk_path_either(store):
+    """Provenance holds whatever form the query takes.
+
+    A negation sends the query down the within-chunk path, where the document
+    scope is unsettled -- but provenance is not. Without the bar there, adding
+    an exclusion *widens* the result: ``deltaword -zzz`` would match a document
+    that ``deltaword`` alone does not, on a term carried only by text no author
+    wrote, and the header would come back as the excerpt.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="Abstract: deltaword appears only in the generated summary",
+                heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+                chunk_index=-1,
+            ),
+            _chunk("d1", content="ordinary body prose", chunk_index=0),
+        ],
+    )
+
+    assert [
+        r.document_id for r in await store.search_bm25("ordinary -zzznotpresent", limit=10)
+    ] == ["d1"], (
+        "positive control: the fallback path returns authored matches, so the two "
+        "empty results below are the provenance bar and not a dead code path"
+    )
+    assert await store.search_bm25("deltaword", limit=10) == [], (
+        "precondition: the term is derived-only, so the document-scoped path refuses it"
+    )
+    assert await store.search_bm25("deltaword -zzznotpresent", limit=10) == [], (
+        "the negation changes the match scope, not what may satisfy a match"
+    )
 
 
 async def test_search_bm25_header_is_never_the_excerpt(store):
