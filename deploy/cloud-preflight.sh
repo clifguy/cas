@@ -682,6 +682,11 @@ check_edge_advertised_resources_registered() {
   # AADSTS-code extraction; stdout is discarded outright so a probe that
   # printed a token could never reach the detail line.
   local missing="" refusal="" probe_err rc count=0
+  # Split the accumulated set on whitespace alone. Pathname expansion applies to
+  # the same unquoted expansion and would replace an advertised resource
+  # carrying a glob character with whatever the runner's working directory
+  # holds, so the URI probed would not be the URI the edge advertises.
+  set -f
   for res in $resources; do
     count=$((count + 1))
     probe_err="$($PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD "$res" 2>&1 >/dev/null)"
@@ -693,6 +698,7 @@ check_edge_advertised_resources_registered() {
       fi
     fi
   done
+  set +f
   if [ -z "$missing" ]; then
     DETAIL_MSG="all $count advertised resources mint a token scoped <resource>/.default (every identifier URI the edge steers a client to is registered in the directory)"
     return 0
@@ -861,23 +867,45 @@ check_vault_load() {
     DETAIL_MSG="expected 200 from /sage_vaults, got $HTTP_CODE"
     return 1
   fi
-  local count missing v
+  local count ids missing v advertised found
   count="$(printf '%s' "$HTTP_BODY" | grep -o '"id"' | wc -l | tr -d ' ')"
-  VAULT_FIRST_ID="$(printf '%s' "$HTTP_BODY" \
-    | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+  # The advertised ids, one per line. The JSON shape is asserted here, against
+  # the body, and nowhere near an operator-supplied value.
+  ids="$(printf '%s' "$HTTP_BODY" \
+    | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | sed -E 's/.*"([^"]*)"$/\1/')"
+  VAULT_FIRST_ID="$(printf '%s\n' "$ids" | head -1)"
   if [ "$count" -lt 1 ]; then
     DETAIL_MSG="/sage_vaults 200 but zero vaults (startup likely aborted -- contrast with /health green)"
     return 1
   fi
   missing=""
   local IFS=','
+  # The list is split on the comma alone. Pathname expansion is suppressed for
+  # the split: it applies to the same unquoted expansion, and would replace an
+  # id carrying a glob character with whatever the deploy runner's working
+  # directory happens to hold -- a file named for a vault would credit an id
+  # that never loaded.
+  set -f
   for v in $PREFLIGHT_EXPECTED_VAULTS; do
     [ -z "$v" ] && continue
-    if ! printf '%s' "$HTTP_BODY" | grep -qE "\"id\"[[:space:]]*:[[:space:]]*\"$v\""; then
+    # Compared as a string, never as a pattern: the id is matched with the
+    # shell's own string equality against each advertised id in turn, so no
+    # character in it carries meaning. A grep would not do -- even with -F a
+    # newline inside the expected id is read as a separator between patterns,
+    # which credits a multi-line value by whichever of its lines matches.
+    found=""
+    while IFS= read -r advertised; do
+      if [ "$advertised" = "$v" ]; then
+        found=yes
+        break
+      fi
+    done <<<"$ids"
+    if [ -z "$found" ]; then
       missing="$missing $v"
     fi
   done
+  set +f
   if [ -n "$missing" ]; then
     DETAIL_MSG="$count vault(s) loaded but missing expected id(s):$missing"
     return 1
