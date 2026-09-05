@@ -867,7 +867,7 @@ check_vault_load() {
     DETAIL_MSG="expected 200 from /sage_vaults, got $HTTP_CODE"
     return 1
   fi
-  local count ids missing v
+  local count ids missing v advertised found
   count="$(printf '%s' "$HTTP_BODY" | grep -o '"id"' | wc -l | tr -d ' ')"
   # The advertised ids, one per line. The JSON shape is asserted here, against
   # the body, and nowhere near an operator-supplied value.
@@ -889,9 +889,19 @@ check_vault_load() {
   set -f
   for v in $PREFLIGHT_EXPECTED_VAULTS; do
     [ -z "$v" ] && continue
-    # -F compares the expected id literally, so a regex metacharacter in it
-    # cannot match an id it is not equal to; -x keeps the match whole-value.
-    if ! printf '%s\n' "$ids" | grep -qxF -e "$v"; then
+    # Compared as a string, never as a pattern: the id is matched with the
+    # shell's own string equality against each advertised id in turn, so no
+    # character in it carries meaning. A grep would not do -- even with -F a
+    # newline inside the expected id is read as a separator between patterns,
+    # which credits a multi-line value by whichever of its lines matches.
+    found=""
+    while IFS= read -r advertised; do
+      if [ "$advertised" = "$v" ]; then
+        found=yes
+        break
+      fi
+    done <<<"$ids"
+    if [ -z "$found" ]; then
       missing="$missing $v"
     fi
   done

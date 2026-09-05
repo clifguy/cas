@@ -25,6 +25,7 @@ with no Docker and no deployed environment:
 from __future__ import annotations
 
 import base64
+import glob
 import http.server
 import inspect
 import json
@@ -1853,6 +1854,11 @@ def test_advertised_resources_registered_probes_the_uri_not_a_filename(
         bait.mkdir(parents=True)
         (bait / "mcpX").touch()
         monkeypatch.chdir(tmp_path)
+        # Positive control on the bait, as in the vault-load scenario: a bait
+        # that does not match leaves this test satisfied by an expanding loop.
+        assert glob.glob(f"{scheme}:/{host_port}/mcp?"), (
+            "the bait is not a live glob match; the scenario is inert"
+        )
         proc = _run(
             _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
         )
@@ -2344,6 +2350,54 @@ def test_vault_load_treats_a_metacharacter_id_as_a_literal(expected: str, bash_b
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize("expected", ["zzz\ncas", "cas\nzzz"], ids=["match-second", "match-first"])
+def test_vault_load_does_not_credit_a_multi_line_id_by_one_of_its_lines(
+    expected: str, bash_bin: str
+) -> None:
+    """An id spanning two lines is one id, and is not satisfied by either line.
+
+    The sibling scenario above pins that the comparison is not a *pattern*
+    match. This pins the narrower thing a pattern-free comparison can still get
+    wrong: a matcher fed the id as a pattern *list* rather than a pattern reads
+    a newline as a separator between entries, so a two-line value is credited
+    whenever any one of its lines names an advertised vault. The value stops
+    being compared and starts being enumerated.
+
+    ``IFS=','`` makes this reachable rather than theoretical -- a newline is not
+    a delimiter there, so it stays inside a field -- and the variable is
+    supplied by a GitHub Actions repository variable, which admits multi-line
+    values. The direction of error is the gate's worst one: `zzz` is credited
+    because `cas`, sharing its value, loaded.
+
+    Both orderings are carried because they fail differently under a matcher
+    that stops at its first entry: ``cas\\nzzz`` is credited by the leading
+    line, ``zzz\\ncas`` only by a matcher that reads on past it. Either alone
+    leaves half of the enumeration unproven.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_EXPECTED_VAULTS=expected, PREFLIGHT_CHECKS="vault_load"),
+            bash_bin=bash_bin,
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, (
+        f"a multi-line id must not be credited by one of its lines:\n{proc.stdout}"
+    )
+    assert verdicts.get("vault_load") == "FAIL", verdicts
+    # Asserted against the whole of stdout rather than the parsed detail: the id
+    # carries a newline, so the missing list it renders into spans two output
+    # lines and ``_detail`` is single-line by construction. Both of the id's
+    # lines must be reported -- an assertion on ``zzz`` alone is also satisfied
+    # by a run that credited ``cas`` and reported only the remainder, which is
+    # the defect this scenario exists to exclude.
+    assert "missing expected id(s):" in proc.stdout, proc.stdout
+    assert "zzz" in proc.stdout and "cas" in proc.stdout, (
+        f"both lines of the id must be reported missing:\n{proc.stdout}"
+    )
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
 def test_vault_load_credits_an_advertised_id_that_carries_a_metacharacter(bash_bin: str) -> None:
     """A metacharacter in an id is not itself disqualifying: an id equal to one
     the registry advertises is satisfied, whatever characters it holds.
@@ -2399,6 +2453,11 @@ def test_vault_load_does_not_expand_an_id_against_the_working_directory(
     """
     (tmp_path / "cas").touch()
     monkeypatch.chdir(tmp_path)
+    # Positive control on the bait. A bait that does not actually match reverts
+    # this scenario to one an expanding split satisfies -- the pattern finds
+    # nothing, stays literal, and the assertion below is met for the wrong
+    # reason -- and nothing else here would say so.
+    assert glob.glob("ca?") == ["cas"], "the bait is not a live glob match; the scenario is inert"
     with serve(_green) as url:
         proc = _run(
             _base_env(url, PREFLIGHT_EXPECTED_VAULTS="ca?", PREFLIGHT_CHECKS="vault_load"),
