@@ -14,7 +14,7 @@
 # carves out of the confirmation it otherwise requires. This vault is persistent
 # and lives in a shared tenant, so it deliberately sits outside that carve-out.
 # The cloud teardown that governs it confirms every id regardless, so the naming
-# is defence in depth rather than the one thing standing between this vault and
+# is defense in depth rather than the one thing standing between this vault and
 # an unconfirmed delete.
 #
 # This is a disposable validation vault. storage_root and brain_root are

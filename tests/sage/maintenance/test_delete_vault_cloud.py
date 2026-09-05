@@ -299,6 +299,7 @@ def test_cloud_typed_confirm_mismatch_refuses(monkeypatch, vault_id):
         # is the value this arm exists to refuse.
         ("test", ""),
         ("test", "tes"),
+        ("test", "tests"),
         ("test", "TEST"),
     ],
 )
@@ -314,9 +315,11 @@ def test_cloud_confirm_mismatch_refuses_before_binding_anything(monkeypatch, vau
     disjoint confirm like ``"WRONG"`` is refused by any compare looser than
     exact, so the near-miss cases carry the discrimination -- a substring-tolerant
     compare accepts ``""`` and ``"tes"``, a prefix-tolerant one accepts ``"tes"``,
-    a case-insensitive one accepts ``"TEST"``. The empty confirm on ``test`` is
-    the original defect exactly: the value that passed when this arm had no check
-    of its own.
+    a superstring-tolerant one accepts ``"tests"``, a case-insensitive one accepts
+    ``"TEST"``. The near misses run shorter *and* longer than the id because a
+    compare can be loose in either direction. The empty confirm on ``test`` is the
+    original defect exactly: the value that passed when this arm had no check of
+    its own.
     """
     _clear_env(monkeypatch)
 
@@ -373,7 +376,8 @@ def test_cloud_matching_confirm_is_normalized_like_the_vault_id(monkeypatch, con
 
 
 @pytest.mark.parametrize("vault_id", ["cas_smoke", "test"])
-def test_cloud_dry_run_does_not_require_a_matching_confirm(monkeypatch, vault_id):
+@pytest.mark.parametrize("apply_env", [None, "false", "0"])
+def test_cloud_dry_run_does_not_require_a_matching_confirm(monkeypatch, vault_id, apply_env):
     """A dry-run returns 0 on a mismatched confirmation, destroying nothing.
 
     The confirmation gates destruction, not the preview: the core consults it only
@@ -382,7 +386,11 @@ def test_cloud_dry_run_does_not_require_a_matching_confirm(monkeypatch, vault_id
 
     Anti-coincidental-pass: an arm-side check written without the apply guard
     refuses here, making the exit code 3 rather than 0 -- so this pins the gating
-    rather than restating the code the destructive path already asserts.
+    rather than restating the code the destructive path already asserts. The
+    falsey spellings are driven alongside the absent variable because the workflow
+    sends the flag as the literal string a dry run selects, never by omitting it: a
+    guard written on the raw value rather than the parsed one reads ``"false"`` as
+    true, refuses, and is invisible to a fixture that only ever leaves it unset.
     """
     _clear_env(monkeypatch)
     store = _FakeSourceStore()
@@ -392,6 +400,8 @@ def test_cloud_dry_run_does_not_require_a_matching_confirm(monkeypatch, vault_id
     monkeypatch.setenv("SAGE_DELETE_VAULT_ID", vault_id)
     monkeypatch.setenv("SAGE_DELETE_CONFIRM", "WRONG")
     monkeypatch.setenv("SAGE_DELETE_SNAPSHOT", "false")
+    if apply_env is not None:
+        monkeypatch.setenv("SAGE_DELETE_APPLY", apply_env)
 
     rc = main()
 
