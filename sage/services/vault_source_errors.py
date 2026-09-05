@@ -30,11 +30,12 @@ wrapper spanning the whole port would answer it silently.
 
 from __future__ import annotations
 
+import abc
 import contextlib
 import functools
 import inspect
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -136,20 +137,28 @@ def _reported_path(signature: inspect.Signature, args: tuple, kwargs: dict) -> s
     return str(value)
 
 
-def _make_delegate(name: str):
-    """A delegate that translates a refusal raised by the call itself."""
+def _make_delegate(name: str) -> Callable[..., Any]:
+    """A delegate that translates a refusal raised by the call itself.
+
+    ``functools.wraps`` copies the port method's ``__dict__``, and
+    ``@abstractmethod`` records itself there as ``__isabstractmethod__``. Left
+    copied, the delegate would claim to be abstract while being the concrete
+    implementation, so the flag is cleared rather than left for the installer
+    to subtract around.
+    """
     port_method = getattr(VaultSourceStore, name)
     signature = inspect.signature(port_method)
 
     @functools.wraps(port_method)
-    def delegate(self, *args: Any, **kwargs: Any):
+    def delegate(self, *args: Any, **kwargs: Any) -> Any:
         with translate_store_refusal(_reported_path(signature, args, kwargs)):
             return getattr(self.binding, name)(*args, **kwargs)
 
+    delegate.__isabstractmethod__ = False
     return delegate
 
 
-def _make_streaming_delegate(name: str):
+def _make_streaming_delegate(name: str) -> Callable[..., Any]:
     """A delegate that translates a refusal raised while the iterator is pulled.
 
     The binding's streaming read is a generator function: it opens no request
@@ -164,7 +173,7 @@ def _make_streaming_delegate(name: str):
     signature = inspect.signature(port_method)
 
     @functools.wraps(port_method)
-    def delegate(self, *args: Any, **kwargs: Any):
+    def delegate(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
         source_path = _reported_path(signature, args, kwargs)
 
         def stream() -> Iterator[bytes]:
@@ -173,6 +182,7 @@ def _make_streaming_delegate(name: str):
 
         return stream()
 
+    delegate.__isabstractmethod__ = False
     return delegate
 
 
@@ -187,13 +197,20 @@ def _install_source_byte_delegates(cls: type) -> type:
     wrapper would keep the defect and only move it.
 
     ``ABCMeta`` computes ``__abstractmethods__`` when the class body closes,
-    before these delegates land, so the set is narrowed to match -- otherwise
-    the class stays uninstantiable despite implementing everything.
+    which is before these delegates land, so the set is recomputed afterwards --
+    otherwise the class stays uninstantiable despite implementing everything.
+    The recompute is ``abc``'s own rather than a subtraction performed here: the
+    factories clear the abstract flag their delegates inherit, so the standard
+    walk reaches the right answer, and anything that recomputes later reaches it
+    too. Subtracting the names by hand would leave the delegates still claiming
+    to be abstract, and the next recompute -- ``abc.update_abstractmethods``,
+    which several stdlib decorators call -- would undo the subtraction and take
+    the class back to uninstantiable.
     """
     for name in sorted(SOURCE_BYTE_METHOD_NAMES):
         factory = _make_streaming_delegate if name in _STREAMING_METHOD_NAMES else _make_delegate
         setattr(cls, name, factory(name))
-    cls.__abstractmethods__ = frozenset(cls.__abstractmethods__ - SOURCE_BYTE_METHOD_NAMES)  # type: ignore[attr-defined]
+    abc.update_abstractmethods(cls)
     return cls
 
 

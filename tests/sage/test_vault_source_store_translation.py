@@ -368,14 +368,19 @@ def test_vsst_009_wrapping_an_already_wrapped_binding_is_a_no_op():
 
 
 def test_vsst_010_the_covered_set_is_the_ports_source_byte_half():
-    """The wrapper's set and the port's agree, with no overlap between halves.
+    """The two halves together account for the whole port, and nothing else.
 
     The seam contract pins the wrapper's *surface* against the port; this pins
-    the *split*. Trap: a config method drifting into the source-byte set would
-    type the config half silently, which VSST-005 catches only for the five
-    names it knows about today.
+    the *split*. It reds when ``CONFIG_METHOD_NAMES`` names something the port
+    no longer declares, which is the way the named half can rot -- it is the one
+    of the two written out by hand rather than derived.
+
+    Disjointness is deliberately not asserted here: the source-byte half is
+    *defined* as the port minus the config half, so an overlap assertion is
+    green against any port and any config set and would read as cover it does
+    not provide. A config method drifting into the source-byte set is caught by
+    VSST-000, which reds by name on the method that moved.
     """
     assert SOURCE_BYTE_METHOD_NAMES | CONFIG_METHOD_NAMES == set(
         VaultSourceStore.__abstractmethods__
     )
-    assert not SOURCE_BYTE_METHOD_NAMES & CONFIG_METHOD_NAMES

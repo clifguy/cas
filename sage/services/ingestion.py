@@ -1020,9 +1020,11 @@ class IngestionService:
                     # path carrying ``.`` or ``..`` segments would be accepted by
                     # the read side while the write-time guard refuses it -- a
                     # record whose own source_path cannot be written back to.
-                    # The rule lives beside that guard so the two cannot drift;
-                    # its refusal is translated to the caller-facing code by the
-                    # enclosing ``_translate_vault_source_refusal``.
+                    # The rule lives beside that guard so the two cannot
+                    # drift; this is a refusal of the path rather than by the
+                    # store, so it never reaches the binding, and the enclosing
+                    # ``_refuse_retention_as`` is what carries it to the
+                    # caller-facing code.
                     from sage.vault_source_binding import normalize_vault_relative
 
                     vault_relative = normalize_vault_relative(request.source)

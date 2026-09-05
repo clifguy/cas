@@ -438,6 +438,13 @@ async def test_vsbb_047_store_refusal_on_retention_carries_the_callers_spelling(
     classes outright rather than carrying the one the binding chose reports every
     refused retention as permanent -- passing the non-retryable arm alone, and
     telling a caller to escalate where the remedy was to retry.
+
+    Anti-coincidental-pass: the chain is asserted to reach the binding's own
+    refusal in one hop. Re-labelling means raising a second typed error, and a
+    rebuild chaining from the error it replaces rather than from that error's
+    cause satisfies every other assertion here while putting the store's own
+    text -- the only text naming what the store actually objected to -- two hops
+    from the exception a log walks.
     """
     from tests.helpers.store_refusal import store_refusal
 
@@ -466,6 +473,7 @@ async def test_vsbb_047_store_refusal_on_retention_carries_the_callers_spelling(
     # The binding's own decision still picks the code and names the operation.
     assert excinfo.value.detail["operation"] == "write source"
     assert excinfo.value.detail["store_status"] == 403
+    assert excinfo.value.__cause__ is refusal
 
 
 async def test_vsbb_045_refusal_detail_carries_a_relative_source_as_supplied(
