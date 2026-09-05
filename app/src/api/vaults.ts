@@ -27,8 +27,8 @@ export async function updateVaultConfig(
 }
 
 // The scaffold a vault with this id would be created with. Served rather
-// than assembled here: the storage and brain roots resolve against the
-// server's vault root, and a second copy of the rest drifts from the first.
+// than assembled here: the server derives the storage and brain roots, and
+// a second copy of the rest drifts from the first.
 export async function getDefaultVaultConfig(vaultId: string): Promise<DefaultVaultConfig> {
   return apiGet<DefaultVaultConfig>(
     `/sage_vaults/default-config?vault_id=${encodeURIComponent(vaultId)}`,
