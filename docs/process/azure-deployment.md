@@ -350,10 +350,13 @@ one lock is not enough: clear every lock the group holds first.
 az lock list --resource-group "$RESOURCE_GROUP_NAME" -o table
 ```
 
-A lock applied by hand before the declaration existed is adopted only if its name
-happens to match. The declared lock's name derives from `environmentName`, while a
-hand-applied lock carries whatever the operator typed; unless the two coincide,
-they are separate child resources and the deployment creates its own. Both are
+A lock applied by hand before the declaration existed is adopted only if it sits at
+the same scope *and* carries the same name — ARM identifies a lock by both, so a
+same-named lock on the resource group is a different resource from one on the
+server. The declared lock is scoped to the server and its name derives from
+`environmentName`, while a hand-applied lock sits wherever the operator put it under
+whatever name they typed; unless both coincide, the two are separate child resources
+and the deployment creates its own. Both are
 `CanNotDelete` and the stricter wins, so the state is safe but divergent —
 confirm the declared lock exists, then delete the hand-made one so the live
 resource group matches the template.

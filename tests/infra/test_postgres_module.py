@@ -164,6 +164,21 @@ def _lock_block(text: str) -> str:
     return rest[: nxt.start()] if nxt else rest
 
 
+def _lock_declaration_is_conditional(text: str) -> bool:
+    """True iff the lock resource is declared with a ``= if (...)`` condition.
+
+    Reads the declaration *head* — the span between the resource type and the
+    opening brace — which is the only place a Bicep deployment condition can sit
+    and the one part of the declaration the body-shape gates never look at.
+    """
+    m = re.search(
+        r"^resource\s+\w+\s+'" + re.escape(_LOCK_TYPE) + r"@[0-9A-Za-z-]+'\s*=([^{]*)\{",
+        _strip_line_comments(text),
+        re.MULTILINE,
+    )
+    return m is not None and "if" in m.group(1)
+
+
 def _lock_name_expression(block: str) -> str:
     """Return the right-hand side of the lock block's ``name:`` line."""
     m = re.search(r"name:\s*(.+)", block)
@@ -320,6 +335,24 @@ def test_postgres_declares_a_delete_lock() -> None:
     text = POSTGRES.read_text(encoding="utf-8")
     count = _count_resource_type(text, _LOCK_TYPE)
     assert count == 1, f"postgres.bicep must declare exactly one {_LOCK_TYPE}; found {count}"
+
+
+def test_postgres_lock_is_declared_unconditionally() -> None:
+    """The lock carries no deployment condition.
+
+    "Unconditionally" is the claim the module comment, the modules README, and the
+    operator runbook all make, and it is the whole of the protection: a lock behind
+    ``= if (<expr>)`` deploys for some tenants and not others, and the tenant it
+    silently skips is indistinguishable from one that never declared a lock. The
+    body-shape gates below all read the declaration's *body*, so a condition in its
+    head passes every one of them.
+    """
+    text = POSTGRES.read_text(encoding="utf-8")
+    assert _lock_block(text), "postgres.bicep must declare a resource lock"
+    assert not _lock_declaration_is_conditional(text), (
+        "the delete lock must be declared unconditionally; a `= if (...)` condition "
+        "would make the durable store's protection tenant-dependent"
+    )
 
 
 def test_postgres_lock_is_scoped_to_the_server() -> None:
@@ -550,6 +583,32 @@ def test_lock_detector_controls() -> None:
         "the block must truncate at the next declaration, not run to end of file"
     )
     assert _lock_block(without_lock) == ""
+
+
+def test_lock_conditionality_detector_controls() -> None:
+    """``_lock_declaration_is_conditional`` separates a conditional declaration from
+    an unconditional one, and reads the head rather than the body.
+
+    The body-carrying fixtures are the point: a conditional lock whose body is
+    otherwise perfect is exactly the rival every other lock gate passes, so the
+    detector must fire on the head alone.
+    """
+    body = "  scope: server\n  properties: {\n    level: 'CanNotDelete'\n  }\n}\n"
+    unconditional = f"resource l 'Microsoft.Authorization/locks@2020-05-01' = {{\n{body}"
+    conditional = (
+        f"resource l 'Microsoft.Authorization/locks@2020-05-01' = if (enableLock) {{\n{body}"
+    )
+    assert not _lock_declaration_is_conditional(unconditional)
+    assert _lock_declaration_is_conditional(conditional)
+
+    # Every signal the body-shape gates read is present and identical in both, which
+    # is why none of them separates the two and the head check has to.
+    for block in (_lock_block(unconditional), _lock_block(conditional)):
+        assert re.search(r"scope:\s*server\b", block)
+        assert re.search(r"level:\s*'CanNotDelete'", block)
+
+    # A declaration of some other type is not the lock, conditional or not.
+    assert _lock_declaration_is_conditional("resource s 'Other/type@2024-01-01' = {\n}\n") is False
 
 
 def test_lock_name_detector_controls() -> None:
