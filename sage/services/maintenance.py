@@ -53,7 +53,6 @@ from sage.models.schemas import (
     canonicalize_sha256,
 )
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
-from sage.services.vault_source_errors import translate_store_refusal
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
 
@@ -523,11 +522,10 @@ class MaintenanceService:
             # A refusal aborts the walk rather than becoming a per-document
             # status: the audit and the repair read the store through one
             # observation helper, and a caller is owed the same answer from it
-            # whichever operation asked. The translation sits inside the loop
-            # so the error names the document the store actually declined on,
-            # not the walk as a whole.
-            with translate_store_refusal(doc.source_path):
-                entry = self._check_document_source_file(doc, storage_root, check_hashes, store)
+            # whichever operation asked. The error names the document the store
+            # declined on, that document's path being what the refused call was
+            # made with, rather than the walk as a whole.
+            entry = self._check_document_source_file(doc, storage_root, check_hashes, store)
             if entry is not None:
                 entries.append(entry)
 
@@ -757,44 +755,43 @@ class MaintenanceService:
         storage_root = self._storage_root()
         store = self._vault_source_store()
 
-        # Every store call the repair makes sits inside one translation, rather
-        # than only the write: a restore reads the retained copy before it
-        # decides whether to write at all, and a refusal on that read is the
-        # same upstream fact to the caller as a refusal on the write. Which of
-        # the two the store declined is a detail of how the repair is
-        # sequenced, and a caller cannot act differently on it.
-        with translate_store_refusal(doc.source_path):
-            # The same observation the integrity audit classifies, so the copy the
-            # audit reports drifted is the copy this repairs, and no other.
-            observation = self._observe_retained_copy(doc, storage_root, store)
-            expected = observation.expected_hash
-            observed = observation.observed_hash
+        # A restore reads the retained copy before it decides whether to write
+        # at all, and a refusal on that read is the same upstream fact to the
+        # caller as a refusal on the write: which of the two the store declined
+        # is a detail of how the repair is sequenced, and a caller cannot act
+        # differently on it. Both are typed at the binding, so neither depends
+        # on the repair remembering to cover it.
+        # The same observation the integrity audit classifies, so the copy the
+        # audit reports drifted is the copy this repairs, and no other.
+        observation = self._observe_retained_copy(doc, storage_root, store)
+        expected = observation.expected_hash
+        observed = observation.observed_hash
 
-            if observation.intact:
-                return SourceFileRestoreReport(
-                    vault_id=self._vault_id,
-                    document_id=doc.id,
-                    source_path=doc.source_path,
-                    status="already_intact",
-                    provenance_verified=provenance_verified,
-                    record_refreshed=False,
-                    expected_content_hash=expected,
-                    observed_content_hash=observed,
-                    stored_content_hash=observed,
-                )
+        if observation.intact:
+            return SourceFileRestoreReport(
+                vault_id=self._vault_id,
+                document_id=doc.id,
+                source_path=doc.source_path,
+                status="already_intact",
+                provenance_verified=provenance_verified,
+                record_refreshed=False,
+                expected_content_hash=expected,
+                observed_content_hash=observed,
+                stored_content_hash=observed,
+            )
 
-            try:
-                restored_hash = store.write_source(
-                    self._vault_id, storage_root, doc.source_path, delivered
-                )
-            except VaultRootEscapeError as exc:
-                # The binding refuses a destination it cannot write at the named
-                # path. Translated here rather than left to propagate: it is a
-                # ``ValueError``, not a ``SAGEError``, so the HTTP surface would
-                # return a bare 500 with no error code against a spec that declares
-                # none. The binding's own message travels with it -- it has several
-                # distinct causes and only it knows which one fired.
-                raise VaultSourcePathRefusedError(doc.source_path, str(exc)) from exc
+        try:
+            restored_hash = store.write_source(
+                self._vault_id, storage_root, doc.source_path, delivered
+            )
+        except VaultRootEscapeError as exc:
+            # The binding refuses a destination it cannot write at the named
+            # path. Translated here rather than left to propagate: it is a
+            # ``ValueError``, not a ``SAGEError``, so the HTTP surface would
+            # return a bare 500 with no error code against a spec that declares
+            # none. The binding's own message travels with it -- it has several
+            # distinct causes and only it knows which one fired.
+            raise VaultSourcePathRefusedError(doc.source_path, str(exc)) from exc
         record_refreshed = restored_hash != expected and restored_hash != delivered_hash
         if record_refreshed:
             # Refreshed only when the *store* changed the bytes -- the sole

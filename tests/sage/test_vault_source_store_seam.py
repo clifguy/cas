@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from sage.config import StackDocumentStoreConfig
+from sage.services.vault_source_errors import _TranslatingVaultSourceStore
 from sage.vault_source_binding import (
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
@@ -38,7 +39,21 @@ from tests.helpers.fake_graph_client import FakeGraphClient
 # return annotation is exempt. Keyed by (binding, method).
 _RETURN_NARROWED = {(FilesystemVaultSourceStore, "config_locator")}
 
-_BINDINGS = [FilesystemVaultSourceStore, DocumentStoreVaultSourceStore]
+# The translating wrapper is a binding by the same contract: it is what every
+# caller that resolves the store actually holds, and it stands in front of both
+# concrete bindings. Included here rather than tested separately because T4/T5
+# are what make its coverage of the port structural -- a source-byte method
+# added to the port that the wrapper does not install fails T4 by name, which
+# is the property that let the hand-placement gate be deleted (CAS-ADR-043).
+# Its download-URL variant is deliberately absent: T4 reads methods declared
+# directly on a class, and that subclass declares only the capability method
+# and inherits the port surface pinned here. Its capability scoping is pinned
+# by tests/sage/test_vault_source_store_translation.py instead.
+_BINDINGS = [
+    FilesystemVaultSourceStore,
+    DocumentStoreVaultSourceStore,
+    _TranslatingVaultSourceStore,
+]
 
 
 def _public_methods(cls: type) -> set[str]:

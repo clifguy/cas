@@ -40,7 +40,6 @@ from sage.models.schemas import (
     ReadMeta,
 )
 from sage.services.read_diagnostics import build_not_found_detail
-from sage.services.vault_source_errors import translate_store_refusal
 from sage.vault_source_binding import SupportsSourceDownloadUrl, VaultSourceStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
@@ -238,17 +237,16 @@ class DocumentsService:
                 # answer for. A refusal on either is the store declining, not a
                 # document that has gone missing, so it reaches the caller as
                 # the typed refusal rather than a bare internal error.
-                with translate_store_refusal(doc.source_path):
-                    if not store.source_exists(vault_id, storage_root, doc.source_path):
-                        raise ContentFileMissingError(doc.id, doc.source_path)
-                    return mint_download_recipe_for_source(
-                        vault_id,
-                        document_id=doc.id,
-                        source_path=doc.source_path,
-                        content_hash=store.hash_source(vault_id, storage_root, doc.source_path),
-                        content_size=store.source_size(vault_id, storage_root, doc.source_path),
-                        write_to_path=write_to_path,
-                    )
+                if not store.source_exists(vault_id, storage_root, doc.source_path):
+                    raise ContentFileMissingError(doc.id, doc.source_path)
+                return mint_download_recipe_for_source(
+                    vault_id,
+                    document_id=doc.id,
+                    source_path=doc.source_path,
+                    content_hash=store.hash_source(vault_id, storage_root, doc.source_path),
+                    content_size=store.source_size(vault_id, storage_root, doc.source_path),
+                    write_to_path=write_to_path,
+                )
 
         doc = await self._store.get_document(document_id)
         if doc is None:
@@ -275,14 +273,10 @@ class DocumentsService:
 
             store = resolve_stack_vault_source_store(get_stack_config())
             vault_id = self._config.vault.id
-            # Outside the delivery helpers rather than inside them, so a
-            # refusal part-way through a write-to-path stream still runs that
-            # helper's removal of the partial target before it is translated.
-            with translate_store_refusal(doc.source_path):
-                if include_content:
-                    _attach_inline_content(response, doc, vault_id, storage_root, store)
-                else:
-                    _deliver_to_path(response, doc, vault_id, storage_root, write_to_path, store)
+            if include_content:
+                _attach_inline_content(response, doc, vault_id, storage_root, store)
+            else:
+                _deliver_to_path(response, doc, vault_id, storage_root, write_to_path, store)
 
         # Self-describing read markers (CAS-ADR-039). The content body is the
         # inlined bytes; write-to-path delivery and the default request both
@@ -329,22 +323,21 @@ class DocumentsService:
         store = resolve_stack_vault_source_store(get_stack_config())
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         vault_id = self._config.vault.id
-        # Covers the reads this call resolves before it returns. The chunk
-        # iterator is created here but first pulled by the response, after the
-        # headers are out, so a refusal raised on that pull cannot become a
-        # status code whatever this wrap spans.
-        with translate_store_refusal(doc.source_path):
-            if not store.source_exists(vault_id, storage_root, doc.source_path):
-                raise ContentFileMissingError(doc.id, doc.source_path)
+        # The chunk iterator is created here but first pulled by the response,
+        # after the headers are out, so a store refusal raised on that pull is
+        # typed but cannot become a status code. The reads below resolve before
+        # this returns, so theirs can.
+        if not store.source_exists(vault_id, storage_root, doc.source_path):
+            raise ContentFileMissingError(doc.id, doc.source_path)
 
-            filename = Path(doc.source_path).name
-            media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-            return SourceContentDelivery(
-                filename=filename,
-                media_type=media_type,
-                size=store.source_size(vault_id, storage_root, doc.source_path),
-                chunks=store.iter_source(vault_id, storage_root, doc.source_path),
-            )
+        filename = Path(doc.source_path).name
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        return SourceContentDelivery(
+            filename=filename,
+            media_type=media_type,
+            size=store.source_size(vault_id, storage_root, doc.source_path),
+            chunks=store.iter_source(vault_id, storage_root, doc.source_path),
+        )
 
     async def get_document_download_url(self, document_id: str) -> DocumentDownloadUrlResponse:
         """Mint a short-lived download URL for a cloud-resident document's source.
@@ -371,11 +364,10 @@ class DocumentsService:
         vault_id = self._config.vault.id
         # A store that declines is a different fact from a binding that
         # cannot mint a URL at all, and the caller is owed the distinction.
-        with translate_store_refusal(doc.source_path):
-            if not store.source_exists(vault_id, storage_root, doc.source_path):
-                raise ContentFileMissingError(doc.id, doc.source_path)
+        if not store.source_exists(vault_id, storage_root, doc.source_path):
+            raise ContentFileMissingError(doc.id, doc.source_path)
 
-            url = store.download_url(vault_id, storage_root, doc.source_path)
+        url = store.download_url(vault_id, storage_root, doc.source_path)
         if url is None:
             raise DownloadUrlNotAvailableError(document_id)
 

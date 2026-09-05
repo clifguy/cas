@@ -80,7 +80,7 @@ from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
 from sage.services.metadata import _wire_version
-from sage.services.vault_source_errors import translate_store_refusal
+from sage.services.vault_source_errors import report_refusal_as
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
@@ -115,31 +115,32 @@ class IngestResult:
 
 
 @contextlib.contextmanager
-def _translate_vault_source_refusal(source: str) -> Iterator[None]:
-    """Surface a binding's refusal to write at a path as a typed API error.
+def _refuse_retention_as(source: str) -> Iterator[None]:
+    """Report both ways a retention can be refused against the caller's spelling.
 
-    The vault-source bindings refuse a write target for several distinct
+    The vault-source bindings refuse a write *target* for several distinct
     reasons, and raise their own ``ValueError`` subclass to say so -- they sit
     below the API layer and may not import its error hierarchy. Left to
     propagate, that reaches an MCP caller as a generic internal error and an
     HTTP caller as a bare 500 against a spec declaring neither, which describes
-    a server fault rather than the refused input it actually is.
+    a server fault rather than the refused input it actually is. The binding's
+    message travels with the translation: only the binding knows which of its
+    causes fired, and a fixed message here could describe at most one of them.
 
-    The binding's message travels with the translation. Only the binding knows
-    which of its causes fired, and a fixed message here could describe at most
-    one of them.
-
-    Nested inside the store-refusal translation, which covers the other way a
-    retain can fail: the target was acceptable and the store declined the bytes
-    anyway. The two are separate refusals with separate remedies -- rewrite the
-    path, or resolve something at the store -- so they carry separate codes, but
-    a retain is only fully typed with both, and typing one without the other
-    would leave a caller a bare 500 on whichever was missed.
+    The other way a retention fails -- the target was acceptable and the store
+    declined the bytes anyway -- is already typed by the time it arrives, the
+    binding being wrapped where it is resolved. What is left to do is name the
+    right path. Retention is the one source-byte operation called with a path
+    the caller never chose: an ingest hands it a staged copy under this
+    process's temp tree, so the wrapper reports a location that names nothing
+    the caller has. Both refusals therefore report ``source`` -- the caller's
+    own spelling -- and they keep separate codes, having separate remedies:
+    rewrite the path, or resolve something at the store.
     """
     from sage.vault_source_binding import VaultRootEscapeError
 
     try:
-        with translate_store_refusal(source):
+        with report_refusal_as(source):
             yield
     except VaultRootEscapeError as exc:
         raise VaultSourcePathRefusedError(source, str(exc)) from exc
@@ -975,7 +976,7 @@ class IngestionService:
         # being typed on another -- including a branch added later, which is the
         # part a shared helper could not have covered. The branches differ in how
         # they reach a retain, not in what a refusal means to the caller.
-        with _translate_vault_source_refusal(reported_source):
+        with _refuse_retention_as(reported_source):
             if source_input.is_absolute():
                 # External file import: copy the caller's file into the vault,
                 # retaining it on the active profile's store (BH-053 through
@@ -2201,14 +2202,9 @@ class IngestionService:
             yield local
             return
         vault_id = self._config.vault.id
-        # At the read rather than at any one caller: three reach here -- the
-        # ingest pipeline's projection stage, the operator-facing recompute,
-        # and the worker's re-projection -- and only the innermost placement
-        # types the refusal for all of them.
-        with translate_store_refusal(source_path):
-            if not store.source_exists(vault_id, storage_root, source_path):
-                raise SourceFileNotFoundError(source_path)
-            data = store.read_source(vault_id, storage_root, source_path)
+        if not store.source_exists(vault_id, storage_root, source_path):
+            raise SourceFileNotFoundError(source_path)
+        data = store.read_source(vault_id, storage_root, source_path)
         staging = Path(tempfile.mkdtemp(prefix="sage-project-"))
         try:
             staged = staging / Path(source_path).name

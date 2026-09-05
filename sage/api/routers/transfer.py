@@ -31,7 +31,6 @@ from sage.services.transfer import (
     TransferStore,
     max_transfer_bytes,
 )
-from sage.services.vault_source_errors import translate_store_refusal
 
 router = APIRouter(tags=["Transfer"])
 
@@ -180,10 +179,9 @@ async def transfer_download(
 
         source_store = resolve_stack_vault_source_store(get_stack_config())
         storage_root = Path(services.config.vault.storage_root).expanduser().resolve()
-        with translate_store_refusal(entry.source_path):
-            if not source_store.source_exists(entry.vault_id, storage_root, entry.source_path):
-                raise ContentFileMissingError(entry.document_id, entry.source_path)
-            chunks = source_store.iter_source(entry.vault_id, storage_root, entry.source_path)
+        if not source_store.source_exists(entry.vault_id, storage_root, entry.source_path):
+            raise ContentFileMissingError(entry.document_id, entry.source_path)
+        chunks = source_store.iter_source(entry.vault_id, storage_root, entry.source_path)
 
     filename = entry.filename.replace("\\", "_").replace('"', "_")
     disposition = f'attachment; filename="{filename}"'
