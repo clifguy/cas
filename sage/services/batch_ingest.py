@@ -190,8 +190,8 @@ class BatchIngestService:
         execution — no explicit lifecycle-transition call is
         required. Both halves of that transition come from the
         vault's lifecycle table: the states it may be taken from,
-        and the state it lands in (``active -> archived`` under the
-        base lifecycle).
+        and the state it lands in (in the create-vault scaffold, from
+        ``active`` or ``completed``, landing in ``archived``).
 
         A target already holding a state a supersession lands in
         gets the edge and no write — the chain-repair case, where an

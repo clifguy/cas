@@ -224,12 +224,37 @@ class LifecycleService:
         batch.
 
         Per-item validation surface:
-        Each item inherits the full ``LifecycleService._set_lifecycle``
-        precondition surface — vault-config-defined action vocabulary,
-        ``InvalidLifecycleTransitionError`` from the current state, the
-        ``supersede`` chain-head and identical-content guards,
-        ``PipelineIncompleteError`` on ``complete``, etc. See
+        Each item resolves its identifier through
+        ``resolve_item_document_id`` inside the per-item ``try``, so
+        ``MissingDocumentIdentifierError`` and
+        ``AmbiguousDocumentIdentifierError`` land in the item's error
+        envelope having mutated nothing. It then inherits the full
+        ``LifecycleService._set_lifecycle`` precondition surface —
+        ``DocumentNotFoundError`` for the item's document,
+        ``InvalidActionError`` for an action outside the vault-config
+        vocabulary, ``InvalidLifecycleTransitionError`` when the table
+        does not permit the action from the current state, and, for
+        ``supersede``, ``MissingFieldError`` and
+        ``DocumentNotFoundError`` on the successor. See
         ``LifecycleService._set_lifecycle`` for the full enumeration.
+
+        Neither ingest-side supersede guard reaches this path.
+        ``SupersedeTargetNotActiveError`` is raised only from
+        ``prepare_supersede``; here the table refuses the same condition
+        as ``InvalidLifecycleTransitionError``, which is also what
+        catches an already-superseded predecessor (no
+        ``archived --supersede-->`` row), so there is no separate
+        chain-head check. ``IdenticalContentSupersedeError`` compares
+        content hashes, which this path never reads.
+
+        A non-terminal ``pipeline_status`` is not part of the surface
+        either, on ``complete`` or on any other action: the transition
+        applies and the item's ``warnings`` carries the
+        pipeline-still-in-progress advisory. Waiting for a terminal
+        ``pipeline_status`` before completing a document is a judgement
+        about whether to record a resting state on a document whose
+        abstraction may still fail — not a way to avoid a refusal,
+        because none is raised here.
 
         Empty ``items`` is valid: the response carries an empty
         ``results`` array and all counts are zero. Callers building

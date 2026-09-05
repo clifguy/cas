@@ -172,6 +172,42 @@ async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_s
 
 
 # ---------------------------------------------------------------------------
+# A non-terminal pipeline is not a precondition on `complete`
+# ---------------------------------------------------------------------------
+
+
+async def test_complete_with_nonterminal_pipeline_is_not_refused(graph_store, lifecycle_service):
+    """`complete` applies while the pipeline is still running, and warns.
+
+    The sibling above covers `archive`, which is the action the warning
+    was written for. `complete` is covered separately because it is the
+    action a caller was told to guard: the transition surface documented
+    a pipeline precondition on `complete` specifically, so a caller
+    waited for a terminal `pipeline_status` to avoid a refusal that is
+    not raised anywhere in this module. The advisory warning is the only
+    thing a non-terminal pipeline produces here, and it is what tells a
+    caller the resting state was recorded ahead of the abstraction that
+    may still fail.
+    """
+    doc_id = _id("doc_indexing_complete_action")
+    await graph_store.insert_document(
+        _make_doc(doc_id, pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
+    )
+
+    response = await lifecycle_service._set_lifecycle(
+        doc_id,
+        SetLifecycleRequest(action="complete"),
+    )
+
+    assert response.document.lifecycle_status == "completed"
+    # The transition does not advance or reset the pipeline.
+    assert response.document.pipeline_status == PipelineStatus.INDEXING_IN_PROGRESS
+    assert response.warnings is not None
+    assert len(response.warnings) == 1
+    assert "pipeline" in response.warnings[0].lower()
+
+
+# ---------------------------------------------------------------------------
 # BH-016: Supersede requires existing successor_id
 # ---------------------------------------------------------------------------
 

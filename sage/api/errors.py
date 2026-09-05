@@ -1339,10 +1339,12 @@ class SupersedeTargetNotActiveError(SAGEError):
     `allowed_states` comes from the vault's lifecycle transition table --
     the states that declare a `supersede` transition -- so the reported
     precondition tracks the vault's configuration instead of restating
-    it. Under the base lifecycle that is exactly `["active"]`, which is
-    what the error name reflects; a vault that declares supersede from a
-    further state reports it here rather than being rejected against a
-    rule it does not hold. A vault whose table permits `supersede` from
+    it. The error's name reflects a single-state rule that no table is
+    obliged to hold: the create-vault scaffold declares `supersede` from
+    `active` and from `completed`, so a vault built from it reports both
+    rather than being rejected against a rule it does not hold. Read
+    `allowed_states`, never the name. A vault whose table permits
+    `supersede` from
     no state at all reports the empty set as such: substituting a state
     the vault does not permit would misreport the precondition.
 
