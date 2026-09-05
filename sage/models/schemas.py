@@ -902,7 +902,7 @@ class IngestRequest(BaseModel):
             "the predecessor: creates a `supersedes` edge from the new "
             "document to the predecessor and moves the predecessor to the "
             "state the vault's transition table lands `supersede` in "
-            "(`archived` under the base lifecycle). Predecessor validation "
+            "(`archived` in the create-vault scaffold). Predecessor validation "
             "(exists + the vault's transition table permits `supersede` from "
             "its current state + different content hash) runs before "
             "projection; failures return 404/409 before any pipeline work "

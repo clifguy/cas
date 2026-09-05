@@ -421,7 +421,7 @@ def register_sage_tools(
                 predecessor: SAGE creates a ``supersedes`` edge (new -> old)
                 and applies the ``supersede`` transition to the predecessor
                 synchronously, landing it where the vault's transition table
-                says (``archived`` under the base lifecycle). The
+                says (``archived`` in the create-vault scaffold). The
                 predecessor's current state must permit ``supersede`` under
                 that table, with a content hash differing from the new file.
                 Trio fields inherit from it when omitted (see above).
@@ -727,16 +727,28 @@ def register_sage_tools(
         (``create_edges`` does NOT auto-transition the predecessor's
         lifecycle).
 
-        Each item is validated for the full lifecycle precondition surface
-        (vault-config action vocabulary, ``invalid_lifecycle_transition``
-        from the current state, the ``supersede`` chain-head and
-        identical-content guards). A non-terminal ``pipeline_status`` is
-        not part of that surface, on ``complete`` or on any other action:
-        the transition applies and the item's ``warnings`` carries the
-        pipeline-still-in-progress advisory. Waiting for a terminal
-        ``pipeline_status`` is a judgement about whether to record a
-        resting state on a document whose abstraction may still fail —
-        not a way to avoid a refusal, because none is raised.
+        Per-item error codes: ``document_not_found`` (the item's own
+        document, or a ``supersede`` successor that does not exist),
+        ``invalid_action``, ``invalid_lifecycle_transition`` (carrying
+        the ``valid_actions`` for the state the document is in), and
+        ``missing_successor_id``. Each appears as a per-item error
+        envelope rather than as a batch-level 400/409.
+
+        Two codes that belong to ingest do not appear here.
+        ``supersede_target_not_active`` is the ingest surface's code for
+        a predecessor whose state does not permit ``supersede``; on this
+        surface the same condition is ``invalid_lifecycle_transition``,
+        which is also what catches an already-superseded predecessor,
+        through the absent ``archived --supersede-->`` row rather than a
+        separate chain-head check. ``identical_content_supersede``
+        compares content hashes, which this surface never reads. A
+        non-terminal ``pipeline_status`` is not among them either, on
+        ``complete`` or on any other action: the transition applies and
+        the item's ``warnings`` carries the pipeline-still-in-progress
+        advisory. Waiting for a terminal ``pipeline_status`` is a
+        judgement about whether to record a resting state on a document
+        whose abstraction may still fail — not a way to avoid a refusal,
+        because none is raised.
 
         **The batch is NOT atomic.** A per-item error surfaces in that
         item's error envelope without rolling back other items; the tool

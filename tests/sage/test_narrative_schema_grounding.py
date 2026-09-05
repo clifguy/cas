@@ -635,7 +635,10 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "cas": "example vault id in a worked example",
         "doc_code": "example filename segment field, defined per vault",
         "doc_date": "example filename segment field, defined per vault",
-        "sage_vaults": "on-disk vault directory, not a contract node",
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the endpoint paths this "
+            "narrative names; a URL segment, not a contract node"
+        ),
     },
     ("sage_core", "get_vault_config"): {
         "vault_config": "the per-vault YAML file, not a contract node",
@@ -650,7 +653,10 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "ingest_document"): {
         "cas": "example vault id in a worked example",
         "false": "prose: a literal boolean value",
-        "sage_vaults": "on-disk vault directory, not a contract node",
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the endpoint paths this "
+            "narrative names; a URL segment, not a contract node"
+        ),
         "ticket_id": "example tier-3 metadata key in a worked example",
         "unique": "prose: the tier-3 uniqueness property, not a field name",
         "imports": "vault source-tree directory, not a contract node",
@@ -745,12 +751,21 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "update_lifecycles"): {
         "cas": "example vault id in a worked example",
-        "sage_vaults": "on-disk vault directory, not a contract node",
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the endpoint paths this "
+            "narrative names; a URL segment, not a contract node"
+        ),
         "KiB": "prose: the unit the inline budget is stated in",
+        # Key of the untyped ``invalid_lifecycle_transition`` detail,
+        # named in the per-item error-code paragraph.
+        "valid_actions": ERROR_DETAIL_KEY,
     },
     ("sage_core", "update_metadata"): {
         "other_key": "placeholder in a worked example, not a field name",
-        "sage_vaults": "on-disk vault directory, not a contract node",
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the endpoint paths this "
+            "narrative names; a URL segment, not a contract node"
+        ),
         "KiB": "prose: the unit the inline budget is stated in",
         "current_version": ERROR_DETAIL_KEY,
         # Codes built as f"{field}_add_conflict" at the raise site, so
@@ -759,7 +774,10 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "tags_remove_conflict": "error code from a parameterized family",
     },
     ("sage_core", "update_vault_config"): {
-        "sage_vaults": "on-disk vault directory, not a contract node",
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the endpoint paths this "
+            "narrative names; a URL segment, not a contract node"
+        ),
         "vault_config": "the per-vault YAML file, not a contract node",
     },
     ("sage_core", "verify_hashes"): {
