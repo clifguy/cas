@@ -21,16 +21,17 @@ the cloud bindings under the workload managed identity (``AZURE_CLIENT_ID``).
 
 Safety envelope, adapted to the CI/in-cloud context:
 - Dry-run is the default; ``SAGE_DELETE_APPLY`` must be truthy for any state change.
-- Typed confirmation is preserved: ``SAGE_DELETE_CONFIRM`` must equal the vault id
-  (the core refuses otherwise). CI has no interactive stdin, so the confirmation is
-  supplied as a workflow input the operator retypes, threaded here as the core's
-  prompt. One carve-out is inherited rather than restated: the core skips the
-  confirmation entirely for the literal vault id ``test``, so for that id alone
-  ``SAGE_DELETE_CONFIRM`` is never consulted and any value passes. ``test`` names
-  an ephemeral workstation or CI vault and is not expected on a deployed tenant --
-  the cloud validation vault is ``cloud_validation`` precisely so that it falls
-  outside the carve-out -- but nothing on this arm *enforces* that, so a tenant
-  vault that did carry the id ``test`` would tear down unconfirmed.
+- Typed confirmation is preserved, and enforced here rather than inherited:
+  ``SAGE_DELETE_CONFIRM`` must equal the vault id, for every id. CI has no
+  interactive stdin, so the confirmation is supplied as a workflow input the
+  operator retypes, threaded on to the core as its prompt; but this arm checks it
+  first and refuses a mismatch before binding anything. The check is its own
+  because the core carves the literal vault id ``test`` out of the confirmation
+  entirely -- correct for the interactive local path, where retyping an ephemeral
+  workstation or CI vault is friction with no safety return, and wrong here, where
+  the same id on a deployed tenant would otherwise tear down with
+  ``SAGE_DELETE_CONFIRM`` never consulted and any value passing. Each context
+  answers for itself.
 - Snapshot-before-destroy is ON by default. The container filesystem is ephemeral,
   so the snapshot is pushed to a durable SharePoint archive folder -- a sibling of
   the vault tree, so it survives the vault-folder delete -- before any destruction.
@@ -186,12 +187,24 @@ def main(argv: list[str] | None = None) -> int:
     if not vault_id:
         print(f"refuse: {_ENV_VAULT_ID} is required.", file=sys.stderr)
         return 2
+    apply = _truthy(env.get(_ENV_APPLY), default=False)
+    confirm = env.get(_ENV_CONFIRM, "")
+    # Typed confirmation, decided here rather than inherited from the shared core.
+    # The core carves the literal id ``test`` out of its prompt -- right for the
+    # interactive local path, where retyping an ephemeral workstation or CI vault
+    # is friction with no safety return -- but this arm reaches deployed-tenant
+    # state, so it refuses every mismatch, that id included, before binding
+    # anything. Gated on apply like the core's own check: a dry-run destroys
+    # nothing, and previewing the plan should not demand the confirmation.
+    if apply and confirm != vault_id:
+        print(f"refuse: {_ENV_CONFIRM} did not match {_ENV_VAULT_ID}. Aborting.", file=sys.stderr)
+        return 3
     return asyncio.run(
         _run_cloud(
             vault_id=vault_id,
-            confirm=env.get(_ENV_CONFIRM, ""),
+            confirm=confirm,
             reason=env.get(_ENV_REASON, "").strip() or "cloud teardown (in-VNet job)",
-            apply=_truthy(env.get(_ENV_APPLY), default=False),
+            apply=apply,
             snapshot=_truthy(env.get(_ENV_SNAPSHOT), default=True),
         )
     )

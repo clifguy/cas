@@ -68,7 +68,6 @@ DEPLOYMENT_DOC_PATH = _REPO_ROOT / "docs" / "process" / "azure-deployment.md"
 VALIDATE_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "sharepoint-validate.yml"
 RUNBOOK_PATH = _REPO_ROOT / "docs" / "process" / "sharepoint-vault-source.md"
 POSTGRES_BOOTSTRAP_DOC_PATH = _REPO_ROOT / "docs" / "process" / "postgres-entra-bootstrap.md"
-DELETE_VAULT_CLOUD_PATH = _REPO_ROOT / "sage" / "maintenance" / "delete_vault_cloud.py"
 CORE_CONFIG_SCHEMA_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_config.schema.json"
 INFRA_DIR = _REPO_ROOT / "infra"
 MAIN_BICEP_PATH = INFRA_DIR / "main.bicep"
@@ -130,15 +129,14 @@ _ROOT_STATEMENT_REACH = 60
 
 # Bare prose mentions of the vault id, in the phrase forms the docs use:
 # "`<id>` vault", "includes `<id>`" (what list_vaults returns), "confirm `<id>`",
-# "exactly `<id>`", and the reStructuredText "vault is ``<id>``". Wording is
-# pinned here, narrowly and deliberately: a bare mention has no structural
-# anchor, and the alternative is not checking it. The completeness controls
-# below keep a mention in an unlisted form from being skipped silently.
+# and "exactly `<id>`". Wording is pinned here, narrowly and deliberately: a
+# bare mention has no structural anchor, and the alternative is not checking it.
+# The completeness controls below keep a mention in an unlisted form from being
+# skipped silently.
 _MENTION_VAULT_RE = re.compile(r"`([^`\s]+)`\s+vault\b")
 _MENTION_INCLUDES_RE = re.compile(r"\bincludes\s+`([^`\s]+)`")
 _MENTION_CONFIRM_RE = re.compile(r"\bconfirm\s+`([^`\s]+)`")
 _MENTION_EXACTLY_RE = re.compile(r"\bexactly\s+`([^`\s]+)`")
-_MENTION_VAULT_IS_RE = re.compile(r"\bvault is ``([^`\s]+)``")
 
 # The seed config's own replicas of its vault.id: the header comment that spells
 # the library path the file is seeded to, and the storage roots, which sit at
@@ -212,7 +210,6 @@ def _vault_id_anchors(root_default: str) -> dict[Path, tuple[tuple[re.Pattern[st
             (_MENTION_CONFIRM_RE, 1),
         ),
         POSTGRES_BOOTSTRAP_DOC_PATH: ((_VAULTS_LOADED_RE, 1), (_MENTION_INCLUDES_RE, 1)),
-        DELETE_VAULT_CLOUD_PATH: ((_MENTION_VAULT_IS_RE, 1),),
     }
 
 
