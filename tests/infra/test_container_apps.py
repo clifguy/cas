@@ -90,6 +90,47 @@ def _output_lines(text: str) -> list[tuple[str, str]]:
     return [(m.group(1), m.group(2)) for m in pattern.finditer(_strip_line_comments(text))]
 
 
+def _resource_blocks(text: str, resource_type: str) -> list[str]:
+    """Return the body of every ``resource <symbol> '<resource_type>@…'`` block.
+
+    Keyed by resource *type* rather than by symbol, so a symbol rename cannot
+    silently blank the list and pass a gate vacuously. Each body runs to the next
+    top-level declaration. The module declares one grant per app identity, so a
+    posture asserted over the whole module is satisfied when only one of them
+    carries it; the grant gate below must read each assignment's own body.
+    """
+    stripped = _strip_line_comments(text)
+    pattern = re.compile(
+        r"^resource\s+\w+\s+'" + re.escape(resource_type) + r"@[0-9A-Za-z-]+'", re.MULTILINE
+    )
+    blocks: list[str] = []
+    for m in pattern.finditer(stripped):
+        rest = stripped[m.end() :]
+        nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
+        blocks.append(rest[: nxt.start()] if nxt else rest)
+    return blocks
+
+
+def _module_block(text: str, module_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
+
+    Slices from the module declaration to the next top-level declaration. The
+    orchestrator wires nine modules and hands several of them the same
+    parameters — the SharePoint coordinates go to the maintenance job as well —
+    so an assertion made over the whole file is satisfied by a neighbour; the
+    orchestrator-wiring gates below must read one module's own call body.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_path) + r"'\s*=", stripped, re.MULTILINE
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
 def _injected_env_names(text: str) -> set[str]:
     """Names of the environment variables the module injects into the containers.
 
@@ -208,13 +249,25 @@ def test_images_pinned_to_immutable_tag() -> None:
 def test_registry_pull_authenticates_by_identity() -> None:
     """The registry pull authenticates by managed identity — a ``registries`` block
     binding the app identity, never a username/password credential.
+
+    Asserted on every container app, as the message says. The module declares two
+    with identical shapes, so read once over the module each check is satisfied by
+    whichever app still has it: either could lose its whole ``registries`` block
+    with the module still compiling and every gate green, and the image pull would
+    fail only at deploy. The credential absences stay module-wide — a stored
+    credential is wrong wherever it appears.
     """
     text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
-    assert re.search(r"registries:\s*\[", text), "each app must declare a registries block"
-    assert re.search(r"server:\s*acrLoginServer", text), (
-        "the registries block must point at the ACR login server"
-    )
-    assert "IdentityId" in text, "the registries block must authenticate by the app's identity"
+    apps = _resource_blocks(text, _CONTAINER_APP_TYPE)
+    assert len(apps) >= 2, f"expected >=2 container apps (SAGE + BFF); found {len(apps)}"
+    for i, app in enumerate(apps):
+        assert re.search(r"registries:\s*\[", app), f"app {i} must declare a registries block"
+        assert re.search(r"server:\s*acrLoginServer", app), (
+            f"app {i}'s registries block must point at the ACR login server"
+        )
+        assert re.search(r"identity:\s*\w*IdentityId\b", app), (
+            f"app {i}'s registries block must authenticate by that app's identity"
+        )
     assert "passwordSecretRef" not in text and "username:" not in text, (
         "the registry pull must use managed identity, not a stored credential"
     )
@@ -223,14 +276,33 @@ def test_registry_pull_authenticates_by_identity() -> None:
 def test_acrpull_role_assignments_present() -> None:
     """Each app identity is granted ``AcrPull`` on the registry through a role
     assignment, mirroring the Key Vault module's grant pattern.
+
+    Both the role and ``principalType`` are asserted per assignment. Read once over
+    the whole module, the role is satisfied by the ``var acrPullRoleId`` declaration
+    whether or not any grant binds it, and one assignment's ``principalType``
+    satisfies the check for every other — so a grant could lose either and leave an
+    identity unable to pull its image, which surfaces at deploy time rather than to
+    any source gate.
     """
     text = CONTAINER_APPS.read_text(encoding="utf-8")
     count = _count_resource_type(text, _ROLE_ASSIGNMENT_TYPE)
     assert count >= 2, f"expected >=2 AcrPull role assignments (SAGE + BFF); found {count}"
-    assert _ACR_PULL_ROLE in text, "a role assignment must reference the AcrPull role id"
     stripped = _strip_line_comments(text)
-    assert re.search(r"principalType:\s*'ServicePrincipal'", stripped), (
-        "AcrPull assignments must set principalType: 'ServicePrincipal'"
+    blocks = _resource_blocks(text, _ROLE_ASSIGNMENT_TYPE)
+    assert len(blocks) == count, "the role-assignment slicer lost a declaration"
+    role_var = re.search(rf"var\s+(\w+)\s*=\s*'{re.escape(_ACR_PULL_ROLE)}'", stripped)
+    assert role_var, f"the module must declare the AcrPull role id {_ACR_PULL_ROLE}"
+    unbound = [
+        b for b in blocks if not re.search(rf"roleDefinitionId:.*\b{role_var.group(1)}\b", b)
+    ]
+    assert not unbound, (
+        f"every AcrPull assignment must bind the AcrPull role id to its roleDefinitionId; "
+        f"{len(unbound)} of {count} do not"
+    )
+    missing = [b for b in blocks if not re.search(r"principalType:\s*'ServicePrincipal'", b)]
+    assert not missing, (
+        f"every AcrPull assignment must set principalType: 'ServicePrincipal'; "
+        f"{len(missing)} of {count} do not"
     )
     bound = [m.group(1) for m in re.finditer(r"principalId:\s*(\S+)", stripped)]
     assert "sageIdentityPrincipalId" in bound, "SAGE identity must be granted AcrPull"
@@ -242,10 +314,22 @@ def test_acrpull_role_assignments_present() -> None:
 def test_sage_ingress_is_external_on_8000() -> None:
     """SAGE takes external container ingress on its service port 8000 (the APIM
     facade routes to its resulting FQDN).
+
+    ``external`` is asserted on every app, as the message says: read once over a
+    module declaring two, the check is satisfied by whichever app still has it, so
+    either could fall to internal ingress with every gate green. SAGE's port is
+    read from SAGE's own block rather than anywhere in the module.
     """
     text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
-    assert re.search(r"targetPort:\s*8000", text), "SAGE ingress must target port 8000"
-    assert re.search(r"external:\s*true", text), "the apps must take external ingress"
+    assert re.search(r"targetPort:\s*8000", _sage_app_block(text)), (
+        "SAGE ingress must target port 8000"
+    )
+    apps = _resource_blocks(text, _CONTAINER_APP_TYPE)
+    assert len(apps) >= 2, f"expected >=2 container apps (SAGE + BFF); found {len(apps)}"
+    internal = [i for i, app in enumerate(apps) if not re.search(r"external:\s*true", app)]
+    assert not internal, (
+        f"every app must take external ingress; app(s) {internal} of {len(apps)} do not"
+    )
 
 
 def test_bff_ingress_binds_custom_domain() -> None:
@@ -341,10 +425,15 @@ def test_sage_config_selects_document_store_vault_source() -> None:
 def test_main_threads_sharepoint_coordinates_into_container_apps() -> None:
     """main.bicep wires the SharePoint coordinate params into the container-apps
     module, so the single source of each coordinate flows end-to-end.
+
+    Read within this module's own call body: the maintenance job is handed all
+    three coordinates identically, so a whole-file search stays green even when
+    the container-apps call has dropped them.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/container-apps.bicep")
+    assert block, "main.bicep must wire a live module from modules/container-apps.bicep"
     for param in ("sharepointSiteId", "sharepointDriveId", "vaultSourceRootPath"):
-        assert re.search(rf"{param}:\s*{param}", text), (
+        assert re.search(rf"{param}:\s*{param}", block), (
             f"main.bicep must thread {param} into the container-apps module"
         )
 
@@ -404,10 +493,12 @@ def test_bff_client_secret_url_built_from_param() -> None:
 def test_main_threads_bff_client_secret_name() -> None:
     """The orchestrator threads the keyvault module's ``bffClientSecretName`` output
     into the container-apps module, so the single source of the secret name flows
-    end-to-end.
+    end-to-end. Read within this module's own call body, so the assertion cannot
+    be satisfied by another module picking the output up later.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"bffClientSecretName:\s*keyvault\.outputs\.bffClientSecretName", text), (
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/container-apps.bicep")
+    assert block, "main.bicep must wire a live module from modules/container-apps.bicep"
+    assert re.search(r"bffClientSecretName:\s*keyvault\.outputs\.bffClientSecretName", block), (
         "main.bicep must thread keyvault.outputs.bffClientSecretName into container-apps"
     )
 
@@ -540,12 +631,18 @@ def test_main_wires_container_apps_and_resolves_apim_backend() -> None:
     """The orchestrator wires the module live (scoped to rg), resolves the APIM
     backend from the SAGE container-app FQDN rather than a hand-substituted
     placeholder param, and exposes that FQDN as an orchestrator output.
+
+    The backend resolution is ``apim``'s parameter, so it is read within the apim
+    call body rather than anywhere in the file. The output and absent-parameter
+    claims are genuinely file-level and stay that way.
     """
     text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/container-apps\.bicep'\s*=", text), (
+    assert _module_block(text, "modules/container-apps.bicep"), (
         "main.bicep must wire a live module from modules/container-apps.bicep"
     )
-    assert re.search(r"sageBackendHostname:\s*containerApps\.outputs\.\w+", text), (
+    apim_block = _module_block(text, "modules/apim.bicep")
+    assert apim_block, "main.bicep must wire a live module from modules/apim.bicep"
+    assert re.search(r"sageBackendHostname:\s*containerApps\.outputs\.\w+", apim_block), (
         "apim's sageBackendHostname must resolve from the container-apps SAGE FQDN output"
     )
     assert not re.search(r"param\s+sageBackendHostname\s+string", text), (
@@ -711,3 +808,70 @@ def test_sage_scale_pinned_to_single_replica() -> None:
     assert re.search(r"maxReplicas:\s*1", sage_block), (
         "the maxReplicas: 1 pin must live in the SAGE app's scale block"
     )
+
+
+def test_module_block_detector_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the orchestrator-wiring gates load-bearing. The
+    maintenance job is handed the SharePoint coordinates in exactly the shape
+    the container-apps call uses, so a whole-file search would be satisfied by
+    that neighbour even after the container-apps call has dropped them.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module containerApps 'modules/container-apps.bicep' = {\n"
+        "  params: {\n    acrName: foundation.outputs.acrName\n  }\n}\n"
+        "module maintenanceJob 'modules/maintenance-job.bicep' = {\n"
+        "  params: {\n    sharepointSiteId: sharepointSiteId\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/container-apps.bicep")
+    assert block, "the detector must find the container-apps module call"
+    assert "acrName" in block, "the block must carry the call's own parameters"
+    assert "sharepointSiteId" not in block, (
+        "the block must truncate at the next declaration, not borrow the maintenance "
+        "job's identical coordinate threading"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""
+
+
+def test_resource_blocks_detector_controls() -> None:
+    """``_resource_blocks`` returns one body per declaration of a type, each
+    truncated at the next declaration.
+
+    This is what makes the AcrPull grant gate load-bearing: the module declares
+    one assignment per app identity, so a single match says nothing about the
+    other, and the role id sits in a module-level ``var`` that satisfies a
+    containment check whether or not any grant binds it.
+
+    The markers live on the *second* assignment and the assertion is that the
+    *first* block does not carry them. That direction is the load-bearing one: a
+    helper that never truncates leaks forward, so every block runs to end of text
+    and swallows each later declaration. Marking the first block and asserting the
+    second is clean cannot detect that — the second block never gains the earlier
+    one's content whether the helper truncates or not.
+    """
+    sample = (
+        f"resource sageAcrPull '{_ROLE_ASSIGNMENT_TYPE}@2022-04-01' = {{\n"
+        "  properties: {\n    principalId: sageIdentityPrincipalId\n  }\n}\n"
+        f"resource bffAcrPull '{_ROLE_ASSIGNMENT_TYPE}@2022-04-01' = {{\n"
+        "  properties: {\n"
+        "    roleDefinitionId: subscriptionResourceId('x', acrPullRoleId)\n"
+        "    principalType: 'ServicePrincipal'\n  }\n}\n"
+    )
+    blocks = _resource_blocks(sample, _ROLE_ASSIGNMENT_TYPE)
+    assert len(blocks) == 2, f"expected one block per assignment; got {len(blocks)}"
+    assert "sageIdentityPrincipalId" in blocks[0], "the first block must carry its own properties"
+    assert "acrPullRoleId" not in blocks[0], (
+        "the first block must truncate at the next declaration, not borrow the second "
+        "assignment's role binding — the coincidence the per-assignment gate defeats"
+    )
+    assert "principalType" not in blocks[0], (
+        "the first block must not borrow the second assignment's principalType"
+    )
+    assert "principalType" in blocks[1], "the second block must carry its own properties"
+    assert _resource_blocks(sample, "Microsoft.Absent/things") == []

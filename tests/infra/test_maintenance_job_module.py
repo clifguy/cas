@@ -97,6 +97,26 @@ def _module_text() -> str:
     return MODULE.read_text(encoding="utf-8")
 
 
+def _module_block(text: str, module_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
+
+    Slices from the module declaration to the next top-level declaration. The
+    orchestrator hands the SAGE identity, the Postgres FQDN and the SharePoint
+    coordinates to more than one module, so an assertion made over the whole
+    file is satisfied by a neighbour; the wiring gate below must read this
+    module's own call body.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_path) + r"'\s*=", stripped, re.MULTILINE
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
 # ---------------------------------------------------------------------------
 # Structural gates
 # ---------------------------------------------------------------------------
@@ -237,21 +257,27 @@ def test_no_hardcoded_identity() -> None:
 
 
 def test_main_wires_maintenance_module() -> None:
-    """The orchestrator wires the maintenance-job module live, feeds it the ACA
-    environment, the SAGE identity, the Postgres server FQDN, and the SharePoint
-    coordinates, and exposes the job name as an output for the workflow to start.
+    """The orchestrator wires the maintenance-job module live, scopes it to the
+    resource group, feeds it the ACA environment, the SAGE identity, the Postgres
+    server FQDN, and the SharePoint coordinates, and exposes the job name as an
+    output for the workflow to start.
+
+    Every consumption assertion reads this module's own call body: each of these
+    values is handed to at least one other module in the same orchestrator, so
+    over the whole file they are all satisfied by a neighbour. The job-name
+    output is genuinely file-level and stays that way.
     """
     text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/maintenance-job\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/maintenance-job.bicep"
-    )
-    assert "identity.outputs.sageIdentityId" in text, (
+    block = _module_block(text, "modules/maintenance-job.bicep")
+    assert block, "main.bicep must wire a live module from modules/maintenance-job.bicep"
+    assert re.search(r"scope:\s*rg\b", block), "the maintenance module must be scoped to rg"
+    assert "identity.outputs.sageIdentityId" in block, (
         "the maintenance module must consume the SAGE identity"
     )
-    assert "postgres.outputs.postgresServerFqdn" in text, (
+    assert "postgres.outputs.postgresServerFqdn" in block, (
         "the maintenance module must consume the Postgres server FQDN"
     )
-    assert "sharepointSiteId: sharepointSiteId" in text, (
+    assert "sharepointSiteId: sharepointSiteId" in block, (
         "the maintenance module must consume the SharePoint site id"
     )
     assert "output maintenanceJobName string = maintenanceJob.outputs.maintenanceJobName" in text, (
@@ -314,4 +340,67 @@ def test_replica_timeout_admits_a_long_sweep() -> None:
     assert timeout, "the job must declare a replicaTimeout"
     assert int(timeout.group(1)) >= 3600, (
         f"replicaTimeout is {timeout.group(1)}s; a bulk reabstract needs at least 3600s"
+    )
+
+
+def test_module_block_detector_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the wiring gate load-bearing. The container-apps module
+    is handed the SAGE identity, the Postgres FQDN and the SharePoint site id in
+    exactly the shape this call uses, so a whole-file search would be satisfied
+    by that neighbour even after this call has dropped them.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module maintenanceJob 'modules/maintenance-job.bicep' = {\n"
+        "  params: {\n    abstractionModel: abstractionModel\n  }\n}\n"
+        "module containerApps 'modules/container-apps.bicep' = {\n"
+        "  scope: rg\n"
+        "  params: {\n    sharepointSiteId: sharepointSiteId\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/maintenance-job.bicep")
+    assert block, "the detector must find the maintenance-job module call"
+    assert "abstractionModel" in block, "the block must carry the call's own parameters"
+    assert "scope: rg" not in block, (
+        "the block must truncate at the next declaration, not borrow the following "
+        "module's scope line"
+    )
+    assert "sharepointSiteId" not in block, (
+        "the block must truncate at the next declaration, not borrow the container-apps "
+        "call's identical coordinate threading"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""
+
+
+def test_module_block_truncates_at_a_top_level_output() -> None:
+    """The slice stops at a top-level ``output``, not only at the next ``module``.
+
+    This module is the last one the orchestrator wires, so what follows its call
+    is the orchestrator's own outputs rather than another module. A slicer that
+    truncated only on ``module`` would run this block to end of file and pick
+    those outputs up — and the sibling control above, whose contaminant is a
+    following module, cannot tell the two apart.
+    """
+    last_module = (
+        "module maintenanceJob 'modules/maintenance-job.bicep' = {\n"
+        "  params: {\n    abstractionModel: abstractionModel\n  }\n}\n"
+        # The decorator, not the `output` keyword, is the first line after the
+        # block: a slicer that truncates only on the keyword keeps this line, so
+        # the decorator's prose lands inside the slice.
+        "@description('Provisioned resource group name, consumed by module deployments.')\n"
+        "output deployedResourceGroupName string = rg.name\n"
+    )
+    block = _module_block(last_module, "modules/maintenance-job.bicep")
+    assert "abstractionModel" in block, "the block must carry the call's own parameters"
+    assert "deployedResourceGroupName" not in block, (
+        "the block must truncate at the orchestrator's top-level output"
+    )
+    assert "Provisioned resource group name" not in block, (
+        "the block must truncate at the output's @description decorator, not at the "
+        "`output` keyword — the decorator line sits between them"
     )

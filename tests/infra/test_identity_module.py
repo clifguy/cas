@@ -61,6 +61,43 @@ def _count_resource_type(text: str, resource_type: str) -> int:
     return len(pattern.findall(_strip_line_comments(text)))
 
 
+def _resource_block(text: str, symbol: str) -> str:
+    """Return the body of the ``resource <symbol> '...' = {...}`` declaration.
+
+    Slices to the next top-level declaration. The module declares three
+    interchangeable-looking user-assigned identities, so a property asserted over
+    the whole module is satisfied when only one of the three carries it; the
+    gates below must read each identity's own body. Returns ``""`` when the
+    symbol is not declared.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(rf"^resource\s+{re.escape(symbol)}\b", stripped, re.MULTILINE)
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _module_block(text: str, module_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
+
+    Slices from the module declaration to the next top-level declaration. The
+    orchestrator wires nine modules and every one is scoped to the resource
+    group, so an assertion made over the whole file is satisfied by any one of
+    them; the wiring gate below must read this module's own call body.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_path) + r"'\s*=", stripped, re.MULTILINE
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
 def _output_lines(text: str) -> list[tuple[str, str]]:
     """Return ``(name, rhs)`` for every ``output <name> <type> = <rhs>`` line."""
     pattern = re.compile(r"^\s*output\s+(\w+)\s+\w+\s*=\s*(.+?)\s*$", re.MULTILINE)
@@ -84,6 +121,11 @@ def test_identity_declares_application_and_bootstrap_identities() -> None:
     relational-store module sets as the server's Entra administrator and the
     in-VNet bootstrap job runs as. None may be silently dropped; downstream modules
     grant and attach each.
+
+    Each name is asserted inside its own resource body. The three declarations are
+    otherwise identical, so a whole-module containment check would stay green with
+    the SAGE name attached to the bootstrap identity — and the outputs downstream
+    modules compose against are keyed by symbol, not by name.
     """
     text = IDENTITY.read_text(encoding="utf-8")
     count = _count_resource_type(text, _UAMI_TYPE)
@@ -91,14 +133,14 @@ def test_identity_declares_application_and_bootstrap_identities() -> None:
         f"identity.bicep must declare exactly three {_UAMI_TYPE} resources "
         f"(SAGE, CAS BFF, Postgres bootstrap); found {count}"
     )
-    stripped = _strip_line_comments(text)
-    assert "'id-sage-${environmentName}'" in stripped, "the SAGE app identity must be declared"
-    assert "'id-cas-bff-${environmentName}'" in stripped, (
-        "the CAS BFF application identity must be declared"
-    )
-    assert "'id-pg-bootstrap-${environmentName}'" in stripped, (
-        "the Postgres bootstrap identity must be declared"
-    )
+    for symbol, name in (
+        ("sageIdentity", "'id-sage-${environmentName}'"),
+        ("bffIdentity", "'id-cas-bff-${environmentName}'"),
+        ("bootstrapIdentity", "'id-pg-bootstrap-${environmentName}'"),
+    ):
+        block = _resource_block(text, symbol)
+        assert block, f"identity.bicep must declare the {symbol} resource"
+        assert name in block, f"{symbol} must be named {name}"
 
 
 def test_identity_exposes_principal_and_id_outputs() -> None:
@@ -137,14 +179,21 @@ def test_identity_exposes_bootstrap_outputs() -> None:
 def test_identity_parameterizes_location() -> None:
     """Location is a parameter and the identities deploy into it — mirrors the
     ``no-hardcoded-location`` bicep rule.
+
+    Asserted on every identity, not once over the module: read whole-module, the
+    check is satisfied by any one of the three, so two could pin a literal region
+    with the gate green.
     """
     text = IDENTITY.read_text(encoding="utf-8")
     assert re.search(r"param\s+location\s+string", text), (
         "identity.bicep must take a `location` string parameter"
     )
-    assert re.search(r"location:\s*location", text), (
-        "each identity must deploy into the `location` parameter"
-    )
+    for symbol in ("sageIdentity", "bffIdentity", "bootstrapIdentity"):
+        block = _resource_block(text, symbol)
+        assert block, f"identity.bicep must declare the {symbol} resource"
+        assert re.search(r"location:\s*location\b", block), (
+            f"{symbol} must deploy into the `location` parameter"
+        )
 
 
 def test_identity_is_resource_group_scoped() -> None:
@@ -172,12 +221,14 @@ def test_identity_outputs_contain_no_literal_guid() -> None:
 def test_main_bicep_wires_identity_module() -> None:
     """The orchestrator wires the identity module live and scopes it to the
     resource group.
+
+    The scope assertion reads this module's own call body: every module in the
+    orchestrator carries ``scope: rg``, so a whole-file search stays green even
+    when this one has lost the line.
     """
-    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
-    assert re.search(r"module\s+\w+\s+'modules/identity\.bicep'\s*=", text), (
-        "main.bicep must wire a live module from modules/identity.bicep"
-    )
-    assert re.search(r"scope:\s*rg", text), "the identity module must be scoped to rg"
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/identity.bicep")
+    assert block, "main.bicep must wire a live module from modules/identity.bicep"
+    assert re.search(r"scope:\s*rg\b", block), "the identity module must be scoped to rg"
 
 
 @pytest.mark.skipif(
@@ -225,3 +276,65 @@ def test_output_guid_detector_controls() -> None:
     expr = "sageIdentity.properties.principalId"
     assert _GUID_RE.search(literal)
     assert not _GUID_RE.search(expr)
+
+
+def test_module_block_detector_controls() -> None:
+    """``_module_block`` returns only the named module's own call body.
+
+    This is what makes the wiring gate load-bearing: every module in the
+    orchestrator carries ``scope: rg``, so a whole-file search is satisfied by a
+    neighbour even when this module's own call has lost the line.
+
+    The neighbouring module is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    two_modules = (
+        "module identity 'modules/identity.bicep' = {\n"
+        "  params: {\n    environmentName: environmentName\n  }\n}\n"
+        "module other 'modules/other.bicep' = {\n"
+        "  scope: rg\n"
+        "  params: {\n    sentinel: true\n  }\n}\n"
+    )
+    block = _module_block(two_modules, "modules/identity.bicep")
+    assert block, "the detector must find the identity module call"
+    assert "environmentName" in block, "the block must carry the call's own parameters"
+    assert "scope: rg" not in block, (
+        "the block must truncate at the next declaration, not borrow the following "
+        "module's scope line"
+    )
+    assert "sentinel" not in block, (
+        "the block must truncate at the next declaration, not leak the following "
+        "module's parameter list"
+    )
+    assert _module_block(two_modules, "modules/absent.bicep") == ""
+
+
+def test_resource_block_detector_controls() -> None:
+    """``_resource_block`` returns only the named resource's own body.
+
+    This is what makes the per-identity gates load-bearing: the three identities
+    are declared identically, so a property found anywhere in the module says
+    nothing about which of them carries it.
+
+    The neighbouring resource is declared *after* the target: a helper that finds
+    the target but never truncates would still leak it, and only this ordering
+    catches that. (A contaminant placed before the target is excluded by the
+    forward search alone and proves nothing.)
+    """
+    sample = (
+        "resource sageIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {\n"
+        "  name: 'id-sage-${environmentName}'\n}\n"
+        "resource bffIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {\n"
+        "  name: 'id-cas-bff-${environmentName}'\n  location: location\n}\n"
+    )
+    block = _resource_block(sample, "sageIdentity")
+    assert block, "the detector must find the sageIdentity declaration"
+    assert "id-sage-" in block, "the block must carry the resource's own name"
+    assert "location: location" not in block, (
+        "the block must truncate at the next declaration, not borrow the sibling "
+        "identity's location binding"
+    )
+    assert "id-cas-bff-" not in block, "the block must not bleed into the following resource"
+    assert _resource_block(sample, "absentSymbol") == ""
