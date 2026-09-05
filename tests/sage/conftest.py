@@ -162,7 +162,16 @@ def tmp_vault_dir(tmp_path):
 
 @pytest.fixture
 def minimal_vault_config_dict(tmp_vault_dir):
-    """Minimal vault config dict for testing (base states only)."""
+    """Minimal vault config dict for testing (base states only).
+
+    Deliberately NOT a mirror of `VaultRegistryService.get_default_config`.
+    The scaffold permits `supersede` and `reactivate` from `completed`;
+    this table omits both, which is what makes it the negative control for
+    the refusal path -- several tests assert that a table lacking those
+    rows refuses, and widening it here would delete that coverage silently
+    rather than failing. Add a row locally in the test that needs one, as
+    `_config_allowing_supersede_from` does.
+    """
     return {
         "vault": {
             "id": "test_vault",

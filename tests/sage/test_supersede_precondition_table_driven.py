@@ -37,6 +37,7 @@ from sage.models.enums import RationaleKind, SourceType
 from sage.models.schemas import IngestRequest, SetLifecycleRequest
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
+from sage.services.vault_registry import VaultRegistryService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
 
@@ -305,7 +306,7 @@ async def test_fail_fast_short_circuits_before_projection(
     assert spy.project_calls == calls_before, "the rejected supersede must not have run projection"
 
 
-async def test_rejection_reports_table_derived_allowed_states_default_table(
+async def test_rejection_reports_table_derived_allowed_states_single_state_table(
     tmp_vault_dir,
     graph_store,
     lock_manager,
@@ -314,11 +315,14 @@ async def test_rejection_reports_table_derived_allowed_states_default_table(
     stub_abstraction_provider,
     minimal_vault_config_dict,
 ):
-    """Under the default table the detail still reads `active`.
+    """A table permitting one source state reports just that one.
 
     Backward-compatibility guard: existing callers key remediation prose
-    off `required_state`, and every vault in service declares supersede
-    only from `active`.
+    off `required_state`, so a single-state table must keep rendering the
+    bare state name rather than a set. The fixture's table is the case
+    under test -- not "the default", which permits supersede from
+    `completed` as well, and not "every vault in service", which the cas
+    vault stopped being an example of when it declared that row.
     """
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     lifecycle, ingestion = _build_services(
@@ -553,3 +557,219 @@ async def test_force_reingest_supersede_surfaces_the_ingest_surface_code(
     )
     assert exc_info.value.detail["predecessor_id"] == v1.document.id
     assert other.document.id  # the hash-match record the force branch reused
+
+
+# ---------------------------------------------------------------------------
+# The default scaffold's own table
+# ---------------------------------------------------------------------------
+#
+# The tests above build their tables from `minimal_vault_config_dict`, which
+# permits `supersede` from `active` only and is the negative control for the
+# refusal path. These four pin the table a vault actually gets when it is
+# created from `VaultRegistryService.get_default_config`, which is what a
+# caller who declares no lifecycle of their own is handed.
+
+
+def _scaffold_config(tmp_vault_dir) -> VaultConfig:
+    """Return the creation-time scaffold's config, rooted in the tmp vault.
+
+    The scaffold hardcodes `~/sage_vaults/<id>/...` for both roots, which a
+    test must not touch; everything else is taken verbatim, so an assertion
+    below reads the shipped table rather than a local restatement of it.
+    """
+    raw = VaultRegistryService.get_default_config("scaffold_vault", "Scaffold Vault", "testuser")
+    raw["vault"]["storage_root"] = str(tmp_vault_dir / "sources")
+    raw["vault"]["brain_root"] = str(tmp_vault_dir / "brain")
+    return VaultConfig.model_validate(raw)
+
+
+async def test_default_scaffold_permits_supersede_from_completed(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+):
+    """A vault created from the scaffold can revise a completed document.
+
+    The scaffold is what every vault inherits when its creator declares no
+    lifecycle of their own. Shipping a table without this row makes the
+    common case -- revising a document that rests at `completed`, which is
+    the resting state of every typed document with a done state -- reachable
+    only through a reactivation walk-back.
+    """
+    config = _scaffold_config(tmp_vault_dir)
+    lifecycle, ingestion = _build_services(
+        config,
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+
+    _seed_file(tmp_vault_dir, "sc_v1.md", "# V1\n\nOriginal.")
+    _seed_file(tmp_vault_dir, "sc_v2.md", "# V2\n\nRevised.")
+
+    v1 = await ingestion.ingest(IngestRequest(source="sc_v1.md", source_type=SourceType.MARKDOWN))
+    await lifecycle._set_lifecycle(v1.document.id, SetLifecycleRequest(action="complete"))
+
+    predecessor = await graph_store.get_document(v1.document.id)
+    assert predecessor.lifecycle_status == "completed", (
+        "precondition: the predecessor must rest at `completed` for this test "
+        "to exercise the scaffold's new supersede row"
+    )
+
+    v2 = await ingestion.ingest(
+        IngestRequest(
+            source="sc_v2.md",
+            source_type=SourceType.MARKDOWN,
+            predecessor_id=v1.document.id,
+        )
+    )
+
+    edges = await graph_store.get_edges_by_source(v2.document.id)
+    supersedes = [e for e in edges if e.edge_type == "supersedes"]
+    assert len(supersedes) == 1, (
+        "the scaffold's supersede row declares `creates_edge: supersedes`; a "
+        "transition that fires without the edge leaves the chain unlinked"
+    )
+    assert supersedes[0].target_id == v1.document.id
+
+    flipped = await graph_store.get_document(v1.document.id)
+    assert flipped.lifecycle_status == "archived"
+
+
+async def test_default_scaffold_permits_reactivate_from_completed(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+):
+    """The scaffold reactivates from `completed` without an archive detour.
+
+    Where a walk-back is still required, routing it through `archived`
+    briefly reports completed work as dropped. The `completed -> active` row
+    is what lets the caller avoid that.
+    """
+    config = _scaffold_config(tmp_vault_dir)
+    lifecycle, ingestion = _build_services(
+        config,
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+
+    _seed_file(tmp_vault_dir, "sr_v1.md", "# V1\n\nOriginal.")
+
+    v1 = await ingestion.ingest(IngestRequest(source="sr_v1.md", source_type=SourceType.MARKDOWN))
+    await lifecycle._set_lifecycle(v1.document.id, SetLifecycleRequest(action="complete"))
+    await lifecycle._set_lifecycle(v1.document.id, SetLifecycleRequest(action="reactivate"))
+
+    revived = await graph_store.get_document(v1.document.id)
+    assert revived.lifecycle_status == "active"
+
+
+async def test_default_scaffold_still_refuses_supersede_from_archived(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+):
+    """Anti-coincidental control for the two positive arms above.
+
+    Both would also pass against a tree with the fail-fast deleted
+    outright. This one fails there: it needs the gate live. It is also the
+    discriminator on the rows themselves -- `allowed_states` reads
+    `["active"]` against the pre-change scaffold and `["active",
+    "completed"]` after, so a passing assertion here proves the table the
+    engine consulted is the shipped one.
+    """
+    config = _scaffold_config(tmp_vault_dir)
+    lifecycle, ingestion = _build_services(
+        config,
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+
+    _seed_file(tmp_vault_dir, "sa_v1.md", "# V1\n\nOriginal.")
+    _seed_file(tmp_vault_dir, "sa_v2.md", "# V2\n\nRevised.")
+
+    v1 = await ingestion.ingest(IngestRequest(source="sa_v1.md", source_type=SourceType.MARKDOWN))
+    await lifecycle._set_lifecycle(v1.document.id, SetLifecycleRequest(action="archive"))
+
+    with pytest.raises(SupersedeTargetNotActiveError) as exc_info:
+        await ingestion.ingest(
+            IngestRequest(
+                source="sa_v2.md",
+                source_type=SourceType.MARKDOWN,
+                predecessor_id=v1.document.id,
+            )
+        )
+
+    err = exc_info.value
+    assert err.status_code == 409
+    assert err.detail["current_state"] == "archived"
+    assert err.detail["allowed_states"] == ["active", "completed"]
+    assert err.detail["required_state"] == "active or completed"
+
+
+async def test_default_scaffold_still_rejects_an_unconfigured_action_from_completed(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+):
+    """Anti-coincidental control for the reactivate arm.
+
+    Reactivating from `completed` would also succeed against a
+    `_set_lifecycle` that validated nothing at all. The scaffold declares
+    no `completed -> complete` row, so a tree that still consults the table
+    refuses this one.
+
+    Anti-coincidental-pass: the exception type alone is non-discriminating
+    -- a guard that rejected every action from a non-`active` state would
+    raise it too, and so would one that rejected `complete` as a no-op
+    against a document already `completed`. The `valid_actions` payload is
+    what separates them: it is rendered from the rows the table holds for
+    `completed`, so naming all three (including the `reactivate` row this
+    change adds) proves the refusal came from the table rather than from a
+    blanket guard. Type and payload together are the gate; neither alone.
+    """
+    config = _scaffold_config(tmp_vault_dir)
+    lifecycle, ingestion = _build_services(
+        config,
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+
+    _seed_file(tmp_vault_dir, "su_v1.md", "# V1\n\nOriginal.")
+
+    v1 = await ingestion.ingest(IngestRequest(source="su_v1.md", source_type=SourceType.MARKDOWN))
+    await lifecycle._set_lifecycle(v1.document.id, SetLifecycleRequest(action="complete"))
+
+    with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
+        await lifecycle._set_lifecycle(v1.document.id, SetLifecycleRequest(action="complete"))
+
+    err = exc_info.value
+    assert err.detail["current_state"] == "completed"
+    assert err.detail["attempted_action"] == "complete"
+    assert sorted(err.detail["valid_actions"]) == ["archive", "reactivate", "supersede"], (
+        "the payload must name every action the table holds for `completed`; a "
+        "blanket non-active guard would refuse without being able to render these"
+    )
