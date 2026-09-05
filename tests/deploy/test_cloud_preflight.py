@@ -1937,16 +1937,25 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
 # and asserts each id came back from /sage_vaults. A tenant starts life with one
 # vault and grows: the deploy variable is operator-edited, and the multi-id path
 # is the one an operator reaches first when adding the second vault. These
-# scenarios hold the split's four decided behaviours -- iterate every id, skip a
-# null element, name only the absent id, and match a whole id rather than a
-# prefix -- and they run under each interpreter the host offers, because the
-# split's semantics are a property of the shell rather than of the script.
+# scenarios hold the split's five decided behaviours -- iterate every id, skip a
+# null element, name only the absent id, treat surrounding whitespace as part of
+# the id, and match a whole id rather than a substring of one -- and they run
+# under each interpreter the host offers, because the split's semantics are a
+# property of the shell rather than of the script.
 #
 # The stub advertises two vaults (``_VAULTS_BODY``), so a multi-id expectation is
 # satisfiable without a bespoke responder.
 # --------------------------------------------------------------------------- #
+#: One case per inventoried interpreter, named by the version it proves rather
+#: than by a filesystem path that says nothing about the floor. A label can repeat
+#: -- two installs may report the same major.minor -- so a repeat is suffixed by
+#: position, keeping every case id distinct without renaming the first of a pair.
 _BASH_BIN_PARAMS: Final[list[pytest.param]] = [
-    pytest.param(path, id=f"bash{label}") for label, path in _BASH_BINS
+    pytest.param(
+        path,
+        id=f"bash{label}" if [lb for lb, _ in _BASH_BINS].count(label) == 1 else f"bash{label}#{i}",
+    )
+    for i, (label, path) in enumerate(_BASH_BINS)
 ]
 
 #: The detail line a satisfied vault_load emits against ``_VAULTS_BODY``.
@@ -1978,10 +1987,13 @@ def test_bash_inventory_is_populated_and_labelled() -> None:
     assert _BASH_BINS, "no bash interpreter resolved; the split scenarios would collect nothing"
     labels = [label for label, _ in _BASH_BINS]
     assert all(re.fullmatch(r"\d+\.\d+", label) for label in labels), labels
-    assert len(set(labels)) == len(labels), f"an interpreter was inventoried twice: {labels}"
+    # Uniqueness is asserted on the real path, which is what the resolution
+    # deduplicates on. Labels are deliberately not required to be unique: two
+    # separate installs can report the same major.minor, and both should run.
+    reals = [Path(path).resolve() for _, path in _BASH_BINS]
+    assert len(set(reals)) == len(reals), f"an interpreter was inventoried twice: {reals}"
     if _BASH is not None:
-        paths = {Path(path).resolve() for _, path in _BASH_BINS}
-        assert Path(_BASH).resolve() in paths, "the PATH bash is missing from the inventory"
+        assert Path(_BASH).resolve() in set(reals), "the PATH bash is missing from the inventory"
 
 
 def _write_version_stub(tmp_path: Path, name: str, version: str) -> str:
@@ -2006,11 +2018,20 @@ def test_bash_inventory_keeps_distinct_interpreters_and_collapses_aliases(tmp_pa
     """
     first = _write_version_stub(tmp_path, "bash-first", "3.2")
     second = _write_version_stub(tmp_path, "bash-second", "5.2")
+    same_as_second = _write_version_stub(tmp_path, "bash-second-again", "5.2")
     unparseable = _write_version_stub(tmp_path, "bash-mute", "not-a-version")
 
     assert _bash_inventory([first, second]) == (("3.2", first), ("5.2", second)), (
         "two interpreters at distinct real paths must both survive"
     )
+    # The case that separates keying on the real path from keying on the version
+    # label. Two separate installs reporting the same major.minor are two
+    # interpreters and must both run; a label-keyed resolution would silently keep
+    # one, and the distinct-version case above cannot tell the two policies apart.
+    assert _bash_inventory([second, same_as_second]) == (
+        ("5.2", second),
+        ("5.2", same_as_second),
+    ), "two installs reporting the same version are still two interpreters"
     assert _bash_inventory([first, first]) == (("3.2", first),), (
         "one interpreter named twice must be inventoried once"
     )
@@ -2113,7 +2134,10 @@ def test_vault_load_names_only_the_absent_id(expected: str, bash_bin: str) -> No
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
-def test_vault_load_does_not_trim_whitespace_around_ids(bash_bin: str) -> None:
+@pytest.mark.parametrize(
+    "expected", [" cas , test ", " cas,test "], ids=["both-sides", "opposite-sides"]
+)
+def test_vault_load_does_not_trim_whitespace_around_ids(expected: str, bash_bin: str) -> None:
     """Whitespace around an id is part of the id, and fails the lookup.
 
     IFS holds only a comma, so a space is not a delimiter: `` cas `` is a
@@ -2125,46 +2149,66 @@ def test_vault_load_does_not_trim_whitespace_around_ids(bash_bin: str) -> None:
     grounds that a check more permissive than the thing it checks would pass a
     value the deploy then rejects. Pinning the behaviour here keeps the two
     halves from drifting apart.
+
+    The two shapes are not redundant, and the second is what gives the scenario
+    teeth. ``" cas , test "`` pads both ids on both sides, which is the shape an
+    operator actually types -- but a trim that strips only one side leaves each id
+    still padded, still missing, and still reported once, so that shape alone is
+    satisfied identically by a one-sided trim. ``" cas,test "`` pads the two ids on
+    opposite sides, so a leading-only strip rescues ``cas`` while a trailing-only
+    strip rescues ``test``: either drops an id out of the missing list and fails
+    the assertion below.
     """
     with serve(_green) as url:
         proc = _run(
-            _base_env(url, PREFLIGHT_EXPECTED_VAULTS=" cas , test ", PREFLIGHT_CHECKS="vault_load"),
+            _base_env(url, PREFLIGHT_EXPECTED_VAULTS=expected, PREFLIGHT_CHECKS="vault_load"),
             bash_bin=bash_bin,
         )
     verdicts = _verdicts(proc.stdout)
     detail = _detail(proc.stdout, "vault_load")
     assert proc.returncode != 0, "padded ids are not the advertised ids; the gate must fail"
     assert verdicts.get("vault_load") == "FAIL", verdicts
-    # Both padded ids are reported missing -- neither was silently trimmed into a
-    # match, which a one-id assertion could not distinguish from a partial trim.
+    # Both ids stay missing. Under the opposite-sides shape a trim of either side
+    # rescues exactly one of them, so requiring both is what separates no-trim
+    # from a partial trim.
     assert detail.count("cas") == 1 and detail.count("test") == 1, detail
     assert "missing expected id(s)" in detail, detail
 
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
-def test_vault_load_requires_a_whole_id_not_a_prefix(bash_bin: str) -> None:
-    """A proper prefix of an advertised id does not satisfy the gate.
+@pytest.mark.parametrize("expected", ["ca", "as"], ids=["prefix", "suffix"])
+def test_vault_load_requires_a_whole_id_not_a_substring(expected: str, bash_bin: str) -> None:
+    """Neither a prefix nor a suffix of an advertised id satisfies the gate.
 
-    ``ca`` is a prefix of the advertised ``cas``. The lookup pattern closes on a
-    quote, so the comparison is against the whole JSON value rather than against
-    any substring of it. Without that anchor the gate would credit an expectation
-    no tenant actually satisfies, and every passing scenario above would pass for
-    a reason unrelated to the id it named.
+    ``ca`` and ``as`` are a prefix and a suffix of the advertised ``cas``. The
+    lookup pattern bounds the id on the left with ``"id"…:"`` and on the right
+    with a closing quote, so the comparison is against the whole JSON value rather
+    than any substring of it. Both ends are exercised because each is held by a
+    different part of the pattern and each fails independently -- measured, not
+    assumed: dropping the closing quote admits the prefix while the suffix case
+    stays green, and reducing the pattern to a bare ``$v"`` admits the suffix while
+    the prefix case stays green.
+
+    Note which rival the suffix case does *not* exclude. Dropping only the opening
+    quote (``…:[[:space:]]*$v"``) still leaves the literal quote that opens the
+    advertised value in the way, so ``as"`` cannot match ``"cas"`` and every
+    scenario here stays green. That mutation is unpinned by this suite; what the
+    suffix case buys is the left anchor as a whole, not that one character.
     """
     with serve(_green) as url:
         proc = _run(
-            _base_env(url, PREFLIGHT_EXPECTED_VAULTS="ca", PREFLIGHT_CHECKS="vault_load"),
+            _base_env(url, PREFLIGHT_EXPECTED_VAULTS=expected, PREFLIGHT_CHECKS="vault_load"),
             bash_bin=bash_bin,
         )
     verdicts = _verdicts(proc.stdout)
     detail = _detail(proc.stdout, "vault_load")
-    assert proc.returncode != 0, "a prefix must not satisfy the expected-id lookup"
+    assert proc.returncode != 0, "a substring must not satisfy the expected-id lookup"
     assert verdicts.get("vault_load") == "FAIL", verdicts
     # The rendered id, not a substring of it: `"ca" in detail` is also satisfied
     # by a run that reported the advertised `cas` missing, which is a different
     # defect entirely and must not be credited as this one.
-    assert detail.endswith("missing expected id(s): ca"), detail
+    assert detail.endswith(f"missing expected id(s): {expected}"), detail
 
 
 @_NEEDS_RUNTIME
