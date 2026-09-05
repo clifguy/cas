@@ -168,17 +168,16 @@ async def optimize_content_store(
             "description": (
                 "`vault_source_store_refused`: the vault-source store declined the "
                 "operation on its merits -- quota, a permission it withdrew, a reply "
-                "that opened no usable upload session. Resolve it at the store before "
-                "retrying; `detail.store_status` carries the status it declined with."
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
             ),
         },
         503: {
             "model": ErrorResponse,
             "description": (
                 "`vault_source_store_unavailable`: the vault-source store declined to "
-                "serve the operation just now -- throttling, a transient backend "
-                "signal, an upload session it expired. The same request may succeed "
-                "on a later attempt."
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
             ),
         },
     },

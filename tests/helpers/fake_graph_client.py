@@ -64,6 +64,7 @@ class FakeGraphClient:
         self.refuse_stat: Exception | Callable | None = None
         self.refuse_read: Exception | Callable | None = None
         self.refuse_stream: Exception | Callable | None = None
+        self.refuse_download_url: Exception | Callable | None = None
 
     @staticmethod
     def _refusal_for(slot, vault_id: str, source_path: str) -> Exception | None:
@@ -189,6 +190,11 @@ class FakeGraphClient:
             yield data[offset : offset + STREAM_CHUNK_BYTES]
 
     def source_download_url(self, vault_id: str, source_path: str) -> str | None:
+        # A URL mint is a store read like any other and can be declined; a fake
+        # that could only ever answer it cannot express the refusal at all.
+        refusal = self._refusal_for(self.refuse_download_url, vault_id, source_path)
+        if refusal is not None:
+            raise refusal
         if source_path not in self.sources:
             return None
         return f"https://sp.example/download/{source_path}?t=fake"

@@ -2503,6 +2503,14 @@ def register_sage_tools(
         - ``recompute_pipeline_already_in_flight`` (409): a recompute is
           already running on this ``document_id``. ``detail`` carries
           ``document_id`` and the in-flight call's ISO 8601 ``start_time``.
+        - ``vault_source_store_refused`` (502): the store declined to serve the
+          retained source this re-projection reads back. Resolve it at the
+          store before retrying; ``detail.store_status`` carries the status it
+          declined with. Only under a binding that fetches the source from a
+          store; a source already present locally is read without one.
+        - ``vault_source_store_unavailable`` (503): the store declined to serve
+          that read just now -- throttling, or a transient backend signal. The
+          same call may succeed later.
 
         Args:
             vault_id: Target vault identifier.

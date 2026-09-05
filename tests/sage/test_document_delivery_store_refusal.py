@@ -28,6 +28,24 @@ from sage.services.documents import DocumentsService
 from tests.helpers.store_refusal import STORE_BODY, store_refusal
 
 
+def _refuse_after(successes: int, refusal: Exception):
+    """A refusal that lets ``successes`` reads through before it fires.
+
+    Lets a test aim past the first store call in a region at the second, which
+    is the only way to tell a wrap spanning the whole region from one that
+    stops after the call that happens to come first.
+    """
+    seen = {"n": 0}
+
+    def hook(vault_id: str, source_path: str) -> Exception | None:
+        if seen["n"] >= successes:
+            return refusal
+        seen["n"] += 1
+        return None
+
+    return hook
+
+
 def _sha256_of(content: bytes) -> str:
     import hashlib
 
@@ -147,13 +165,17 @@ async def test_get_document_content_refusal_is_typed_before_the_stream_opens(
     delivery, so a refusal on those reads is typed rather than surfacing as a
     truncated stream.
 
-    Anti-coincidental-pass: the assertion is that the call raises at all. This
-    path returns a delivery object holding a not-yet-pulled chunk iterator, so
-    a translation placed where it cannot cover the pre-stream reads would let
-    the call return normally and fail here.
+    Anti-coincidental-pass: the refusal is armed to fire on the *second* store
+    read of the region -- the size -- rather than the existence probe that
+    comes first. A wrap covering only the probe passes when the probe is the
+    one refused, so refusing the probe proves nothing about the region's
+    extent; refusing past it does. The size read is also what the response's
+    Content-Length promises, so leaving it untyped is not cosmetic.
     """
     doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_b4")
-    refusing_source_store.refuse_stat = store_refusal(403, retryable=False, operation="stat source")
+    refusing_source_store.refuse_stat = _refuse_after(
+        1, store_refusal(403, retryable=False, operation="stat source")
+    )
     documents = DocumentsService(graph_store, minimal_config)
 
     with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
@@ -168,14 +190,19 @@ async def test_get_download_url_refusal_is_typed_not_unavailable(
     """A refusal while minting a download URL is reported as the store
     declining, not as the binding being unable to answer.
 
-    Anti-coincidental-pass: this path already has a structured refusal for the
-    binding that cannot mint a URL at all (``download_url_unavailable``, 501).
-    That is a different fact -- a capability the binding lacks, rather than a
-    store that declined -- and a rival letting the refusal fall through into it
-    would satisfy a test asserting only that a typed error came out.
+    Anti-coincidental-pass: the refusal is armed on the URL mint itself, not on
+    the existence probe that precedes it, so a wrap stopping after the probe
+    fails here. Expressing that rival at all required the fake to gain a
+    refusal it never carried -- on the real binding the mint is a store round
+    trip that can be throttled like any other, and a fake that could only ever
+    answer it left the narrow wrap and the wide one indistinguishable. The
+    test also excludes ``download_url_unavailable`` (501), a different fact: a
+    capability the binding lacks, not a store that declined.
     """
     doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_b5")
-    refusing_source_store.refuse_stat = store_refusal(503, retryable=True, operation="stat source")
+    refusing_source_store.refuse_download_url = store_refusal(
+        503, retryable=True, operation="mint download url"
+    )
     documents = DocumentsService(graph_store, minimal_config)
 
     with pytest.raises(VaultSourceStoreUnavailableError) as excinfo:
@@ -195,7 +222,11 @@ async def test_download_recipe_hash_refusal_is_typed(
     Anti-coincidental-pass: this branch is reached only when the caller's own
     filesystem is out of the server's reach, and it is the one delivery site
     that hashes. A translation covering the ordinary delivery region alone
-    passes every other test in this module and fails here.
+    passes every other test in this module and fails here. The second arm aims
+    past the hash at the region's last store read, so a wrap that stopped after
+    the hash -- the call this test would otherwise be built around -- fails on
+    it; both the digest and the size are promises the caller verifies the
+    fetched bytes against, so neither may reach it as an untyped error.
     """
     doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_b6")
     monkeypatch.setattr("sage.mcp_init.caller_local_filesystem_reachable", lambda: False)
@@ -207,6 +238,15 @@ async def test_download_recipe_hash_refusal_is_typed(
 
     assert excinfo.value.detail["operation"] == "hash source"
     assert excinfo.value.status_code == 502
+
+    # The size read follows the hash in the same region; refuse past the stat
+    # the branch opens with, so this arm lands on it rather than on the probe.
+    refusing_source_store.refuse_hash = None
+    refusing_source_store.refuse_stat = _refuse_after(
+        1, store_refusal(503, retryable=True, operation="stat source")
+    )
+    with pytest.raises(VaultSourceStoreUnavailableError):
+        await documents.get_document_with_content(doc.id, False, "/caller/local/copy2.md")
 
 
 async def test_delivery_refusal_message_omits_the_store_body(
@@ -255,3 +295,61 @@ async def test_delivery_transience_follows_the_binding_not_the_status(
 
     with pytest.raises(expected):
         await documents.get_document_with_content(doc.id, True, None)
+
+
+# ---------------------------------------------------------------------------
+# Re-projection reads the retained source through the same store
+# ---------------------------------------------------------------------------
+
+
+async def test_recompute_pipeline_source_read_refusal_is_typed(
+    graph_store, minimal_config, ingestion_service, refusing_source_store
+):
+    """Re-projection reads the retained source back through the store, and a
+    refusal on that read is typed like every other read of it.
+
+    The read has three callers -- the operator-facing recompute, the ingest
+    pipeline's own projection stage, and the worker's re-projection -- so the
+    translation belongs at the read rather than at any one of them.
+
+    Anti-coincidental-pass: the refusal is armed on the *read* and not on the
+    existence probe that precedes it, and `source_reads` would stay at zero if
+    the probe had refused instead. A translation placed on the caller rather
+    than on the read would leave the other two callers untyped, which the
+    companion test below is what excludes.
+    """
+    doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_rp")
+    refusing_source_store.refuse_read = store_refusal(403, retryable=False, operation="read source")
+
+    with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
+        await ingestion_service.recompute_pipeline(doc.id)
+
+    assert excinfo.value.code == "vault_source_store_refused"
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail["source_path"] == doc.source_path
+    assert excinfo.value.detail["operation"] == "read source"
+    assert refusing_source_store.source_stats >= 1, "the existence probe must have run"
+
+
+async def test_reprojection_read_refusal_is_typed_at_the_read_not_the_caller(
+    graph_store, minimal_config, ingestion_service, refusing_source_store
+):
+    """The existence probe the re-projection makes before the read is typed too.
+
+    Anti-coincidental-pass: pairs with the test above. That one arms the read
+    and this one arms the probe, and the two store calls sit on either side of
+    a `SourceFileNotFoundError` raise -- so a translation covering only the
+    read leaves this one raw, and one covering only the probe leaves that one
+    raw. Neither test alone separates a wrap around the pair from a wrap
+    around either half. This also asserts the refusal is not folded into the
+    absent-source error the probe raises when the store answers honestly.
+    """
+    doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_rq")
+    refusing_source_store.refuse_stat = store_refusal(429, retryable=True, operation="stat source")
+
+    with pytest.raises(VaultSourceStoreUnavailableError) as excinfo:
+        await ingestion_service.recompute_pipeline(doc.id)
+
+    assert excinfo.value.code == "vault_source_store_unavailable"
+    assert excinfo.value.code != "source_file_not_found"
+    assert refusing_source_store.source_reads == 0
