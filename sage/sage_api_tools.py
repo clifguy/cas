@@ -310,13 +310,16 @@ def register_sage_tools(
           the transfer channel but declares no public transfer endpoint, so
           no recipe can be minted.
         - ``vault_source_store_refused`` (502): the vault-source store declined
-          to retain the source on its merits -- quota, a permission it
-          withdrew, a reply that opened no usable upload session. Resolve it at
-          the store before retrying; ``detail.store_status`` carries the status
-          it declined with.
+          either to retain the source or to serve the read-back the projection
+          makes of it -- quota, a permission it withdrew, a reply that opened
+          no usable upload session. Resolve it at the store before retrying;
+          ``detail.store_status`` carries the status it declined with. A
+          refusal on the read-back leaves the retained copy in place; a retry
+          reuses it rather than sending the bytes again.
         - ``vault_source_store_unavailable`` (503): the store declined to serve
-          the retention just now -- throttling, a transient backend signal, an
-          upload session it expired. The same call may succeed later.
+          the retention or that read-back just now -- throttling, a transient
+          backend signal, an upload session it expired. The same call may
+          succeed later.
         - ``duplicate_content`` (409): a document with the same
           ``source_path`` and content hash exists. Override with
           ``force=true``.
@@ -623,12 +626,12 @@ def register_sage_tools(
         - ``write_path_invalid`` (400): ``write_to_path`` parent is
           missing or not writable, or the path is not absolute.
         - ``vault_source_store_refused`` (502): the store declined the operation
-          on its merits -- quota, a permission it withdrew, a reply that opened
-          no usable upload session. Resolve it at the store before retrying;
+          on its merits -- quota, a permission it withdrew, a reply that could
+          not be used. Resolve it at the store before retrying;
           ``detail.store_status`` carries the status it declined with.
         - ``vault_source_store_unavailable`` (503): the store declined to serve
-          the operation just now -- throttling, a transient backend signal, an
-          upload session it expired. The same call may succeed later.
+          the operation just now -- throttling, or a transient backend signal.
+          The same call may succeed later.
           Both only when bytes are requested; a metadata-only read touches
           the store not at all.
 
@@ -2707,12 +2710,12 @@ def register_sage_tools(
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``vault_source_store_refused`` (502): the store declined the operation
-          on its merits -- quota, a permission it withdrew, a reply that opened
-          no usable upload session. Resolve it at the store before retrying;
+          on its merits -- quota, a permission it withdrew, a reply that could
+          not be used. Resolve it at the store before retrying;
           ``detail.store_status`` carries the status it declined with.
         - ``vault_source_store_unavailable`` (503): the store declined to serve
-          the operation just now -- throttling, a transient backend signal, an
-          upload session it expired. The same call may succeed later.
+          the operation just now -- throttling, or a transient backend signal.
+          The same call may succeed later.
 
         A refusal ends the walk rather than becoming a per-document status, so
         no report is returned and the findings gathered so far are discarded.

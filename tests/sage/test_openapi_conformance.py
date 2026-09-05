@@ -1938,10 +1938,22 @@ def test_specs_respect_url_prefix_boundaries(
 #: a background worker, neither of which has a spec operation to declare on.
 #:
 #: The keys are *checked against the code*, not trusted: the test below walks
-#: every module under ``sage/`` for calls to ``translate_store_refusal`` and
-#: requires this mapping to name exactly the sites it finds. A wrap added to a
-#: new function therefore fails here by name, which is the direction a
-#: spec-driven gate cannot see.
+#: every module under ``sage/`` for **bare-name** calls to
+#: ``translate_store_refusal`` and requires this mapping to name exactly the
+#: sites it finds. A wrap added to a new function under that spelling fails
+#: here by name, which is a direction a spec-driven gate cannot see.
+#:
+#: **What it does not reach.** Only ``translate_store_refusal(...)`` written as
+#: a bare name. A translation opened through a module-local wrapper -- such as
+#: ``_translate_vault_source_refusal`` in the ingest service -- or called
+#: attribute-style or under an import alias is invisible to the walk, and a
+#: site added that way passes silently. Teaching the walk to chase those
+#: spellings was deliberately not done: it is scaffolding for a design in
+#: which translation is placed by hand at each site, and the intended
+#: replacement is a translating wrapper around the store binding itself, which
+#: covers every call by construction and removes the need for this gate. The
+#: limit is stated here rather than papered over so the next sweep through the
+#: ingest service -- where the wrapper *is* the idiom -- knows it is unguarded.
 TRANSLATION_SITE_OPERATIONS: dict[str, frozenset[str]] = {
     "sage/api/routers/transfer.py::transfer_download": frozenset({"transfer_download"}),
     "sage/services/documents.py::DocumentsService.get_document_with_content": frozenset(
@@ -1999,12 +2011,15 @@ def _translation_sites() -> set[str]:
 
 
 def test_translation_site_mapping_is_total():
-    """The mapping names exactly the translation sites the code contains.
+    """The mapping names exactly the bare-name translation sites the code contains.
 
     This is what makes the coverage test below a gate on the *code* rather than
-    on a hand-kept list. A wrap added to a function absent from the mapping
-    fails here by name, and a mapping entry whose function no longer translates
-    fails here too, so the table cannot drift silently in either direction.
+    on a hand-kept list, for the spelling it can see. A wrap added to a function
+    absent from the mapping fails here by name, and a mapping entry whose
+    function no longer translates fails here too, so the table cannot drift
+    silently in either direction -- within that spelling. See the note on
+    ``TRANSLATION_SITE_OPERATIONS`` for what the walk does not reach, and why
+    extending it was declined.
 
     Anti-coincidental-pass: the discovered set is asserted non-empty first. A
     walk that silently found nothing -- a renamed helper, a changed import
@@ -2029,9 +2044,12 @@ def test_store_refusal_operations_declare_both_codes(live_openapi: dict):
     The envelope gate above is driven from the committed spec, so it catches a
     router that dropped a declared status but not an operation that can emit a
     status it never declared. The expectation here is derived from the
-    translation sites the code actually contains, by way of a mapping the test
-    above proves total -- so adding a wrap without the declaration fails, which
-    is the direction the spec-driven gate is blind to.
+    translation sites the code contains, by way of a mapping the test above
+    proves total -- so adding a bare-name wrap without the declaration fails,
+    which is a direction the spec-driven gate is blind to. It is not a complete
+    guard: the walk sees one spelling, and the mapping's *values* are hand-kept,
+    so an operation newly routed to an already-mapped service method does not
+    move the expectation.
 
     Pinned as an equality so the reverse drift fails too: a declaration left on
     an operation whose translation was removed documents a status the operation

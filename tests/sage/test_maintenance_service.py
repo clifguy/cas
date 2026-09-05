@@ -57,7 +57,7 @@ from sage.services.maintenance import (
     MaintenanceService,
 )
 from sage.storage.tier3_uniqueness import tier3_unique_index_name
-from tests.helpers.store_refusal import STORE_BODY, store_refusal
+from tests.helpers.store_refusal import STORE_BODY, refuse_after, store_refusal
 from tests.sage.test_tier3_uniqueness import (
     _config_dict_with_unique_keys,
     _make_ticket_doc,
@@ -3505,24 +3505,6 @@ async def _audit_doc(gs, fake, did: str, *, present: bool = True) -> str:
     return sp
 
 
-def _refuse_after(successes: int, refusal: Exception):
-    """A refusal that lets ``successes`` reads through before it fires.
-
-    Order-independent: whichever documents the walk reaches first, the
-    refusal lands after exactly that many succeeded, so a test can assert
-    what had been collected by then without pinning the iteration order.
-    """
-    seen = {"n": 0}
-
-    def hook(vault_id: str, source_path: str) -> Exception | None:
-        if seen["n"] >= successes:
-            return refusal
-        seen["n"] += 1
-        return None
-
-    return hook
-
-
 async def test_verify_source_files_store_refusal_is_typed_and_actionable(
     graph_store, minimal_config, stub_content_store, refusing_source_store
 ):
@@ -3604,7 +3586,7 @@ async def test_verify_source_files_aborts_rather_than_reporting_a_per_document_s
     maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
     for did in ("deadbeef_a3", "deadbeef_b3", "deadbeef_c3"):
         await _audit_doc(gs, refusing_source_store, did, present=False)
-    refusing_source_store.refuse_stat = _refuse_after(
+    refusing_source_store.refuse_stat = refuse_after(
         1, _refusal(403, retryable=False, operation="stat source")
     )
 

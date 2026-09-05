@@ -23,27 +23,9 @@ from sage.api.errors import (
     VaultSourceStoreUnavailableError,
 )
 from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import Document
+from sage.models.schemas import Document, IngestRequest
 from sage.services.documents import DocumentsService
-from tests.helpers.store_refusal import STORE_BODY, store_refusal
-
-
-def _refuse_after(successes: int, refusal: Exception):
-    """A refusal that lets ``successes`` reads through before it fires.
-
-    Lets a test aim past the first store call in a region at the second, which
-    is the only way to tell a wrap spanning the whole region from one that
-    stops after the call that happens to come first.
-    """
-    seen = {"n": 0}
-
-    def hook(vault_id: str, source_path: str) -> Exception | None:
-        if seen["n"] >= successes:
-            return refusal
-        seen["n"] += 1
-        return None
-
-    return hook
+from tests.helpers.store_refusal import STORE_BODY, refuse_after, store_refusal
 
 
 def _sha256_of(content: bytes) -> str:
@@ -173,7 +155,7 @@ async def test_get_document_content_refusal_is_typed_before_the_stream_opens(
     Content-Length promises, so leaving it untyped is not cosmetic.
     """
     doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_b4")
-    refusing_source_store.refuse_stat = _refuse_after(
+    refusing_source_store.refuse_stat = refuse_after(
         1, store_refusal(403, retryable=False, operation="stat source")
     )
     documents = DocumentsService(graph_store, minimal_config)
@@ -242,7 +224,7 @@ async def test_download_recipe_hash_refusal_is_typed(
     # The size read follows the hash in the same region; refuse past the stat
     # the branch opens with, so this arm lands on it rather than on the probe.
     refusing_source_store.refuse_hash = None
-    refusing_source_store.refuse_stat = _refuse_after(
+    refusing_source_store.refuse_stat = refuse_after(
         1, store_refusal(503, retryable=True, operation="stat source")
     )
     with pytest.raises(VaultSourceStoreUnavailableError):
@@ -314,9 +296,13 @@ async def test_recompute_pipeline_source_read_refusal_is_typed(
 
     Anti-coincidental-pass: the refusal is armed on the *read* and not on the
     existence probe that precedes it, and `source_reads` would stay at zero if
-    the probe had refused instead. A translation placed on the caller rather
-    than on the read would leave the other two callers untyped, which the
-    companion test below is what excludes.
+    the probe had refused instead. The companion below arms the probe, which
+    separates a read-only wrap from a probe-only one; neither says anything
+    about *where* the wrap sits, because both reach the read through this one
+    caller. The placement rival -- a wrap lifted from the read up to this
+    caller -- is excluded by the ingest test after them, which reaches the
+    same read through a different caller and is the only test here that fails
+    against it.
     """
     doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_rp")
     refusing_source_store.refuse_read = store_refusal(403, retryable=False, operation="read source")
@@ -341,7 +327,8 @@ async def test_reprojection_read_refusal_is_typed_at_the_read_not_the_caller(
     a `SourceFileNotFoundError` raise -- so a translation covering only the
     read leaves this one raw, and one covering only the probe leaves that one
     raw. Neither test alone separates a wrap around the pair from a wrap
-    around either half. This also asserts the refusal is not folded into the
+    around either half, and neither constrains placement -- see the ingest
+    test below for that. This also asserts the refusal is not folded into the
     absent-source error the probe raises when the store answers honestly.
     """
     doc = await _delivered_doc(graph_store, refusing_source_store, "deadbeef_rq")
@@ -353,3 +340,40 @@ async def test_reprojection_read_refusal_is_typed_at_the_read_not_the_caller(
     assert excinfo.value.code == "vault_source_store_unavailable"
     assert excinfo.value.code != "source_file_not_found"
     assert refusing_source_store.source_reads == 0
+
+
+async def test_ingest_projection_read_refusal_is_typed(
+    ingestion_service, refusing_source_store, tmp_path
+):
+    """The ingest pipeline's own projection stage reads the retained source back
+    through the store, and a refusal there is typed too.
+
+    Retention and the read-back are separate store operations on the same
+    ingest: the bytes are written, then read back to project them. The write
+    succeeding does not make the read safe, and the read sits outside the
+    translation the retention runs under.
+
+    Anti-coincidental-pass: this is the only test that reaches the re-projection
+    read through a caller other than the recompute, and it is what excludes the
+    placement rival the two tests above cannot. A wrap lifted off the read and
+    re-opened around ``recompute_pipeline`` satisfies both of those and leaves
+    this path raw -- which is the gap the review found on this branch, on this
+    exact caller. ``source_uploads`` is asserted non-zero so the refusal is
+    proven to have landed on the read-back rather than on the retention, which
+    would exercise the retention's own long-standing translation instead.
+    """
+    external = tmp_path / "external.md"
+    external.write_text("# External\n\nBody the ingest retains and then reads back.\n")
+    refusing_source_store.refuse_read = store_refusal(403, retryable=False, operation="read source")
+
+    with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+        )
+
+    assert excinfo.value.code == "vault_source_store_refused"
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail["operation"] == "read source"
+    assert refusing_source_store.source_uploads >= 1, (
+        "the retention must have succeeded, so the refusal landed on the read-back"
+    )

@@ -35,3 +35,23 @@ def store_refusal(
         status=status,
         retryable=retryable,
     )
+
+
+def refuse_after(successes: int, refusal: Exception):
+    """A refusal that lets ``successes`` reads through before it fires.
+
+    Lets a test aim past the first store call in a region at a later one,
+    which is the only way to tell a wrap spanning a whole region from one
+    that stops after the call that happens to come first. Kept here for the
+    same reason as the builders above: two copies of a counting hook are two
+    copies that can disagree about what "after" means.
+    """
+    seen = {"n": 0}
+
+    def hook(vault_id: str, source_path: str) -> Exception | None:
+        if seen["n"] >= successes:
+            return refusal
+        seen["n"] += 1
+        return None
+
+    return hook
