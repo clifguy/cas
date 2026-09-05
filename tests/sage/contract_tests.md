@@ -1005,7 +1005,7 @@ which asserts that the spec's path/method set equals the FastAPI route set in
 both directions, with `SPEC_FORWARD_DECLARATIONS` as the only allowlist. Any
 future enumeration of the surface belongs in that module, never here.
 
-### TEST-SAGE-API-003: No DELETE method on a document path
+### TEST-SAGE-API-003: DELETE declared only on the edge-unlink path
 
 **Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml`
 **Category:** valid
@@ -1014,7 +1014,7 @@ future enumeration of the surface belongs in that module, never here.
 **Input:** Scan all paths for the `delete` method.
 
 **Expected:** The only operation using `delete` is `DELETE /sage_vaults/{vault_id}/edges/{edge_id}`. No path under `/sage_vaults/{vault_id}/documents` declares `delete`.
-**Rationale:** The no-delete invariant applies to documents, which are superseded or archived, never destroyed. Edges are not documents: an edge whose relationship is no longer correct is unlinked, and the spec header states the invariant in exactly those terms. `tests/sage/test_openapi_conformance.py::test_no_delete_method_on_a_document_path` enforces this constraint over the parsed spec.
+**Rationale:** The no-delete invariant applies to documents, which are superseded or archived, never destroyed. Edges are not documents: an edge whose relationship is no longer correct is unlinked, and the spec header states the invariant in exactly those terms. `tests/sage/test_openapi_conformance.py::test_delete_is_declared_only_on_the_edge_unlink_path` pins the set of paths declaring `delete` to exactly that one, so a DELETE introduced on any other subtree fails the gate.
 
 ### TEST-SAGE-API-004: Vault-scoped paths, with the process-scoped exceptions enumerated
 

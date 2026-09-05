@@ -1936,19 +1936,18 @@ def test_specs_respect_url_prefix_boundaries(
 # ---------------------------------------------------------------------------
 
 
-def _document_delete_operations(spec: dict | None) -> set[str]:
-    """Paths under a vault's ``/documents`` subtree that declare ``delete``.
+# The one path on which ``delete`` is declared. The no-delete invariant
+# (SAGE Architecture Reference §6.4) covers documents, which are superseded
+# or archived rather than destroyed; an edge whose relationship is no longer
+# correct may be unlinked, which is why this set is not empty. Pinned to
+# equality rather than scanned for a documents-only violation, so a DELETE
+# introduced anywhere on the surface forces a deliberate edit here.
+_EXPECTED_DELETE_PATHS: set[str] = {"/sage_vaults/{vault_id}/edges/{edge_id}"}
 
-    The no-delete invariant (SAGE Architecture Reference §6.4) covers
-    documents only: an edge whose relationship is no longer correct may be
-    unlinked, so ``DELETE .../edges/{edge_id}`` is not reported here.
-    """
-    documents_prefix = f"{_VAULT_SCOPED_PREFIX}documents"
-    return {
-        path
-        for path, method in _operations(spec)
-        if method == "delete" and path.startswith(documents_prefix)
-    }
+
+def _delete_operations(spec: dict | None) -> set[str]:
+    """Every path in ``spec`` that declares the ``delete`` method."""
+    return {path for path, method in _operations(spec) if method == "delete"}
 
 
 def _paths_outside_vault_scope(spec: dict | None) -> set[str]:
@@ -1956,18 +1955,20 @@ def _paths_outside_vault_scope(spec: dict | None) -> set[str]:
     return {path for path, _ in _operations(spec) if not path.startswith(_VAULT_SCOPED_PREFIX)}
 
 
-def test_no_delete_method_on_a_document_path(sage_core_spec: dict | None):
-    """No path under ``/sage_vaults/{vault_id}/documents`` declares ``delete``.
+def test_delete_is_declared_only_on_the_edge_unlink_path(sage_core_spec: dict | None):
+    """``delete`` appears on the edge-unlink path and on no other.
 
-    Documents are superseded or archived, never destroyed. The scan is
-    anchored on a non-empty operation set so a missing or empty spec cannot
-    pass it vacuously.
+    Equality rather than a documents-only scan: the weaker form stays green
+    while a DELETE appears on any other subtree, which falsifies the claim
+    this gate carries. Anchored on a non-empty operation set so a missing or
+    empty spec cannot pass it vacuously.
     """
     assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
     assert _operations(sage_core_spec), "spec declares no operations; nothing to scan"
-    offenders = _document_delete_operations(sage_core_spec)
-    assert not offenders, "DELETE declared on a document path:\n" + "\n".join(
-        f"  {p}" for p in sorted(offenders)
+    declared = _delete_operations(sage_core_spec)
+    assert declared == _EXPECTED_DELETE_PATHS, (
+        f"paths declaring delete: {sorted(declared)}; "
+        f"expected exactly {sorted(_EXPECTED_DELETE_PATHS)}"
     )
 
 
@@ -1996,8 +1997,9 @@ def test_path_shape_detectors_have_teeth():
             "/orphan": {"get": {}},
         }
     }
-    assert _document_delete_operations(mutant) == {
-        "/sage_vaults/{vault_id}/documents/{document_id}"
+    assert _delete_operations(mutant) == {
+        "/sage_vaults/{vault_id}/documents/{document_id}",
+        "/sage_vaults/{vault_id}/edges/{edge_id}",
     }
     assert _paths_outside_vault_scope(mutant) == {"/orphan"}
 
