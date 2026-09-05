@@ -108,19 +108,24 @@ _RUNBOOK_EXPORT_VAULT_RE = re.compile(r"^\s*export\s+SP_VALIDATE_VAULT_ID=(\S+)"
 # A prose statement of what the vault-source root defaults to, in the forms the
 # docs use: the parameter name (or "root path") followed by "default(s) to/is"
 # and a quoted value (Markdown backticks or Bicep-comment single quotes), or
-# "the default `<root>` root". Anchored on the parameter's name or the word
-# "root" so a neighbouring parameter's default is not captured.
+# "the default `<root>` root ... `vaultSourceRootPath`". Every form spans the
+# parameter's name, so a *site* (the name within reach of the word "default")
+# is either inside a statement's span or unread -- the containment the
+# per-document check asserts.
 _ROOT_DEFAULT_STATEMENT_RES = (
-    re.compile(r"`?vaultSourceRootPath`?\s+defaults?\s+(?:to|is)\s+[`']([^`'\s]+)[`']"),
-    re.compile(r"\bdefault\s+`([^`\s]+)`\s+root\b"),
+    re.compile(r"`?<?vaultSourceRootPath>?`?\s+defaults?\s+(?:to|is)\s+[`']([^`'\s]+)[`']"),
+    re.compile(r"\bdefault\s+`([^`\s]+)`\s+root\b[^`]{0,40}`vaultSourceRootPath`"),
     re.compile(r"\broot path defaults?\s+to\s+[`']([^`'\s]+)[`']"),
 )
 _ROOT_DEFAULT_DOCS = (RUNBOOK_PATH, BICEPPARAM_EXAMPLE_PATH, BICEPPARAM_PATH)
-# The parameter's name outside a `<placeholder>`, or the prose "root path".
-_ROOT_PARAM_NAME_RE = re.compile(r"(?<!<)vaultSourceRootPath|\broot path\b")
+# The parameter's name, or the prose "root path". The one spelling excluded is
+# the placeholder used as a path segment (`<vaultSourceRootPath>/...`), which
+# describes the tree's shape rather than stating a default.
+_ROOT_PARAM_NAME_RE = re.compile(r"vaultSourceRootPath(?!>/)|\broot path\b")
 _DEFAULT_WORD_RE = re.compile(r"\bdefaults?\b")
-# How far, in whitespace-flattened characters, the word "default" may sit from
-# the parameter's name and still be the same statement.
+# How far, in characters, the word "default" may sit from the parameter's name
+# and still be the same statement. Whitespace counts, so a statement reflowed
+# across a line break is still within reach.
 _ROOT_STATEMENT_REACH = 60
 
 # Bare prose mentions of the vault id, in the phrase forms the docs use:
@@ -183,23 +188,12 @@ _PREFLIGHT_EXPECTED_RE = re.compile(
     r"PREFLIGHT_EXPECTED_VAULTS(?:\s+--env\s+\"\$ENVIRONMENT\"\s+--body\s+\"([^\"]*)\"|=(\S+))"
 )
 
-# The inventory: every tracked file outside tests/ that names the seeded vault.
-# The anchored-occurrence test walks each entry; the inventory test holds this
-# tuple to what the tree actually contains. The forms each file names the id in
-# are built per run by ``_vault_id_anchors``, because one of them (the runbook's
-# folder mention) is anchored on the resolved root default.
-_VAULT_ID_FILES: tuple[Path, ...] = (
-    SEED_CONFIG_PATH,
-    SEED_SCRIPT_PATH,
-    VALIDATE_DRIVER_PATH,
-    VALIDATE_WORKFLOW_PATH,
-    DEPLOYMENT_DOC_PATH,
-    RUNBOOK_PATH,
-    POSTGRES_BOOTSTRAP_DOC_PATH,
-    DELETE_VAULT_CLOUD_PATH,
-)
 
-
+# The inventory: every tracked file outside tests/ that names the seeded vault,
+# with the forms it names the id in as (pattern, capture group). Built per run
+# rather than held as a constant because one form (the runbook's folder mention)
+# is anchored on the resolved root default. The anchored-occurrence test walks
+# each entry; the inventory test holds the key set to what the tree contains.
 def _vault_id_anchors(root_default: str) -> dict[Path, tuple[tuple[re.Pattern[str], int], ...]]:
     """The forms each inventoried file names the vault id in, as (pattern,
     capture group), for the given resolved root default."""
@@ -220,6 +214,12 @@ def _vault_id_anchors(root_default: str) -> dict[Path, tuple[tuple[re.Pattern[st
         POSTGRES_BOOTSTRAP_DOC_PATH: ((_VAULTS_LOADED_RE, 1), (_MENTION_INCLUDES_RE, 1)),
         DELETE_VAULT_CLOUD_PATH: ((_MENTION_VAULT_IS_RE, 1),),
     }
+
+
+# The inventoried files, derived from the anchor table so the two cannot
+# disagree. The root passed here only shapes the runbook's folder pattern, which
+# the key set does not depend on.
+_VAULT_ID_FILES: tuple[Path, ...] = tuple(_vault_id_anchors(root_default=""))
 
 
 # Top-level sections VaultConfig declares without a default (sage/config.py).
@@ -310,19 +310,16 @@ def _main_bicep_root_default() -> str:
     return default
 
 
-def _root_default_statement_sites(text: str) -> int:
-    """How many times ``text`` names the root parameter within reach of the word
-    "default". Measured over whitespace-flattened text so a statement reflowed
-    across a line break counts once, the same as the statement patterns match it.
-    """
-    flat = re.sub(r"\s+", " ", text)
-    return sum(
-        1
-        for match in _ROOT_PARAM_NAME_RE.finditer(flat)
+def _root_default_statement_sites(text: str) -> list[re.Match[str]]:
+    """Every place ``text`` names the root parameter within reach of the word
+    "default" -- the sites a statement of the default must account for."""
+    return [
+        match
+        for match in _ROOT_PARAM_NAME_RE.finditer(text)
         if _DEFAULT_WORD_RE.search(
-            flat, max(0, match.start() - _ROOT_STATEMENT_REACH), match.end() + _ROOT_STATEMENT_REACH
+            text, max(0, match.start() - _ROOT_STATEMENT_REACH), match.end() + _ROOT_STATEMENT_REACH
         )
-    )
+    ]
 
 
 def _text_or_none(path: Path) -> str | None:
@@ -591,22 +588,23 @@ def test_documented_root_default_is_the_bicep_default() -> None:
     stale "defaults to" teaches the wrong shape at exactly the moment it matters.
 
     Completeness control: every site where the parameter's name (or "root path")
-    sits within reach of the word "default" -- measured over whitespace-flattened
-    text, so a reflowed statement counts the same as an unwrapped one -- must
-    have yielded a capture, so a statement in a spelling the patterns do not
-    cover fails here rather than passing unread.
+    sits within reach of the word "default" must lie inside the span of a
+    statement this check read, so a statement in a spelling the patterns do not
+    cover fails here, at its own line, rather than passing unread. Containment
+    by position rather than a count of each: a count can be satisfied by an
+    unrelated statement elsewhere in the document standing in for the unread one.
     """
     root_default = _main_bicep_root_default()
     for path in _ROOT_DEFAULT_DOCS:
         text = path.read_text()
         statements = [m for pattern in _ROOT_DEFAULT_STATEMENT_RES for m in pattern.finditer(text)]
         assert statements, f"{path.name} must state what the vault-source root defaults to"
-        sites = _root_default_statement_sites(text)
-        assert len(statements) == sites, (
-            f"{path.name} names the root parameter within reach of a default at {sites} "
-            f"site(s) but this check read {len(statements)} statement(s); an unread "
-            "statement is an unchecked one"
-        )
+        for site in _root_default_statement_sites(text):
+            assert any(s.start() <= site.start() and site.end() <= s.end() for s in statements), (
+                f"{path.name}:{_line_at(text, site.start())} names the root parameter beside "
+                "the word 'default' in a form this check does not read; an unread statement "
+                "is an unchecked one"
+            )
         for match in sorted(statements, key=lambda m: m.start()):
             assert match.group(1) == root_default, (
                 f"{path.name}:{_line_at(text, match.start())} says the vault-source root "
