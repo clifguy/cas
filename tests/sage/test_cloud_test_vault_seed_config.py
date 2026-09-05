@@ -7,19 +7,39 @@ suite guards the committed seed so a config SAGE would reject can never be
 uploaded -- a defect that would otherwise surface only at runtime, in the
 cloud, as a discovery failure.
 
-The seed's ``vault.id`` is also replicated as a bare literal in four other
-artifacts that no schema check reaches: the document-library folder the
-bootstrap script uploads into, the validation driver's fallback ``--vault-id``,
-the CI harness's ``SP_VALIDATE_VAULT_ID``, and the deploy gate's documented
-``PREFLIGHT_EXPECTED_VAULTS`` list. Nothing reconciles them at runtime: discovery
-enumerates the library's folder names but registers each vault under the
-``vault.id`` its own config declares (``sage/app.py``), and a vault's sources are
-then addressed at ``<root>/<registered id>/``. A divergence therefore does not
-fail -- it splits. The vault registers and serves normally while its declaration
-sits in one folder and its sources are addressed to another, so the split is
-invisible to discovery, to the preflight vault check, and to any read that only
-asks whether the vault is present. The coupling tests below hold all five
-literals to the config, before that state can be created.
+The seed's ``vault.id`` is also replicated as a bare literal in artifacts that
+no schema check reaches: the document-library folder the bootstrap script
+uploads into, the validation driver's fallback ``--vault-id``, the CI harness's
+``SP_VALIDATE_VAULT_ID``, the deploy gate's documented
+``PREFLIGHT_EXPECTED_VAULTS`` list, the operator runbooks' worked commands and
+prose, and the seed config's own header comment and storage roots. Nothing
+reconciles them at runtime: discovery enumerates the library's folder names but
+registers each vault under the ``vault.id`` its own config declares
+(``sage/app.py``), and a vault's sources are then addressed at
+``<root>/<registered id>/``. A divergence therefore does not fail -- it splits.
+The vault registers and serves normally while its declaration sits in one folder
+and its sources are addressed to another, so the split is invisible to
+discovery, to the preflight vault check, and to any read that only asks whether
+the vault is present. The coupling tests below hold every replica to the config,
+before that state can be created.
+
+The replicas are held by an *inventory* rather than one test per site: every
+tracked file that names the id is listed with the forms it names it in, each
+form is anchored on structure where structure exists (a Graph path, an export
+line, a YAML key, the startup banner's own log line) and on a narrowly pinned
+phrase where only prose does, and two completeness controls close the sweep --
+every occurrence of the id in a listed file must fall inside an anchored form,
+and every tracked file naming the id must be listed. A replica added anywhere
+in the tree therefore fails here rather than surfacing later as a stale
+document.
+
+The *root* segment of the same path is replicated the same way: the bootstrap
+script's ``VAULT_SOURCE_ROOT_PATH`` default, the IaC parameter defaults, the
+engine's ``root_path`` model default and its JSON-schema mirror, the maintenance
+job's environment fallback, and the "defaults to" statements in the operator
+docs. That divergence has the opposite shape: discovery lists vault folders
+within the root, so a config seeded under one root and served under another is
+never enumerated at all -- an absent vault rather than a split one.
 
 Each replica has its own structural gate elsewhere asserting a different property
 of it -- that the harness targets a disposable vault rather than ``cas``, that
@@ -27,14 +47,17 @@ the seed config is schema-valid. Those answer "is this value acceptable?"; these
 answer "is it the same value?", and a literal-against-literal check cannot.
 """
 
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from sage.config import VaultConfig
+from sage.config import StackDocumentStoreConfig, VaultConfig
+from sage.maintenance._cloud_env import config_from_env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,6 +66,104 @@ SEED_SCRIPT_PATH = _REPO_ROOT / "deploy" / "bootstrap" / "seed-vault-source.sh"
 VALIDATE_DRIVER_PATH = _REPO_ROOT / "deploy" / "sharepoint_validate.py"
 DEPLOYMENT_DOC_PATH = _REPO_ROOT / "docs" / "process" / "azure-deployment.md"
 VALIDATE_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "sharepoint-validate.yml"
+RUNBOOK_PATH = _REPO_ROOT / "docs" / "process" / "sharepoint-vault-source.md"
+POSTGRES_BOOTSTRAP_DOC_PATH = _REPO_ROOT / "docs" / "process" / "postgres-entra-bootstrap.md"
+DELETE_VAULT_CLOUD_PATH = _REPO_ROOT / "sage" / "maintenance" / "delete_vault_cloud.py"
+CORE_CONFIG_SCHEMA_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_config.schema.json"
+INFRA_DIR = _REPO_ROOT / "infra"
+MAIN_BICEP_PATH = INFRA_DIR / "main.bicep"
+BICEPPARAM_EXAMPLE_PATH = INFRA_DIR / "main.bicepparam.example"
+BICEPPARAM_PATH = INFRA_DIR / "main.bicepparam"
+
+# The bootstrap script's root default, anchored on the whole parameter-expansion
+# line: the operator may override the root through the environment, and the
+# default is the value that applies when they do not.
+_SEED_SCRIPT_ROOT_DEFAULT_RE = re.compile(
+    r"^VAULT_SOURCE_ROOT_PATH=\"\$\{VAULT_SOURCE_ROOT_PATH:-([^}\"]*)\}\"\s*$", re.MULTILINE
+)
+
+# A Bicep declaration of vaultSourceRootPath *with* a default. A declaration
+# without one (a module that is always handed the value) is not a replica.
+_BICEP_ROOT_DEFAULT_RE = re.compile(
+    r"^param\s+vaultSourceRootPath\s+string\s*=\s*'([^']*)'\s*$", re.MULTILINE
+)
+
+# The runbook's worked Graph paths -- the `az rest` commands an operator copies
+# verbatim -- capturing the root and vault-id segments together.
+_RUNBOOK_GRAPH_PATH_RE = re.compile(r"root:/([^/\"`<>\s]+)/([^/\"`<>\s]+)/vault_config\.yaml")
+
+
+# The runbook's backticked `<root>/<vault_id>/` folder mentions, anchored on the
+# resolved root default so a backticked repository path (`deploy/test-vault/`)
+# is a non-match rather than a misdiagnosed replica. A folder mention under a
+# *stale* root is then not captured either, and surfaces as an unanchored
+# occurrence of the id in the sweep below -- still a failure, at the right line.
+def _runbook_folder_re(root: str) -> re.Pattern[str]:
+    return re.compile(rf"`{re.escape(root)}/([^/`<>\s]+)/`")
+
+
+# The runbook's exported SP_VALIDATE_VAULT_ID, anchored on the export line.
+_RUNBOOK_EXPORT_VAULT_RE = re.compile(r"^\s*export\s+SP_VALIDATE_VAULT_ID=(\S+)", re.MULTILINE)
+
+# A prose statement of what the vault-source root defaults to, in the forms the
+# docs use: the parameter name (or "root path") followed by "default(s) to/is"
+# and a quoted value (Markdown backticks or Bicep-comment single quotes), or
+# "the default `<root>` root ... `vaultSourceRootPath`". Every form spans the
+# parameter's name, so a *site* (the name within reach of the word "default")
+# is either inside a statement's span or unread -- the containment the
+# per-document check asserts.
+_ROOT_DEFAULT_STATEMENT_RES = (
+    re.compile(r"`?<?vaultSourceRootPath>?`?\s+defaults?\s+(?:to|is)\s+[`']([^`'\s]+)[`']"),
+    re.compile(r"\bdefault\s+`([^`\s]+)`\s+root\b[^`]{0,40}`vaultSourceRootPath`"),
+    re.compile(r"\broot path defaults?\s+to\s+[`']([^`'\s]+)[`']"),
+)
+_ROOT_DEFAULT_DOCS = (RUNBOOK_PATH, BICEPPARAM_EXAMPLE_PATH, BICEPPARAM_PATH)
+# The parameter's name, or the prose "root path". The one spelling excluded is
+# the placeholder used as a path segment (`<vaultSourceRootPath>/...`), which
+# describes the tree's shape rather than stating a default.
+_ROOT_PARAM_NAME_RE = re.compile(r"vaultSourceRootPath(?!>/)|\broot path\b")
+_DEFAULT_WORD_RE = re.compile(r"\bdefaults?\b")
+# How far, in characters, the word "default" may sit from the parameter's name
+# and still be the same statement. Whitespace counts, so a statement reflowed
+# across a line break is still within reach.
+_ROOT_STATEMENT_REACH = 60
+
+# Bare prose mentions of the vault id, in the phrase forms the docs use:
+# "`<id>` vault", "includes `<id>`" (what list_vaults returns), "confirm `<id>`",
+# "exactly `<id>`", and the reStructuredText "vault is ``<id>``". Wording is
+# pinned here, narrowly and deliberately: a bare mention has no structural
+# anchor, and the alternative is not checking it. The completeness controls
+# below keep a mention in an unlisted form from being skipped silently.
+_MENTION_VAULT_RE = re.compile(r"`([^`\s]+)`\s+vault\b")
+_MENTION_INCLUDES_RE = re.compile(r"\bincludes\s+`([^`\s]+)`")
+_MENTION_CONFIRM_RE = re.compile(r"\bconfirm\s+`([^`\s]+)`")
+_MENTION_EXACTLY_RE = re.compile(r"\bexactly\s+`([^`\s]+)`")
+_MENTION_VAULT_IS_RE = re.compile(r"\bvault is ``([^`\s]+)``")
+
+# The seed config's own replicas of its vault.id: the header comment that spells
+# the library path the file is seeded to, and the storage roots, which sit at
+# <...>/<vault_id>/<leaf>. The id line itself anchors the declaration.
+_SEED_ID_LINE_RE = re.compile(r"^\s*id:\s*(\S+)\s*$", re.MULTILINE)
+_SEED_HEADER_PATH_RE = re.compile(
+    r"^#.*<vaultSourceRootPath>/([^/\s]+)/vault_config\.yaml", re.MULTILINE
+)
+_SEED_ROOTS_RE = re.compile(
+    r"^\s*(?:storage_root|brain_root):\s*\S*/([^/\s]+)/[^/\s]+\s*$", re.MULTILINE
+)
+
+# The single id a documented PREFLIGHT_EXPECTED_VAULTS value carries, in either
+# spelling. Used to anchor the occurrence; the value's completeness is asserted
+# separately with the wider _PREFLIGHT_EXPECTED_RE below.
+_PREFLIGHT_VALUE_RE = re.compile(
+    r"PREFLIGHT_EXPECTED_VAULTS(?:\s+--env\s+\"\$ENVIRONMENT\"\s+--body\s+\"|=)([^\"\s\\,]+)"
+)
+
+# The startup banner's own "vaults loaded (N): <ids>" line (sage/startup_banner.py),
+# quoted by the bootstrap doc as what the operator should see in the logs.
+_VAULTS_LOADED_RE = re.compile(r"vaults loaded \(\d+\):\s*([^\s,]+)")
+
+# The CI harness's job-level SP_VALIDATE_VAULT_ID, as a YAML key.
+_WORKFLOW_ENV_VAULT_RE = re.compile(r"^\s*SP_VALIDATE_VAULT_ID:\s*(\S+)\s*$", re.MULTILINE)
 
 # The folder segment the bootstrap script PUTs the seed config into, anchored on
 # the surrounding URI so the capture cannot drift onto an unrelated path.
@@ -67,6 +188,40 @@ _PREFLIGHT_EXPECTED_RE = re.compile(
     r"PREFLIGHT_EXPECTED_VAULTS(?:\s+--env\s+\"\$ENVIRONMENT\"\s+--body\s+\"([^\"]*)\"|=(\S+))"
 )
 
+
+# The inventory: every tracked file outside tests/ that names the seeded vault,
+# with the forms it names the id in as (pattern, capture group). Built per run
+# rather than held as a constant because one form (the runbook's folder mention)
+# is anchored on the resolved root default. The anchored-occurrence test walks
+# each entry; the inventory test holds the key set to what the tree contains.
+def _vault_id_anchors(root_default: str) -> dict[Path, tuple[tuple[re.Pattern[str], int], ...]]:
+    """The forms each inventoried file names the vault id in, as (pattern,
+    capture group), for the given resolved root default."""
+    return {
+        SEED_CONFIG_PATH: ((_SEED_ID_LINE_RE, 1), (_SEED_HEADER_PATH_RE, 1), (_SEED_ROOTS_RE, 1)),
+        SEED_SCRIPT_PATH: ((_SEED_UPLOAD_FOLDER_RE, 1),),
+        VALIDATE_DRIVER_PATH: ((_DRIVER_DEFAULT_VAULT_RE, 1), (_DRIVER_HELP_VAULT_RE, 1)),
+        VALIDATE_WORKFLOW_PATH: ((_WORKFLOW_ENV_VAULT_RE, 1), (_MENTION_VAULT_RE, 1)),
+        DEPLOYMENT_DOC_PATH: ((_PREFLIGHT_VALUE_RE, 1), (_MENTION_EXACTLY_RE, 1)),
+        RUNBOOK_PATH: (
+            (_RUNBOOK_GRAPH_PATH_RE, 2),
+            (_runbook_folder_re(root_default), 1),
+            (_RUNBOOK_EXPORT_VAULT_RE, 1),
+            (_MENTION_VAULT_RE, 1),
+            (_MENTION_INCLUDES_RE, 1),
+            (_MENTION_CONFIRM_RE, 1),
+        ),
+        POSTGRES_BOOTSTRAP_DOC_PATH: ((_VAULTS_LOADED_RE, 1), (_MENTION_INCLUDES_RE, 1)),
+        DELETE_VAULT_CLOUD_PATH: ((_MENTION_VAULT_IS_RE, 1),),
+    }
+
+
+# The inventoried files, derived from the anchor table so the two cannot
+# disagree. The root passed here only shapes the runbook's folder pattern, which
+# the key set does not depend on.
+_VAULT_ID_FILES: tuple[Path, ...] = tuple(_vault_id_anchors(root_default=""))
+
+
 # Top-level sections VaultConfig declares without a default (sage/config.py).
 # Each must be present for a config to validate; the optional sections
 # (adapter_defaults, abstraction, access_control_defaults, retrieval_health,
@@ -86,6 +241,115 @@ def _load_seed_dict() -> dict:
 
 def _seeded_vault_id() -> str:
     return VaultConfig.model_validate(_load_seed_dict()).vault.id
+
+
+def _seed_script_root_default() -> str:
+    matches = _SEED_SCRIPT_ROOT_DEFAULT_RE.findall(SEED_SCRIPT_PATH.read_text())
+    assert len(matches) == 1, (
+        f"{SEED_SCRIPT_PATH.name} must default the root exactly once, as "
+        'VAULT_SOURCE_ROOT_PATH="${VAULT_SOURCE_ROOT_PATH:-<root>}"; '
+        f"found {len(matches)} such line(s)"
+    )
+    return matches[0]
+
+
+def _bicep_root_defaults() -> dict[Path, str]:
+    """Every Bicep file under ``infra/`` that declares a ``vaultSourceRootPath``
+    default, mapped to that default. Walks the whole tree so a module default
+    is held to the same value as the entry point's -- a module that diverges is
+    inert only for as long as the entry point keeps threading the value in.
+    """
+    return {
+        path: match.group(1)
+        for path in sorted(INFRA_DIR.rglob("*.bicep"))
+        if (match := _BICEP_ROOT_DEFAULT_RE.search(path.read_text())) is not None
+    }
+
+
+def _root_default_replicas() -> dict[str, str]:
+    """Every declared default for the vault-source root, keyed by where it lives:
+    the bootstrap script, each Bicep file declaring one, the engine's config
+    model and its JSON-schema mirror, and the maintenance job's environment
+    fallback (exercised by building the config with the root unset, so the
+    fallback is read as behaviour rather than as source text).
+    """
+
+    def rel(path: Path) -> str:
+        return path.relative_to(_REPO_ROOT).as_posix()
+
+    replicas = {rel(SEED_SCRIPT_PATH): _seed_script_root_default()}
+    for path, default in _bicep_root_defaults().items():
+        replicas[rel(path)] = default
+    replicas["sage.config.StackDocumentStoreConfig.root_path"] = (
+        StackDocumentStoreConfig.model_fields["root_path"].default
+    )
+    schema = json.loads(CORE_CONFIG_SCHEMA_PATH.read_text())
+    replicas[f"{rel(CORE_CONFIG_SCHEMA_PATH)}#document_store.root_path"] = schema["properties"][
+        "document_store"
+    ]["properties"]["root_path"]["default"]
+    job_env = {
+        "PG_FQDN": "pg.example.invalid",
+        "PG_DATABASE": "sage",
+        "PG_USER": "sage",
+        "SHAREPOINT_SITE_ID": "site",
+        "SHAREPOINT_DRIVE_ID": "drive",
+    }
+    replicas["sage.maintenance._cloud_env.config_from_env (SHAREPOINT_ROOT_PATH unset)"] = (
+        config_from_env(job_env).document_store.root_path
+    )
+    return replicas
+
+
+def _main_bicep_root_default() -> str:
+    """The IaC parameter's default -- the referent every other replica is held to."""
+    default = _bicep_root_defaults().get(MAIN_BICEP_PATH)
+    assert default is not None, (
+        f"{MAIN_BICEP_PATH.relative_to(_REPO_ROOT)} must declare a default for "
+        "vaultSourceRootPath (param vaultSourceRootPath string = '<root>')"
+    )
+    return default
+
+
+def _root_default_statement_sites(text: str) -> list[re.Match[str]]:
+    """Every place ``text`` names the root parameter within reach of the word
+    "default" -- the sites a statement of the default must account for."""
+    return [
+        match
+        for match in _ROOT_PARAM_NAME_RE.finditer(text)
+        if _DEFAULT_WORD_RE.search(
+            text, max(0, match.start() - _ROOT_STATEMENT_REACH), match.end() + _ROOT_STATEMENT_REACH
+        )
+    ]
+
+
+def _text_or_none(path: Path) -> str | None:
+    """The file's text, or ``None`` for a file that is not UTF-8 text."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _line_at(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def _unanchored_occurrences(text: str, token: str, anchored_starts: set[int]) -> list[int]:
+    """Line numbers of every whole-word occurrence of ``token`` in ``text`` that
+    no anchored capture starts at."""
+    pattern = re.compile(rf"\b{re.escape(token)}\b")
+    return [
+        _line_at(text, m.start())
+        for m in pattern.finditer(text)
+        if m.start() not in anchored_starts
+    ]
+
+
+def _tracked_files() -> list[Path]:
+    listing = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"], capture_output=True, check=True
+    ).stdout
+    return [_REPO_ROOT / entry.decode() for entry in listing.split(b"\0") if entry]
 
 
 def test_seed_config_is_schema_valid() -> None:
@@ -233,6 +497,225 @@ def test_validation_workflow_targets_the_seeded_vault() -> None:
             f"committed seed declares {seeded!r}; the harness would mutate a vault "
             "that is not the one this repository seeds"
         )
+
+
+def test_every_root_default_is_the_bicep_default() -> None:
+    """Every declared default for the vault-source root is the IaC parameter's.
+
+    The seed upload roots the vault tree at the bootstrap script's default; a
+    deployed SAGE roots discovery at whatever it is handed, which under the IaC
+    is the Bicep default, and outside it -- a hand-built job environment, a
+    config that omits ``root_path`` -- is the engine's own default or the
+    maintenance job's fallback. Discovery lists vault folders *within* the root,
+    so a config seeded under one root and served under another is never
+    enumerated: the vault is simply absent, with nothing to say that two halves
+    of the bootstrap disagreed about where to look. Each default is a bare
+    literal in its own language. The Bicep parameter is the one a tenant
+    overrides, so it is the referent; this holds the *defaults* together and
+    says nothing about a tenant that overrides one of them.
+    """
+    replicas = _root_default_replicas()
+    referent_key = MAIN_BICEP_PATH.relative_to(_REPO_ROOT).as_posix()
+    assert referent_key in replicas, (
+        f"{referent_key} must declare a default for vaultSourceRootPath "
+        "(param vaultSourceRootPath string = '<root>')"
+    )
+    referent = replicas[referent_key]
+    for where, default in replicas.items():
+        assert default == referent, (
+            f"{where} defaults the vault-source root to {default!r} but {referent_key} "
+            f"defaults vaultSourceRootPath to {referent!r}; a vault seeded under one "
+            "root and served under the other is absent rather than split"
+        )
+
+
+def test_runbook_commands_address_the_seeded_vault_under_the_default_root() -> None:
+    """Every worked path in the operator runbook names the seeded vault under
+    the default root.
+
+    The runbook is the hand-run bring-up procedure -- the one path with no gate
+    behind it -- and its ``az rest`` commands are copied verbatim, so a stale
+    path there seeds the wrong folder as surely as a stale script would. Both
+    segments are checked: the vault id against the committed seed, and the
+    root against the Bicep default the runbook says its paths assume.
+
+    Anchored on the path forms (the Graph ``root:/…/vault_config.yaml`` command
+    and the backticked ``<root>/<id>/`` folder mention), not on the prose around
+    them, so an unrelated edit does not trip it.
+    """
+    text = RUNBOOK_PATH.read_text()
+    root_default = _main_bicep_root_default()
+    graph_paths = list(_RUNBOOK_GRAPH_PATH_RE.finditer(text))
+    folder_mentions = list(_runbook_folder_re(root_default).finditer(text))
+    assert graph_paths, f"{RUNBOOK_PATH.name} must carry a worked root:/…/vault_config.yaml command"
+    assert folder_mentions, f"{RUNBOOK_PATH.name} must name the `{root_default}/<vault_id>/` folder"
+    # Completeness: every Graph path in the runbook must have parsed, or a site
+    # written in a form the pattern does not cover is skipped rather than checked.
+    assert len(graph_paths) == text.count("root:/"), (
+        f"{RUNBOOK_PATH.name} carries {text.count('root:/')} root:/ paths but this "
+        f"check parsed {len(graph_paths)}; an unparsed site is an unchecked site"
+    )
+    seeded = _seeded_vault_id()
+    for match in graph_paths:
+        root, vault_id = match.group(1), match.group(2)
+        line = _line_at(text, match.start())
+        assert vault_id == seeded, (
+            f"{RUNBOOK_PATH.name}:{line} addresses vault {vault_id!r} but "
+            f"{SEED_CONFIG_PATH.name} declares vault.id {seeded!r}; an operator "
+            "following the runbook seeds a folder the config does not name"
+        )
+        assert root == root_default, (
+            f"{RUNBOOK_PATH.name}:{line} assumes root {root!r} but "
+            f"{MAIN_BICEP_PATH.name} defaults vaultSourceRootPath to {root_default!r}; "
+            "the runbook's paths claim to assume the default root"
+        )
+    for match in folder_mentions:
+        assert match.group(1) == seeded, (
+            f"{RUNBOOK_PATH.name}:{_line_at(text, match.start())} names folder "
+            f"{root_default}/{match.group(1)}/ but {SEED_CONFIG_PATH.name} declares "
+            f"vault.id {seeded!r}"
+        )
+
+
+def test_documented_root_default_is_the_bicep_default() -> None:
+    """Every prose statement of what the vault-source root defaults to -- in the
+    runbook, the parameter-set example, and the tenant parameter set -- states
+    the Bicep default.
+
+    These are wording, not configuration, and nothing consumes them; but the
+    runbook is what an operator reads while deciding whether to override the
+    root, and the parameter sets are the files they write the override into. A
+    stale "defaults to" teaches the wrong shape at exactly the moment it matters.
+
+    Completeness control: every site where the parameter's name (or "root path")
+    sits within reach of the word "default" must lie inside the span of a
+    statement this check read, so a statement in a spelling the patterns do not
+    cover fails here, at its own line, rather than passing unread. Containment
+    by position rather than a count of each: a count can be satisfied by an
+    unrelated statement elsewhere in the document standing in for the unread one.
+    """
+    root_default = _main_bicep_root_default()
+    for path in _ROOT_DEFAULT_DOCS:
+        text = path.read_text()
+        statements = [m for pattern in _ROOT_DEFAULT_STATEMENT_RES for m in pattern.finditer(text)]
+        assert statements, f"{path.name} must state what the vault-source root defaults to"
+        for site in _root_default_statement_sites(text):
+            assert any(s.start() <= site.start() and site.end() <= s.end() for s in statements), (
+                f"{path.name}:{_line_at(text, site.start())} names the root parameter beside "
+                "the word 'default' in a form this check does not read; an unread statement "
+                "is an unchecked one"
+            )
+        for match in sorted(statements, key=lambda m: m.start()):
+            assert match.group(1) == root_default, (
+                f"{path.name}:{_line_at(text, match.start())} says the vault-source root "
+                f"defaults to {match.group(1)!r} but {MAIN_BICEP_PATH.name} defaults "
+                f"vaultSourceRootPath to {root_default!r}"
+            )
+
+
+def test_root_default_statement_inventory_is_complete() -> None:
+    """The documents held by the statement check are exactly the tracked files
+    that state the root default.
+
+    The per-document check can only read the documents it is told about, so a
+    "defaults to" statement written into a document it does not list would pass
+    unread. This holds the list to the tree with the same site predicate the
+    per-document check counts with: any tracked text file outside ``tests/``
+    that names the root parameter within reach of the word "default" must be
+    listed, and a listed document that stops stating the default must be
+    dropped.
+    """
+    stating = {
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in _tracked_files()
+        if path.relative_to(_REPO_ROOT).parts[0] != "tests"
+        and path.is_file()
+        and (text := _text_or_none(path)) is not None
+        and _root_default_statement_sites(text)
+    }
+    listed = {path.relative_to(_REPO_ROOT).as_posix() for path in _ROOT_DEFAULT_DOCS}
+    assert stating == listed, (
+        f"Tracked files stating the root default but not held by the check: "
+        f"{sorted(stating - listed)}. Held but no longer stating it: {sorted(listed - stating)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "path", sorted(_VAULT_ID_FILES), ids=lambda p: p.relative_to(_REPO_ROOT).as_posix()
+)
+def test_every_occurrence_of_the_vault_id_is_anchored_to_the_seed(path: Path) -> None:
+    """Every occurrence of the vault id in an inventoried file sits in a form the
+    inventory reads for that file, and every such form names the seeded vault.
+
+    The per-site tests above assert each replica's own stronger property (the
+    upload folder, the driver default and its help text, the preflight list's
+    exact membership, the harness env). This one is the sweep behind them: it
+    reads the same value at every site the inventory lists, so a stale replica
+    is reported by file and line, and it refuses an occurrence that no listed
+    form covers -- the only way a mention can be written that the sweep does not
+    reach is to add a form for it here.
+
+    Anti-coincidental-pass: with the seed's id changed and nothing else, every
+    inventoried file fails on its first anchored capture; with one site changed
+    alone, only that file fails, naming the line. A mention appended in a form
+    the inventory does not list fails the unanchored-occurrence assertion, not
+    silently passes it -- which is what makes the induction hold: every
+    occurrence was anchored when it was written, so a stale one is always at an
+    anchored site.
+    """
+    text = path.read_text()
+    rel = path.relative_to(_REPO_ROOT).as_posix()
+    seeded = _seeded_vault_id()
+    captures = [
+        (match.start(group), match.group(group))
+        for pattern, group in _vault_id_anchors(_main_bicep_root_default())[path]
+        for match in pattern.finditer(text)
+    ]
+    assert captures, f"{rel} carries none of the forms the inventory reads for it"
+    for start, value in sorted(captures):
+        # The phrase forms capture whatever id sits in them, so a deliberate
+        # reference to a different vault reads as a stale replica here. That is
+        # the accepted cost of not skipping stale mentions; the remedy is named.
+        assert value == seeded, (
+            f"{rel}:{_line_at(text, start)} names vault {value!r} but "
+            f"{SEED_CONFIG_PATH.name} declares vault.id {seeded!r}. If this is a "
+            "deliberate reference to another vault, phrase it outside the listed "
+            "forms (for example 'the vault `<id>`' rather than '`<id>` vault')"
+        )
+    stray = _unanchored_occurrences(text, seeded, {start for start, _ in captures})
+    assert not stray, (
+        f"{rel} names the seeded vault at line(s) {stray} in a form the inventory does "
+        "not read for this file; phrase it in a listed form or add an anchor for it"
+    )
+
+
+def test_vault_id_anchor_inventory_is_complete() -> None:
+    """The inventory lists exactly the tracked files that name the seeded vault.
+
+    The anchored-occurrence test can only sweep the files it is told about, so a
+    replica written into a file the inventory does not list would be unreachable
+    -- which is how replicas accumulated unnoticed before the inventory existed.
+    This holds the key set to the tree: a new file naming the
+    vault must be listed with the forms it uses, and a file that stops naming it
+    must be dropped, so the inventory can neither lag the tree nor pad it.
+
+    ``tests/`` is excluded because it is the checking side, not a replica.
+    """
+    seeded = _seeded_vault_id()
+    needle = re.compile(rb"\b" + re.escape(seeded.encode()) + rb"\b")
+    naming = {
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in _tracked_files()
+        if path.relative_to(_REPO_ROOT).parts[0] != "tests"
+        and path.is_file()
+        and needle.search(path.read_bytes())
+    }
+    inventory = {path.relative_to(_REPO_ROOT).as_posix() for path in _VAULT_ID_FILES}
+    assert naming == inventory, (
+        f"Tracked files naming {seeded!r} but missing from the inventory: "
+        f"{sorted(naming - inventory)}. Inventoried but no longer naming it: "
+        f"{sorted(inventory - naming)}"
+    )
 
 
 @pytest.mark.parametrize("section", REQUIRED_SECTIONS)
