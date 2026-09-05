@@ -97,7 +97,7 @@ def _resource_block(text: str, symbol: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 
@@ -126,7 +126,7 @@ def _module_block(text: str, module_file: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 
@@ -232,9 +232,14 @@ def test_grants_acrpull_to_bootstrap_identity() -> None:
     """The bootstrap identity is granted AcrPull on the registry so the job can
     pull the SAGE image.
 
-    The grant's own body carries the role and the principal. Read module-wide,
-    the principal check is satisfied by the ``param bootstrapIdentityPrincipalId``
-    declaration alone — the parameter could be declared and never bound.
+    The grant's own body carries the role and the principal, and both are asserted
+    as *bindings* rather than by containment. Read module-wide, the principal is
+    satisfied by the `param bootstrapIdentityPrincipalId` declaration and the role
+    by the `var acrPullRoleId` declaration, each whether or not the grant binds it;
+    read as containment within the block, the principal is still satisfied by the
+    grant's deterministic `guid(acr.id, bootstrapIdentityPrincipalId, ...)` name.
+    Dropping either binding leaves an identity with no pull rights, which surfaces
+    as a deploy-time image-pull failure rather than anything a source gate sees.
     """
     text = _strip_line_comments(_module_text())
     assert _declares_resource_type(text, _ROLE_ASSIGNMENT_TYPE), (
@@ -242,10 +247,11 @@ def test_grants_acrpull_to_bootstrap_identity() -> None:
     )
     grant = _resource_block(text, "bootstrapAcrPull")
     assert grant, "postgres-bootstrap.bicep must declare the bootstrapAcrPull resource"
-    assert _ACR_PULL_ROLE in text, "the role assignment must reference the AcrPull role id"
-    # The binding, not bare containment: the grant's deterministic name is
-    # `guid(acr.id, bootstrapIdentityPrincipalId, ...)`, so the principal appears
-    # in this block whether or not it is the principal actually granted.
+    role_var = re.search(rf"var\s+(\w+)\s*=\s*'{re.escape(_ACR_PULL_ROLE)}'", text)
+    assert role_var, f"the module must declare the AcrPull role id {_ACR_PULL_ROLE}"
+    assert re.search(rf"roleDefinitionId:.*\b{role_var.group(1)}\b", grant), (
+        "the role assignment must bind the AcrPull role id to its roleDefinitionId"
+    )
     assert re.search(r"principalId:\s*bootstrapIdentityPrincipalId\b", grant), (
         "AcrPull must be granted to the bootstrap identity principal"
     )
@@ -429,12 +435,20 @@ def test_module_block_truncates_at_a_top_level_output() -> None:
     last_module = (
         "module maintenanceJob 'modules/maintenance-job.bicep' = {\n"
         "  params: {\n    abstractionModel: abstractionModel\n  }\n}\n"
+        # The decorator, not the `output` keyword, is the first line after the
+        # block: a slicer that truncates only on the keyword keeps this line, so
+        # the decorator's prose lands inside the slice.
+        "@description('Provisioned resource group name, consumed by module deployments.')\n"
         "output deployedResourceGroupName string = rg.name\n"
     )
     block = _module_block(last_module, "maintenance-job.bicep")
     assert "abstractionModel" in block, "the block must carry the call's own parameters"
     assert "deployedResourceGroupName" not in block, (
         "the block must truncate at the orchestrator's top-level output"
+    )
+    assert "Provisioned resource group name" not in block, (
+        "the block must truncate at the output's @description decorator, not at the "
+        "`output` keyword — the decorator line sits between them"
     )
 
 

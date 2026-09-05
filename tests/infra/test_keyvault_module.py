@@ -100,7 +100,7 @@ def _resource_blocks(text: str, resource_type: str) -> list[str]:
     blocks: list[str] = []
     for m in pattern.finditer(stripped):
         rest = stripped[m.end() :]
-        nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+        nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
         blocks.append(rest[: nxt.start()] if nxt else rest)
     return blocks
 
@@ -120,7 +120,7 @@ def _module_block(text: str, module_path: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 

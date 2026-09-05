@@ -105,7 +105,7 @@ def _resource_block(text: str, symbol: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 
@@ -124,7 +124,7 @@ def _module_block(text: str, module_path: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 

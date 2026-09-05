@@ -113,7 +113,7 @@ def _module_block(text: str, module_path: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 
@@ -389,10 +389,18 @@ def test_module_block_truncates_at_a_top_level_output() -> None:
     last_module = (
         "module maintenanceJob 'modules/maintenance-job.bicep' = {\n"
         "  params: {\n    abstractionModel: abstractionModel\n  }\n}\n"
+        # The decorator, not the `output` keyword, is the first line after the
+        # block: a slicer that truncates only on the keyword keeps this line, so
+        # the decorator's prose lands inside the slice.
+        "@description('Provisioned resource group name, consumed by module deployments.')\n"
         "output deployedResourceGroupName string = rg.name\n"
     )
     block = _module_block(last_module, "modules/maintenance-job.bicep")
     assert "abstractionModel" in block, "the block must carry the call's own parameters"
     assert "deployedResourceGroupName" not in block, (
         "the block must truncate at the orchestrator's top-level output"
+    )
+    assert "Provisioned resource group name" not in block, (
+        "the block must truncate at the output's @description decorator, not at the "
+        "`output` keyword — the decorator line sits between them"
     )

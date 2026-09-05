@@ -90,6 +90,27 @@ def _output_lines(text: str) -> list[tuple[str, str]]:
     return [(m.group(1), m.group(2)) for m in pattern.finditer(_strip_line_comments(text))]
 
 
+def _resource_blocks(text: str, resource_type: str) -> list[str]:
+    """Return the body of every ``resource <symbol> '<resource_type>@…'`` block.
+
+    Keyed by resource *type* rather than by symbol, so a symbol rename cannot
+    silently blank the list and pass a gate vacuously. Each body runs to the next
+    top-level declaration. The module declares one grant per app identity, so a
+    posture asserted over the whole module is satisfied when only one of them
+    carries it; the grant gate below must read each assignment's own body.
+    """
+    stripped = _strip_line_comments(text)
+    pattern = re.compile(
+        r"^resource\s+\w+\s+'" + re.escape(resource_type) + r"@[0-9A-Za-z-]+'", re.MULTILINE
+    )
+    blocks: list[str] = []
+    for m in pattern.finditer(stripped):
+        rest = stripped[m.end() :]
+        nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
+        blocks.append(rest[: nxt.start()] if nxt else rest)
+    return blocks
+
+
 def _module_block(text: str, module_path: str) -> str:
     """Return the body of the ``module <symbol> '<module_path>' = {...}`` call.
 
@@ -106,7 +127,7 @@ def _module_block(text: str, module_path: str) -> str:
     if start is None:
         return ""
     rest = stripped[start.end() :]
-    nxt = re.search(r"^(?:resource|output|module|param|var)\s+\w+", rest, re.MULTILINE)
+    nxt = re.search(r"^(?:@|resource|output|module|param|var)\s*\w*", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
 
 
@@ -243,14 +264,33 @@ def test_registry_pull_authenticates_by_identity() -> None:
 def test_acrpull_role_assignments_present() -> None:
     """Each app identity is granted ``AcrPull`` on the registry through a role
     assignment, mirroring the Key Vault module's grant pattern.
+
+    Both the role and ``principalType`` are asserted per assignment. Read once over
+    the whole module, the role is satisfied by the ``var acrPullRoleId`` declaration
+    whether or not any grant binds it, and one assignment's ``principalType``
+    satisfies the check for every other — so a grant could lose either and leave an
+    identity unable to pull its image, which surfaces at deploy time rather than to
+    any source gate.
     """
     text = CONTAINER_APPS.read_text(encoding="utf-8")
     count = _count_resource_type(text, _ROLE_ASSIGNMENT_TYPE)
     assert count >= 2, f"expected >=2 AcrPull role assignments (SAGE + BFF); found {count}"
-    assert _ACR_PULL_ROLE in text, "a role assignment must reference the AcrPull role id"
     stripped = _strip_line_comments(text)
-    assert re.search(r"principalType:\s*'ServicePrincipal'", stripped), (
-        "AcrPull assignments must set principalType: 'ServicePrincipal'"
+    blocks = _resource_blocks(text, _ROLE_ASSIGNMENT_TYPE)
+    assert len(blocks) == count, "the role-assignment slicer lost a declaration"
+    role_var = re.search(rf"var\s+(\w+)\s*=\s*'{re.escape(_ACR_PULL_ROLE)}'", stripped)
+    assert role_var, f"the module must declare the AcrPull role id {_ACR_PULL_ROLE}"
+    unbound = [
+        b for b in blocks if not re.search(rf"roleDefinitionId:.*\b{role_var.group(1)}\b", b)
+    ]
+    assert not unbound, (
+        f"every AcrPull assignment must bind the AcrPull role id to its roleDefinitionId; "
+        f"{len(unbound)} of {count} do not"
+    )
+    missing = [b for b in blocks if not re.search(r"principalType:\s*'ServicePrincipal'", b)]
+    assert not missing, (
+        f"every AcrPull assignment must set principalType: 'ServicePrincipal'; "
+        f"{len(missing)} of {count} do not"
     )
     bound = [m.group(1) for m in re.finditer(r"principalId:\s*(\S+)", stripped)]
     assert "sageIdentityPrincipalId" in bound, "SAGE identity must be granted AcrPull"
@@ -773,3 +813,41 @@ def test_module_block_detector_controls() -> None:
         "job's identical coordinate threading"
     )
     assert _module_block(two_modules, "modules/absent.bicep") == ""
+
+
+def test_resource_blocks_detector_controls() -> None:
+    """``_resource_blocks`` returns one body per declaration of a type, each
+    truncated at the next declaration.
+
+    This is what makes the AcrPull grant gate load-bearing: the module declares
+    one assignment per app identity, so a single match says nothing about the
+    other, and the role id sits in a module-level ``var`` that satisfies a
+    containment check whether or not any grant binds it.
+
+    The markers live on the *second* assignment and the assertion is that the
+    *first* block does not carry them. That direction is the load-bearing one: a
+    helper that never truncates leaks forward, so every block runs to end of text
+    and swallows each later declaration. Marking the first block and asserting the
+    second is clean cannot detect that — the second block never gains the earlier
+    one's content whether the helper truncates or not.
+    """
+    sample = (
+        f"resource sageAcrPull '{_ROLE_ASSIGNMENT_TYPE}@2022-04-01' = {{\n"
+        "  properties: {\n    principalId: sageIdentityPrincipalId\n  }\n}\n"
+        f"resource bffAcrPull '{_ROLE_ASSIGNMENT_TYPE}@2022-04-01' = {{\n"
+        "  properties: {\n"
+        "    roleDefinitionId: subscriptionResourceId('x', acrPullRoleId)\n"
+        "    principalType: 'ServicePrincipal'\n  }\n}\n"
+    )
+    blocks = _resource_blocks(sample, _ROLE_ASSIGNMENT_TYPE)
+    assert len(blocks) == 2, f"expected one block per assignment; got {len(blocks)}"
+    assert "sageIdentityPrincipalId" in blocks[0], "the first block must carry its own properties"
+    assert "acrPullRoleId" not in blocks[0], (
+        "the first block must truncate at the next declaration, not borrow the second "
+        "assignment's role binding — the coincidence the per-assignment gate defeats"
+    )
+    assert "principalType" not in blocks[0], (
+        "the first block must not borrow the second assignment's principalType"
+    )
+    assert "principalType" in blocks[1], "the second block must carry its own properties"
+    assert _resource_blocks(sample, "Microsoft.Absent/things") == []
