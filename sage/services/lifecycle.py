@@ -227,9 +227,16 @@ class LifecycleService:
         Each item inherits the full ``LifecycleService._set_lifecycle``
         precondition surface — vault-config-defined action vocabulary,
         ``InvalidLifecycleTransitionError`` from the current state, the
-        ``supersede`` chain-head and identical-content guards,
-        ``PipelineIncompleteError`` on ``complete``, etc. See
+        ``supersede`` chain-head and identical-content guards. See
         ``LifecycleService._set_lifecycle`` for the full enumeration.
+
+        A non-terminal ``pipeline_status`` is not part of that surface,
+        on ``complete`` or on any other action: the transition applies
+        and the item's ``warnings`` carries the pipeline-still-in-progress
+        advisory. Waiting for a terminal ``pipeline_status`` before
+        completing a document is a judgement about whether to record a
+        resting state on a document whose abstraction may still fail —
+        not a way to avoid a refusal, because none is raised here.
 
         Empty ``items`` is valid: the response carries an empty
         ``results`` array and all counts are zero. Callers building

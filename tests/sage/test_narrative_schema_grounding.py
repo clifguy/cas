@@ -639,6 +639,10 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "get_vault_config"): {
         "vault_config": "the per-vault YAML file, not a contract node",
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the fully-qualified endpoint "
+            "paths this narrative names; a URL segment, not a contract node"
+        ),
     },
     ("sage_core", "get_vault_stats"): {
         "vault_config": "the per-vault YAML file, not a contract node",
@@ -702,6 +706,12 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # Carried on the error envelope's untyped ``detail``, which no
         # schema describes.
         "available_headings": "field of the heading_not_found error detail",
+    },
+    ("sage_core", "list_pending_metadata"): {
+        "sage_vaults": (
+            "the vault-scoped route prefix, in the fully-qualified endpoint "
+            "path this narrative names; a URL segment, not a contract node"
+        ),
     },
     ("sage_core", "list_staging_edges"): {
         "by_source_document": "vault-config value for staging_review_grouping",

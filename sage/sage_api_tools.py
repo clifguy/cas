@@ -335,13 +335,21 @@ def register_sage_tools(
           record (for example, a document whose file legitimately moved).
         - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
           but the vault's lifecycle transition table does not permit
-          ``supersede`` from the predecessor's current state -- under the
-          base lifecycle, any state other than ``active``. Run the archive
-          -> reactivate dance via ``update_lifecycles`` before retrying.
-          Detail carries ``current_state`` and the ``allowed_states`` the
-          table does permit; a table permitting ``supersede`` from no
-          state reports an empty ``allowed_states`` and a
-          ``required_state`` of ``(none)``.
+          ``supersede`` from the predecessor's current state. Detail
+          carries ``current_state`` and the ``allowed_states`` the table
+          does permit; a table permitting ``supersede`` from no state
+          reports an empty ``allowed_states`` and a ``required_state`` of
+          ``(none)``. There is no one remedy, because there is no one
+          table: read ``allowed_states``, or the vault's
+          ``lifecycle.transitions`` via ``get_vault_config``, for the
+          states this vault admits. A vault may permit ``supersede`` from
+          ``completed`` or another non-``active`` state, in which case
+          the predecessor needs no walk-back at all. Where one is needed,
+          move the predecessor to a permitted state directly from where
+          it stands via ``update_lifecycles`` -- ``reactivate`` from
+          ``completed``, where the table declares it -- rather than
+          archiving first, which records shipped work as dropped for the
+          length of the walk.
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; chains require distinct content
           per step.
@@ -704,19 +712,31 @@ def register_sage_tools(
         ``reactivate``.
 
         **``supersede`` is the canonical atomic form for replacing one
-        document with another:** it transitions the predecessor
-        (``active -> archived``) AND creates the ``supersedes`` edge
-        (new -> old) in one operation. The two-step alternative —
-        ``create_edges`` with ``edge_type="supersedes"`` then
-        ``update_lifecycles`` with ``action="archive"`` — ends in the same
-        state but is needed only to patch an already-archived predecessor
-        whose edge is missing (``create_edges`` does NOT auto-transition
-        the predecessor's lifecycle).
+        document with another:** it transitions the predecessor AND
+        creates the ``supersedes`` edge (new -> old) in one operation.
+        The predecessor's transition is the one the vault's table
+        declares, not a fixed pair: the gate admits ``supersede`` from
+        whichever ``from_state`` rows the table carries for it and moves
+        the predecessor to that row's ``to_state``. A vault declaring
+        ``completed --supersede--> archived`` admits a completed
+        predecessor directly, with no walk-back to ``active`` first. The
+        two-step alternative — ``create_edges`` with
+        ``edge_type="supersedes"`` then ``update_lifecycles`` with
+        ``action="archive"`` — ends in the same state but is needed only
+        to patch an already-archived predecessor whose edge is missing
+        (``create_edges`` does NOT auto-transition the predecessor's
+        lifecycle).
 
         Each item is validated for the full lifecycle precondition surface
         (vault-config action vocabulary, ``invalid_lifecycle_transition``
         from the current state, the ``supersede`` chain-head and
-        identical-content guards, ``pipeline_incomplete`` on ``complete``).
+        identical-content guards). A non-terminal ``pipeline_status`` is
+        not part of that surface, on ``complete`` or on any other action:
+        the transition applies and the item's ``warnings`` carries the
+        pipeline-still-in-progress advisory. Waiting for a terminal
+        ``pipeline_status`` is a judgement about whether to record a
+        resting state on a document whose abstraction may still fail —
+        not a way to avoid a refusal, because none is raised.
 
         **The batch is NOT atomic.** A per-item error surfaces in that
         item's error envelope without rolling back other items; the tool

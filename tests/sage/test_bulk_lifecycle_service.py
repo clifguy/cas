@@ -200,6 +200,46 @@ async def test_bulk_set_lifecycle_warnings_pass_through(graph_store, lifecycle_s
     assert "pipeline" in entry.warnings[0]
 
 
+async def test_bulk_set_lifecycle_complete_with_nonterminal_pipeline_succeeds_with_warning(
+    graph_store, lifecycle_service
+):
+    """`complete` is not gated on a terminal pipeline_status.
+
+    The per-item validation surface inherits whatever the single-item
+    path enforces, and a non-terminal pipeline is not part of it: the
+    item succeeds, the document rests in `completed`, and the advisory
+    warning is the whole of the response's account of the running
+    pipeline. Covered here as well as at the single-item level because
+    both surfaces describe this precondition set to a caller, and a
+    caller reads the bulk one.
+    """
+    doc_id = _id("doc_indexing_bulk_complete")
+    await graph_store.insert_document(
+        _make_doc(doc_id, pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
+    )
+
+    response = await lifecycle_service.bulk_set_lifecycle(
+        BulkLifecycleRequest(items=[BulkLifecycleItem(document_id=doc_id, action="complete")])
+    )
+
+    assert response.success_count == 1
+    assert response.error_count == 0
+    entry = response.results[0]
+    assert entry.status == "success"
+    assert entry.error is None
+    assert entry.document is not None
+    assert entry.document.lifecycle_status == "completed"
+    assert entry.document.pipeline_status == PipelineStatus.INDEXING_IN_PROGRESS
+    assert entry.warnings is not None
+    assert len(entry.warnings) == 1
+    assert "pipeline" in entry.warnings[0]
+
+    # Anti-coincidental-pass: re-read from storage, so a response that
+    # reports a transition it did not persist cannot carry this test.
+    stored = await graph_store.get_document(doc_id)
+    assert stored.lifecycle_status == "completed"
+
+
 async def test_bulk_set_lifecycle_distinct_items_run_per_item_transactions(
     graph_store, lifecycle_service
 ):

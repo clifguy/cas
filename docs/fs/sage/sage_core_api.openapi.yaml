@@ -253,12 +253,18 @@ paths:
 
         **The `supersede` action is the canonical atomic form for
         replacing one document with another.** It both transitions the
-        predecessor (`active → archived`) AND creates the `supersedes`
-        edge (new → old) in a single operation. The alternative
-        two-step pattern -- `POST /edges` with `edge_type=supersedes`
-        followed by `POST /lifecycles` with `action=archive` -- ends in
-        the same state but is required only when patching up an
-        already-archived predecessor whose supersedes edge is missing.
+        predecessor AND creates the `supersedes` edge (new → old) in a
+        single operation. The predecessor's transition is the one the
+        vault's table declares, not a fixed pair: the gate admits
+        `supersede` from whichever `from_state` rows the table carries
+        for it and moves the predecessor to that row's `to_state`. A
+        vault declaring `completed --supersede--> archived` admits a
+        completed predecessor directly, with no walk-back to `active`
+        first. The alternative two-step pattern -- `POST /edges` with
+        `edge_type=supersedes` followed by `POST /lifecycles` with
+        `action=archive` -- ends in the same state but is required only
+        when patching up an already-archived predecessor whose
+        supersedes edge is missing.
 
 
         **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
@@ -273,9 +279,15 @@ paths:
 
         Per-item error codes: `invalid_action`,
         `invalid_lifecycle_transition`, `supersede_target_not_active`,
-        `pipeline_incomplete`, `identical_content_supersede`. Each
-        appears as a per-item error envelope rather than as a
-        batch-level 400/409.
+        `identical_content_supersede`. Each appears as a per-item error
+        envelope rather than as a batch-level 400/409. A non-terminal
+        `pipeline_status` is not among them, on `complete` or on any
+        other action: the transition applies and the item's `warnings`
+        carries the pipeline-still-in-progress advisory. Waiting for a
+        terminal `pipeline_status` is a judgement about whether to
+        record a resting state on a document whose abstraction may
+        still fail -- not a way to avoid a refusal, because none is
+        raised.
 
 
         Empty `items` is valid: the response carries an empty `results`
@@ -460,7 +472,7 @@ paths:
         `metadata_extraction.filename_extraction` in
         `GET /sage_vaults/{vault_id}/config`), and the document is
         held with `metadata_confirmed=false` until a reviewer confirms
-        via `PATCH /documents/{id}/metadata`.
+        via `POST /sage_vaults/{vault_id}/metadata`.
       tags: [Ingestion]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -527,15 +539,24 @@ paths:
 
             `supersede_target_not_active`: `predecessor_id` was set but
             the vault's lifecycle transition table does not permit
-            `supersede` from the predecessor's current state. Under the
-            base lifecycle that is every state other than `active`; for
-            completed, filed, or otherwise non-active predecessors, run
-            the archive → reactivate dance via
-            `POST /documents/{id}/lifecycle` before retrying. Detail
+            `supersede` from the predecessor's current state. Detail
             carries `current_state` and the `allowed_states` the table
             does permit; a table permitting `supersede` from no state
             reports an empty `allowed_states` and a `required_state` of
-            `(none)` rather than naming a state the vault does not permit.
+            `(none)` rather than naming a state the vault does not
+            permit. There is no one remedy, because there is no one
+            table: read `allowed_states`, or the vault's
+            `lifecycle.transitions` via
+            `GET /sage_vaults/{vault_id}/config`, for the states this
+            vault admits. A vault may permit `supersede` from
+            `completed` or another non-`active` state, in which case the
+            predecessor needs no walk-back at all. Where one is needed,
+            move the predecessor to a permitted state directly from
+            where it stands via
+            `POST /sage_vaults/{vault_id}/lifecycles` -- `reactivate`
+            from `completed`, where the table declares it -- rather than
+            archiving first, which records shipped work as dropped for
+            the length of the walk.
 
 
             `identical_content_supersede`: the new file's content hash
@@ -1481,13 +1502,14 @@ paths:
         you need:
 
         - The valid `action` vocabulary for
-          `POST /documents/{id}/lifecycle` (under
+          `POST /sage_vaults/{vault_id}/lifecycles` (under
           `lifecycle.transitions`; each entry includes `from_state`,
           `action`, `to_state`, `creates_edge`).
 
         - The valid `doc_type` values for
-          `PATCH /documents/{id}/metadata` or for filtering
-          `POST /discover` (under `document_types.doc_types`).
+          `POST /sage_vaults/{vault_id}/metadata` or for filtering
+          `POST /sage_vaults/{vault_id}/discover` (under
+          `document_types.doc_types`).
 
         - The per-adapter projection parameters this vault sets (under
           `adapter_defaults`, keyed by source type). Which adapters
@@ -1813,8 +1835,8 @@ paths:
         metadata to filename inference, which populated fields the
         caller did not supply and held the document for review. The
         pending state is cleared on any successful
-        `PATCH /documents/{id}/metadata` call against the document
-        (even a single-field update). The default ingest path
+        `POST /sage_vaults/{vault_id}/metadata` call against the
+        document (even a single-field update). The default ingest path
         (`needs_review=false`) lands documents with
         `metadata_confirmed=true`; those never appear here.
       tags: [Pending Metadata]
