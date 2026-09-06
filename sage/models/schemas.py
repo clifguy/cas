@@ -2876,9 +2876,10 @@ class DiscoverRequest(BaseModel):
 
     - semantic: query is required.
     - keyword: query is required. Use query="*" for filter-only listing.
-    - catalog: no query required. Returns document-level metadata only
-      (no chunks or scores). Queries the graph store directly with filter
-      predicates. Supports pagination via limit + offset.
+    - catalog: query is refused, not merely unnecessary. Returns
+      document-level metadata only (no chunks or scores). Queries the graph
+      store directly with filter predicates. Supports pagination via
+      limit + offset.
     - deterministic: document_id and heading_path are required.
     """
 
