@@ -685,6 +685,13 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "null": "prose: the JSON literal, in a worked filter example",
         "failure_record": "example doc_type value in a worked example",
         "fix_commit": "example tier-3 metadata key in a worked example",
+        "facets_response_exceeds_inline_budget": (
+            "value of the reason key in the facets budget hint, which the "
+            "contract types as an untyped hints mapping"
+        ),
+        "recommended_facet_value_limit": (
+            "key of the facets budget hint, sibling to recommended_limit"
+        ),
         "allowed_modes": ERROR_DETAIL_KEY,
         "allowed_targets": ERROR_DETAIL_KEY,
         "constraint": ERROR_DETAIL_KEY,

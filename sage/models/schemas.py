@@ -3043,7 +3043,10 @@ class DiscoverRequest(BaseModel):
             "true distinct-value count regardless of the cap, so "
             "truncation is always detectable; to read a full "
             "vocabulary, re-call with facet_value_limit set to the "
-            "reported total_distinct. Not valid for other targets."
+            "reported total_distinct. This is the parameter the facets "
+            "budget hint recommends lowering when the serialized "
+            "response exceeds the MCP inline ceiling. Not valid for "
+            "other targets."
         ),
     )
 
@@ -3432,8 +3435,11 @@ class FacetHit(BaseModel):
     requested facet field, carrying the field's top distinct values
     with matching-document counts plus the true distinct-value total.
     The row count is fixed by the facet field set and each value map is
-    capped, so the response stays bounded regardless of how many
-    documents the vault holds or how densely they are tagged.
+    capped, so the number of values returned stays bounded regardless of
+    how many documents the vault holds or how densely they are tagged.
+    That bound is denominated in values, not bytes; when the serialized
+    response nonetheless exceeds the MCP inline ceiling the response
+    carries a facets budget hint naming a smaller facet_value_limit.
     """
 
     field: str = Field(
@@ -3506,7 +3512,13 @@ class DiscoverResponse(BaseModel):
             "the serialized response exceeds the MCP inline "
             'ceiling): `reason="response_exceeds_inline_budget"`, '
             "`response_size_bytes`, `budget_bytes`, `recommended_limit` "
-            "(re-page at this limit to fit inline). Vocabulary warnings "
+            "(re-page at this limit to fit inline). Facets budget hint "
+            "(same trigger, on the facets target, which rejects "
+            'limit): `reason="facets_response_exceeds_inline_budget"`, '
+            "`response_size_bytes`, `budget_bytes`, and "
+            "`recommended_facet_value_limit` (re-call at this cap to fit "
+            "inline), the last omitted when no cap below the one in "
+            "force would help. Vocabulary warnings "
             "(all modes): `warnings`, a list of advisories naming any "
             "filter value outside this vault's configured doc_type or "
             "lifecycle_status vocabulary. Absent when every filter value "

@@ -198,8 +198,11 @@ class RetrievalTarget(StrEnum):
     aggregation: results are ``FacetHit`` rows carrying the requested
     facet fields' top distinct values with counts (every facet field
     when none are selected), each row capped to a per-field value limit
-    and carrying the field's true distinct-value total, so the response
-    stays bounded at any corpus size and tagging density. `edges` and `facets` are only valid in
+    and carrying the field's true distinct-value total, so the number of
+    values returned stays bounded at any corpus size and tagging
+    density; a response whose serialized bytes nonetheless exceed the
+    MCP inline ceiling carries a facets budget hint naming a smaller
+    facet_value_limit. `edges` and `facets` are only valid in
     combination with ``mode="catalog"``; other modes are rejected at
     request validation.
     """

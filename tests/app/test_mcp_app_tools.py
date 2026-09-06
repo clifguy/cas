@@ -1308,3 +1308,64 @@ class TestSageDiscoverCatalog:
         recommended = hints.get("recommended_limit")
         assert isinstance(recommended, int)
         assert 1 <= recommended < 100
+
+    async def test_facets_budget_hint_surfaces_through_mcp_wrapper(self, single_vault):
+        """The facets budget hint survives serialization across the MCP boundary.
+
+        The failure this whole guarantee exists for happened at the
+        tool-result boundary, not inside the service, so a service-level
+        assertion never reaches it. Runs at the production budget on a
+        vault whose fifty widest tags overrun it on width alone -- the
+        count cap is satisfied and truncated nothing, as the exact
+        fifty-of-fifty assertion below records, so only a byte-aware
+        element can be firing.
+        """
+        from sage.models.schemas import Document
+        from sage.services.retrieval import (
+            DEFAULT_FACET_VALUE_LIMIT,
+            DEFAULT_MCP_INLINE_BUDGET_BYTES,
+        )
+
+        services, _ = single_vault
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+
+        tag_width = 1000
+        assert DEFAULT_FACET_VALUE_LIMIT * tag_width > DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+        for i in range(DEFAULT_FACET_VALUE_LIMIT):
+            doc_id = _id(f"overwide_{i:04d}")
+            await gs.insert_document(
+                Document(
+                    id=doc_id,
+                    title=f"Over-wide-tag doc {i:04d}",
+                    source_type=SourceType.MARKDOWN,
+                    source_path=f"test/overwide_{i:04d}.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha(doc_id),
+                    adapter_version="0.1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    doc_type="note",
+                    tags=[f"tag-{i:04d}-".ljust(tag_width, "x")],
+                )
+            )
+
+        result = _parse(await search(vault_id="test_vault", mode="catalog", target="facets"))
+
+        tags_row = next(r for r in result["results"] if r["field"] == "tags")
+        assert len(tags_row["values"]) == DEFAULT_FACET_VALUE_LIMIT
+        assert tags_row["total_distinct"] == DEFAULT_FACET_VALUE_LIMIT
+
+        hints = result.get("hints")
+        assert hints is not None, "facets hints dict not surfaced through MCP wrapper"
+        assert hints.get("reason") == "facets_response_exceeds_inline_budget"
+        assert hints.get("budget_bytes") == DEFAULT_MCP_INLINE_BUDGET_BYTES
+        recommended = hints.get("recommended_facet_value_limit")
+        assert isinstance(recommended, int)
+        assert 1 < recommended < DEFAULT_FACET_VALUE_LIMIT
+        assert "recommended_limit" not in hints

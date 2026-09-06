@@ -209,6 +209,12 @@ paths:
 
         Results can be scoped (all, authoritative, specific, filtered) and
         filtered by metadata criteria.
+
+
+        The facets value cap is denominated in values rather than bytes,
+        so a facets response whose serialized size exceeds the MCP
+        inline ceiling carries a `facets_response_exceeds_inline_budget`
+        hint naming the `recommended_facet_value_limit` to re-call at.
       tags: [Retrieval]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -3244,8 +3250,11 @@ components:
         results are FacetHit rows carrying the requested facet fields'
         top distinct values with counts (every facet field when none
         are selected), each row capped to a per-field value limit and
-        carrying the field's true distinct-value total, so the response
-        stays bounded at any corpus size and tagging density. "edges" and "facets" are valid
+        carrying the field's true distinct-value total, so the number of
+        values returned stays bounded at any corpus size and tagging
+        density; a response whose serialized bytes nonetheless exceed
+        the MCP inline ceiling carries a facets budget hint naming a
+        smaller facet_value_limit. "edges" and "facets" are valid
         only with mode="catalog"; other modes are rejected at request
         validation.
 
@@ -3942,7 +3951,9 @@ components:
             true distinct-value count regardless of the cap, so
             truncation is always detectable; to read a full vocabulary,
             re-call with facet_value_limit set to the reported
-            total_distinct. Not valid for other targets.
+            total_distinct. This is the parameter the facets budget hint
+            recommends lowering when the serialized response exceeds the
+            MCP inline ceiling. Not valid for other targets.
 
     RetrievalFilters:
       type: object
@@ -4675,7 +4686,13 @@ components:
             the serialized response exceeds the MCP inline
             ceiling): `reason="response_exceeds_inline_budget"`,
             `response_size_bytes`, `budget_bytes`, `recommended_limit`
-            (re-page at this limit to fit inline). Vocabulary warnings
+            (re-page at this limit to fit inline). Facets budget hint
+            (same trigger, on the facets target, which rejects
+            limit): `reason="facets_response_exceeds_inline_budget"`,
+            `response_size_bytes`, `budget_bytes`, and
+            `recommended_facet_value_limit` (re-call at this cap to fit
+            inline), the last omitted when no cap below the one in
+            force would help. Vocabulary warnings
             (all modes): `warnings`, a list of advisories naming any
             filter value outside this vault's configured doc_type or
             lifecycle_status vocabulary. Absent when every filter value
@@ -4818,9 +4835,12 @@ components:
         target="facets": one row per requested facet field, carrying
         the field's top distinct values with matching-document counts
         plus the true distinct-value total. The row count is fixed by
-        the facet field set and each value map is capped, so the
-        response stays bounded regardless of how many documents the
-        vault holds or how densely they are tagged.
+        the facet field set and each value map is capped, so the number
+        of values returned stays bounded regardless of how many
+        documents the vault holds or how densely they are tagged. That
+        bound is denominated in values, not bytes; when the serialized
+        response nonetheless exceeds the MCP inline ceiling the response
+        carries a facets budget hint naming a smaller facet_value_limit.
       properties:
         field:
           type: string

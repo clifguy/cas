@@ -130,21 +130,32 @@ def _resolve_mcp_inline_budget_bytes() -> int:
     return value if value > 0 else DEFAULT_MCP_INLINE_BUDGET_BYTES
 
 
+def _serialized_response_bytes(response: DiscoverResponse) -> int:
+    """Size of the response in the encoding the MCP runtime delivers.
+
+    Pydantic ``model_dump(mode="json", exclude_none=True)`` then UTF-8
+    JSON. Shared by both budget hints so the two measure the same thing;
+    a hint that fires on a different encoding than the one that busts the
+    ceiling reports a size the caller cannot act on.
+    """
+    return len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+
+
 def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
     """Annotate the response with a budget hint when it exceeds the inline ceiling.
 
-    Measures the serialized response in bytes via the same encoding the
-    MCP runtime uses (Pydantic ``model_dump(mode="json", exclude_none=True)``
-    then UTF-8 JSON). When the size is over budget, computes a
-    ``recommended_limit`` proportional to the number of records that
-    would fit, and merges the hint into ``response.hints``. No-op when
-    there are no results — empty responses are trivially inline.
+    Measures the serialized response in bytes via
+    ``_serialized_response_bytes``. When the size is over budget,
+    computes a ``recommended_limit`` proportional to the number of
+    records that would fit, and merges the hint into
+    ``response.hints``. No-op when there are no results — empty
+    responses are trivially inline.
 
     Advisory only — the response is not truncated.
     """
     if not response.results:
         return
-    size = len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    size = _serialized_response_bytes(response)
     budget = _resolve_mcp_inline_budget_bytes()
     if size <= budget:
         return
@@ -158,6 +169,55 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
         "budget_bytes": budget,
         "recommended_limit": recommended,
     }
+    if response.hints is None:
+        response.hints = budget_hint
+    else:
+        response.hints = {**response.hints, **budget_hint}
+
+
+def _apply_facets_budget_hint(response: DiscoverResponse) -> None:
+    """Annotate a facets response that exceeds the inline ceiling.
+
+    The per-field value cap bounds a facets response by *count*, which
+    makes its size independent of corpus size and tagging density but
+    says nothing about bytes: fifty long tag strings clear the cap and
+    still bust the ceiling. This is the byte-denominated companion to
+    that count bound, not a replacement for it -- nothing is truncated
+    here, and the cap's own semantics are untouched.
+
+    Separate from the catalog hint because the re-call differs. The
+    catalog hint names ``limit``, which this target rejects; the
+    parameter that shrinks a facets response is ``facet_value_limit``,
+    so the hint carries ``recommended_facet_value_limit`` under its own
+    ``reason``. A caller switching on the catalog reason is never handed
+    a payload whose ``recommended_limit`` is silently absent.
+
+    The recommendation scales the per-field cap actually in force -- the
+    widest row's entry count, which is the cap or the largest vocabulary
+    under it. The measured size includes a fixed envelope that does not
+    shrink with the cap, so the proportional model under-recommends
+    rather than over-recommends. It is omitted entirely when it could
+    not come out below the cap in force, since a re-call at the same cap
+    changes nothing.
+    """
+    if not response.results:
+        return
+    size = _serialized_response_bytes(response)
+    budget = _resolve_mcp_inline_budget_bytes()
+    if size <= budget:
+        return
+    budget_hint: dict[str, object] = {
+        "reason": "facets_response_exceeds_inline_budget",
+        "response_size_bytes": size,
+        "budget_bytes": budget,
+    }
+    cap_in_force = max(
+        (len(row.values) for row in response.results if isinstance(row, FacetHit)),
+        default=0,
+    )
+    recommended = max(1, int(cap_in_force * budget / size * _BUDGET_RECOMMEND_SAFETY_FACTOR))
+    if recommended < cap_in_force:
+        budget_hint["recommended_facet_value_limit"] = recommended
     if response.hints is None:
         response.hints = budget_hint
     else:
@@ -554,14 +614,16 @@ class RetrievalService:
                 return response
 
             # Facet aggregation likewise bypasses the document-target
-            # post-processing pipeline. No budget hint: the response is
-            # bounded by construction -- vocabulary fields by vocabulary
-            # size, tags by the per-field value cap -- and the hint's
-            # recommended_limit would name a parameter the facets
-            # validator rejects.
+            # post-processing pipeline. Its own budget hint rather than
+            # the catalog one: the row count is bounded by construction
+            # -- vocabulary fields by vocabulary size, tags by the
+            # per-field value cap -- but that bound is denominated in
+            # values, not bytes, and the catalog hint's recommended_limit
+            # would name a parameter this target rejects.
             if request.target == RetrievalTarget.FACETS:
                 response = await self._catalog_facets(request, phases)
                 self._apply_warnings(response, request)
+                _apply_facets_budget_hint(response)
                 return response
 
             if request.mode == RetrievalMode.SEMANTIC:
@@ -748,9 +810,12 @@ class RetrievalService:
         the fixed field order regardless of the order requested. Each
         row's values are capped to ``facet_value_limit`` entries
         (``DEFAULT_FACET_VALUE_LIMIT`` when unset) and carry the true
-        distinct total, so the response is bounded regardless of vault
-        size or tagging density. ``total_available`` is the count of
-        documents matching the filters (the facet denominator).
+        distinct total, so the number of values returned is bounded
+        regardless of vault size or tagging density. That bound is
+        denominated in values rather than bytes; the byte-denominated
+        companion is ``_apply_facets_budget_hint``, applied by the
+        dispatcher. ``total_available`` is the count of documents
+        matching the filters (the facet denominator).
         """
         sql_filters = self._build_catalog_sql_filters(request)
         requested = (
