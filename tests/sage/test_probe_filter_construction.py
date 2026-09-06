@@ -16,6 +16,15 @@ against the model's actual fields.
 Scoped to ``scripts/`` deliberately. Application code that constructs this
 model is exercised by the tests around it; a script is the surface where a
 wrong keyword ships un-run.
+
+**What this gate does not see, stated so it is not mistaken for coverage.** It
+reads keyword arguments written literally at the call. A ``RetrievalFilters(
+**kwargs)`` or a filter assembled as a dict and splatted passes it unexamined,
+because deciding those needs the value of an arbitrary expression rather than
+the shape of the call. Closing that is constant-folding, a different and much
+larger instrument than this one; no such call exists under ``scripts/`` today,
+and this gate is the reason a new one would have to be written deliberately
+rather than arrived at.
 """
 
 from __future__ import annotations

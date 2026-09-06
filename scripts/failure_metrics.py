@@ -345,6 +345,13 @@ class GitRepo(Protocol):
     def first_parent(self, sha: str) -> str | None:
         """Full SHA of a commit's first parent, or None at a root commit."""
 
+    def commit_date(self, sha: str) -> date | None:
+        """Committer date, or None when the commit is unreadable.
+
+        Used to exclude merge candidates that predate the commit they would
+        claim to carry.
+        """
+
 
 @dataclass(frozen=True)
 class MergedCommit:
@@ -392,6 +399,15 @@ def map_to_merged_commit(
     default branch, because that is the branch point rather than the squash
     that carried the work. Only the stored commit itself may resolve by being
     on the branch already.
+
+    Both text tiers prefer the **oldest** candidate that could actually carry
+    the stored commit, rather than the newest match in history order. A squash
+    cannot precede the branch commit it carries, so a candidate merged before
+    the stored commit's own committer date is excluded outright; among the rest
+    the oldest is the one the work landed in. Fourteen ticket ids on this
+    repository's default branch are carried by more than one squash, so
+    newest-wins is not a tie-break but a wrong answer for every one of them
+    whose earlier pull request is the one being attributed.
     """
     if stored is None:
         return MappingOutcome(stored=None, merged_sha=None, reason=NULL)
@@ -420,14 +436,15 @@ def map_to_merged_commit(
             return MappingOutcome(stored=stored, merged_sha=None, reason=UNRESOLVABLE)
         subject = repo.subject(cursor)
         if subject:
-            hit = _match_by_subject_prefix(subject, merged)
+            not_before = repo.commit_date(cursor)
+            hit = _match_by_subject_prefix(subject, merged, not_before)
             if hit is not None:
                 return MappingOutcome(
                     stored=stored,
                     merged_sha=hit,
                     reason=SUBJECT_PREFIX if first else FIRST_PARENT,
                 )
-            hit = _match_by_ticket_id(subject, merged)
+            hit = _match_by_ticket_id(subject, merged, not_before)
             if hit is not None:
                 return MappingOutcome(
                     stored=stored,
@@ -440,23 +457,45 @@ def map_to_merged_commit(
     return MappingOutcome(stored=stored, merged_sha=None, reason=UNRESOLVABLE)
 
 
-def _match_by_subject_prefix(subject: str, merged: Sequence[MergedCommit]) -> str | None:
+def _oldest_carrier(candidates: Iterable[MergedCommit], not_before: date | None) -> str | None:
+    """The earliest candidate that could carry a commit dated ``not_before``.
+
+    A squash merge cannot precede the branch commit it carries, so anything
+    merged earlier is excluded outright. Among what survives, the earliest is
+    the pull request the work landed in; taking the newest instead misattributes
+    every ticket carried by more than one squash to its most recent one. A null
+    ``not_before`` -- the commit's date is unreadable -- drops the exclusion and
+    keeps the oldest, which is the same answer whenever the filter would have
+    been vacuous.
+    """
+    eligible = [
+        commit for commit in candidates if not_before is None or commit.commit_date >= not_before
+    ]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda commit: (commit.commit_date, commit.sha)).sha
+
+
+def _match_by_subject_prefix(
+    subject: str, merged: Sequence[MergedCommit], not_before: date | None = None
+) -> str | None:
     """A squash merge keeps the branch head's subject and appends its own suffix."""
-    for commit in merged:
-        if commit.subject.startswith(subject):
-            return commit.sha
-    return None
+    return _oldest_carrier(
+        (commit for commit in merged if commit.subject.startswith(subject)), not_before
+    )
 
 
-def _match_by_ticket_id(subject: str, merged: Sequence[MergedCommit]) -> str | None:
+def _match_by_ticket_id(
+    subject: str, merged: Sequence[MergedCommit], not_before: date | None = None
+) -> str | None:
     """The ticket id survives into the squash even when the subject does not."""
     ids = set(_TICKET_ID_RE.findall(subject))
     if not ids:
         return None
-    for commit in merged:
-        if ids & set(_TICKET_ID_RE.findall(commit.subject)):
-            return commit.sha
-    return None
+    return _oldest_carrier(
+        (commit for commit in merged if ids & set(_TICKET_ID_RE.findall(commit.subject))),
+        not_before,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +520,13 @@ class Window:
     #: window itself, which is the right search space only when the two
     #: genuinely coincide.
     history: tuple[MergedCommit, ...] = ()
+    #: The date of the window's earliest commit, when it is known. The span
+    #: never opens later than this: the rule is "30 commits or four weeks,
+    #: whichever is longer", so a window wider than the nominal span widens the
+    #: span rather than silently dropping its own early observations from the
+    #: gate-catch denominator while still counting those commits in the
+    #: introduction denominator.
+    oldest_commit_date: date | None = None
 
     @property
     def search_space(self) -> tuple[MergedCommit, ...]:
@@ -488,7 +534,15 @@ class Window:
 
     @property
     def span_start(self) -> date:
-        return self.tip_date - timedelta(days=self.span_days)
+        nominal = self.tip_date - timedelta(days=self.span_days)
+        if self.oldest_commit_date is None:
+            return nominal
+        return min(nominal, self.oldest_commit_date)
+
+    @property
+    def span_widened(self) -> bool:
+        """True when the window outran its nominal span and the span followed."""
+        return self.span_start != self.tip_date - timedelta(days=self.span_days)
 
     @property
     def merged_shas(self) -> frozenset[str]:
@@ -797,6 +851,17 @@ class VerificationRow:
 
     @property
     def agrees(self) -> bool:
+        """The one deliberate prefix comparison in this module.
+
+        Everywhere else an abbreviated SHA is refused outright, because a
+        mixed-width comparison against git output is silently false. Here the
+        widths differ by construction and legitimately: the frozen table stores
+        the seven characters the baseline published, and the computation
+        produces forty. Nothing is being tested for membership in a set of full
+        SHAs -- this asks whether today's answer starts with the answer that was
+        published -- so the guard would have nothing to protect and would reject
+        the frozen table itself.
+        """
         return self.actual_merged is not None and self.actual_merged.startswith(
             self.expected_merged
         )
@@ -828,10 +893,17 @@ class Verification:
     observed_added: tuple[str, ...] = ()
     observed_missing: tuple[str, ...] = ()
     caught_added: tuple[str, ...] = ()
-    #: The two headline figures recomputed over the population the baseline
-    #: measured, rather than over today's whole corpus.
+    introduced_added: tuple[str, ...] = ()
+    introduced_missing: tuple[str, ...] = ()
+    #: All three headline figures recomputed over the population the baseline
+    #: measured, rather than over today's whole corpus. The introduced axis
+    #: needs this exactly as much as the other two: a record written after
+    #: publication whose introducing commit resolves back into the closed
+    #: window is growth of the same kind, and comparing a raw count would turn
+    #: this check permanently red on the first one.
     caught_within_frozen_population: int = BASELINE_2_CAUGHT
     observed_within_frozen_population: int = BASELINE_2_OBSERVED
+    introduced_within_frozen_population: int = BASELINE_2_INTRODUCED
 
     @property
     def tally_reproduced(self) -> bool:
@@ -839,15 +911,16 @@ class Verification:
 
     @property
     def grew(self) -> bool:
-        return bool(self.observed_added or self.caught_added)
+        return bool(self.observed_added or self.caught_added or self.introduced_added)
 
     @property
     def diverged(self) -> bool:
         return bool(
             not self.tally_reproduced
             or self.observed_missing
+            or self.introduced_missing
             or self.actual_commits != BASELINE_2_COMMITS
-            or self.actual_introduced != BASELINE_2_INTRODUCED
+            or self.introduced_within_frozen_population != BASELINE_2_INTRODUCED
             or self.observed_within_frozen_population != BASELINE_2_OBSERVED
             or self.caught_within_frozen_population != BASELINE_2_CAUGHT
         )
@@ -883,9 +956,11 @@ def verify_baseline_2(
                 reason=outcome.reason,
             )
         )
-    expected_observed = {row[0] for row in BASELINE_2_TALLY} | set(BASELINE_2_OBSERVED_ONLY)
+    expected_introduced = {row[0] for row in BASELINE_2_TALLY}
+    expected_observed = expected_introduced | set(BASELINE_2_OBSERVED_ONLY)
     actual_observed = set(metrics.observed_in_window)
     actual_caught = set(metrics.caught_by_gate)
+    actual_introduced = set(metrics.introduced_failures)
 
     return Verification(
         rows=tuple(rows),
@@ -898,11 +973,14 @@ def verify_baseline_2(
         observed_added=_sorted_ids(actual_observed - expected_observed),
         observed_missing=_sorted_ids(expected_observed - actual_observed),
         caught_added=_sorted_ids(actual_caught - expected_observed),
-        # Both headline figures are compared over the population the baseline
-        # actually measured, so a record written later raises the raw counts
-        # without touching the reproduction.
+        introduced_added=_sorted_ids(actual_introduced - expected_introduced),
+        introduced_missing=_sorted_ids(expected_introduced - actual_introduced),
+        # All three headline figures are compared over the population the
+        # baseline actually measured, so a record written later raises the raw
+        # counts without touching the reproduction.
         caught_within_frozen_population=len(actual_caught & expected_observed),
         observed_within_frozen_population=len(actual_observed & expected_observed),
+        introduced_within_frozen_population=len(actual_introduced & expected_introduced),
     )
 
 
@@ -933,7 +1011,8 @@ def render_report(
         f"  window commits      {window.commit_count}",
         f"  merged pull requests {len(window.merged)}",
         f"  calendar span       {window.span_start.isoformat()} .. {window.tip_date.isoformat()}"
-        f"  ({window.span_days} days)",
+        f"  ({window.span_days} nominal days"
+        f"{'; widened to the window' if window.span_widened else ''})",
         f"  gate boundary       {gate_date.isoformat()}",
         "",
         "Chain-head dedup",
@@ -1026,7 +1105,8 @@ def render_verification(verification: Verification) -> str:
         f"  window commits    expected {BASELINE_2_COMMITS:>4}   actual "
         f"{verification.actual_commits:>4}",
         f"  introduced        expected {BASELINE_2_INTRODUCED:>4}   actual "
-        f"{verification.actual_introduced:>4}",
+        f"{verification.introduced_within_frozen_population:>4}"
+        f"   (whole corpus today: {verification.actual_introduced})",
         f"  observed          expected {BASELINE_2_OBSERVED:>4}   actual "
         f"{verification.observed_within_frozen_population:>4}"
         f"   (whole corpus today: {verification.actual_observed})",
@@ -1050,6 +1130,14 @@ def render_verification(verification: Verification) -> str:
         lines.append("                            not a divergence")
     if verification.caught_added:
         lines.append(f"  caught since published:   {', '.join(verification.caught_added)}")
+    if verification.introduced_added:
+        lines.append(
+            "  introduced since published: "
+            f"{', '.join(verification.introduced_added)} -- later records whose introducing"
+        )
+        lines.append("                            commit resolves back into the closed window")
+    if verification.introduced_missing:
+        lines.append(f"  introduced NO LONGER found: {', '.join(verification.introduced_missing)}")
     if verification.observed_missing:
         lines.append(f"  observed NO LONGER found: {', '.join(verification.observed_missing)}")
 
@@ -1153,6 +1241,13 @@ class SubprocessGitRepo:
     def first_parent(self, sha: str) -> str | None:
         return self._git("rev-parse", "--verify", "--quiet", f"{sha}^1^{{commit}}") or None
 
+    def commit_date(self, sha: str) -> date | None:
+        out = self._git("log", "-1", "--format=%cs", sha)
+        return date.fromisoformat(out) if out else None
+
+    def is_ancestor(self, candidate: str, of: str) -> bool:
+        return self._git("merge-base", "--is-ancestor", candidate, of) is not None
+
     def merged_commits(self, base: str | None, tip: str) -> list[MergedCommit]:
         """Every first-parent commit in the range -- one per merged pull request.
 
@@ -1175,13 +1270,16 @@ class SubprocessGitRepo:
         return commits
 
 
+DEFAULT_HISTORY_REF = "origin/main"
+
+
 def build_window(
     repo: SubprocessGitRepo,
     base: str,
     tip: str,
     span_days: int,
     *,
-    history_ref: str = "HEAD",
+    history_ref: str = DEFAULT_HISTORY_REF,
 ) -> Window | None:
     """Resolve a window from git, or None when either anchor is unreachable here.
 
@@ -1189,6 +1287,15 @@ def build_window(
     ``history_ref``, not the window: a failure introduced after the window
     still has a real merge to resolve to, and denying it one makes the ancestry
     tier attribute it to the nearest in-window ancestor instead.
+
+    ``history_ref`` names the **default branch**, never the checked-out one.
+    Records are written before their pull request merges, so a run from the
+    branch that is being measured would find those unmerged commits in the
+    history and resolve them to themselves: a defect introduced and fixed on one
+    branch then reads as having escaped before the merge and as contained after
+    it, from the same corpus. Anchoring on the remote default branch makes the
+    answer a property of the repository rather than of the working tree the
+    script happened to run in. The override exists for a clone with no remote.
     """
     base_full = repo.rev_parse(base)
     tip_full = repo.rev_parse(tip)
@@ -1197,7 +1304,24 @@ def build_window(
     merged = repo.merged_commits(base_full, tip_full)
     if not merged:
         return None
-    history = repo.merged_commits(None, history_ref)
+
+    history_full = repo.rev_parse(history_ref)
+    if history_full is None:
+        print(
+            f"history ref {history_ref!r} does not resolve; "
+            "falling back to the window itself, which narrows attribution to it",
+            file=sys.stderr,
+        )
+        history = list(merged)
+    else:
+        history = repo.merged_commits(None, history_full)
+        if not repo.is_ancestor(tip_full, history_full):
+            print(
+                f"warning: the window tip is not an ancestor of {history_ref!r}, "
+                "so the window being measured is not on the branch being searched",
+                file=sys.stderr,
+            )
+
     return Window(
         base=base,
         tip=tip,
@@ -1206,6 +1330,7 @@ def build_window(
         tip_date=merged[0].commit_date,
         span_days=span_days,
         history=tuple(history) or tuple(merged),
+        oldest_commit_date=merged[-1].commit_date,
     )
 
 
@@ -1262,7 +1387,12 @@ async def load_catalog(services: object) -> tuple[list[FailureRow], list[tuple[s
         filters={"edge_type": "supersedes"},
         limit=100_000,
     )
-    edges = [(row.edge.source_id, row.edge.target_id) for row in edge_rows]
+    # A retracted edge is the vault's correction path for a mis-anchored one.
+    # Honouring it would drop a genuine chain head and then blame the
+    # disagreement column for the gap.
+    edges = [
+        (row.edge.source_id, row.edge.target_id) for row in edge_rows if row.retracted_at is None
+    ]
     return rows, edges
 
 
@@ -1274,7 +1404,7 @@ async def run(args: argparse.Namespace) -> int:
 
     repo = SubprocessGitRepo(_REPO_ROOT)
     base, tip = args.window
-    window = build_window(repo, base, tip, args.span_days)
+    window = build_window(repo, base, tip, args.span_days, history_ref=args.history_ref)
     if window is None:
         print(
             f"window {base}..{tip} does not resolve in this clone; "
@@ -1361,6 +1491,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_SPAN_DAYS,
         dest="span_days",
         help="Calendar span, counted back from the window tip's date.",
+    )
+    parser.add_argument(
+        "--history-ref",
+        default=DEFAULT_HISTORY_REF,
+        dest="history_ref",
+        help=(
+            "Ref whose first-parent history the mapping searches. Defaults to the "
+            "remote default branch so the answer does not depend on the checked-out "
+            "branch; override only in a clone with no remote."
+        ),
     )
     parser.add_argument("--json", type=Path, default=None, help="Write the payload here.")
     parser.add_argument(

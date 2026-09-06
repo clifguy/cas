@@ -23,7 +23,8 @@ or a repository to notice.
 
 from __future__ import annotations
 
-from datetime import date
+import asyncio
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -59,11 +60,13 @@ from scripts.failure_metrics import (
     failure_id_sort_key,
     full_sha_set,
     in_window,
+    load_catalog,
     map_to_merged_commit,
     render_report,
     render_verification,
     report_payload,
     same_commit,
+    verify_baseline_2,
 )
 
 # ---------------------------------------------------------------------------
@@ -114,10 +117,12 @@ class FakeRepo:
         resolve: dict[str, str] | None = None,
         subjects: dict[str, str] | None = None,
         parents: dict[str, str] | None = None,
+        dates: dict[str, date] | None = None,
     ) -> None:
         self.resolve = resolve or {}
         self.subjects = subjects or {}
         self.parents = parents or {}
+        self.dates = dates or {}
         self.rev_parse_calls: list[str] = []
 
     def rev_parse(self, rev: str) -> str | None:
@@ -129,6 +134,9 @@ class FakeRepo:
 
     def first_parent(self, sha: str) -> str | None:
         return self.parents.get(sha)
+
+    def commit_date(self, sha: str) -> date | None:
+        return self.dates.get(sha)
 
 
 def _window(
@@ -723,6 +731,159 @@ def test_a_baseline_row_joins_no_census():
     assert metrics.post_gate_population == 1
 
 
+def test_the_oldest_eligible_carrier_wins_not_the_newest():
+    """Fourteen ticket ids on this branch are carried by more than one squash.
+
+    Newest-wins is not a tie-break for those, it is a wrong answer: a mid-branch
+    commit of the earlier pull request maps to the later one, which can sit
+    outside the window the earlier one was in. The oldest eligible candidate is
+    the pull request the work actually landed in.
+    """
+    merged = (
+        _merged(SHA_D, "Later work (T-0001) (#99)", when=date(2026, 9, 2)),
+        _merged(SHA_A, "Earlier work (T-0001) (#40)", when=date(2026, 8, 20)),
+    )
+    repo = FakeRepo(
+        resolve={"bbbbbbb": SHA_B},
+        subjects={SHA_B: "Mid-branch fixup (T-0001)"},
+        dates={SHA_B: date(2026, 8, 19)},
+    )
+    outcome = map_to_merged_commit("bbbbbbb", repo, merged)
+    assert outcome.merged_sha == SHA_A
+    assert outcome.reason == TICKET_ID
+
+
+def test_a_candidate_merged_before_the_stored_commit_cannot_carry_it():
+    """A squash cannot precede the branch commit it carries -- a hard invariant.
+
+    Without the exclusion, "oldest wins" would hand this commit to a pull
+    request that merged the day before it was written, which is strictly worse
+    than newest-wins rather than better.
+    """
+    merged = (
+        _merged(SHA_D, "Later work (T-0001) (#99)", when=date(2026, 9, 2)),
+        _merged(SHA_A, "Earlier work (T-0001) (#40)", when=date(2026, 8, 20)),
+    )
+    repo = FakeRepo(
+        resolve={"bbbbbbb": SHA_B},
+        subjects={SHA_B: "Mid-branch fixup (T-0001)"},
+        dates={SHA_B: date(2026, 9, 1)},
+    )
+    outcome = map_to_merged_commit("bbbbbbb", repo, merged)
+    assert outcome.merged_sha == SHA_D
+
+
+def test_an_unreadable_commit_date_drops_the_exclusion_rather_than_the_match():
+    """A missing date must not turn a resolvable commit into an unresolvable one."""
+    merged = (_merged(SHA_A, "Work (T-0001) (#40)", when=date(2026, 8, 20)),)
+    repo = FakeRepo(
+        resolve={"bbbbbbb": SHA_B},
+        subjects={SHA_B: "Fixup (T-0001)"},
+        dates={},
+    )
+    outcome = map_to_merged_commit("bbbbbbb", repo, merged)
+    assert outcome.merged_sha == SHA_A
+
+
+class FakeHistoryRepo(FakeRepo):
+    """A repo whose history differs by ref, so the choice of ref is observable.
+
+    ``build_window`` is the only consumer of the history ref, and it takes a
+    repo rather than a ref list -- so a fake that returns the same history for
+    every ref cannot tell the default branch from the checked-out one, which is
+    the entire distinction under test.
+    """
+
+    def __init__(self, histories: dict[str, tuple[MergedCommit, ...]]) -> None:
+        resolvable = {name: name for name in histories}
+        resolvable.update({"base": "base", "tip": "tip"})
+        super().__init__(resolve=resolvable)
+        self.histories = histories
+        self.asked_for: list[str | None] = []
+
+    def merged_commits(self, base, tip):
+        self.asked_for.append(tip)
+        if base is None:
+            return list(self.histories.get(tip, ()))
+        return [_merged(SHA_A, "In window (#1)", when=date(2026, 9, 3))]
+
+    def is_ancestor(self, candidate, of):
+        return True
+
+
+def test_the_history_is_taken_from_the_default_branch_not_the_checked_out_one():
+    """Records are written before their pull request merges.
+
+    Run from the branch being measured, an unmerged commit is found in its own
+    history and resolves to itself, so a defect introduced and fixed on that
+    branch reads as escaped before the merge and contained after it -- from one
+    corpus, two answers, decided by which working tree the script ran in.
+    """
+    from scripts.failure_metrics import DEFAULT_HISTORY_REF, build_window
+
+    on_branch = _merged(SHA_C, "Unmerged branch work (#0)", when=date(2026, 9, 4))
+    on_default = _merged(SHA_D, "Landed work (#2)", when=date(2026, 9, 2))
+    repo = FakeHistoryRepo({"HEAD": (on_branch, on_default), "origin/main": (on_default,)})
+
+    window = build_window(repo, "base", "tip", DEFAULT_SPAN_DAYS)
+
+    assert DEFAULT_HISTORY_REF != "HEAD"
+    assert "HEAD" not in repo.asked_for
+    search = {commit.sha for commit in window.search_space}
+    assert SHA_C not in search, "an unmerged branch commit reached the search space"
+    assert SHA_D in search
+
+
+def test_the_history_ref_override_is_honoured():
+    """The override exists for a clone with no remote, and must actually apply."""
+    from scripts.failure_metrics import build_window
+
+    on_branch = _merged(SHA_C, "Local work (#0)", when=date(2026, 9, 4))
+    repo = FakeHistoryRepo({"HEAD": (on_branch,), "origin/main": ()})
+
+    window = build_window(repo, "base", "tip", DEFAULT_SPAN_DAYS, history_ref="HEAD")
+
+    assert SHA_C in {commit.sha for commit in window.search_space}
+
+
+def test_the_span_widens_to_the_window_rather_than_narrowing_below_it():
+    """The rule is thirty commits or four weeks, whichever is *longer*.
+
+    A window wider than the nominal span would otherwise drop its own early
+    observations from the gate-catch numerator and denominator while still
+    counting those commits in the introduction denominator -- two metrics
+    silently drawn from different date ranges.
+    """
+    wide = Window(
+        base="base",
+        tip="tip",
+        merged=(_merged(SHA_A),),
+        commit_count=1,
+        tip_date=date(2026, 9, 3),
+        span_days=28,
+        oldest_commit_date=date(2026, 7, 20),
+    )
+    assert wide.span_start == date(2026, 7, 20)
+    assert wide.span_widened is True
+    assert wide.covers_date(date(2026, 7, 25)) is True
+
+
+def test_a_window_inside_its_nominal_span_leaves_the_span_alone():
+    """The other half: widening must not become unconditional."""
+    narrow = Window(
+        base="base",
+        tip="tip",
+        merged=(_merged(SHA_A),),
+        commit_count=1,
+        tip_date=date(2026, 9, 3),
+        span_days=28,
+        oldest_commit_date=date(2026, 8, 10),
+    )
+    assert narrow.span_start == date(2026, 8, 6)
+    assert narrow.span_widened is False
+    assert narrow.covers_date(date(2026, 8, 5)) is False
+
+
 # ---------------------------------------------------------------------------
 # F. What the frozen check treats as a fault
 # ---------------------------------------------------------------------------
@@ -830,11 +991,136 @@ def test_a_tally_row_that_cannot_resolve_at_all_is_divergence():
     assert verification.diverged is True
 
 
-def test_a_moved_introduction_total_is_divergence_even_with_a_clean_tally():
-    """The tally names 17 rows; the count is checked independently of them."""
-    verification = _verification(actual_introduced=BASELINE_2_INTRODUCED + 1)
+def test_a_moved_introduction_count_is_divergence_even_with_a_clean_tally():
+    """The count is checked independently of the rows, over the frozen population.
+
+    Every row can reproduce while the count over that same population is wrong
+    — a frozen id resolving into the window that the tally does not claim, say —
+    so the two checks are not redundant. What the count must *not* respond to is
+    the whole-corpus total: that moves with every later record and is checked by
+    the growth tests instead.
+    """
+    verification = _verification(introduced_within_frozen_population=BASELINE_2_INTRODUCED + 1)
     assert verification.tally_reproduced is True
     assert verification.diverged is True
+
+
+def test_a_later_record_attributing_into_the_closed_window_is_growth():
+    """The introduced axis needs the frozen population exactly as the others do.
+
+    A record written after publication whose introducing commit resolves back
+    into the closed window is corpus growth of the same kind as a later
+    observation. Compared as a raw count it makes the check permanently red on
+    the first one, with no row in the tally to point at.
+    """
+    verification = _verification(
+        introduced_added=("F999",),
+        actual_introduced=BASELINE_2_INTRODUCED + 1,
+    )
+    assert verification.diverged is False
+    assert verification.grew is True
+    assert "introduced since published" in render_verification(verification)
+
+
+def test_a_frozen_tally_row_leaving_the_introduced_set_is_divergence():
+    """Growth and loss on this axis are opposite findings, as on the others."""
+    verification = _verification(
+        introduced_missing=("F48",),
+        introduced_within_frozen_population=BASELINE_2_INTRODUCED - 1,
+    )
+    assert verification.diverged is True
+    assert "NO LONGER" in render_verification(verification)
+
+
+def test_verify_baseline_2_partitions_the_live_corpus_against_the_frozen_one():
+    """The set arithmetic itself, over a synthetic corpus rather than injected.
+
+    Every other check in this section constructs a ``Verification`` directly and
+    so tests the verdict rules while assuming the partition that fed them. This
+    one drives the real function: two frozen ids reproduce, one frozen id is
+    absent, and one later id is present, and each must land in its own bucket.
+    """
+    merged = (_merged(SHA_A, "Landed (#1)"), _merged(SHA_D, "Also landed (#2)"))
+    window = _window(merged, commit_count=BASELINE_2_COMMITS)
+    repo = FakeRepo(resolve={SHA_A[:7]: SHA_A, SHA_D[:7]: SHA_D})
+    heads = {
+        "F43": _row("F43", introduction=SHA_A[:7], when=date(2026, 9, 1), caught=True),
+        "F45": _row("F45", introduction=SHA_D[:7], when=date(2026, 9, 1), caught=True),
+        "F999": _row("F999", introduction=SHA_A[:7], when=date(2026, 9, 1), caught=True),
+    }
+    dedup = chain_heads(list(heads.values()), [])
+    metrics = compute_metrics(heads, window, repo)
+    verification = verify_baseline_2(heads, window, repo, metrics, dedup)
+
+    assert verification.introduced_added == ("F999",)
+    assert "F43" not in verification.introduced_missing
+    assert "F48" in verification.introduced_missing
+    assert verification.introduced_within_frozen_population == 2
+    assert [row.failure_id for row in verification.rows] == ["F43", "F45"]
+    assert verification.missing_failures[:1] == ("F48",)
+
+
+class _FakeEdge:
+    def __init__(self, source_id: str, target_id: str) -> None:
+        self.source_id = source_id
+        self.target_id = target_id
+
+
+class _FakeEdgeRow:
+    def __init__(self, source_id: str, target_id: str, retracted_at=None) -> None:
+        self.edge = _FakeEdge(source_id, target_id)
+        self.retracted_at = retracted_at
+
+
+class _FakeDocument:
+    def __init__(self, doc_id: str, failure_id: str) -> None:
+        self.id = doc_id
+        self.lifecycle_status = "active"
+        self.document_date = "2026-09-01"
+        self.tags = []
+        self.tier3_metadata = {"failure_id": failure_id}
+
+
+class _FakeGraphStore:
+    def __init__(self, documents, edge_rows) -> None:
+        self._documents = documents
+        self._edge_rows = edge_rows
+
+    async def query_documents(self, **kwargs):
+        return list(self._documents), len(self._documents)
+
+    async def query_edges(self, **kwargs):
+        return list(self._edge_rows), len(self._edge_rows)
+
+
+class _FakeServices:
+    def __init__(self, graph_store) -> None:
+        self.graph_store = graph_store
+
+
+def test_a_retracted_supersedes_edge_is_dropped_before_it_reaches_the_dedup():
+    """Retraction is the vault's correction path for a mis-anchored edge.
+
+    The filter is in ``load_catalog``, not in ``chain_heads`` -- so this drives
+    the reader rather than the reducer. Exercising the reducer with a
+    hand-trimmed edge list would pass whatever the reader does, which is the
+    whole defect: an honoured retraction drops a genuine chain head and then
+    reports the loss as a disagreement between the two dedup rules, pointing at
+    the wrong thing entirely.
+    """
+    documents = [_FakeDocument("head", "F1"), _FakeDocument("pred", "F1")]
+    edge_rows = [
+        _FakeEdgeRow("head", "pred", retracted_at=None),
+        _FakeEdgeRow("pred", "head", retracted_at=datetime(2026, 9, 5, tzinfo=UTC)),
+    ]
+    rows, edges = asyncio.run(load_catalog(_FakeServices(_FakeGraphStore(documents, edge_rows))))
+
+    assert len(rows) == 2
+    assert edges == [("head", "pred")], "the retracted edge survived into the dedup input"
+
+    result = chain_heads(rows, edges)
+    assert result.heads["F1"].doc_id == "head"
+    assert result.multiple_heads == ()
 
 
 # ---------------------------------------------------------------------------
