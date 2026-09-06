@@ -6,6 +6,7 @@ discover, export, refresh) and API query tools (vault stats, hash check,
 staging edges, pending metadata).
 """
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -58,6 +59,8 @@ from sage.models.schemas import (
 )
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.services.vault_registry import VaultRegistryService
+
+logger = logging.getLogger(__name__)
 
 # Module-scope TypeAdapters for Pattern 2 boundary validation on FastMCP tool
 # parameters. Each adapter is constructed once at import time and reused per
@@ -3130,6 +3133,15 @@ def register_sage_tools(
         it sooner, use the out-of-band bulk reabstract sweep, whose default
         selector includes that status.
 
+        The response carries ``document_count`` for the reloaded vault. The
+        count spans every lifecycle state, including archived predecessors --
+        it says how much a vault holds, not how much of it is current;
+        ``get_vault_stats`` gives the per-state breakdown for one vault. It is
+        null, never zero, when the count could not be read: that read happens
+        after the reload has already succeeded, so its failure degrades the
+        reported count rather than the reported outcome, and a null there says
+        the count is unknown rather than the vault empty.
+
         Error modes (the registry slot is preserved on every failure path;
         the old services stay installed and the caller can retry):
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
@@ -3191,8 +3203,28 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-        # Return confirmation with basic stats
-        total_docs = len(await new_services.graph_store.list_all_documents())
+        # Return confirmation with basic stats. The store's own total, not a
+        # length over materialized records and not a sum over
+        # ``get_document_counts_by_field``, which omits rows with a null
+        # field value.
+        #
+        # The reload has already succeeded here and the new services are
+        # installed, so a failure to read the count must not be reported as a
+        # failed reload: a caller acting on that error would retry, tearing
+        # down and rebuilding services that are already correct. The count is
+        # decoration on a success, so it degrades to null and is logged for an
+        # operator. The guard is broad because this call reaches the store
+        # directly, with no service layer to translate a driver error into a
+        # typed one -- the same log-and-continue discipline the vault listing
+        # applies per vault.
+        try:
+            total_docs: int | None = await new_services.graph_store.get_total_document_count()
+        except Exception:
+            logger.exception(
+                "Reload of vault %s succeeded but the document count could not be read",
+                vault_id,
+            )
+            total_docs = None
         return {
             "vault_id": vault_id,
             "reloaded": True,

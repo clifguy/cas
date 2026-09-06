@@ -153,8 +153,8 @@ async def test_sage_reload_vault_threads_registry_service_into_initialize_servic
     captured: list[dict] = []
 
     class _CountingGraphStore(_FakeGraphStore):
-        async def list_all_documents(self) -> list:
-            return []
+        async def get_total_document_count(self) -> int:
+            return 0
 
     class _CountingServices(_FakeServices):
         def __init__(self, config) -> None:  # noqa: ANN001

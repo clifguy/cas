@@ -11,6 +11,7 @@ tests services directly rather than through HTTP.
 
 import asyncio
 import json
+import logging
 from typing import get_args
 
 import pytest
@@ -1943,6 +1944,130 @@ async def test_reload_vault_reinitializes_services(vault_services):
     assert result["document_count"] >= 1
     # Services instance should be replaced
     assert _mcp._vaults["test_vault"] is not old_services
+
+
+async def test_reload_vault_count_comes_from_the_store_total(vault_services, monkeypatch):
+    """``document_count`` is the store's COUNT(*), not a list length.
+
+    Pins the producer rather than the value. The fake store's
+    ``list_all_documents()`` raises, so a count taken by materializing every
+    document record cannot quietly agree with the sentinel;
+    ``get_total_document_count()`` returns a value no default or fixture
+    could supply.
+
+    What discriminates is the sentinel comparison, not the raise reaching the
+    caller. A rival reading the length *outside* the tool's degrade guard
+    propagates the ``AssertionError``; one reading it *inside* is caught
+    there -- ``except Exception`` takes ``AssertionError`` too -- logged, and
+    degraded to ``None``. Both go red, the second on the value rather than on
+    the exception, which is why the assertion is on 4242 and not on the raise.
+    """
+    import sage.sage_api_tools as _sage_tools_module
+
+    class _CountOnlyGraphStore:
+        async def get_total_document_count(self) -> int:
+            return 4242
+
+        async def list_all_documents(self):
+            raise AssertionError(
+                "list_all_documents() must not be called for reload_vault's document_count"
+            )
+
+    class _FakeServices:
+        graph_store = _CountOnlyGraphStore()
+
+    async def fake_reload(*args, **kwargs):
+        return _FakeServices()
+
+    # The tool closure resolves ``reload_vault_in_registry`` through its
+    # defining module's globals, so the patch must land there rather than on
+    # sage.mcp_server, which only re-exports the closure.
+    monkeypatch.setattr(_sage_tools_module, "reload_vault_in_registry", fake_reload)
+
+    result = _parse(await reload_vault("test_vault"))
+
+    assert result["vault_id"] == "test_vault"
+    assert result["reloaded"] is True
+    assert result["document_count"] == 4242
+
+
+async def test_reload_vault_count_spans_every_lifecycle_state(vault_services, tmp_vault_dir):
+    """The count covers every lifecycle state, not just the current ones.
+
+    The vault holds exactly one document in each of its three states, so
+    excluding *any* single state reports 2 rather than 3. Populating one state
+    per document is what makes that true: with only an active and an archived
+    document, an implementation that dropped ``completed`` rows would agree
+    with the correct one and pass, because no fixture would carry the input
+    that separates them.
+
+    The literal is asserted alongside parity with ``list_all_documents()`` so
+    that two paths broken the same way cannot agree their way to a pass.
+    """
+    (tmp_vault_dir / "sources" / "test" / "third.md").write_text("# Third Document\n\nMore.")
+
+    active = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    to_archive = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    to_complete = _parse(await ingest_document("test_vault", "test/third.md", "markdown"))
+    for doc in (active, to_archive, to_complete):
+        await _await_document_idle(vault_services, "test_vault", doc["id"])
+
+    archived = _parse(await update_lifecycle("test_vault", to_archive["id"], "archive"))
+    completed = _parse(await update_lifecycle("test_vault", to_complete["id"], "complete"))
+    assert archived["document"]["lifecycle_status"] == "archived"
+    assert completed["document"]["lifecycle_status"] == "completed"
+
+    result = _parse(await reload_vault("test_vault"))
+
+    live = await _mcp._vaults["test_vault"].graph_store.list_all_documents()
+    assert result["document_count"] == 3
+    assert result["document_count"] == len(live)
+    # One document per state, so no single-state exclusion can still total 3.
+    assert {d.lifecycle_status for d in live} == {"active", "archived", "completed"}
+
+
+async def test_reload_vault_reports_success_when_the_count_read_fails(
+    vault_services, monkeypatch, caplog
+):
+    """A failed count must not turn a completed reload into a reported failure.
+
+    By the time the count is read the new services are already installed, so
+    the reload has happened. Reporting an error here would tell the caller to
+    retry an operation that already succeeded -- tearing down and rebuilding
+    services that are correct. The count is decoration on a success, so it
+    degrades to null and the reload is still reported.
+
+    The raised type is a bare ``RuntimeError``, standing in for the driver
+    errors the store raises untranslated on this path: ``COUNT(*)`` goes
+    through ``_fetch_scalar`` with no ``StorageQueryError`` translation, so
+    what escapes is neither a ``SAGEError`` nor a ``ValueError`` and no
+    existing handler in the tool body sees it.
+    """
+    import sage.sage_api_tools as _sage_tools_module
+
+    class _FailingCountGraphStore:
+        async def get_total_document_count(self) -> int:
+            raise RuntimeError("simulated driver failure on the count read")
+
+    class _FakeServices:
+        graph_store = _FailingCountGraphStore()
+
+    async def fake_reload(*args, **kwargs):
+        return _FakeServices()
+
+    monkeypatch.setattr(_sage_tools_module, "reload_vault_in_registry", fake_reload)
+
+    with caplog.at_level(logging.ERROR):
+        result = _parse(await reload_vault("test_vault"))
+
+    assert "error" not in result
+    assert result["vault_id"] == "test_vault"
+    assert result["reloaded"] is True
+    # None, not 0: an unknown count and an empty vault are different facts,
+    # and 0 would be read as the latter.
+    assert result["document_count"] is None
+    # The failure is not swallowed -- an operator can still see it.
+    assert "simulated driver failure on the count read" in caplog.text
 
 
 async def test_reload_vault_closes_old_graph_store(vault_services):
