@@ -266,11 +266,20 @@ async def test_document_surface_competes_on_the_semantic_arm(store, corpus):
     assert surface_hits[0].heading_path == "", (
         "the top hit should be the document-level row, which carries no heading"
     )
+    # Both properties, because the empty heading is not what identifies the
+    # row: a document with no headings has a genuine passage whose path is
+    # also empty. The flag is what the row says about itself.
+    assert surface_hits[0].is_document_surface is True, (
+        "the top hit does not name itself a document-level row"
+    )
 
     passage_hits = await store.search_semantic(_distinct_embedding(index, surface=False), limit=3)
     assert passage_hits[0].document_id == document_id
     assert passage_hits[0].heading_path == "Body", (
         "a passage vector must still retrieve the passage, not the surface"
+    )
+    assert passage_hits[0].is_document_surface is False, (
+        "a passage row is marked as a document-level one"
     )
 
 
@@ -317,14 +326,14 @@ async def test_title_reaches_a_document_whose_headings_never_carried_it(store):
 async def test_gate_does_not_depend_on_a_graph_store_boost(store, corpus):
     """These results come from the retrieval binding, not a metadata boost.
 
-    The service layer separately boosts documents whose title, source path or
-    tags contain the query as a substring, reading the graph store. That boost
-    could mask a binding that had lost title matching entirely -- and it
-    matches by substring, so it cannot answer the separator variants above at
-    all. Every assertion in this module calls the content store directly, with
-    no service layer and no graph store in the picture; this test states that
-    invariant so it is not lost if the module is later refactored to run
-    through the service.
+    The service layer separately boosts documents whose title or tags contain
+    the query as a substring, reading the graph store. That boost could mask a
+    binding that had lost title matching entirely -- and it matches by
+    substring, so it cannot answer the separator variants above at all. Every
+    assertion in this module calls the content store directly, with no service
+    layer and no graph store in the picture; this test states that invariant so
+    it is not lost if the module is later refactored to run through the
+    service.
     """
     assert not hasattr(store, "_graph"), (
         "the content store must have no graph-store collaborator; if it gains "

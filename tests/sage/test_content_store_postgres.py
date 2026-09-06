@@ -1129,6 +1129,44 @@ async def test_document_surface_hit_reports_no_matched_passages(store):
         "a document-level hit is not a passage and must not be counted as one"
     )
     assert hit.heading_path == "", "a document-level hit carries no passage excerpt"
+    assert hit.is_document_surface is True, "the row does not name the surface it came from"
+
+
+async def test_document_surface_leg_returns_no_excerpt_on_the_semantic_arm(store):
+    """The semantic arm's document-level row carries no excerpt either.
+
+    The stored authored half is widened to a superset of the title's
+    renderings so a caller reaching for one form finds the other. Serving that
+    widening back as the row's content hands a caller duplicated tokens in
+    place of anything the document says. A document-level row is not a passage
+    and has no excerpt to give, on either arm (CAS-ADR-049 Decision 5).
+    """
+    # Orthogonal one-hot vectors, so the query reaches the document-level row
+    # rather than the passage. A zero vector has no defined cosine and the arm
+    # drops such a row, which would empty the result and prove nothing.
+    await store.index_chunks(
+        "surfaced",
+        [_chunk("surfaced", content="unrelated body prose", embedding=_emb(1))],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="surfaced",
+            matchable="ZetawordCatalog Zetaword Catalog",
+            orienting="",
+            embedding=_emb(0),
+        )
+    )
+
+    hits = await store.search_semantic(_emb(0), limit=10)
+    surface_hits = [h for h in hits if h.document_id == "surfaced" and h.is_document_surface]
+
+    assert surface_hits, "the document-level row did not compete on the semantic arm"
+    [hit] = surface_hits
+    assert hit.content == "", "the semantic arm's document-level row carries an excerpt"
+    assert "zetaword" not in hit.content.lower(), (
+        "the row exposes its index-side expansion as content"
+    )
+    assert hit.matched_chunk_count == 0, "the semantic arm counts a document-level row as a passage"
 
 
 async def test_matched_passage_count_counts_only_passages(store):
@@ -1560,4 +1598,125 @@ async def test_passage_reads_exclude_a_legacy_document_level_row(store):
     hits = await store.search_semantic([0.0] * EMBEDDING_DIM, limit=10)
     assert all(h.heading_path != "__document_header__" for h in hits), (
         "a legacy row reached a caller through the semantic arm"
+    )
+
+
+async def test_service_reports_zero_passages_for_a_keyword_document_level_hit(
+    store, graph_store, stub_embedding_provider, minimal_config
+):
+    """The binding's zero survives the service, on the keyword arm.
+
+    The count the caller sees is the service's, and the service reconciles two
+    ways of reporting one: an arm that returns a row per passage, whose rows it
+    tallies, and an arm whose row stands for a whole document and carries its
+    own count. Taking the larger of the two read both -- until a document
+    matched through its document surface, where the honest answer is zero and
+    the tally of rows is one. The larger was one, so the arm whose storage layer
+    had this right all along still served a caller the wrong number.
+
+    Against the real binding rather than the in-memory double, which stores a
+    document surface but never consults it on the keyword arm.
+    """
+    from datetime import datetime, timezone
+
+    from sage.models.enums import PipelineStatus, SourceType
+    from sage.models.schemas import DiscoverRequest, Document, RetrievalMode
+    from sage.services.retrieval import RetrievalService
+
+    now = datetime.now(timezone.utc)
+    doc = Document(
+        id="0000ab01_surface_only",
+        title="Zetaword Catalog",
+        source_type=SourceType.MARKDOWN,
+        source_path="imports/unrelated_stem.md",
+        lifecycle_status="active",
+        source_content_hash="sha256:" + "ab" * 32,
+        adapter_version="1",
+        created_by="t",
+        created_at=now,
+        last_modified_by="t",
+        updated_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        tags=["design"],
+    )
+    await graph_store.insert_document(doc)
+    # The body shares no term with the title, so a hit naming the title's terms
+    # cannot have come through a passage.
+    await store.index_chunks(
+        doc.id,
+        [_chunk(doc.id, content="unrelated body prose", embedding=[0.0] * EMBEDDING_DIM)],
+    )
+    await _surface(store, doc.id, matchable="Zetaword Catalog", orienting="")
+
+    service = RetrievalService(
+        graph_store=graph_store,
+        content_store=store,
+        embedding_provider=stub_embedding_provider,
+        config=minimal_config,
+    )
+    response = await service.discover(DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zetaword"))
+
+    hits = [h for h in response.results if h.document.id == doc.id]
+    assert hits, "the document surface did not answer the keyword query"
+    assert hits[0].matched_chunk_count == 0, (
+        "the binding's zero was floored to one on the way to the caller"
+    )
+    assert not (hits[0].chunk_content or ""), "a document-level hit carries no excerpt"
+
+
+# ---------------------------------------------------------------------------
+# The whole-query fallback reaches both surfaces (CAS-ADR-049 Decisions 7-8)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_negated_query_still_reaches_a_title(store):
+    """A query carrying a negation can still match a document by its title.
+
+    A negation makes the query's shape undecomposable, so it is evaluated whole
+    against a single text unit rather than across the document. That scope is
+    deliberate and unchanged here -- but reading only passages left the title
+    unreachable by any such query, which is a hole in the guarantee that a
+    document is findable by its own name.
+    """
+    await store.index_chunks("negated", [_chunk("negated", content="unrelated body prose")])
+    await _surface(store, "negated", matchable="Zetaword Catalog", orienting="")
+
+    hits = await store.search_bm25("zetaword -absentword", limit=10)
+
+    assert [h.document_id for h in hits] == ["negated"], (
+        "a negated query could not reach the document's title"
+    )
+
+
+async def test_an_alternation_query_still_reaches_a_title(store):
+    """The same for a top-level alternation, the other undecomposable shape."""
+    await store.index_chunks("alternated", [_chunk("alternated", content="unrelated body prose")])
+    await _surface(store, "alternated", matchable="Zetaword Catalog", orienting="")
+
+    hits = await store.search_bm25("zetaword or absentword", limit=10)
+
+    assert [h.document_id for h in hits] == ["alternated"], (
+        "an alternation query could not reach the document's title"
+    )
+
+
+async def test_the_fallback_does_not_make_derived_text_matchable(store):
+    """Widening the fallback to the surface must not widen it past the line.
+
+    The surface carries authored text and derived text in separate columns, and
+    only the authored one is a match arm. Reaching the surface from this path
+    must use that column, or a negated query would match a filename stem or a
+    generated abstract that no other query form can reach.
+    """
+    await store.index_chunks("derived", [_chunk("derived", content="unrelated body prose")])
+    await _surface(
+        store, "derived", matchable="Ordinary Title", orienting="iotaword-quarterly-review"
+    )
+
+    assert await store.search_bm25("iotaword -absentword", limit=10) == [], (
+        "derived text satisfied a match through the whole-query fallback"
+    )
+    control = await store.search_bm25("ordinary -absentword", limit=10)
+    assert [h.document_id for h in control] == ["derived"], (
+        "positive control: authored text on the same row is reachable this way"
     )

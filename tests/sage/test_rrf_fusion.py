@@ -146,3 +146,77 @@ async def test_hybrid_rrf_delegates_unchanged() -> None:
     ]
     for got, want in zip(fused, expected, strict=True):
         assert got.score == pytest.approx(want.score)
+
+
+# ---------------------------------------------------------------------------
+# A document-level row is not a passage (CAS-ADR-049 Decision 5)
+# ---------------------------------------------------------------------------
+
+
+def _surface_result(doc_id: str, score: float = 0.0) -> SearchResult:
+    """A document-level row as a binding emits one: no excerpt, no passages."""
+    return SearchResult(
+        document_id=doc_id,
+        heading_path="",
+        content="",
+        score=score,
+        matched_chunk_count=0,
+        is_document_surface=True,
+    )
+
+
+def test_rrf_does_not_count_a_surface_row_as_a_passage() -> None:
+    """Fusion counts passages, and a document-level row is not one.
+
+    The fusion tallies the distinct passages a document contributed across both
+    arms. A document-level row carries an empty heading path, so a tally keyed
+    on that path counts it as a passage of its own -- inflating the count of a
+    document that matched partly through its surface, and inventing a count of
+    one for a document that matched through nothing else.
+    """
+    vector = [_surface_result("d1"), _result("d1", heading_path="S1")]
+    keyword = [_result("d1", heading_path="S2")]
+
+    [fused] = rrf_fuse(vector, keyword, limit=10)
+
+    assert fused.matched_chunk_count == 2, "the document-level row was tallied as a third passage"
+    assert fused.is_document_surface is False, (
+        "a document that contributed real passages is not a document-level hit"
+    )
+
+
+def test_rrf_marks_a_document_that_matched_only_through_its_surface() -> None:
+    """A document with no passage in either arm stays a document-level hit.
+
+    The representative row a fusion carries forward is the first one seen, so
+    reading the flag off that row alone would report whichever arm happened to
+    rank first. The question is about the document: every row it contributed
+    was a document-level row, so the fused row is one too, and it counts no
+    passages.
+    """
+    vector = [_surface_result("d1")]
+    keyword = [_surface_result("d1")]
+
+    [fused] = rrf_fuse(vector, keyword, limit=10)
+
+    assert fused.is_document_surface is True
+    assert fused.matched_chunk_count == 0, "a document-level hit counts no passages"
+
+
+def test_rrf_keeps_the_larger_count_across_arms() -> None:
+    """The passage count survives fusion when one arm reports it in bulk.
+
+    The keyword arm's match unit is the document: it returns one row carrying
+    the count of passages that matched, rather than one row per passage. Fusing
+    that against a vector arm's single row must not discard the larger number
+    just because the row it carried forward came from the other arm.
+    """
+    vector = [_result("d1", heading_path="S1")]
+    keyword = [_result("d1", heading_path="S1")]
+    keyword[0].matched_chunk_count = 3
+
+    [fused] = rrf_fuse(vector, keyword, limit=10)
+
+    assert fused.matched_chunk_count == 3, (
+        "the keyword arm's passage count was discarded by the fusion"
+    )

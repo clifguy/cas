@@ -1145,6 +1145,13 @@ class RetrievalService:
         unit is the document reports one row per document and cannot be
         tallied, so it counts its own chunks and the carried value is the
         answer. Taking the larger reads both without asking which is which.
+
+        Only passages are tallied. A document-level row is not a passage
+        (CAS-ADR-049 Decision 5), so it contributes nothing to the tally and a
+        document reached through nothing else answers zero -- which is what the
+        field's published description promises. Tallying it would floor every
+        such document at one, including on the arm whose binding already
+        reported zero correctly.
         """
         seen_docs: dict[str, DiscoverHit] = {}
         chunk_counts: dict[str, int] = {}
@@ -1152,9 +1159,13 @@ class RetrievalService:
         doc_cache: dict[str, object | None] = {}
 
         for result in results:
-            # Count additional chunks for already-seen documents
+            # Count additional chunks for already-seen documents. A row can
+            # arrive after the one that won the excerpt -- a document's surface
+            # ranks below its own passage on the semantic arm -- so the
+            # passage test belongs on both branches, not only the first.
             if result.document_id in seen_docs:
-                chunk_counts[result.document_id] += 1
+                if not result.is_document_surface:
+                    chunk_counts[result.document_id] += 1
                 continue
 
             # Cache document lookups
@@ -1196,7 +1207,7 @@ class RetrievalService:
                 relevance_score=result.score,
             )
             seen_docs[result.document_id] = hit
-            chunk_counts[result.document_id] = 1
+            chunk_counts[result.document_id] = 0 if result.is_document_surface else 1
             carried_counts[result.document_id] = result.matched_chunk_count
 
         # Stamp matched_chunk_count on each hit
@@ -1210,15 +1221,20 @@ class RetrievalService:
         hits: list[DiscoverHit],
         request: DiscoverRequest,
     ) -> list[DiscoverHit]:
-        """Boost documents matching the query by metadata identity fields.
+        """Boost documents matching the query by authored metadata.
 
-        Searches title, source_path, and tags in the graph store. Documents
-        found by metadata receive a synthetic score above the highest
-        content-search score. Documents already in hits have their score
-        promoted; documents not yet in hits are prepended as new entries.
-        This ensures documents whose identity (filename, codes, tags)
-        matches the query always surface at the top, regardless of their
-        content-level relevance score.
+        Searches the title and the tags in the graph store. Documents found by
+        metadata receive a synthetic score above the highest content-search
+        score. Documents already in hits have their score promoted; documents
+        not yet in hits are prepended as new entries. This ensures documents
+        whose identity (name, codes, tags) matches the query surface at the
+        top, regardless of their content-level relevance score.
+
+        This is a path into a caller's result set, so it is bound by the same
+        provenance rule the retrieval surfaces are: derived text ranks and
+        orients and never admits (CAS-ADR-049 Decision 4). What the store
+        admits here is authored, which is why a filename no longer reaches a
+        document by this route.
         """
         if not request.query:
             return hits
@@ -1235,7 +1251,6 @@ class RetrievalService:
         boost_base = max_score + 0.1 if max_score > 0 else 1.0
 
         existing_hits = {h.document.id: h for h in hits}
-        metadata_ids = set()
         boosted: list[DiscoverHit] = []
 
         for i, doc in enumerate(metadata_docs):
@@ -1250,7 +1265,6 @@ class RetrievalService:
                 continue
 
             boost_score = boost_base - (i * 0.001)
-            metadata_ids.add(doc.id)
 
             if doc.id in existing_hits:
                 # Promote existing hit's score to boost level
