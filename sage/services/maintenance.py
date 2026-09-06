@@ -54,6 +54,7 @@ from sage.models.schemas import (
 )
 from sage.services.document_surface import compose_document_surface
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
+from sage.services.passage_structure import indexed_structure
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
 
@@ -181,6 +182,11 @@ BACKFILL_NON_CANONICAL_SOURCE_PATH = "normalize_non_canonical_source_paths"
 # Name reported in MigrationReport.backfills_applied when the migration moved a
 # vault's document-level text off the passage surface onto its own.
 BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
+
+# Name reported in MigrationReport.backfills_applied when the migration derived
+# each passage's structure relative to its document, or repaired a keyword
+# vector still built from the passage's address.
+BACKFILL_PASSAGE_INDEXED_STRUCTURE = "derive_passage_structure_relative_to_document"
 
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
@@ -365,6 +371,9 @@ class MaintenanceService:
         if await self._migrate_to_document_surface():
             backfills_applied.append(BACKFILL_DOCUMENT_SURFACE)
 
+        if await self._migrate_to_relative_indexed_structure():
+            backfills_applied.append(BACKFILL_PASSAGE_INDEXED_STRUCTURE)
+
         activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
@@ -397,11 +406,9 @@ class MaintenanceService:
         finds no legacy rows and does nothing, which is what makes it
         idempotent.
 
-        Stored heading paths are left as they are. CAS-ADR-049 also places a
-        passage's structure relative to its document, but for a source whose
-        title is also its top-level heading the two clauses of that decision
-        name the same string, and rewriting the paths changes how every
-        section of such a document is addressed. That is tracked separately.
+        Stored heading paths are left as they are, here and in the pass below:
+        a passage's address does not change, and its structure relative to the
+        document is carried by a field of its own.
 
         Returns:
             The number of documents relocated -- zero on a vault with nothing
@@ -425,6 +432,51 @@ class MaintenanceService:
 
         await self._content_store.delete_legacy_document_header_rows()
         return relocated
+
+    async def _migrate_to_relative_indexed_structure(self) -> int:
+        """Derive each passage's structure relative to its document.
+
+        CAS-ADR-049 Decision 3 separates a passage's *address* -- its heading
+        path, which does not change -- from its *indexed structure*, that path
+        with a root element equal to the document title removed. A vault
+        provisioned before the decision carries no derived structure and ranks
+        the whole address at the top keyword weight, so a title a source format
+        made its top-level heading is indexed into every passage of that
+        document.
+
+        The derivation is the same function ingest uses, applied to the stored
+        record's current title. That is what keeps a migrated vault and a
+        freshly ingested one carrying identical structure for the same source;
+        a second derivation here, however careful, would be a rule expressed
+        twice and would only agree until one of them moved.
+
+        Two conditions are repaired, and they can disagree. A pass interrupted
+        after its derivation leaves nothing to derive and a keyword vector still
+        built from the address, so guarding on the derivation alone would leave
+        such a vault unrepaired forever. The store settles both inside one
+        transaction and reports what the derivation wrote; this method names the
+        backfill when either did work.
+
+        Returns:
+            The number of passages written -- zero on a vault with nothing to
+            repair, so the backfill does not name itself in the report.
+        """
+        pending = await self._content_store.passages_awaiting_indexed_structure()
+        vector_is_stale = not await self._content_store.passage_vector_ranks_indexed_structure()
+        if not pending and not vector_is_stale:
+            return 0
+
+        titles = {doc.id: doc.title for doc in await self._graph_store.list_all_documents()}
+        derived = [
+            (document_id, heading_path, indexed_structure(heading_path, titles.get(document_id)))
+            for document_id, heading_path in pending
+        ]
+
+        written = await self._content_store.migrate_indexed_structure(derived)
+        # A stale vector is repair enough to report even when nothing was
+        # derived: the pass did work, and a silent return would read as a vault
+        # that needed none.
+        return written or (1 if vector_is_stale else 0)
 
     async def _normalize_source_paths(self) -> list[SourcePathNormalization]:
         """Rewrite each stored source path that is not already in plain form.

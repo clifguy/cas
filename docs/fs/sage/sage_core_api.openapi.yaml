@@ -2653,7 +2653,7 @@ paths:
         the registry so subsequent operations observe the new schema.
 
 
-        Two data backfills run, each naming itself in backfills_applied
+        Four data backfills run, each naming itself in backfills_applied
         only when it changed rows. Documents already at a successful
         terminal pipeline_status that still carry the pipeline_error of a
         failure they have since recovered from get that field cleared.
@@ -2663,7 +2663,23 @@ paths:
         re-projecting them stops raising force_reingest_path_mismatch;
         each rewrite is reported in source_paths_normalized. A recorded
         path that walks out of the vault's source tree has no plain form
-        inside it and is left as recorded.
+        inside it and is left as recorded. A vault provisioned before
+        document-level text had a retrieval surface of its own has that
+        text moved off its passages onto that surface. And every passage
+        gains its structure relative to its document -- its heading path
+        with a root element equal to the document title removed -- so a
+        title that a source format made the document's top-level heading
+        stops being indexed into every passage of that document at the
+        top ranking weight. Stored heading paths are untouched: they are
+        how a passage is addressed, and enumeration, section reads and
+        any cached path resolve exactly as before.
+
+
+        The last backfill is expensive and exclusive, and runs once. It
+        rewrites the passage table and rebuilds every index over it,
+        including the vector index over the embeddings, which dominates
+        the cost: expect minutes of exclusive access on a vault holding
+        tens of thousands of passages. Nothing is re-embedded.
 
 
         Idempotent: a re-call against an already-migrated vault with

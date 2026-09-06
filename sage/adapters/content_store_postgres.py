@@ -22,6 +22,7 @@ plain Python lists.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -35,7 +36,12 @@ from sage.adapters.interfaces import (
     SearchResult,
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
-from sage.storage.postgres.schema import EMBEDDING_DIM, TEXT_SEARCH_CONFIG
+from sage.storage.postgres.schema import (
+    CHUNKS_TSV_GENERATION_EXPRESSION_PROBE,
+    CHUNKS_TSV_REBUILD,
+    EMBEDDING_DIM,
+    TEXT_SEARCH_CONFIG,
+)
 from sage.utils.sql_patterns import escape_like
 from sage.utils.text_normalization import fold_for_query
 
@@ -48,21 +54,33 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # interpolated into SQL -- predicate values are always parameterized.
 _FILTERABLE_COLUMNS: tuple[str, ...] = ("doc_type", "document_id", "lifecycle_status", "project")
 
+# Backfill batch size. The pairs are distinct (document_id, heading_path), so a
+# vault of tens of thousands of passages yields far fewer of them than rows;
+# batching keeps one statement's parameter list bounded all the same.
+_BACKFILL_BATCH_SIZE = 1000
+
 # Metadata columns update_chunk_metadata may touch (content, hence tsv, is never
 # rewritten here).
 _METADATA_COLUMNS: tuple[str, ...] = ("doc_type", "lifecycle_status", "project")
 
 _INSERT_COLUMNS = (
-    "document_id, heading_path, content, chunk_index, "
+    "document_id, heading_path, indexed_structure, content, chunk_index, "
     "embedding, doc_type, lifecycle_status, project"
 )
 _INSERT_SQL = (
     f"INSERT INTO chunks ({_INSERT_COLUMNS}) "  # noqa: S608 -- fixed column constant
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
+# ``indexed_structure`` is read back as well as written, though no path today
+# reads a passage and writes it again. If one is added, excluding the column
+# here would null it on the way through, and the generated column's coalesce
+# would quietly index the address again instead of failing -- a silent reversion
+# rather than an error, which is why the column is carried on reads it has no
+# other caller for.
 _SELECT_CHUNK_COLUMNS = (
-    "document_id, heading_path, content, chunk_index, doc_type, lifecycle_status, project"
+    "document_id, heading_path, indexed_structure, content, chunk_index, "
+    "doc_type, lifecycle_status, project"
 )
 
 
@@ -277,6 +295,7 @@ class PostgresContentStore(ContentStore):
         return (
             chunk.document_id,
             chunk.heading_path,
+            chunk.indexed_structure,
             chunk.content,
             chunk.chunk_index,
             embedding,
@@ -326,6 +345,35 @@ class PostgresContentStore(ContentStore):
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
                 )
 
+    async def update_document_surface_text(
+        self, document_id: str, matchable: str, orienting: str
+    ) -> bool:
+        """Rewrite a document-level row's text, leaving its vector in place."""
+        with self._query_timer.measure("update_document_surface_text"):
+            async with self._pool.connection() as conn:
+                cur = await conn.execute(
+                    "UPDATE document_surface SET matchable = %s, orienting = %s"
+                    " WHERE document_id = %s",
+                    (matchable, orienting, document_id),
+                )
+                return bool(cur.rowcount)
+
+    async def update_indexed_structure(
+        self, document_id: str, derived: Sequence[tuple[str, str]]
+    ) -> int:
+        """Rewrite one document's derived structure, by ``(heading_path, structure)``."""
+        if not derived:
+            return 0
+        with self._query_timer.measure("update_indexed_structure", params={"paths": len(derived)}):
+            async with self._pool.connection() as conn, conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.executemany(
+                        "UPDATE chunks SET indexed_structure = %s"
+                        " WHERE document_id = %s AND heading_path = %s",
+                        [(structure, document_id, path) for path, structure in derived],
+                    )
+                    return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
     async def remove_document(self, document_id: str) -> None:
         """Remove a document's passages and document surface (idempotent)."""
         with self._query_timer.measure("remove_document"):
@@ -355,6 +403,87 @@ class PostgresContentStore(ContentStore):
                     (LEGACY_DOCUMENT_HEADER_HEADING_PATH,),
                 )
                 return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    # -- migration to the relative indexed structure (CAS-ADR-049 Decision 3) --
+
+    async def passages_awaiting_indexed_structure(self) -> list[tuple[str, str]]:
+        """Return the distinct ``(document_id, heading_path)`` still underived."""
+        with self._query_timer.measure("passages_awaiting_indexed_structure"):
+            rows = await self._fetchall(
+                "SELECT DISTINCT document_id, heading_path FROM chunks "
+                "WHERE indexed_structure IS NULL"
+            )
+            return [(r[0], r[1]) for r in rows]
+
+    async def passage_vector_ranks_indexed_structure(self) -> bool:
+        """Whether the keyword vector already ranks the relative structure."""
+        with self._query_timer.measure("passage_vector_ranks_indexed_structure"):
+            async with self._pool.connection() as conn:
+                return await self._vector_ranks_indexed_structure(conn)
+
+    @staticmethod
+    async def _vector_ranks_indexed_structure(conn: AsyncConnection) -> bool:
+        """Read the stored generation expression on an open connection."""
+        cur = await conn.execute(CHUNKS_TSV_GENERATION_EXPRESSION_PROBE)
+        row = await cur.fetchone()
+        if row is None:
+            raise RuntimeError(
+                "the passage table carries no generated keyword vector; a rebuild "
+                "was interrupted outside a transaction and the table needs repair "
+                "before a migration can proceed"
+            )
+        return "indexed_structure" in (row[0] or "")
+
+    async def migrate_indexed_structure(self, derived: Sequence[tuple[str, str, str]]) -> int:
+        """Apply derived structure and, if needed, rebuild the keyword vector.
+
+        One transaction, because the statement order is what makes this
+        affordable and a half-applied order is worse than either end of it. The
+        vector column is dropped *before* the backfill and re-added after, so
+        the backfill maintains one fewer index -- dropping the column takes the
+        GIN over it along -- and does not recompute a vector it is about to
+        invalidate. The re-add then rewrites the table over final values,
+        compacting the dead tuples the backfill created instead of leaving them
+        for a later optimize.
+
+        The rebuild is skipped when the stored expression already names the
+        column, so an ordinary re-run costs a catalog read. That check is made
+        inside the transaction, so it cannot be raced by a concurrent one.
+
+        Expensive and exclusive when the rebuild does run: the re-add rewrites
+        the passage table and every index over it, including the HNSW index
+        over the embeddings, which dominates the cost on a large vault.
+
+        Returns the number of rows the backfill wrote.
+        """
+        with self._query_timer.measure("migrate_indexed_structure", params={"pairs": len(derived)}):
+            written = 0
+            async with self._pool.connection() as conn, conn.transaction():
+                rebuilding = not await self._vector_ranks_indexed_structure(conn)
+                drop, add, index = CHUNKS_TSV_REBUILD
+
+                if rebuilding:
+                    await conn.execute(drop)
+
+                if derived:
+                    async with conn.cursor() as cur:
+                        for start in range(0, len(derived), _BACKFILL_BATCH_SIZE):
+                            batch = derived[start : start + _BACKFILL_BATCH_SIZE]
+                            # Restricted to rows still awaiting derivation, so a
+                            # re-run cannot overwrite a value a later ingest
+                            # already wrote from a newer title.
+                            await cur.executemany(
+                                "UPDATE chunks SET indexed_structure = %s "
+                                "WHERE document_id = %s AND heading_path = %s "
+                                "AND indexed_structure IS NULL",
+                                [(structure, doc, path) for doc, path, structure in batch],
+                            )
+                            written += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+                if rebuilding:
+                    await conn.execute(add)
+                    await conn.execute(index)
+            return written
 
     async def update_chunk_metadata(
         self,
@@ -933,11 +1062,12 @@ class PostgresContentStore(ContentStore):
         return Chunk(
             document_id=row[0],
             heading_path=row[1],
-            content=row[2],
-            chunk_index=row[3],
-            doc_type=row[4],
-            lifecycle_status=row[5],
-            project=row[6],
+            indexed_structure=row[2],
+            content=row[3],
+            chunk_index=row[4],
+            doc_type=row[5],
+            lifecycle_status=row[6],
+            project=row[7],
         )
 
     _escape_like = staticmethod(escape_like)

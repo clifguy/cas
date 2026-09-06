@@ -38,6 +38,13 @@ rather than its content: the double's is a whitespace split, so the stopword,
 stemming, negation and alternation cases the Postgres parse tests cover have
 nothing to assert against here.
 
+**Rules pinned on both sides, in each side's own terms.** A passage is indexed
+by its structure relative to its document, and an underived one falls back to
+its address (CAS-ADR-049 Decision 3). Both hold here and in the binding, but the
+binding expresses them as a generated column with a ``coalesce`` and pins them
+in ``test_indexed_structure_migration``, so the two modules assert the same rule
+against different mechanisms rather than mirroring name-for-name.
+
 **Rules pinned here and nowhere else.** The four parse pins -- the two
 directions of the agreement, the alternation flag, and the parse's own shape --
 have no meaning against a binding whose parse *is* the text-search
@@ -77,11 +84,13 @@ def _chunk(
     doc_type: str | None = None,
     lifecycle_status: str | None = None,
     project: str | None = None,
+    indexed_structure: str | None = None,
 ) -> Chunk:
     """A chunk with no embedding -- the keyword arm never reads one."""
     return Chunk(
         document_id=document_id,
         heading_path=heading_path,
+        indexed_structure=indexed_structure,
         content=content,
         chunk_index=chunk_index,
         doc_type=doc_type,
@@ -134,6 +143,54 @@ async def test_stub_search_bm25_finds_heading_only_term(store):
     assert [r.document_id for r in await store.search_bm25("zzheadingword", limit=10)] == ["d1"], (
         "a term carried only by the heading path must match"
     )
+
+
+async def test_stub_search_bm25_indexes_the_structure_relative_to_the_document(store):
+    """A title that merely roots a passage's address is not indexed text.
+
+    CAS-ADR-049 Decision 3: the address stays whole, and what is indexed is that
+    path relative to the document. The double reads the derived field for the
+    same reason the binding's generated column does.
+
+    Anti-coincidental-pass: the negative alone would pass against a double whose
+    keyword arm had stopped working entirely, so a heading *within* the document
+    is asserted on the same chunk -- Decision 3 keeps those at their weight, and
+    only the root leaves.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk(
+                "d1",
+                content="unremarkable prose",
+                heading_path="Zztitleword > Zzsectionword",
+                indexed_structure="Zzsectionword",
+            )
+        ],
+    )
+
+    assert await store.search_bm25("zztitleword", limit=10) == [], (
+        "a document title that merely rooted the address must not be indexed text"
+    )
+    assert [r.document_id for r in await store.search_bm25("zzsectionword", limit=10)] == ["d1"], (
+        "positive control: a heading within the document keeps its place in the index"
+    )
+
+
+async def test_stub_search_bm25_falls_back_to_the_address_when_underived(store):
+    """An underived passage is indexed by its address, as the binding's is.
+
+    Parity rather than a divergence: the binding's generated column coalesces to
+    ``heading_path``, so a vault that has taken the column but not yet the
+    migration goes on behaving exactly as before. A double that skipped the
+    fallback would report such a vault as unsearchable by heading.
+    """
+    await store.index_chunks(
+        "d1",
+        [_chunk("d1", content="unremarkable prose", heading_path="Zztitleword > Zzsectionword")],
+    )
+
+    assert [r.document_id for r in await store.search_bm25("zztitleword", limit=10)] == ["d1"]
 
 
 async def test_stub_search_bm25_header_sentinel_is_not_searchable_text(store):

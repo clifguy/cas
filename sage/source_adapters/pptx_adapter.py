@@ -44,6 +44,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
+from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
 from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
 
 # OPC main-part content types for the presentation and template flavors.
@@ -352,7 +353,7 @@ class PptxAdapter(SourceAdapter):
                     HeadingNode(
                         level=2,
                         text="Notes",
-                        path=f"{heading_text} > Notes",
+                        path=f"{heading_text}{HEADING_PATH_SEPARATOR}Notes",
                         content=notes,
                     )
                 )

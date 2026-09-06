@@ -15,6 +15,22 @@ The corpus is deliberately crowded: twelve documents sharing a working
 vocabulary, so ranking first is a result rather than an artifact of being the
 only candidate. ``test_corpus_is_actually_competitive`` fails if that stops
 being true.
+
+Every passage is addressed the way a markdown source addresses one -- rooted at
+the document's title, because its H1 *is* its title -- and carries the indexed
+structure CAS-ADR-049 Decision 3 derives from that address. So the gate runs
+over the shape the decision changes rather than over a synthetic ``Body`` path
+that never exercises it.
+
+What the gate does *not* try to show is a rank-1 improvement from that
+derivation, and the reason is worth recording. Whatever leaves a passage's
+indexed structure is, by the rule's construction, exactly the document title
+its own document surface already carries at the same ranking weight -- so on a
+corpus this size the derivation moves score magnitudes and never the order.
+The ordering effect is a corpus-scale phenomenon: it needs a document whose many
+passages out-score a rival's surface row. Measuring it belongs to the
+reference-corpus sweep, not to a gate; what a gate can hold is that Decision 8
+still binds, which is what the rank-1 assertions below do.
 """
 
 from datetime import datetime, timezone
@@ -22,10 +38,11 @@ from datetime import datetime, timezone
 import pytest
 
 from sage.adapters.content_store_postgres import PostgresContentStore
-from sage.adapters.interfaces import Chunk, DocumentSurface
+from sage.adapters.interfaces import HEADING_PATH_SEPARATOR, Chunk, DocumentSurface
 from sage.models.enums import SourceType
 from sage.models.schemas import Document
 from sage.services.document_surface import compose_document_surface
+from sage.services.passage_structure import indexed_structure
 from sage.storage.postgres.schema import EMBEDDING_DIM
 
 pytestmark = pytest.mark.asyncio
@@ -101,29 +118,44 @@ def _distinct_embedding(index: int, *, surface: bool) -> list[float]:
     return vector
 
 
-@pytest.fixture
-async def corpus(store):
+def _passage(index: int, document_id: str, title: str, body: str, *, derived: bool) -> Chunk:
+    """One passage, addressed the way the markdown adapter addresses one.
+
+    The address is rooted at the title, because that is what a source whose H1
+    is its title produces -- the shape most of the corpus is made of, and the
+    one the indexed structure is defined against. ``derived`` selects between a
+    vault that has taken the migration and one that has not.
+    """
+    address = f"{title}{HEADING_PATH_SEPARATOR}Body"
+    return Chunk(
+        document_id=document_id,
+        heading_path=address,
+        indexed_structure=indexed_structure(address, title) if derived else None,
+        content=body,
+        embedding=_distinct_embedding(index, surface=False),
+        chunk_index=0,
+        doc_type="adr",
+        lifecycle_status="active",
+        project="CAS",
+    )
+
+
+async def _seed(store, *, derived: bool) -> dict[str, str]:
     """Seed the crowded corpus on both surfaces and return its ids."""
     for index, (document_id, title, body) in enumerate(_CORPUS):
         await store.index_chunks(
-            document_id,
-            [
-                Chunk(
-                    document_id=document_id,
-                    heading_path="Body",
-                    content=body,
-                    embedding=_distinct_embedding(index, surface=False),
-                    chunk_index=0,
-                    doc_type="adr",
-                    lifecycle_status="active",
-                    project="CAS",
-                )
-            ],
+            document_id, [_passage(index, document_id, title, body, derived=derived)]
         )
         surface = compose_document_surface(document_id, _document(document_id, title))
         surface.embedding = _distinct_embedding(index, surface=True)
         await store.upsert_document_surface(surface)
     return {document_id: title for document_id, title, _ in _CORPUS}
+
+
+@pytest.fixture
+async def corpus(store):
+    """The corpus as a migrated vault holds it."""
+    return await _seed(store, derived=True)
 
 
 async def _rank_of(store, query: str, document_id: str) -> int | None:
@@ -275,8 +307,10 @@ async def test_document_surface_competes_on_the_semantic_arm(store, corpus):
 
     passage_hits = await store.search_semantic(_distinct_embedding(index, surface=False), limit=3)
     assert passage_hits[0].document_id == document_id
-    assert passage_hits[0].heading_path == "Body", (
-        "a passage vector must still retrieve the passage, not the surface"
+    assert passage_hits[0].heading_path == (f"{_CORPUS[index][1]}{HEADING_PATH_SEPARATOR}Body"), (
+        "a passage vector must still retrieve the passage, not the surface -- "
+        "and it is returned at its address, title root included, which the "
+        "indexed structure does not change"
     )
     assert passage_hits[0].is_document_surface is False, (
         "a passage row is marked as a document-level one"

@@ -34,6 +34,8 @@ from sage.models.schemas import (
     UpdateMetadataResponse,
 )
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
+from sage.services.document_surface import compose_document_surface
+from sage.services.passage_structure import indexed_structure
 from sage.storage.locks import DocumentLockManager
 
 
@@ -349,7 +351,38 @@ class MetadataService:
                 if chunk_updates:
                     await self._content.update_chunk_metadata(document_id, chunk_updates)
 
+                if "title" in updates or "tags" in updates:
+                    await self._refresh_derived_retrieval_text(document_id, doc)
+
             return UpdateMetadataResponse(document=doc, dry_run=False)
+
+    async def _refresh_derived_retrieval_text(self, document_id: str, doc: Document) -> None:
+        """Re-derive what the content store holds *about* a document.
+
+        A document's title and tags are authored text the retrieval binding
+        indexes in two derived places (CAS-ADR-049): the document surface's
+        matchable half, and -- because a passage's indexed structure is its
+        heading path relative to the document -- every passage of the document.
+        Both are computed from the record, so an edit to the record leaves both
+        describing a title nobody holds any more: the document goes on matching
+        its old title and not its new one.
+
+        The structure is re-derived through the same function ingest and the
+        migration use, so a document edited here and one re-ingested afterwards
+        agree. Only the keyword halves move; nothing is re-embedded, which is
+        the posture passages already have -- a metadata edit has never
+        recomputed a vector.
+        """
+        surface = compose_document_surface(document_id, doc)
+        await self._content.update_document_surface_text(
+            document_id, surface.matchable, surface.orienting
+        )
+
+        paths = await self._content.get_heading_paths(document_id)
+        if paths:
+            await self._content.update_indexed_structure(
+                document_id, [(path, indexed_structure(path, doc.title)) for path in paths]
+            )
 
     async def bulk_update_metadata(
         self,
