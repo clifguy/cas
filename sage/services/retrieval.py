@@ -1476,6 +1476,25 @@ class RetrievalService:
         if not request.query:
             return hits
 
+        # The cap stays, and the store's ordering is what makes it safe to
+        # keep. This loop scores by *position* and prepends what it does not
+        # already hold, so an uncapped search would push every metadata match
+        # ahead of the content hits the caller actually searched for and count
+        # them all into ``total_available``. What a cap needs in exchange is
+        # that the hundred it keeps are the same hundred twice and the best
+        # hundred to keep: the store orders by match quality, then by the same
+        # salience this pipeline reranks on below, then by the primary key.
+        #
+        # One caller pays for that ordering, and the cost is worth naming
+        # because it is the price of the guarantee rather than an oversight.
+        # The cut is taken here and the request's scope and filters are applied
+        # to the result below, so a caller who filtered to a *non-active*
+        # lifecycle and whose query matches more documents than the cap now
+        # receives a hundred active documents that the filter then discards --
+        # no boost at all, every time, where before the arbitrary hundred
+        # sometimes happened to contain what they asked for. Ranking the cut
+        # over eligible documents instead would mean pushing the request's
+        # filters down into the store helper.
         metadata_docs = await self._graph.search_metadata(
             request.query,
             limit=100,
@@ -1549,7 +1568,14 @@ class RetrievalService:
         if not hits:
             return hits
 
-        # Query the graph store for documents whose abstract matches
+        # Query the graph store for documents whose abstract matches. Only
+        # membership is read below, so the store's ordering is invisible here
+        # in every respect but the one that matters: on a corpus with more
+        # matches than the cap, the order is what decides which of them the
+        # cap keeps. The store ranks that cut by salience and breaks the
+        # remaining ties on the primary key, so the same query boosts the same
+        # documents twice, and the ones it keeps are the ones the rerank below
+        # would have raised anyway.
         abstract_docs = await self._graph.search_abstracts(
             request.query,
             limit=100,

@@ -90,6 +90,43 @@ _SORTABLE_COLUMNS: frozenset[str] = frozenset(
 # order is the same one twice, not which of two tied rows comes first.
 _ORDER_TIEBREAK: Final[str] = ", id ASC"
 
+# The default document enumeration order: active documents first, then the most
+# recently dated, with undated documents last. This is a browsing order -- it
+# arranges rows for a reader, and enumeration has no notion of a better row, so
+# what it owes is a sensible arrangement and (with the tiebreak) a repeatable
+# one. An undated document sorts last here rather than being given a substitute
+# date, which keeps the documents that carry an authored date in one unbroken
+# sequence.
+_SALIENCE_ORDER: Final[str] = (
+    "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
+    "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
+    "document_date DESC"
+)
+
+# The order the two boost helpers rank their match set by before truncating it.
+# Deliberately not ``_SALIENCE_ORDER``, though it agrees with it on every
+# document carrying an authored date: the two answer different questions, and
+# the fallback below is where that shows.
+#
+# This one exists to mirror the retrieval layer's own reranking, because a cut
+# taken before that reranking runs should keep the rows the reranking would go
+# on to raise. That reranking resolves a document's date as ``document_date``
+# and falls back to ``source_modified_at``, so an undated but recently ingested
+# document is boosted there -- and ranking it last here would cut it before it
+# ever reached the boost. Both columns hold ISO-8601 text, so truncating the
+# timestamp to its date leaves a value that compares lexically against
+# ``document_date``. A document with neither still sorts last.
+#
+# The divergence is the point rather than an oversight: a browsing order should
+# not invent a date for a document that has none, and a cut that mirrors a
+# ranking must follow that ranking's own fallback.
+_BOOST_CUT_DATE: Final[str] = "COALESCE(document_date, LEFT(source_modified_at, 10))"
+_BOOST_CUT_ORDER: Final[str] = (
+    "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
+    f"CASE WHEN {_BOOST_CUT_DATE} IS NULL THEN 1 ELSE 0 END, "
+    f"{_BOOST_CUT_DATE} DESC"
+)
+
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).
 # Mirrors the embedded store's ``trg_tier3_chain_head_on_supersedes``: any
 # supersedes edge insertion flips the target's ``is_chain_head`` to false, so
@@ -559,11 +596,7 @@ class PostgresGraphStore(GraphStore):
         ties in the first place.
         """
         if sort_by is None:
-            primary = (
-                "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
-                "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
-                "document_date DESC"
-            )
+            primary = _SALIENCE_ORDER
         elif sort_by not in _SORTABLE_COLUMNS:
             primary = "title"
         else:
@@ -593,6 +626,15 @@ class PostgresGraphStore(GraphStore):
         path into a caller's result set, not the retrieval surfaces alone. The
         source path keeps its place in the ordering, where it can only arrange
         documents an authored field has already admitted.
+
+        Beneath those two keys the match set is unranked -- containment either
+        holds or does not, so two tag matches are equally good matches -- and
+        the caller truncates. ``_BOOST_CUT_ORDER`` decides which of them
+        survive and ``_ORDER_TIEBREAK`` makes that decision reproducible: the
+        cut takes the documents the caller's own reranking would have raised
+        anyway, rather than whichever ones the scan reached first. Those keys
+        sit behind the match-quality keys, not in front, so a better match
+        still outranks a more salient one.
         """
         with self._query_timer.measure("search_metadata"):
             # The query is text to find, not a pattern to apply: a caller's
@@ -600,25 +642,37 @@ class PostgresGraphStore(GraphStore):
             # wildcards and silently widen the result.
             pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
-                "SELECT * FROM documents "
+                "SELECT * FROM documents "  # noqa: S608 -- order from module constants; values are %s
                 "WHERE title ILIKE %s "
                 "   OR tags::text ILIKE %s "
                 "ORDER BY "
                 "  CASE WHEN title ILIKE %s THEN 0 ELSE 1 END, "
-                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END "
+                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END, "
+                f" {_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
                 "LIMIT %s",
                 (pattern, pattern, pattern, pattern, limit),
             )
             return [self._row_to_document(r) for r in rows]
 
     async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+        """Documents whose generated abstract carries the query as a substring.
+
+        Ordered on the same grounds as the sibling above and with the same two
+        terms, but with nothing ahead of them: containment in an abstract
+        admits a document and says nothing about how well it matched, so there
+        is no match-quality key to rank the set by first. Without the ordering
+        the truncation is a slice of whatever the scan reached, which Postgres
+        need not choose the same way twice.
+        """
         with self._query_timer.measure("search_abstracts"):
             # Escaped for the same reason the sibling above is: this result
             # feeds the abstract boost, which is another path into a caller's
             # result set, and a caller's own % or _ is text to find.
             pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
-                "SELECT * FROM documents WHERE semantic_abstract ILIKE %s LIMIT %s",
+                "SELECT * FROM documents WHERE semantic_abstract ILIKE %s "  # noqa: S608 -- order from module constants; values are %s
+                f"ORDER BY {_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
+                "LIMIT %s",
                 (pattern, limit),
             )
             return [self._row_to_document(r) for r in rows]
