@@ -334,12 +334,13 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     per-test root rely on. Tests that need either input set do so themselves;
     their ``monkeypatch`` calls run after this fixture and win.
 
-    Neither clear can be exercised by a test on the machine the suite normally
-    runs on, so read a green suite carefully. The ``delenv`` defends against an
-    ambient variable present at process start, which a test body cannot set
-    ahead of an autouse fixture; with the clear in place the scaffold test above
-    is green whether or not the machine exports the variable, so its passing
-    says nothing about the guard.
+    Neither clear is exercised by this suite as it stands, so read a green suite
+    carefully. The ``delenv`` defends against an ambient variable present at
+    process start, which no test can set for itself ahead of an autouse fixture
+    -- only a preceding test leaking one could, and the suite contains no such
+    test. With the clear in place the scaffold test above is green whether or
+    not the machine exports the variable, so its passing says nothing about the
+    guard.
 
     What that test does change is where a *removal* becomes visible. Delete the
     ``delenv`` and it reds on a machine that exports ``SAGE_VAULT_ROOT`` --
@@ -350,11 +351,14 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     empty scratch directory, run the vault-config write tests, and confirm the
     directory is still empty afterward.
 
-    The ``_vault_root`` clear is the weaker of the two and defends a narrower
-    condition: the lifespan publishes a root and clears it again under
-    ``finally``, so reaching this fixture with one set takes a caller that
-    publishes without a lifespan. No test can install that condition ahead of an
-    autouse fixture either. Both are load-bearing despite the green suite.
+    The ``_vault_root`` clear defends a narrower condition: the lifespan
+    publishes a root and clears it again under ``finally``, so reaching this
+    fixture with one set takes a caller that publishes without a lifespan -- in
+    the suite, a preceding test that calls ``set_vault_root`` without
+    ``monkeypatch``. That is a leak rather than a state a test can install for
+    itself, and no test in the suite does it, which is why this clear is
+    likewise unexercised rather than unexercisable. Both are load-bearing
+    despite the green suite.
     """
     from sage import mcp_init, vault_management
 
