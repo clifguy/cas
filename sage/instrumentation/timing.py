@@ -1,9 +1,9 @@
 """Structured query-timing instrumentation for SAGE storage and retrieval.
 
-Phase 0 of the storage-audit plan. Adds per-call timing
-records on three named loggers (``sage.storage.timing``,
-``sage.content.timing``, ``sage.retrieval.timing``) so downstream
-remediation sub-tickets (F-1..F-7) can cite measured before/after numbers.
+Emits per-call timing records on three named loggers
+(``sage.storage.timing``, ``sage.content.timing``,
+``sage.retrieval.timing``) so later work on these paths can cite
+measured before/after numbers rather than estimates.
 
 The hot path is bounded by the requirement that timing wrappers add no
 more than ~10us per call. Sub-millisecond queries are suppressed at the

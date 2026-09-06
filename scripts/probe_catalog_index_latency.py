@@ -64,7 +64,7 @@ from sage.vault_management import bound_vault_root, config_path_for_vault
 DOC_TYPES = ("ticket", "adr", "failure_record", "tooling_entry", "steering_document")
 
 # Deterministic start nodes for traversal probes. Picked for density:
-# umbrella references the eight Phase 0–3 sub-tickets; the
+# the audit document references eight related documents; the
 # steering doc anchors many ticket → steering references.
 TRAVERSE_STARTS = (
     (

@@ -12,7 +12,7 @@ T1 -- Happy path: ADR mention creates a `references` edge.
 
 T2 -- Happy path: ticket id mention creates a `references` edge.
   Inputs: Pre-seeded ticket document carrying an `id:` tag. New doc whose
-           body mentions ``.
+           body mentions a ticket id.
   Expect: One `references` edge from the new doc to the ticket.
   Why: Covers the second default pattern surface.
 

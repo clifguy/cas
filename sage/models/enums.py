@@ -57,7 +57,7 @@ class EdgeType(StrEnum):
     `retracts` is a meta-edge pointing at an earlier edge instance that the
     retracting chain now disclaims. The retracting edge requires the
     `edge_id` of the edge it disclaims; that id is discoverable via
-    ``search(target="edges", filters={"source_id":..., "edge_type":...})``.
+    ``search(target="edges", filters={"source_id": ..., "edge_type": ...})``.
     `merged_from` is a meta-edge recording that a successor chain
     absorbs predecessor chains, tombstoning their downstream edges.
     """

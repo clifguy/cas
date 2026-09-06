@@ -3,7 +3,7 @@
 heading line.
 
 A chunking fix changed the persisted shape of ``Chunk.content``: each
-body chunk now holds its own ATX heading line ("#...", "##...",...)
+body chunk now holds its own ATX heading line ("#...", "##...", ...)
 followed by the body text. The fix lives in ``IngestionService._chunk_projection``
 and is source-type-agnostic: it iterates ``projection.headings`` produced
 by whatever adapter ran Stage 1. Every adapter that emits ``HeadingNode``

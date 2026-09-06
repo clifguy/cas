@@ -140,7 +140,7 @@ async def test_content_filter_pushdown_lifecycle_only(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config, monkeypatch
 ):
     """When the only active filter is lifecycle_status, _content_filters
-    must return {"lifecycle_status":...} with has_doc_constraints=False
+    must return {"lifecycle_status": ...} with has_doc_constraints=False
     and must NOT invoke graph_store.query_documents (no IN-clause
     resolution needed).
     """

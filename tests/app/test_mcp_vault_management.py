@@ -224,7 +224,7 @@ class TestSageCreateVault:
     async def test_create_vault_populates_config_path_on_services(
         self, vaults_root, empty_registry
     ):
-        """/F10 regression — create_vault must populate
+        """F10 regression — create_vault must populate
         ``SAGEServices.config_path`` so a subsequent ``reload_vault`` after
         an on-disk YAML edit re-reads from disk instead of silently no-op'ing
         on the in-memory ``VaultConfig``.
