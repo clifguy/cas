@@ -19,13 +19,29 @@ from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 
-# Legacy marker, retained for migration only. It identified a per-document
-# synthetic header row on the passage surface, carrying the title, source
-# filename stem, tags, semantic abstract, and case-split identifier tokens.
-# Document-level text now has a surface of its own (CAS-ADR-049) and nothing
-# writes this marker; the migration matches on it to relocate rows a vault
-# provisioned before that change still holds.
+# The legacy document-level marker, in both the spellings a stored row carries
+# it in. It identified a per-document synthetic header row on the passage
+# surface, holding the title, source filename stem, tags, semantic abstract, and
+# case-split identifier tokens. Document-level text now has a surface of its own
+# (CAS-ADR-049) and nothing writes either spelling.
+#
+# The two are written together, by one ingestion path, so a legacy row always
+# carries both and neither is the canonical one. A sweep that finds one form and
+# reports the class closed has looked at half the surface.
+#
+# This block is where the window such a row can appear in is stated, and it is
+# the only place that states it. The window is open and is not expected to
+# close. Every vault in the fleet has been migrated, but a store restored from a
+# backup taken before the decision is reprovisioned by the schema layer's
+# ``IF NOT EXISTS`` bootstrap and opens without complaint, so an unmigrated
+# vault can still arrive -- from a restore, or from a newly attached tenant.
+# The migration surface below therefore stays, and so do the read-path guards
+# that keep a legacy row from reaching a caller in the meantime: on the Postgres
+# binding as a predicate scoping every passage read to indexes above
+# ``LEGACY_DOCUMENT_HEADER_CHUNK_INDEX``, and on the stub binding as heading-path
+# comparisons in its keyword arm. Both cite this block rather than restating it.
 LEGACY_DOCUMENT_HEADER_HEADING_PATH = "__document_header__"
+LEGACY_DOCUMENT_HEADER_CHUNK_INDEX = -1
 
 
 class KeywordQueryParse(NamedTuple):
@@ -262,7 +278,9 @@ class ContentStore(ABC):
     # A vault provisioned before document-level text had a surface of its own
     # still holds a synthetic header row per document on the passage surface.
     # These two exist to relocate that text, and have no caller outside the
-    # migration.
+    # migration. They are permanent members of this contract rather than a
+    # one-shot awaiting removal: the condition that would retire them is stated
+    # at LEGACY_DOCUMENT_HEADER_HEADING_PATH, and it is not met.
 
     @abstractmethod
     async def legacy_document_header_rows(self) -> list[tuple[str, list[float] | None]]:

@@ -262,10 +262,13 @@ class StubContentStore(ContentStore):
             behaviour for a vault that has taken the column but not yet the
             migration.
 
-            A legacy document-header row is the exception. Its
-            ``heading_path`` is an internal sentinel rather than a heading
-            someone wrote, so including it would let a query for one of the
-            sentinel's own words score every such row in the store.
+            A legacy document-header row is the exception: its ``heading_path``
+            is an internal sentinel rather than a heading someone wrote, so
+            including it would let a query for one of the sentinel's own words
+            score every such row in the store. Why such a row can still be here
+            to exclude is stated at ``LEGACY_DOCUMENT_HEADER_HEADING_PATH`` in
+            the port; this double guards by that marker where the Postgres
+            binding guards by the chunk index, and the two are written together.
 
             This carve-out is not parity: the Postgres binding indexes the
             marker today, because its generated column weights ``heading_path``
@@ -297,6 +300,8 @@ class StubContentStore(ContentStore):
                 for c in chunks
                 if _chunk_matches_filters(c, filters)
             ]
+            # Guarded by the heading path, for the reason ``_searchable`` gives
+            # and under the condition the port's marker block states.
             authored = [
                 (c, hits)
                 for c, hits in scored
@@ -399,8 +404,18 @@ class StubContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        No exclusion is needed: the passage surface holds authored passages
-        only, so every path here is a real heading.
+        Unguarded, which is a divergence from the Postgres binding rather than
+        an absence of the condition: a caller can seed a legacy document-level
+        row into this double, and its sentinel path would be enumerated here
+        where the binding's passage scoping excludes it.
+
+        The divergence is deliberate and safe. This double models a store that
+        has run its migration, and the guarded behaviour is a property of the
+        real binding, so a test asserting that enumeration excludes a legacy row
+        is evidence about the binding and has to be written against it. The
+        keyword arm is guarded all the same, because there the marker changes
+        what *matches*, and a double that let derived text satisfy a term would
+        be modelling the wrong contract rather than a narrower one.
         """
         chunks = self._store.get(document_id, [])
         seen: set[str] = set()

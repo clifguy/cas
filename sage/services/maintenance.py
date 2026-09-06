@@ -410,6 +410,11 @@ class MaintenanceService:
         a passage's address does not change, and its structure relative to the
         document is carried by a field of its own.
 
+        Every known vault having been migrated is not the condition under which
+        this pass would be removed, because it does not stop another arriving
+        unmigrated. The condition that would, and why it is not met, is stated
+        at ``LEGACY_DOCUMENT_HEADER_HEADING_PATH`` in the content-store port.
+
         Returns:
             The number of documents relocated -- zero on a vault with nothing
             to repair, so the backfill does not name itself in the report.

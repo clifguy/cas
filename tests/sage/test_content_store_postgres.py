@@ -8,16 +8,23 @@ when no server is configured.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import os
 import time
 from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from sage.adapters.content_store_postgres import PostgresContentStore
-from sage.adapters.interfaces import Chunk, DocumentSurface
+from sage.adapters.interfaces import (
+    LEGACY_DOCUMENT_HEADER_CHUNK_INDEX,
+    LEGACY_DOCUMENT_HEADER_HEADING_PATH,
+    Chunk,
+    DocumentSurface,
+)
 from sage.storage.postgres.schema import EMBEDDING_DIM
 from sage.utils.rrf import rrf_fuse
 
@@ -1572,6 +1579,21 @@ async def test_semantic_arm_applies_the_updated_filter_to_both_surfaces(store):
 # ---------------------------------------------------------------------------
 
 
+def _legacy_header(document_id: str, *, content: str) -> Chunk:
+    """The synthetic document-header row, as the ingestion pipeline wrote it.
+
+    Seeded from the port's two constants rather than their values, so a sweep
+    that greps for either marker by name reaches this module -- which holds the
+    only assertions that the migration window still exists.
+    """
+    return _chunk(
+        document_id,
+        content=content,
+        heading_path=LEGACY_DOCUMENT_HEADER_HEADING_PATH,
+        chunk_index=LEGACY_DOCUMENT_HEADER_CHUNK_INDEX,
+    )
+
+
 async def test_passage_reads_exclude_a_legacy_document_level_row(store):
     """A vault that has not run its migration cannot leak its legacy rows.
 
@@ -1583,12 +1605,7 @@ async def test_passage_reads_exclude_a_legacy_document_level_row(store):
     await store.index_chunks(
         "d1",
         [
-            _chunk(
-                "d1",
-                content="Title: T\nAbstract: a previously generated abstract",
-                heading_path="__document_header__",
-                chunk_index=-1,
-            ),
+            _legacy_header("d1", content="Title: T\nAbstract: a previously generated abstract"),
             _chunk("d1", content="authored body", heading_path="Body", chunk_index=0),
         ],
     )
@@ -1596,8 +1613,116 @@ async def test_passage_reads_exclude_a_legacy_document_level_row(store):
     assert await store.get_heading_paths("d1") == ["Body"]
     assert [c.content for c in await store.get_all_chunks("d1")] == ["authored body"]
     hits = await store.search_semantic([0.0] * EMBEDDING_DIM, limit=10)
-    assert all(h.heading_path != "__document_header__" for h in hits), (
+    assert all(h.heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH for h in hits), (
         "a legacy row reached a caller through the semantic arm"
+    )
+
+
+async def test_a_legacy_row_cannot_satisfy_a_keyword_match_across_the_document(store):
+    """A term only the legacy row carries does not make its document match.
+
+    The document-scoped keyword arm resolves each operand to a set of document
+    ids before anything is ranked, so the scoping has to hold there or a legacy
+    row admits its whole document on text no author wrote.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _legacy_header("d1", content="Abstract: zzheaderterm governs the summary"),
+            _chunk("d1", content="alphaword in the body", heading_path="Body", chunk_index=0),
+        ],
+    )
+
+    assert await store.search_bm25("zzheaderterm", limit=10) == [], (
+        "a legacy row satisfied a match through the document-scoped arm"
+    )
+    assert [r.document_id for r in await store.search_bm25("alphaword", limit=10)] == ["d1"], (
+        "positive control: the same arm matches on the authored passage, so the "
+        "empty result above is the scoping and not an unreachable query"
+    )
+
+
+async def test_a_legacy_row_does_not_rank_or_count_toward_a_matched_document(store):
+    """A matched document's excerpt and passage count see passages only.
+
+    The ranking stage is scoped separately from the matching stage, so a
+    document that matched on its authored text can still have its legacy row
+    reach the excerpt or inflate the count if only the match arm is scoped.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _legacy_header("d1", content="Abstract: alphaword restated in the summary"),
+            _chunk("d1", content="alphaword in the body", heading_path="Body", chunk_index=0),
+        ],
+    )
+
+    results = await store.search_bm25("alphaword", limit=10)
+
+    assert [r.document_id for r in results] == ["d1"]
+    assert results[0].heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH, (
+        "a legacy row became the excerpt"
+    )
+    assert results[0].matched_chunk_count == 1, (
+        "the count names passages, so a legacy row must not be one of them"
+    )
+
+
+async def test_a_legacy_row_cannot_satisfy_a_within_chunk_keyword_query(store):
+    """The single-chunk fallback is scoped too, not only the decomposed arms.
+
+    A query carrying an exclusion cannot be decomposed into document-scoped
+    operands and falls back to evaluating against one chunk, which is a third
+    statement and needs its own scoping.
+    """
+    await store.index_chunks(
+        "d1",
+        [
+            _legacy_header("d1", content="Abstract: zzheaderterm governs the summary"),
+            _chunk("d1", content="alphaword in the body", heading_path="Body", chunk_index=0),
+        ],
+    )
+
+    assert await store.search_bm25("zzheaderterm -nothingword", limit=10) == [], (
+        "a legacy row satisfied a match through the within-chunk fallback"
+    )
+    assert [r.document_id for r in await store.search_bm25("alphaword -nothingword", limit=10)] == [
+        "d1"
+    ], (
+        "positive control: the exclusion still reaches the fallback and can "
+        "return a hit, so the empty result above is the scoping"
+    )
+
+
+def test_the_passage_surface_scoping_is_expressed_once():
+    """The scoping stays at one anchor rather than decaying into literals.
+
+    Every passage read on this binding goes through ``_passage_rows_only``, so
+    the condition is stated once and a read added without it is visible. A site
+    that spells the predicate inline would be a second, unexplained statement of
+    it -- which is the shape this anchor replaced.
+
+    The call-count assertion excludes the module that defines the helper and
+    calls it nowhere, which "no inline predicate" would otherwise satisfy
+    trivially. It does not reach two further rivals, and this test is not where
+    they are caught: a module keeping one call and dropping the scoping from the
+    other reads satisfies both assertions, and so does one scoping by the
+    heading path instead. The behavioural tests above exclude the first --
+    between them they exercise every scoped read, so a dropped guard reds one of
+    them -- and the second is not a defect, since neither marker is canonical.
+
+    This test's own job is the narrower one: keeping the condition stated once
+    rather than re-spelled, unexplained, at each site.
+    """
+    source = Path(inspect.getfile(PostgresContentStore)).read_text(encoding="utf-8")
+
+    assert "chunk_index >" not in source, (
+        "the passage-surface predicate is spelled inline somewhere; route it "
+        "through _passage_rows_only so the condition stays named once"
+    )
+    # One definition plus a call at every passage read.
+    assert source.count("_passage_rows_only(") >= 2, (
+        "_passage_rows_only is defined but never called -- the passage reads are no longer scoped"
     )
 
 
