@@ -53,6 +53,7 @@ def _doc(
     lifecycle_status: str = "active",
     document_date: str | None = None,
     semantic_abstract: str | None = None,
+    source_modified_at: datetime | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -73,6 +74,7 @@ def _doc(
         tier3_metadata=tier3,
         document_date=document_date,
         semantic_abstract=semantic_abstract,
+        source_modified_at=source_modified_at,
     )
 
 
@@ -911,6 +913,42 @@ async def test_recency_orders_the_truncation(postgres_graph_store, helper_name, 
 
     assert [d.id for d in found] == [newer.id, older.id], (
         "the cut ignored document_date: an undated document survived a dated one"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_an_undated_document_is_cut_on_when_it_was_modified(
+    postgres_graph_store, helper_name, make_doc
+):
+    """A document with no authored date is ranked on the date it was modified.
+
+    The cut exists to mirror the reranking that runs after it, and that
+    reranking resolves a document's date as ``document_date`` falling back to
+    ``source_modified_at`` -- so a recently ingested document carrying no
+    authored date is one it boosts. Ranking such a document last here would cut
+    it before it ever reached that boost, which is the shape of the very defect
+    the ordering was added to fix.
+
+    The sibling above cannot see this: every document it builds leaves
+    ``source_modified_at`` unset, so the fallback has nothing to reach for and
+    an undated document sorts last under either rule. Here the undated document
+    is the *more* recently modified one and the dated one is six years stale,
+    so ranking undated-last returns exactly the wrong document.
+    """
+    stale_but_dated = make_doc(990, document_date="2020-01-01")
+    undated_but_fresh = make_doc(
+        991,
+        document_date=None,
+        source_modified_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    await postgres_graph_store.insert_document(stale_but_dated)
+    await postgres_graph_store.insert_document(undated_but_fresh)
+
+    found = await getattr(postgres_graph_store, helper_name)(_BOOST_TERM, limit=1)
+
+    assert [d.id for d in found] == [undated_but_fresh.id], (
+        "an undated document was cut on its missing authored date rather than "
+        "on when it was modified, so the cut dropped a document the rerank boosts"
     )
 
 

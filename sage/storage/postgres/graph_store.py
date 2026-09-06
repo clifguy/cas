@@ -90,17 +90,41 @@ _SORTABLE_COLUMNS: frozenset[str] = frozenset(
 # order is the same one twice, not which of two tied rows comes first.
 _ORDER_TIEBREAK: Final[str] = ", id ASC"
 
-# Salience order: active documents first, then the most recently dated, with
-# undated documents last. Named here because two unrelated paths want it and
-# want the same one -- the default document enumeration order, and the ranked
-# truncation the two boost helpers apply to a match set they cannot otherwise
-# rank. It mirrors what the retrieval layer's own reranking applies downstream
-# (active above non-active, then a decaying recency boost), which is what makes
-# it the defensible order for a cut taken before that reranking runs.
+# The default document enumeration order: active documents first, then the most
+# recently dated, with undated documents last. This is a browsing order -- it
+# arranges rows for a reader, and enumeration has no notion of a better row, so
+# what it owes is a sensible arrangement and (with the tiebreak) a repeatable
+# one. An undated document sorts last here rather than being given a substitute
+# date, which keeps the documents that carry an authored date in one unbroken
+# sequence.
 _SALIENCE_ORDER: Final[str] = (
     "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
     "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
     "document_date DESC"
+)
+
+# The order the two boost helpers rank their match set by before truncating it.
+# Deliberately not ``_SALIENCE_ORDER``, though it agrees with it on every
+# document carrying an authored date: the two answer different questions, and
+# the fallback below is where that shows.
+#
+# This one exists to mirror the retrieval layer's own reranking, because a cut
+# taken before that reranking runs should keep the rows the reranking would go
+# on to raise. That reranking resolves a document's date as ``document_date``
+# and falls back to ``source_modified_at``, so an undated but recently ingested
+# document is boosted there -- and ranking it last here would cut it before it
+# ever reached the boost. Both columns hold ISO-8601 text, so truncating the
+# timestamp to its date leaves a value that compares lexically against
+# ``document_date``. A document with neither still sorts last.
+#
+# The divergence is the point rather than an oversight: a browsing order should
+# not invent a date for a document that has none, and a cut that mirrors a
+# ranking must follow that ranking's own fallback.
+_BOOST_CUT_DATE: Final[str] = "COALESCE(document_date, LEFT(source_modified_at, 10))"
+_BOOST_CUT_ORDER: Final[str] = (
+    "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
+    f"CASE WHEN {_BOOST_CUT_DATE} IS NULL THEN 1 ELSE 0 END, "
+    f"{_BOOST_CUT_DATE} DESC"
 )
 
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).
@@ -605,10 +629,10 @@ class PostgresGraphStore(GraphStore):
 
         Beneath those two keys the match set is unranked -- containment either
         holds or does not, so two tag matches are equally good matches -- and
-        the caller truncates. ``_SALIENCE_ORDER`` decides which of them survive
-        and ``_ORDER_TIEBREAK`` makes that decision reproducible: the cut takes
-        the documents the caller's own reranking would have raised anyway,
-        rather than whichever ones the scan reached first. The salience keys
+        the caller truncates. ``_BOOST_CUT_ORDER`` decides which of them
+        survive and ``_ORDER_TIEBREAK`` makes that decision reproducible: the
+        cut takes the documents the caller's own reranking would have raised
+        anyway, rather than whichever ones the scan reached first. Those keys
         sit behind the match-quality keys, not in front, so a better match
         still outranks a more salient one.
         """
@@ -624,7 +648,7 @@ class PostgresGraphStore(GraphStore):
                 "ORDER BY "
                 "  CASE WHEN title ILIKE %s THEN 0 ELSE 1 END, "
                 "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END, "
-                f" {_SALIENCE_ORDER}{_ORDER_TIEBREAK} "
+                f" {_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
                 "LIMIT %s",
                 (pattern, pattern, pattern, pattern, limit),
             )
@@ -647,7 +671,7 @@ class PostgresGraphStore(GraphStore):
             pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
                 "SELECT * FROM documents WHERE semantic_abstract ILIKE %s "  # noqa: S608 -- order from module constants; values are %s
-                f"ORDER BY {_SALIENCE_ORDER}{_ORDER_TIEBREAK} "
+                f"ORDER BY {_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
                 "LIMIT %s",
                 (pattern, limit),
             )

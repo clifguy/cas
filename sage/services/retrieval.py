@@ -1484,6 +1484,17 @@ class RetrievalService:
         # that the hundred it keeps are the same hundred twice and the best
         # hundred to keep: the store orders by match quality, then by the same
         # salience this pipeline reranks on below, then by the primary key.
+        #
+        # One caller pays for that ordering, and the cost is worth naming
+        # because it is the price of the guarantee rather than an oversight.
+        # The cut is taken here and the request's scope and filters are applied
+        # to the result below, so a caller who filtered to a *non-active*
+        # lifecycle and whose query matches more documents than the cap now
+        # receives a hundred active documents that the filter then discards --
+        # no boost at all, every time, where before the arbitrary hundred
+        # sometimes happened to contain what they asked for. Ranking the cut
+        # over eligible documents instead would mean pushing the request's
+        # filters down into the store helper.
         metadata_docs = await self._graph.search_metadata(
             request.query,
             limit=100,
