@@ -1897,3 +1897,300 @@ async def test_a_headingless_passage_is_not_mistaken_for_a_document_surface(stor
     assert semantic[0].content.startswith("zetaword catalog"), (
         "the passage's excerpt was suppressed as if it were document-level"
     )
+
+
+# ---------------------------------------------------------------------------
+# Which path answers, and that the set of paths is closed
+#
+# The tests above cover what each path matches. These cover the dispatch: which
+# of the two paths answers a given query shape, where the folded arm sits
+# relative to them, and that nothing else answers at all. They read the path
+# from the row shape rather than from the method that produced it, because the
+# row shape is the published difference -- a binding that declines a query at
+# document scope returns one row per matching chunk with matched_chunk_count
+# left at its default, and the caller tallies -- so these survive a rename of
+# the private methods and would fail a consolidation that changed what a caller
+# sees.
+# ---------------------------------------------------------------------------
+
+
+async def _two_chunk_document(store, document_id="routed", term="deltaword"):
+    """A document whose term is carried by two passages, not one.
+
+    Two is what makes the row shape legible: a document-scoped answer collapses
+    them into one row carrying a count of two, and a within-unit answer returns
+    both rows carrying the default count of one. With a single passage the two
+    shapes are identical and the assertions below would hold either way.
+    """
+    await store.index_chunks(
+        document_id,
+        [
+            _chunk(document_id, content=f"{term} in the first passage", chunk_index=0),
+            _chunk(document_id, content=f"{term} in the second passage", chunk_index=1),
+        ],
+    )
+
+
+async def test_a_decomposable_query_is_answered_at_document_scope(store):
+    """A plain conjunction collapses a document's passages into one row."""
+    await _two_chunk_document(store)
+
+    rows = [r for r in await store.search_bm25("deltaword", limit=10) if r.document_id == "routed"]
+
+    assert len(rows) == 1, "a document-scoped answer returns each document once"
+    assert rows[0].matched_chunk_count == 2, (
+        "the row must count both passages carrying the term, not just its excerpt's"
+    )
+
+
+async def test_a_negated_query_is_answered_within_one_unit(store):
+    """A negation is evaluated per unit, so each passage answers for itself."""
+    await _two_chunk_document(store)
+
+    rows = [
+        r
+        for r in await store.search_bm25("deltaword -absentword", limit=10)
+        if r.document_id == "routed"
+    ]
+
+    assert len(rows) == 2, "a within-unit answer returns one row per matching passage"
+    assert [r.matched_chunk_count for r in rows] == [1, 1], (
+        "a chunk-by-chunk binding leaves the count at its default for the caller to tally"
+    )
+
+
+async def test_an_alternation_query_is_answered_within_one_unit(store):
+    """The other undecomposable shape routes the same way."""
+    await _two_chunk_document(store)
+
+    rows = [
+        r
+        for r in await store.search_bm25("deltaword or absentword", limit=10)
+        if r.document_id == "routed"
+    ]
+
+    assert len(rows) == 2, "an alternation must not be answered at document scope"
+    assert [r.matched_chunk_count for r in rows] == [1, 1]
+
+
+async def test_an_exclusion_only_query_is_answered_within_one_unit(store):
+    """A query requiring no lexeme is answered per unit, like the shapes above.
+
+    It reaches the fallback by the first dispatch decision rather than the
+    second, but the two are ordered rather than independent: every no-lexeme
+    query also fails the decomposition, so deleting the first decision outright
+    leaves this test green. What is pinned here is the behaviour -- a query
+    asking only for an absence is answered within one unit -- and not the
+    decision that delivers it, which no test can isolate because nothing routes
+    on it alone.
+    """
+    await _two_chunk_document(store)
+
+    rows = [
+        r for r in await store.search_bm25("-absentword", limit=50) if r.document_id == "routed"
+    ]
+
+    assert len(rows) == 2, "a query asking only for an absence is answered per unit"
+    assert [r.matched_chunk_count for r in rows] == [1, 1]
+
+
+async def _folded_surface_document(store, document_id="folded", title="Epsilon Level Text"):
+    """A spaced title on a document surface, over passages carrying none of its words.
+
+    The passage surface indexes literally, and a query naming a compound or a
+    hyphenated identifier renders lexemes no spaced passage carries --
+    ``first-passage`` becomes a phrase over ``first-passag``. Such a query
+    therefore has nothing to reach on that surface by construction, which is
+    why the folded arm is confined to the document surface and why a document
+    with one is the only kind it can match.
+
+    Not every query against this fixture needs folding to land: an underscore
+    renders as its parts alone and matches the expanded title directly. Which
+    renderings need the arm and which do not is the subject of
+    ``test_a_hyphenated_query_reaches_a_spaced_title_only_by_folding``.
+    """
+    await store.index_chunks(
+        document_id, [_chunk(document_id, content="body prose carrying none of the terms")]
+    )
+    await _surface(store, document_id, matchable=title, orienting="")
+
+
+async def test_the_folded_arm_is_reachable_only_from_the_document_scoped_path(store):
+    """Folding widens the document-scoped path and nothing else.
+
+    The arm is spliced into that path's query, so a shape routed to the
+    within-unit path never gets it. A title reachable only by folding is
+    therefore reachable by a bare query and not by the same query carrying a
+    negation -- which is the arm's placement, stated as behaviour rather than
+    as a claim in a docstring.
+    """
+    await _folded_surface_document(store)
+
+    reached = await store.search_bm25("epsilonLevelText", limit=10)
+    assert [r.document_id for r in reached] == ["folded"], (
+        "the folded arm did not reach a title the raw tokenization cannot match"
+    )
+
+    assert await store.search_bm25("epsilonLevelText -absentword", limit=10) == [], (
+        "the folded arm reached a query routed to the within-unit path"
+    )
+    control = await store.search_bm25("epsilon -absentword", limit=10)
+    assert [r.document_id for r in control] == ["folded"], (
+        "positive control: the within-unit path does reach this surface, just not "
+        "through a folded compound"
+    )
+
+
+async def test_a_hyphenated_query_reaches_a_spaced_title_only_by_folding(store):
+    """The hyphen is the separator the arm is load-bearing for, and the underscore is not.
+
+    Folding treats the two as one character class; the text-search
+    configuration does not. ``epsilon_level`` renders as its parts alone, which
+    the index-side expansion already writes into adjacent positions, so it
+    lands without the arm. ``epsilon-level`` renders as the hyphenated whole
+    *followed by* those parts, and the expansion never produces that whole --
+    so the query demands a lexeme no widening of the index supplies, and only
+    the folded arm can answer it.
+
+    Pinned because the distinction is invisible in the transform and easy to
+    state backwards, and because the hyphenated form is the one nearly every
+    identifier-shaped title carries.
+
+    The two "without the arm" claims are made against the *within-unit* path,
+    by appending a negation. That path never gets the folded arm, so what lands
+    there landed without it. Asserting the bare renderings instead would say
+    nothing: with the arm in place both land, so a binding where the underscore
+    also needed the arm would pass identically -- the claim would hold only
+    under a mutation the suite does not run.
+    """
+    await _folded_surface_document(store, title="Epsilon Level")
+
+    underscore = await store.search_bm25("epsilon_level -absentword", limit=10)
+    assert [r.document_id for r in underscore] == ["folded"], (
+        "the underscore rendering needs no arm, so it must land on the path that has none"
+    )
+
+    assert await store.search_bm25("epsilon-level -absentword", limit=10) == [], (
+        "the hyphenated rendering must be unreachable on that same path, or the arm "
+        "is not what answers it"
+    )
+
+    assert [r.document_id for r in await store.search_bm25("epsilon-level", limit=10)] == [
+        "folded"
+    ], "and on the path that does have the arm, the same hyphenated rendering lands"
+
+
+async def test_every_keyword_query_is_answered_by_exactly_one_path(store, monkeypatch):
+    """No query is answered by both paths, or by neither.
+
+    The row shape above says which of the two answered; it cannot say that a
+    third did. Counting entries into each path is the one claim behaviour
+    cannot make, so it is the only claim this test makes: a path added later
+    that emitted a familiar row shape shows up here as a query entering
+    neither.
+
+    What it does not reach is a path that *delegates* to one of these two after
+    doing something of its own first -- that still enters exactly one, and the
+    row-shape tests above catch it only if it changes the shape. The claim here
+    is that the dispatch has no third exit, not that nothing else runs.
+    """
+    await _two_chunk_document(store)
+    entered: list[str] = []
+
+    for name in ("_search_bm25_across_document", "_search_bm25_within_chunk"):
+        original = getattr(type(store), name)
+
+        def spy(self, *args, _name=name, _original=original, **kwargs):
+            entered.append(_name)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(store), name, spy)
+
+    queries = [
+        "deltaword",
+        "deltaword -absentword",
+        "deltaword or absentword",
+        "-absentword",
+        "epsilonLevelText",
+    ]
+    for query in queries:
+        entered.clear()
+        await store.search_bm25(query, limit=10)
+        assert len(entered) == 1, f"{query!r} entered {entered}, not exactly one path"
+
+    entered.clear()
+    for query in queries:
+        await store.search_bm25(query, limit=10)
+    assert set(entered) == {"_search_bm25_across_document", "_search_bm25_within_chunk"}, (
+        "the matrix must reach both paths, or a path could be removed without failing"
+    )
+
+
+async def _render_statements(store, monkeypatch, query, limit=10):
+    """The rendering statements one search issues, and what that search found.
+
+    A rendering is the statement that asks the configuration how it reads a
+    string; every other statement in a search is a match or a rank. Selecting
+    on the shape rather than counting all statements keeps this measuring the
+    round-trips the dispatch spends, not the search's own.
+
+    The hits come back alongside so a caller can assert the search it measured
+    was a real one. A statement count says nothing about whether anything
+    matched, and a query reaching no document renders exactly as often as one
+    reaching every document -- so without an assertion consuming the hits, the
+    seeded corpus is scaffolding nothing reads, and would describe itself as a
+    control while being inert.
+    """
+    seen: list[str] = []
+    original = type(store)._fetchall
+
+    async def spy(self, sql, *args, **kwargs):
+        if sql.lstrip().startswith("SELECT websearch_to_tsquery"):
+            seen.append(sql)
+        return await original(self, sql, *args, **kwargs)
+
+    monkeypatch.setattr(type(store), "_fetchall", spy)
+    hits = await store.search_bm25(query, limit=limit)
+    return seen, hits
+
+
+async def test_a_keyword_search_renders_its_query_once(store, monkeypatch):
+    """One round-trip answers both decisions and the folded arm.
+
+    Dispatch needs the backend for exactly one thing: how the configuration
+    reads the query. Both decisions read the same rendering, and the folded arm
+    reads a second one of the same kind, so a search that asks more than once
+    is asking twice for what it already had.
+    """
+    await _folded_surface_document(store)
+
+    rendered, hits = await _render_statements(store, monkeypatch, "epsilonLevelText")
+
+    assert len(rendered) == 1, f"the search issued {len(rendered)} rendering statements, not one"
+    assert rendered[0].count("websearch_to_tsquery") == 2, (
+        "a query with something to fold renders both forms, in the one statement"
+    )
+    assert [h.document_id for h in hits] == ["folded"], (
+        "positive control: the measured search must be one that reaches a document, "
+        "or the count is of a query that bailed before the arms it is supposed to cost"
+    )
+
+
+async def test_a_query_with_nothing_to_fold_renders_only_the_raw_form(store, monkeypatch):
+    """Folding is decided before the statement is built, not after.
+
+    The folded arm is dropped when folding changes nothing, and that is a pure
+    text test -- so a query with no separators and no compound must not pay for
+    a second rendering it would discard.
+    """
+    await _two_chunk_document(store)
+
+    rendered, hits = await _render_statements(store, monkeypatch, "deltaword")
+
+    assert len(rendered) == 1
+    assert rendered[0].count("websearch_to_tsquery") == 1, (
+        "a query with nothing to fold rendered a folded form anyway"
+    )
+    assert [h.document_id for h in hits] == ["routed"], (
+        "positive control: the measured search must be one that reaches a document"
+    )

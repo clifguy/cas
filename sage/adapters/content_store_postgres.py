@@ -221,6 +221,31 @@ def _or_form(terms: tuple[str, ...]) -> str:
     return " | ".join("'" + term.replace("'", "''") + "'" for term in terms)
 
 
+def _parse_rendered(query: str, rendered: str) -> KeywordQueryParse:
+    """Read a rendered tsquery, alongside the text it came from, as a parse.
+
+    Split out from ``parse_keyword_query`` so the dispatcher can reuse a
+    rendering it already has rather than asking the backend for a second one.
+    Everything here is pure; the round-trip is the caller's.
+    """
+    required, excluded = _split_negation(rendered)
+    spans = _required_phrase_spans(query)
+    return KeywordQueryParse(
+        terms=tuple(lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required)),
+        excluded=tuple(excluded),
+        all_required="|" not in required,
+        # Both halves are load-bearing, and each is read from its own source.
+        # The rendered operator alone over-reports: the tokenizer emits
+        # adjacency for every compound it splits, so "CAS-ADR-048" would read
+        # as a phrase. The caller's quotes alone over-report too: a quoted span
+        # that rendered nothing imposes no adjacency. A span counts only if it
+        # holds more than one word, since a single quoted word has nothing to
+        # be adjacent to. Matching on "<" rather than "<->" catches the
+        # distances a dropped stopword produces.
+        adjacent=any(len(span.split()) > 1 for span in spans) and "<" in required,
+    )
+
+
 def _split_negation(rendered: str) -> tuple[str, list[str]]:
     """Separate a rendered tsquery into what it requires and what it excludes.
 
@@ -661,8 +686,7 @@ class PostgresContentStore(ContentStore):
 
         Each arm is an indexed predicate over the generated tsvector, which
         covers heading_path (weight A) and content (weight D), so a term
-        present only in a heading is findable. Queries whose shape does not
-        decompose fall back to evaluating the whole query against one chunk.
+        present only in a heading is findable.
 
         Each operand is satisfied by the document's *authored* text wherever it
         lives: a passage, or the document surface carrying its title and tags
@@ -673,24 +697,98 @@ class PostgresContentStore(ContentStore):
         reaches only the document surface's ranking vector and so can never
         satisfy an operand.
 
-        A separate union arm matches the whole query, normalized, against the
-        document surface alone. That is what lets a caller reach a document by
-        its title without reproducing the author's separators or word
-        boundaries; it is confined to the document surface so passage matching
-        keeps its literal tokenization.
+        Two matching paths answer a query, and one arm grafts onto the first.
+        The whole set is stated here and only here: each path's own docstring
+        carries its internals, none of them carries its placement relative to
+        the others, and a reader who needs the shape should not have to
+        assemble it from three of them.
+
+        ``_search_bm25_across_document``. Scope: the document. Tokenization:
+        the query as the text-search configuration renders it, split into
+        top-level operands and cast back verbatim, since re-parsing a rendered
+        lexeme would stem it a second time. Admitted when the query requires at
+        least one lexeme and ``_split_conjuncts`` accepts its shape.
+
+        The folded arm. Not a third scope: the same document scope reached by a
+        different tokenization, spliced into the path above as an extra
+        ``UNION`` over the document surface alone. Admitted when folding
+        changes the query and the folded text still renders. Confining it to
+        the document surface is what keeps passage matching on literal
+        tokenization.
+
+        Two directions need it, for two different reasons. A caller typing
+        ``documentLevelTextHandling`` reaches a title written ``Document Level
+        Text Handling`` only through this arm, because no index-side widening
+        can: the expansion adds a compound's folded and split forms and never
+        synthesizes a joining of words the author wrote apart. A caller typing
+        ``epsilon-level`` reaches ``Epsilon Level`` only through this arm too,
+        because the configuration reads a hyphenated pair as the hyphenated
+        whole *followed by* its parts -- so the query demands a lexeme the
+        expansion never produced.
+
+        The underscore is the separator that needs no arm: it renders as the
+        parts alone, which the expansion already writes into adjacent
+        positions. Hyphen and underscore are one character class to the folding
+        transform and two different things to the tokenizer, and the hyphenated
+        form is the one nearly every identifier-shaped title carries.
+
+        ``_search_bm25_within_chunk``. Scope: one unit of text -- a passage, or
+        the document surface as a second such unit. Tokenization: the whole
+        query, rendered in SQL and never decomposed. Admitted when the query
+        requires no lexeme at all, or when ``_split_conjuncts`` refuses its
+        shape: a negation, or a top-level alternation.
+
+        The set is exhaustive because the dispatch is two decisions over the
+        parse, taken in order and jointly total -- whether the query requires a
+        lexeme, and whether its rendered shape decomposes. Nothing else is
+        consulted, and the folded arm answers nothing on its own: it widens
+        what the first path matches and is unreachable without it.
+
+        The two are ordered, not independent. Every query requiring no lexeme
+        also fails the decomposition -- an empty rendering yields no operand,
+        and a rendering of only negations carries the character that refuses
+        one -- so the first decision routes nothing the second would not.
+        It stays because it names a different thing: nothing to intersect on
+        rather than a shape that will not split, and it says so before a
+        rendering is scanned for a shape it does not have.
+
+        The two paths stay two because merging them changes what a caller sees,
+        not merely how the answer is computed. The document-scoped path ranks
+        on the query's required lexemes joined by ``|`` rather than on the
+        query itself, which is empty for a query asking only for absences and
+        would collapse every row to a document-level one; its excerpt is the
+        best-ranking chunk under that alternation, which for a negated query
+        can be a chunk holding the very term the caller excluded; its
+        ``matched_chunk_count`` counts chunks carrying a required lexeme, which
+        a negation-only query has none of; and its ``limit`` budgets documents
+        where the fallback budgets rows. The port admits both row shapes for
+        exactly this reason.
+
+        The fallback covers two shapes rather than one because only the
+        negation's scope is genuinely undecided. A top-level alternation could
+        instead be distributed -- ``a | (b & c)`` as an arm for ``a`` unioned
+        with the intersection of arms for ``b`` and ``c`` -- which would make
+        it document-scoped and leave the fallback to negation alone. That is a
+        recall change no decision has taken: it would newly let a document
+        carrying ``b`` in one passage and ``c`` in another satisfy the branch.
         """
         with self._query_timer.measure(
             "search_bm25", params={"limit": limit, "filtered": bool(filters)}
         ):
             if not query or not query.strip():
                 return []
-            parse = await self.parse_keyword_query(query)
+            # Both renderings the dispatch can need, asked for once. Reading
+            # the parse from the rendering rather than through
+            # ``parse_keyword_query`` is what keeps it to one: that method
+            # renders the query itself, and rendering is the only thing either
+            # decision below needs the backend for.
+            rendered, folded = await self._render_query_forms(query)
+            parse = _parse_rendered(query, rendered)
             if not parse.terms:
                 # Nothing to rank against, and nothing to intersect on: either
                 # every word was discarded, or the query asked only for
                 # absences, which the decomposition refuses.
                 return await self._search_bm25_within_chunk(query, limit, filters)
-            rendered = await self._render_tsquery(query)
             operands = _split_conjuncts(rendered)
             if operands is None:
                 return await self._search_bm25_within_chunk(query, limit, filters)
@@ -699,21 +797,33 @@ class PostgresContentStore(ContentStore):
                 _or_form(parse.terms),
                 limit,
                 filters,
-                await self._render_folded_tsquery(query),
+                folded,
             )
 
-    async def _render_folded_tsquery(self, query: str) -> str | None:
-        """Render the separator-folded form of ``query``, or ``None``.
+    async def _render_query_forms(self, query: str) -> tuple[str, str | None]:
+        """Both renderings a keyword search needs, in one round-trip.
 
-        Returns ``None`` when folding changes nothing or leaves no lexemes, so
-        the caller can drop the extra union arm rather than repeat one it
-        already has.
+        Returns the query as the text-search configuration reads it, and its
+        separator-folded rendering -- the latter ``None`` when folding changes
+        nothing or leaves no lexemes, so the caller drops the extra union arm
+        rather than repeating one it already has.
+
+        Folding is a pure text transform, so whether a second rendering is
+        wanted is known before the statement is built. A query with nothing to
+        fold therefore asks for one column rather than two and costs what it
+        did when the renderings were separate calls; one with something to fold
+        pays a column instead of a round-trip.
         """
         folded = fold_for_query(query)
-        if not folded.strip() or folded == query:
-            return None
-        rendered = await self._render_tsquery(folded)
-        return rendered or None
+        wants_folded = bool(folded.strip()) and folded != query
+        column = f"websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text"
+        rows = await self._fetchall(
+            f"SELECT {', '.join([column] * (2 if wants_folded else 1))}",  # noqa: S608
+            [query, folded] if wants_folded else [query],
+        )
+        if not rows:
+            return "", None
+        return rows[0][0] or "", (rows[0][1] or None) if wants_folded else None
 
     async def _search_bm25_across_document(
         self,
@@ -724,6 +834,10 @@ class PostgresContentStore(ContentStore):
         folded: str | None = None,
     ) -> list[SearchResult]:
         """Resolve each operand across both surfaces, intersect, then rank.
+
+        What this path matches, in what tokenization, when it is admitted, and
+        how it sits relative to the other one are stated at ``search_bm25`` and
+        are not restated here. What follows is this path's own shape.
 
         ``limit`` bounds documents rather than rows: a matching document is
         returned once, carrying its best-ranking passage as the excerpt and a
@@ -812,11 +926,14 @@ class PostgresContentStore(ContentStore):
     ) -> list[SearchResult]:
         """Evaluate the whole query against a single text unit.
 
-        The fallback for queries the document-scoped decomposition refuses --
-        those carrying a negation or a top-level alternation. What is unsettled
-        for those is the *scope* of the match, so this keeps the scope they
-        already had rather than inventing one: the query is satisfied within
-        one unit of text, not assembled across a document.
+        Which queries reach this path, and why it and the document-scoped one
+        are the whole set, are stated at ``search_bm25`` and are not restated
+        here. What follows is why the scope is the one it is.
+
+        What is unsettled for the shapes that arrive here is the *scope* of the
+        match, so this keeps the scope they already had rather than inventing
+        one: the query is satisfied within one unit of text, not assembled
+        across a document.
 
         The document surface is a second such unit, not a second scope. A
         document's authored text spans both surfaces (CAS-ADR-049 Decision 7),
@@ -897,26 +1014,7 @@ class PostgresContentStore(ContentStore):
         with self._query_timer.measure("parse_keyword_query"):
             if not query or not query.strip():
                 return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
-            rendered = await self._render_tsquery(query)
-            required, excluded = _split_negation(rendered)
-            spans = _required_phrase_spans(query)
-            return KeywordQueryParse(
-                terms=tuple(
-                    lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required)
-                ),
-                excluded=tuple(excluded),
-                all_required="|" not in required,
-                # Both halves are load-bearing, and each is read from its own
-                # source. The rendered operator alone over-reports: the
-                # tokenizer emits adjacency for every compound it splits, so
-                # "CAS-ADR-048" would read as a phrase. The caller's quotes
-                # alone over-report too: a quoted span that rendered nothing
-                # imposes no adjacency. A span counts only if it holds more
-                # than one word, since a single quoted word has nothing to be
-                # adjacent to. Matching on "<" rather than "<->" catches the
-                # distances a dropped stopword produces.
-                adjacent=any(len(span.split()) > 1 for span in spans) and "<" in required,
-            )
+            return _parse_rendered(query, await self._render_tsquery(query))
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str
