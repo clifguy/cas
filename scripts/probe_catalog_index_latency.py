@@ -177,7 +177,7 @@ async def _run_probes(label: str, reps: int) -> None:
             for _ in range(reps):
                 req = DiscoverRequest(
                     mode=RetrievalMode.CATALOG,
-                    filters=RetrievalFilters(doc_type="ticket", tier3=tier3),
+                    filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3),
                     limit=100,
                 )
                 t0 = time.perf_counter()
