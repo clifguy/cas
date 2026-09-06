@@ -1462,8 +1462,9 @@ def register_sage_tools(
             cap is denominated in values rather than bytes, so a facets
             response whose serialized size exceeds the MCP inline
             ceiling carries a ``facets_response_exceeds_inline_budget``
-            hint naming the ``recommended_facet_value_limit`` to re-call
-            at. A row was truncated exactly
+            hint, naming the ``recommended_facet_value_limit`` to
+            re-call at whenever a smaller cap would fit and omitting it
+            when none would. A row was truncated exactly
             when its ``total_distinct`` exceeds its value count; to
             read a full vocabulary, re-call with ``facet_value_limit``
             set to the reported ``total_distinct``. ``facet_fields``

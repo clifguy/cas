@@ -175,6 +175,66 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
         response.hints = {**response.hints, **budget_hint}
 
 
+def _facets_response_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:
+    """The facets response a re-call at ``cap`` would produce.
+
+    Faithful because a lower cap changes exactly one thing: each row
+    keeps the first ``cap`` of its values. They arrive ordered by
+    descending count then value, and the re-call's own rows would be
+    ordered the same way, so the prefix is the same prefix. Each row's
+    ``total_distinct`` is computed before any cap and is unchanged.
+    """
+    rows = [
+        row.model_copy(update={"values": dict(list(row.values.items())[:cap])})
+        if isinstance(row, FacetHit)
+        else row
+        for row in response.results
+    ]
+    return response.model_copy(update={"results": rows})
+
+
+def _facets_recommended_value_limit(response: DiscoverResponse, budget: int) -> int | None:
+    """Largest cap below the one in force whose re-call fits the budget.
+
+    Measured rather than modelled. Scaling the cap in force by
+    ``budget / size``, as the catalog hint scales its row count, is
+    wrong twice over on this target. It treats the response's fixed
+    part -- the envelope, and every vocabulary row already shorter than
+    the cap -- as though it shrank with the cap, and so lands the
+    re-call *above* budget by that fixed part times the fraction the
+    response was over. And it scales the widest row, which need not be
+    the heaviest: a wide row of short vocabulary values and a narrow row
+    of long tags put the bytes and the entry count in different rows,
+    and only the entry count is what the model reads.
+
+    Simulating the re-call has neither problem, and the payload is small
+    enough to make the cost irrelevant -- at most one row per facet
+    field, serialized a logarithmic number of times. Size is monotone in
+    the cap (raising it never removes a value), so the search is a
+    binary one.
+
+    Returns None when no cap below the one in force fits, which is the
+    caller's signal to omit the recommendation rather than name a
+    re-call that would not help. That covers both the degenerate cap of
+    one and the case where a single value is wider than the whole
+    budget.
+    """
+    cap_in_force = max(
+        (len(row.values) for row in response.results if isinstance(row, FacetHit)),
+        default=0,
+    )
+    low, high = 1, cap_in_force - 1
+    best: int | None = None
+    while low <= high:
+        mid = (low + high) // 2
+        if _serialized_response_bytes(_facets_response_at_cap(response, mid)) <= budget:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
 def _apply_facets_budget_hint(response: DiscoverResponse) -> None:
     """Annotate a facets response that exceeds the inline ceiling.
 
@@ -192,13 +252,12 @@ def _apply_facets_budget_hint(response: DiscoverResponse) -> None:
     ``reason``. A caller switching on the catalog reason is never handed
     a payload whose ``recommended_limit`` is silently absent.
 
-    The recommendation scales the per-field cap actually in force -- the
-    widest row's entry count, which is the cap or the largest vocabulary
-    under it. The measured size includes a fixed envelope that does not
-    shrink with the cap, so the proportional model under-recommends
-    rather than over-recommends. It is omitted entirely when it could
-    not come out below the cap in force, since a re-call at the same cap
-    changes nothing.
+    The recommendation is measured rather than modelled: it is the
+    largest cap below the one in force whose simulated re-call fits.
+    See ``_facets_recommended_value_limit`` for why the proportional
+    model the catalog hint uses does not transfer to this target. It is
+    omitted when no such cap exists, so the hint never names a re-call
+    that would not help.
     """
     if not response.results:
         return
@@ -211,12 +270,11 @@ def _apply_facets_budget_hint(response: DiscoverResponse) -> None:
         "response_size_bytes": size,
         "budget_bytes": budget,
     }
-    cap_in_force = max(
-        (len(row.values) for row in response.results if isinstance(row, FacetHit)),
-        default=0,
-    )
-    recommended = max(1, int(cap_in_force * budget / size * _BUDGET_RECOMMEND_SAFETY_FACTOR))
-    if recommended < cap_in_force:
+    # Computed before the hint is attached, so the simulated re-call
+    # carries what the real one would: the vocabulary warnings, and no
+    # budget hint of its own.
+    recommended = _facets_recommended_value_limit(response, budget)
+    if recommended is not None:
         budget_hint["recommended_facet_value_limit"] = recommended
     if response.hints is None:
         response.hints = budget_hint

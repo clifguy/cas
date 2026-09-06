@@ -46,6 +46,7 @@ from sage.models.schemas import (
     _FACET_FORBIDDEN_PARAMS,
     DiscoverHit,
     DiscoverRequest,
+    DiscoverResponse,
     Document,
     DocumentSummary,
     Edge,
@@ -59,6 +60,7 @@ from sage.services.retrieval import (
     DEFAULT_FACET_VALUE_LIMIT,
     DEFAULT_MCP_INLINE_BUDGET_BYTES,
     RetrievalService,
+    _apply_facets_budget_hint,
 )
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -5689,20 +5691,23 @@ async def test_catalog_facets_surfaces_vocabulary_warnings(graph_store, retrieva
 
 
 async def test_facets_budget_hint_never_names_the_rejected_limit_parameter(
-    graph_store, retrieval_service, monkeypatch
+    graph_store, retrieval_service
 ):
     """The facets budget hint recommends facet_value_limit, never limit.
 
     Deliberate deviation from the edges branch, which reuses the catalog
     hint wholesale: ``limit`` is rejected on this target, so a hint
     naming ``recommended_limit`` would recommend a re-call the validator
-    refuses. Inherits the tiny-budget setup from the test that pinned
-    the skip before the facets hint existed, and keeps its assertion --
-    the absence is still the point -- alongside the presence of the key
-    that replaced it.
+    refuses. Carries forward the assertion of the test that pinned the
+    deliberate skip before this hint existed -- the absence is still the
+    point -- alongside the presence of the key that replaced it.
+
+    Runs on a fixture where a smaller cap genuinely fits, so the
+    presence half asserts something reachable. A budget too tight for
+    any cap reaches the omission branch, where the presence half would
+    be asserting the wrong thing about a correct response.
     """
-    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "64")
-    await _seed_facet_docs(graph_store)
+    await _seed_many_tag_docs(graph_store, DEFAULT_FACET_VALUE_LIMIT, tag_width=_WIDE_TAG_WIDTH)
 
     req = DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
     resp = await retrieval_service.discover(req)
@@ -5884,7 +5889,7 @@ async def test_facets_budget_hint_fires_on_wide_tags_at_the_production_budget(
     assert resp.hints is not None
     assert resp.hints["reason"] == "facets_response_exceeds_inline_budget"
     assert resp.hints["budget_bytes"] == DEFAULT_MCP_INLINE_BUDGET_BYTES
-    assert resp.hints["response_size_bytes"] >= DEFAULT_MCP_INLINE_BUDGET_BYTES
+    assert resp.hints["response_size_bytes"] > DEFAULT_MCP_INLINE_BUDGET_BYTES
 
 
 async def test_facets_budget_hint_absent_when_the_same_row_count_is_narrow(
@@ -5958,8 +5963,8 @@ async def test_facets_budget_hint_omits_the_recommendation_when_it_could_not_shr
     The degenerate branch: the response is over budget for a reason
     lowering the cap cannot fix, and a ``recommended_facet_value_limit``
     equal to the cap already in force would name a re-call that changes
-    nothing. Pins the omission so a later simplification to a bare
-    ``max(1, ...)`` reddens.
+    nothing. Pins the omission so a later implementation that always
+    names a recommendation reddens.
 
     The seeded corpus is load-bearing, not scenery: the tags assertion
     below fails without it, and a cap of one that never bit on a real
@@ -5980,6 +5985,146 @@ async def test_facets_budget_hint_omits_the_recommendation_when_it_could_not_shr
     assert resp.hints["reason"] == "facets_response_exceeds_inline_budget"
     assert resp.hints["budget_bytes"] == 1
     assert "recommended_facet_value_limit" not in resp.hints
+
+
+# ---------------------------------------------------------------------------
+# The recommendation, at payload shapes a real vault cannot reach
+#
+# A vault's four vocabulary facets are closed enumerations, so no corpus
+# puts enough bytes outside the tags row to separate a recommendation
+# that accounts for the response's fixed part from one that does not,
+# and none makes a vocabulary row wider than the tag row while carrying
+# fewer bytes. Both shapes are reachable in principle and neither is
+# reachable through the graph store, so these build the payload
+# directly. Each asserts the property that matters -- the simulated
+# re-call fits -- alongside the arithmetic the rejected model would
+# have produced, so the fixture carries its own discrimination instead
+# of pinning a number whose significance has to be taken on trust.
+# ---------------------------------------------------------------------------
+
+
+def _facets_payload(rows: dict[str, dict[str, int]]) -> DiscoverResponse:
+    """A facets response over the given field -> values mapping."""
+    return DiscoverResponse(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        results=[
+            FacetHit(field=field, values=values, total_distinct=len(values))
+            for field, values in rows.items()
+        ],
+        total_available=1000,
+    )
+
+
+def _payload_bytes(response: DiscoverResponse) -> int:
+    """Serialized size, spelled out rather than imported.
+
+    Deliberately a second expression of the encoding under test: a
+    helper that shares the implementation's own measurement cannot
+    report that the implementation measures the wrong thing.
+    """
+    return len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+
+
+def _payload_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:
+    """The payload a re-call at ``cap`` would carry."""
+    return _facets_payload(
+        {row.field: dict(list(row.values.items())[:cap]) for row in response.results}
+    )
+
+
+def test_facets_recommendation_accounts_for_the_response_fixed_part(monkeypatch):
+    """The recommended re-call fits where a proportional one would not.
+
+    Scaling the cap in force by ``budget / size`` treats the response's
+    fixed part -- the envelope, and every vocabulary row already shorter
+    than the cap -- as though it shrank with the cap, so it names more
+    values than fit. The error is the fixed part times the fraction the
+    response was over, which the tag payload alone never makes large
+    enough to escape a safety margin.
+
+    Anti-coincidental-pass: the second assertion computes what the
+    proportional model would have recommended and shows that re-call
+    landing over budget, so the fixture is proved to discriminate on
+    the run rather than asserted to. A fixture on which the two models
+    agree passes the first assertion and fails the second. The
+    ``> 1`` guard excludes the rival every fit assertion admits --
+    always naming the floor, which fits trivially and would hand a
+    caller one value out of fifty.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    budget = DEFAULT_MCP_INLINE_BUDGET_BYTES
+    payload = _facets_payload(
+        {
+            "tags": {f"tag-{i:03d}-".ljust(1000, "x"): 3 for i in range(50)},
+            "doc_type": {f"vocab-{i:03d}-".ljust(70, "y"): 7 for i in range(25)},
+            "source_type": {f"other-{i:03d}-".ljust(70, "z"): 7 for i in range(25)},
+        }
+    )
+    size = _payload_bytes(payload)
+    assert size > budget
+
+    _apply_facets_budget_hint(payload)
+    assert payload.hints is not None
+    recommended = payload.hints["recommended_facet_value_limit"]
+    assert recommended > 1
+    assert _payload_bytes(_payload_at_cap(payload, recommended)) <= budget
+
+    proportional = max(1, int(50 * budget / size * 0.95))
+    assert proportional > recommended
+    assert _payload_bytes(_payload_at_cap(payload, proportional)) > budget
+
+
+def test_facets_recommendation_shrinks_the_heaviest_row_not_the_widest(monkeypatch):
+    """A wide cheap row does not hide a narrow expensive one.
+
+    The cap in force is the widest row's entry count, but the bytes can
+    sit in a narrower row. A recommendation derived by scaling that
+    count leaves the expensive row untouched until the cap falls below
+    its own width, costing a round trip per step; here that walk is
+    50 -> 22 -> ... where one call would do.
+
+    Anti-coincidental-pass: the recommendation is asserted below the
+    heavy row's width, which is the property that makes the re-call fit
+    at all -- an implementation reading only the widest row lands above
+    it and is caught by the fit assertion in the same breath -- and
+    above the floor, which every fit assertion admits.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    budget = DEFAULT_MCP_INLINE_BUDGET_BYTES
+    heavy_width = 12
+    payload = _facets_payload(
+        {
+            "doc_type": {f"cheap-{i:03d}": 4 for i in range(50)},
+            "tags": {f"tag-{i:03d}-".ljust(2500, "x"): 9 for i in range(heavy_width)},
+        }
+    )
+    assert _payload_bytes(payload) > budget
+
+    _apply_facets_budget_hint(payload)
+    assert payload.hints is not None
+    recommended = payload.hints["recommended_facet_value_limit"]
+    assert 1 < recommended < heavy_width
+    assert _payload_bytes(_payload_at_cap(payload, recommended)) <= budget
+
+
+def test_facets_recommendation_omitted_when_a_single_value_busts_the_budget(monkeypatch):
+    """No cap helps when one value alone exceeds the ceiling.
+
+    The other way into the omission branch, distinct from the cap of
+    one: the cap in force is well above one and every candidate below
+    it still overruns, so there is no re-call to name. Pins that the
+    search reports absence rather than falling back on its floor.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    payload = _facets_payload(
+        {"tags": {f"tag-{i}-".ljust(DEFAULT_MCP_INLINE_BUDGET_BYTES * 2, "x"): 1 for i in range(4)}}
+    )
+
+    _apply_facets_budget_hint(payload)
+    assert payload.hints is not None
+    assert payload.hints["reason"] == "facets_response_exceeds_inline_budget"
+    assert "recommended_facet_value_limit" not in payload.hints
 
 
 async def test_facets_budget_hint_absent_under_budget_at_default(graph_store, retrieval_service):
