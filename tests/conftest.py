@@ -334,16 +334,27 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     per-test root rely on. Tests that need either input set do so themselves;
     their ``monkeypatch`` calls run after this fixture and win.
 
-    No test can install the condition the ``delenv`` defends against: an
+    Neither clear can be exercised by a test on the machine the suite normally
+    runs on, so read a green suite carefully. The ``delenv`` defends against an
     ambient variable present at process start, which a test body cannot set
-    ahead of an autouse fixture. On a machine that does export it the scaffold
-    test named above goes red, but that machine is not the one the suite
-    normally runs on, so a green suite is no evidence the guard is intact. It
-    is verified out-of-band instead, and reproducibly -- export
-    ``SAGE_VAULT_ROOT`` to an empty scratch directory, run the vault-config
-    write tests, and confirm that directory is still empty afterward. Treat the
-    guard as load-bearing despite the green suite: deleting it restores the
-    failure silently everywhere the variable is not exported.
+    ahead of an autouse fixture; with the clear in place the scaffold test above
+    is green whether or not the machine exports the variable, so its passing
+    says nothing about the guard.
+
+    What that test does change is where a *removal* becomes visible. Delete the
+    ``delenv`` and it reds on a machine that exports ``SAGE_VAULT_ROOT`` --
+    which is the only machine where the guard does anything -- whereas before
+    the removal was silent everywhere. On a machine that exports nothing the
+    deletion still passes unnoticed, so the out-of-band check remains the one
+    that settles it, and it is reproducible: export ``SAGE_VAULT_ROOT`` to an
+    empty scratch directory, run the vault-config write tests, and confirm the
+    directory is still empty afterward.
+
+    The ``_vault_root`` clear is the weaker of the two and defends a narrower
+    condition: the lifespan publishes a root and clears it again under
+    ``finally``, so reaching this fixture with one set takes a caller that
+    publishes without a lifespan. No test can install that condition ahead of an
+    autouse fixture either. Both are load-bearing despite the green suite.
     """
     from sage import mcp_init, vault_management
 
