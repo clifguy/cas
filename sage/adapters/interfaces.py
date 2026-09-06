@@ -789,7 +789,12 @@ class GraphStore(ABC):
         """Return documents whose title matches exactly."""
 
     @abstractmethod
-    async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
+    async def search_metadata(
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict[str, object] | None = None,
+    ) -> list[Document]:
         """Keyword search over a document's authored metadata.
 
         The title and the tags are authored and admit a document. The source
@@ -805,10 +810,33 @@ class GraphStore(ABC):
         matches survive the cut, and these terms are what keep that cut
         reproducible and stop it dropping a document the caller's own ranking
         would have raised.
+
+        **Filtering happens here, ahead of the cut.** ``filters`` takes the
+        same shape ``query_documents`` accepts and resolves with the same
+        semantics. A caller must not narrow this result itself and expect the
+        survivors to be its own best matches: what the ordering above ranks is
+        whatever the ``WHERE`` clause admitted, so the cut a caller receives is
+        the best of the documents *it is eligible for* only if its constraints
+        were supplied here. Applying them afterwards ranks over the whole
+        corpus and can return a full cut of documents the caller then discards
+        entirely.
+
+        Failed-pipeline documents are excluded unless ``filters`` names a
+        ``pipeline_status`` -- the rule ``query_documents`` follows, inherited
+        rather than separately switchable, because a boost has no use for a
+        failed document its caller did not ask for. ``has_authority_scope`` is
+        the one key here that is not also an equality: it admits documents
+        whose ``authority_scope`` is set and non-empty, which is what a caller
+        scoped to authoritative documents can use.
         """
 
     @abstractmethod
-    async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+    async def search_abstracts(
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict[str, object] | None = None,
+    ) -> list[Document]:
         """Keyword search over generated semantic abstracts.
 
         Ordered by the same salience terms the sibling above applies beneath
@@ -816,6 +844,11 @@ class GraphStore(ABC):
         of them. Containment in an abstract admits a document and says nothing
         about how well it matched, so there is no quality signal to rank the
         set by first.
+
+        ``filters`` means what it means above, and for the same reason: the
+        cut is drawn from the documents the ``WHERE`` clause admitted, so a
+        caller's constraints belong here rather than on the result. The
+        failed-pipeline default is the same one too.
         """
 
     # --- Tier3 unique indexes ---

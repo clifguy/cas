@@ -635,10 +635,20 @@ class StubGraphStore(GraphStore):
     async def find_documents_by_title(self, title: str) -> list[Document]:
         return [d for d in self._docs.values() if d.title == title]
 
-    async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
+    async def search_metadata(
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict[str, object] | None = None,
+    ) -> list[Document]:
         raise self._unsupported("search_metadata")
 
-    async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+    async def search_abstracts(
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict[str, object] | None = None,
+    ) -> list[Document]:
         raise self._unsupported("search_abstracts")
 
     # --- Tier3 unique indexes ---

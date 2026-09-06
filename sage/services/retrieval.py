@@ -24,6 +24,7 @@ import os
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Final
 
 import pydantic_core
 
@@ -70,6 +71,7 @@ from sage.models.schemas import (
     DocumentSummaryLight,
     EdgeHit,
     FacetHit,
+    RetrievalFilters,
 )
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
@@ -90,6 +92,14 @@ _CHUNK_PUSHDOWN_KEYS = frozenset({"doc_type", "lifecycle_status", "project"})
 _FETCH_MULTIPLIER_NONE = 5
 _FETCH_MULTIPLIER_PUSHDOWN = 3
 _FETCH_MULTIPLIER_MIXED = 10
+
+# How many matching documents each relevance boost asks the graph store for.
+# The boosts score by position and prepend what the result does not already
+# hold, so an uncapped search would push every match ahead of the content hits
+# the caller searched for and count them all into ``total_available``. What the
+# cap costs is bounded by the store ranking the cut it takes and drawing it
+# from the documents the caller's filters admit; see the call sites.
+_BOOST_CUT_LIMIT: Final[int] = 100
 
 # Size of a tool result at which the reference client stops delivering it
 # inline and falls back to the disk round-trip. Measured 2026-09-06 against
@@ -476,34 +486,72 @@ class RetrievalService:
             f.tags or f.pipeline_status or f.document_ids or f.source_type or f.tier3_metadata
         )
         if has_non_pushdown:
-            sql_filters: dict[str, object] = {}
-            if f.doc_type:
-                sql_filters["doc_type"] = f.doc_type
-            if f.lifecycle_status:
-                sql_filters["lifecycle_status"] = f.lifecycle_status
-            if f.project:
-                sql_filters["project"] = f.project
-            if f.pipeline_status:
-                sql_filters["pipeline_status"] = f.pipeline_status
-            if f.tags:
-                sql_filters["tags"] = f.tags
-            if f.document_ids:
-                sql_filters["document_ids"] = f.document_ids
-            if f.source_type:
-                sql_filters["source_type"] = f.source_type.value
-            if f.tier3_metadata:
-                sql_filters["tier3_metadata"] = f.tier3_metadata
             # Filter resolution wants the full match set, not a page;
             # use an unbounded limit. The SQL ceiling is the documents
             # table size pre-filter, which is bounded at vault scale.
             matching_docs, _ = await self._graph.query_documents(
-                filters=sql_filters or None,
+                filters=self._graph_filters(f),
                 limit=10_000_000,
                 offset=0,
             )
             result["document_id"] = [doc.id for doc in matching_docs]
 
         return (result or None, has_non_pushdown)
+
+    @staticmethod
+    def _graph_filters(filters: RetrievalFilters | None) -> dict[str, object] | None:
+        """A request's filters in the shape the graph store's SQL expects.
+
+        Six calls in this service hand a caller's own filters to the graph
+        store, and all six read this one translation: the document-id
+        resolution above, the wildcard drill-down, catalog enumeration and its
+        facet sibling, and both relevance boosts -- which must narrow the set
+        they rank rather than the cut they receive. A hand-rolled second copy
+        is how one of them comes to omit a key, and an omitted key is silent,
+        because the SQL that results is a valid query for a wider set of
+        documents than the caller asked for. The count is of caller-filter
+        paths, not of every filtered read: a query assembled from a stored
+        pattern rather than from a request is a different translation with
+        different defaults, and does not belong here.
+        """
+        if not filters:
+            return None
+        out: dict[str, object] = {}
+        if filters.doc_type:
+            out["doc_type"] = filters.doc_type
+        if filters.lifecycle_status:
+            out["lifecycle_status"] = filters.lifecycle_status
+        if filters.project:
+            out["project"] = filters.project
+        if filters.pipeline_status:
+            out["pipeline_status"] = filters.pipeline_status
+        if filters.tags:
+            out["tags"] = filters.tags
+        if filters.document_ids:
+            out["document_ids"] = filters.document_ids
+        if filters.source_type:
+            out["source_type"] = filters.source_type.value
+        if filters.tier3_metadata:
+            out["tier3_metadata"] = filters.tier3_metadata
+        return out or None
+
+    @classmethod
+    def _boost_filters(cls, request: DiscoverRequest) -> dict[str, object] | None:
+        """Everything constraining a boost's cut, filters and scope together.
+
+        Scope reaches a request outside ``RetrievalFilters`` and so is not part
+        of the translation above, which the content path also reads. Only
+        AUTHORITATIVE adds anything here: it is a rule about a row, and a
+        capped search that ranks over rows the caller cannot use starves it the
+        way an unfiltered cut starves a filtered caller. SPECIFIC is a rule
+        about the *request* -- it admits nothing at all unless the request
+        named document ids, which are already a filter -- so it has nothing to
+        push down and loses nothing by staying at the gate.
+        """
+        out = cls._graph_filters(request.filters) or {}
+        if request.scope == RetrievalScope.AUTHORITATIVE:
+            out["has_authority_scope"] = True
+        return out or None
 
     @staticmethod
     def _active_filters(request: DiscoverRequest) -> dict[str, object]:
@@ -911,33 +959,18 @@ class RetrievalService:
     def _build_catalog_sql_filters(self, request: DiscoverRequest) -> dict[str, object] | None:
         """Translate ``RetrievalFilters`` into the graph-store filter dict.
 
-        Shared by document catalog enumeration and facet aggregation so
-        both resolve identical filter semantics, including the tier3
-        filter-key validation against the resolved doc_type's
-        metadata_schema. Returns None when no filter is active.
+        Shared by document catalog enumeration and facet aggregation so both
+        resolve identical filter semantics. The translation itself is
+        ``_graph_filters``; what this adds is the tier3 filter-key validation
+        against the resolved doc_type's metadata_schema, which these two
+        surfaces owe their callers and which the retrieval paths perform at
+        their own entry points instead. Returns None when no filter is active.
         """
-        sql_filters: dict[str, object] = {}
-        if request.filters:
-            if request.filters.doc_type:
-                sql_filters["doc_type"] = request.filters.doc_type
-            if request.filters.project:
-                sql_filters["project"] = request.filters.project
-            if request.filters.lifecycle_status:
-                sql_filters["lifecycle_status"] = request.filters.lifecycle_status
-            if request.filters.pipeline_status:
-                sql_filters["pipeline_status"] = request.filters.pipeline_status
-            if request.filters.tags:
-                sql_filters["tags"] = request.filters.tags
-            if request.filters.document_ids:
-                sql_filters["document_ids"] = request.filters.document_ids
-            if request.filters.source_type:
-                sql_filters["source_type"] = request.filters.source_type.value
-            if request.filters.tier3_metadata:
-                self._validate_tier3_filter_keys(
-                    request.filters.tier3_metadata, request.filters.doc_type
-                )
-                sql_filters["tier3_metadata"] = request.filters.tier3_metadata
-        return sql_filters or None
+        if request.filters and request.filters.tier3_metadata:
+            self._validate_tier3_filter_keys(
+                request.filters.tier3_metadata, request.filters.doc_type
+            )
+        return self._graph_filters(request.filters)
 
     async def _catalog_facets(
         self,
@@ -1181,10 +1214,12 @@ class RetrievalService:
 
         Filters that map to SQL column predicates (doc_type, project,
         lifecycle_status, pipeline_status, tags, document_ids,
-        tier3_metadata) are pushed into ``query_documents()``. ``scope=AUTHORITATIVE``
-        remains a Python post-pass because ``authority_scope`` has no
-        SQL column predicate today; the other scope values (SPECIFIC,
-        FILTERED, ALL) reduce to filter or short-circuit conditions
+        tier3_metadata) are pushed into ``query_documents()``.
+        ``scope=AUTHORITATIVE`` stays a Python post-pass, though a predicate
+        for it exists: this query takes no meaningful limit, so nothing is cut
+        before the pass runs and pushing it down would buy a second place to
+        be wrong rather than a different answer. The other scope values
+        (SPECIFIC, FILTERED, ALL) reduce to filter or short-circuit conditions
         that the SQL predicates already cover.
         """
         filters = request.filters
@@ -1197,28 +1232,11 @@ class RetrievalService:
             if not filters:
                 return []
 
-        sql_filters: dict[str, object] = {}
-        if filters:
-            if filters.doc_type:
-                sql_filters["doc_type"] = filters.doc_type
-            if filters.lifecycle_status:
-                sql_filters["lifecycle_status"] = filters.lifecycle_status
-            if filters.project:
-                sql_filters["project"] = filters.project
-            if filters.pipeline_status:
-                sql_filters["pipeline_status"] = filters.pipeline_status
-            if filters.tags:
-                sql_filters["tags"] = filters.tags
-            if filters.document_ids:
-                sql_filters["document_ids"] = filters.document_ids
-            if filters.source_type:
-                sql_filters["source_type"] = filters.source_type.value
-            if filters.tier3_metadata:
-                self._validate_tier3_filter_keys(filters.tier3_metadata, filters.doc_type)
-                sql_filters["tier3_metadata"] = filters.tier3_metadata
+        if filters and filters.tier3_metadata:
+            self._validate_tier3_filter_keys(filters.tier3_metadata, filters.doc_type)
 
         docs, _ = await self._graph.query_documents(
-            filters=sql_filters or None,
+            filters=self._graph_filters(filters),
             limit=10_000_000,
             offset=0,
         )
@@ -1237,9 +1255,11 @@ class RetrievalService:
                 request.filters is None or request.filters.pipeline_status is None
             ):
                 continue
-            # AUTHORITATIVE is the one scope rule not expressible as a
-            # SQL column predicate today. Other scope rules are already
-            # satisfied by the SQL filters and the short-circuits above.
+            # AUTHORITATIVE is applied here rather than pushed down, for the
+            # reason the docstring gives: the query above is unbounded, so this
+            # pass sees every matching document and cannot starve. Other scope
+            # rules are already satisfied by the SQL filters and the
+            # short-circuits above.
             if request.scope == RetrievalScope.AUTHORITATIVE and not doc.authority_scope:
                 continue
 
@@ -1476,28 +1496,28 @@ class RetrievalService:
         if not request.query:
             return hits
 
-        # The cap stays, and the store's ordering is what makes it safe to
-        # keep. This loop scores by *position* and prepends what it does not
-        # already hold, so an uncapped search would push every metadata match
-        # ahead of the content hits the caller actually searched for and count
-        # them all into ``total_available``. What a cap needs in exchange is
-        # that the hundred it keeps are the same hundred twice and the best
-        # hundred to keep: the store orders by match quality, then by the same
-        # salience this pipeline reranks on below, then by the primary key.
+        # The cap stays, and two properties of the store's search are what
+        # make it safe to keep. This loop scores by *position* and prepends
+        # what it does not already hold, so an uncapped search would push every
+        # metadata match ahead of the content hits the caller actually searched
+        # for and count them all into ``total_available``. What a cap needs in
+        # exchange is that the documents it keeps are the same ones twice and
+        # the best ones to keep -- the store orders by match quality, then by
+        # the same salience this pipeline reranks on below, then by the primary
+        # key -- and that they are drawn from the documents this caller can
+        # use, which is why its filters are supplied to the search rather than
+        # applied to what the search returns. Ranking the cut over the whole
+        # corpus starves a caller constrained to a lifecycle the ordering sorts
+        # last: the cut comes back entirely active, and the gate below discards
+        # all of it.
         #
-        # One caller pays for that ordering, and the cost is worth naming
-        # because it is the price of the guarantee rather than an oversight.
-        # The cut is taken here and the request's scope and filters are applied
-        # to the result below, so a caller who filtered to a *non-active*
-        # lifecycle and whose query matches more documents than the cap now
-        # receives a hundred active documents that the filter then discards --
-        # no boost at all, every time, where before the arbitrary hundred
-        # sometimes happened to contain what they asked for. Ranking the cut
-        # over eligible documents instead would mean pushing the request's
-        # filters down into the store helper.
+        # That gate stays as the mirror it is: what is supplied to the search
+        # decides which documents are ranked, and what is applied below decides
+        # nothing the search has not already decided.
         metadata_docs = await self._graph.search_metadata(
             request.query,
-            limit=100,
+            limit=_BOOST_CUT_LIMIT,
+            filters=self._boost_filters(request),
         )
         if not metadata_docs:
             return hits
@@ -1576,9 +1596,17 @@ class RetrievalService:
         # remaining ties on the primary key, so the same query boosts the same
         # documents twice, and the ones it keeps are the ones the rerank below
         # would have raised anyway.
+        #
+        # The request's filters go with it for the reason they do at the
+        # sibling boost above, and the consequence here is quieter: what is
+        # intersected below has already been filtered, so a cut drawn from the
+        # whole corpus does not admit anything wrong -- it simply spends the
+        # cap on documents that cannot intersect, and the boost silently does
+        # nothing for the caller it was meant to serve.
         abstract_docs = await self._graph.search_abstracts(
             request.query,
-            limit=100,
+            limit=_BOOST_CUT_LIMIT,
+            filters=self._boost_filters(request),
         )
         abstract_doc_ids = {doc.id for doc in abstract_docs}
 
