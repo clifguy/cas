@@ -1,4 +1,4 @@
-"""Batch edge inference service (; follows pattern).
+"""Batch edge inference service.
 
 Owns the vault-declared inference rules that operate on multi-document
 batch context. Per principle 5 ("SAGE owns vault-declared behavior"), the

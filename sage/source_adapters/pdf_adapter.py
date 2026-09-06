@@ -390,7 +390,7 @@ class PdfAdapter(SourceAdapter):
     # 0.4.0: scanned PDFs run through inline ocrmypdf pre-pass; tag set
     # changes (pdf:scanned removed; pdf:ocr_applied / pdf:ocr_no_text added).
     # 0.5.0: post-extraction CID safe-decode for printable-ASCII glyphs
-    # (; mitigates pdfminer.six side-effect after ocrmypdf import).
+    # (mitigates a pdfminer.six side-effect after the ocrmypdf import).
     VERSION = "0.5.0"
     EXTENSIONS = [".pdf"]
 

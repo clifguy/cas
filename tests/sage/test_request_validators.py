@@ -228,8 +228,8 @@ def test_hash_check_request_rejects_wrong_length():
 
 # ---------------------------------------------------------------------------
 # Sha256Str — applied to LinkRequest.synced_from_content_hash and
-# Edge.synced_from_content_hash (; tightening of the schema-only
-# fields introduced by).
+# Edge.synced_from_content_hash — a tightening of fields that were
+# previously schema-only.
 #
 # Each rejection case populates all other required LinkRequest fields with
 # valid values so the only validator that can fire is the synced_from

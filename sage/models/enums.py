@@ -225,7 +225,7 @@ class FacetField(StrEnum):
 
 
 class ResponseMode(StrEnum):
-    """Payload depth for ``search`` results (,).
+    """Payload depth for ``search`` results.
 
     `light` returns identity columns only and omits rationale, retraction
     envelope, and other large fields. `full` returns the complete envelope.

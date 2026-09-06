@@ -649,8 +649,8 @@ def test_chunk_projection_fallback_chunk_has_no_preamble(ingestion_service):
 
 
 def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
-    """Every body chunk carries its ATX heading line plus body content
-    ; the synthetic header chunk lives outside _chunk_projection's
+    """Every body chunk carries its ATX heading line plus body content;
+    the synthetic header chunk lives outside _chunk_projection's
     output."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
@@ -2701,8 +2701,8 @@ class _RecordingEmbeddingProvider:
     """Captures the texts passed to embed() for assertion.
 
     Accumulates across calls — the production pipeline now embeds chunks
-    in Stage 2 and re-embeds the synthetic header chunk in Stage 3
-    , so a single call's inputs are no longer the full picture.
+    in Stage 2 and re-embeds the synthetic header chunk in Stage 3,
+    so a single call's inputs are no longer the full picture.
     """
 
     def __init__(self) -> None:
