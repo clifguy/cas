@@ -3,7 +3,7 @@
 Covers T1 (helper round-trip). Write-path coverage lives in
 tests/app/test_batch_ingest_service.py and tests/sage/test_mcp_server.py.
 
-CAS-ADR-019 /.
+CAS-ADR-019.
 """
 
 from __future__ import annotations

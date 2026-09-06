@@ -184,7 +184,7 @@ async def _drive_mcp_reload(
     ``sage.mcp_init.reload_vault_in_registry``, which calls
     ``initialize_services`` from its own module namespace and builds the
     stack abstraction provider locally. The driver therefore patches both
-    in ``sage.mcp_init`` (the post-call site), not in
+    in ``sage.mcp_init`` (the current call site), not in
     ``sage.mcp_server``.
     """
     vault_root = tmp_path / "vault_root"

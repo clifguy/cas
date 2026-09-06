@@ -111,7 +111,7 @@ async def initialize_services_for_test(config, **kwargs):
     ``VaultTimingThread`` is stopped, its ``timing.log`` file handle is
     released, and the graph store is closed (the first two via
     ``close_timing``). Replaces the
-    ``services = await initialize_services(...); try:...; finally:
+    ``services = await initialize_services(...); try: ...; finally:
     await services.graph_store.close()`` pattern, which historically
     forgot to stop the timing thread and leaked it (and its log handle)
     into subsequent tests, polluting their caplog windows on the timing

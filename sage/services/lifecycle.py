@@ -313,7 +313,7 @@ class LifecycleService:
                     BulkLifecycleItemResult(
                         document_id=resolved_id,
                         status="success",
-                        # light mode: drop the document body. The
+                        # Light mode: drop the document body. The
                         # caller already knows the document_id (they
                         # passed it); the body's primary bloat field
                         # (semantic_abstract) and the rest are stripped.

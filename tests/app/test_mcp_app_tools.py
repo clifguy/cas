@@ -1286,7 +1286,7 @@ class TestSageDiscoverCatalog:
     async def test_mcp_028_catalog_budget_hint_surfaces_through_mcp_wrapper(
         self, single_vault, monkeypatch
     ):
-        """budget hint survives Pydantic→dict serialization across the MCP boundary."""
+        """Budget hint survives Pydantic→dict serialization across the MCP boundary."""
         monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
         services, _ = single_vault
         await self._seed_portfolio(services, 60)

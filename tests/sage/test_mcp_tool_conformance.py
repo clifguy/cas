@@ -392,7 +392,7 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ): "Cookie-scoped sign-out; no MCP tool by design.",
     # ROOT Harness Orchestration API: no MCP surface yet. Each
     # operation must drain individually once the orchestrator MCP
-    # tools land (/).
+    # tools land.
     (
         "root_harness",
         "trigger_workflow",

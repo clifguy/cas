@@ -1,4 +1,4 @@
-"""prompt-content tests for Qwen3AbstractionProvider.
+"""Prompt-content tests for Qwen3AbstractionProvider.
 
 Asserts two prompt-layer directives:
 

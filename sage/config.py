@@ -1207,7 +1207,7 @@ class TransitionTable:
     """
 
     def __init__(self, transitions: list[LifecycleTransition]) -> None:
-        # {from_state: [(action, to_state, creates_edge),...]}
+        # {from_state: [(action, to_state, creates_edge), ...]}
         self._table: dict[str, list[LifecycleTransition]] = {}
         self._all_actions: set[str] = set()
         self._ingest_landing: str | None = None

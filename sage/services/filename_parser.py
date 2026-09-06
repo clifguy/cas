@@ -33,7 +33,7 @@ class ParsedMetadata:
 # Pre-split patterns: operate on the full stem before separator splitting.
 # Leading date: YYYY-MM-DD followed by a space or underscore.
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[_ ](.*)")
-# Trailing version: v-prefix with optional sub-components separated by _ or.
+# Trailing version: v-prefix with optional sub-components separated by _ or .
 # An optional trailing annotation group (e.g. _FIXED, _FINAL) is captured
 # separately so it can be re-attached to the residual stem as title content.
 _TRAILING_VERSION_RE = re.compile(

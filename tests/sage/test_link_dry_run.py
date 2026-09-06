@@ -72,7 +72,7 @@ async def test_dry_run_returns_would_be_edge_with_sentinel_id(
 async def test_dry_run_on_natural_key_collision_returns_existing_edge(
     graph_store, graph_ops_service, stub_content_store
 ):
-    """pre-check (lifted from storage to application layer for
+    """Pre-check (lifted from storage to application layer for
     ): dry-run via `_create_edge` on a (source, target,
     edge_type) that already has an edge returns the existing edge with
     `created=False` — same shape as the real-run no-op path.

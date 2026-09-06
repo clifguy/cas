@@ -274,7 +274,7 @@ def _walk_annotation(annotation) -> tuple[bool, bool]:
 
     - Required ``DocumentIdStr``: ``field_info.annotation == str`` and the
       ``AfterValidator`` lives in ``field_info.metadata``.
-    - ``DocumentIdStr | None``: the Union arm is the ``Annotated[str,...]``
+    - ``DocumentIdStr | None``: the Union arm is the ``Annotated[str, ...]``
       itself; ``field_info.metadata`` is empty.
 
     This walker covers the second case (and is composed with a direct
@@ -649,7 +649,7 @@ def _module_typeadapter_bindings(module: ModuleType) -> dict[str, type]:
 
 
 def _validate_python_calls_in_function(fn: Callable) -> list[tuple[str, str]]:
-    """Return ``[(adapter_name, param_name),...]`` from the function's body.
+    """Return ``[(adapter_name, param_name), ...]`` from the function's body.
 
     Walks the AST of ``fn`` looking for calls of the form::
 

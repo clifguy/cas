@@ -188,7 +188,7 @@ _BLOAT_PROBE_ABSTRACT = "Test abstract used as the bulk-mode bloat probe."
 
 @pytest.fixture
 async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empty_registry):
-    """fixture. Boot a vault, seed six active documents each
+    """Fixture. Boot a vault, seed six active documents each
     with doc_type='note', tags=['a'], and a populated `semantic_abstract`;
     publish on mcp_server._vaults.
 

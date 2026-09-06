@@ -2,7 +2,7 @@
 
 POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
 
-replaces the synchronous JSON 200 response with an SSE stream of
+The endpoint replaces the synchronous JSON 200 response with an SSE stream of
 per-document progress events followed by a summary event. The error
 paths (404 vault_not_found and 409 reabstract_already_in_flight) still
 resolve synchronously BEFORE the stream opens, returning the
@@ -276,7 +276,7 @@ async def test_post_reabstract_deferred_409_when_already_in_flight(
 
             resp_b = await client.post(f"/sage_vaults/{vault_id}/admin/reabstract-deferred")
             assert resp_b.status_code == 409, resp_b.text
-            # no-leak guard: the 409 path must resolve BEFORE the
+            # No-leak guard: the 409 path must resolve BEFORE the
             # StreamingResponse is constructed -- content-type is
             # application/json and the body carries the ErrorResponse
             # envelope, not an SSE stream with an in-stream error event.

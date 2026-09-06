@@ -206,7 +206,7 @@ SHA256_INVALID: dict[str, st.SearchStrategy[str]] = {
 # DocumentDateStr -- regex ^\d{4}-\d{2}-\d{2}$ + date.fromisoformat, or None.
 #
 # Quirks 1 and 2 (re.match + $ trailing-newline acceptance, and
-# calendar-correctness gap) were closed in. The trailing_newline and
+# calendar-correctness gap) are closed. The trailing_newline and
 # calendar_invalid negative strategies below lock in the tighter behavior.
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
-"""eviction-primitive tests for Qwen3AbstractionProvider.
+"""Eviction-primitive tests for Qwen3AbstractionProvider.
 
-adds the prevention half of the F8 GPU OOM pattern: a deliberate,
+These cover the prevention half of the F8 GPU OOM pattern: a deliberate,
 caller-controllable eviction primitive that releases the resident ~16 GB
 Qwen3 footprint on demand, plus an idle-policy helper that callers can
 use to drive eviction. preflight check and asyncio lock remain

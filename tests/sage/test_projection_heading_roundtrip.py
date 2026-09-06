@@ -172,7 +172,7 @@ async def test_tc5_fenced_code_block_with_hashes_does_not_promote(
     # The phantom heading text survives inside the fence as code content.
     assert "## Phantom Inside Fence" in first_text
 
-    # interlock: the phantom heading does not become a real heading.
+    # Interlock: the phantom heading does not become a real heading.
     assert second_paths == ["Real"]
 
 
@@ -196,7 +196,7 @@ async def test_tc6_yaml_frontmatter_stripped_headings_below_preserved(
     assert "\n# Real" in "\n" + first_text
     assert "body" in first_text
 
-    # interlock: round-trip preserves the heading below frontmatter.
+    # Interlock: round-trip preserves the heading below frontmatter.
     assert second_paths == ["Real"]
 
 

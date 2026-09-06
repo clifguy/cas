@@ -196,7 +196,7 @@ def test_t1_unique_keys_round_trips_through_pydantic(tmp_vault_dir):
     failure_dt = next(dt for dt in cfg.document_types.doc_types if dt.value == "failure_record")
     assert failure_dt.unique_keys == ["failure_id"]
     # The misc doc_type has no unique_keys declared: None preserves the
-    # pre-default-off shape.
+    # earlier default-off shape.
     misc_dt = next(dt for dt in cfg.document_types.doc_types if dt.value == "misc")
     assert misc_dt.unique_keys is None
 
@@ -508,7 +508,7 @@ async def test_t8_second_unrelated_ingest_after_supersession_still_collides(
     tmp_vault_dir, unique_keys_ingestion_service, graph_store
 ):
     """T8 (functional substitute for a true concurrent-race test):
-    after a chain head holds ``, a third unrelated insert with the
+    after a chain head holds the identifier, a third unrelated insert with the
     same identifier still collides. Validates that the partial UNIQUE
     constraint stays live across the supersession transition rather than
     being dropped by the reordering."""
@@ -677,7 +677,7 @@ async def test_t12_ingestion_service_translates_storage_signal(
 async def test_t13_migration_scan_reports_unrelated_collisions(
     graph_store, unique_keys_maintenance_service
 ):
-    """T13: two unrelated documents sharing `ticket_id=''` (no
+    """T13: two unrelated documents sharing one `ticket_id` (no
     supersedes edge between them) are surfaced as a collision when the
     `unique_keys` opt-in is scanned. Anti-coincidental: skipping the
     chain-head pass and counting raw rows would still flag this case,
@@ -705,7 +705,7 @@ async def test_t13_migration_scan_reports_unrelated_collisions(
 async def test_t14_migration_scan_treats_supersession_chain_as_one_artifact(
     graph_store, unique_keys_maintenance_service
 ):
-    """T14: a chain of three tickets all sharing `ticket_id=''`
+    """T14: a chain of three tickets all sharing one `ticket_id`
     connected by supersedes edges is one logical artifact. Only the
     chain head has `is_chain_head=1`; the migration scan sees a single
     chain head and reports no collision. Anti-coincidental: ignoring

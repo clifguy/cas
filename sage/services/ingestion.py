@@ -1538,8 +1538,8 @@ class IngestionService:
         body_chunks = self._chunk_projection(document_id, projection)
 
         # Stamp document-level scalars on body chunks for content-store
-        # pre-filtering. doc_type, lifecycle_status, and project
-        # are all stable per-document fields whose values must
+        # pre-filtering. doc_type, lifecycle_status, and project are
+        # all stable per-document fields whose values must
         # ride along with each chunk row so the content store can
         # pre-filter at top-K time without a graph-store round trip.
         #

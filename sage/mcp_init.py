@@ -1036,7 +1036,7 @@ async def initialize_services(
             else:
                 embedding_provider = get_nomic_embedding_provider()
 
-        # Abstraction provider: post CAS-ADR-030 /, the factory dispatch
+        # Abstraction provider: post CAS-ADR-030, the factory dispatch
         # lives in build_stack_abstraction_provider (stack scope). The per-vault
         # path here only consults the vault-scope opt-out. Precedence:
         # 1. vault.abstraction.enabled is False -> Stub (ADR-011 opt-in)
@@ -1145,7 +1145,7 @@ async def initialize_services(
             storage=storage_handle,
         )
     except BaseException:
-        # AC2 + Risk: release partially-allocated resources without
+        # Release partially-allocated resources without
         # masking the original exception. BaseException (not Exception) is
         # deliberate — KeyboardInterrupt and asyncio.CancelledError between
         # _build_vault_timers and the return statement would otherwise leak

@@ -1486,7 +1486,7 @@ class TestTwoPhaseOrchestration:
 
 # ---------------------------------------------------------------------------
 # 4. plan_batch_edges (BI-001 through BI-004)
-# New tests covering the batch-context entry point introduced by.
+# New tests covering the batch-context entry point.
 # ---------------------------------------------------------------------------
 
 

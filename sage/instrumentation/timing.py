@@ -1,6 +1,6 @@
 """Structured query-timing instrumentation for SAGE storage and retrieval.
 
-(Phase 0 of the storage-audit plan). Adds per-call timing
+Phase 0 of the storage-audit plan. Adds per-call timing
 records on three named loggers (``sage.storage.timing``,
 ``sage.content.timing``, ``sage.retrieval.timing``) so downstream
 remediation sub-tickets (F-1..F-7) can cite measured before/after numbers.

@@ -614,7 +614,7 @@ class TestScanEndpoint:
         body = resp.json()
         files = body["files"]
 
-        # Find the.md file
+        # Find the .md file
         md_files = [f for f in files if f["file_path"].endswith(".md")]
         assert len(md_files) == 1
         md = md_files[0]

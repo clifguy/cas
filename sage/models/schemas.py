@@ -1919,7 +1919,7 @@ class BulkMetadataResponse(BaseModel):
 
 
 class UpdateMetadataResponse(BaseModel):
-    """wrapper for single-item `update_metadata`.
+    """Wrapper for single-item `update_metadata`.
 
     Promotes the bare-Document return so the dry-run flag has a home.
     The `document` field is the post-patch state — persisted on a real
@@ -2144,7 +2144,7 @@ class LinkRequest(BaseModel):
 class LinkResponse(BaseModel):
     """wrapper for `create_edge` return.
 
-    Promotes the previously-hand-constructed `{edge, created,...}`
+    Promotes the previously-hand-constructed `{edge, created, ...}`
     dict to a real schema so the dry-run flag has a home.
     """
 
@@ -2714,8 +2714,8 @@ class RetrievalFilters(BaseModel):
     """
 
     # extra="forbid": unknown filter keys raise rather than silently
-    # drop. The pre-default ("ignore") turned a typo like
-    # ``{"tickett_id": ""}`` into a no-op match-everything filter; the
+    # drop. The previous default ("ignore") turned a typo like
+    # ``{"tickett_id": "..."}`` into a no-op match-everything filter; the
     # translator in sage.api.errors now converts the extra_forbidden
     # ValidationError into a typed UnknownFilterKeyError envelope.
     model_config = ConfigDict(extra="forbid")

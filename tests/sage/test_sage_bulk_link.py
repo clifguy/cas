@@ -474,7 +474,7 @@ async def test_c3_mixed_batch_partial_success_envelope_is_success(seeded_mcp_vau
 
 
 # ---------------------------------------------------------------------------
-# Group D — Dry-run (/)
+# Group D — Dry-run
 # ---------------------------------------------------------------------------
 
 
@@ -580,7 +580,7 @@ async def test_d5_dry_run_envelope_carries_dry_run_true(seeded_mcp_vault):
 
 
 # ---------------------------------------------------------------------------
-# Group E — response_mode (/)
+# Group E — response_mode
 # ---------------------------------------------------------------------------
 
 
