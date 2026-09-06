@@ -712,16 +712,24 @@ class PostgresContentStore(ContentStore):
         The folded arm. Not a third scope: the same document scope reached by a
         different tokenization, spliced into the path above as an extra
         ``UNION`` over the document surface alone. Admitted when folding
-        changes the query and the folded text still renders. Its work is the
-        compound-concatenation direction specifically -- a caller typing
-        ``documentLevelTextHandling`` reaching a title written ``Document Level
-        Text Handling``. Separators need no arm of their own, because the
-        index-side expansion already writes a compound's parts into adjacent
-        positions; a concatenation is what no index-side widening reaches,
-        since the expansion adds a compound's folded and split forms and never
-        synthesizes a joining of words the author wrote apart. Confining the
-        arm to the document surface is what keeps passage matching on literal
+        changes the query and the folded text still renders. Confining it to
+        the document surface is what keeps passage matching on literal
         tokenization.
+
+        Two directions need it, and they are not the same one. A caller typing
+        ``documentLevelTextHandling`` reaches a title written ``Document Level
+        Text Handling`` only through this arm: no index-side widening can, since
+        the expansion adds a compound's folded and split forms and never
+        synthesizes a joining of words the author wrote apart. A caller typing
+        ``epsilon-level`` reaches ``Epsilon Level`` only through it either, for
+        a different reason -- the configuration reads a hyphenated pair as the
+        hyphenated whole *followed by* its parts, so the query demands a lexeme
+        the expansion never produced. The underscore is the separator that
+        needs no arm: it renders as the parts alone, which the expansion
+        already writes into adjacent positions. Hyphen and underscore are one
+        character class to the folding transform and two different things to
+        the tokenizer, and it is the hyphenated form that nearly every
+        identifier-shaped title in practice carries.
 
         ``_search_bm25_within_chunk``. Scope: one unit of text -- a passage, or
         the document surface as a second such unit. Tokenization: the whole
@@ -734,6 +742,14 @@ class PostgresContentStore(ContentStore):
         lexeme, and whether its rendered shape decomposes. Nothing else is
         consulted, and the folded arm answers nothing on its own: it widens
         what the first path matches and is unreachable without it.
+
+        The two are ordered, not independent. Every query requiring no lexeme
+        also fails the decomposition -- an empty rendering yields no operand,
+        and a rendering of only negations carries the character that refuses
+        one -- so the first decision routes nothing the second would not.
+        It stays because it names a different thing: nothing to intersect on
+        rather than a shape that will not split, and it says so before a
+        rendering is scanned for a shape it does not have.
 
         The two paths stay two because merging them changes what a caller sees,
         not merely how the answer is computed. The document-scoped path ranks

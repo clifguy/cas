@@ -1974,11 +1974,15 @@ async def test_an_alternation_query_is_answered_within_one_unit(store):
 
 
 async def test_an_exclusion_only_query_is_answered_within_one_unit(store):
-    """A query requiring no lexeme routes by the first decision, not the second.
+    """A query requiring no lexeme is answered per unit, like the shapes above.
 
-    Its rendered shape is a bare negation, which the decomposition would refuse
-    anyway -- but it is refused earlier, for having nothing to intersect on.
-    Asserting it separately keeps the two decisions independently covered.
+    It reaches the fallback by the first dispatch decision rather than the
+    second, but the two are ordered rather than independent: every no-lexeme
+    query also fails the decomposition, so deleting the first decision outright
+    leaves this test green. What is pinned here is the behaviour -- a query
+    asking only for an absence is answered within one unit -- and not the
+    decision that delivers it, which no test can isolate because nothing routes
+    on it alone.
     """
     await _two_chunk_document(store)
 
@@ -2030,6 +2034,33 @@ async def test_the_folded_arm_is_reachable_only_from_the_document_scoped_path(st
         "positive control: the within-unit path does reach this surface, just not "
         "through a folded compound"
     )
+
+
+async def test_a_hyphenated_query_reaches_a_spaced_title_only_by_folding(store):
+    """The hyphen is the separator the arm is load-bearing for, and the underscore is not.
+
+    Folding treats the two as one character class; the text-search
+    configuration does not. ``epsilon_level`` renders as its parts alone, which
+    the index-side expansion already writes into adjacent positions, so it
+    lands without the arm. ``epsilon-level`` renders as the hyphenated whole
+    *followed by* those parts, and the expansion never produces that whole --
+    so the query demands a lexeme no widening of the index supplies, and only
+    the folded arm can answer it.
+
+    Pinned because the distinction is invisible in the transform and easy to
+    state backwards, and because the hyphenated form is the one nearly every
+    identifier-shaped title carries. Disabling the arm reds the first assertion
+    and leaves the second green, which is what makes the second a control.
+    """
+    await _folded_surface_document(store, title="Epsilon Level")
+
+    assert [r.document_id for r in await store.search_bm25("epsilon-level", limit=10)] == [
+        "folded"
+    ], "a hyphenated query did not reach the spaced title it renders"
+
+    assert [r.document_id for r in await store.search_bm25("epsilon_level", limit=10)] == [
+        "folded"
+    ], "control: the underscore form lands whether or not the arm fires"
 
 
 async def test_every_keyword_query_is_answered_by_exactly_one_path(store, monkeypatch):
