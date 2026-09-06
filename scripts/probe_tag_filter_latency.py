@@ -28,7 +28,7 @@ from sage.instrumentation.timing import TimingConfig
 from sage.mcp_init import initialize_services
 from sage.models.enums import RetrievalMode
 from sage.models.schemas import DiscoverRequest, RetrievalFilters
-from sage.vault_management import config_path_for_vault
+from sage.vault_management import bound_vault_root, config_path_for_vault
 
 TAG_PROBES = (
     ["ticket"],
@@ -130,4 +130,4 @@ if __name__ == "__main__":
 
 
 def cas_brain_root() -> Path:
-    return Path("~/sage_vaults/cas/brain").expanduser()
+    return bound_vault_root() / "cas" / "brain"

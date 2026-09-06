@@ -30,6 +30,7 @@ reaches the literal directly (CAS-ADR-043).
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 import yaml
@@ -380,3 +381,83 @@ async def test_get_stats_reads_optimize_log_from_bound_root(roots, minimal_confi
     last_optimize = (await stats_service.get_stats()).last_optimize
     assert last_optimize is not None
     assert last_optimize.bytes_reclaimed == report.bytes_reclaimed
+
+
+# ---------------------------------------------------------------------------
+# Default-config scaffold
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_roots_follow_bound_root(roots):
+    """The creation scaffold's storage and brain roots sit under the bound root.
+
+    The scaffold precedes the vault, so nothing is created here -- the claim is
+    about the paths served, which ``create_vault`` then expands and mkdirs
+    verbatim. Three distinct roots separate the three resolutions the chain
+    admits: the bound-root equality is what fails on a scaffold built from a
+    module-level constant, and the negative assertions catch a resolution that
+    reaches only ``SAGE_VAULT_ROOT`` or only the redirected literal.
+
+    This test and its ``_without_a_bound_root`` sibling are one gate, not two.
+    Neither alone is discriminating: a ``default_vault_root()``-only
+    resolution passes the sibling, because with no published root the two legs
+    agree, and is caught only here, where they disagree; a
+    ``get_vault_root()``-only resolution passes here, where a root is
+    published, and is caught only there. Only the full
+    ``get_vault_root() or default_vault_root()`` chain satisfies both.
+    """
+    bound, default, literal = roots
+
+    config = VaultRegistryService.get_default_config("scaffold_vault")
+
+    assert config["vault"]["storage_root"] == str(bound / "scaffold_vault" / "sources")
+    assert config["vault"]["brain_root"] == str(bound / "scaffold_vault" / "brain")
+    for root_value in (config["vault"]["storage_root"], config["vault"]["brain_root"]):
+        assert not root_value.startswith(str(default))
+        assert not root_value.startswith(str(literal))
+
+
+def test_default_config_falls_back_to_default_root_without_a_bound_root(roots, monkeypatch):
+    """With no lifespan-published root, the scaffold follows ``default_vault_root()``.
+
+    Pins the fallback leg of the resolution chain, so the fix cannot be written
+    as a ``get_vault_root()``-only read: that returns None for the callers that
+    run without a lifespan at all -- repo scripts, in-process mounts, and
+    injected-config paths -- and would yield a None-derived path rather than the
+    environment root this asserts.
+
+    The other leg is pinned by ``test_default_config_roots_follow_bound_root``,
+    which is where a ``default_vault_root()``-only resolution fails; this test
+    passes against one, since with no published root both legs agree. The two
+    together are the gate.
+    """
+    _bound, default, literal = roots
+    monkeypatch.setattr(mcp_init, "_vault_root", None)
+
+    config = VaultRegistryService.get_default_config("fallback_vault")
+
+    assert config["vault"]["storage_root"] == str(default / "fallback_vault" / "sources")
+    assert config["vault"]["brain_root"] == str(default / "fallback_vault" / "brain")
+    assert not config["vault"]["storage_root"].startswith(str(literal))
+
+
+def test_autouse_root_redirect_reaches_the_scaffold(_redirect_vaults_root):
+    """The suite-wide root redirect governs the scaffold, not just the write paths.
+
+    Requests the autouse fixture by name for the tmp root it yields; takes no
+    ``roots``, so the ambient redirect is the only thing standing between this
+    call and the operator's real vault tree. The scaffold reaches that redirect
+    through ``default_vault_root()``, one level below the constant the fixture
+    patches, and this is the only assertion in the suite that the reach is real:
+    a scaffold resolved any other way lands outside ``fake_root``.
+
+    The second assertion rules out the degenerate pass where the redirect
+    happens to be the real tree, which would satisfy the first without
+    isolating anything.
+    """
+    fake_root = _redirect_vaults_root
+
+    config = VaultRegistryService.get_default_config("ambient_scaffold")
+
+    assert config["vault"]["storage_root"] == str(fake_root / "ambient_scaffold" / "sources")
+    assert not config["vault"]["storage_root"].startswith(str(Path("~/sage_vaults").expanduser()))

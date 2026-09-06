@@ -38,6 +38,13 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
     is applied; the path is not required to exist (discovery treats a
     missing root as an empty vault set).
 
+    This function names the ``~/sage_vaults`` default directly, which every
+    other root consumer is forbidden to do (see
+    :func:`sage.vault_management.default_vault_root`). The exception is
+    structural rather than an oversight: this is where the binding is
+    established, before it is published for the rest of the process to resolve
+    against, so resolving it through the published root would be circular.
+
     Args:
         args: Parsed args namespace, expected to have a ``vault_root``
             attribute (``None`` if the flag was not given).

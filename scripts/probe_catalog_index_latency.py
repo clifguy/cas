@@ -59,7 +59,7 @@ from sage.models.schemas import (
     RetrievalFilters,
     TraverseRequest,
 )
-from sage.vault_management import config_path_for_vault
+from sage.vault_management import bound_vault_root, config_path_for_vault
 
 DOC_TYPES = ("ticket", "adr", "failure_record", "tooling_entry", "steering_document")
 
@@ -257,4 +257,4 @@ if __name__ == "__main__":
 
 # Convenience for module-level runs.
 def cas_brain_root() -> Path:
-    return Path("~/sage_vaults/cas/brain").expanduser()
+    return bound_vault_root() / "cas" / "brain"
