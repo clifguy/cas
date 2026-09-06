@@ -1251,25 +1251,65 @@ filename and tags.
 
 **Category:** ingestion / retrieval
 
-**Decision:** The ingestion pipeline builds a search preamble from the document
-record (title, source filename stem, tags) and prepends it to the first chunk's
-content. This makes document identity signals discoverable via BM25 keyword
-search and vector similarity without requiring a separate metadata search path.
+**Decision:** Document-level text lives on a retrieval surface of its own,
+indexed for both the vector and the keyword arm and queried alongside the
+passage surface (CAS-ADR-049 Decision 2). A document's identity is therefore
+discoverable without any passage carrying it, and without a separate metadata
+search path.
+
+Which identity signals *admit* a document is governed by provenance
+(CAS-ADR-049 Decision 4). The title and the tags are authored and satisfy a
+match. The source filename is incidental to how the document arrived: it ranks
+and orients, and never admits. That is a deliberate narrowing of this test's
+original decision, which built a "search preamble" from the title, filename
+stem and tags and prepended it to the first chunk -- an arrangement Decision 1
+abolished by confining the passage surface to authored passages.
 
 **Precondition:** A document with title "ClinicalNormalization", source_path
-containing "PV07", and tags including "PV07". The body content does not contain
-the string "PV07".
+containing "PV07", and tags including "PV07". No passage carries "PV07".
 
 **Input:** `discover(mode="semantic", query="PV07", use_hybrid=True)`
 
 **Expected:**
-- The document appears in search results (BM25 matches "PV07" in the source
-  filename within the first chunk's preamble).
+- The document appears in search results, through its document surface, which
+  carries the authored tag.
+- The hit is a document-level one: it carries no excerpt and no heading path,
+  and reports `matched_chunk_count` of `0`.
+- A document whose only carrier of the term is the source filename does **not**
+  appear (see TEST-SAGE-BH-058b below).
 
-**Rationale:** Document identity lives in multiple places: title (from content),
-source filename (from the filesystem), and tags/codes (from the filename
-parser). All three must be searchable. Relying solely on body content misses
-documents whose identifying codes appear only in the filename.
+**Rationale:** Document identity lives in more than one place -- the title
+(from content) and the tags/codes (from the filename parser) -- and relying
+solely on body content misses documents whose identifying codes appear in
+neither. The filename is where identity is *observed* rather than where it is
+*authored*, so it informs ranking without making a document match.
+
+
+### TEST-SAGE-BH-058b: A filename does not admit a document
+
+**Artifact:** `sage/storage/postgres/graph_store.py` (search_metadata),
+`sage/services/retrieval.py` (_boost_metadata_matches)
+**Category:** retrieval
+
+**Decision:** The provenance rule binds every path into a caller's result set,
+not the content store's matching alone (CAS-ADR-049 Decision 4). The
+service-layer metadata boost is such a path, so it admits on authored metadata
+-- the title and the tags -- and never on the source path.
+
+**Precondition:** Two documents whose title and tags both exclude the code
+`QV77`. One carries it in its source_path; the other carries it in its title.
+No passage of either carries it.
+
+**Input:** `discover(mode="keyword", query="QV77")`
+
+**Expected:**
+- The title-carrying document appears.
+- The source-path-carrying document does not.
+
+**Rationale:** Filenames in a large corpus routinely embed the originating
+system's identifiers, so admitting on the source path makes a bare identifier
+return every record that passed through that system -- results a caller cannot
+distinguish from documents that discuss it.
 
 
 ### TEST-SAGE-BH-059: Keyword-only retrieval mode uses BM25 without embedding
@@ -1911,7 +1951,10 @@ each with at least one chunk containing the word "integration".
 - All returned hits have `chunk_content is None`.
 - All returned hits have `heading_path` (not None -- best chunk's heading preserved).
 - All returned hits have `relevance_score` > 0.
-- All returned hits have `matched_chunk_count >= 1`.
+- All returned hits have `matched_chunk_count >= 1`. Every document in this
+  precondition carries a matching chunk; a document reached through its
+  document-level text alone reports `0`, because the count names passages and
+  a document surface is not one (CAS-ADR-049 Decision 5).
 - Each hit's `document` field contains a valid `DocumentSummary` with `id`, `title`, etc.
 - Result count matches the number of distinct documents matching the query.
 
@@ -1939,7 +1982,10 @@ are preserved. (T-0169 retired the legacy `response_level` parameter.)
 - All returned hits have `chunk_content is None`.
 - All returned hits have `heading_path` (not None).
 - All returned hits have `relevance_score` > 0.
-- All returned hits have `matched_chunk_count >= 1`.
+- All returned hits have `matched_chunk_count >= 1`. Every document in this
+  precondition carries a matching chunk; a document reached through its
+  document-level text alone reports `0`, because the count names passages and
+  a document surface is not one (CAS-ADR-049 Decision 5).
 - Each hit's `document` field is a valid `DocumentSummary`.
 
 **Rationale:** Keyword mode shares the same `_results_to_hits()` pipeline as

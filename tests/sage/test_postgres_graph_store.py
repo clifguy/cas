@@ -42,13 +42,21 @@ PostgresGraphStore = pytest.importorskip("sage.storage.postgres.graph_store").Po
 # ---------------------------------------------------------------------------
 
 
-def _doc(i: int, *, tier3: dict | None = None, doc_type: str = "ticket") -> Document:
+def _doc(
+    i: int,
+    *,
+    tier3: dict | None = None,
+    doc_type: str = "ticket",
+    title: str | None = None,
+    source_path: str | None = None,
+    tags: list[str] | None = None,
+) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
         id=f"{i:08x}_doc_{i}",
-        title=f"Doc {i}",
+        title=f"Doc {i}" if title is None else title,
         source_type=SourceType.MARKDOWN,
-        source_path=f"/x/{i}.md",
+        source_path=f"/x/{i}.md" if source_path is None else source_path,
         lifecycle_status="active",
         source_content_hash=f"sha256:{i:064x}",
         adapter_version="1",
@@ -57,7 +65,7 @@ def _doc(i: int, *, tier3: dict | None = None, doc_type: str = "ticket") -> Docu
         last_modified_by="t",
         updated_at=now,
         pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
-        tags=["a", "b"],
+        tags=["a", "b"] if tags is None else tags,
         doc_type=doc_type,
         tier3_metadata=tier3,
     )
@@ -613,3 +621,165 @@ async def test_storage_present_sees_through_search_path_fallback(pg_dsn):
                 await conn.execute(
                     f'DROP SCHEMA IF EXISTS "{assert_disposable_target(schema)}" CASCADE'
                 )
+
+
+# ---------------------------------------------------------------------------
+# C7: search_metadata admits by authored metadata only (server)
+#
+# CAS-ADR-049 Decision 4: derived text ranks and orients, and never satisfies a
+# match -- and the rule "binds every path into a caller's result set, not the
+# content store's matching alone". search_metadata feeds the service-layer
+# boost, which is such a path, so its admission set is subject to the same
+# provenance line the retrieval surfaces are held to: the title and the tags
+# are authored and may admit; the source path is incidental to how a document
+# arrived and may only rank.
+# ---------------------------------------------------------------------------
+
+
+async def test_title_admits_a_document(postgres_graph_store):
+    """A term carried only by the title admits the document."""
+    doc = _doc(701, title="Zetaword Catalog", source_path="/x/unrelated.md", tags=["alpha"])
+    await postgres_graph_store.insert_document(doc)
+
+    found = await postgres_graph_store.search_metadata("zetaword")
+
+    assert [d.id for d in found] == [doc.id]
+
+
+async def test_tags_admit_a_document(postgres_graph_store):
+    """A term carried only by a tag admits the document."""
+    doc = _doc(702, title="Unrelated Title", source_path="/x/unrelated.md", tags=["zetaword"])
+    await postgres_graph_store.insert_document(doc)
+
+    found = await postgres_graph_store.search_metadata("zetaword")
+
+    assert [d.id for d in found] == [doc.id]
+
+
+async def test_source_path_alone_does_not_admit_a_document(postgres_graph_store):
+    """A filename is derived text and cannot admit a document on its own.
+
+    The defect this pins: a query naming nothing but a filename stem returned
+    the document, so a filename satisfied a match. The positive control in the
+    same call is what makes the refusal meaningful -- without it the assertion
+    would pass just as well against a ``search_metadata`` that had stopped
+    returning anything at all.
+    """
+    derived_only = _doc(
+        703,
+        title="Unrelated Title",
+        source_path="/imports/zetaword-quarterly-review.md",
+        tags=["alpha"],
+    )
+    authored = _doc(704, title="Zetaword Digest", source_path="/x/plain.md", tags=["alpha"])
+    await postgres_graph_store.insert_document(derived_only)
+    await postgres_graph_store.insert_document(authored)
+
+    found = await postgres_graph_store.search_metadata("zetaword")
+    found_ids = [d.id for d in found]
+
+    assert derived_only.id not in found_ids, (
+        "a term carried only by the source path admitted the document"
+    )
+    assert found_ids == [authored.id], (
+        "positive control: the same term in an authored field still admits"
+    )
+
+
+async def test_source_path_still_orders_among_admitted_documents(postgres_graph_store):
+    """Derived text ranks what it may no longer admit.
+
+    Both documents are admitted by an authored field; only one also carries the
+    term in its source path. That document ranks first. This is the half of the
+    old behaviour the decision keeps -- the source path contributes to ranking
+    -- expressed over a set it can no longer widen.
+    """
+    # Inserted in the reverse of the asserted order, deliberately. Both share a
+    # title, so the primary key of the ordering cannot separate them and only
+    # the source-path key can. Were they inserted in the asserted order, a
+    # query that had lost that key would return them in insertion order and
+    # pass anyway.
+    tag_only = _doc(705, title="Unrelated Title", source_path="/x/plain.md", tags=["zetaword"])
+    tag_and_path = _doc(
+        706,
+        title="Unrelated Title",
+        source_path="/imports/zetaword-review.md",
+        tags=["zetaword"],
+    )
+    await postgres_graph_store.insert_document(tag_only)
+    await postgres_graph_store.insert_document(tag_and_path)
+
+    found = await postgres_graph_store.search_metadata("zetaword")
+    found_ids = [d.id for d in found]
+
+    assert set(found_ids) == {tag_only.id, tag_and_path.id}, (
+        "both documents are admitted by their tag"
+    )
+    assert found_ids[0] == tag_and_path.id, (
+        "the source-path match orders first among documents already admitted"
+    )
+
+
+async def test_a_wildcard_in_the_query_matches_literally(postgres_graph_store):
+    """A query is text to find, not a pattern to apply.
+
+    The admission test is a substring containment expressed as ``ILIKE``, so a
+    caller's ``%`` or ``_`` would otherwise be read as the pattern language's
+    own wildcards -- ``%`` matching any run of characters and ``_`` any single
+    one. A caller searching for a title that contains a percent sign gets every
+    document instead.
+    """
+    literal = _doc(707, title="Coverage 80% Report", source_path="/x/a.md", tags=["alpha"])
+    # The decoy is what an unescaped '%' would additionally match: read as a
+    # wildcard the query becomes "80", anything, " Report". A decoy sharing no
+    # words would be excluded either way and prove nothing, since a wildcard
+    # only ever widens the pattern.
+    decoy = _doc(708, title="Coverage 80 Quarterly Report", source_path="/x/b.md", tags=["alpha"])
+    await postgres_graph_store.insert_document(literal)
+    await postgres_graph_store.insert_document(decoy)
+
+    found = await postgres_graph_store.search_metadata("80% Report")
+
+    assert [d.id for d in found] == [literal.id], (
+        "the query's '%' acted as a wildcard instead of matching literally"
+    )
+
+
+async def test_an_underscore_in_the_query_matches_literally(postgres_graph_store):
+    """The single-character wildcard is escaped too.
+
+    ``_`` is the easier one to miss, because it is a legitimate character in
+    the identifiers and filename stems callers actually search for, so an
+    unescaped one returns a superset rather than an obvious error.
+    """
+    literal = _doc(709, title="Report_v2", source_path="/x/c.md", tags=["alpha"])
+    decoy = _doc(710, title="ReportXv2", source_path="/x/d.md", tags=["alpha"])
+    await postgres_graph_store.insert_document(literal)
+    await postgres_graph_store.insert_document(decoy)
+
+    found = await postgres_graph_store.search_metadata("Report_v2")
+
+    assert [d.id for d in found] == [literal.id], (
+        "the query's '_' matched any single character instead of an underscore"
+    )
+
+
+async def test_a_wildcard_in_an_abstract_query_matches_literally(postgres_graph_store):
+    """The abstract lookup escapes its pattern for the same reason.
+
+    It feeds the abstract boost, which is another path into a caller's result
+    set, and it splices the query into the same operator. A sibling of a fixed
+    site with the identical shape is where a sweep stops one method short.
+    """
+    literal = _doc(711, title="Alpha", source_path="/x/e.md", tags=["alpha"])
+    literal.semantic_abstract = "Coverage reached 80% Report thresholds."
+    decoy = _doc(712, title="Beta", source_path="/x/f.md", tags=["alpha"])
+    decoy.semantic_abstract = "Coverage reached 80 Quarterly Report thresholds."
+    await postgres_graph_store.insert_document(literal)
+    await postgres_graph_store.insert_document(decoy)
+
+    found = await postgres_graph_store.search_abstracts("80% Report")
+
+    assert [d.id for d in found] == [literal.id], (
+        "the query's '%' acted as a wildcard against the abstract"
+    )

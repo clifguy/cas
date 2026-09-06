@@ -61,6 +61,7 @@ from sage.storage.tier3_uniqueness import (
     Tier3UniqueViolation,
     tier3_unique_index_name,
 )
+from sage.utils.sql_patterns import escape_like
 
 # Names of the natural-key UNIQUE indexes (provisioned by the schema module).
 # Postgres reports a unique-index violation with ``diag.constraint_name`` set to
@@ -559,24 +560,39 @@ class PostgresGraphStore(GraphStore):
             return [self._row_to_document(r) for r in rows]
 
     async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
+        """Documents whose authored metadata carries the query as a substring.
+
+        The title and the tags admit a document; the source path does not.
+        A filename is incidental to how a document arrived rather than
+        something an author wrote, and derived text ranks and orients but never
+        satisfies a match (CAS-ADR-049 Decision 4) -- a rule that binds every
+        path into a caller's result set, not the retrieval surfaces alone. The
+        source path keeps its place in the ordering, where it can only arrange
+        documents an authored field has already admitted.
+        """
         with self._query_timer.measure("search_metadata"):
-            pattern = f"%{query}%"
+            # The query is text to find, not a pattern to apply: a caller's
+            # own '%' or '_' would otherwise be read as this operator's
+            # wildcards and silently widen the result.
+            pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
                 "SELECT * FROM documents "
-                "WHERE source_path ILIKE %s "
-                "   OR title ILIKE %s "
+                "WHERE title ILIKE %s "
                 "   OR tags::text ILIKE %s "
                 "ORDER BY "
-                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END, "
-                "  CASE WHEN title ILIKE %s THEN 0 ELSE 1 END "
+                "  CASE WHEN title ILIKE %s THEN 0 ELSE 1 END, "
+                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END "
                 "LIMIT %s",
-                (pattern, pattern, pattern, pattern, pattern, limit),
+                (pattern, pattern, pattern, pattern, limit),
             )
             return [self._row_to_document(r) for r in rows]
 
     async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
         with self._query_timer.measure("search_abstracts"):
-            pattern = f"%{query}%"
+            # Escaped for the same reason the sibling above is: this result
+            # feeds the abstract boost, which is another path into a caller's
+            # result set, and a caller's own % or _ is text to find.
+            pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
                 "SELECT * FROM documents WHERE semantic_abstract ILIKE %s LIMIT %s",
                 (pattern, limit),

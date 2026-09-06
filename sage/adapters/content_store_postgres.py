@@ -36,6 +36,7 @@ from sage.adapters.interfaces import (
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.storage.postgres.schema import EMBEDDING_DIM, TEXT_SEARCH_CONFIG
+from sage.utils.sql_patterns import escape_like
 from sage.utils.text_normalization import fold_for_query
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -425,15 +426,24 @@ class PostgresContentStore(ContentStore):
             where, where_params = self._build_where(filters)
             predicate = f" WHERE {where}" if where else ""
             sql = (
-                "SELECT document_id, heading_path, content, score FROM ("  # noqa: S608
+                "SELECT document_id, heading_path, content, score,"  # noqa: S608
+                " is_document_surface FROM ("
                 " (SELECT document_id, heading_path, content,"
-                " 1 - (embedding <=> %s::vector) AS score FROM chunks"
+                " 1 - (embedding <=> %s::vector) AS score,"
+                " false AS is_document_surface FROM chunks"
                 f" WHERE chunk_index >= 0{' AND ' + where if where else ''}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " UNION ALL"
+                # The stored halves are widened to a superset of the document's
+                # renderings so a query reaching for one form finds the other.
+                # That widening is for the index to match on; served back as an
+                # excerpt it reads as duplicated tokens rather than as anything
+                # the document says. A document-level row is not a passage and
+                # carries no excerpt (CAS-ADR-049).
                 " (SELECT document_id, '' AS heading_path,"
-                " matchable || ' ' || orienting AS content,"
-                " 1 - (embedding <=> %s::vector) AS score FROM document_surface"
+                " '' AS content,"
+                " 1 - (embedding <=> %s::vector) AS score,"
+                " true AS is_document_surface FROM document_surface"
                 f"{predicate}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " ) s WHERE score IS NOT NULL ORDER BY score DESC LIMIT %s"
@@ -450,7 +460,7 @@ class PostgresContentStore(ContentStore):
                 limit,
             ]
             rows = await self._fetchall(sql, params)
-            return [self._row_to_result(r) for r in rows]
+            return [self._row_to_semantic_result(r) for r in rows]
 
     async def search_bm25(
         self,
@@ -591,7 +601,10 @@ class PostgresContentStore(ContentStore):
             " ) SELECT m.document_id,"
             " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
             " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
-            " COALESCE(r.matched_chunks, 0) AS matched_chunks"
+            " COALESCE(r.matched_chunks, 0) AS matched_chunks,"
+            # No surviving passage row means nothing but the document surface
+            # answered, which is what makes the row a document-level one.
+            " (r.document_id IS NULL) AS is_document_surface"
             " FROM matched m"
             " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
             " LEFT JOIN surf s USING (document_id)"
@@ -606,6 +619,7 @@ class PostgresContentStore(ContentStore):
                 content=row[2],
                 score=float(row[3]),
                 matched_chunk_count=int(row[4]),
+                is_document_surface=bool(row[5]),
             )
             for row in rows
         ]
@@ -616,31 +630,60 @@ class PostgresContentStore(ContentStore):
         limit: int,
         filters: dict[str, str | list[str]] | None,
     ) -> list[SearchResult]:
-        """Evaluate the whole query against a single chunk.
+        """Evaluate the whole query against a single text unit.
 
         The fallback for queries the document-scoped decomposition refuses --
         those carrying a negation or a top-level alternation. What is unsettled
         for those is the *scope* of the match, so this keeps the scope they
-        already had rather than inventing one.
+        already had rather than inventing one: the query is satisfied within
+        one unit of text, not assembled across a document.
 
-        Provenance is not unsettled and does not lapse here: this path reads
-        the passage surface, which holds authored passages only, so derived
-        text is out of reach by construction rather than by an exclusion.
+        The document surface is a second such unit, not a second scope. A
+        document's authored text spans both surfaces (CAS-ADR-049 Decision 7),
+        so reading passages alone left a title unreachable by any query of
+        these shapes -- a hole in the guarantee that a document is findable by
+        its own name, and one no ordinary conjunction would reveal. Adding the
+        surface as another unit closes it while leaving the open question --
+        whether a negation should be document-scoped -- exactly as open.
+
+        Provenance does not lapse here either. The surface arm matches on
+        ``tsv_match``, which covers the authored half alone, and ranks on
+        ``tsv_rank``, which also covers the derived half: derived text ranks
+        and orients, and never satisfies a match (Decision 4).
         """
         where, where_params = self._build_where(filters)
-        sql = (
-            "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score "  # noqa: S608
-            f"FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q "
-            "WHERE tsv @@ q AND chunk_index >= 0"
+        chunk_arm = (
+            # The interpolations are a module constant and a predicate built
+            # from a fixed column allowlist; every value stays bound.
+            "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score,"  # noqa: S608
+            " false AS is_document_surface"
+            f" FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
+            " WHERE tsv @@ q AND chunk_index >= 0"
+        )
+        # A document-level row is not a passage, so it carries no excerpt and
+        # no heading, exactly as it does on the arms above.
+        surface_arm = (
+            "SELECT document_id, '' AS heading_path, '' AS content,"  # noqa: S608
+            " ts_rank(tsv_rank, q) AS score, true AS is_document_surface"
+            f" FROM document_surface, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
+            " WHERE tsv_match @@ q"
         )
         params: list[object] = [query]
         if where:
-            sql += f" AND {where}"
+            chunk_arm += f" AND {where}"
             params += where_params
-        sql += " ORDER BY score DESC LIMIT %s"
+        params.append(query)
+        if where:
+            surface_arm += f" AND {where}"
+            params += where_params
+        sql = (
+            f"SELECT document_id, heading_path, content, score, is_document_surface FROM ("  # noqa: S608
+            f" ({chunk_arm}) UNION ALL ({surface_arm})"
+            " ) u ORDER BY score DESC LIMIT %s"
+        )
         params.append(limit)
         rows = await self._fetchall(sql, params)
-        return [self._row_to_result(r) for r in rows]
+        return [self._row_to_semantic_result(r) for r in rows]
 
     async def _render_tsquery(self, query: str) -> str:
         """The query as the text-search configuration parses it."""
@@ -867,12 +910,22 @@ class PostgresContentStore(ContentStore):
         return int(rows[0][0]) if rows and rows[0][0] is not None else 0
 
     @staticmethod
-    def _row_to_result(row: tuple) -> SearchResult:
+    def _row_to_semantic_result(row: tuple) -> SearchResult:
+        """A row from the semantic union, which spans both surfaces.
+
+        The passage count follows from the discriminant rather than being
+        selected alongside it: the arm ranks row by row, so a passage row
+        stands for one passage and a document-level row for none
+        (CAS-ADR-049 Decision 5).
+        """
+        is_document_surface = bool(row[4])
         return SearchResult(
             document_id=row[0],
             heading_path=row[1],
             content=row[2],
             score=float(row[3]),
+            matched_chunk_count=0 if is_document_surface else 1,
+            is_document_surface=is_document_surface,
         )
 
     @staticmethod
@@ -887,7 +940,4 @@ class PostgresContentStore(ContentStore):
             project=row[6],
         )
 
-    @staticmethod
-    def _escape_like(value: str) -> str:
-        """Escape LIKE wildcards so a literal prefix never acts as a pattern."""
-        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    _escape_like = staticmethod(escape_like)

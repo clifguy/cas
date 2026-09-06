@@ -121,11 +121,17 @@ class StubContentStore(ContentStore):
                 scored.append(
                     (
                         sim,
+                        # No excerpt and no passage count, as the real binding
+                        # returns: a document-level row is not a passage, and
+                        # its stored halves carry the index-side expansion
+                        # rather than the document's own text (CAS-ADR-049).
                         SearchResult(
                             document_id=surface.document_id,
                             heading_path="",
-                            content=f"{surface.matchable} {surface.orienting}",
+                            content="",
                             score=sim,
+                            matched_chunk_count=0,
+                            is_document_surface=True,
                         ),
                     )
                 )

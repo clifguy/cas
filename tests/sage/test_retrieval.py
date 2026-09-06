@@ -144,14 +144,36 @@ def retrieval_service(graph_store, stub_content_store, seeded_embedding_provider
 def _document_level_hit(response, document_id):
     """The response's document-level hit for a document, or ``None``.
 
-    A hit is document-level when it carries no heading path: a passage always
-    has one, and the document surface never does. Naming it this way is what
-    makes the assertions below discriminating -- a document with a body chunk
-    is returned whether or not its surface was ever written, so asserting only
-    that the document came back says nothing about the surface.
+    Naming the hit this way is what makes the assertions below discriminating
+    -- a document with a body chunk is returned whether or not its surface was
+    ever written, so asserting only that the document came back says nothing
+    about the surface.
+
+    Two conditions, because the empty heading path alone is not sufficient: a
+    hit the metadata boost injected carries one too, and it never reached a
+    retrieval surface at all. What separates them is that a boosted hit reports
+    no passage count -- it was admitted without consulting a passage -- while a
+    hit that came through a surface always reports one, even when the answer is
+    zero.
+
+    The count is not required to *be* zero by the predicate, though in practice
+    it now is. A document whose surface and whose passages both answer is one
+    hit, and that hit carries the passage's heading: the fusion lets a passage
+    row displace a surface row, and the service hands the excerpt to a passage
+    that arrives after a surface-sourced hit. So such a document is not
+    classified document-level here at all, and a test asserting the zero seeds
+    a document with no passages -- not to avoid an ambiguity, but because
+    nothing else can produce the shape.
+
+    One case this cannot see: a passage of a document that has no headings at
+    all carries an empty path too. No fixture here has one.
     """
     for hit in response.results:
-        if hit.document.id == document_id and hit.heading_path is None:
+        if (
+            hit.document.id == document_id
+            and hit.heading_path is None
+            and hit.matched_chunk_count is not None
+        ):
             return hit
     return None
 
@@ -737,52 +759,52 @@ async def test_filter_by_project(
 
 
 # ---------------------------------------------------------------------------
-# BH-058: Document title is indexed in chunk content for search
+# BH-058: a document's identifying terms are reachable without being in a body
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_058_document_identity_indexed_in_chunks(
+async def test_bh_058_document_identity_is_reachable_off_the_passage_surface(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """A document whose body does not contain "PV07" is still discoverable
-    via keyword (BM25) search because the search preamble (title, source
-    filename, tags) is prepended to the first chunk during indexing.
+    """A document is reachable by an identifying term its body never carries.
+
+    The behaviour this pins is older than the mechanism that serves it. It was
+    once served by a "search preamble" -- the title, source filename and tags
+    prepended to the document's first chunk at indexing time -- and this test
+    hand-wrote that preamble into a chunk body, so it went on passing after
+    CAS-ADR-049 abolished the arrangement, on text nothing in production
+    writes. Passages now hold authored passages only (Decision 1) and
+    document-level text has a surface of its own (Decision 2).
+
+    Seeded through the production composer, so the fixture cannot drift from
+    what ingest actually stores.
+
+    The code is carried by an authored tag. It is also in the filename, as the
+    original report had it, and that route is now closed: a filename is derived
+    text and admits nothing (Decision 4), which is the subject of
+    ``test_filename_stem_does_not_admit_a_document_through_the_boost`` below.
+    The document has no passages at all, so the surface is the only thing that
+    can answer -- and the assertion is on the document-level hit rather than on
+    the document, because on a corpus this small a semantic query returns
+    nearly everything and the weaker assertion would pass against a store that
+    never wrote a surface.
     """
-    # Document title is "ClinicalNormalization" (no "PV07"),
-    # but source filename contains "PV07"
     doc = _make_doc(_id("doc_pv07"))
     doc.title = "ClinicalNormalization"
     doc.source_path = "imports/EXAMPLE_PV07_ClinicalNormalization_v1_0.md"
     doc.tags = ["PV07"]
     await graph_store.insert_document(doc)
-
-    # Index a chunk with search preamble from source filename
-    # (simulating what _stage2_indexing now produces)
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_pv07"),
-        [
-            (
-                "Section 1",
-                "Title: ClinicalNormalization\n"
-                "Source: EXAMPLE_PV07_ClinicalNormalization_v1_0\n"
-                "Tags: PV07\n\n"
-                "This document discusses report claims.",
-            )
-        ],
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("doc_pv07"), doc
     )
 
-    # BM25 search for "PV07" should find it via the source filename in preamble
-    request = DiscoverRequest(
-        mode=RetrievalMode.SEMANTIC,
-        query="PV07",
-        use_hybrid=True,
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="PV07", use_hybrid=True)
     )
-    response = await retrieval_service.discover(request)
 
-    doc_ids = [h.document.id for h in response.results]
-    assert _id("doc_pv07") in doc_ids
+    assert _document_level_hit(response, _id("doc_pv07")) is not None, (
+        "the document surface did not carry the document's identity"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -809,17 +831,11 @@ async def test_camelcase_title_searchable_via_split_tokens(
     )
     await graph_store.insert_document(doc)
 
-    body_content = "[Placeholder content. Template body is structurally minimal.]"
-
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_portfolio"),
-        [("Sheet1", body_content)],
-    )
-    # Document-level text lives on the document surface. Its authored half
-    # carries the case-split expansion of the compound title, which is what
-    # makes "dashboard" reach "PortfolioDashboard".
+    # No passage at all. The document surface is then the only thing that can
+    # answer, so the document-level hit below is evidence about the surface
+    # rather than about a body chunk that would have been returned anyway.
+    # Its authored half carries the case-split expansion of the compound
+    # title, which is what makes "dashboard" reach "PortfolioDashboard".
     await _index_document_surface(
         stub_content_store, seeded_embedding_provider, _id("doc_portfolio"), doc
     )
@@ -860,17 +876,13 @@ async def test_camelcase_title_searchable_via_split_tokens(
         assert _id("doc_portfolio") in doc_ids, (
             f"doc_portfolio missing from top 5 for {mode_kwargs!r}; got {doc_ids}"
         )
-        # The case-split expansion of the compound title lives only on the
-        # document surface, so a document-level hit is what shows the surface
-        # was actually consulted. Without it the body chunk alone would return
-        # the document and the assertion above would pass unchanged.
+        # The hit itself is the evidence: it carries no excerpt to inspect,
+        # because a document-level hit is not a passage (CAS-ADR-049), and the
+        # document has no passage that could have supplied one instead.
         hit = _document_level_hit(response, _id("doc_portfolio"))
         assert hit is not None, (
             f"no document-level hit for {mode_kwargs!r}; the document surface "
             "contributed nothing to this result"
-        )
-        assert "dashboard" in (hit.chunk_content or "").lower(), (
-            "the document-level hit does not carry the title's expansion"
         )
 
 
@@ -894,12 +906,8 @@ async def test_semantic_abstract_drives_a_semantic_match(
     )
     await graph_store.insert_document(doc)
 
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_abstract_only"),
-        [("Sheet1", "[empty]")],
-    )
+    # No passage, so nothing but the document surface can answer for this
+    # document and the document-level hit below is evidence about it.
     await _index_document_surface(
         stub_content_store, seeded_embedding_provider, _id("doc_abstract_only"), doc
     )
@@ -912,15 +920,14 @@ async def test_semantic_abstract_drives_a_semantic_match(
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_abstract_only") in doc_ids
 
-    # The abstract is carried by the document surface and nowhere else, so the
-    # hit that carries it must be the document-level one. Asserting only that
-    # the document was returned would pass against a store that never stored a
-    # surface at all, since the body chunk returns it either way.
+    # The abstract is carried by the document surface and nowhere else, and
+    # the document has no passage, so the hit can only have come from the
+    # surface. It carries no excerpt to read the abstract back from -- a
+    # document-level hit is not a passage (CAS-ADR-049) -- so its presence,
+    # and the absence of any other row that could have produced it, is the
+    # evidence.
     hit = _document_level_hit(response, _id("doc_abstract_only"))
     assert hit is not None, "the abstract's document-level hit is absent"
-    assert "accumulator" in (hit.chunk_content or "").lower(), (
-        "the document-level hit does not carry the generated abstract"
-    )
 
     # A sibling whose authored body carries the same terms, so the refusal
     # below is a statement about provenance rather than about a keyword arm
@@ -2576,15 +2583,24 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
 ):
     """Metadata match promotes a document already in content results.
 
-    When a document code (e.g., "PV13") appears in the source_path and the
-    document is also found by content search at a low relevance score, the
-    metadata boost should promote its score above the highest content score.
-    Previously, metadata boost skipped documents already in content results,
-    leaving code-based lookups at near-zero relevance.
+    When a document code (e.g., "PV13") appears in an authored metadata field
+    and the document is also found by content search at a low relevance score,
+    the metadata boost should promote its score above the highest content
+    score. Previously, metadata boost skipped documents already in content
+    results, leaving code-based lookups at near-zero relevance.
+
+    The code is carried by the title. It used to be carried by the source path,
+    which no longer admits a document (CAS-ADR-049 Decision 4; the refusal is
+    pinned by ``test_filename_stem_does_not_admit_a_document_through_the_boost``
+    below). Note that the default ``_make_doc`` title embeds the document id, so
+    a code resembling any id fragment would be matched by the title whatever the
+    source path said -- the title here is set explicitly so the promotion under
+    test is driven by a field that is unambiguously authored.
     """
-    # Target doc: code "PV13" is in the source_path, content barely matches
+    # Target doc: code "PV13" is in the title, content barely matches
     target = _make_doc(_id("target_pv13"), doc_type="design_spec")
-    target.source_path = "reports/PV13_AuthoritativeAccumulator.docx"
+    target.title = "PV13 Authoritative Accumulator"
+    target.source_path = "reports/unrelated_stem.docx"
     await graph_store.insert_document(target)
     await _index_doc_chunks(
         stub_content_store,
@@ -2596,6 +2612,7 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
 
     # Distractor doc: strong content match for "PV13" but no metadata match
     distractor = _make_doc(_id("distractor"), doc_type="design_spec")
+    distractor.title = "Prior Art Survey"
     distractor.source_path = "reports/PV99_Unrelated.docx"
     await graph_store.insert_document(distractor)
     await _index_doc_chunks(
@@ -2619,7 +2636,7 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
 
     # Target must rank first: metadata identity match outranks content match
     assert ids.index(_id("target_pv13")) < ids.index(_id("distractor")), (
-        "Document with code in source_path should rank above "
+        "Document with code in its title should rank above "
         "document that merely mentions the code in body text"
     )
 
@@ -2627,6 +2644,333 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
     target_hit = next(h for h in response.results if h.document.id == _id("target_pv13"))
     distractor_hit = next(h for h in response.results if h.document.id == _id("distractor"))
     assert target_hit.relevance_score > distractor_hit.relevance_score
+
+
+async def test_filename_stem_does_not_admit_a_document_through_the_boost(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """A filename cannot put a document in a caller's results.
+
+    CAS-ADR-049 Decision 4 binds every path into a result set, not the content
+    store's matching alone: a service-layer boost that admits a document on
+    derived text defeats the provenance rule as surely as an unfiltered index
+    would. The source path is derived -- incidental to how the document arrived
+    -- so a query naming nothing but a filename stem must not reach it.
+
+    Both documents carry an explicitly authored title and tag set, because
+    ``_make_doc`` derives its default title *and* its default source path from
+    the same document id: left at the default, every document's title contains
+    its own filename stem and the refusal below could not be observed.
+    """
+    derived_only = _make_doc(_id("filename_only"))
+    derived_only.title = "Authoritative Accumulator"
+    derived_only.tags = ["design"]
+    derived_only.source_path = "reports/QV77_AuthoritativeAccumulator.docx"
+    await graph_store.insert_document(derived_only)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("filename_only"),
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+    )
+
+    # Positive control: the same term in an authored field, so the assertion
+    # below is a statement about provenance rather than about a boost that
+    # stopped working. Without it, deleting the boost outright would pass.
+    authored = _make_doc(_id("authored_code"))
+    authored.title = "QV77 Prior Art Survey"
+    authored.tags = ["design"]
+    authored.source_path = "reports/unrelated_stem.docx"
+    await graph_store.insert_document(authored)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("authored_code"),
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="QV77", limit=10)
+    )
+    ids = [h.document.id for h in response.results]
+
+    assert _id("authored_code") in ids, (
+        "positive control: a code in the title still admits the document"
+    )
+    assert _id("filename_only") not in ids, (
+        "a code carried only by the filename admitted the document; the boost "
+        "is admitting on derived text"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A document-level hit is not a passage: it is not counted as one, and it
+# carries no excerpt (CAS-ADR-049 Decisions 4 and 5).
+# ---------------------------------------------------------------------------
+
+
+async def _seed_surface_only_match(
+    graph_store, stub_content_store, seeded_embedding_provider, doc_id, *, title
+):
+    """Seed a document that has a document surface and no passages at all.
+
+    No passages, deliberately. The arms fuse on the document, so a document
+    that also has a body chunk comes back as one hit carrying whatever that
+    chunk contributes -- which is the right answer, and the wrong fixture for
+    asserting what a document reached through document-level text alone
+    reports. With no passage in the store there is nothing else the hit could
+    have come from.
+    """
+    doc = _make_doc(_id(doc_id))
+    doc.title = title
+    doc.tags = ["design"]
+    doc.source_path = f"reports/{doc_id}.md"
+    await graph_store.insert_document(doc)
+    await _index_document_surface(stub_content_store, seeded_embedding_provider, _id(doc_id), doc)
+    return doc
+
+
+async def test_document_level_hit_reports_zero_matched_passages_semantic(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document-level hit counts no passages, on the semantic arm.
+
+    The count names passages (CAS-ADR-049 Decision 5) and a document-level row
+    is not one, so the answer is zero rather than one. ``DiscoverHit``'s own
+    published description already says so.
+    """
+    await _seed_surface_only_match(
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
+        "surface_count_sem",
+        title="Zetaword Accumulator Catalog",
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="zetaword accumulator catalog")
+    )
+
+    hit = _document_level_hit(response, _id("surface_count_sem"))
+    assert hit is not None, "the document surface contributed nothing to this result"
+    assert hit.matched_chunk_count == 0, (
+        "a document-level hit is not a passage and must not be counted as one"
+    )
+
+
+# The keyword arm's end-to-end counterpart lives in
+# ``tests/sage/test_content_store_postgres.py``. This double stores a document
+# surface but never consults it on the keyword arm, by design, so a keyword hit
+# won through document-level text can only be observed against a real backend.
+
+
+async def test_a_surface_row_does_not_inflate_a_passage_count(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document matching on both surfaces counts its passages only.
+
+    Two passages carry the term and the document surface carries it too. The
+    count is two, not three: the surface row rides alongside the passages in
+    the same result set and must not be tallied with them. It arrives after the
+    row that wins the excerpt, which is the case a tally that tested provenance
+    only on a document's first row would miss.
+
+    Removing the surface from the setup leaves this passing, which is the point
+    rather than a gap: a correct tally makes the extra row a no-op, so what the
+    seeding buys is a red when the tally regresses -- it reports three.
+    """
+    doc = _make_doc(_id("both_surfaces"))
+    doc.title = "Zetaword Accumulator Catalog"
+    doc.tags = ["design"]
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("both_surfaces"),
+        [
+            ("Section 1", "zetaword accumulator catalog in the first passage"),
+            ("Section 2", "zetaword accumulator catalog in the second passage"),
+        ],
+    )
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("both_surfaces"), doc
+    )
+
+    # Pure vector rather than the fused default, so the surface row and the
+    # passage rows all reach the service as separate rows. Fusion would collapse
+    # them first and the tally under test would never see the surface row.
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.SEMANTIC,
+            query="zetaword accumulator catalog",
+            use_hybrid=False,
+        )
+    )
+
+    hits = [h for h in response.results if h.document.id == _id("both_surfaces")]
+    assert len(hits) == 1, "the document is deduplicated to one hit"
+    assert hits[0].matched_chunk_count == 2, (
+        "the surface row was tallied as if it were a third passage"
+    )
+
+
+async def test_a_passage_supplies_the_excerpt_when_the_surface_outranks_it(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document that matched passages is served one of them.
+
+    The service dedupes to the document's best-ranking row, and for a
+    title-shaped query that row is routinely the document surface -- which is
+    what the surface is for. Left there, the hit reports the passages it
+    matched and carries neither an excerpt nor a heading for any of them. The
+    score stays the document's best across both surfaces; only the excerpt
+    moves.
+
+    Pure vector rather than the fused default, so the rows reach the service
+    separately and the handoff under test is the service's own.
+    """
+    # The title is a compound, so the metadata boost -- which matches by
+    # substring -- cannot reach it with this query and does not overwrite the
+    # score on the way out. The document surface can: its authored half is
+    # widened to the split rendering. Without that the assertion below would be
+    # about the boost's synthetic score rather than about the handoff.
+    doc = _make_doc(_id("surface_outranks"))
+    doc.title = "ZetawordAccumulator_Catalog"
+    doc.tags = ["design"]
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("surface_outranks"),
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+    )
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("surface_outranks"), doc
+    )
+
+    # Same passage, no surface. Its score is the passage's alone.
+    control = _make_doc(_id("passage_only"))
+    control.title = "Unrelated Control"
+    await graph_store.insert_document(control)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("passage_only"),
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.SEMANTIC,
+            query="zetaword accumulator catalog",
+            use_hybrid=False,
+        )
+    )
+
+    [hit] = [h for h in response.results if h.document.id == _id("surface_outranks")]
+    [control] = [h for h in response.results if h.document.id == _id("passage_only")]
+    assert hit.matched_chunk_count == 1, "the document matched one passage"
+    # The score is the document's best across both surfaces, and the handoff
+    # moves the excerpt alone. The control carries the same passage and no
+    # surface, so its score is what this document's would collapse to if the
+    # handoff took the passage's score along with its text.
+    assert hit.relevance_score > control.relevance_score, (
+        "the handoff moved the score as well as the excerpt"
+    )
+    assert hit.heading_path == "Section 1", (
+        "the hit kept the surface row's absent heading despite matching a passage"
+    )
+    assert hit.chunk_content == "Clinical normalization of respiratory signals.", (
+        "the hit carries no excerpt for the passage it reports having matched"
+    )
+
+
+async def test_a_headingless_passage_reaches_the_service_tally_as_a_passage(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A passage carrying no heading is still tallied as a passage.
+
+    The service tests provenance by the row's own flag rather than by an empty
+    heading path, and a headingless passage is the input that separates the
+    two: ingestion writes one for any source with no headings at all
+    (``_build_chunks``), so a tally reading the heading path would stop
+    counting it.
+
+    The fixture pairs a headed passage with a headingless one to isolate the
+    tally rule, which is narrower than what ingestion emits -- a real
+    headingless document has exactly one chunk. With only that one chunk the
+    substitution is unobservable here, because the row's own carried count is
+    one and the service takes the larger of the two; it is the tally, not the
+    carried value, that this fixture is about. The fusion's half of the same
+    rule is covered in ``test_rrf_counts_a_headingless_passage_as_a_passage``.
+    """
+    doc = _make_doc(_id("headless_service"))
+    doc.title = "Unrelated Title"
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("headless_service"),
+        [
+            ("Section 1", "zetaword catalog in a passage that carries a heading"),
+            ("", "zetaword catalog in a passage that carries none"),
+        ],
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.SEMANTIC,
+            query="zetaword catalog passage",
+            use_hybrid=False,
+        )
+    )
+
+    [hit] = [h for h in response.results if h.document.id == _id("headless_service")]
+    assert hit.matched_chunk_count == 2, (
+        "the headingless passage was not tallied, so the count dropped to the headed one alone"
+    )
+
+
+async def test_document_level_hit_carries_no_excerpt(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document-level hit exposes no index-side expansion as its excerpt.
+
+    The stored document surface widens its authored half to a superset of the
+    title's renderings so a caller reaching for one form finds the other. That
+    widening is an index-side artifact: served back as ``chunk_content`` it
+    reads as duplicated tokens rather than as anything the document says. A
+    document-level hit is not a passage and carries no excerpt at all.
+
+    The title is a CamelCase compound, so the stored surface demonstrably
+    carries a split rendering the raw title does not. Asserting the absence of
+    that split form -- not merely that the excerpt is short -- is what makes
+    this a statement about the expansion.
+    """
+    await _seed_surface_only_match(
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
+        "no_excerpt",
+        title="ZetawordAccumulator_Catalog",
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="zetaword accumulator catalog")
+    )
+
+    hit = _document_level_hit(response, _id("no_excerpt"))
+    assert hit is not None, (
+        "the document surface contributed nothing to this result, so the "
+        "excerpt assertion below would say nothing about it"
+    )
+    assert not (hit.chunk_content or ""), "a document-level hit carries no excerpt"
+    assert "zetaword accumulator" not in (hit.chunk_content or "").lower(), (
+        "the hit exposes the index-side expansion's split rendering"
+    )
 
 
 async def test_bh_087_response_mode_unset_preserves_chunk_content(

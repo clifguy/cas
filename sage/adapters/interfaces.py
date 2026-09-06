@@ -118,6 +118,15 @@ class SearchResult:
     reports how many of its chunks carry a query term. A binding that ranks
     chunk-by-chunk leaves the count at its default of 1, and the caller
     tallies duplicate ``document_id`` rows itself.
+
+    ``is_document_surface`` names which of the two surfaces the row came from
+    (CAS-ADR-049 Decision 2). A document-level row is not a passage: it carries
+    no excerpt, and it is not counted by ``matched_chunk_count``, which names
+    passages. The distinction is a field rather than something a caller infers,
+    because neither of the two properties that look like it is one. An empty
+    ``heading_path`` does not imply it -- a document with no headings has a
+    genuine passage whose path is empty -- and a zero ``matched_chunk_count``
+    does not survive rank fusion, which reconciles counts across arms.
     """
 
     document_id: str
@@ -125,6 +134,7 @@ class SearchResult:
     content: str
     score: float
     matched_chunk_count: int = 1
+    is_document_surface: bool = False
 
 
 @dataclass(frozen=True)
@@ -637,7 +647,12 @@ class GraphStore(ABC):
 
     @abstractmethod
     async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
-        """Keyword search over indexed document metadata."""
+        """Keyword search over a document's authored metadata.
+
+        The title and the tags are authored and admit a document. The source
+        path is derived -- incidental to how the document arrived -- so it may
+        order the admitted but never widen them (CAS-ADR-049 Decision 4).
+        """
 
     @abstractmethod
     async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
