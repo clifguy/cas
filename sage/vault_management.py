@@ -44,6 +44,15 @@ def default_vault_root() -> Path:
     the ``~/sage_vaults`` default. The fallback is the module-level
     ``_VAULTS_ROOT`` (not a fresh literal) so the same redirect point existing
     callers and tests already use stays authoritative.
+
+    This is the codebase's only read of ``_VAULTS_ROOT``, and deliberately so:
+    every other root consumer resolves through :func:`bound_vault_root` or
+    through this function, which keeps the constant a single redirect point
+    rather than a location several modules can reach independently. A caller
+    that needs the default root asks here; one that needs the root the process
+    is actually bound to asks :func:`bound_vault_root`. Reading the constant
+    directly is neither, and reintroduces the divergence between a served path
+    and the process's own binding that CAS-ADR-043 exists to prevent.
     """
     env = os.environ.get("SAGE_VAULT_ROOT")
     return Path(env).expanduser() if env else _VAULTS_ROOT

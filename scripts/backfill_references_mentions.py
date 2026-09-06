@@ -62,6 +62,7 @@ from sage.services.identifier_mention_inference import (  # noqa: E402
     plan_identifier_mention_edges,
     plan_reference_reconcile,
 )
+from sage.vault_management import config_path_for_vault  # noqa: E402
 
 
 @dataclass
@@ -79,7 +80,7 @@ class DocReport:
 
 
 def _load_vault_config(vault_id: str) -> VaultConfig:
-    config_path = Path.home() / "sage_vaults" / vault_id / "vault_config.yaml"
+    config_path = config_path_for_vault(vault_id)
     if not config_path.exists():
         raise FileNotFoundError(f"Vault config not found: {config_path}")
     with open(config_path) as f:

@@ -29,15 +29,13 @@ from sage.models.schemas import (
 from sage.vault_management import (
     _atomic_write_bytes,
     _validate_config,
+    bound_vault_root,
 )
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
-
-
-_VAULTS_ROOT = Path("~/sage_vaults").expanduser()
 
 
 class VaultRegistryService:
@@ -62,14 +60,23 @@ class VaultRegistryService:
         that do not have them yet -- the read endpoint serving this
         scaffold over HTTP fills neither, leaving both to whoever
         completes the config before creating the vault.
+
+        The roots resolve through :func:`bound_vault_root`, the same
+        authority discovery and the vault-source binding use
+        (CAS-ADR-043), so a process bound to a non-default root serves a
+        scaffold naming its own binding. Nothing downstream rewrites
+        these values -- ``create_vault`` expands and creates exactly the
+        directories named here -- so a scaffold built from a fixed
+        location would provision outside the serving process's view.
         """
+        root = bound_vault_root()
         return {
             "vault": {
                 "id": vault_id,
                 "name": name,
                 "owner": owner,
-                "storage_root": str(_VAULTS_ROOT / vault_id / "sources"),
-                "brain_root": str(_VAULTS_ROOT / vault_id / "brain"),
+                "storage_root": str(root / vault_id / "sources"),
+                "brain_root": str(root / vault_id / "brain"),
                 "visibility": "personal",
             },
             "document_types": {

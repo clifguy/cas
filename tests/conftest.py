@@ -313,36 +313,44 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     orphan vault directories behind, which then show up in
     ``list_vaults`` after the server restarts.
 
-    ``sage.services.vault_registry._VAULTS_ROOT`` is the same constant
-    re-imported for default-config path construction; patch both so a
-    test using ``VaultRegistryService.get_default_config`` without overriding
-    storage_root/brain_root also lands in tmp space.
+    ``VaultRegistryService.get_default_config`` resolves the scaffold's
+    storage and brain roots through the same chain, one level below the
+    patched constant: ``bound_vault_root`` falls back to
+    ``default_vault_root``, which reads ``_VAULTS_ROOT`` at call time. So the
+    single patch below governs the served scaffold as well as the write paths,
+    and a test that creates a vault from an unedited scaffold lands in tmp
+    space. ``test_autouse_root_redirect_reaches_the_scaffold`` in
+    tests/sage/test_vault_config_write_root_binding.py asserts that reach
+    directly, so a resolution change that routes around this fixture surfaces
+    as a red test rather than as writes into the real tree.
 
-    ``SAGE_VAULT_ROOT`` is cleared rather than left alone. Root resolution
-    honors that variable *ahead of* the patched constant, so on a machine that
-    exports it the redirect below would be silently outranked and writes would
-    land in the operator's real vault tree. Clearing it rather than pointing it
-    at ``fake_root`` keeps the patched constant authoritative, which is what
-    the tests that install their own per-test root rely on. Tests that need the
-    variable set do so themselves; their ``monkeypatch.setenv`` runs after this
-    fixture and wins.
+    Both inputs that outrank the constant in that chain are cleared, for the
+    same reason. ``SAGE_VAULT_ROOT`` is honored *ahead of* it, so on a machine
+    that exports the variable the redirect would be silently outranked and
+    writes would land in the operator's real vault tree. The
+    lifespan-published root outranks both, and a leaked one would do the same
+    from inside the process. Clearing rather than repointing keeps the patched
+    constant authoritative, which is what the tests that install their own
+    per-test root rely on. Tests that need either input set do so themselves;
+    their ``monkeypatch`` calls run after this fixture and win.
 
-    No test in this suite can go red when that ``delenv`` is removed: the
-    condition it defends against is an ambient variable present at process
-    start, which a test body cannot install ahead of an autouse fixture. It is
-    verified out-of-band instead, and reproducibly -- export ``SAGE_VAULT_ROOT``
-    to an empty scratch directory, run the vault-config write tests, and confirm
-    that directory is still empty afterward. Treat the guard as load-bearing
-    despite the green suite: deleting it restores the failure silently on any
-    machine that exports the variable.
+    No test can install the condition the ``delenv`` defends against: an
+    ambient variable present at process start, which a test body cannot set
+    ahead of an autouse fixture. On a machine that does export it the scaffold
+    test named above goes red, but that machine is not the one the suite
+    normally runs on, so a green suite is no evidence the guard is intact. It
+    is verified out-of-band instead, and reproducibly -- export
+    ``SAGE_VAULT_ROOT`` to an empty scratch directory, run the vault-config
+    write tests, and confirm that directory is still empty afterward. Treat the
+    guard as load-bearing despite the green suite: deleting it restores the
+    failure silently everywhere the variable is not exported.
     """
-    from sage import vault_management
-    from sage.services import vault_registry
+    from sage import mcp_init, vault_management
 
     fake_root = tmp_path_factory.mktemp("sage_vaults_isolated")
     monkeypatch.delenv("SAGE_VAULT_ROOT", raising=False)
+    monkeypatch.setattr(mcp_init, "_vault_root", None)
     monkeypatch.setattr(vault_management, "_VAULTS_ROOT", fake_root)
-    monkeypatch.setattr(vault_registry, "_VAULTS_ROOT", fake_root)
     yield fake_root
 
 

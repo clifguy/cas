@@ -54,7 +54,7 @@ from sage.models.schemas import (
     DiscoverRequest,
     RetrievalFilters,
 )
-from sage.vault_management import config_path_for_vault
+from sage.vault_management import bound_vault_root, config_path_for_vault
 
 # Tier3 shapes drawn from the cas vault's seeded ticket portfolio.
 # Mirrors probe_catalog_index_latency.TIER3_PROBES but framed for semantic-mode
@@ -203,4 +203,4 @@ if __name__ == "__main__":
 
 
 def cas_brain_root() -> Path:
-    return Path("~/sage_vaults/cas/brain").expanduser()
+    return bound_vault_root() / "cas" / "brain"
