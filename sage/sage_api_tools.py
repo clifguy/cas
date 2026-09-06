@@ -1503,7 +1503,9 @@ def register_sage_tools(
         Args:
             vault_id: Target vault identifier.
             mode: Retrieval mode (semantic, keyword, catalog, deterministic). Default: semantic.
-            query: Search query text (required for semantic/keyword modes).
+            query: Search query text (required for semantic and keyword
+                modes; refused by catalog and deterministic, which do not
+                consume it).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,

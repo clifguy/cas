@@ -2889,7 +2889,10 @@ class DiscoverRequest(BaseModel):
     query: str | None = Field(
         default=None,
         description=(
-            "Search query text. Required for semantic and keyword modes. Ignored in catalog mode."
+            "Search query text. Required for semantic and keyword modes, "
+            "and refused by the other two: catalog enumerates by filter "
+            "and deterministic extracts by heading path, so neither "
+            "consumes it."
         ),
     )
     scope: RetrievalScope = Field(

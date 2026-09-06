@@ -7380,6 +7380,13 @@ def test_every_target_forbidden_parameter_is_reachable(target, param, default, a
     existing per-parameter tests. Only ``allowed_targets`` separates the
     row under test having fired from something above it firing first.
     """
+    # The table restates each field's default. Pin that copy to the model,
+    # or a later change to a default leaves the table declaring a value the
+    # field no longer has -- the row would then fire for every caller who
+    # left the knob alone, and the reachability assertion below would stay
+    # green throughout, since it only ever probes the non-default direction.
+    assert DiscoverRequest.model_fields[param].default == default
+
     value = _reachability_value(param, default)
     with pytest.raises(ValidationError) as info:
         DiscoverRequest(mode=RetrievalMode.CATALOG, target=target, **{param: value})
