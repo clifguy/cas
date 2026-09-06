@@ -1965,7 +1965,7 @@ async def test_reload_vault_count_comes_from_the_store_total(vault_services, mon
 
         async def list_all_documents(self):
             raise AssertionError(
-                "list_all_documents() must not be called for reload_vault's document_count (T-0508)"
+                "list_all_documents() must not be called for reload_vault's document_count"
             )
 
     class _FakeServices:
