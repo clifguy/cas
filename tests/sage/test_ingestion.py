@@ -596,15 +596,14 @@ async def test_ensure_vault_local_creates_missing_sources_parent(
 
 
 # ---------------------------------------------------------------------------
-# (unit): _chunk_projection emits body chunks only; identity
-# signals live in the standalone synthetic header chunk built by
-# _build_header_chunk.
+# _chunk_projection emits body chunks only; document-level identity
+# signals live on the document surface (CAS-ADR-049).
 # ---------------------------------------------------------------------------
 
 
 def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
     """_chunk_projection prepends the ATX heading line to body content
-     so the projection round-trips through read_projection. The
+    so the projection round-trips through read_projection. The
     synthetic-header preamble still lives in its own chunk and
     must not leak into body chunks."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
@@ -649,8 +648,8 @@ def test_chunk_projection_fallback_chunk_has_no_preamble(ingestion_service):
 
 
 def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
-    """Every body chunk carries its ATX heading line plus body content
-    ; the synthetic header chunk lives outside _chunk_projection's
+    """Every body chunk carries its ATX heading line plus body content;
+    the synthetic header chunk lives outside _chunk_projection's
     output."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
@@ -2701,8 +2700,8 @@ class _RecordingEmbeddingProvider:
     """Captures the texts passed to embed() for assertion.
 
     Accumulates across calls — the production pipeline now embeds chunks
-    in Stage 2 and re-embeds the synthetic header chunk in Stage 3
-    , so a single call's inputs are no longer the full picture.
+    in Stage 2 and re-embeds the synthetic header chunk in Stage 3,
+    so a single call's inputs are no longer the full picture.
     """
 
     def __init__(self) -> None:

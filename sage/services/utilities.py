@@ -266,7 +266,7 @@ class UtilitiesService:
           ``write_to_path`` and is refused without one.
 
         The write-to-disk mode mirrors ``DocumentsService.get_document_with_content``
-        delivery and replaces the per--audit-removed
+        delivery and replaces the audit-removed
         ``export_projection`` MCP tool, whose pre-existing storage_root-
         relative semantics remain on the REST surface.
 

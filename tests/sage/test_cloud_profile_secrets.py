@@ -80,7 +80,7 @@ def test_cld_001_abstraction_binding_fetches_key_and_passes_it_not_env(monkeypat
 
 def test_cld_002_abstraction_binding_honors_stub_override_no_key_vault(monkeypatch):
     """Under SAGE_TEST_STUB_PROVIDERS=1 the binding returns the stub provider and
-    never reaches Key Vault -- keeping the suite offline (F-8).
+    never reaches Key Vault -- keeping the suite offline.
 
     Anti-coincidental-pass: fetch_secret is rigged to raise; reaching it (a
     missing stub short-circuit) would surface as that error instead of a stub.

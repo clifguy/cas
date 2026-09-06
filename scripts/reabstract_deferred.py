@@ -4,8 +4,8 @@
 Standalone fallback for operator workflows (cron-style, no MCP server
 running). Agents should call the ``recompute_deferred_vault_abstracts``
 MCP tool instead -- it reuses the running MCP server's already-loaded
-AbstractionProvider so the dual-Qwen3 RAM hazard does not apply (,
-F-8). The ``--all`` mode (full-vault sweep regardless of pipeline_status)
+AbstractionProvider so the dual-Qwen3 RAM hazard does not apply. The
+``--all`` mode (full-vault sweep regardless of pipeline_status)
 is still operator-only and remains the reason this script lives on.
 
 By default, picks up every document with ``pipeline_status='abstraction_skipped'``

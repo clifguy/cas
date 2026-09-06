@@ -1,7 +1,7 @@
 """Tests for sage/services/batch_inference.py.
 
 Covers the batch-context edge inference service relocated from the app
-layer per
+layer:
 
   - Version chain inference (EI-013 through EI-018)
   - Filename code match inference (EI-019 through EI-024)

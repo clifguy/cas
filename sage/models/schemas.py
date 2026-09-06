@@ -3049,8 +3049,8 @@ class DiscoverRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_mode_parameter_mismatch(self) -> "DiscoverRequest":
-        """Reject parameter/mode combinations that have no defined semantics
-        . Required-but-absent cases (e.g., semantic mode without
+        """Reject parameter/mode combinations that have no defined semantics.
+        Required-but-absent cases (e.g., semantic mode without
         ``query``) are still handled at the service layer via
         ``MissingFieldError`` to preserve the existing ``missing_*`` typed
         codes. This validator only catches the inverse case: a parameter is

@@ -57,8 +57,8 @@ class EdgeType(StrEnum):
     `retracts` is a meta-edge pointing at an earlier edge instance that the
     retracting chain now disclaims. The retracting edge requires the
     `edge_id` of the edge it disclaims; that id is discoverable via
-    ``search(target="edges", filters={"source_id":..., "edge_type":...})``
-    . `merged_from` is a meta-edge recording that a successor chain
+    ``search(target="edges", filters={"source_id":..., "edge_type":...})``.
+    `merged_from` is a meta-edge recording that a successor chain
     absorbs predecessor chains, tombstoning their downstream edges.
     """
 
@@ -225,7 +225,7 @@ class FacetField(StrEnum):
 
 
 class ResponseMode(StrEnum):
-    """Payload depth for ``search`` results (,).
+    """Payload depth for ``search`` results.
 
     `light` returns identity columns only and omits rationale, retraction
     envelope, and other large fields. `full` returns the complete envelope.
@@ -245,8 +245,8 @@ class ResponseMode(StrEnum):
 # stay inside the MCP inline-output budget); at or below it, default is
 # FULL (so single-item-style calls keep their contextual richness).
 #
-# Originally tied to edge-enumeration default; extends
-# the same rule to the bulk mutation tools (``bulk_update_metadata``
+# Originally tied to the edge-enumeration default; the same rule now
+# extends to the bulk mutation tools (``bulk_update_metadata``
 # and ``bulk_update_lifecycle``). The 5-item figure comes from
 # field-use report (a 28-item bulk_update_metadata batch overflowed the
 # MCP inline budget by returning a full ``semantic_abstract`` per item).

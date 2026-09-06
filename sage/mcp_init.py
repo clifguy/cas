@@ -535,7 +535,7 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
          and provider is not "local-mlx" -> raise ValueError
 
     The env override remains the topmost short-circuit so that tests
-    cannot load the local MLX model alongside the running MCP server (F-8).
+    cannot load the local MLX model alongside the running MCP server.
     Provider/model live at stack scope because the local MLX provider is a
     process-wide singleton; co-locating the config with the resource
     boundary resolves the layering contradiction (ADR-030). The hosted

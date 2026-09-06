@@ -7,7 +7,7 @@ Schema-only ship. Covers:
 - TEST-3: one attribute set, the other null (no coupled enforcement).
 - TEST-5: Pydantic type rejection at the FastAPI router boundary.
 
-TEST-4 (migration idempotency on a pre--shaped DB) lives in
+TEST-4 (migration idempotency on a pre-migration DB) lives in
 ``tests/sage/test_migrate_flag.py`` alongside the other migration tests.
 The OpenAPI conformance regression (TEST-6) is covered by
 ``tests/sage/test_openapi_conformance.py``; no new test required.

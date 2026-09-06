@@ -1,7 +1,7 @@
 """Tests for vault-management MCP tools (TEST-APP-MCP-030 through MCP-040).
 
 Covers the three vault-management MCP tools:
-  - create_vault (single config-dict argument; see)
+  - create_vault (single config-dict argument)
   - get_vault_config
   - update_vault_config (with destructive-change force-gate)
 
