@@ -17,6 +17,7 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.config import VaultConfig
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
 
 # ---------------------------------------------------------------------------
@@ -333,7 +334,6 @@ async def test_di_015_postgres_services_run_ingest_search_traverse_lifecycle(
     chain-head trigger installed at vault open, and Postgres FTS serving the
     keyword arm.
     """
-    import asyncio
     import copy
     import uuid
 
@@ -362,15 +362,13 @@ async def test_di_015_postgres_services_run_ingest_search_traverse_lifecycle(
         path.write_text(body)
 
     async def _await_terminal_pipeline(services, doc_id: str) -> None:
-        from sage.models.enums import TERMINAL_PIPELINE_STATUSES
-
-        for _ in range(100):
-            doc = await services.graph_store.get_document(doc_id)
-            assert doc is not None
-            if doc.pipeline_status in TERMINAL_PIPELINE_STATUSES:
-                return
-            await asyncio.sleep(0.1)
-        raise AssertionError(f"document {doc_id} never reached a terminal pipeline status")
+        await await_pipeline_idle(
+            services.graph_store,
+            doc_id,
+            service=services.ingestion_service,
+            attempts=100,
+            delay=0.1,
+        )
 
     stack = SageCoreConfig(
         storage_backend="postgres",

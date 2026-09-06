@@ -42,23 +42,21 @@ from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.locks import DocumentLockManager
+from tests.helpers.pipeline_wait import TERMINAL_PIPELINE_STATES, await_pipeline_idle
 from tests.sage.test_ingestion import _create_test_file
 
-_TERMINAL_STATES = {
-    PipelineStatus.ABSTRACTION_COMPLETE,
-    PipelineStatus.ABSTRACTION_SKIPPED,
-    PipelineStatus.FAILED,
-}
 
+async def _await_terminal(graph_store, service, doc_id: str, *, attempts: int = 500):
+    """Wait until the document is settled and unclaimed; return its status.
 
-async def _await_terminal(graph_store, doc_id: str, *, attempts: int = 500) -> PipelineStatus:
-    """Poll the document until it reaches a terminal pipeline_status."""
-    for _ in range(attempts):
-        doc = await graph_store.get_document(doc_id)
-        if doc is not None and doc.pipeline_status in _TERMINAL_STATES:
-            return doc.pipeline_status
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"document {doc_id} did not reach terminal status in time")
+    Thin adapter over the shared wait so the assertions below keep reading
+    against a ``PipelineStatus``. The predicate itself -- terminal status *and*
+    no in-flight claim -- lives in one place for the whole suite, because the
+    claim is released after the terminal status write and a wait keyed on the
+    status alone hands its caller a document the next call rejects.
+    """
+    doc = await await_pipeline_idle(graph_store, doc_id, service=service, attempts=attempts)
+    return doc.pipeline_status
 
 
 # --------------------------------------------------------------------------
@@ -237,7 +235,7 @@ async def test_ingest_enqueues_and_returns_nonterminal(
     doc_id = result.document.id
 
     # Returned snapshot is non-terminal — work has been enqueued, not run.
-    assert result.document.pipeline_status not in _TERMINAL_STATES
+    assert result.document.pipeline_status.value not in TERMINAL_PIPELINE_STATES
 
     # Exactly one long-lived worker task drains the queue.
     await asyncio.wait_for(gated.entered.wait(), timeout=2.0)
@@ -245,7 +243,7 @@ async def test_ingest_enqueues_and_returns_nonterminal(
     assert not ingestion_service._worker_task.done()
 
     gated.gate.set()
-    terminal = await _await_terminal(graph_store, doc_id)
+    terminal = await _await_terminal(graph_store, ingestion_service, doc_id)
     assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
 
 
@@ -268,8 +266,10 @@ async def test_single_worker_serializes_concurrent_ingests(
         wait_for_pipeline=False,
     )
 
-    assert await _await_terminal(graph_store, r1.document.id) == PipelineStatus.ABSTRACTION_COMPLETE
-    assert await _await_terminal(graph_store, r2.document.id) == PipelineStatus.ABSTRACTION_COMPLETE
+    terminal = await _await_terminal(graph_store, ingestion_service, r1.document.id)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
+    terminal = await _await_terminal(graph_store, ingestion_service, r2.document.id)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
     assert tracker.max_seen == 1
 
 
@@ -294,7 +294,7 @@ async def test_abstraction_retried_then_succeeds(tmp_vault_dir, ingestion_servic
         IngestRequest(source="samples/r3.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
     assert provider.calls == 3
@@ -317,7 +317,7 @@ async def test_terminal_failed_after_max_attempts(tmp_vault_dir, ingestion_servi
         IngestRequest(source="samples/r4.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.FAILED
     assert provider.calls == 3  # max_attempts
@@ -355,12 +355,13 @@ async def test_reabstract_clears_stale_pipeline_error(
         IngestRequest(source="samples/stale.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    assert await _await_terminal(graph_store, result.document.id) == PipelineStatus.FAILED
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
+    assert terminal == PipelineStatus.FAILED
     failed = await graph_store.get_document(result.document.id)
     assert "3 attempts" in failed.pipeline_error
 
     await ingestion_service.reabstract(result.document.id)
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
     repaired = await graph_store.get_document(result.document.id)
@@ -389,13 +390,14 @@ async def test_repeat_failure_replaces_prior_pipeline_error(
         IngestRequest(source="samples/twice.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    assert await _await_terminal(graph_store, result.document.id) == PipelineStatus.FAILED
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
+    assert terminal == PipelineStatus.FAILED
     first = await graph_store.get_document(result.document.id)
     assert "simulated failure A" in first.pipeline_error
 
     ingestion_service._abstraction = _MarkedFailProvider("simulated failure B")
     await ingestion_service.reabstract(result.document.id)
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.FAILED
     second = await graph_store.get_document(result.document.id)
@@ -430,7 +432,8 @@ async def test_retry_backoff_bounded(tmp_vault_dir, minimal_vault_config_dict, g
             IngestRequest(source="samples/r5.md", source_type=SourceType.MARKDOWN),
             wait_for_pipeline=False,
         )
-        assert await _await_terminal(graph_store, result.document.id) == PipelineStatus.FAILED
+        terminal = await _await_terminal(graph_store, service, result.document.id)
+        assert terminal == PipelineStatus.FAILED
     finally:
         await service.stop_worker()
 
@@ -457,7 +460,7 @@ async def test_reabstract_rejected_while_inflight(tmp_vault_dir, ingestion_servi
         await ingestion_service.reabstract(doc_id)
 
     gated.gate.set()
-    await _await_terminal(graph_store, doc_id)
+    await _await_terminal(graph_store, ingestion_service, doc_id)
 
 
 async def test_recompute_rejected_while_inflight(tmp_vault_dir, ingestion_service, graph_store):
@@ -474,7 +477,7 @@ async def test_recompute_rejected_while_inflight(tmp_vault_dir, ingestion_servic
         await ingestion_service.recompute_pipeline(doc_id)
 
     gated.gate.set()
-    await _await_terminal(graph_store, doc_id)
+    await _await_terminal(graph_store, ingestion_service, doc_id)
 
 
 async def test_one_abstraction_run_per_document(tmp_vault_dir, ingestion_service, graph_store):
@@ -491,7 +494,7 @@ async def test_one_abstraction_run_per_document(tmp_vault_dir, ingestion_service
         await ingestion_service.reabstract(doc_id)
 
     gated.gate.set()
-    await _await_terminal(graph_store, doc_id)
+    await _await_terminal(graph_store, ingestion_service, doc_id)
     assert gated.calls == 1
 
 
@@ -515,7 +518,7 @@ async def test_recover_projection_complete_document(tmp_vault_dir, ingestion_ser
     count = await ingestion_service.recover_incomplete_documents()
     assert count == 1
 
-    terminal = await _await_terminal(graph_store, doc_id)
+    terminal = await _await_terminal(graph_store, ingestion_service, doc_id)
     assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
     assert await ingestion_service._content_store.has_chunks(doc_id)
 
@@ -534,7 +537,7 @@ async def test_recover_indexed_document_from_chunks(tmp_vault_dir, ingestion_ser
     count = await ingestion_service.recover_incomplete_documents()
     assert count == 1
 
-    terminal = await _await_terminal(graph_store, doc_id)
+    terminal = await _await_terminal(graph_store, ingestion_service, doc_id)
     assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
     assert spy.project_calls == 0
 
@@ -614,7 +617,8 @@ async def test_recover_re_enqueues_an_interrupted_document(
     assert count == 1
 
     interrupted = seeded[PipelineStatus.ABSTRACTION_INTERRUPTED]
-    assert await _await_terminal(graph_store, interrupted) == PipelineStatus.ABSTRACTION_COMPLETE
+    terminal = await _await_terminal(graph_store, ingestion_service, interrupted)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
     for status in (
         PipelineStatus.ABSTRACTION_SKIPPED,
         PipelineStatus.ABSTRACTION_COMPLETE,
@@ -780,7 +784,8 @@ async def test_stop_worker_releases_the_claim_of_a_dropped_queued_job(
     ingestion_service._abstraction = _FailNTimesProvider(0)
     result = await ingestion_service.reabstract(queued_id)
     assert result["status"] == "reabstract_started"
-    assert await _await_terminal(graph_store, queued_id) == PipelineStatus.ABSTRACTION_COMPLETE
+    terminal = await _await_terminal(graph_store, ingestion_service, queued_id)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
 
 
 async def test_stop_worker_with_no_pending_work_writes_no_document(
@@ -976,7 +981,8 @@ async def test_stop_worker_cancels_cleanly(tmp_vault_dir, ingestion_service, gra
         IngestRequest(source="samples/w1.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    assert await _await_terminal(graph_store, r1.document.id) == PipelineStatus.ABSTRACTION_COMPLETE
+    terminal = await _await_terminal(graph_store, ingestion_service, r1.document.id)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
 
     await ingestion_service.stop_worker()
     assert ingestion_service._worker_task is None or ingestion_service._worker_task.done()
@@ -987,7 +993,8 @@ async def test_stop_worker_cancels_cleanly(tmp_vault_dir, ingestion_service, gra
         IngestRequest(source="samples/w2.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    assert await _await_terminal(graph_store, r2.document.id) == PipelineStatus.ABSTRACTION_COMPLETE
+    terminal = await _await_terminal(graph_store, ingestion_service, r2.document.id)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
 
 
 async def test_wait_for_pipeline_true_runs_inline(tmp_vault_dir, minimal_config, graph_store):
@@ -1038,7 +1045,7 @@ async def test_non_retryable_failure_terminates_on_first_attempt(
         IngestRequest(source="samples/nr1.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.FAILED
     assert provider.calls == 1  # max_attempts is 3; the budget is not spent
@@ -1076,7 +1083,7 @@ async def test_ordinary_failure_still_exhausts_the_retry_budget(
         IngestRequest(source="samples/nr2.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.FAILED
     assert provider.calls == 3  # max_attempts
@@ -1114,7 +1121,7 @@ async def test_memory_exhaustion_terminates_on_first_attempt(
         IngestRequest(source="samples/nr3.md", source_type=SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
-    terminal = await _await_terminal(graph_store, result.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
 
     assert terminal == PipelineStatus.FAILED
     assert provider.calls == 1  # max_attempts is 3; the budget is not spent

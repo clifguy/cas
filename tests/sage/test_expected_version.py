@@ -30,7 +30,7 @@ from sage.mcp_server import (
 from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
-from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES
+from tests.helpers.pipeline_wait import await_tool_idle
 from tests.sage.conftest import initialize_services_for_test
 
 
@@ -111,28 +111,25 @@ def _parse(result):
     return json.loads(result)
 
 
-# Derived rather than restated: a terminal status added to the enum and
-# missing here leaves this poll waiting on a document that has settled.
-_TERMINAL_PIPELINE_STATES = set(TERMINAL_PIPELINE_STATUS_VALUES)
-
-
-async def _seed_doc(source_path: str = "test/sample.md") -> tuple[str, str]:
+async def _seed_doc(services, source_path: str = "test/sample.md") -> tuple[str, str]:
     """Ingest a fresh document and return (document_id, current_updated_at).
 
-    Waits for the background abstraction pipeline to reach a terminal
-    `pipeline_status` before reading `updated_at`. Without this gate,
-    the background pipeline can advance `updated_at` between the test's
-    read and its compare-and-swap call, producing a `stale_read` from
-    the pipeline race rather than the assertion under test.
+    Waits for the background pipeline to settle *and* release its claim before
+    reading `updated_at`. Without that gate the pipeline can advance
+    `updated_at` between the test's read and its compare-and-swap call,
+    producing a `stale_read` from the pipeline race rather than the assertion
+    under test.
     """
     ingest_result = _parse(await ingest_document("test_vault", source_path, "markdown"))
     doc_id = ingest_result["id"]
-    for _ in range(100):
-        doc = _parse(await get_document("test_vault", doc_id))
-        if doc.get("pipeline_status") in _TERMINAL_PIPELINE_STATES:
-            return doc_id, doc["updated_at"]
-        await asyncio.sleep(0.02)
-    raise AssertionError(f"document {doc_id!r} pipeline did not reach terminal state in 2s")
+
+    async def fetch():
+        return _parse(await get_document("test_vault", doc_id))
+
+    doc = await await_tool_idle(
+        fetch, doc_id, service=services.ingestion_service, attempts=100, delay=0.02
+    )
+    return doc_id, doc["updated_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +165,7 @@ async def test_t1_matching_expected_version_succeeds(vault_services):
     """Caller passes the current `updated_at`; write succeeds and
     `updated_at` advances past the supplied version.
     """
-    doc_id, v0 = await _seed_doc()
+    doc_id, v0 = await _seed_doc(vault_services)
     result = _parse(
         await update_metadata("test_vault", doc_id, title="renamed", expected_version=v0)
     )
@@ -183,7 +180,7 @@ async def test_t3_omitted_expected_version_preserves_back_compat(vault_services)
     no check, last-writer-wins. The call must succeed regardless of any
     intervening update.
     """
-    doc_id, v0 = await _seed_doc()
+    doc_id, v0 = await _seed_doc(vault_services)
     # First write advances version without the caller observing it.
     intermediate = _parse(await update_metadata("test_vault", doc_id, title="first"))
     assert "error" not in intermediate
@@ -207,7 +204,7 @@ async def test_t2_stale_expected_version_returns_structured_stale_read(vault_ser
     """A mismatched `expected_version` rejects with the structured
     `stale_read` 409 envelope. Document state is unchanged.
     """
-    doc_id, v0 = await _seed_doc()
+    doc_id, v0 = await _seed_doc(vault_services)
 
     # Advance the document so v0 is now stale.
     first = _parse(await update_metadata("test_vault", doc_id, title="advance"))
@@ -247,7 +244,7 @@ async def test_t4_parallel_same_version_one_wins_one_stale(vault_services):
     Runs 25 iterations to surface interleaving races, mirroring the
     Primitive A commutative-add sweep (CAS-ADR-038).
     """
-    doc_id, _ = await _seed_doc()
+    doc_id, _ = await _seed_doc(vault_services)
 
     for i in range(25):
         before = _parse(await get_document("test_vault", doc_id))
@@ -290,7 +287,7 @@ async def test_t5_retry_after_stale_succeeds_with_current_version(vault_services
     follow-up write succeeds. This pins the retry contract — the
     envelope is sufficient without an out-of-band refetch round-trip.
     """
-    doc_id, v0 = await _seed_doc()
+    doc_id, v0 = await _seed_doc(vault_services)
 
     # A racer advances the document.
     racer = _parse(await update_metadata("test_vault", doc_id, title="racer", expected_version=v0))
@@ -329,7 +326,7 @@ async def test_t6_dry_run_with_stale_expected_version_rejects(vault_services):
     the write contract, not the persistence step. A dry-run with a
     stale version must reject in the same shape a real run would.
     """
-    doc_id, v0 = await _seed_doc()
+    doc_id, v0 = await _seed_doc(vault_services)
     advanced = _parse(
         await update_metadata("test_vault", doc_id, title="advance", expected_version=v0)
     )
@@ -362,9 +359,9 @@ async def test_t7_bulk_one_stale_item_rejects_per_item_rest_succeed(vault_servic
     inside the response envelope while fresh items commit. Per-item
     isolation per CAS-ADR-029.
     """
-    doc1_id, v1 = await _seed_doc("test/sample.md")
-    doc2_id, v2 = await _seed_doc("test/second.md")
-    doc3_id, v3 = await _seed_doc("test/third.md")
+    doc1_id, v1 = await _seed_doc(vault_services, "test/sample.md")
+    doc2_id, v2 = await _seed_doc(vault_services, "test/second.md")
+    doc3_id, v3 = await _seed_doc(vault_services, "test/third.md")
 
     items = [
         {"document_id": doc1_id, "title": "d1_new", "expected_version": v1},
@@ -411,7 +408,7 @@ async def test_t9_fastmcp_wire_path_surfaces_stale_read_envelope(vault_services)
     """
     from mcp.types import TextContent
 
-    doc_id, v0 = await _seed_doc()
+    doc_id, v0 = await _seed_doc(vault_services)
     advanced = _parse(
         await update_metadata("test_vault", doc_id, title="advance", expected_version=v0)
     )

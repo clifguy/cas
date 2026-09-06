@@ -26,6 +26,7 @@ from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.enums import PipelineStatus
 from sage.models.schemas import ReabstractStartedResponse
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.test_graph_ops import _make_doc
 from tests.sage.test_lifecycle import _id
 from tests.sage.test_reabstract_deferred_service import _GatedAbstractionProvider
@@ -67,16 +68,23 @@ async def _poll_pipeline_status(
     services: SAGEServices,
     doc_id: str,
     *,
-    terminal: set[str],
     timeout_polls: int = 200,
 ) -> str:
-    """Poll the graph store until ``doc_id`` reaches a terminal pipeline_status."""
-    for _ in range(timeout_polls):
-        doc = await services.graph_store.get_document(doc_id)
-        if doc is not None and doc.pipeline_status in terminal:
-            return doc.pipeline_status
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"{doc_id} never reached {terminal}")
+    """Wait until ``doc_id`` is settled and unclaimed; return its status.
+
+    Thin adapter over the shared wait. The accept-set used to be a caller
+    argument, which put this module's polls out of reach of the poll-discipline
+    gate at the very surface -- the ``/reabstract`` route -- that rejects a
+    document whose claim is still held.
+    """
+    doc = await await_pipeline_idle(
+        services.graph_store,
+        doc_id,
+        service=services.ingestion_service,
+        attempts=timeout_polls,
+        delay=0.05,
+    )
+    return doc.pipeline_status
 
 
 @pytest.fixture
@@ -143,9 +151,7 @@ async def test_reabstract_document_completes_and_refreshes_abstract(document_app
         resp = await client.post(f"/sage_vaults/{vault_id}/documents/{doc_id}/reabstract")
     assert resp.status_code == 200, resp.text
 
-    await _poll_pipeline_status(
-        services, doc_id, terminal={PipelineStatus.ABSTRACTION_COMPLETE.value}
-    )
+    await _poll_pipeline_status(services, doc_id)
     doc = await services.graph_store.get_document(doc_id)
     assert doc.semantic_abstract, "abstract must be populated after completion"
     assert doc.semantic_abstract != _STALE_SENTINEL, (
@@ -185,9 +191,9 @@ async def test_post_reabstract_document_regardless_of_terminal_status(document_a
     assert resp.json()["status"] == "reabstract_started"
 
     # Let the background job finish so it does not outlive the fixture teardown.
-    await _poll_pipeline_status(
-        services, doc_id, terminal={PipelineStatus.ABSTRACTION_COMPLETE.value}
-    )
+    # Asserting the landing keeps what the old caller-supplied accept-set carried:
+    # a job that ends FAILED is a different outcome, not a drained one.
+    assert await _poll_pipeline_status(services, doc_id) == PipelineStatus.ABSTRACTION_COMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +299,8 @@ async def test_post_reabstract_document_concurrent_returns_409(
 
             # Release the gate; the first job completes and drops the claim.
             gated.gate.set()
-            await _poll_pipeline_status(
-                services, doc_id, terminal={PipelineStatus.ABSTRACTION_COMPLETE.value}
+            assert (
+                await _poll_pipeline_status(services, doc_id) == PipelineStatus.ABSTRACTION_COMPLETE
             )
     finally:
         await asyncio.sleep(0.1)

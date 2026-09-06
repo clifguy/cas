@@ -38,7 +38,7 @@ from sage.mcp_server import (
 from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
-from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES
+from tests.helpers.pipeline_wait import await_tool_idle
 from tests.sage.conftest import initialize_services_for_test
 
 
@@ -108,29 +108,25 @@ def _parse(result):
     return json.loads(result)
 
 
-# Derived rather than restated: a terminal status added to the enum and
-# missing here leaves this poll waiting on a document that has settled.
-_TERMINAL_PIPELINE_STATES = set(TERMINAL_PIPELINE_STATUS_VALUES)
+async def _wait_terminal(services, doc_id: str) -> dict:
+    """Wait until the document is settled and unclaimed, then return it.
 
-
-async def _wait_terminal(doc_id: str) -> dict:
-    """Poll `get_document` until pipeline_status is terminal, then return it.
-
-    Without this gate, the background abstraction pipeline can advance
+    Without this gate the background abstraction pipeline can advance
     `updated_at` between a test's read and its compare-and-swap call,
-    producing a `stale_chain_head` from the pipeline race rather than
-    the assertion under test. Mirror of `_seed_doc` in the Primitive B
-    test surface.
+    producing a `stale_chain_head` from the pipeline race rather than the
+    assertion under test. Mirror of `_seed_doc` in the Primitive B test
+    surface.
     """
-    for _ in range(150):
-        doc = _parse(await get_document("test_vault", doc_id))
-        if doc.get("pipeline_status") in _TERMINAL_PIPELINE_STATES:
-            return doc
-        await asyncio.sleep(0.02)
-    raise AssertionError(f"document {doc_id!r} pipeline did not reach terminal state in 3s")
+
+    async def fetch():
+        return _parse(await get_document("test_vault", doc_id))
+
+    return await await_tool_idle(
+        fetch, doc_id, service=services.ingestion_service, attempts=150, delay=0.02
+    )
 
 
-async def _seed_chain_head(test_dir, name: str = "seed") -> dict:
+async def _seed_chain_head(services, test_dir, name: str = "seed") -> dict:
     """Write a source file, ingest it, and return the terminal-state doc dict.
 
     Returns the parsed `get_document` payload, including a stable
@@ -140,7 +136,7 @@ async def _seed_chain_head(test_dir, name: str = "seed") -> dict:
     src.write_text(f"# {name}\n\nSeed content for {name}.")
     initial = _parse(await ingest_document("test_vault", f"test/{name}.md", "markdown"))
     assert "error" not in initial, f"seed ingest failed: {initial!r}"
-    return await _wait_terminal(initial["id"])
+    return await _wait_terminal(services, initial["id"])
 
 
 async def _write_source(test_dir, name: str, body: str) -> str:
@@ -190,8 +186,8 @@ async def test_t1_matching_expected_head_version_succeeds(vault_services):
 
     Linear chain: D1 → D2 (one supersedes edge inbound to D1, D1 archived).
     """
-    _, test_dir = vault_services
-    d1 = await _seed_chain_head(test_dir, "d1")
+    services, test_dir = vault_services
+    d1 = await _seed_chain_head(services, test_dir, "d1")
     v0 = d1["updated_at"]
 
     new_source = await _write_source(test_dir, "d2", "# D2\n\nRevision of d1.")
@@ -235,8 +231,8 @@ async def test_t3_omitted_expected_head_version_preserves_back_compat(vault_serv
     must succeed without any version check. Regression guard for
     callers that have not adopted the contract.
     """
-    _, test_dir = vault_services
-    d1 = await _seed_chain_head(test_dir, "d1")
+    services, test_dir = vault_services
+    d1 = await _seed_chain_head(services, test_dir, "d1")
 
     new_source = await _write_source(test_dir, "d2", "# D2\n\nBack-compat path.")
     result = _parse(
@@ -262,8 +258,8 @@ async def test_t2_stale_expected_head_version_returns_structured_409(vault_servi
     `stale_chain_head` 409 envelope. No new document inserted, no
     supersedes edge created, predecessor remains active.
     """
-    _, test_dir = vault_services
-    d1 = await _seed_chain_head(test_dir, "d1")
+    services, test_dir = vault_services
+    d1 = await _seed_chain_head(services, test_dir, "d1")
     v0 = d1["updated_at"]
 
     # Out-of-band advance: update_metadata bumps the predecessor's
@@ -321,13 +317,13 @@ async def test_t4_parallel_same_version_one_wins_one_stale(vault_services):
     the fix. Runs 25 iterations on fresh chains to surface interleaving
     races.
     """
-    _, test_dir = vault_services
+    services, test_dir = vault_services
 
     for i in range(25):
         # Fresh chain per iteration: a brand-new head with a stable
         # terminal updated_at. Each iteration's source files carry
         # distinct content so the duplicate-content guard never trips.
-        head = await _seed_chain_head(test_dir, f"iter_{i}_head")
+        head = await _seed_chain_head(services, test_dir, f"iter_{i}_head")
         head_id = head["id"]
         v_baseline = head["updated_at"]
 
@@ -415,8 +411,8 @@ async def test_t5_retry_after_stale_succeeds_with_current_head(vault_services):
     check, and the caller's retry path is "pivot to the new head" not
     "supply current_head_version".
     """
-    _, test_dir = vault_services
-    d1 = await _seed_chain_head(test_dir, "d1")
+    services, test_dir = vault_services
+    d1 = await _seed_chain_head(services, test_dir, "d1")
     v0 = d1["updated_at"]
 
     # A racer bumps d1's updated_at without superseding it.
@@ -487,8 +483,8 @@ async def test_t6_archived_predecessor_surfaces_existing_supersede_target_not_ac
     is *additive*: it does not replace the existing "predecessor must be
     active" guard. Regression guard for validation ordering.
     """
-    _, test_dir = vault_services
-    d1 = await _seed_chain_head(test_dir, "d1")
+    services, test_dir = vault_services
+    d1 = await _seed_chain_head(services, test_dir, "d1")
     v0 = d1["updated_at"]
 
     # Out-of-band supersede: D1 → D2. D1 is now archived.
@@ -530,7 +526,7 @@ async def test_t7_expected_head_version_without_predecessor_id_is_400(vault_serv
     `predecessor_id` to anchor it has no defined meaning. Fail loud with
     a 400 rather than silently ignoring the parameter.
     """
-    _, test_dir = vault_services
+    services, test_dir = vault_services
     bare_src = await _write_source(test_dir, "bare", "# Bare\n\nNo predecessor.")
     result = _parse(
         await ingest_document(
@@ -558,8 +554,8 @@ async def test_t9_fastmcp_wire_path_surfaces_stale_chain_head_envelope(vault_ser
     """
     from mcp.types import TextContent
 
-    _, test_dir = vault_services
-    d1 = await _seed_chain_head(test_dir, "d1")
+    services, test_dir = vault_services
+    d1 = await _seed_chain_head(services, test_dir, "d1")
     v0 = d1["updated_at"]
 
     bumped = _parse(
@@ -650,13 +646,19 @@ async def test_t10_http_post_stale_expected_head_version_returns_409_envelope(ht
         seeded_doc = seeded.json()["document"]
         d1_id = seeded_doc["id"]
 
-        # Wait for terminal pipeline_status so updated_at is stable.
-        for _ in range(150):
-            current = await client.get(f"/sage_vaults/{vault_id}/documents/{d1_id}")
-            if current.json().get("pipeline_status") in _TERMINAL_PIPELINE_STATES:
-                break
-            await asyncio.sleep(0.02)
-        v0 = current.json()["updated_at"]
+        # Wait for the document to settle and release its claim, so updated_at
+        # is stable and a later reabstract would not be rejected.
+        async def _fetch_over_http():
+            return (await client.get(f"/sage_vaults/{vault_id}/documents/{d1_id}")).json()
+
+        current = await await_tool_idle(
+            _fetch_over_http,
+            d1_id,
+            service=app.state.vault_registry[vault_id].ingestion_service,
+            attempts=150,
+            delay=0.02,
+        )
+        v0 = current["updated_at"]
 
         # Out-of-band bump so v0 is stale. Post-CAS-ADR-029, the metadata
         # endpoint is POST /metadata with an items[] body.

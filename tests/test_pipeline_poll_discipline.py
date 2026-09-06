@@ -45,6 +45,15 @@ function. Its blind spot is the same one by the same design: a wait expressed
 through a shared claim-aware helper is invisible, because that helper is where
 the argument belongs.
 
+Both blind spots presume the helper carries the argument, and a helper that
+does not is invisible to both arms while being exactly the defect. A third
+detector closes that from the other side: any function polling
+``pipeline_status`` in an inline loop must consult the claim registry as well,
+or delegate to the shared helper in ``tests/helpers/pipeline_wait.py`` that
+does. The first two arms may then keep their indirection blind spot, because
+the indirection is checked rather than assumed -- and "which modules define
+their own poll" stops being an enumeration somebody has to remember to repeat.
+
 Allowlist convention follows ``ORPHANED_TEST_ALLOWLIST`` in
 ``tests/test_collection_integrity.py`` and the allowlists in
 ``tests/test_public_posture.py``: empty by default, every entry carrying a
@@ -135,6 +144,45 @@ NONTERMINAL_POLL_ALLOWLIST: Final[dict[str, list[int]]] = {}
 # ---------------------------------------------------------------------------
 
 CLAIM_ARM_POLL_ALLOWLIST: Final[dict[str, list[int]]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Status-only helper allowlist
+#
+# path (relative to repo root) → names of the functions whose inline
+# pipeline_status loop consults no claim state, where that is nonetheless
+# correct. Empty by default; a wait that does not check the claim is not a wait
+# a caller can act on, and the sanctioned form is to delegate to
+# tests/helpers/pipeline_wait.py. Every entry added later requires a 1-line
+# rationale alongside it.
+#
+# Keyed by function name rather than by line number, unlike the two allowlists
+# above. A line number is a coordinate that any edit or reformat above it
+# invalidates -- the failure is loud rather than silent, since a staled anchor
+# reds this gate, but it is still a red that says nothing about the code it
+# names. The function name is stable under formatting and is what a reader has
+# to go and look at.
+# ---------------------------------------------------------------------------
+
+STATUS_ONLY_POLL_ALLOWLIST: Final[dict[str, list[str]]] = {
+    # Waits for a document to *enter* indexing_in_progress, to show the stage
+    # observably re-ran; it follows its own recompute_pipeline call and gates
+    # nothing, and the settle-wait on the next line is delegated.
+    "tests/sage/test_ingestion.py": ["test_recompute_pipeline_idempotent_on_terminal_document"],
+}
+
+
+# Evidence, in a polling function's own body, that the wait consults the claim
+# as well as the status: the registry itself, or one of the shared helper's
+# entry points, which check it unconditionally. Matched as identifiers by
+# ``_consults_claim`` rather than as substrings of the unparsed function -- a
+# false exemption here is silent, and is exactly the shape this arm exists to
+# report.
+CLAIM_AWARE_MARKERS: Final[tuple[str, ...]] = (
+    "_inflight",
+    "await_pipeline_idle",
+    "await_tool_idle",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +401,130 @@ def _format_claim_arm_violations(violations: list[tuple[str, int, str, int]]) ->
     )
 
 
+def _sleeps(loop: ast.AST) -> bool:
+    """Whether a loop yields between iterations.
+
+    A wait sleeps; a loop that enumerates or asserts does not. Matched on the
+    bare call name, so ``asyncio.sleep``, ``time.sleep`` and a directly
+    imported ``sleep`` all count.
+    """
+    return any(
+        isinstance(node, ast.Call) and _called_name(node.func) == "sleep" for node in ast.walk(loop)
+    )
+
+
+def _status_only_poll_helpers(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(poll lineno, function name)`` for every function that polls
+    ``pipeline_status`` in an inline loop without consulting the claim.
+
+    Each loop is attributed to its *innermost* enclosing function, so a helper
+    nested inside a test is reported once, under its own name, rather than
+    twice under both. A module-level loop belongs to no function and is out of
+    scope: this walk's subject is the reusable wait, and the two arms above
+    already cover a poll written inline at its call site.
+
+    Delegation is the sanctioned form and is invisible here by construction: a
+    function that calls the shared helper has no loop of its own, so there is
+    nothing for this walk to anchor on.
+
+    A loop qualifies only if it *sleeps*. That is what separates a wait from
+    the far more common loop that merely mentions ``pipeline_status`` while
+    seeding documents, asserting over a result set, or walking source in
+    another gate. Those yield to nothing and race nothing, and reporting them
+    would bury the findings that matter.
+    """
+    findings: list[tuple[int, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+
+    def visit(node: ast.AST, func: ast.FunctionDef | ast.AsyncFunctionDef | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child)
+                continue
+            if (
+                func is not None
+                and isinstance(child, (ast.For, ast.AsyncFor, ast.While))
+                and "pipeline_status" in ast.unparse(child)
+                and _sleeps(child)
+            ):
+                findings.append((child.lineno, func))
+            visit(child, func)
+
+    visit(tree, None)
+
+    # One entry per function -- keyed by the function object, not its name, so
+    # two same-named functions in one module are judged separately. The first
+    # loop is the line a reader has to go and look at.
+    seen: set[int] = set()
+    kept: list[tuple[int, str]] = []
+    for lineno, func in sorted(findings, key=lambda entry: entry[0]):
+        if id(func) in seen or _consults_claim(func):
+            continue
+        seen.add(id(func))
+        kept.append((lineno, func.name))
+    return kept
+
+
+def _consults_claim(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether the function's own body consults the in-flight claim.
+
+    Matched on identifiers -- a name or an attribute, which between them cover
+    the function half of a call -- rather than on the unparsed text of the
+    function. Text matching read a marker out of two places it does not belong:
+
+    * a **docstring**, which is prose *about* the wait rather than a check the
+      wait performs -- and "deliberately does not consult ``_inflight``" is a
+      natural sentence for exactly the helper this walk exists to report;
+    * a **nested definition**, whose body runs in its own scope and is
+      attributed to that definition by the walk above, so a nested delegating
+      helper would exempt the enclosing function's own status-only loop.
+
+    Both were reachable and neither was hypothetical. Note which change closes
+    which: the nested-definition case is excluded *here*, by the descent
+    stopping at a nested scope, while the docstring case is excluded by the
+    match being over identifiers at all -- a docstring is a string constant,
+    which is neither a name nor an attribute and has no children to descend
+    into. There is deliberately no separate docstring skip: one would pin
+    nothing, and would leave a later reader believing prose is excluded by a
+    guard rather than by the shape of the match. A scan widened to read string
+    content would reopen the case, and should reopen it visibly.
+
+    Scope is the whole body rather than the polling loop's own predicate, so a
+    marker anywhere in the function exempts every loop in it -- including one
+    appearing only in a timeout diagnostic. That is a known limit rather than
+    an oversight: narrowing to the predicate has to keep admitting the
+    sanctioned shape, which binds the registry to a local name *before* its
+    loop and tests that name inside it.
+    """
+
+    def scan(node: ast.AST) -> bool:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return False
+        if isinstance(node, ast.Attribute) and node.attr in CLAIM_AWARE_MARKERS:
+            return True
+        if isinstance(node, ast.Name) and node.id in CLAIM_AWARE_MARKERS:
+            return True
+        return any(scan(child) for child in ast.iter_child_nodes(node))
+
+    return any(scan(stmt) for stmt in func.body)
+
+
+def _format_helper_violations(violations: list[tuple[str, int, str]]) -> str:
+    """Render a status-only-helper violation list as a pytest.fail message."""
+    head = violations[:_MAX_REPORTED]
+    body = "\n".join(f"  {path}:{line} → in {name}()" for path, line, name in head)
+    overflow = len(violations) - len(head)
+    tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
+    return (
+        f"Pipeline polls that never check the in-flight claim "
+        f"({len(violations)} found):\n{body}{tail}\n"
+        "A terminal pipeline_status is necessary but not sufficient: the "
+        "abstraction queue releases the claim after the terminal status write, "
+        "so a wait keyed on status alone can hand its caller a document the "
+        "next call rejects. Delegate to await_pipeline_idle / await_tool_idle "
+        "in tests/helpers/pipeline_wait.py, which check both."
+    )
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -402,6 +574,29 @@ def test_no_poll_then_contend_without_claim_arm() -> None:
 
     if violations:
         pytest.fail(_format_claim_arm_violations(violations))
+
+
+def test_no_status_only_pipeline_poll_helpers() -> None:
+    """No tracked test module may define a ``pipeline_status`` poll that does
+    not also wait for the in-flight claim to clear.
+    """
+    violations: list[tuple[str, int, str]] = []
+    for path in _tracked_test_modules():
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            # A syntactically broken test module fails its own collection
+            # loudly; not this gate's concern.
+            continue
+        allowed = set(STATUS_ONLY_POLL_ALLOWLIST.get(rel, []))
+        for lineno, name in _status_only_poll_helpers(tree):
+            if name in allowed:
+                continue
+            violations.append((rel, lineno, name))
+
+    if violations:
+        pytest.fail(_format_helper_violations(violations))
 
 
 # ---------------------------------------------------------------------------
@@ -658,3 +853,257 @@ def test_claim_arm_detector_flags_poll_then_route_contend() -> None:
     """
     found = _poll_then_contend(ast.parse(_SYNTHETIC_POLL_THEN_ROUTE_CONTEND_SOURCE))
     assert [target for _, target, _ in found] == ["/reabstract"]
+
+
+# ---------------------------------------------------------------------------
+# Status-only-helper detector self-tests
+#
+# Source strings again, for the same reason: the live walk over this file must
+# not read a fixture as a real finding.
+# ---------------------------------------------------------------------------
+
+# The defect this arm exists for: a reusable wait that returns on the status
+# alone, so every one of its call sites inherits the race.
+_SYNTHETIC_STATUS_ONLY_HELPER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_terminal(graph_store, doc_id, *, attempts=500):
+        for _ in range(attempts):
+            doc = await graph_store.get_document(doc_id)
+            if doc is not None and doc.pipeline_status in _TERMINAL_STATES:
+                return doc.pipeline_status
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+    """
+)
+
+# The same wait with the claim arm present. Both conditions, so a caller can
+# act on what it returns.
+_SYNTHETIC_CLAIM_AWARE_HELPER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_idle(graph_store, doc_id, *, service, attempts=400):
+        for _ in range(attempts):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES and doc_id not in service._inflight:
+                return doc
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+    """
+)
+
+# The sanctioned form: no loop at all, because the wait is delegated.
+_SYNTHETIC_DELEGATING_WAIT_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_reabstract_after_settle(graph_store, ingestion_service, doc_id):
+        await await_pipeline_idle(graph_store, doc_id, service=ingestion_service)
+        result = await ingestion_service.reabstract(doc_id)
+        assert result["status"] == "reabstract_started"
+    """
+)
+
+# A helper nested inside a test, which is how one of these hid from an
+# enumeration that only looked at module level.
+_SYNTHETIC_NESTED_HELPER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_end_to_end(services):
+        async def _await_terminal_pipeline(doc_id):
+            for _ in range(200):
+                doc = await services.graph_store.get_document(doc_id)
+                if doc.pipeline_status in TERMINAL_PIPELINE_STATUSES:
+                    return doc
+                await asyncio.sleep(0.05)
+            raise AssertionError("timed out")
+
+        await _await_terminal_pipeline("doc1")
+    """
+)
+
+# A polling loop on something else entirely. Out of scope.
+_SYNTHETIC_UNRELATED_POLL_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_health(client):
+        for _ in range(30):
+            resp = await client.get("/healthz")
+            if resp.status_code == 200:
+                return resp
+            await asyncio.sleep(0.1)
+        raise AssertionError("timed out")
+    """
+)
+
+
+def test_helper_detector_flags_status_only_helper() -> None:
+    """A reusable wait that checks the status and nothing else is reported,
+    named, and anchored at its loop.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_STATUS_ONLY_HELPER_SOURCE))
+    assert [name for _, name in found] == ["_await_terminal"]
+
+
+def test_helper_detector_ignores_claim_aware_helper() -> None:
+    """A wait that also requires the claim clear is the correct shape and must
+    not be reported -- otherwise the gate would flag its own remedy.
+    """
+    assert _status_only_poll_helpers(ast.parse(_SYNTHETIC_CLAIM_AWARE_HELPER_SOURCE)) == []
+
+
+def test_helper_detector_ignores_delegating_wait() -> None:
+    """A caller that delegates the wait has no loop to anchor on.
+
+    This is the negative control for the whole arm: if delegation were
+    reported, migrating to the shared helper would leave the gate red and the
+    only way out would be an allowlist entry per call site.
+    """
+    assert _status_only_poll_helpers(ast.parse(_SYNTHETIC_DELEGATING_WAIT_SOURCE)) == []
+
+
+def test_helper_detector_flags_nested_helper_under_its_own_name() -> None:
+    """A helper defined inside a test is reported once, under its own name.
+
+    Attribution to the innermost enclosing function is what keeps a nested
+    definition from being reported twice, and what makes the finding name the
+    function a reader has to edit rather than the test that happens to hold it.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_NESTED_HELPER_SOURCE))
+    assert [name for _, name in found] == ["_await_terminal_pipeline"]
+
+
+def test_helper_detector_ignores_polls_on_other_subjects() -> None:
+    """A bounded poll that has nothing to do with the pipeline is out of scope
+    even though it is structurally identical.
+    """
+    assert _status_only_poll_helpers(ast.parse(_SYNTHETIC_UNRELATED_POLL_SOURCE)) == []
+
+
+# A loop that enumerates documents and reads pipeline_status off each. It
+# yields to nothing, so it waits for nothing and races nothing.
+_SYNTHETIC_NON_SLEEPING_LOOP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _seed_mixed_vault(graph_store, specs):
+        for name, status in specs:
+            doc = _document(name, pipeline_status=status)
+            await graph_store.create_document(doc)
+    """
+)
+
+
+def test_helper_detector_ignores_loops_that_never_sleep() -> None:
+    """A loop that does not yield is not a wait.
+
+    This pins the rule that keeps the arm's findings legible: seeding loops,
+    assertion loops over a result set, and the AST walks in this very module
+    all mention ``pipeline_status`` inside a loop while waiting for nothing.
+    Reporting them would bury the handful of real waits among dozens that can
+    never race anything.
+    """
+    assert _status_only_poll_helpers(ast.parse(_SYNTHETIC_NON_SLEEPING_LOOP_SOURCE)) == []
+
+
+# A module holding both shapes at once: a status-only helper beside a function
+# that delegates. Every synthetic above holds one function, so none of them can
+# tell per-function exemption from module-wide exemption.
+_SYNTHETIC_MIXED_MODULE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_terminal(graph_store, doc_id):
+        for _ in range(400):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES:
+                return doc
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+
+    async def test_uses_the_shared_helper(graph_store, ingestion_service, doc_id):
+        await await_pipeline_idle(graph_store, doc_id, service=ingestion_service)
+        assert True
+    """
+)
+
+# A status-only helper that *mentions* the claim registry in its docstring.
+_SYNTHETIC_DOCSTRING_MARKER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_terminal(graph_store, doc_id):
+        \"\"\"Status-only wait; deliberately does not consult _inflight.\"\"\"
+        for _ in range(400):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES:
+                return doc
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+    """
+)
+
+# A status-only loop in the outer function, with a nested def that delegates.
+_SYNTHETIC_NESTED_MARKER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_outer(graph_store, ingestion_service, doc_id):
+        for _ in range(400):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES:
+                break
+            await asyncio.sleep(0.01)
+
+        async def _later(other_id):
+            await await_pipeline_idle(graph_store, other_id, service=ingestion_service)
+    """
+)
+
+
+def test_helper_detector_exempts_per_function_not_per_module() -> None:
+    """A delegating function does not exempt its status-only neighbour.
+
+    Per-function scoping is the whole value of this arm: after the migration
+    every module that polls also contains a marker somewhere, so an
+    implementation that exempted module-wide would leave the live gate green
+    while blind in exactly the modules it guards. Every other synthetic here
+    holds a single function and cannot tell the two apart.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_MIXED_MODULE_SOURCE))
+    assert [name for _, name in found] == ["_await_terminal"]
+
+
+def test_helper_detector_ignores_a_marker_in_a_docstring() -> None:
+    """Prose about the claim is not a check on it.
+
+    "deliberately does not consult ``_inflight``" is a natural sentence for
+    precisely the helper this arm exists to report, so reading the docstring as
+    evidence of a claim arm exempts the defect on the strength of admitting it.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_DOCSTRING_MARKER_SOURCE))
+    assert [name for _, name in found] == ["_await_terminal"]
+
+
+def test_helper_detector_ignores_a_marker_in_a_nested_def() -> None:
+    """A nested definition's body does not exempt its enclosing function.
+
+    The nested def runs in its own scope and is attributed to itself by the
+    walk, so a marker inside it says nothing about the enclosing function's own
+    loop.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_NESTED_MARKER_SOURCE))
+    assert [name for _, name in found] == ["test_outer"]
+
+
+def test_status_only_allowlist_has_no_stale_entries() -> None:
+    """Every allowlist entry names a function the walk still reports.
+
+    An entry whose function was since migrated, renamed, or deleted lingers
+    silently: the gate stays green while the allowlist documents an exemption
+    that no longer applies, and the next reader inherits a waiver for something
+    that was fixed. ``KNOWN_VIOLATIONS`` in
+    ``tests/sage/test_router_conformance.py`` carries the same assertion for
+    the same reason.
+    """
+    stale: list[str] = []
+    for rel, names in STATUS_ONLY_POLL_ALLOWLIST.items():
+        path = REPO_ROOT / rel
+        reported = (
+            {name for _, name in _status_only_poll_helpers(ast.parse(path.read_bytes()))}
+            if path.exists()
+            else set()
+        )
+        stale.extend(f"{rel}: {name}" for name in names if name not in reported)
+
+    assert not stale, (
+        "STATUS_ONLY_POLL_ALLOWLIST entries that the walk no longer reports "
+        f"({len(stale)}): {', '.join(stale)}. Drop each one — the poll it "
+        "exempted is gone, so the entry now waives nothing."
+    )
