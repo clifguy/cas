@@ -142,7 +142,7 @@ async def _run_probes(label: str, reps: int) -> None:
                     req = DiscoverRequest(
                         mode=RetrievalMode.SEMANTIC,
                         query=query,
-                        filters=RetrievalFilters(doc_type="ticket", tier3=tier3),
+                        filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3),
                         limit=20,
                     )
                     t0 = time.perf_counter()
