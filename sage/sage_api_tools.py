@@ -1457,11 +1457,17 @@ def register_sage_tools(
             distinct-value count for the slice. This is the bounded way
             to ask what exists in a vault: each row's value map is
             capped (50 values by default; ``facet_value_limit`` sets
-            the cap explicitly), so response size never grows with
-            document count or tagging density, and no pagination
-            applies (non-default ``limit``, ``offset``, ``sort_by``,
-            ``sort_order``, and ``response_mode`` are rejected via
-            ``mode_parameter_mismatch``). A row was truncated exactly
+            the cap explicitly), so the number of values returned never
+            grows with document count or tagging density, and no
+            pagination applies (non-default ``limit``, ``offset``,
+            ``sort_by``, ``sort_order``, and ``response_mode`` are
+            rejected via ``mode_parameter_mismatch``). The facets value
+            cap is denominated in values rather than bytes, so a facets
+            response whose serialized size exceeds the MCP inline
+            ceiling carries a ``facets_response_exceeds_inline_budget``
+            hint, naming the ``recommended_facet_value_limit`` to
+            re-call at whenever a smaller cap would fit and omitting it
+            when none would. A row was truncated exactly
             when its ``total_distinct`` exceeds its value count; to
             read a full vocabulary, re-call with ``facet_value_limit``
             set to the reported ``total_distinct``. ``facet_fields``
@@ -1601,9 +1607,12 @@ def register_sage_tools(
         Catalog budget hint:
             Catalog responses include a ``hints`` field carrying
             ``recommended_limit`` when the serialized result would
-            exceed the Claude Code MCP inline ceiling. When present,
-            re-page with ``limit=recommended_limit`` to keep the
-            response inline and avoid the disk/jq fallback. The
+            exceed the Claude Code MCP inline ceiling, and facets
+            responses carry ``recommended_facet_value_limit`` instead,
+            since the facets target rejects ``limit``. When present,
+            re-page with ``limit=recommended_limit`` (or re-call with
+            ``facet_value_limit=recommended_facet_value_limit``) to keep
+            the response inline and avoid the disk/jq fallback. The
             budget defaults to 24 KiB and is configurable per process
             via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
 

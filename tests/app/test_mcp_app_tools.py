@@ -1308,3 +1308,165 @@ class TestSageDiscoverCatalog:
         recommended = hints.get("recommended_limit")
         assert isinstance(recommended, int)
         assert 1 <= recommended < 100
+
+    async def test_facets_budget_hint_surfaces_through_mcp_wrapper(self, single_vault):
+        """The facets budget hint survives serialization across the MCP boundary.
+
+        The failure this whole guarantee exists for happened at the
+        tool-result boundary, not inside the service, so a service-level
+        assertion never reaches it. Runs at the production budget on a
+        vault whose fifty widest tags overrun it on width alone -- the
+        count cap is satisfied and truncated nothing, as the exact
+        fifty-of-fifty assertion below records, so only a byte-aware
+        element can be firing.
+        """
+        from sage.models.schemas import Document
+        from sage.services.retrieval import (
+            DEFAULT_FACET_VALUE_LIMIT,
+            DEFAULT_MCP_INLINE_BUDGET_BYTES,
+        )
+
+        services, _ = single_vault
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+
+        tag_width = 1000
+        assert DEFAULT_FACET_VALUE_LIMIT * tag_width > DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+        for i in range(DEFAULT_FACET_VALUE_LIMIT):
+            doc_id = _id(f"overwide_{i:04d}")
+            await gs.insert_document(
+                Document(
+                    id=doc_id,
+                    title=f"Over-wide-tag doc {i:04d}",
+                    source_type=SourceType.MARKDOWN,
+                    source_path=f"test/overwide_{i:04d}.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha(doc_id),
+                    adapter_version="0.1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    doc_type="note",
+                    tags=[f"tag-{i:04d}-".ljust(tag_width, "x")],
+                )
+            )
+
+        result = _parse(await search(vault_id="test_vault", mode="catalog", target="facets"))
+
+        tags_row = next(r for r in result["results"] if r["field"] == "tags")
+        assert len(tags_row["values"]) == DEFAULT_FACET_VALUE_LIMIT
+        assert tags_row["total_distinct"] == DEFAULT_FACET_VALUE_LIMIT
+
+        hints = result.get("hints")
+        assert hints is not None, "facets hints dict not surfaced through MCP wrapper"
+        assert hints.get("reason") == "facets_response_exceeds_inline_budget"
+        assert hints.get("budget_bytes") == DEFAULT_MCP_INLINE_BUDGET_BYTES
+        recommended = hints.get("recommended_facet_value_limit")
+        assert isinstance(recommended, int)
+        assert 1 < recommended < DEFAULT_FACET_VALUE_LIMIT
+        assert "recommended_limit" not in hints
+
+    async def test_facets_recommended_re_call_fits_the_delivered_ceiling(self, single_vault):
+        """The re-call the hint names fits, measured on the delivered bytes.
+
+        This is the assertion the whole guarantee is about, and the only
+        one taken at the boundary the original failure crossed. Every
+        other test in this change measures the service's own view of the
+        payload; the runtime encodes the dict the tool returns a second
+        time, with indentation, and a recommendation fitted to the
+        service's view with no margin has nothing to absorb the
+        difference.
+
+        Anti-coincidental-pass: the first call is asserted over the
+        ceiling in the same delivered units, so the pair is a real
+        crossing rather than a payload that was never over budget.
+        Measuring the tool's return value instead of the transport's
+        text passes against a service that measures the wrong encoding
+        -- which is the defect this exists to catch -- so the bytes are
+        read off the TextContent the runtime produced.
+
+        The fixture is high-cardinality with short values, not the wide
+        tags the sibling tests use, and that choice is what makes the
+        test discriminate. Indentation costs bytes per element rather
+        than per byte of content, so on fifty thousand-character tags
+        the two encodings differ by about 1% and a compact measurement
+        still lands under; on six hundred forty-character tags they
+        differ by 17%, and a compact search recommends 518 values whose
+        delivered payload overruns by more than four kilobytes. Verified
+        by mutation: this test goes green against the compact encoding
+        on the wide-tag shape and red on this one.
+        """
+        from mcp.types import TextContent
+
+        from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+        vocabulary = 600
+        services, _ = single_vault
+        await self._seed_short_tags(services, vocabulary, tags_per_doc=10, tag_width=40)
+
+        async def delivered(**kwargs) -> tuple[int, dict]:
+            out = await _mcp.mcp.call_tool(
+                "search",
+                {
+                    "vault_id": "test_vault",
+                    "mode": "catalog",
+                    "target": "facets",
+                    "facet_value_limit": vocabulary,
+                    **kwargs,
+                },
+            )
+            text = next(c.text for c in out if isinstance(c, TextContent))
+            return len(text.encode("utf-8")), json.loads(text)
+
+        first_bytes, first = await delivered()
+        assert first_bytes > DEFAULT_MCP_INLINE_BUDGET_BYTES
+        recommended = first["hints"]["recommended_facet_value_limit"]
+
+        second_bytes, second = await delivered(facet_value_limit=recommended)
+        assert second_bytes <= DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+            f"the re-call the hint named delivered {second_bytes} bytes against a "
+            f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte ceiling"
+        )
+        assert "hints" not in second or "recommended_facet_value_limit" not in second["hints"]
+        tags_row = next(r for r in second["results"] if r["field"] == "tags")
+        assert len(tags_row["values"]) == recommended
+
+    async def _seed_short_tags(
+        self, services, vocabulary: int, *, tags_per_doc: int, tag_width: int
+    ):
+        """A tag vocabulary of ``vocabulary`` distinct short values.
+
+        Spread across documents rather than one per document, so a
+        high-cardinality vocabulary costs a tenth of the inserts. Counts
+        are uniform, so the top-of-ordering prefix is purely value-ASC.
+        """
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+        for doc_index in range(vocabulary // tags_per_doc):
+            doc_id = _id(f"shorttag_{doc_index:04d}")
+            base = doc_index * tags_per_doc
+            await gs.insert_document(
+                Document(
+                    id=doc_id,
+                    title=f"Short-tag doc {doc_index:04d}",
+                    source_type=SourceType.MARKDOWN,
+                    source_path=f"test/shorttag_{doc_index:04d}.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha(doc_id),
+                    adapter_version="0.1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    doc_type="note",
+                    tags=[
+                        f"tag-{base + j:04d}-".ljust(tag_width, "x") for j in range(tags_per_doc)
+                    ],
+                )
+            )

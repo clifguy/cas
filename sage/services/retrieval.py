@@ -18,12 +18,14 @@ Deterministic mode:
   - Returns 404 for non-existent heading paths (BH-030).
 """
 
-import json
 import logging
 import math
 import os
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
+
+import pydantic_core
 
 from sage.adapters.interfaces import (
     DOCUMENT_FACET_FIELDS,
@@ -130,34 +132,196 @@ def _resolve_mcp_inline_budget_bytes() -> int:
     return value if value > 0 else DEFAULT_MCP_INLINE_BUDGET_BYTES
 
 
+def _serialized_response_bytes(response: DiscoverResponse) -> int:
+    """Size of the response in the encoding the MCP runtime delivers.
+
+    The tool layer hands the runtime a plain dict --
+    ``model_dump(mode="json", exclude_none=True)`` -- and the runtime
+    encodes it with ``pydantic_core.to_json(..., indent=2)``. Both
+    halves are reproduced here, so this is the delivered byte count
+    rather than an approximation of it.
+
+    Indentation is not a rounding error at this scale. It costs bytes
+    per element rather than per byte of content, so the delta grows
+    with value count: about 1% on fifty thousand-character tags, and
+    17% on the high-cardinality short-value vocabularies the per-field
+    count cap exists for. A compact measurement therefore understates
+    the delivered size most in exactly the shape the budget hint is
+    for, and the facets recommendation is fitted to this number with no
+    margin to absorb the difference.
+    """
+    dumped = response.model_dump(mode="json", exclude_none=True)
+    return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
+
+
+def _largest_fitting_prefix(
+    response: DiscoverResponse,
+    budget: int,
+    ceiling: int,
+    truncate: Callable[[DiscoverResponse, int], DiscoverResponse],
+) -> int | None:
+    """Largest ``n`` in ``[1, ceiling]`` whose truncated response fits.
+
+    Measured rather than modelled, and shared by both budget hints
+    because both were modelled the same wrong way. Scaling a count by
+    ``budget / size`` treats the response's fixed part -- the envelope,
+    and anything else that does not shrink with the count -- as though
+    it shrank too, so it names more than fits and the re-call lands
+    above budget by that fixed part times the fraction the response was
+    over.
+
+    Size is monotone in ``n`` (raising it never removes a row or a
+    value), so the search is a binary one, and the responses these hints
+    annotate are small enough that a logarithmic number of
+    serializations is not worth modelling around. Returns None when
+    nothing in range fits; what that means is the caller's to decide.
+    """
+    low, high = 1, ceiling
+    best: int | None = None
+    while low <= high:
+        mid = (low + high) // 2
+        if _serialized_response_bytes(truncate(response, mid)) <= budget:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+def _response_at_row_count(response: DiscoverResponse, count: int) -> DiscoverResponse:
+    """The response a re-page at ``limit=count`` would produce.
+
+    A lower limit returns the same rows in the same order, truncated,
+    and leaves ``total_available`` alone -- it counts what matched, not
+    what was returned.
+    """
+    return response.model_copy(update={"results": response.results[:count]})
+
+
 def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
     """Annotate the response with a budget hint when it exceeds the inline ceiling.
 
-    Measures the serialized response in bytes via the same encoding the
-    MCP runtime uses (Pydantic ``model_dump(mode="json", exclude_none=True)``
-    then UTF-8 JSON). When the size is over budget, computes a
-    ``recommended_limit`` proportional to the number of records that
-    would fit, and merges the hint into ``response.hints``. No-op when
-    there are no results — empty responses are trivially inline.
+    Measures the serialized response in bytes via
+    ``_serialized_response_bytes``. When the size is over budget,
+    computes the largest ``recommended_limit`` whose re-page fits, and
+    merges the hint into ``response.hints``. No-op when there are no
+    results — empty responses are trivially inline.
+
+    ``recommended_limit`` is always present, unlike its facets sibling,
+    because callers have been able to rely on that since it shipped.
+    Where no limit fits -- a single record wider than the whole budget
+    -- it falls back to 1, which is the smallest re-page there is and
+    the same answer the previous proportional model gave in that case.
 
     Advisory only — the response is not truncated.
     """
     if not response.results:
         return
-    size = len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    size = _serialized_response_bytes(response)
     budget = _resolve_mcp_inline_budget_bytes()
     if size <= budget:
         return
-    recommended = max(
-        1,
-        int(len(response.results) * budget / size * _BUDGET_RECOMMEND_SAFETY_FACTOR),
+    fitting = _largest_fitting_prefix(
+        response, budget, len(response.results) - 1, _response_at_row_count
     )
+    recommended = fitting if fitting is not None else 1
     budget_hint: dict[str, object] = {
         "reason": "response_exceeds_inline_budget",
         "response_size_bytes": size,
         "budget_bytes": budget,
         "recommended_limit": recommended,
     }
+    if response.hints is None:
+        response.hints = budget_hint
+    else:
+        response.hints = {**response.hints, **budget_hint}
+
+
+def _facets_response_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:
+    """The facets response a re-call at ``cap`` would produce.
+
+    Faithful because a lower cap changes exactly one thing: each row
+    keeps the first ``cap`` of its values. They arrive ordered by
+    descending count then value, and the re-call's own rows would be
+    ordered the same way, so the prefix is the same prefix. Each row's
+    ``total_distinct`` is computed before any cap and is unchanged.
+    """
+    rows = [
+        row.model_copy(update={"values": dict(list(row.values.items())[:cap])})
+        if isinstance(row, FacetHit)
+        else row
+        for row in response.results
+    ]
+    return response.model_copy(update={"results": rows})
+
+
+def _facets_recommended_value_limit(response: DiscoverResponse, budget: int) -> int | None:
+    """Largest cap below the one in force whose re-call fits the budget.
+
+    The search is ``_largest_fitting_prefix``; what this adds is the
+    range. Beyond the fixed part that helper's docstring describes, a
+    proportional model has a second error here: it would scale the
+    widest row, which need not be the heaviest. A wide row of short
+    vocabulary values and a narrow row of long tags put the bytes and
+    the entry count in different rows, and only the entry count is what
+    such a model reads. Simulation truncates every row and measures the
+    result, so both errors fall out together.
+
+    Returns None when no cap below the one in force fits, which is the
+    caller's signal to omit the recommendation rather than name a
+    re-call that would not help. That covers both the degenerate cap of
+    one and the case where a single value is wider than the whole
+    budget. The facets hint can omit the key where the catalog hint
+    cannot: it is new here, so nothing has been able to rely on it.
+    """
+    cap_in_force = max(
+        (len(row.values) for row in response.results if isinstance(row, FacetHit)),
+        default=0,
+    )
+    return _largest_fitting_prefix(response, budget, cap_in_force - 1, _facets_response_at_cap)
+
+
+def _apply_facets_budget_hint(response: DiscoverResponse) -> None:
+    """Annotate a facets response that exceeds the inline ceiling.
+
+    The per-field value cap bounds a facets response by *count*, which
+    makes its size independent of corpus size and tagging density but
+    says nothing about bytes: fifty long tag strings clear the cap and
+    still bust the ceiling. This is the byte-denominated companion to
+    that count bound, not a replacement for it -- nothing is truncated
+    here, and the cap's own semantics are untouched.
+
+    Separate from the catalog hint because the re-call differs. The
+    catalog hint names ``limit``, which this target rejects; the
+    parameter that shrinks a facets response is ``facet_value_limit``,
+    so the hint carries ``recommended_facet_value_limit`` under its own
+    ``reason``. A caller switching on the catalog reason is never handed
+    a payload whose ``recommended_limit`` is silently absent.
+
+    The recommendation is measured rather than modelled: it is the
+    largest cap below the one in force whose simulated re-call fits.
+    See ``_facets_recommended_value_limit`` for why the proportional
+    model the catalog hint uses does not transfer to this target. It is
+    omitted when no such cap exists, so the hint never names a re-call
+    that would not help.
+    """
+    if not response.results:
+        return
+    size = _serialized_response_bytes(response)
+    budget = _resolve_mcp_inline_budget_bytes()
+    if size <= budget:
+        return
+    budget_hint: dict[str, object] = {
+        "reason": "facets_response_exceeds_inline_budget",
+        "response_size_bytes": size,
+        "budget_bytes": budget,
+    }
+    # Computed before the hint is attached, so the simulated re-call
+    # carries what the real one would: the vocabulary warnings, and no
+    # budget hint of its own.
+    recommended = _facets_recommended_value_limit(response, budget)
+    if recommended is not None:
+        budget_hint["recommended_facet_value_limit"] = recommended
     if response.hints is None:
         response.hints = budget_hint
     else:
@@ -554,14 +718,16 @@ class RetrievalService:
                 return response
 
             # Facet aggregation likewise bypasses the document-target
-            # post-processing pipeline. No budget hint: the response is
-            # bounded by construction -- vocabulary fields by vocabulary
-            # size, tags by the per-field value cap -- and the hint's
-            # recommended_limit would name a parameter the facets
-            # validator rejects.
+            # post-processing pipeline. Its own budget hint rather than
+            # the catalog one: the row count is bounded by construction
+            # -- vocabulary fields by vocabulary size, tags by the
+            # per-field value cap -- but that bound is denominated in
+            # values, not bytes, and the catalog hint's recommended_limit
+            # would name a parameter this target rejects.
             if request.target == RetrievalTarget.FACETS:
                 response = await self._catalog_facets(request, phases)
                 self._apply_warnings(response, request)
+                _apply_facets_budget_hint(response)
                 return response
 
             if request.mode == RetrievalMode.SEMANTIC:
@@ -748,9 +914,12 @@ class RetrievalService:
         the fixed field order regardless of the order requested. Each
         row's values are capped to ``facet_value_limit`` entries
         (``DEFAULT_FACET_VALUE_LIMIT`` when unset) and carry the true
-        distinct total, so the response is bounded regardless of vault
-        size or tagging density. ``total_available`` is the count of
-        documents matching the filters (the facet denominator).
+        distinct total, so the number of values returned is bounded
+        regardless of vault size or tagging density. That bound is
+        denominated in values rather than bytes; the byte-denominated
+        companion is ``_apply_facets_budget_hint``, applied by the
+        dispatcher. ``total_available`` is the count of documents
+        matching the filters (the facet denominator).
         """
         sql_filters = self._build_catalog_sql_filters(request)
         requested = (

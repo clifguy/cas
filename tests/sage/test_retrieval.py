@@ -17,6 +17,7 @@ import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
+import pydantic_core
 import pytest
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
@@ -46,6 +47,7 @@ from sage.models.schemas import (
     _FACET_FORBIDDEN_PARAMS,
     DiscoverHit,
     DiscoverRequest,
+    DiscoverResponse,
     Document,
     DocumentSummary,
     Edge,
@@ -55,7 +57,12 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
 )
 from sage.services.document_surface import compose_document_surface, embedding_text
-from sage.services.retrieval import RetrievalService
+from sage.services.retrieval import (
+    DEFAULT_FACET_VALUE_LIMIT,
+    DEFAULT_MCP_INLINE_BUDGET_BYTES,
+    RetrievalService,
+    _apply_facets_budget_hint,
+)
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -3804,7 +3811,17 @@ async def test_response_size_bytes_matches_serialization(
     retrieval_service,
     monkeypatch,
 ):
-    """response_size_bytes matches the actual JSON serialization length."""
+    """response_size_bytes matches the length the runtime delivers.
+
+    Exact, not within a tolerance, and denominated in the delivered
+    encoding rather than a compact one. The earlier form restated
+    ``json.dumps(model_dump(...))`` — the same expression the
+    implementation used — inside a 1% band, so it could confirm only
+    that the reported number matched a second copy of the measurement,
+    and not that either matched the wire. The runtime encodes the dict
+    the tool layer returns with ``to_json(..., indent=2)``, which on a
+    high-cardinality payload runs 17% above the compact form.
+    """
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
     await _seed_portfolio(graph_store, 60)
 
@@ -3817,14 +3834,39 @@ async def test_response_size_bytes_matches_serialization(
     )
 
     assert response.hints is not None
-    actual_bytes = len(
-        json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8")
-    )
     reported = response.hints["response_size_bytes"]
-    tolerance = max(64, actual_bytes // 100)
-    assert abs(reported - actual_bytes) <= tolerance, (
-        f"reported={reported}, actual={actual_bytes}, tolerance={tolerance}"
+
+    def delivered(resp) -> int:
+        return len(
+            pydantic_core.to_json(
+                resp.model_dump(mode="json", exclude_none=True), fallback=str, indent=2
+            )
+        )
+
+    # The size is measured before the hint is attached, so the response
+    # it describes is this one minus the hint's own four keys.
+    without_hint = response.model_copy(
+        update={
+            "hints": {
+                k: v
+                for k, v in response.hints.items()
+                if k not in ("reason", "response_size_bytes", "budget_bytes", "recommended_limit")
+            }
+            or None
+        }
     )
+    assert reported == delivered(without_hint), (
+        f"reported={reported}, delivered={delivered(without_hint)}"
+    )
+
+    # Two anti-coincidental checks. The encodings must actually differ
+    # on this payload, or the equality above holds against the compact
+    # one too and says nothing about which was measured. And the hint
+    # must cost something, or the "before it is attached" clause above
+    # is untested scaffolding rather than the reason for the exclusion.
+    compact = len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    assert delivered(without_hint) > compact
+    assert delivered(response) > reported
 
 
 async def test_budget_hint_respects_env_override(
@@ -5684,32 +5726,55 @@ async def test_catalog_facets_surfaces_vocabulary_warnings(graph_store, retrieva
     assert resp.hints.get("warnings"), "an undefined doc_type must surface a hints warning"
 
 
-async def test_catalog_facets_never_emits_budget_hint(graph_store, retrieval_service, monkeypatch):
-    """No budget hint on facets, even under a tiny inline budget.
+async def test_facets_budget_hint_never_names_the_rejected_limit_parameter(
+    graph_store, retrieval_service
+):
+    """The facets budget hint recommends facet_value_limit, never limit.
 
-    Deliberate deviation from the edges branch: the hint's
-    recommended_limit names a parameter the facets validator rejects,
-    and the response is vocabulary-bounded by construction. Pins the
-    skip so a future consistency edit re-introducing the hint fails.
+    Deliberate deviation from the edges branch, which reuses the catalog
+    hint wholesale: ``limit`` is rejected on this target, so a hint
+    naming ``recommended_limit`` would recommend a re-call the validator
+    refuses. Carries forward the assertion of the test that pinned the
+    deliberate skip before this hint existed -- the absence is still the
+    point -- alongside the presence of the key that replaced it.
+
+    Runs on a fixture where a smaller cap genuinely fits, so the
+    presence half asserts something reachable. A budget too tight for
+    any cap reaches the omission branch, where the presence half would
+    be asserting the wrong thing about a correct response.
     """
-    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "64")
-    await _seed_facet_docs(graph_store)
+    await _seed_many_tag_docs(graph_store, DEFAULT_FACET_VALUE_LIMIT, tag_width=_WIDE_TAG_WIDTH)
 
     req = DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
     resp = await retrieval_service.discover(req)
 
-    assert resp.hints is None or "recommended_limit" not in resp.hints
+    assert resp.hints is not None
+    assert resp.hints["reason"] == "facets_response_exceeds_inline_budget"
+    assert "recommended_limit" not in resp.hints
+    assert "recommended_facet_value_limit" in resp.hints
 
 
-async def _seed_many_tag_docs(graph_store, count: int, offset: int = 0) -> None:
+async def _seed_many_tag_docs(
+    graph_store, count: int, offset: int = 0, *, tag_width: int | None = None
+) -> None:
     """One document per unique tag, ``count`` of them, all counts 1.
 
     Uniform counts make the top-of-ordering prefix purely value-ASC,
     so a capped enumeration has exactly one correct answer.
+
+    ``tag_width``, when given, pads each tag to a fixed character width
+    without disturbing that ordering -- the ``tag-NNN`` prefix stays
+    leftmost, so the sort is unchanged and only the payload's byte
+    weight moves. Callers separating a value bound from a byte bound
+    need the two to vary independently; callers asserting the exact
+    value prefix leave it unset and get the bare ``tag-NNN`` form.
     """
     for i in range(offset, offset + count):
+        tag = f"tag-{i:03d}"
+        if tag_width is not None:
+            tag = tag.ljust(tag_width, "x")
         await graph_store.insert_document(
-            _make_doc(_id(f"cap_{i:03d}"), doc_type="note", tags=[f"tag-{i:03d}"])
+            _make_doc(_id(f"cap_{i:03d}"), doc_type="note", tags=[tag])
         )
 
 
@@ -5807,6 +5872,336 @@ async def test_catalog_facets_total_distinct_on_small_and_empty_vaults(
     )
     assert all(hit.total_distinct == len(hit.values) for hit in small.results)
     assert next(h for h in small.results if h.field == "tags").total_distinct == 2
+
+
+# ---------------------------------------------------------------------------
+# The facets size guarantee, denominated in bytes
+#
+# The per-field value cap makes a facets response independent of corpus
+# size and tagging density, but only in the unit it counts: values. The
+# failure it was built against was denominated in bytes. These tests fix
+# the two units against each other -- a payload that satisfies the count
+# bound completely and busts the byte one -- so neither can be mistaken
+# for the other.
+# ---------------------------------------------------------------------------
+
+#: Tag width at which fifty values alone overrun the production inline
+#: budget. Chosen so the arithmetic guard in the test below holds with
+#: room to spare rather than at the margin, where a serialization detail
+#: could decide the outcome.
+_WIDE_TAG_WIDTH = 1000
+
+
+async def test_facets_budget_hint_fires_on_wide_tags_at_the_production_budget(
+    graph_store, retrieval_service
+):
+    """Fifty wide tags clear the value cap and still bust the byte ceiling.
+
+    The regression the count bound does not cover. Runs at the
+    production budget rather than a lowered one, so it measures the
+    guarantee a caller actually depends on instead of the plumbing.
+
+    Anti-coincidental-pass: the tags row is asserted to carry exactly
+    ``DEFAULT_FACET_VALUE_LIMIT`` values with a ``total_distinct`` equal
+    to it -- the count bound is satisfied and truncated nothing -- so a
+    hint can only be firing on measured bytes. The arithmetic guard
+    makes the overrun structural rather than incidental to whatever the
+    seeded corpus happens to weigh.
+    """
+    assert DEFAULT_FACET_VALUE_LIMIT * _WIDE_TAG_WIDTH > DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+        "the fixture must overrun the budget on tag width alone; a narrower "
+        "tag would make this test pass or fail on unrelated payload weight"
+    )
+    await _seed_many_tag_docs(graph_store, DEFAULT_FACET_VALUE_LIMIT, tag_width=_WIDE_TAG_WIDTH)
+
+    resp = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+
+    tags_row = next(h for h in resp.results if h.field == "tags")
+    assert len(tags_row.values) == DEFAULT_FACET_VALUE_LIMIT
+    assert tags_row.total_distinct == DEFAULT_FACET_VALUE_LIMIT
+
+    assert resp.hints is not None
+    assert resp.hints["reason"] == "facets_response_exceeds_inline_budget"
+    assert resp.hints["budget_bytes"] == DEFAULT_MCP_INLINE_BUDGET_BYTES
+    assert resp.hints["response_size_bytes"] > DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+
+async def test_facets_budget_hint_absent_when_the_same_row_count_is_narrow(
+    graph_store, retrieval_service
+):
+    """The same fifty values, narrow, emit nothing.
+
+    The control for the test above: identical document count, identical
+    value count, identical ``total_distinct`` -- only the byte weight
+    differs. A hint keyed on cardinality rather than on bytes would fire
+    here too.
+    """
+    await _seed_many_tag_docs(graph_store, DEFAULT_FACET_VALUE_LIMIT)
+
+    resp = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+
+    tags_row = next(h for h in resp.results if h.field == "tags")
+    assert len(tags_row.values) == DEFAULT_FACET_VALUE_LIMIT
+    assert tags_row.total_distinct == DEFAULT_FACET_VALUE_LIMIT
+    assert resp.hints is None or resp.hints.get("reason") != "facets_response_exceeds_inline_budget"
+
+
+async def test_facets_recommended_value_limit_re_calls_within_budget(
+    graph_store, retrieval_service
+):
+    """Re-calling at the recommended cap produces an inline response.
+
+    Without this the recommendation is decorative: a hint can name any
+    number below the cap and look right. Mirrors the catalog side's
+    ``test_recommended_limit_re_pages_within_budget``.
+
+    Anti-coincidental-pass: the re-call assertion alone passes against
+    an implementation that collapses every recommendation to the floor
+    of 1, which fits inline trivially and would leave a caller reading
+    one tag value out of fifty. The fixture sits only about twice over
+    budget, so a proportional recommendation is well clear of the floor
+    -- asserting that excludes the collapse without pinning a brittle
+    exact number.
+    """
+    await _seed_many_tag_docs(graph_store, DEFAULT_FACET_VALUE_LIMIT, tag_width=_WIDE_TAG_WIDTH)
+
+    first = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+    assert first.hints is not None
+    recommended = first.hints["recommended_facet_value_limit"]
+    assert isinstance(recommended, int)
+    assert 1 < recommended < DEFAULT_FACET_VALUE_LIMIT
+
+    second = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            facet_value_limit=recommended,
+        )
+    )
+    assert (
+        second.hints is None
+        or second.hints.get("reason") != "facets_response_exceeds_inline_budget"
+    )
+    assert len(next(h for h in second.results if h.field == "tags").values) == recommended
+
+
+async def test_facets_budget_hint_omits_the_recommendation_when_it_could_not_shrink(
+    graph_store, retrieval_service, monkeypatch
+):
+    """A cap of one gets the size fields and no recommendation.
+
+    The degenerate branch: the response is over budget for a reason
+    lowering the cap cannot fix, and a ``recommended_facet_value_limit``
+    equal to the cap already in force would name a re-call that changes
+    nothing. Pins the omission so a later implementation that always
+    names a recommendation reddens.
+
+    The seeded corpus is load-bearing, not scenery: the tags assertion
+    below fails without it, and a cap of one that never bit on a real
+    two-value vocabulary would leave the cap in force at zero, reaching
+    the same omission for a reason the test does not mean to pin.
+    """
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
+    await _seed_facet_docs(graph_store)
+
+    resp = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS, facet_value_limit=1
+        )
+    )
+
+    assert len(next(h for h in resp.results if h.field == "tags").values) == 1
+    assert resp.hints is not None
+    assert resp.hints["reason"] == "facets_response_exceeds_inline_budget"
+    assert resp.hints["budget_bytes"] == 1
+    assert "recommended_facet_value_limit" not in resp.hints
+
+
+# ---------------------------------------------------------------------------
+# The recommendation, at payload shapes a real vault cannot reach
+#
+# A vault's four vocabulary facets are closed enumerations, so no corpus
+# puts enough bytes outside the tags row to separate a recommendation
+# that accounts for the response's fixed part from one that does not,
+# and none makes a vocabulary row wider than the tag row while carrying
+# fewer bytes. Both shapes are reachable in principle and neither is
+# reachable through the graph store, so these build the payload
+# directly. Each asserts the property that matters -- the simulated
+# re-call fits -- alongside the arithmetic the rejected model would
+# have produced, so the fixture carries its own discrimination instead
+# of pinning a number whose significance has to be taken on trust.
+# ---------------------------------------------------------------------------
+
+
+def _facets_payload(rows: dict[str, dict[str, int]]) -> DiscoverResponse:
+    """A facets response over the given field -> values mapping."""
+    return DiscoverResponse(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        results=[
+            FacetHit(field=field, values=values, total_distinct=len(values))
+            for field, values in rows.items()
+        ],
+        total_available=1000,
+    )
+
+
+def _payload_bytes(response: DiscoverResponse) -> int:
+    """Delivered size, reached through the runtime rather than restated.
+
+    Independence here has to be from the *runtime's* encoding, not from
+    the implementation's spelling of it. An earlier version of this
+    helper claimed the latter and re-expressed
+    ``json.dumps(model_dump(...))`` -- the same expression the
+    implementation used, spelled twice -- so it could report nothing the
+    implementation would not, and did not report that the implementation
+    was measuring a compact encoding the runtime does not deliver.
+    ``pydantic_core.to_json(..., indent=2)`` on the dict the tool layer
+    hands over is what actually reaches the wire.
+    """
+    dumped = response.model_dump(mode="json", exclude_none=True)
+    return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
+
+
+def _payload_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:
+    """The payload a re-call at ``cap`` would carry.
+
+    ``total_distinct`` is carried through rather than recomputed: the
+    real re-call reports the true distinct count, which is computed
+    before any cap and does not move with it. Rebuilding it from the
+    truncated length costs a byte per row whose digit count changes,
+    which is small and in the safe direction, but makes the helper
+    something other than the re-call its name claims.
+    """
+    return DiscoverResponse(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        results=[
+            FacetHit(
+                field=row.field,
+                values=dict(list(row.values.items())[:cap]),
+                total_distinct=row.total_distinct,
+            )
+            for row in response.results
+        ],
+        total_available=response.total_available,
+    )
+
+
+def test_facets_recommendation_accounts_for_the_response_fixed_part(monkeypatch):
+    """The recommended re-call fits where a proportional one would not.
+
+    Scaling the cap in force by ``budget / size`` treats the response's
+    fixed part -- the envelope, and every vocabulary row already shorter
+    than the cap -- as though it shrank with the cap, so it names more
+    values than fit. The error is the fixed part times the fraction the
+    response was over, which the tag payload alone never makes large
+    enough to escape a safety margin.
+
+    Anti-coincidental-pass: the second assertion computes what the
+    proportional model would have recommended and shows that re-call
+    landing over budget, so the fixture is proved to discriminate on
+    the run rather than asserted to. A fixture on which the two models
+    agree passes the first assertion and fails the second. The
+    ``> 1`` guard excludes the rival every fit assertion admits --
+    always naming the floor, which fits trivially and would hand a
+    caller one value out of fifty.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    budget = DEFAULT_MCP_INLINE_BUDGET_BYTES
+    payload = _facets_payload(
+        {
+            "tags": {f"tag-{i:03d}-".ljust(1000, "x"): 3 for i in range(50)},
+            "doc_type": {f"vocab-{i:03d}-".ljust(70, "y"): 7 for i in range(25)},
+            "source_type": {f"other-{i:03d}-".ljust(70, "z"): 7 for i in range(25)},
+        }
+    )
+    size = _payload_bytes(payload)
+    assert size > budget
+
+    _apply_facets_budget_hint(payload)
+    assert payload.hints is not None
+    recommended = payload.hints["recommended_facet_value_limit"]
+    assert recommended > 1
+    assert _payload_bytes(_payload_at_cap(payload, recommended)) <= budget
+
+    proportional = max(1, int(50 * budget / size * 0.95))
+    assert proportional > recommended
+    assert _payload_bytes(_payload_at_cap(payload, proportional)) > budget
+
+
+def test_facets_recommendation_shrinks_the_heaviest_row_not_the_widest(monkeypatch):
+    """A wide cheap row does not hide a narrow expensive one.
+
+    The cap in force is the widest row's entry count, but the bytes can
+    sit in a narrower row. A recommendation derived by scaling that
+    count leaves the expensive row untouched until the cap falls below
+    its own width, costing a round trip per step; here that walk is
+    50 -> 22 -> ... where one call would do.
+
+    Anti-coincidental-pass: the recommendation is asserted below the
+    heavy row's width, which is the property that makes the re-call fit
+    at all -- an implementation reading only the widest row lands above
+    it and is caught by the fit assertion in the same breath -- and
+    above the floor, which every fit assertion admits.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    budget = DEFAULT_MCP_INLINE_BUDGET_BYTES
+    heavy_width = 12
+    payload = _facets_payload(
+        {
+            "doc_type": {f"cheap-{i:03d}": 4 for i in range(50)},
+            "tags": {f"tag-{i:03d}-".ljust(2500, "x"): 9 for i in range(heavy_width)},
+        }
+    )
+    assert _payload_bytes(payload) > budget
+
+    _apply_facets_budget_hint(payload)
+    assert payload.hints is not None
+    recommended = payload.hints["recommended_facet_value_limit"]
+    assert 1 < recommended < heavy_width
+    assert _payload_bytes(_payload_at_cap(payload, recommended)) <= budget
+
+
+def test_facets_recommendation_omitted_when_a_single_value_busts_the_budget(monkeypatch):
+    """No cap helps when one value alone exceeds the ceiling.
+
+    The other way into the omission branch, distinct from the cap of
+    one: the cap in force is well above one and every candidate below
+    it still overruns, so there is no re-call to name. Pins that the
+    search reports absence rather than falling back on its floor.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    payload = _facets_payload(
+        {"tags": {f"tag-{i}-".ljust(DEFAULT_MCP_INLINE_BUDGET_BYTES * 2, "x"): 1 for i in range(4)}}
+    )
+
+    _apply_facets_budget_hint(payload)
+    assert payload.hints is not None
+    assert payload.hints["reason"] == "facets_response_exceeds_inline_budget"
+    assert "recommended_facet_value_limit" not in payload.hints
+
+
+async def test_facets_budget_hint_absent_under_budget_at_default(graph_store, retrieval_service):
+    """An ordinary facets call at the production budget carries no hint.
+
+    The negative control for the whole change: real vaults sit far below
+    the ceiling, so a hint that fired unconditionally would annotate
+    every orientation call with advice to shrink a response that fits.
+    """
+    await _seed_facet_docs(graph_store)
+
+    resp = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=RetrievalTarget.FACETS)
+    )
+
+    assert resp.hints is None or resp.hints.get("reason") != "facets_response_exceeds_inline_budget"
 
 
 # ---------------------------------------------------------------------------
