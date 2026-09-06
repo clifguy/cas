@@ -6804,6 +6804,149 @@ async def test_keyword_multi_term_with_hits_has_no_warning(
     assert response.hints is None or "warnings" not in response.hints
 
 
+# The advisory reports what the keyword search returned; the metadata boost then
+# admits documents that search never saw, matching a title or a tag by substring
+# in the graph store rather than by lexeme in the content store. The two disagree
+# wherever a substring cuts a word, and a response can carry the boost's
+# documents beside a sentence asserting there are none. These turn on the gate
+# that keeps the advisory to the empty responses it was written to explain.
+#
+# The fixture pairing is what makes the divergence reachable in-suite: the
+# content-store double never consults the document surface, so a title reaches
+# the response only through the boost, while the graph store here is the real
+# binding and its substring match is the real one.
+
+_BOOST_ONLY_TITLE = "Keyword Advisory Reconciliation Notes"
+
+# Two terms, so the conjunction advisory is reachable at all -- a single term
+# never reaches it. A contiguous substring of the title, so the boost answers.
+# And the second term is a word cut mid-way, which is the only thing that keeps
+# the content store from answering too: no text in the fixture carries it.
+_BOOST_ONLY_QUERY = "Advisory Reconcil"
+
+
+async def test_keyword_advisory_suppressed_when_boost_supplied_results(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A response the boost filled carries no advisory claiming nothing matched.
+
+    Both halves share one fixture, because what is at stake is a condition and
+    not the sentence: a service that stopped attaching the advisory at all
+    satisfies the first assertion and fails the second.
+
+    What this pair does not settle is *which* condition. A service suppressing
+    on the boost's own search having answered passes both halves here, because
+    on this fixture the boost answering and the caller receiving coincide. The
+    sibling below separates them, and is the reason that rival is excluded.
+    """
+    doc = _make_doc(_id("kw_boost_advisory"))
+    doc.title = _BOOST_ONLY_TITLE
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_boost_advisory"),
+        [("Section 1", "alphaword content only.")],
+    )
+
+    # Positive control: the corpus is reachable in keyword mode, so the boosted
+    # hit below is a document the content search could have returned and did
+    # not, rather than the only thing in a vault nothing else can reach.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    boosted = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query=_BOOST_ONLY_QUERY)
+    )
+
+    assert boosted.results, (
+        "precondition: the query must be one the content store misses and the "
+        "metadata boost answers -- without a result there is no contradiction "
+        "to suppress"
+    )
+    assert [h.document.id for h in boosted.results] == [_id("kw_boost_advisory")]
+    assert boosted.results[0].chunk_content is None and boosted.results[0].heading_path is None, (
+        "precondition: the hit must be one the boost injected rather than one a "
+        "retrieval surface matched"
+    )
+    assert boosted.hints is None or "warnings" not in boosted.hints, (
+        "a response carrying results must not also assert that nothing matched"
+    )
+
+    # Control: the same service, the same corpus, a query neither the content
+    # store nor the boost can answer. The advisory explains an empty result and
+    # must still do so, with its wording and its term reporting unchanged.
+    empty = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword")
+    )
+
+    assert empty.results == []
+    assert empty.hints is not None
+    joined = " ".join(empty.hints.get("warnings") or [])
+    assert "conjunctive" in joined, "an empty multi-term result must still be explained"
+    assert "deltaword" in joined and "epsilonword" in joined, (
+        "and must still name the terms the query required"
+    )
+
+
+async def test_keyword_advisory_fires_when_the_boosted_document_is_filtered_out(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """The gate reads the response, not whether the boost's own search answered.
+
+    Anti-coincidental trap for suppressing whenever ``search_metadata`` returned
+    rows. Here it returns one -- the title matches exactly as it does above --
+    and the boost's failed-pipeline gate then drops it, so nothing reaches the
+    caller. An empty response is the case the advisory exists for, and a rival
+    keyed on the boost having found something goes silent on it.
+    """
+    doc_failed = _make_doc(_id("kw_boost_failed"), pipeline_status=PipelineStatus.FAILED)
+    doc_failed.title = _BOOST_ONLY_TITLE
+    await graph_store.insert_document(doc_failed)
+    await graph_store.insert_document(_make_doc(_id("kw_boost_healthy")))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("kw_boost_healthy"),
+        [("Section 1", "alphaword content only.")],
+    )
+
+    # Positive control, as above: the silence being ruled out below is a
+    # suppressed advisory rather than an unsearchable vault.
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+    # Precondition on the trap itself: the boost's search must answer, or the
+    # test would discriminate nothing. Asserted through the surface that reveals
+    # it -- with the caller asking for failed documents the boost admits the
+    # document, so its absence from the unfiltered response below is the
+    # pipeline gate's doing and not an unmatched title.
+    admitted = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query=_BOOST_ONLY_QUERY,
+            filters=RetrievalFilters(pipeline_status="failed"),
+        )
+    )
+    assert [h.document.id for h in admitted.results] == [_id("kw_boost_failed")]
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query=_BOOST_ONLY_QUERY)
+    )
+
+    assert response.results == []
+    assert response.hints is not None
+    joined = " ".join(response.hints.get("warnings") or [])
+    assert "conjunctive" in joined, (
+        "the boost answering is not the caller receiving; an empty response is "
+        "still owed its explanation"
+    )
+
+
 async def test_semantic_multi_term_empty_result_stays_silent(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):

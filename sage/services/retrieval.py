@@ -428,13 +428,18 @@ class RetrievalService:
         caller who did not build a positive control reads it as the former.
 
         Called only from the term-search path, with the row count that search
-        returned. Both conditions are load-bearing. A caller-supplied filter
-        that resolves to no documents short-circuits before any search runs,
-        and post-filtering (``min_relevance``) can empty a result the search
-        did fill; in either case the response is empty while documents
-        carrying the terms may well exist, so an advisory keyed on the
-        response would assert a fact about the corpus that nothing
-        established.
+        returned, and only for a response that came back empty. All three
+        conditions are load-bearing. A caller-supplied filter that resolves to
+        no documents short-circuits before any search runs, and post-filtering
+        (``min_relevance``) can empty a result the search did fill; in either
+        case the response is empty while documents carrying the terms may well
+        exist, so an advisory keyed on the response alone would assert a fact
+        about the corpus that nothing established. The count alone is no more
+        sufficient in the other direction: a response can carry documents the
+        search never counted, and a sentence explaining an empty result has
+        nothing to explain beside them. The third is applied by the caller
+        rather than here, because the response is the one thing this helper
+        cannot see.
 
         The terms come from the backend's own parse, because the words typed
         are not the terms required -- stopwords are dropped and the rest
@@ -940,9 +945,21 @@ class RetrievalService:
             hints=self._build_hints(raw_count, request) if not final else None,
         )
         # Attached here rather than in the dispatcher: only this scope knows
-        # whether a term search ran and what it returned before post-filtering,
-        # and both facts gate the advisory.
-        if searched:
+        # whether a term search ran, what it returned before post-filtering,
+        # and whether anything reached the response -- three facts that gate
+        # the advisory.
+        #
+        # The third is what keeps the advisory from contradicting the results
+        # beside it. Every sentence it can attach explains an empty result, and
+        # the metadata boost admits documents the term search never counted --
+        # it matches a title or a tag by substring in the graph store, where
+        # the search matched by lexeme in the content store, and the two
+        # disagree wherever a substring cuts a word. Without this the caller is
+        # handed those documents together with an assertion that there are
+        # none. Keyed on what the response carries rather than on the boost
+        # having run, so a boosted document that scope or pipeline filtering
+        # then dropped leaves an empty response still explained.
+        if searched and not final:
             with phases.phase("keyword_search_warnings"):
                 warnings = await self._keyword_search_warnings(request, raw_count)
             if warnings:
