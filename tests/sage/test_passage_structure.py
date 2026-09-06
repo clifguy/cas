@@ -173,32 +173,38 @@ def test_both_writers_call_the_one_rule():
     assert maintenance.indexed_structure is passage_structure.indexed_structure
 
 
-def test_no_source_adapter_restates_the_separator():
-    """The delimiter is defined once, so a path cannot be built with another.
+def test_nothing_restates_the_separator():
+    """The delimiter is defined once, so a path cannot be split on another.
 
-    Scoped to the whole ``sage/source_adapters`` tree rather than to the four
-    modules that join paths today, so an adapter added later is covered without
-    an allowlist edit -- a new format that spelled the delimiter itself would
-    produce paths this rule cannot split, and the failure would surface as a
-    document whose title silently stopped being stripped.
+    Scoped to the whole ``sage`` package rather than to the producers alone. A
+    path is joined in one place and split in another -- the adapters build it,
+    while heading-candidate ranking, the child-heading prefix query and its
+    double all take it apart -- and the two halves cannot be allowed to answer
+    differently. Watching only the producing half leaves a drift on the
+    consuming half unobserved, which is what a narrower earlier version of this
+    scan did.
 
     Anti-coincidental-pass: the assertion is bracketed by a positive control
-    that the tree was actually read. A glob that matched nothing would
-    otherwise report a clean scan.
+    that the tree was actually read. A glob that matched nothing would otherwise
+    report a clean scan. The module that *defines* the constant is the one
+    exemption, since the definition is necessarily a literal.
     """
-    adapters = sorted((Path(sage.__file__).parent / "source_adapters").glob("*.py"))
-    assert len(adapters) >= 5, "the source-adapter tree was not read; the scan proves nothing"
+    root = Path(sage.__file__).parent
+    modules = sorted(root.rglob("*.py"))
+    assert len(modules) >= 50, "the sage package was not read; the scan proves nothing"
 
-    offenders = {
-        path.name: [
+    definition = root / "adapters" / "interfaces.py"
+    restated = {
+        str(path.relative_to(root)): [
             number
             for number, line in enumerate(path.read_text().splitlines(), start=1)
             if f'"{HEADING_PATH_SEPARATOR}"' in line or f"'{HEADING_PATH_SEPARATOR}'" in line
         ]
-        for path in adapters
+        for path in modules
+        if path != definition
     }
-    restated = {name: lines for name, lines in offenders.items() if lines}
+    restated = {name: lines for name, lines in restated.items() if lines}
     assert not restated, (
-        f"source adapters spell the heading-path delimiter themselves: {restated}; "
+        f"these modules spell the heading-path delimiter themselves: {restated}; "
         "import HEADING_PATH_SEPARATOR from sage.adapters.interfaces instead"
     )

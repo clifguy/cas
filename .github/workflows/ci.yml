@@ -168,11 +168,20 @@ jobs:
     # is one such statement, and it will not be the only one.
     #
     # This job closes that by running the storage-touching tests against the
-    # floor. Scoped to `tests/sage/` rather than the whole suite because the
-    # risk is version-specific SQL and DDL, which lives there; running the rest
-    # would double the runner minutes to re-prove behaviour that never opens a
-    # connection. No coverage upload: the pg17 job above owns that, and two
-    # reports of the same lines would race on the artifact name.
+    # floor: `tests/sage/`, plus the BFF session store, which is the one module
+    # outside that tree issuing its own SQL against the service database.
+    # Scoped rather than whole-suite because the risk is version-specific SQL
+    # and DDL, and running the rest would double the runner minutes to re-prove
+    # behaviour that never opens a connection. No coverage upload: the pg17 job
+    # above owns that, and two reports of the same lines would race on the
+    # artifact name.
+    #
+    # Deliberately a separate job rather than a `strategy.matrix` leg on `test`,
+    # though a matrix would keep the two setups in lockstep and this one is a
+    # hand-maintained copy. A matrix renames the check to `test (pg17)`, which
+    # silently drops the branch ruleset's required `test` context — trading a
+    # duplicated setup block for a disabled required check. If the ruleset is
+    # ever updated to match, prefer the matrix.
     name: storage tests on the deploy floor (pg16)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -226,7 +235,7 @@ jobs:
           SAGE_TEST_STUB_PROVIDERS: "1"
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
-          .venv/bin/pytest -v --tb=short -n auto tests/sage/
+          .venv/bin/pytest -v --tb=short -n auto tests/sage/ tests/app/test_bff_session_store.py
 
   container:
     # Container packaging path: build both images and run the smoke tests

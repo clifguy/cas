@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sage.adapters.interfaces import (
+    HEADING_PATH_SEPARATOR,
     LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     NON_CANONICAL_SOURCE_PATH_PATTERN,
     AbstractionProvider,
@@ -389,7 +390,8 @@ class StubContentStore(ContentStore):
         matched = [
             c
             for c in chunks
-            if c.heading_path == heading_prefix or c.heading_path.startswith(heading_prefix + " > ")
+            if c.heading_path == heading_prefix
+            or c.heading_path.startswith(heading_prefix + HEADING_PATH_SEPARATOR)
         ]
         matched.sort(key=lambda c: c.chunk_index)
         return matched

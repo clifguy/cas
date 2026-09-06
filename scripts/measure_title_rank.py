@@ -60,6 +60,26 @@ from sage.utils.text_normalization import fold_for_query  # noqa: E402
 _RECALL_DEPTH = 20
 
 
+# Schemas this script provisions. The `finally` below drops the one it made, but
+# a run that takes minutes over a large corpus is realistically ended by killing
+# it, and nothing else reclaims what that leaves: the test harness's orphan
+# sweep targets `sage_test_db_*` *databases*, not schemas. So each run clears
+# what earlier ones stranded, which also keeps a full copy of a large corpus --
+# embeddings and vector index included -- from accumulating inside the working
+# database.
+_SCHEMA_PREFIX = "sage_test_titlerank_"
+
+
+async def _sweep_orphaned_schemas(conn) -> None:
+    """Drop schemas a killed earlier run left behind."""
+    cur = await conn.execute(
+        "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE %s",
+        (_SCHEMA_PREFIX + "%",),
+    )
+    for (stale,) in await cur.fetchall():
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{assert_disposable_target(stale)}" CASCADE')  # noqa: S608
+
+
 @dataclass
 class ArmResult:
     """One arm's sweep over one rendering of every queried title."""
@@ -164,7 +184,7 @@ async def _load(store: PostgresContentStore, chunks, surfaces, titles, *, derive
         )
 
 
-async def _arm_control(pool, schema: str) -> tuple[int, int]:
+async def _arm_control(pool) -> tuple[int, int]:
     """How much indexed text this arm actually changed.
 
     The control on the whole measurement. Two arms that tie tell you nothing
@@ -271,8 +291,9 @@ async def main() -> int:
     )
     applicable = rooted / len(chunks)
 
-    schema = assert_disposable_target("sage_test_titlerank_" + os.urandom(4).hex())
+    schema = assert_disposable_target(_SCHEMA_PREFIX + os.urandom(4).hex())
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
+        await _sweep_orphaned_schemas(conn)
         await bootstrap_schema(conn, schema=schema, extensions=["vector"])
 
     pool = AsyncConnectionPool(
@@ -283,11 +304,11 @@ async def main() -> int:
         store = PostgresContentStore(pool)
 
         await _load(store, chunks, surfaces, titles, derived=False)
-        before_control = await _arm_control(pool, schema)
+        before_control = await _arm_control(pool)
         before = await _sweep(store, queried)
 
         await _load(store, chunks, surfaces, titles, derived=True)
-        after_control = await _arm_control(pool, schema)
+        after_control = await _arm_control(pool)
         after = await _sweep(store, queried)
     finally:
         await pool.close()

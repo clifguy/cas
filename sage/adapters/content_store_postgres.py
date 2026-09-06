@@ -27,6 +27,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import (
+    HEADING_PATH_SEPARATOR,
     LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     Chunk,
     ContentStore,
@@ -72,12 +73,13 @@ _INSERT_SQL = (
     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
-# ``indexed_structure`` is read back as well as written, though no path today
-# reads a passage and writes it again. If one is added, excluding the column
-# here would null it on the way through, and the generated column's coalesce
-# would quietly index the address again instead of failing -- a silent reversion
-# rather than an error, which is why the column is carried on reads it has no
-# other caller for.
+# ``indexed_structure`` is read back as well as written, because a passage read
+# can be the first half of a write: the re-embedding maintenance script reads
+# every chunk of a document, replaces the embeddings, and hands the same objects
+# back to ``index_chunks``. Omitting the column here would null the derived
+# structure on the way through that round-trip, and the generated column's
+# coalesce would then quietly index the address again -- a silent reversion to
+# the pre-decision behaviour rather than an error.
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
     "doc_type, lifecycle_status, project"
@@ -447,8 +449,19 @@ class PostgresContentStore(ContentStore):
         for a later optimize.
 
         The rebuild is skipped when the stored expression already names the
-        column, so an ordinary re-run costs a catalog read. That check is made
-        inside the transaction, so it cannot be raced by a concurrent one.
+        column, so an ordinary re-run costs a catalog read. The table is locked
+        explicitly before that check, which is belt-and-braces rather than a
+        repair. Reading a generated column's expression out of the catalog
+        renders it through ``pg_get_expr``, which opens the relation and takes a
+        share lock of its own -- measured, on a server where the probe blocks
+        under a concurrent exclusive lock and so reads a settled answer. But
+        that serialization is an artifact of how a catalog view happens to be
+        evaluated rather than a documented guarantee, and this table is rebuilt
+        on a different major version from the one the tests run against. An
+        explicit lock costs nothing uncontended, since the rebuild takes it
+        anyway, and does not rest on that detail holding. The contention it
+        covers is not two operators but one, re-invoking after a client timed
+        out on a call still running.
 
         Expensive and exclusive when the rebuild does run: the re-add rewrites
         the passage table and every index over it, including the HNSW index
@@ -459,6 +472,7 @@ class PostgresContentStore(ContentStore):
         with self._query_timer.measure("migrate_indexed_structure", params={"pairs": len(derived)}):
             written = 0
             async with self._pool.connection() as conn, conn.transaction():
+                await conn.execute("LOCK TABLE chunks IN ACCESS EXCLUSIVE MODE")
                 rebuilding = not await self._vector_ranks_indexed_structure(conn)
                 drop, add, index = CHUNKS_TSV_REBUILD
 
@@ -872,7 +886,7 @@ class PostgresContentStore(ContentStore):
     ) -> list[Chunk]:
         """Return chunks at the heading or any child heading, document order."""
         with self._query_timer.measure("get_chunks_by_heading_prefix"):
-            child_pattern = self._escape_like(heading_prefix) + " > %"
+            child_pattern = self._escape_like(heading_prefix) + HEADING_PATH_SEPARATOR + "%"
             rows = await self._fetchall(
                 f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed column constant
                 "WHERE document_id = %s AND (heading_path = %s OR heading_path LIKE %s) "

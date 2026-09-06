@@ -18,6 +18,7 @@ for the whole module: a fixture that silently failed to install the old shape
 would start from the post-state and every assertion below would pass vacuously.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -279,6 +280,69 @@ async def test_a_vault_that_took_the_column_but_not_the_migration_is_unchanged(
         "control: the content half of the vector survives too, so a failure "
         "above reads as a lost fallback rather than as an emptied vector"
     )
+
+
+async def test_the_migration_takes_the_table_lock_before_it_decides(
+    store, pre_change_vault, pg_pool
+):
+    """The decision is made under the lock the rebuild needs, not before it.
+
+    Measured, and not what a reading of the code suggests: the probe reads a
+    generated column's expression, which the catalog renders through
+    ``pg_get_expr``, which opens the relation and takes a share lock. So the
+    check already serializes against a concurrent rebuild on this server, and
+    the double-rewrite it looks vulnerable to is not reachable here. The
+    explicit lock is kept because that behaviour is an artifact of how a catalog
+    view is evaluated rather than a documented guarantee, and this table is
+    rebuilt on a different major version from the one these tests run against --
+    which is the same hazard class the rest of this change exists to close.
+
+    Anti-coincidental-pass, and the first version of this test failed it: with a
+    second connection holding the table, the call does not finish either way,
+    because an implementation that decided first would simply block later at the
+    ``DROP``. Asserting that the call had not completed passed against both
+    orderings; verified by mutation.
+
+    What separates them is *which statement waits*. The assertion reads the
+    blocked backend's current query: waiting at ``LOCK TABLE`` means the lock
+    was taken first, and waiting at the catalog probe means it was not.
+    """
+    pending = await store.passages_awaiting_indexed_structure()
+    derived = [(doc, path, indexed_structure(path, _TITLE)) for doc, path in pending]
+    assert derived, "control: there is work for the pass to do"
+
+    async def _blocked_statement() -> str:
+        async with pg_pool.connection() as observer:
+            cur = await observer.execute(
+                "SELECT query FROM pg_stat_activity"
+                " WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                " AND query ILIKE '%chunks%'"
+            )
+            rows = await cur.fetchall()
+        return " | ".join(r[0] for r in rows)
+
+    async with pg_pool.connection() as blocker:
+        async with blocker.transaction():
+            await blocker.execute("LOCK TABLE chunks IN ACCESS EXCLUSIVE MODE")
+
+            migrating = asyncio.create_task(store.migrate_indexed_structure(derived))
+            await asyncio.sleep(0.5)
+
+            waiting_on = await _blocked_statement()
+            assert waiting_on, (
+                "control: the migration must be blocked on the held lock, or "
+                "this test is observing nothing"
+            )
+            assert "LOCK TABLE" in waiting_on.upper(), (
+                "the migration is waiting at "
+                f"{waiting_on!r}, past its own decision -- the check ran against "
+                "a catalog another caller was mid-change, so both would rebuild"
+            )
+
+        written = await asyncio.wait_for(migrating, timeout=30)
+
+    assert written == len(derived), "the pass completes once the lock is released"
+    assert await store.passage_vector_ranks_indexed_structure()
 
 
 # ---------------------------------------------------------------------------
