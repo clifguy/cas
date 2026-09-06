@@ -28,23 +28,19 @@ from sage.models.schemas import IngestRequest
 # Reuse the helper that creates a markdown file under the temp vault's
 # sources/ tree. Keeps fixture wiring identical to the rest of the
 # ingestion test suite.
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.test_ingestion import _create_test_file
 
-_TERMINAL_STATES = {
-    PipelineStatus.ABSTRACTION_COMPLETE,
-    PipelineStatus.ABSTRACTION_SKIPPED,
-    PipelineStatus.FAILED,
-}
 
+async def _await_terminal(graph_store, service, doc_id: str, *, attempts: int = 400):
+    """Wait until the document is settled and unclaimed; return its status.
 
-async def _await_terminal(graph_store, doc_id: str, *, attempts: int = 400) -> PipelineStatus:
-    """Poll the document until it reaches a terminal pipeline_status."""
-    for _ in range(attempts):
-        doc = await graph_store.get_document(doc_id)
-        if doc is not None and doc.pipeline_status in _TERMINAL_STATES:
-            return doc.pipeline_status
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"document {doc_id} did not reach terminal status in time")
+    Thin adapter over the shared wait so the assertions below keep reading
+    against a ``PipelineStatus``. The predicate itself lives in one place for
+    the whole suite.
+    """
+    doc = await await_pipeline_idle(graph_store, doc_id, service=service, attempts=attempts)
+    return doc.pipeline_status
 
 
 async def test_enqueued_work_drains_to_terminal_with_chunks(
@@ -77,7 +73,7 @@ async def test_enqueued_work_drains_to_terminal_with_chunks(
     assert not ingestion_service._worker_task.done()
 
     gate.set()
-    terminal = await _await_terminal(graph_store, doc_id)
+    terminal = await _await_terminal(graph_store, ingestion_service, doc_id)
     assert terminal in {PipelineStatus.ABSTRACTION_COMPLETE, PipelineStatus.ABSTRACTION_SKIPPED}
     chunks = await stub_content_store.get_all_chunks(doc_id)
     assert chunks, "Stage 2 must have indexed chunks; no-chunks is the silent-loss failure mode."
@@ -122,7 +118,7 @@ async def test_worker_task_survives_dropped_caller_reference(
     assert task_ref() is ingestion_service._worker_task
 
     gate.set()
-    terminal = await _await_terminal(graph_store, doc_id)
+    terminal = await _await_terminal(graph_store, ingestion_service, doc_id)
     assert terminal in {PipelineStatus.ABSTRACTION_COMPLETE, PipelineStatus.ABSTRACTION_SKIPPED}
     chunks = await stub_content_store.get_all_chunks(doc_id)
     assert chunks, "Stage 2 must have indexed chunks; the no-chunks state is the silent-loss mode."
@@ -176,8 +172,9 @@ async def test_ingest_and_reabstract_share_one_worker(
         gate.set()
 
     # Both reach terminal once the gate releases — drained by the one worker.
-    assert await _await_terminal(graph_store, seeded_id) == PipelineStatus.ABSTRACTION_COMPLETE
-    second_terminal = await _await_terminal(graph_store, second.document.id)
+    terminal = await _await_terminal(graph_store, ingestion_service, seeded_id)
+    assert terminal == PipelineStatus.ABSTRACTION_COMPLETE
+    second_terminal = await _await_terminal(graph_store, ingestion_service, second.document.id)
     assert second_terminal == PipelineStatus.ABSTRACTION_COMPLETE
 
     await ingestion_service.stop_worker()

@@ -35,6 +35,7 @@ from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
 from sage.services.documents import DocumentsService
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+from tests.helpers.pipeline_wait import await_pipeline_idle
 
 
 def _id(name: str) -> str:
@@ -74,32 +75,20 @@ class _SlowStubAbstractionProvider(AbstractionProvider):
 # ---------------------------------------------------------------------------
 
 
-_TERMINAL_PIPELINE_STATES = {
-    PipelineStatus.ABSTRACTION_COMPLETE,
-    PipelineStatus.ABSTRACTION_SKIPPED,
-    PipelineStatus.FAILED,
-}
+async def await_pipeline_terminal(graph_store, service, doc_id: str, timeout_s: float = 30.0):
+    """Wait until the document is settled and unclaimed. Returns the Document.
 
-
-async def await_pipeline_terminal(graph_store, doc_id: str, timeout_s: float = 30.0):
-    """Poll `graph_store.get_document(doc_id)` until pipeline_status is
-    terminal or the timeout elapses. Returns the final Document record.
-
-    Fails the test if the timeout is reached with a non-terminal state,
-    which would indicate the background pipeline task is stuck or never
-    started.
+    Thin adapter over the shared wait, keeping this module's deadline-shaped
+    signature. A stuck or never-started background pipeline still fails the
+    test loudly, naming the last status observed.
     """
-    deadline = time.monotonic() + timeout_s
-    while True:
-        doc = await graph_store.get_document(doc_id)
-        if doc is not None and doc.pipeline_status in _TERMINAL_PIPELINE_STATES:
-            return doc
-        if time.monotonic() >= deadline:
-            raise AssertionError(
-                f"pipeline_status never reached terminal state for {doc_id}"
-                f"; last observed: {doc.pipeline_status if doc else 'doc missing'}"
-            )
-        await asyncio.sleep(0.05)
+    return await await_pipeline_idle(
+        graph_store,
+        doc_id,
+        service=service,
+        attempts=max(1, int(timeout_s / 0.05)),
+        delay=0.05,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +432,7 @@ async def test_bh_129_supersede_atomic_with_ingest_response(
     assert new_doc_now.lifecycle_status == "active"
 
     # Allow background pipeline to complete, then verify terminal state.
-    terminal = await await_pipeline_terminal(graph_store, v2.document.id)
+    terminal = await await_pipeline_terminal(graph_store, ingestion_service, v2.document.id)
     assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
     # Supersedes edge and archival are unchanged by pipeline completion.
@@ -501,7 +490,9 @@ async def test_bh_130_fire_and_forget_returns_fast(
     # Must return well before the 3s artificial abstraction delay.
     assert elapsed < 2.0, f"fire-and-forget ingest took {elapsed:.2f}s"
     # Background task will finish the pipeline eventually.
-    terminal = await await_pipeline_terminal(graph_store, result.document.id, timeout_s=10.0)
+    terminal = await await_pipeline_terminal(
+        graph_store, slow_ingestion_service, result.document.id, timeout_s=10.0
+    )
     assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 

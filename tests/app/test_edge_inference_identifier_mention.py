@@ -85,6 +85,7 @@ from sage.services.identifier_mention_inference import (
     infer_identifier_mentions_for_document,
     plan_reference_reconcile,
 )
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
 
 # ---------------------------------------------------------------------------
@@ -781,13 +782,6 @@ async def test_t8_failed_pipeline_target_still_resolves(tmp_path, services):
 # ---------------------------------------------------------------------------
 
 
-TERMINAL_PIPELINE_STATUSES = {
-    "abstraction_complete",
-    "abstraction_skipped",
-    "failed",
-}
-
-
 async def _ingest_via_sage_ingest_and_get_edges(
     svc: SAGEServices,
     file_path: str,
@@ -814,23 +808,17 @@ async def _ingest_via_sage_ingest_and_get_edges(
     )
     doc_id = ingest_result.document.id
 
-    # Poll for terminal pipeline_status. Bounded timeout prevents a hung
-    # pipeline from masking a zero-edge "pass" — the test fails with a
-    # readable timeout message instead of asserting against partial state.
-    import asyncio
-
-    deadline = asyncio.get_event_loop().time() + 5.0
-    while True:
-        doc = await svc.graph_store.get_document(doc_id)
-        assert doc is not None, f"document {doc_id} disappeared during polling"
-        if doc.pipeline_status.value in TERMINAL_PIPELINE_STATUSES:
-            break
-        if asyncio.get_event_loop().time() > deadline:
-            raise AssertionError(
-                f"pipeline_status did not reach terminal in 5s; "
-                f"last observed: {doc.pipeline_status.value}"
-            )
-        await asyncio.sleep(0.05)
+    # Wait for the document to settle and its claim to clear. A bounded wait
+    # prevents a hung pipeline from masking a zero-edge "pass" -- it fails with
+    # a readable message naming the last status instead of asserting against
+    # partial state.
+    await await_pipeline_idle(
+        svc.graph_store,
+        doc_id,
+        service=svc.ingestion_service,
+        attempts=100,
+        delay=0.05,
+    )
 
     edges = await svc.graph_store.get_edges_by_source(doc_id, edge_type)
     return doc_id, edges
