@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import (
     HEADING_PATH_SEPARATOR,
+    LEGACY_DOCUMENT_HEADER_CHUNK_INDEX,
     LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     Chunk,
     ContentStore,
@@ -84,6 +85,33 @@ _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
     "doc_type, lifecycle_status, project"
 )
+
+
+def _passage_rows_only(alias: str = "") -> str:
+    """Scope a read to the passage surface, as a ``WHERE`` fragment.
+
+    This is the surface's own definition rather than a per-consumer exclusion of
+    some particular row: nothing writes an index at or below the legacy marker's
+    any more. It is expressed once, here, and every passage read on this binding
+    calls it, so a site added without the scoping is visible as one.
+
+    Why the scoping is kept at all -- the window in which a vault still holds a
+    legacy document-level row, and why that window does not close -- is stated at
+    ``LEGACY_DOCUMENT_HEADER_CHUNK_INDEX`` in the port, and is not restated here
+    or at any call site.
+
+    Rendered as ``>=`` against the first index above the marker rather than as
+    ``>`` against the marker itself. The two are identical on an integer column,
+    but the second spells the heading-path delimiter between two placeholders,
+    which is a form the passage-structure scan reads as a restatement of that
+    delimiter -- correctly, since it cannot tell a SQL comparison from a join.
+
+    Args:
+        alias: The table alias to qualify the column with, when the surrounding
+            statement joins and an unqualified column would be ambiguous.
+    """
+    column = f"{alias}.chunk_index" if alias else "chunk_index"
+    return f"{column} >= {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX + 1}"
 
 
 # A tsquery renders as quoted lexemes joined by operators: ``&`` conjunction,
@@ -583,7 +611,7 @@ class PostgresContentStore(ContentStore):
                 " (SELECT document_id, heading_path, content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
                 " false AS is_document_surface FROM chunks"
-                f" WHERE chunk_index >= 0{' AND ' + where if where else ''}"
+                f" WHERE {_passage_rows_only()}{' AND ' + where if where else ''}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " UNION ALL"
                 # The stored halves are widened to a superset of the document's
@@ -716,7 +744,7 @@ class PostgresContentStore(ContentStore):
         # would multiply every row the ranking join produces.
         arm = (
             "(SELECT DISTINCT document_id FROM chunks"  # noqa: S608
-            f" WHERE chunk_index >= 0 AND tsv @@ %s::tsquery{predicate}"
+            f" WHERE {_passage_rows_only()} AND tsv @@ %s::tsquery{predicate}"
             " UNION"
             " SELECT DISTINCT document_id FROM document_surface"
             f" WHERE tsv_match @@ %s::tsquery{predicate})"
@@ -749,7 +777,7 @@ class PostgresContentStore(ContentStore):
             " row_number() OVER (PARTITION BY c.document_id ORDER BY"
             " ts_rank(c.tsv, %s::tsquery) DESC, c.chunk_index) AS rn"
             " FROM chunks c JOIN matched USING (document_id)"
-            f" WHERE c.chunk_index >= 0 AND c.tsv @@ %s::tsquery{predicate}"
+            f" WHERE {_passage_rows_only('c')} AND c.tsv @@ %s::tsquery{predicate}"
             " ) SELECT m.document_id,"
             " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
             " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
@@ -810,7 +838,7 @@ class PostgresContentStore(ContentStore):
             "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score,"  # noqa: S608
             " false AS is_document_surface"
             f" FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
-            " WHERE tsv @@ q AND chunk_index >= 0"
+            f" WHERE tsv @@ q AND {_passage_rows_only()}"
         )
         # A document-level row is not a passage, so it carries no excerpt and
         # no heading, exactly as it does on the arms above.
@@ -907,17 +935,13 @@ class PostgresContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        Scoped to passages by ``chunk_index >= 0``, which is the passage
-        surface's own definition rather than a per-consumer exclusion of some
-        particular row: nothing writes a negative index any more. It is kept
-        because a vault provisioned before CAS-ADR-049 still holds one
-        document-level row per document until its migration runs, and between
-        those two moments this is what stops that row reaching a caller.
+        Scoped to the passage surface by ``_passage_rows_only``, which is where
+        that scoping is explained.
         """
         with self._query_timer.measure("get_heading_paths"):
             rows = await self._fetchall(
-                "SELECT heading_path FROM chunks "
-                "WHERE document_id = %s AND chunk_index >= 0 "
+                "SELECT heading_path FROM chunks "  # noqa: S608 -- fixed predicate constant
+                f"WHERE document_id = %s AND {_passage_rows_only()} "
                 "GROUP BY heading_path ORDER BY MIN(chunk_index)",
                 (document_id,),
             )
@@ -934,16 +958,14 @@ class PostgresContentStore(ContentStore):
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
         """Return a document's passages in document order.
 
-        Scoped by ``chunk_index >= 0`` for the reason ``get_heading_paths``
-        gives: nothing writes a negative index any more, but a vault whose
-        migration has not yet run still holds one document-level row per
-        document, and this is what keeps it out of reconstructed projection
-        text and out of the abstraction stage's input in the meantime.
+        Scoped to the passage surface by ``_passage_rows_only``, which is what
+        keeps a legacy document-level row out of reconstructed projection text
+        and out of the abstraction stage's input.
         """
         with self._query_timer.measure("get_all_chunks"):
             rows = await self._fetchall(
-                f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed column constant
-                "WHERE document_id = %s AND chunk_index >= 0 ORDER BY chunk_index",
+                f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed constants
+                f"WHERE document_id = %s AND {_passage_rows_only()} ORDER BY chunk_index",
                 (document_id,),
             )
             return [self._row_to_chunk(r) for r in rows]

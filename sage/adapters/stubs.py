@@ -34,6 +34,20 @@ class StubContentStore(ContentStore):
     Supports indexing, removal, semantic search (cosine similarity),
     BM25-style keyword search, and heading prefix retrieval for
     deterministic mode.
+
+    **The passage reads model a migrated store.** A caller can seed a legacy
+    document-level row here -- the port's marker block states when a real vault
+    still holds one -- and the reads that merely enumerate or return passages
+    (``get_heading_paths``, ``get_all_chunks``, ``search_semantic``) will include
+    it, where the Postgres binding's passage scoping excludes it. The divergence
+    is deliberate: the guarded behaviour is a property of the real binding, so a
+    test asserting that a passage read excludes a legacy row is evidence about
+    that binding and has to be written against it.
+
+    ``search_bm25`` is guarded all the same, and that asymmetry is the point:
+    there the marker changes what *matches*, and a double that let a legacy
+    row's derived text satisfy a caller's term would be modelling the wrong
+    contract rather than a narrower one.
     """
 
     def __init__(self) -> None:
@@ -262,10 +276,13 @@ class StubContentStore(ContentStore):
             behaviour for a vault that has taken the column but not yet the
             migration.
 
-            A legacy document-header row is the exception. Its
-            ``heading_path`` is an internal sentinel rather than a heading
-            someone wrote, so including it would let a query for one of the
-            sentinel's own words score every such row in the store.
+            A legacy document-header row is the exception: its ``heading_path``
+            is an internal sentinel rather than a heading someone wrote, so
+            including it would let a query for one of the sentinel's own words
+            score every such row in the store. Why such a row can still be here
+            to exclude is stated at ``LEGACY_DOCUMENT_HEADER_HEADING_PATH`` in
+            the port; this double guards by that marker where the Postgres
+            binding guards by the chunk index, and the two are written together.
 
             This carve-out is not parity: the Postgres binding indexes the
             marker today, because its generated column weights ``heading_path``
@@ -297,6 +314,8 @@ class StubContentStore(ContentStore):
                 for c in chunks
                 if _chunk_matches_filters(c, filters)
             ]
+            # Guarded by the heading path, for the reason ``_searchable`` gives
+            # and under the condition the port's marker block states.
             authored = [
                 (c, hits)
                 for c, hits in scored
@@ -399,8 +418,7 @@ class StubContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        No exclusion is needed: the passage surface holds authored passages
-        only, so every path here is a real heading.
+        Unguarded, as this class's passage reads are; see the class docstring.
         """
         chunks = self._store.get(document_id, [])
         seen: set[str] = set()
@@ -416,7 +434,10 @@ class StubContentStore(ContentStore):
         return len(self._store.get(document_id, [])) > 0
 
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
-        """Return all chunks for a document in document order."""
+        """Return all chunks for a document in document order.
+
+        Unguarded, as this class's passage reads are; see the class docstring.
+        """
         chunks = self._store.get(document_id, [])
         return sorted(chunks, key=lambda c: c.chunk_index)
 
