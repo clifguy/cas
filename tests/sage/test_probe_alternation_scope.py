@@ -176,6 +176,28 @@ def test_a_document_whose_own_candidates_co_occur_is_dropped():
     assert _cross_passage_pairs(chunks, _no_stemming) == {}
 
 
+def test_a_word_the_configuration_discards_is_not_a_candidate():
+    """A term that renders to nothing degenerates the pair into one lexeme.
+
+    ``_stem_map`` reports no lexeme for a word the configuration drops, and a
+    pair holding such a word asks for a single required term -- which the
+    before arm answers within one passage, exactly the case the pair exists to
+    avoid. Rare in practice, since a stopword is seldom a passage's rarest
+    word, which is why it has to be pinned rather than left to the corpus.
+    """
+    chunks = [
+        _chunk("d1", "because alphaword"),
+        _chunk("d1", "because betaword"),
+    ]
+
+    def _drops_because(word: str):
+        return None if word == "because" else word
+
+    assert set(_cross_passage_pairs(chunks, _drops_because)["d1"]) == {"alphaword", "betaword"}, (
+        "the discarded word was selected, so the pair asks for one lexeme"
+    )
+
+
 def test_a_document_offering_no_such_pair_is_dropped():
     """Silence beats a weaker query.
 

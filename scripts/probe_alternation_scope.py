@@ -64,7 +64,10 @@ from psycopg_pool import AsyncConnectionPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sage.adapters.content_store_postgres import PostgresContentStore  # noqa: E402
+from sage.adapters.content_store_postgres import (  # noqa: E402
+    PostgresContentStore,
+    _passage_rows_only,
+)
 from sage.adapters.interfaces import Chunk, DocumentSurface  # noqa: E402
 from sage.services.passage_structure import indexed_structure  # noqa: E402
 from sage.storage.postgres.schema import (  # noqa: E402
@@ -166,26 +169,36 @@ def _cross_passage_pairs(chunks, stem) -> dict[str, tuple[str, str]]:
     ``stem`` maps a word to the lexeme the text-search configuration reduces it
     to, and everything except the returned pair is decided on lexemes. It has
     to be: matching is stemmed, so a passage holding ``documents`` satisfies a
-    term ``document``, and a guard reading raw words would call such a pair
+    term ``document``, and a selection reading raw words would call such a pair
     cross-passage and hand the before arm a query it can answer within one unit
-    after all. Measured against the cas corpus, a raw-word guard admitted 30 of
-    199 pairs on that mistake -- which is the whole of what the before arm
-    appeared to reach.
+    after all.
 
     The *terms* stay raw words even so, because a lexeme is not a safe query:
     the English stemmer is not idempotent, and rendering an already-stemmed
     word stems it a second time to something the index never wrote.
+
+    What this produces is a *candidate* set, and the docstring says candidate
+    because the lexeme sets here are assembled from the words the regex above
+    yields -- so a lexeme the index holds through a shorter inflection is
+    invisible to them, and a pair can survive that a passage answers.
+    ``_keep_unsatisfied_pairs`` settles it against the index itself; nothing
+    downstream should treat this function's output as the guarantee.
     """
     by_document: dict[str, list[set[str]]] = {}
     frequency: dict[str, int] = {}
     for document_id, _address, content, *_ in chunks:
         words = _passage_words(content)
         by_document.setdefault(document_id, []).append(words)
-        for lexeme in {stem(word) for word in words}:
+        for lexeme in {stem(word) for word in words if stem(word)}:
             frequency[lexeme] = frequency.get(lexeme, 0) + 1
 
     def _rank(word: str) -> tuple[int, str]:
         return (frequency.get(stem(word), 0), word)
+
+    def _queryable(words):
+        # A word the configuration discards renders to nothing, so a pair
+        # holding one asks for a single lexeme and is not a conjunction.
+        return {word for word in words if stem(word)}
 
     pairs: dict[str, tuple[str, str]] = {}
     for document_id, passages in by_document.items():
@@ -193,8 +206,9 @@ def _cross_passage_pairs(chunks, stem) -> dict[str, tuple[str, str]]:
             continue
         # The rarest word of each passage, then the rarest two of those whose
         # lexemes no one passage holds together.
-        rarest = sorted((min(words, key=_rank) for words in passages if words), key=_rank)
-        lexemes = [{stem(word) for word in words} for words in passages]
+        queryable = [_queryable(words) for words in passages]
+        rarest = sorted((min(words, key=_rank) for words in queryable if words), key=_rank)
+        lexemes = [{stem(word) for word in words} for words in queryable]
         pair = next(
             (
                 (first, second)
@@ -216,9 +230,11 @@ def _cross_passage_pairs(chunks, stem) -> dict[str, tuple[str, str]]:
 async def _stem_map(dsn: str, words: set[str]) -> dict[str, str]:
     """Each word's lexeme under the text-search configuration, in one round-trip.
 
-    Asked of the backend rather than reimplemented, so the guard and the match
-    agree by construction. A word the configuration discards reports itself, and
-    such a word cannot satisfy a query either way.
+    Asked of the backend rather than reimplemented, so the selection and the
+    match agree on what a word reduces to. A word the configuration discards
+    reports itself; such a word is dropped as a candidate by the caller, since
+    a pair holding one renders to a single required lexeme and stops being a
+    conjunction at all.
     """
     ordered = sorted(words)
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
@@ -228,7 +244,47 @@ async def _stem_map(dsn: str, words: set[str]) -> dict[str, str]:
             " FROM unnest(%s::text[]) AS w",
             (ordered,),
         )
-        return {word: lexeme or word for word, lexeme in await cur.fetchall()}
+        return {word: lexeme for word, lexeme in await cur.fetchall()}
+
+
+async def _keep_unsatisfied_pairs(
+    pool, pairs: dict[str, tuple[str, str]]
+) -> tuple[dict[str, tuple[str, str]], int]:
+    """Drop any pair some passage of its own document already satisfies.
+
+    The selection above reasons over lexemes it assembles itself, and an
+    assembled set is only as complete as the words it was built from: a term's
+    lexeme can reach a passage through an inflection the candidate regex never
+    yielded, and the pair then looks cross-passage while a single passage
+    answers it. Two of 199 survived the previous guard that way, which was the
+    whole of what the before arm appeared to reach.
+
+    So the last word goes to the predicate the before arm actually evaluates,
+    over the seeded rows it will actually read -- same tokenizer, same operator,
+    same text. Nothing is derived here, which is the point: a guard that reasons
+    can be incomplete in a way that a guard that asks cannot.
+
+    One statement rather than one per document. A document whose pair is
+    satisfied is dropped rather than given the next candidate: silence beats a
+    weaker query, and the alternative reintroduces the selection this exists to
+    check.
+    """
+    if not pairs:
+        return {}, 0
+    rows = [(document_id, f"{first} {second}") for document_id, (first, second) in pairs.items()]
+    values = ", ".join(["(%s, %s)"] * len(rows))
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            f"SELECT v.document_id FROM (VALUES {values}) AS v(document_id, q)"  # noqa: S608
+            " WHERE EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = v.document_id"
+            f" AND {_passage_rows_only('c')}"
+            f" AND c.tsv @@ websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', v.q))",
+            [value for row in rows for value in row],
+        )
+        satisfied = {document_id for (document_id,) in await cur.fetchall()}
+    return {
+        document_id: pair for document_id, pair in pairs.items() if document_id not in satisfied
+    }, len(satisfied)
 
 
 async def _read_corpus(dsn: str, vault: str) -> tuple[list, list, list]:
@@ -410,8 +466,9 @@ def _table(before: dict[str, ArmResult], after: dict[str, ArmResult]) -> list[st
 
 
 def _render(  # noqa: PLR0913 -- a report renderer takes what the report shows
-    vault, seeded, titles_queried, pairs_queried, title_arms, pair_arms, controls
+    vault, seeded, titles_queried, pairs, title_arms, pair_arms, controls
 ) -> str:
+    pairs_queried, leaked = pairs
     return "\n".join(
         [
             f"Alternation scope against the {vault!r} corpus, on the retrieval binding alone.",
@@ -422,6 +479,8 @@ def _render(  # noqa: PLR0913 -- a report renderer takes what the report shows
             f"  titles queried     {titles_queried} active documents",
             f"  pairs queried      {pairs_queried} documents offering two terms no one "
             "passage holds together",
+            f"  pairs dropped      {leaked} candidates a passage answered after all, "
+            "rejected by the index rather than by the selection",
             f"  control            titles {controls[0]}/{titles_queried}, pairs "
             f"{controls[1]}/{pairs_queried} queries answered differently by the two arms",
             "",
@@ -460,14 +519,13 @@ async def main() -> int:
     # disposable schema exists, since it is a property of the configuration
     # rather than of the seeded copy.
     vocabulary = {word for _, _, content, *_ in chunks for word in _passage_words(content)}
-    stem = (await _stem_map(dsn, vocabulary)).get
-    pairs = {
+    stem = await _stem_map(dsn, vocabulary)
+    candidates = {
         document_id: pair
-        for document_id, pair in _cross_passage_pairs(chunks, lambda w: stem(w, w)).items()
+        for document_id, pair in _cross_passage_pairs(chunks, stem.get).items()
         if document_id in queried
     }
     title_queries = _title_queries(queried)
-    pair_queries = _pair_queries(pairs)
 
     schema = assert_disposable_target(_SCHEMA_PREFIX + os.urandom(4).hex())
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
@@ -481,6 +539,10 @@ async def main() -> int:
     try:
         store = PostgresContentStore(pool)
         await _load(store, chunks, surfaces, titles)
+        # Settled against the seeded rows, so the guard is the arm's own
+        # predicate rather than a reconstruction of it.
+        pairs, leaked = await _keep_unsatisfied_pairs(pool, candidates)
+        pair_queries = _pair_queries(pairs)
         controls = (
             await _arm_control(store, title_queries),
             await _arm_control(store, pair_queries),
@@ -499,7 +561,13 @@ async def main() -> int:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
 
     report = _render(
-        args.vault, len(documents), len(queried), len(pairs), title_arms, pair_arms, controls
+        args.vault,
+        len(documents),
+        len(queried),
+        (len(pairs), leaked),
+        title_arms,
+        pair_arms,
+        controls,
     )
     print(report)
     if args.json:
@@ -510,6 +578,7 @@ async def main() -> int:
                     "seeded_documents": len(documents),
                     "titles_queried": len(queried),
                     "pairs_queried": len(pairs),
+                    "pairs_dropped_as_satisfied": leaked,
                     "arms_differing": {"title": controls[0], "cross_passage": controls[1]},
                     "title": _as_figures(*title_arms),
                     "cross_passage": _as_figures(*pair_arms),
