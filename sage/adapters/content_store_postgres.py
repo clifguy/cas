@@ -658,7 +658,7 @@ class PostgresContentStore(ContentStore):
                 " is_document_surface FROM ("
                 " (SELECT document_id, heading_path, content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
-                " false AS is_document_surface FROM chunks"
+                " false AS is_document_surface, chunk_index FROM chunks"
                 f" WHERE {_passage_rows_only()}{' AND ' + where if where else ''}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " UNION ALL"
@@ -671,16 +671,20 @@ class PostgresContentStore(ContentStore):
                 " (SELECT document_id, '' AS heading_path,"
                 " '' AS content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
-                " true AS is_document_surface FROM document_surface"
+                " true AS is_document_surface,"
+                f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index FROM document_surface"
                 f"{predicate}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 # Two rows can share a score, and a clause stopping there hands
                 # back whichever the scan reached first, so the same call can
                 # answer differently twice. The id makes the order total across
-                # documents; within one, a passage and its document-level row
-                # are separated by the heading path.
+                # documents; within one, the passage index separates the
+                # passages from each other and from the document-level row,
+                # which sorts at the index the port reserves for it. The
+                # heading will not serve: two passages can share one, and a
+                # passage carrying none ties with its own surface row.
                 " ) s WHERE score IS NOT NULL"
-                " ORDER BY score DESC, document_id, heading_path LIMIT %s"
+                " ORDER BY score DESC, document_id, chunk_index LIMIT %s"
             )
             params: list[object] = [
                 query_embedding,
@@ -1017,15 +1021,19 @@ class PostgresContentStore(ContentStore):
             # The interpolations are a module constant and a predicate built
             # from a fixed column allowlist; every value stays bound.
             "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score,"  # noqa: S608
-            " false AS is_document_surface"
+            " false AS is_document_surface, chunk_index"
             f" FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
             f" WHERE tsv @@ q AND {_passage_rows_only()}"
         )
         # A document-level row is not a passage, so it carries no excerpt and
-        # no heading, exactly as it does on the arms above.
+        # no heading, exactly as it does on the arms above. It sorts at the
+        # index the port reserves for document-level text, which is the row it
+        # replaced and which neither arm can return, so the value orders the
+        # surface ahead of the passages without colliding with one.
         surface_arm = (
             "SELECT document_id, '' AS heading_path, '' AS content,"  # noqa: S608
-            " ts_rank(tsv_rank, q) AS score, true AS is_document_surface"
+            " ts_rank(tsv_rank, q) AS score, true AS is_document_surface,"
+            f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index"
             f" FROM document_surface, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
             " WHERE tsv_match @@ q"
         )
@@ -1048,7 +1056,12 @@ class PostgresContentStore(ContentStore):
             # identically for every row, and every query routed here carries
             # one or requires no lexeme at all. ``score DESC`` stays because it
             # costs nothing and would order a shape this path does not yet see.
-            " ) u ORDER BY score DESC, document_id, heading_path LIMIT %s"
+            #
+            # The final term is the passage index rather than its heading,
+            # which is not unique within a document: two passages can share a
+            # heading, and a document whose passage carries none ties with its
+            # own surface row on the empty string.
+            " ) u ORDER BY score DESC, document_id, chunk_index LIMIT %s"
         )
         params.append(limit)
         rows = await self._fetchall(sql, params)

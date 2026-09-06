@@ -83,14 +83,19 @@ _SORTABLE_COLUMNS: frozenset[str] = frozenset(
     {"title", "doc_type", "document_date", "lifecycle_status"}
 )
 
-# Final sort term on every enumeration this store orders, making the ordering
-# total. ``id`` is the primary key of each table it is appended for -- documents
-# and staging edges alike -- so appending it breaks every tie the sort columns
-# leave without disturbing the primary sort a caller asked for. The direction is
-# arbitrary: what the consumers need is that the order is the same one twice,
-# not which of two tied rows comes first. It earns its place wherever one batch
-# can write several rows at a single timestamp and the sort stops at that
-# timestamp, which is every enumeration keyed on ``created_at``.
+# Final sort term making an enumeration's ordering total. ``id`` is the primary
+# key of each table it is appended for -- documents and staging edges alike --
+# so appending it breaks every tie the sort columns leave without disturbing the
+# primary sort a caller asked for. The direction is arbitrary: what the
+# consumers need is that the order is the same one twice, not which of two tied
+# rows comes first.
+#
+# It is applied where it is applied, and this names no more than that: the
+# catalog clause built below, and the enumerations keyed on ``created_at``,
+# which one batch can write identically. Other orderings here remain partial --
+# the metadata search ranks on two tiers and takes a limit, so which rows
+# survive its cut is not fixed -- and appending this term to one of them is a
+# change of its own, not something to infer from its presence here.
 _ORDER_TIEBREAK: Final[str] = ", id ASC"
 
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).

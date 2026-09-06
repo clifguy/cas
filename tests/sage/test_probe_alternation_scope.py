@@ -36,6 +36,17 @@ def _chunk(document_id: str, content: str):
     return (document_id, "Section", content, 0, None, "adr", "active", "CAS")
 
 
+def _no_stemming(word: str) -> str:
+    """A configuration that reduces nothing, so a fixture's words are its lexemes.
+
+    Every fixture below is written in words no English stemmer touches, so this
+    is what the real map would return for them -- stated rather than assumed,
+    since the selection now decides on lexemes and a test that hid which it was
+    reading could not tell the two apart.
+    """
+    return word
+
+
 # ---------------------------------------------------------------------------
 # The query shape under measurement
 # ---------------------------------------------------------------------------
@@ -91,24 +102,57 @@ def test_the_sweep_covers_the_renderings_the_title_instrument_uses():
 # ---------------------------------------------------------------------------
 
 
-def test_a_pair_is_never_carried_by_one_passage():
-    """The defining property, and the one the whole second table rests on.
+def test_a_pair_spans_two_passages():
+    """The pair's terms come from different passages, not from the richest one.
 
-    A pair one passage happens to hold is satisfied within that unit, so both
-    arms answer it and the query measures nothing. The selection must reject
-    such a pair even when it is the rarest one available -- which is exactly
-    when a greedy "take the two rarest" would choose it.
+    Says only that, and its name now says only that. It was written as the pin
+    on the co-occurrence guard and is not one: on this fixture the per-passage
+    rarest words are ``beside`` and ``betaword``, which no passage holds
+    together, so the guard never fires and the selection returns the same pair
+    with it removed. ``test_a_document_whose_own_candidates_co_occur_is_dropped``
+    is the fixture that reaches it.
     """
     chunks = [
         _chunk("d1", "alphaword betaword together in the first passage"),
         _chunk("d1", "alphaword again with gammaword beside it"),
     ]
 
-    first, second = _cross_passage_pairs(chunks)["d1"]
+    first, second = _cross_passage_pairs(chunks, _no_stemming)["d1"]
 
     assert {first, second} != {"alphaword", "betaword"}
     assert not ({first, second} <= {"alphaword", "betaword", "together", "passage"}), (
         "the pair was drawn from the first passage alone"
+    )
+
+
+def test_the_guard_reads_lexemes_rather_than_the_words_as_written():
+    """Two spellings of one lexeme are one term to the index, and must be here.
+
+    The failure this closes is silent and it inflates the before arm rather
+    than emptying it. ``documents`` and ``document`` are one lexeme, so a
+    passage holding the plural satisfies a query naming the singular -- and a
+    guard comparing the words as written calls that pair cross-passage, hands
+    the before arm a query it answers within one unit, and reports the reach as
+    the change's baseline. Against the cas corpus a raw-word guard admitted 30
+    of 199 pairs this way.
+
+    Here ``alphaword`` and ``alphawords`` are one lexeme. Reading lexemes, the
+    two candidates are ``gammaword`` and that lexeme, which the second passage
+    holds together, so the guard rejects them and the document is dropped.
+    Reading the words as written, the same fixture yields the pair
+    ``('alphaword', 'alphawords')`` -- a conjunction of a term with a second
+    spelling of itself, which every passage carrying either already satisfies.
+    """
+    chunks = [
+        _chunk("d1", "alphaword betaword"),
+        _chunk("d1", "alphawords betaword gammaword"),
+    ]
+    stemmed = {"alphawords": "alphaword"}
+
+    assert _cross_passage_pairs(chunks, lambda w: stemmed.get(w, w)) == {}
+    assert _cross_passage_pairs(chunks, _no_stemming) == {"d1": ("alphaword", "alphawords")}, (
+        "positive control: read as written, the fixture yields exactly the pair "
+        "the stemming rejects, so the emptiness above is the guard and not the shape"
     )
 
 
@@ -129,7 +173,7 @@ def test_a_document_whose_own_candidates_co_occur_is_dropped():
         _chunk("d1", "alphaword betaword gammaword"),
     ]
 
-    assert _cross_passage_pairs(chunks) == {}
+    assert _cross_passage_pairs(chunks, _no_stemming) == {}
 
 
 def test_a_document_offering_no_such_pair_is_dropped():
@@ -145,14 +189,14 @@ def test_a_document_offering_no_such_pair_is_dropped():
         _chunk("d1", "gammaword betaword alphaword"),
     ]
 
-    assert _cross_passage_pairs(chunks) == {}
+    assert _cross_passage_pairs(chunks, _no_stemming) == {}
 
 
 def test_a_single_passage_document_is_dropped():
     """One passage cannot hold a pair across two of them."""
     chunks = [_chunk("d1", "alphaword betaword gammaword deltaword")]
 
-    assert _cross_passage_pairs(chunks) == {}
+    assert _cross_passage_pairs(chunks, _no_stemming) == {}
 
 
 def test_both_terms_come_from_the_document():
@@ -162,7 +206,7 @@ def test_both_terms_come_from_the_document():
         _chunk("d1", "betaword in the second passage"),
     ]
 
-    assert set(_cross_passage_pairs(chunks)["d1"]) == {"alphaword", "betaword"}
+    assert set(_cross_passage_pairs(chunks, _no_stemming)["d1"]) == {"alphaword", "betaword"}
 
 
 def test_the_pair_family_carries_the_alternation_and_its_control():

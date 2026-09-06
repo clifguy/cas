@@ -68,6 +68,7 @@ from sage.adapters.content_store_postgres import PostgresContentStore  # noqa: E
 from sage.adapters.interfaces import Chunk, DocumentSurface  # noqa: E402
 from sage.services.passage_structure import indexed_structure  # noqa: E402
 from sage.storage.postgres.schema import (  # noqa: E402
+    TEXT_SEARCH_CONFIG,
     assert_disposable_target,
     bootstrap_schema,
 )
@@ -147,7 +148,7 @@ def _passage_words(content: str) -> set[str]:
     return set(_WORD.findall(content.lower()))
 
 
-def _cross_passage_pairs(chunks) -> dict[str, tuple[str, str]]:
+def _cross_passage_pairs(chunks, stem) -> dict[str, tuple[str, str]]:
     """One pair of terms per document that no single passage of it carries.
 
     The pair is what the before arm cannot satisfy anywhere: each term lives in
@@ -161,37 +162,73 @@ def _cross_passage_pairs(chunks) -> dict[str, tuple[str, str]]:
     presence in the result is most plainly the query's doing rather than the
     ranking's, and taking the rarest from each of two passages makes the choice
     a property of the corpus rather than of whoever wrote the probe.
+
+    ``stem`` maps a word to the lexeme the text-search configuration reduces it
+    to, and everything except the returned pair is decided on lexemes. It has
+    to be: matching is stemmed, so a passage holding ``documents`` satisfies a
+    term ``document``, and a guard reading raw words would call such a pair
+    cross-passage and hand the before arm a query it can answer within one unit
+    after all. Measured against the cas corpus, a raw-word guard admitted 30 of
+    199 pairs on that mistake -- which is the whole of what the before arm
+    appeared to reach.
+
+    The *terms* stay raw words even so, because a lexeme is not a safe query:
+    the English stemmer is not idempotent, and rendering an already-stemmed
+    word stems it a second time to something the index never wrote.
     """
     by_document: dict[str, list[set[str]]] = {}
     frequency: dict[str, int] = {}
     for document_id, _address, content, *_ in chunks:
         words = _passage_words(content)
         by_document.setdefault(document_id, []).append(words)
-        for word in words:
-            frequency[word] = frequency.get(word, 0) + 1
+        for lexeme in {stem(word) for word in words}:
+            frequency[lexeme] = frequency.get(lexeme, 0) + 1
+
+    def _rank(word: str) -> tuple[int, str]:
+        return (frequency.get(stem(word), 0), word)
 
     pairs: dict[str, tuple[str, str]] = {}
     for document_id, passages in by_document.items():
         if len(passages) < 2:
             continue
-        # The rarest word of each passage, then the rarest two of those that no
-        # one passage holds together.
-        rarest = sorted(
-            (min(words, key=lambda w: (frequency[w], w)) for words in passages if words),
-            key=lambda w: (frequency[w], w),
-        )
+        # The rarest word of each passage, then the rarest two of those whose
+        # lexemes no one passage holds together.
+        rarest = sorted((min(words, key=_rank) for words in passages if words), key=_rank)
+        lexemes = [{stem(word) for word in words} for words in passages]
         pair = next(
             (
                 (first, second)
                 for i, first in enumerate(rarest)
                 for second in rarest[i + 1 :]
-                if first != second and not any({first, second} <= words for words in passages)
+                # Distinct *as the index sees them*: two spellings of one lexeme
+                # are one term, and a conjunction of a term with itself is not a
+                # cross-passage query.
+                if stem(first) != stem(second)
+                and not any({stem(first), stem(second)} <= held for held in lexemes)
             ),
             None,
         )
         if pair:
             pairs[document_id] = pair
     return pairs
+
+
+async def _stem_map(dsn: str, words: set[str]) -> dict[str, str]:
+    """Each word's lexeme under the text-search configuration, in one round-trip.
+
+    Asked of the backend rather than reimplemented, so the guard and the match
+    agree by construction. A word the configuration discards reports itself, and
+    such a word cannot satisfy a query either way.
+    """
+    ordered = sorted(words)
+    async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
+        cur = await conn.execute(
+            "SELECT w, (SELECT lexeme FROM unnest("  # noqa: S608
+            f"to_tsvector('{TEXT_SEARCH_CONFIG}', w)) LIMIT 1)"
+            " FROM unnest(%s::text[]) AS w",
+            (ordered,),
+        )
+        return {word: lexeme or word for word, lexeme in await cur.fetchall()}
 
 
 async def _read_corpus(dsn: str, vault: str) -> tuple[list, list, list]:
@@ -418,9 +455,15 @@ async def main() -> int:
     queried = {row[0]: row[1] for row in documents if row[2] == "active" and row[1]}
     # Pairs are drawn from the active slice too, so both families ask about the
     # same documents and a difference between the tables is the query shape.
+    # Lexemes, not raw words, decide which pairs qualify -- see
+    # ``_cross_passage_pairs``. The vocabulary is asked for once, before the
+    # disposable schema exists, since it is a property of the configuration
+    # rather than of the seeded copy.
+    vocabulary = {word for _, _, content, *_ in chunks for word in _passage_words(content)}
+    stem = (await _stem_map(dsn, vocabulary)).get
     pairs = {
         document_id: pair
-        for document_id, pair in _cross_passage_pairs(chunks).items()
+        for document_id, pair in _cross_passage_pairs(chunks, lambda w: stem(w, w)).items()
         if document_id in queried
     }
     title_queries = _title_queries(queried)
