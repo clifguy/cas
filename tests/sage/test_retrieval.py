@@ -3919,10 +3919,9 @@ async def test_recommended_limit_re_pages_within_delivered_bytes(
     does not supply. Perturbing the scan order between the two calls is enough
     to break it, and this assertion fails against the ordering as it stood.
 
-    The **byte assertion** is the guarantee, stated the way the acceptance
-    criterion asks: on the bytes the runtime delivers rather than on the
-    service's own measurement, which cannot catch a recommendation that is
-    wrong in the same way twice. It is not a discriminator against the old
+    The **byte assertion** is the guarantee, stated on the bytes the runtime
+    delivers rather than on the service's own measurement, which cannot catch
+    a recommendation that is wrong in the same way twice. It is not a discriminator against the old
     ordering -- a reordered prefix still fits the ceiling whenever the rows it
     drew from weigh about the same -- and it is not being claimed as one. What
     it pins is that the number the hint names is honest at the wire.
@@ -3982,41 +3981,50 @@ async def test_recommended_limit_re_pages_within_delivered_bytes(
     )
 
 
-async def test_facets_value_order_is_already_total(
+async def test_facets_value_order_breaks_a_count_tie_on_the_value(
     graph_store,
     retrieval_service,
 ):
-    """The facets arm needs no tiebreak, and this is what says so.
+    """The facets arm needs no document tiebreak, and this is what says so.
 
     Facet values order by ``doc_count DESC, value ASC`` over a GROUP BY on the
-    field, so a value appears once and the order is already total. That premise
-    is what ``_facets_response_at_cap`` relies on to simulate a re-call by
-    truncating, and it is asserted here rather than assumed: the fixture puts
-    two values on an equal count, which is where a non-total order would show,
-    and the scan order is perturbed between the two calls. Green before the
-    document-side tiebreak lands as well as after -- a red here would mean the
-    ticket's analysis of this arm is wrong, not that this arm needs fixing.
+    field, so a value appears once per row and ``value ASC`` leaves no tie
+    behind. That is the premise ``_facets_response_at_cap`` relies on to
+    simulate a re-call by truncating, and it holds for a reason the document
+    query's ordering does not share -- which is why this arm takes no
+    primary-key tiebreak. Green before the document-side one lands as well as
+    after; a red here would mean the analysis of this arm is wrong, not that
+    this arm needs fixing.
+
+    The assertion is on the *order*, not on two calls agreeing. Agreement is
+    the weaker claim and the one a stable-by-accident order also satisfies:
+    with ``value ASC`` deleted from the aggregate, two calls still match each
+    other while the order is no longer total. So the fixture ties two values on
+    count and seeds them in descending value order, and the assertion is that
+    they come back ascending -- which the aggregate's own emission order does
+    not supply.
     """
     for n in range(4):
         await graph_store.insert_document(
-            _make_doc(_id(f"facettie_{n:02d}"), doc_type="adr" if n < 2 else "ticket")
+            _make_doc(_id(f"facettie_{n:02d}"), doc_type="ticket" if n < 2 else "adr")
         )
 
-    request = DiscoverRequest(
-        mode=RetrievalMode.CATALOG,
-        target=RetrievalTarget.FACETS,
-        facet_fields=["doc_type"],
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            facet_fields=["doc_type"],
+        )
     )
-    first = await retrieval_service.discover(request)
-    await _perturb_scan_order(graph_store, _id("facettie_00"))
-    second = await retrieval_service.discover(request)
 
-    counts = first.results[0].values
+    counts = response.results[0].values
     assert sorted(counts.values()) == [2, 2], (
         "the fixture must tie two facet values on count, or the order has no "
         f"tie to be total over: {counts}"
     )
-    assert list(counts) == list(second.results[0].values)
+    assert list(counts) == ["adr", "ticket"], (
+        f"count-tied facet values must come back in ascending value order: {counts}"
+    )
 
 
 async def test_response_size_bytes_matches_serialization(

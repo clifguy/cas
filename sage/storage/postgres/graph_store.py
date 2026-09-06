@@ -828,6 +828,13 @@ class PostgresGraphStore(GraphStore):
         query, for the same reason. Edges are written a transaction at a time
         and share a ``created_at`` freely, so without the tiebreak a caller
         paging this surface could skip an edge or receive one twice.
+
+        The retraction pick below takes the same tiebreak on the same grounds.
+        Nothing stops an edge being retracted twice -- a ``retracts`` edge
+        carries a null target, so the natural-key index does not fire across
+        two of them -- and the window reports whichever the row number ranks
+        first. Ranking on ``created_at`` alone would let two retractions
+        written together report either one, on different calls.
         """
         with self._query_timer.measure("query_edges"):
             where_clauses: list[str] = []
@@ -856,7 +863,7 @@ class PostgresGraphStore(GraphStore):
                         created_at,
                         ROW_NUMBER() OVER (
                             PARTITION BY retracted_edge_id
-                            ORDER BY created_at ASC
+                            ORDER BY created_at ASC, id ASC
                         ) AS rn
                     FROM edges
                     WHERE edge_type = 'retracts'

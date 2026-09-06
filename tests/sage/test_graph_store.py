@@ -698,6 +698,61 @@ async def test_query_edges_multiple_retracts_earliest_wins(graph_store):
     assert disclaimed.retracted_by_edge_id == r_earliest_id
 
 
+async def test_query_edges_retracts_tie_on_created_at_resolves_by_id(graph_store):
+    """Two retracts edges written together: the pick is by id, not by arrival.
+
+    Its sibling above pins that the *earliest* retraction wins, which leaves
+    the equal-timestamp case open, and nothing forbids that case: a retracts
+    edge carries a null target, so the natural-key index on
+    (source_id, target_id, edge_type) does not fire across two of them, and the
+    link path checks only that the retracted edge exists. Two written in one
+    batch share a created_at, and the row-number window then has a tie to break.
+
+    The two retractions are inserted in descending id order, so insertion order
+    and id order disagree and a window ranking on created_at alone reports
+    whichever the scan reaches first. Fixed ids rather than uuid4 because the
+    assertion is about *which* id wins, and a random pair cannot express that.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_tiesrc")))
+    await graph_store.insert_document(_make_doc(_id("doc_tietgt")))
+
+    e1_id = str(uuid.uuid4())
+    await graph_store.insert_edge(
+        Edge(
+            id=e1_id,
+            source_id=_id("doc_tiesrc"),
+            target_id=_id("doc_tietgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    lower_id = "00000000-0000-4000-8000-000000000001"
+    higher_id = "00000000-0000-4000-8000-000000000002"
+    tied_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    for retracts_id in (higher_id, lower_id):
+        await graph_store.insert_edge(
+            Edge(
+                id=retracts_id,
+                source_id=_id("doc_tiesrc"),
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                source_valid_from_version=_id("doc_tiesrc"),
+                retracted_edge_id=e1_id,
+                created_at=tied_at,
+            )
+        )
+
+    rows, _ = await graph_store.query_edges(filters={"source_id": _id("doc_tiesrc")})
+    disclaimed = next(r for r in rows if r.edge.id == e1_id)
+
+    assert disclaimed.retracted_at == tied_at
+    assert disclaimed.retracted_by_edge_id == lower_id, (
+        "a created_at tie between two retractions must resolve on the edge id, "
+        f"not on which arrived first; got {disclaimed.retracted_by_edge_id}"
+    )
+
+
 async def test_query_edges_null_target_on_retracts_preserved(graph_store):
     """10. Per CAS-ADR-017 retracts edges have target_id=NULL.
     query_edges must preserve the null (not coerce or drop the row).
@@ -1430,7 +1485,7 @@ async def test_paging_a_tied_set_returns_each_document_exactly_once(
     the test passes against the defect and proves nothing. What is perturbed is
     the page just read, so a clause that lets those rows drift to the end of
     the tied block returns them again in a later page and drops whatever they
-    displaced -- the skip and the duplicate the ticket describes, in one shot.
+    displaced -- the skip and the duplicate a non-total order produces, in one shot.
 
     Run against all three ORDER BY branches -- a tiebreak on the default alone
     leaves the other two admitting ties.
