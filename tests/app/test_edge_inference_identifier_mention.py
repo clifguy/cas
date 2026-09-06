@@ -69,6 +69,7 @@ from types import SimpleNamespace
 
 import jsonschema
 import pytest
+import yaml
 
 from sage.adapters.stubs import (
     StubAbstractionProvider,
@@ -82,14 +83,29 @@ from sage.models.schemas import Document, IngestRequest, LinkRequest
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.identifier_mention_inference import (
     IDENTIFIER_MENTION_RATIONALE_PREFIX,
+    _identifier_mention_rules,
     infer_identifier_mentions_for_document,
     plan_reference_reconcile,
 )
+from sage.vault_management import default_vault_root
 from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
 
 # ---------------------------------------------------------------------------
 # Fixture: vault config with the new identifier_mention rule
+#
+# These three patterns are not illustrative. They are the cas vault's own
+# identifier_mention patterns, and `test_cas_vault_config_matches_canonical_
+# patterns` below holds them to that config literal-for-literal, so a change
+# on either side fails here rather than drifting silently. Editing one of
+# them to make a test pass is therefore a claim about production, not a
+# fixture tweak.
+#
+# The three are deliberately asymmetric and must stay so. `CAS-ADR-\d{3}` and
+# `T-\d{4}` are fixed-width by their own conventions; only the failure-record
+# leg is unbounded, and deliberately so: that id space has no width
+# bound. Regularizing all three to one shape re-creates the bound that
+# stopped three-digit failure ids from resolving.
 # ---------------------------------------------------------------------------
 
 ADR_PATTERN = {
@@ -103,10 +119,208 @@ TICKET_PATTERN = {
     "target_doc_type": "ticket",
 }
 FAILURE_PATTERN = {
-    "regex": r"\bF\d{1,2}\b|\bBASELINE(?:-\d+)?\b",
+    "regex": r"\bF\d+\b|\bBASELINE(?:-\d+)?\b",
     "target_tier3": {"failure_id": "{id}"},
     "target_doc_type": "failure_record",
 }
+
+# The full pattern set the cas vault declares, in one place. Every fixture and
+# assertion below reads this rather than re-listing the three constants, so
+# there is exactly one copy to compare against production.
+CAS_IDENTIFIER_MENTION_PATTERNS = [ADR_PATTERN, TICKET_PATTERN, FAILURE_PATTERN]
+
+
+# ---------------------------------------------------------------------------
+# The id space each pattern must span
+#
+# The tests further down prove the inference engine behaves correctly *given*
+# a pattern. These prove the patterns themselves admit exactly the identifiers
+# their id spaces define -- the property the engine tests take as given and so
+# can never establish.
+#
+# Both halves carry weight. The accepted ids fail a pattern that is too
+# narrow; the rejected ids fail one widened past its id space, which is how
+# a too-narrow pattern tends to get "repaired".
+#
+# Each reject set covers both word boundaries, and they fail to different
+# inputs. A lost *trailing* boundary shows up on an id one character too
+# long, which over-matches. A lost *leading* boundary shows up only on a
+# valid id embedded in a longer token -- ``REF12``, ``0xF3``, ``XT-0001``
+# -- because every id tested on its own starts at a boundary whether the
+# pattern demands one or not. Without the embedded cases a pattern missing
+# its leading ``\b`` passes every assertion here while matching mid-word in
+# real prose, which is what the schema's own regex guidance warns against.
+# ---------------------------------------------------------------------------
+
+_ID_SPACE_CASES = [
+    pytest.param(
+        ADR_PATTERN,
+        ["CAS-ADR-001", "CAS-ADR-042", "CAS-ADR-999"],
+        # Two and four digits both fall outside the fixed three-digit width;
+        # a bare ``ADR-042`` lacks the project prefix the pattern anchors on;
+        # ``XCAS-ADR-001`` embeds a valid id and needs the leading boundary.
+        ["CAS-ADR-42", "CAS-ADR-1000", "ADR-042", "XCAS-ADR-001"],
+        id="adr",
+    ),
+    pytest.param(
+        TICKET_PATTERN,
+        ["T-0001", "T-0042", "T-9999"],
+        ["T-001", "T-00001", "XT-0001"],
+        id="ticket",
+    ),
+    pytest.param(
+        FAILURE_PATTERN,
+        # F100 and F1000 carry the three-and-more-digit case no other test
+        # exercises; the superseded two-digit bound reached neither.
+        ["F1", "F3", "F12", "F100", "F1000", "BASELINE", "BASELINE-2"],
+        ["F", "FX", "F1a", "REF12", "0xF3"],
+        id="failure_record",
+    ),
+]
+
+
+@pytest.mark.parametrize(("pattern", "accepted", "rejected"), _ID_SPACE_CASES)
+def test_identifier_mention_regexes_span_the_cas_id_space(
+    pattern: dict, accepted: list[str], rejected: list[str]
+) -> None:
+    """Each production regex matches its whole id space and nothing beyond it.
+
+    A match is required to cover the identifier entirely: the engine feeds
+    ``re.finditer`` over document bodies and substitutes the matched span
+    into the tier3 filter, so a pattern that matched only ``F10`` of ``F100``
+    would resolve against a real but wrong failure record. Asserting on the
+    matched span rather than on truthiness is what distinguishes the two.
+    """
+    regex = re.compile(pattern["regex"])
+    for identifier in accepted:
+        match = regex.search(identifier)
+        assert match is not None, (
+            f"{pattern['target_doc_type']} pattern {pattern['regex']!r} does not "
+            f"match {identifier!r}, an identifier its id space admits."
+        )
+        assert match.group(0) == identifier, (
+            f"{pattern['target_doc_type']} pattern {pattern['regex']!r} matched only "
+            f"{match.group(0)!r} of {identifier!r}. A partial match substitutes the "
+            f"truncated span into the tier3 filter and resolves the wrong document."
+        )
+    for identifier in rejected:
+        assert regex.search(identifier) is None, (
+            f"{pattern['target_doc_type']} pattern {pattern['regex']!r} matches "
+            f"{identifier!r}, which lies outside its id space."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The pin to production
+#
+# The check above establishes what the constants do; this one establishes
+# that they are the constants production runs. Without it the suite proves
+# the engine behaves correctly *given a pattern* and says nothing about
+# whether the pattern in the vault is the intended one -- the gap that let
+# the vault's mention regex and this file's copy of it drift apart
+# unnoticed until a live mention of a three-digit failure id failed to
+# resolve.
+#
+# The cas vault config is machine-local (``$SAGE_VAULT_ROOT`` or
+# ``~/sage_vaults``, outside any repository), so this test skips where the
+# file is absent, which is every CI runner. That is a narrow skip rather
+# than a hole: a vault config is edited on a workstation, where the file is
+# present and the pre-push suite run is the occasion this fires on. The skip
+# is keyed on the file's absence alone -- a config that is present but has
+# dropped the rule fails here rather than skipping, since that is exactly
+# the silent regression this exists to catch.
+#
+# Resolving the root is the one subtlety. The root conftest's autouse
+# ``_redirect_vaults_root`` repoints ``_VAULTS_ROOT`` at a tmp directory for
+# every test, so a ``default_vault_root()`` call inside the test body returns
+# the redirect and the pin skips everywhere -- gate presence without
+# coverage. The root is therefore resolved once at module import, before any
+# fixture runs, and still through ``default_vault_root`` so ``$SAGE_VAULT_ROOT``
+# is honored rather than a second resolution chain being invented here.
+#
+# That deliberately steps outside the redirect, so it is worth being exact
+# about what the redirect protects: it exists to keep tests from *writing*
+# YAML into the operator's real vault tree and leaving orphan vault
+# directories behind. This reads one file and writes nothing, under a vault
+# id fixed to ``cas`` that no argument can redirect. No other test in this
+# module resolves the root, so the guard remains in force everywhere it was.
+# ---------------------------------------------------------------------------
+
+# Resolved at import, ahead of the autouse redirect -- see above.
+_REAL_VAULT_ROOT = default_vault_root()
+
+
+def _patterns_the_engine_would_apply(config: dict) -> list[dict]:
+    """Return the vault's identifier_mention patterns as the engine reads them.
+
+    Selection is delegated to the engine's own reader rather than
+    re-implemented, so the pin compares against what production actually
+    applies. Two behaviours a private re-implementation kept getting wrong,
+    both of which the reader has: it accumulates across every
+    ``identifier_mention`` rule (``inference_rules`` is a list and nothing
+    forbids two, so a first-match read leaves the second free to hold a
+    stale pattern), and it honours each pattern's ``enabled`` flag, which
+    the schema defaults to true and the engine uses to skip a pattern
+    without removing it.
+
+    ``enabled`` is then dropped from what is returned. A disabled pattern is
+    already gone, so the key that survives is always true and carries no
+    information — leaving it in would red the pin on a config that spells
+    out a default the engine treats as identical.
+    """
+    patterns = _identifier_mention_rules(config.get("edge_inference"))
+    return [{k: v for k, v in pattern.items() if k != "enabled"} for pattern in patterns]
+
+
+def test_cas_vault_config_matches_canonical_patterns() -> None:
+    """The cas vault's identifier_mention patterns equal this file's copy.
+
+    The config file's own text is the input, read rather than loaded
+    through ``VaultConfig.model_validate``: the question is what the vault
+    declares, and a loader that expands paths or normalises shapes would
+    answer a slightly different one. Which patterns that text *applies* is
+    a separate question, and the engine's reader answers it -- see
+    ``_patterns_the_engine_would_apply``.
+    """
+    config_path = _REAL_VAULT_ROOT / "cas" / "vault_config.yaml"
+    if not config_path.exists():
+        pytest.skip(
+            f"cas vault config not present at {config_path}; this pin runs "
+            f"where the vault lives (a workstation), not on a CI runner."
+        )
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    live_patterns = _patterns_the_engine_would_apply(config)
+    assert live_patterns, (
+        f"{config_path} applies no identifier_mention pattern at all -- the "
+        f"rule is absent from its `references` tier assignment, or every "
+        f"pattern it declares is `enabled: false`. Every mention in the vault "
+        f"has stopped producing edges; repair with `update_vault_config`."
+    )
+
+    by_regex = sorted(live_patterns, key=lambda p: p["regex"])
+    expected = sorted(CAS_IDENTIFIER_MENTION_PATTERNS, key=lambda p: p["regex"])
+    live_regexes = [p["regex"] for p in by_regex]
+    expected_regexes = [p["regex"] for p in expected]
+    assert live_regexes == expected_regexes, (
+        f"Identifier-mention regexes diverge between {config_path} and this "
+        f"file's CAS_IDENTIFIER_MENTION_PATTERNS. A regex present here and "
+        f"missing from the vault list is either absent from the config or "
+        f"disabled there.\n"
+        f"  vault: {live_regexes}\n"
+        f"  suite: {expected_regexes}\n"
+        f"Whichever is stale is a repair, not a fixture edit: correct the "
+        f"vault with `update_vault_config`, or correct the constant here -- "
+        f"and check the id space each pattern's `target_doc_type` admits "
+        f"before deciding which."
+    )
+    assert by_regex == expected, (
+        f"Identifier-mention pattern bodies diverge between {config_path} and "
+        f"this file's CAS_IDENTIFIER_MENTION_PATTERNS while their regexes "
+        f"agree -- a target_doc_type or target_tier3 filter has moved.\n"
+        f"  vault: {by_regex}\n"
+        f"  suite: {expected}"
+    )
 
 
 def _vault_config_dict(
@@ -116,7 +330,7 @@ def _vault_config_dict(
 ) -> dict:
     """Minimal vault config with identifier_mention enabled."""
     if patterns is None:
-        patterns = [ADR_PATTERN, TICKET_PATTERN, FAILURE_PATTERN]
+        patterns = CAS_IDENTIFIER_MENTION_PATTERNS
     brain_dir = tmp_path / "brain"
     brain_dir.mkdir(parents=True, exist_ok=True)
     sources_dir = tmp_path / "sources"
@@ -1418,24 +1632,39 @@ async def test_adr_resolution_via_tier3_adr_num_substitution(tmp_path, services)
 #
 # The cas vault writes failure_id values as bare ``F<N>`` and ``BASELINE``
 # (no dashed F- prefix). The legacy regex ``\bF-\d+\b`` matched none of
-# these. The post-fix regex ``\bF\d{1,2}\b|\bBASELINE(?:-\d+)?\b`` covers
-# both shapes. Tier3 substitution uses ``{id}`` so the matched literal
-# becomes the canonical filter value directly.
+# these. The current regex ``\bF\d+\b|\bBASELINE(?:-\d+)?\b`` covers both
+# shapes over an unbounded digit run. Tier3 substitution uses ``{id}`` so
+# the matched literal becomes the canonical filter value directly. The
+# digit run is unbounded deliberately; see the module header for why.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_f_record_resolution_dashless_and_baseline(tmp_path, services):
-    """F-record mentions resolve via tier3 ``failure_id`` for both shapes.
+    """F-record mentions resolve via tier3 ``failure_id`` for every shape.
 
-    Three failure records seeded — bare ``F12``, single-digit ``F3``, and
-    ``BASELINE`` — and the source body mentions all three. Anti-coincidence:
-    if any one fails to resolve, the count assertion catches the gap. The
-    three target shapes exercise both branches of the alternation regex
-    and the single-vs-double-digit boundary on the F\\d{1,2} branch.
+    Four failure records seeded — single-digit ``F3``, two-digit ``F12``,
+    three-digit ``F100`` and ``BASELINE`` — with the source body mentioning
+    all four. The four exercise both branches of the alternation and the
+    digit-run widths on the ``F\\d+`` branch; ``F100`` is the width the
+    superseded ``F\\d{1,2}`` bound could not reach, and the width at which
+    live mentions stopped resolving in production.
+
+    Anti-coincidence, in two parts. The count assertion catches any one
+    shape failing to resolve. The target-set assertion catches a
+    resolution that lands on the wrong record, and the unmentioned
+    ``F10`` decoy is what makes that half expressible: a pattern anchored
+    only at its left edge matches ``F10`` inside ``F100`` and substitutes
+    the truncated span into the tier3 filter, which resolves to the decoy
+    — four edges, one of them wrong. Without the decoy seeded, that rival
+    resolves to nothing instead and is indistinguishable from a regex
+    that simply missed, so the count would be doing all the work and the
+    target-set assertion would be inert.
     """
     f12_id = _doc_id("failure_record_f12")
     f3_id = _doc_id("failure_record_f3")
+    f100_id = _doc_id("failure_record_f100")
+    f10_decoy_id = _doc_id("failure_record_f10_decoy")
     baseline_id = _doc_id("failure_record_baseline")
     await _seed_document(
         services,
@@ -1455,6 +1684,25 @@ async def test_f_record_resolution_dashless_and_baseline(tmp_path, services):
     )
     await _seed_document(
         services,
+        doc_id=f100_id,
+        title="F100: Three-digit failure record",
+        doc_type="failure_record",
+        tags=["failure_record"],
+        tier3_metadata={"failure_id": "F100"},
+    )
+    # Never mentioned in the body. Present only so a left-anchored pattern
+    # that truncates F100 to F10 resolves to something and lands a visibly
+    # wrong edge, rather than resolving to nothing and looking like a miss.
+    await _seed_document(
+        services,
+        doc_id=f10_decoy_id,
+        title="F10: Decoy — must never be matched",
+        doc_type="failure_record",
+        tags=["failure_record"],
+        tier3_metadata={"failure_id": "F10"},
+    )
+    await _seed_document(
+        services,
         doc_id=baseline_id,
         title="BASELINE: Initial failure rate (synthetic for testing)",
         doc_type="failure_record",
@@ -1463,21 +1711,26 @@ async def test_f_record_resolution_dashless_and_baseline(tmp_path, services):
     )
     src_path = _write_md(
         tmp_path,
-        "postmortem_mentions_three_f_records.md",
-        "# Postmortem\n\nPattern-matched against F12, related to F3, "
-        "and the BASELINE failure rate.\n",
+        "postmortem_mentions_four_f_records.md",
+        "# Postmortem\n\nPattern-matched against F12, related to F3 and "
+        "to F100, and the BASELINE failure rate.\n",
     )
 
     src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
 
-    assert len(edges) == 3, (
-        f"Expected three references edges (to F12, F3, BASELINE). Got "
+    assert len(edges) == 4, (
+        f"Expected four references edges (to F12, F3, F100, BASELINE). Got "
         f"{len(edges)}: {[(e.source_id, e.target_id) for e in edges]}. "
-        f"Fewer than three would mean the regex missed one of the three "
-        f"shapes; more than three would mean the resolver over-matched."
+        f"Fewer than four would mean the regex missed one of the shapes -- "
+        f"three is the signature of a bounded digit run dropping F100; "
+        f"more than four would mean the resolver over-matched."
     )
     targets = {e.target_id for e in edges}
-    assert targets == {f12_id, f3_id, baseline_id}
+    assert targets == {f12_id, f3_id, f100_id, baseline_id}, (
+        f"Edge targets are not the four mentioned records. Containing "
+        f"{f10_decoy_id} means a truncated F100 match resolved to the "
+        f"unmentioned F10 decoy."
+    )
     for edge in edges:
         assert edge.source_id == src_doc_id
         assert edge.rationale_kind == RationaleKind.REFERENCES_MENTION
