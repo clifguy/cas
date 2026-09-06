@@ -1415,7 +1415,8 @@ def register_sage_tools(
                 rest stemmed, so they are not the words typed. The other forms
                 carry their own advisory or, where every term is optional, none.
             catalog: Filter-only SQL enumeration -- the canonical way to
-                enumerate documents already in a vault. No query needed. Returns
+                enumerate documents already in a vault. A query is refused
+                rather than ignored, since nothing would consume it. Returns
                 document metadata only (no chunks or scores). Supports pagination
                 via limit + offset. Best for deterministic enumeration by tags,
                 doc_type, or other metadata.
@@ -1502,7 +1503,9 @@ def register_sage_tools(
         Args:
             vault_id: Target vault identifier.
             mode: Retrieval mode (semantic, keyword, catalog, deterministic). Default: semantic.
-            query: Search query text (required for semantic/keyword modes).
+            query: Search query text (required for semantic and keyword
+                modes; refused by catalog and deterministic, which do not
+                consume it).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,
@@ -1631,10 +1634,13 @@ def register_sage_tools(
           rejected and the envelope names the offending entry. A
           well-formed id that matches no document is not an error --
           it is a successful empty result, as it has always been.
-        - ``mode_parameter_mismatch`` (400): a parameter is set that is
-          not valid for the chosen mode (e.g., ``heading_path`` outside
-          deterministic mode, ``query`` in deterministic mode). Detail
-          carries ``mode``, ``forbidden_param``, ``allowed_modes``.
+        - ``mode_parameter_mismatch`` (400): a parameter is set that the
+          chosen mode or the chosen target forbids (e.g., ``heading_path``
+          outside deterministic mode, ``facet_fields`` off the ``facets``
+          target). Detail carries ``mode``, ``target``,
+          ``forbidden_param``, and the allowed set for whichever axis the
+          constraint is on -- ``allowed_modes`` or ``allowed_targets``,
+          never both.
         - ``missing_query`` / ``missing_document_id`` / ``missing_heading_path``
           (400): a parameter required for the chosen mode is absent (the
           inverse case of ``mode_parameter_mismatch``).

@@ -10,10 +10,12 @@ and two-pass abstract-boosted retrieval.
 """
 
 import hashlib
+import inspect
 import json
 import re
 import uuid as _uuid
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 import pytest
 from pydantic import ValidationError
@@ -25,10 +27,13 @@ from sage.api.errors import (
     DocumentNotFoundError,
     HeadingNotFoundError,
     MissingFieldError,
+    ModeParameterMismatchError,
     PipelineIncompleteError,
+    translate_validation_error,
 )
 from sage.models.enums import (
     EdgeType,
+    FacetField,
     PipelineStatus,
     ResponseMode,
     RetrievalMode,
@@ -37,6 +42,8 @@ from sage.models.enums import (
     SourceType,
 )
 from sage.models.schemas import (
+    _EDGE_FORBIDDEN_PARAMS,
+    _FACET_FORBIDDEN_PARAMS,
     DiscoverHit,
     DiscoverRequest,
     Document,
@@ -681,6 +688,373 @@ def test_discover_request_construction_rejects_catalog_with_heading_path():
     custom_err = next(e for e in errors if e["type"] == "mode_parameter_mismatch")
     assert custom_err["ctx"]["mode"] == "catalog"
     assert custom_err["ctx"]["forbidden_param"] == "heading_path"
+
+
+# ---------------------------------------------------------------------------
+# mode_parameter_mismatch: the validator's message and the constrained axis
+# ---------------------------------------------------------------------------
+#
+# The rejection is raised as a PydanticCustomError in the models layer,
+# which cannot import the api layer, and is rebuilt into the public
+# SAGEError by the translator in sage.api.errors. Two properties of that
+# seam are pinned here: the validator's own message survives it, and the
+# structured detail names the axis the constraint is actually on.
+#
+# Every branch of the validator gets a row. Rows carry the axis and the
+# allowed set the branch is expected to report, so a branch whose ctx
+# says one thing and whose message says another fails on the row rather
+# than passing on a shared prefix.
+
+_MODE = "mode"
+_TARGET = "target"
+
+
+class _MismatchCase(NamedTuple):
+    """One rejection: what to send, and what the envelope must say."""
+
+    branch: int
+    label: str
+    kwargs: dict
+    axis: str
+    allowed: list[str]
+    forbidden_param: str
+    expected_mode: str
+    expected_target: str
+
+
+def _case(
+    branch: int,
+    label: str,
+    axis: str,
+    allowed: list[str],
+    forbidden_param: str,
+    expected_mode: str = "catalog",
+    expected_target: str = "documents",
+    **kwargs: object,
+) -> _MismatchCase:
+    return _MismatchCase(
+        branch=branch,
+        label=label,
+        kwargs=kwargs,
+        axis=axis,
+        allowed=allowed,
+        forbidden_param=forbidden_param,
+        expected_mode=expected_mode,
+        expected_target=expected_target,
+    )
+
+
+_DOCS = RetrievalTarget.DOCUMENTS.value
+_EDGES = RetrievalTarget.EDGES.value
+_FACETS = RetrievalTarget.FACETS.value
+_CATALOG = RetrievalMode.CATALOG.value
+
+_MISMATCH_CASES: list[_MismatchCase] = [
+    # 1. A parameter that only deterministic mode gives meaning to.
+    _case(
+        1,
+        "heading_path outside deterministic",
+        _MODE,
+        [RetrievalMode.DETERMINISTIC.value],
+        "heading_path",
+        mode=RetrievalMode.CATALOG,
+        heading_path="Section 1",
+    ),
+    # 2. A parameter deterministic mode has no use for.
+    _case(
+        2,
+        "query in deterministic",
+        _MODE,
+        [RetrievalMode.SEMANTIC.value, RetrievalMode.KEYWORD.value],
+        "query",
+        expected_mode=RetrievalMode.DETERMINISTIC.value,
+        mode=RetrievalMode.DETERMINISTIC,
+        document_id=_id("d1"),
+        heading_path="Section 1",
+        query="anything",
+    ),
+    _case(
+        2,
+        "query in catalog",
+        _MODE,
+        [RetrievalMode.SEMANTIC.value, RetrievalMode.KEYWORD.value],
+        "query",
+        mode=RetrievalMode.CATALOG,
+        query="anything",
+    ),
+    # 3. The edges target needs catalog mode.
+    _case(
+        3,
+        "target=edges outside catalog",
+        _MODE,
+        [_CATALOG],
+        "target",
+        expected_mode=RetrievalMode.SEMANTIC.value,
+        expected_target=_EDGES,
+        mode=RetrievalMode.SEMANTIC,
+        target=RetrievalTarget.EDGES,
+        query="q",
+    ),
+    # 4. Document-only filter keys against the edges target. Allowed on
+    # documents and on facets, which aggregates document metadata.
+    _case(
+        4,
+        "doc-only filter key on edges",
+        _TARGET,
+        [_DOCS, _FACETS],
+        "filters.doc_type",
+        expected_target=_EDGES,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(doc_type="ticket"),
+    ),
+    _case(
+        4,
+        "doc-only filter key on edges (tier3_metadata)",
+        _TARGET,
+        [_DOCS, _FACETS],
+        "filters.tier3_metadata",
+        expected_target=_EDGES,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(tier3_metadata={"k": "v"}),
+    ),
+    # 5. Edge-only filter keys against the default documents target.
+    _case(
+        5,
+        "edge-only filter key on documents",
+        _TARGET,
+        [_EDGES],
+        "filters.source_id",
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(source_id=_id("d1")),
+    ),
+    # 6. Facet-only parameters against a non-facets target.
+    _case(
+        6,
+        "facet_fields off the facets target",
+        _TARGET,
+        [_FACETS],
+        "facet_fields",
+        mode=RetrievalMode.CATALOG,
+        facet_fields=[FacetField.TAGS],
+    ),
+    _case(
+        6,
+        "facet_value_limit off the facets target",
+        _TARGET,
+        [_FACETS],
+        "facet_value_limit",
+        mode=RetrievalMode.CATALOG,
+        facet_value_limit=5,
+    ),
+    # 7. Document-only request parameters against the edges target.
+    _case(
+        7,
+        "min_relevance on edges",
+        _TARGET,
+        [_DOCS],
+        "min_relevance",
+        expected_target=_EDGES,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        min_relevance=0.5,
+    ),
+    _case(
+        7,
+        "include_abstracts on edges",
+        _TARGET,
+        [_DOCS],
+        "include_abstracts",
+        expected_target=_EDGES,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        include_abstracts=True,
+    ),
+    # 8. The facets target needs catalog mode.
+    _case(
+        8,
+        "target=facets outside catalog",
+        _MODE,
+        [_CATALOG],
+        "target",
+        expected_mode=RetrievalMode.KEYWORD.value,
+        expected_target=_FACETS,
+        mode=RetrievalMode.KEYWORD,
+        target=RetrievalTarget.FACETS,
+        query="q",
+    ),
+    # 9. Edge-only filter keys against the facets target.
+    _case(
+        9,
+        "edge-only filter key on facets",
+        _TARGET,
+        [_EDGES],
+        "filters.edge_type",
+        expected_target=_FACETS,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        filters=RetrievalFilters(edge_type=EdgeType.REFERENCES),
+    ),
+    # 10. Parameters the facets target has nothing to apply them to. The
+    # seven document-only ones are rejected on edges as well, so only
+    # documents remains; the three pagination and payload-shape knobs are
+    # not, so edges remains open to them.
+    _case(
+        10,
+        "sort_by on facets",
+        _TARGET,
+        [_DOCS],
+        "sort_by",
+        expected_target=_FACETS,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        sort_by="title",
+    ),
+    _case(
+        10,
+        "document_id on facets",
+        _TARGET,
+        [_DOCS],
+        "document_id",
+        expected_target=_FACETS,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        document_id=_id("d1"),
+    ),
+    _case(
+        10,
+        "limit on facets",
+        _TARGET,
+        [_DOCS, _EDGES],
+        "limit",
+        expected_target=_FACETS,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        limit=5,
+    ),
+    _case(
+        10,
+        "response_mode on facets",
+        _TARGET,
+        [_DOCS, _EDGES],
+        "response_mode",
+        expected_target=_FACETS,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        response_mode=ResponseMode.LIGHT,
+    ),
+]
+
+_MISMATCH_IDS = [f"{c.branch}-{c.label}" for c in _MISMATCH_CASES]
+
+
+def _reject(case: _MismatchCase) -> tuple[dict, ModeParameterMismatchError]:
+    """Trip one branch and return the raw Pydantic error beside the
+    public error the boundary translator builds from it."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(**case.kwargs)
+    raw = next(e for e in info.value.errors() if e["type"] == "mode_parameter_mismatch")
+    translated = translate_validation_error(info.value)
+    assert isinstance(translated, ModeParameterMismatchError), (
+        f"{case.label}: the translator returned {translated!r}, so the "
+        "rejection would reach the caller through the untyped fallback path."
+    )
+    return raw, translated
+
+
+@pytest.mark.parametrize("case", _MISMATCH_CASES, ids=_MISMATCH_IDS)
+def test_mode_parameter_mismatch_delivers_the_validators_message(case):
+    """The message a caller receives is the one the validator wrote.
+
+    The expected value is read back from the validator on this run
+    rather than restated here. A second copy of the string would go
+    stale silently, and -- the point of the assertion -- would still
+    pass for a translator that re-synthesized a message that happened
+    to match the one branch the copy was taken from. Comparing against
+    the validator's own rendering holds for every branch and for
+    branches not yet written.
+    """
+    raw, translated = _reject(case)
+    assert translated.message == raw["msg"]
+
+
+@pytest.mark.parametrize("case", _MISMATCH_CASES, ids=_MISMATCH_IDS)
+def test_mode_parameter_mismatch_detail_names_the_constrained_axis(case):
+    """The structured detail reports the axis the constraint is on.
+
+    A caller reading `detail` rather than `message` learns the same
+    thing: both axes' current values, and the allowed set for whichever
+    one the branch constrains. Reporting `allowed_modes` on a branch
+    constrained by `target` would name a set the caller cannot act on.
+    """
+    _, translated = _reject(case)
+    detail = translated.detail
+
+    assert detail["mode"] == case.expected_mode
+    assert detail["target"] == case.expected_target
+    assert detail["forbidden_param"] == case.forbidden_param
+
+    axis_keys = {"allowed_modes", "allowed_targets"}
+    present = axis_keys & set(detail)
+    expected_key = f"allowed_{case.axis}s"
+    assert present == {expected_key}, (
+        f"{case.label}: constraint is on the {case.axis} axis, so detail "
+        f"must carry {expected_key} and nothing from the other axis; "
+        f"got {sorted(present)}."
+    )
+    assert detail[expected_key] == sorted(case.allowed)
+
+    # `key` is an input to a message template, not part of the published
+    # contract. It rides the validator's ctx on the filter-key branches
+    # and must not leak into the envelope.
+    assert "key" not in detail
+
+
+@pytest.mark.parametrize("case", _MISMATCH_CASES, ids=_MISMATCH_IDS)
+def test_mode_parameter_mismatch_message_is_not_the_re_synthesized_form(case):
+    """The delivered message is not one composed from the detail fields.
+
+    Without this, the assertion that the message equals the validator's
+    could pass on a coincidence: a re-synthesized sentence that happened
+    to match what the validator wrote. No branch's message coincides
+    with the composed form today, so the check is a real trap rather
+    than a restatement -- and it holds for the mode-constrained branches
+    too, whose detail is otherwise unchanged.
+    """
+    _, translated = _reject(case)
+    detail = translated.detail
+    param = detail["forbidden_param"]
+    # Composed from what was actually delivered, not from what this row
+    # expects. A trap built from the row's own expectations would not
+    # fire on a translator that composed from a detail of a different
+    # shape -- which is exactly the shape the unfixed translator sends.
+    allowed = detail.get("allowed_modes") or detail.get("allowed_targets") or []
+    composed = (
+        f"Parameter {param!r} is not valid for mode {detail['mode']!r}. "
+        f"Allowed modes for {param!r}: {sorted(allowed)!r}"
+    )
+    assert translated.message != composed
+
+
+def test_mode_parameter_mismatch_cases_cover_every_branch():
+    """Every rejection site in the validator has at least one case.
+
+    The three tests above are only as good as the table that drives
+    them, and a branch added later would otherwise be uncovered in
+    silence. Counted from the validator's own source so the pin cannot
+    drift from what is there.
+    """
+    source = inspect.getsource(DiscoverRequest._reject_mode_parameter_mismatch)
+    # Each rejection site opens with the error type as a quoted first
+    # argument. The docstring names the same code in prose, which this
+    # form does not match.
+    sites = source.count('"mode_parameter_mismatch",')
+    covered = {case.branch for case in _MISMATCH_CASES}
+    assert sites > 0, "the rejection-site count has gone stale; it matched nothing"
+    assert covered == set(range(1, sites + 1)), (
+        f"the validator raises at {sites} sites; the case table covers branches {sorted(covered)}."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -6949,3 +7323,80 @@ async def test_no_warnings_key_when_all_values_valid(graph_store, retrieval_serv
 
     assert len(response.results) == 1
     assert response.hints is None or "warnings" not in response.hints
+
+
+# ---------------------------------------------------------------------------
+# Every target-axis forbidden-parameter row can actually fire
+# ---------------------------------------------------------------------------
+
+
+def _reachability_value(param: str, default: object) -> object:
+    """A non-default value for one forbidden parameter."""
+    overrides: dict[str, object] = {
+        "document_id": _id("d1"),
+        "min_relevance": 0.5,
+        "sort_by": "title",
+        "sort_order": "asc",
+        "include_abstracts": True,
+        "response_mode": ResponseMode.LIGHT,
+        "limit": 5,
+        "offset": 3,
+    }
+    value = overrides[param]
+    assert value != default, f"{param}: probe value equals the default, so nothing is set"
+    return value
+
+
+_REACHABILITY_CASES = [
+    (target, name, default, allowed)
+    for target, table in (
+        (RetrievalTarget.EDGES, _EDGE_FORBIDDEN_PARAMS),
+        (RetrievalTarget.FACETS, _FACET_FORBIDDEN_PARAMS),
+    )
+    for name, default, allowed in table
+]
+
+
+@pytest.mark.parametrize(
+    ("target", "param", "default", "allowed"),
+    _REACHABILITY_CASES,
+    ids=[f"{t.value}-{n}" for t, n, _, _ in _REACHABILITY_CASES],
+)
+def test_every_target_forbidden_parameter_is_reachable(target, param, default, allowed):
+    """Each row of the two target-axis tables can actually fire.
+
+    A row goes unreachable when a mode-axis check above the loop answers
+    every combination that would otherwise reach it. That is what befell
+    ``query`` and ``heading_path``: both are refused on the mode axis,
+    and both targets require catalog mode, which neither parameter
+    permits -- so no request could ever be rejected against a target for
+    them. An unreachable row is not inert; it states a second, invisible
+    copy of a rule, free to drift from the one that fires.
+
+    Asserting the axis is what makes this discriminating. Every request
+    below is rejected either way, so a check on the code or on
+    ``forbidden_param`` would pass just as well for a row answered by a
+    mode-axis branch -- which is how the unreachable rows survived the
+    existing per-parameter tests. Only ``allowed_targets`` separates the
+    row under test having fired from something above it firing first.
+    """
+    # The table restates each field's default. Pin that copy to the model,
+    # or a later change to a default leaves the table declaring a value the
+    # field no longer has -- the row would then fire for every caller who
+    # left the knob alone, and the reachability assertion below would stay
+    # green throughout, since it only ever probes the non-default direction.
+    assert DiscoverRequest.model_fields[param].default == default
+
+    value = _reachability_value(param, default)
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target=target, **{param: value})
+    raw = info.value.errors()[0]
+    assert raw["type"] == "mode_parameter_mismatch"
+    ctx = raw["ctx"]
+    assert ctx["forbidden_param"] == param
+    assert ctx.get("allowed_targets") == allowed, (
+        f"{target.value}/{param} was answered on the mode axis "
+        f"({ctx.get('allowed_modes')!r}), so its row in the target table "
+        "cannot fire and states a rule nothing enforces."
+    )
+    assert ctx["target"] == target.value

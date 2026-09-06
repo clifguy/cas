@@ -198,7 +198,9 @@ paths:
           own advisory or, where every term is optional, none.
 
         - **catalog**: Filter-only document enumeration via SQL. No vector
-          search, no chunk content. Supports pagination via limit + offset.
+          search, no chunk content. A query is refused rather than ignored,
+          since nothing would consume it. Supports pagination via limit +
+          offset.
 
         - **deterministic**: Exact content extraction by document ID and heading
           path. Bypasses vector search entirely. Used for governed content
@@ -224,7 +226,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/DiscoverResponse"
         "400":
-          description: Invalid parameters (unknown mode, scope, or filter field).
+          description: >-
+            Invalid parameters (unknown mode, scope, or filter field), or
+            `mode_parameter_mismatch` when a parameter is set that the chosen
+            mode or the chosen target forbids. Its detail carries `mode`,
+            `target`, `forbidden_param`, and the allowed set for whichever
+            axis the constraint is on -- `allowed_modes` or `allowed_targets`,
+            never both.
           content:
             application/json:
               schema:
@@ -3787,9 +3795,9 @@ components:
 
         - keyword: query is required. Use query="*" for filter-only listing.
 
-        - catalog: no query required. Returns document-level metadata only
-          (no chunks or scores). Queries the graph store directly with filter predicates.
-          Supports pagination via limit + offset.
+        - catalog: query is refused, not merely unnecessary. Returns
+          document-level metadata only (no chunks or scores). Queries the graph
+          store directly with filter predicates. Supports pagination via limit + offset.
 
         - deterministic: document_id and heading_path are required.
       required: [mode]
@@ -3797,8 +3805,9 @@ components:
         query:
           type: string
           description: >-
-            Search query text. Required for semantic and keyword modes.
-            Ignored in catalog mode.
+            Search query text. Required for semantic and keyword modes, and
+            refused by the other two: catalog enumerates by filter and
+            deterministic extracts by heading path, so neither consumes it.
         mode:
           $ref: "#/components/schemas/RetrievalMode"
         scope:

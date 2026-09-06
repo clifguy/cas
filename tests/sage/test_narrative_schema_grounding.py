@@ -686,6 +686,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "failure_record": "example doc_type value in a worked example",
         "fix_commit": "example tier-3 metadata key in a worked example",
         "allowed_modes": ERROR_DETAIL_KEY,
+        "allowed_targets": ERROR_DETAIL_KEY,
         "constraint": ERROR_DETAIL_KEY,
         "example": ERROR_DETAIL_KEY,
         "expected_type": ERROR_DETAIL_KEY,

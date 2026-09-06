@@ -341,3 +341,75 @@ async def test_filter_scoped_codes_are_pairwise_distinct(vault_services):
     codes = [(await _call_search(filters=f))["error"] for _, f, _ in _FILTER_CASES]
 
     assert len(set(codes)) == 3, codes
+
+
+# ---------------------------------------------------------------------------
+# mode_parameter_mismatch -- both axes, both surfaces
+# ---------------------------------------------------------------------------
+#
+# This rejection is raised in the models layer and rebuilt at the request
+# boundary, so the message and the detail cross a seam that the
+# limit-over-cap case above does not exercise. Two rejections are driven
+# rather than one, because the constraint sits on a different axis in each
+# and only the target-constrained shape shows whether the validator's own
+# wording survived.
+
+_MODE_CONSTRAINED = {"mode": "catalog", "heading_path": "Section 1"}
+_TARGET_CONSTRAINED = {"mode": "catalog", "target": "documents", "facet_fields": ["tags"]}
+
+
+async def _both_surfaces(http_client, arguments):
+    """Drive one rejection through both seams and return both envelopes."""
+    mcp_envelope = await _call_search(**arguments)
+    resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/discover", json=arguments)
+    return mcp_envelope, resp.json()
+
+
+@pytest.mark.parametrize(
+    ("label", "arguments"),
+    [("mode-constrained", _MODE_CONSTRAINED), ("target-constrained", _TARGET_CONSTRAINED)],
+)
+async def test_mode_parameter_mismatch_parity_between_surfaces(
+    vault_services, http_client, label, arguments
+):
+    """One rejection, one message, one detail, whichever surface asked.
+
+    Both surfaces read the same SAGEError, so this holds structurally and
+    would pass vacuously if the translator regressed for both at once --
+    which is what the content test below is for.
+    """
+    mcp_envelope, http_body = await _both_surfaces(http_client, arguments)
+
+    assert mcp_envelope["error"] == http_body["code"] == "mode_parameter_mismatch"
+    assert mcp_envelope["message"] == http_body["message"]
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert set(http_body) - set(mcp_envelope) == {"code", "read_meta"}
+    assert set(mcp_envelope) - set(http_body) == {"error"}
+
+
+async def test_mode_parameter_mismatch_content_is_pinned_independently(vault_services, http_client):
+    """A target-constrained rejection reaches the caller as one.
+
+    The literals here are the point rather than a shortcut: they are what a
+    caller reads, and the rejection they pin is the one whose delivered
+    wording used to contradict itself -- refusing a mode while reporting
+    that same mode as the allowed one, and never naming `target`, which is
+    the parameter that has to change. Both surfaces are asserted so neither
+    can drift alone behind the parity check above.
+    """
+    expected_message = "Parameter 'facet_fields' is valid only for target 'facets'."
+    expected_detail = {
+        "mode": "catalog",
+        "target": "documents",
+        "forbidden_param": "facet_fields",
+        "allowed_targets": ["facets"],
+    }
+
+    mcp_envelope, http_body = await _both_surfaces(http_client, _TARGET_CONSTRAINED)
+
+    for envelope in (mcp_envelope, http_body):
+        assert envelope["message"] == expected_message
+        assert envelope["detail"] == expected_detail
+        # The rejection is on the target axis, so a mode set would name a
+        # change that does not lift it.
+        assert "allowed_modes" not in envelope["detail"]

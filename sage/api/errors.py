@@ -757,35 +757,48 @@ class InvalidFilterShapeError(SAGEError):
         )
 
 
+#: Keys of the request validator's context that belong in this error's
+#: published ``detail``. A whitelist rather than a blocklist, so context a
+#: branch carries for its own message template -- ``key`` on the filter-key
+#: branches today, whatever a future branch adds -- stays out of the
+#: caller-facing envelope by default rather than by remembering to exclude it.
+_MODE_MISMATCH_DETAIL_KEYS: frozenset[str] = frozenset(
+    {"mode", "target", "forbidden_param", "allowed_modes", "allowed_targets"}
+)
+
+#: The two axis-scoped allowed-set keys, exactly one of which a rejection
+#: carries. Sorted on the way out so ordering is a property of the envelope
+#: rather than of the order a branch happened to list its members in.
+_MODE_MISMATCH_ALLOWED_KEYS: tuple[str, ...] = ("allowed_modes", "allowed_targets")
+
+
 class ModeParameterMismatchError(SAGEError):
-    """400: a parameter is set that is forbidden by the chosen discover mode.
+    """400: a parameter is set that the chosen mode or target forbids.
 
     Distinct from `missing_*` codes which fire on the inverse case
     (parameter required for the chosen mode but absent — e.g.,
     `missing_query` for semantic mode). This error fires when the parameter
-    IS present but is not valid for the chosen mode (e.g., catalog mode
-    with `heading_path`, which is deterministic-only).
+    IS present but is not valid — `heading_path` outside deterministic mode,
+    `facet_fields` off the facets target.
+
+    A typed envelope over the request validator's own message, not a second
+    account of the rejection. The constraint is enforced in
+    `DiscoverRequest._reject_mode_parameter_mismatch`, which the leaf-layer
+    import contract keeps from raising this error itself; composing a
+    message here from the context fields alone would lose the axis the
+    branch actually constrains, since most branches constrain `target`
+    while the fields available to compose from describe `mode`.
+
+    `detail` reports both axes' current values and the allowed set for the
+    constrained one — `allowed_modes` or `allowed_targets`, never both.
     """
 
-    def __init__(
-        self,
-        mode: str,
-        forbidden_param: str,
-        allowed_modes: list[str],
-    ) -> None:
-        super().__init__(
-            "mode_parameter_mismatch",
-            (
-                f"Parameter {forbidden_param!r} is not valid for mode {mode!r}. "
-                f"Allowed modes for {forbidden_param!r}: {sorted(allowed_modes)!r}"
-            ),
-            400,
-            {
-                "mode": mode,
-                "forbidden_param": forbidden_param,
-                "allowed_modes": sorted(allowed_modes),
-            },
-        )
+    def __init__(self, message: str, detail: dict) -> None:
+        detail = {
+            key: sorted(value) if key in _MODE_MISMATCH_ALLOWED_KEYS else value
+            for key, value in detail.items()
+        }
+        super().__init__("mode_parameter_mismatch", message, 400, detail)
 
 
 class InvalidParameterError(SAGEError):
@@ -1993,13 +2006,19 @@ def translate_validation_error(
         # DiscoverRequest model_validator via PydanticCustomError. The
         # validator lives in sage.models.schemas which cannot import
         # sage.api.errors (import-linter "Models are a leaf layer"
-        # contract). We reconstruct the public-facing SAGEError here from
-        # the embedded ctx.
+        # contract), so the public-facing SAGEError is built here.
+        #
+        # The message is carried across rather than composed. Pydantic has
+        # already rendered the validator's template into ``msg`` with the
+        # ctx placeholders substituted, and that sentence names the axis
+        # the branch constrains -- a target, a filter-key set -- which the
+        # ctx fields on their own cannot be composed back into.
         if err_type == "mode_parameter_mismatch":
             return ModeParameterMismatchError(
-                mode=str(ctx.get("mode", "")),
-                forbidden_param=str(ctx.get("forbidden_param", "")),
-                allowed_modes=list(ctx.get("allowed_modes") or []),
+                message=str(err.get("msg", "")),
+                detail={
+                    key: value for key, value in ctx.items() if key in _MODE_MISMATCH_DETAIL_KEYS
+                },
             )
 
         # 0a) Custom ``legacy_form`` raised from the UpdateMetadataRequest
