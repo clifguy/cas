@@ -156,11 +156,14 @@ def _document_level_hit(response, document_id):
     hit that came through a surface always reports one, even when the answer is
     zero.
 
-    The count is not required to *be* zero. A document whose surface and whose
-    passages both answer is one hit, since the arms fuse on the document; that
-    hit is document-level when the surface supplied its representative row, and
-    it still counts the passages it matched. A test asserting the zero itself
-    seeds a document with no passages, so nothing but the surface can answer.
+    The count is not required to *be* zero by the predicate, though in practice
+    it now is. A document whose surface and whose passages both answer is one
+    hit, and that hit carries the passage's heading: the fusion lets a passage
+    row displace a surface row, and the service hands the excerpt to a passage
+    that arrives after a surface-sourced hit. So such a document is not
+    classified document-level here at all, and a test asserting the zero seeds
+    a document with no passages -- not to avoid an ambiguity, but because
+    nothing else can produce the shape.
 
     One case this cannot see: a passage of a document that has no headings at
     all carries an empty path too. No fixture here has one.
@@ -2829,8 +2832,13 @@ async def test_a_passage_supplies_the_excerpt_when_the_surface_outranks_it(
     Pure vector rather than the fused default, so the rows reach the service
     separately and the handoff under test is the service's own.
     """
+    # The title is a compound, so the metadata boost -- which matches by
+    # substring -- cannot reach it with this query and does not overwrite the
+    # score on the way out. The document surface can: its authored half is
+    # widened to the split rendering. Without that the assertion below would be
+    # about the boost's synthetic score rather than about the handoff.
     doc = _make_doc(_id("surface_outranks"))
-    doc.title = "Zetaword Accumulator Catalog"
+    doc.title = "ZetawordAccumulator_Catalog"
     doc.tags = ["design"]
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
@@ -2843,6 +2851,17 @@ async def test_a_passage_supplies_the_excerpt_when_the_surface_outranks_it(
         stub_content_store, seeded_embedding_provider, _id("surface_outranks"), doc
     )
 
+    # Same passage, no surface. Its score is the passage's alone.
+    control = _make_doc(_id("passage_only"))
+    control.title = "Unrelated Control"
+    await graph_store.insert_document(control)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("passage_only"),
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+    )
+
     response = await retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
@@ -2852,12 +2871,66 @@ async def test_a_passage_supplies_the_excerpt_when_the_surface_outranks_it(
     )
 
     [hit] = [h for h in response.results if h.document.id == _id("surface_outranks")]
+    [control] = [h for h in response.results if h.document.id == _id("passage_only")]
     assert hit.matched_chunk_count == 1, "the document matched one passage"
+    # The score is the document's best across both surfaces, and the handoff
+    # moves the excerpt alone. The control carries the same passage and no
+    # surface, so its score is what this document's would collapse to if the
+    # handoff took the passage's score along with its text.
+    assert hit.relevance_score > control.relevance_score, (
+        "the handoff moved the score as well as the excerpt"
+    )
     assert hit.heading_path == "Section 1", (
         "the hit kept the surface row's absent heading despite matching a passage"
     )
     assert hit.chunk_content == "Clinical normalization of respiratory signals.", (
         "the hit carries no excerpt for the passage it reports having matched"
+    )
+
+
+async def test_a_headingless_passage_reaches_the_service_tally_as_a_passage(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A passage carrying no heading is still tallied as a passage.
+
+    The service tests provenance by the row's own flag rather than by an empty
+    heading path, and a headingless passage is the input that separates the
+    two: ingestion writes one for any source with no headings at all
+    (``_build_chunks``), so a tally reading the heading path would stop
+    counting it.
+
+    The fixture pairs a headed passage with a headingless one to isolate the
+    tally rule, which is narrower than what ingestion emits -- a real
+    headingless document has exactly one chunk. With only that one chunk the
+    substitution is unobservable here, because the row's own carried count is
+    one and the service takes the larger of the two; it is the tally, not the
+    carried value, that this fixture is about. The fusion's half of the same
+    rule is covered in ``test_rrf_counts_a_headingless_passage_as_a_passage``.
+    """
+    doc = _make_doc(_id("headless_service"))
+    doc.title = "Unrelated Title"
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("headless_service"),
+        [
+            ("Section 1", "zetaword catalog in a passage that carries a heading"),
+            ("", "zetaword catalog in a passage that carries none"),
+        ],
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.SEMANTIC,
+            query="zetaword catalog passage",
+            use_hybrid=False,
+        )
+    )
+
+    [hit] = [h for h in response.results if h.document.id == _id("headless_service")]
+    assert hit.matched_chunk_count == 2, (
+        "the headingless passage was not tallied, so the count dropped to the headed one alone"
     )
 
 

@@ -258,3 +258,37 @@ def test_rrf_keeps_the_surface_row_when_the_document_has_no_passage() -> None:
     assert fused.is_document_surface is True
     assert fused.heading_path == ""
     assert fused.content == ""
+
+
+def test_rrf_counts_a_headingless_passage_as_a_passage() -> None:
+    """The fusion tests the flag, not the empty heading path.
+
+    A document with no headings contributes a passage whose heading path is
+    empty, which is the one input that separates the flag from the heuristic.
+    A tally reading the heading path classifies it as document-level: no
+    passage counted, and the fused row marked as carrying none.
+    """
+    [fused] = rrf_fuse([_result("d1", heading_path="")], [], limit=10)
+
+    assert fused.matched_chunk_count == 1, "a headingless passage was not counted"
+    assert fused.is_document_surface is False, (
+        "a headingless passage was classified as a document-level row"
+    )
+
+
+def test_rrf_does_not_displace_a_passage_row_with_a_later_surface_row() -> None:
+    """Displacement runs one way only.
+
+    The rule has two halves -- a passage displaces a held surface row, and
+    nothing displaces a passage. A rival that swaps on any change of flag
+    satisfies the first and breaks the second, which is invisible while every
+    fixture puts the surface first. Here the passage arrives first, which is
+    the ordinary order for a body-shaped query.
+    """
+    vector = [_result("d1", heading_path="S1"), _surface_result("d1")]
+
+    [fused] = rrf_fuse(vector, [], limit=10)
+
+    assert fused.heading_path == "S1", "a later surface row displaced the passage"
+    assert fused.content == "content of d1"
+    assert fused.is_document_surface is False
