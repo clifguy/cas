@@ -716,20 +716,21 @@ class PostgresContentStore(ContentStore):
         the document surface is what keeps passage matching on literal
         tokenization.
 
-        Two directions need it, and they are not the same one. A caller typing
+        Two directions need it, for two different reasons. A caller typing
         ``documentLevelTextHandling`` reaches a title written ``Document Level
-        Text Handling`` only through this arm: no index-side widening can, since
-        the expansion adds a compound's folded and split forms and never
+        Text Handling`` only through this arm, because no index-side widening
+        can: the expansion adds a compound's folded and split forms and never
         synthesizes a joining of words the author wrote apart. A caller typing
-        ``epsilon-level`` reaches ``Epsilon Level`` only through it either, for
-        a different reason -- the configuration reads a hyphenated pair as the
-        hyphenated whole *followed by* its parts, so the query demands a lexeme
-        the expansion never produced. The underscore is the separator that
-        needs no arm: it renders as the parts alone, which the expansion
-        already writes into adjacent positions. Hyphen and underscore are one
-        character class to the folding transform and two different things to
-        the tokenizer, and it is the hyphenated form that nearly every
-        identifier-shaped title in practice carries.
+        ``epsilon-level`` reaches ``Epsilon Level`` only through this arm too,
+        because the configuration reads a hyphenated pair as the hyphenated
+        whole *followed by* its parts -- so the query demands a lexeme the
+        expansion never produced.
+
+        The underscore is the separator that needs no arm: it renders as the
+        parts alone, which the expansion already writes into adjacent
+        positions. Hyphen and underscore are one character class to the folding
+        transform and two different things to the tokenizer, and the hyphenated
+        form is the one nearly every identifier-shaped title carries.
 
         ``_search_bm25_within_chunk``. Scope: one unit of text -- a passage, or
         the document surface as a second such unit. Tokenization: the whole

@@ -1995,14 +1995,19 @@ async def test_an_exclusion_only_query_is_answered_within_one_unit(store):
 
 
 async def _folded_surface_document(store, document_id="folded", title="Epsilon Level Text"):
-    """A document reachable only by folding: a spaced title, passages carrying neither term.
+    """A spaced title on a document surface, over passages carrying none of its words.
 
-    A query that folds is one whose raw form names a compound or a separated
-    identifier, and the passage surface indexes literally -- ``first-passage``
-    renders as a phrase over ``first-passag``, a lexeme no spaced passage
-    carries. A folding query therefore has nothing to reach on that surface by
-    construction, which is why the folded arm is confined to the document
-    surface, and why a document with one is the only kind such a query matches.
+    The passage surface indexes literally, and a query naming a compound or a
+    hyphenated identifier renders lexemes no spaced passage carries --
+    ``first-passage`` becomes a phrase over ``first-passag``. Such a query
+    therefore has nothing to reach on that surface by construction, which is
+    why the folded arm is confined to the document surface and why a document
+    with one is the only kind it can match.
+
+    Not every query against this fixture needs folding to land: an underscore
+    renders as its parts alone and matches the expanded title directly. Which
+    renderings need the arm and which do not is the subject of
+    ``test_a_hyphenated_query_reaches_a_spaced_title_only_by_folding``.
     """
     await store.index_chunks(
         document_id, [_chunk(document_id, content="body prose carrying none of the terms")]
@@ -2049,18 +2054,30 @@ async def test_a_hyphenated_query_reaches_a_spaced_title_only_by_folding(store):
 
     Pinned because the distinction is invisible in the transform and easy to
     state backwards, and because the hyphenated form is the one nearly every
-    identifier-shaped title carries. Disabling the arm reds the first assertion
-    and leaves the second green, which is what makes the second a control.
+    identifier-shaped title carries.
+
+    The two "without the arm" claims are made against the *within-unit* path,
+    by appending a negation. That path never gets the folded arm, so what lands
+    there landed without it. Asserting the bare renderings instead would say
+    nothing: with the arm in place both land, so a binding where the underscore
+    also needed the arm would pass identically -- the claim would hold only
+    under a mutation the suite does not run.
     """
     await _folded_surface_document(store, title="Epsilon Level")
 
+    underscore = await store.search_bm25("epsilon_level -absentword", limit=10)
+    assert [r.document_id for r in underscore] == ["folded"], (
+        "the underscore rendering needs no arm, so it must land on the path that has none"
+    )
+
+    assert await store.search_bm25("epsilon-level -absentword", limit=10) == [], (
+        "the hyphenated rendering must be unreachable on that same path, or the arm "
+        "is not what answers it"
+    )
+
     assert [r.document_id for r in await store.search_bm25("epsilon-level", limit=10)] == [
         "folded"
-    ], "a hyphenated query did not reach the spaced title it renders"
-
-    assert [r.document_id for r in await store.search_bm25("epsilon_level", limit=10)] == [
-        "folded"
-    ], "control: the underscore form lands whether or not the arm fires"
+    ], "and on the path that does have the arm, the same hyphenated rendering lands"
 
 
 async def test_every_keyword_query_is_answered_by_exactly_one_path(store, monkeypatch):
