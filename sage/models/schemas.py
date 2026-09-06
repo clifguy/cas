@@ -2828,6 +2828,48 @@ _EDGE_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "edge_type",
 )
 
+# Where a request parameter rejected by the edges and facets targets is
+# still accepted. The two sets differ: retrieval and ranking parameters
+# have meaning only for the document target, while the pagination and
+# payload-shape knobs are refused by facets alone -- a facets response
+# carries at most one row per facet field -- and remain open to edges.
+_DOCUMENTS_ONLY: list[str] = [RetrievalTarget.DOCUMENTS.value]
+_DOCUMENTS_AND_EDGES: list[str] = [
+    RetrievalTarget.DOCUMENTS.value,
+    RetrievalTarget.EDGES.value,
+]
+
+# Request parameters the edges and facets targets refuse, each with the
+# default that marks "not supplied" and the targets that still accept it.
+# Only explicitly non-default values are flagged, so a caller can leave
+# the other knobs alone.
+#
+# `query` and `heading_path` are deliberately absent from both. Each is
+# already refused on the mode axis above, and both targets require
+# catalog mode -- which neither parameter permits -- so no combination
+# reaches a target-axis rejection for them. Listing them here would add a
+# rule that cannot fire and would drift from the reachable one.
+_EDGE_FORBIDDEN_PARAMS: tuple[tuple[str, object, list[str]], ...] = (
+    ("document_id", None, _DOCUMENTS_ONLY),
+    ("min_relevance", None, _DOCUMENTS_ONLY),
+    ("sort_by", None, _DOCUMENTS_ONLY),
+    ("sort_order", None, _DOCUMENTS_ONLY),
+    ("include_abstracts", False, _DOCUMENTS_ONLY),
+)
+
+# The facets target refuses everything the edges target does, and the
+# pagination and payload-shape knobs besides: a facets response carries
+# at most one row per facet field, bounded by the field set rather than
+# by the corpus, so limit, offset, sort and response_mode have nothing to
+# act on. Those three remain valid on edges, which is why their accepted
+# set is wider.
+_FACET_FORBIDDEN_PARAMS: tuple[tuple[str, object, list[str]], ...] = (
+    *_EDGE_FORBIDDEN_PARAMS,
+    ("response_mode", None, _DOCUMENTS_AND_EDGES),
+    ("limit", 10, _DOCUMENTS_AND_EDGES),
+    ("offset", 0, _DOCUMENTS_AND_EDGES),
+)
+
 
 class DiscoverRequest(BaseModel):
     """Retrieval request. Required fields vary by mode.
@@ -3008,14 +3050,32 @@ class DiscoverRequest(BaseModel):
         ``query``) are still handled at the service layer via
         ``MissingFieldError`` to preserve the existing ``missing_*`` typed
         codes. This validator only catches the inverse case: a parameter is
-        set that is not valid for the chosen mode.
+        set that is not valid for the chosen mode or for the chosen target.
 
         Raises a ``PydanticCustomError`` carrying ``mode_parameter_mismatch``
         as the error type plus the structured detail. The translator in
-        ``sage.api.errors`` reconstructs the public-facing
-        ``ModeParameterMismatchError`` SAGEError from the embedded ``ctx``.
-        This indirection respects the "models are a leaf layer"
-        import-linter contract: sage.models cannot import from sage.api.
+        ``sage.api.errors`` builds the public-facing
+        ``ModeParameterMismatchError`` SAGEError from it. This indirection
+        respects the "models are a leaf layer" import-linter contract:
+        sage.models cannot import from sage.api.
+
+        **The message written here is the one the caller receives.** Pydantic
+        renders it into the error's ``msg`` with the ``ctx`` placeholders
+        substituted, and the translator carries that rendering across
+        unchanged rather than composing a second sentence from the context
+        fields. A branch is therefore free to state its constraint in the
+        terms it actually enforces -- a target, a filter-key set -- without
+        that wording being replaced downstream by one about ``mode``.
+
+        ``ctx`` reports both axes' current values (``mode``, ``target``) and
+        the ``forbidden_param``, then the allowed set for whichever axis the
+        branch constrains: ``allowed_modes`` where the parameter needs a
+        different mode, ``allowed_targets`` where it needs a different
+        target. Exactly one of the two, because naming a set on the axis the
+        constraint is not on would describe a change that does not lift the
+        rejection. ``key`` rides the filter-key branches as an input to their
+        message template; the translator keeps it out of the published
+        envelope.
         """
         if self.mode != RetrievalMode.DETERMINISTIC and self.heading_path is not None:
             raise PydanticCustomError(
@@ -3026,19 +3086,26 @@ class DiscoverRequest(BaseModel):
                 ),
                 {
                     "mode": self.mode.value,
+                    "target": self.target.value,
                     "forbidden_param": "heading_path",
                     "allowed_modes": [RetrievalMode.DETERMINISTIC.value],
                 },
             )
-        if self.mode == RetrievalMode.DETERMINISTIC and self.query is not None:
+        # Only the two scoring modes consume a query. Catalog enumerates by
+        # filter and deterministic extracts by heading path, and neither
+        # reads the field -- so accepting one there returned the whole
+        # filtered set as though it had been searched, with nothing in the
+        # response to say the query had been dropped.
+        if self.query is not None and self.mode not in (
+            RetrievalMode.SEMANTIC,
+            RetrievalMode.KEYWORD,
+        ):
             raise PydanticCustomError(
                 "mode_parameter_mismatch",
-                (
-                    "Parameter 'query' is not valid for mode 'deterministic'. "
-                    "Allowed: semantic, keyword."
-                ),
+                ("Parameter 'query' is not valid for mode '{mode}'. Allowed: semantic, keyword."),
                 {
                     "mode": self.mode.value,
+                    "target": self.target.value,
                     "forbidden_param": "query",
                     "allowed_modes": [
                         RetrievalMode.SEMANTIC.value,
@@ -3054,6 +3121,7 @@ class DiscoverRequest(BaseModel):
                 ("Target 'edges' is not valid for mode '{mode}'. Allowed: catalog only."),
                 {
                     "mode": self.mode.value,
+                    "target": self.target.value,
                     "forbidden_param": "target",
                     "allowed_modes": [RetrievalMode.CATALOG.value],
                 },
@@ -3072,8 +3140,12 @@ class DiscoverRequest(BaseModel):
                         ),
                         {
                             "mode": self.mode.value,
+                            "target": self.target.value,
                             "forbidden_param": f"filters.{key}",
-                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "allowed_targets": [
+                                RetrievalTarget.DOCUMENTS.value,
+                                RetrievalTarget.FACETS.value,
+                            ],
                             "key": key,
                         },
                     )
@@ -3091,8 +3163,9 @@ class DiscoverRequest(BaseModel):
                         ),
                         {
                             "mode": self.mode.value,
+                            "target": self.target.value,
                             "forbidden_param": f"filters.{key}",
-                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "allowed_targets": [RetrievalTarget.EDGES.value],
                             "key": key,
                         },
                     )
@@ -3112,8 +3185,9 @@ class DiscoverRequest(BaseModel):
                         ("Parameter '{forbidden_param}' is valid only for target 'facets'."),
                         {
                             "mode": self.mode.value,
+                            "target": self.target.value,
                             "forbidden_param": name,
-                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "allowed_targets": [RetrievalTarget.FACETS.value],
                         },
                     )
 
@@ -3121,24 +3195,16 @@ class DiscoverRequest(BaseModel):
         # explicitly non-default values are flagged so callers can leave
         # the other knobs alone without triggering this branch.
         if self.target == RetrievalTarget.EDGES:
-            edge_forbidden_params: list[tuple[str, object, object]] = [
-                ("query", self.query, None),
-                ("document_id", self.document_id, None),
-                ("heading_path", self.heading_path, None),
-                ("min_relevance", self.min_relevance, None),
-                ("sort_by", self.sort_by, None),
-                ("sort_order", self.sort_order, None),
-                ("include_abstracts", self.include_abstracts, False),
-            ]
-            for name, value, default in edge_forbidden_params:
-                if value != default:
+            for name, default, allowed_targets in _EDGE_FORBIDDEN_PARAMS:
+                if getattr(self, name) != default:
                     raise PydanticCustomError(
                         "mode_parameter_mismatch",
                         ("Parameter '{forbidden_param}' is not valid for target 'edges'."),
                         {
                             "mode": self.mode.value,
+                            "target": self.target.value,
                             "forbidden_param": name,
-                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "allowed_targets": allowed_targets,
                         },
                     )
 
@@ -3149,6 +3215,7 @@ class DiscoverRequest(BaseModel):
                 ("Target 'facets' is not valid for mode '{mode}'. Allowed: catalog only."),
                 {
                     "mode": self.mode.value,
+                    "target": self.target.value,
                     "forbidden_param": "target",
                     "allowed_modes": [RetrievalMode.CATALOG.value],
                 },
@@ -3170,8 +3237,9 @@ class DiscoverRequest(BaseModel):
                         ),
                         {
                             "mode": self.mode.value,
+                            "target": self.target.value,
                             "forbidden_param": f"filters.{key}",
-                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "allowed_targets": [RetrievalTarget.EDGES.value],
                             "key": key,
                         },
                     )
@@ -3184,27 +3252,16 @@ class DiscoverRequest(BaseModel):
         # explicitly non-default values are flagged so callers can
         # leave the other knobs alone without triggering this branch.
         if self.target == RetrievalTarget.FACETS:
-            facet_forbidden_params: list[tuple[str, object, object]] = [
-                ("query", self.query, None),
-                ("document_id", self.document_id, None),
-                ("heading_path", self.heading_path, None),
-                ("min_relevance", self.min_relevance, None),
-                ("sort_by", self.sort_by, None),
-                ("sort_order", self.sort_order, None),
-                ("include_abstracts", self.include_abstracts, False),
-                ("response_mode", self.response_mode, None),
-                ("limit", self.limit, 10),
-                ("offset", self.offset, 0),
-            ]
-            for name, value, default in facet_forbidden_params:
-                if value != default:
+            for name, default, allowed_targets in _FACET_FORBIDDEN_PARAMS:
+                if getattr(self, name) != default:
                     raise PydanticCustomError(
                         "mode_parameter_mismatch",
                         ("Parameter '{forbidden_param}' is not valid for target 'facets'."),
                         {
                             "mode": self.mode.value,
+                            "target": self.target.value,
                             "forbidden_param": name,
-                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "allowed_targets": allowed_targets,
                         },
                     )
 

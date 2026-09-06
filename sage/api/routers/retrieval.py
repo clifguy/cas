@@ -15,7 +15,14 @@ router = APIRouter(tags=["Retrieval"])
     responses={
         400: {
             "model": ErrorResponse,
-            "description": ("Invalid parameters (unknown mode, scope, or filter field)."),
+            "description": (
+                "Invalid parameters (unknown mode, scope, or filter field), or "
+                "`mode_parameter_mismatch` when a parameter is set that the chosen "
+                "mode or the chosen target forbids. Its detail carries `mode`, "
+                "`target`, `forbidden_param`, and the allowed set for whichever "
+                "axis the constraint is on -- `allowed_modes` or `allowed_targets`, "
+                "never both."
+            ),
         },
         404: {
             "model": ErrorResponse,
