@@ -1117,26 +1117,56 @@ async def test_the_filtered_cut_keeps_the_salience_order(
 ):
     """Pushing the filters down must not displace the ranking C8 established.
 
-    The obvious wrong fix routes the whole statement through the shared
-    document query, which orders by the *browsing* order rather than the boost
-    cut's. Here 150 admitted documents carry ascending dates against ascending
-    ids, so date order and id order disagree: the expected survivors are the
-    100 most recent, which are the 100 *highest* ids, and any fix that lost
-    the date keys returns the 100 lowest instead.
+    The wrong fix routes the whole statement through the shared document
+    query, whose order is the *browsing* one. That order and the boost cut's
+    agree on every document carrying an authored date and part company only on
+    the boost order's fallback -- ``COALESCE(document_date,
+    LEFT(source_modified_at, 10))``, which dates an undated document by when
+    it was modified where the browsing order sorts it last. So a fixture whose
+    documents all carry a date cannot tell the two apart, and the five undated
+    documents below are what separates them: the boost order puts them at the
+    *head* of the cut, on 2026 modification dates, and the browsing order puts
+    them past its tail.
+
+    The dates ascend with the ids and the undated documents hold the lowest
+    ids, so neither ``id ASC`` nor ``id DESC`` produces the expected list
+    either. Three rivals, one fixture.
     """
     helper = getattr(postgres_graph_store, helper_name)
-    ids_by_date: list[str] = []
-    for n, i in enumerate(range(1400, 1550)):
+
+    # Undated, and modified more recently than any dated document here. Their
+    # ids are the lowest in the range, so an id-ordered rival cannot place
+    # them at the head by accident.
+    undated: list[str] = []
+    for offset in range(5):
+        doc = make_doc(
+            1400 + offset,
+            lifecycle_status="superseded",
+            document_date=None,
+            source_modified_at=datetime(2026, 9, 5 - offset, tzinfo=timezone.utc),
+        )
+        await postgres_graph_store.insert_document(doc)
+        undated.append(doc.id)
+
+    dated_by_date: list[str] = []
+    for n, i in enumerate(range(1405, 1550)):
         doc = make_doc(i, lifecycle_status="superseded", document_date=_dated(n))
         await postgres_graph_store.insert_document(doc)
-        ids_by_date.append(doc.id)
-    expected = list(reversed(ids_by_date))[:100]
+        dated_by_date.append(doc.id)
+
+    # The five most recently modified first, then the 95 most recently dated.
+    expected = undated + list(reversed(dated_by_date))[:95]
+    assert len(expected) == 100, "fixture: the expected cut is a full one"
+    assert len(undated) + len(dated_by_date) > 100, (
+        "fixture: the match set must exceed the cap, or nothing is truncated and "
+        "this test pins an ordering rather than the ordering of a cut"
+    )
 
     found = await helper(_BOOST_TERM, filters={"lifecycle_status": "superseded"}, limit=100)
 
     assert [d.id for d in found] == expected, (
-        "the filtered cut lost the boost ordering: the survivors were not the "
-        "100 most recently dated documents"
+        "the filtered cut lost the boost ordering: an undated but recently "
+        "modified document was ranked as though it had no date at all"
     )
 
 

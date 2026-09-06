@@ -8338,8 +8338,10 @@ def test_every_target_forbidden_parameter_is_reachable(target, param, default, a
 # are.
 # ---------------------------------------------------------------------------
 
-# One over the cap the boosts take, so the fixture corpora below fill it with
-# documents the filter under test excludes.
+# Comfortably past the cap the boosts take, so the fixture corpora below fill
+# it with documents the filter under test excludes and still have some to
+# spare. The margin is slack rather than a second condition: any value above
+# the cap exercises the same starvation.
 _OVER_CAP = 120
 
 _BOOST_TAG = "phiword"

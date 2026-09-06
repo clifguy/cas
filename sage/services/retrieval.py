@@ -502,13 +502,17 @@ class RetrievalService:
     def _graph_filters(filters: RetrievalFilters | None) -> dict[str, object] | None:
         """A request's filters in the shape the graph store's SQL expects.
 
-        Every path that hands a caller's constraints to the graph store reads
-        this one translation: the document-id resolution above, and both
-        relevance boosts, which must narrow the set they rank rather than the
-        cut they receive. A second hand-rolled copy is how one of them comes to
-        omit a key -- and an omitted key is silent, because the SQL that
-        results is a valid query for a wider set of documents than the caller
-        asked for.
+        Six calls in this service hand a caller's own filters to the graph
+        store, and all six read this one translation: the document-id
+        resolution above, the wildcard drill-down, catalog enumeration and its
+        facet sibling, and both relevance boosts -- which must narrow the set
+        they rank rather than the cut they receive. A hand-rolled second copy
+        is how one of them comes to omit a key, and an omitted key is silent,
+        because the SQL that results is a valid query for a wider set of
+        documents than the caller asked for. The count is of caller-filter
+        paths, not of every filtered read: a query assembled from a stored
+        pattern rather than from a request is a different translation with
+        different defaults, and does not belong here.
         """
         if not filters:
             return None
@@ -955,33 +959,18 @@ class RetrievalService:
     def _build_catalog_sql_filters(self, request: DiscoverRequest) -> dict[str, object] | None:
         """Translate ``RetrievalFilters`` into the graph-store filter dict.
 
-        Shared by document catalog enumeration and facet aggregation so
-        both resolve identical filter semantics, including the tier3
-        filter-key validation against the resolved doc_type's
-        metadata_schema. Returns None when no filter is active.
+        Shared by document catalog enumeration and facet aggregation so both
+        resolve identical filter semantics. The translation itself is
+        ``_graph_filters``; what this adds is the tier3 filter-key validation
+        against the resolved doc_type's metadata_schema, which these two
+        surfaces owe their callers and which the retrieval paths perform at
+        their own entry points instead. Returns None when no filter is active.
         """
-        sql_filters: dict[str, object] = {}
-        if request.filters:
-            if request.filters.doc_type:
-                sql_filters["doc_type"] = request.filters.doc_type
-            if request.filters.project:
-                sql_filters["project"] = request.filters.project
-            if request.filters.lifecycle_status:
-                sql_filters["lifecycle_status"] = request.filters.lifecycle_status
-            if request.filters.pipeline_status:
-                sql_filters["pipeline_status"] = request.filters.pipeline_status
-            if request.filters.tags:
-                sql_filters["tags"] = request.filters.tags
-            if request.filters.document_ids:
-                sql_filters["document_ids"] = request.filters.document_ids
-            if request.filters.source_type:
-                sql_filters["source_type"] = request.filters.source_type.value
-            if request.filters.tier3_metadata:
-                self._validate_tier3_filter_keys(
-                    request.filters.tier3_metadata, request.filters.doc_type
-                )
-                sql_filters["tier3_metadata"] = request.filters.tier3_metadata
-        return sql_filters or None
+        if request.filters and request.filters.tier3_metadata:
+            self._validate_tier3_filter_keys(
+                request.filters.tier3_metadata, request.filters.doc_type
+            )
+        return self._graph_filters(request.filters)
 
     async def _catalog_facets(
         self,
