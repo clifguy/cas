@@ -1951,11 +1951,16 @@ async def test_reload_vault_count_comes_from_the_store_total(vault_services, mon
 
     Pins the producer rather than the value. The fake store's
     ``list_all_documents()`` raises, so a count taken by materializing every
-    document record fails loudly instead of quietly agreeing with the
-    sentinel; ``get_total_document_count()`` returns a value no default or
-    fixture could supply. The count expression sits outside the tool's
-    ``except (SAGEError, ValueError)`` block, so the raise propagates rather
-    than being laundered into an error envelope.
+    document record cannot quietly agree with the sentinel;
+    ``get_total_document_count()`` returns a value no default or fixture
+    could supply.
+
+    What discriminates is the sentinel comparison, not the raise reaching the
+    caller. A rival reading the length *outside* the tool's degrade guard
+    propagates the ``AssertionError``; one reading it *inside* is caught
+    there -- ``except Exception`` takes ``AssertionError`` too -- logged, and
+    degraded to ``None``. Both go red, the second on the value rather than on
+    the exception, which is why the assertion is on 4242 and not on the raise.
     """
     import sage.sage_api_tools as _sage_tools_module
 
