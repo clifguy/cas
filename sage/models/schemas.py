@@ -2981,7 +2981,9 @@ class DiscoverRequest(BaseModel):
         description=(
             "Sort key for catalog mode results. Optional. Default when "
             "omitted: active lifecycle first, then document_date descending. "
-            "Ignored by other retrieval modes."
+            "Ignored by other retrieval modes. Ties are broken by document "
+            "id, so the order is total and paging a filtered set returns each "
+            "document exactly once."
         ),
     )
     sort_order: SortOrder | None = Field(
@@ -3491,7 +3493,10 @@ class DiscoverResponse(BaseModel):
             "(semantic/keyword) or by sort_by (catalog) for documents; "
             "ordered by edge created_at DESC for edges; one FacetHit "
             "row per requested facet field for facets. Row type is "
-            "discriminated by `target`."
+            "discriminated by `target`. "
+            "Both orderings are total -- ties broken by document id for "
+            "documents, by edge id for edges -- so paging returns each row "
+            "exactly once."
         )
     )
     total_available: int = Field(

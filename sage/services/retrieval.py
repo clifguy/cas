@@ -194,6 +194,14 @@ def _response_at_row_count(response: DiscoverResponse, count: int) -> DiscoverRe
     A lower limit returns the same rows in the same order, truncated,
     and leaves ``total_available`` alone -- it counts what matched, not
     what was returned.
+
+    The first half of that is a premise, not an observation, and it is
+    supplied by the catalog ordering being total: the store appends the
+    document's primary key to every ORDER BY it builds, so no two rows
+    tie and two calls with the same filters cannot disagree about which
+    rows a prefix holds. Without it the simulation measures a prefix the
+    re-page would not return, and recommends a limit fitted to the wrong
+    rows.
     """
     return response.model_copy(update={"results": response.results[:count]})
 
@@ -245,6 +253,13 @@ def _facets_response_at_cap(response: DiscoverResponse, cap: int) -> DiscoverRes
     descending count then value, and the re-call's own rows would be
     ordered the same way, so the prefix is the same prefix. Each row's
     ``total_distinct`` is computed before any cap and is unchanged.
+
+    That the two orders agree rests on this one being total, and it is:
+    the counts come from a GROUP BY on the field, so a value appears
+    once per row and ``value ASC`` has no tie left to break. The sibling
+    ``_response_at_row_count`` needs the same property and does not get
+    it for free -- documents tie on every sortable column, so the store
+    supplies it with a primary-key tiebreak.
     """
     rows = [
         row.model_copy(update={"values": dict(list(row.values.items())[:cap])})

@@ -717,6 +717,14 @@ class GraphStore(ABC):
 
         Returns the page plus the total count of matching rows. By default
         excludes documents whose pipeline ended in a failed state.
+
+        The ordering is total whatever ``sort_by`` asks for: documents tie
+        freely on every sortable column, so an implementation must break the
+        remaining ties on something unique per row. Two consequences callers
+        rely on. Paging one filtered set with ``limit``/``offset`` returns each
+        matching document exactly once -- no skips, no duplicates across a page
+        boundary. And two calls with the same filters agree on row order, which
+        is what lets a caller reason about a prefix of a larger page.
         """
 
     @abstractmethod

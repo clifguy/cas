@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
@@ -82,6 +82,13 @@ _DOC_TYPE_FORMAT = re.compile(r"^[a-z][a-z0-9_]*$")
 _SORTABLE_COLUMNS: frozenset[str] = frozenset(
     {"title", "doc_type", "document_date", "lifecycle_status"}
 )
+
+# Final sort term on every document enumeration, making the ordering total.
+# ``id`` is the documents table's primary key, so appending it breaks every tie
+# the sort columns leave without disturbing the primary sort a caller asked
+# for. The direction is arbitrary -- what the two consumers need is that the
+# order is the same one twice, not which of two tied rows comes first.
+_ORDER_TIEBREAK: Final[str] = ", id ASC"
 
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).
 # Mirrors the embedded store's ``trg_tier3_chain_head_on_supersedes``: any
@@ -534,23 +541,40 @@ class PostgresGraphStore(GraphStore):
 
     @classmethod
     def _build_order_clause(cls, sort_by: str | None, sort_order: str | None) -> str:
-        """Build a safe ORDER BY clause (active first, document_date desc default)."""
+        """Build a safe, total ORDER BY clause (active first, document_date desc default).
+
+        Every branch orders on a column that admits ties -- hundreds of
+        documents can share a ``document_date``, and the fallback sorts on
+        ``title`` alone -- and Postgres is free to return tied rows in any
+        order, and to choose a different one next time. Two things depend on it
+        not doing that: ``limit``/``offset`` paging, which skips or repeats a
+        row when the two queries disagree on where the page boundary falls, and
+        the retrieval layer's budget hint, whose recommendation is measured on
+        the premise that a lower limit returns the same rows truncated.
+
+        ``_ORDER_TIEBREAK`` supplies what the sort columns cannot. Each branch
+        contributes only its primary sort expression and every one of them
+        returns through the single exit below, so a branch added later cannot
+        be total-by-oversight -- which is how all three of these came to admit
+        ties in the first place.
+        """
         if sort_by is None:
-            return (
-                "ORDER BY "
+            primary = (
                 "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
                 "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
                 "document_date DESC"
             )
-        if sort_by not in _SORTABLE_COLUMNS:
-            return "ORDER BY title"
-        direction = "DESC" if sort_order == "desc" else "ASC"
-        nulls_last = (
-            "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
-            if sort_by == "document_date"
-            else ""
-        )
-        return f"ORDER BY {nulls_last}{sort_by} {direction}"
+        elif sort_by not in _SORTABLE_COLUMNS:
+            primary = "title"
+        else:
+            direction = "DESC" if sort_order == "desc" else "ASC"
+            nulls_last = (
+                "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
+                if sort_by == "document_date"
+                else ""
+            )
+            primary = f"{nulls_last}{sort_by} {direction}"
+        return f"ORDER BY {primary}{_ORDER_TIEBREAK}"
 
     async def find_documents_by_title(self, title: str) -> list[Document]:
         with self._query_timer.measure("find_documents_by_title"):
@@ -797,6 +821,14 @@ class PostgresGraphStore(GraphStore):
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[EdgeQueryRow], int]:
+        """Filtered, paginated edge enumeration with retraction state.
+
+        Ordered by ``created_at`` descending, ties broken by edge id: the same
+        total-order requirement ``_ORDER_TIEBREAK`` serves on the document
+        query, for the same reason. Edges are written a transaction at a time
+        and share a ``created_at`` freely, so without the tiebreak a caller
+        paging this surface could skip an edge or receive one twice.
+        """
         with self._query_timer.measure("query_edges"):
             where_clauses: list[str] = []
             params: list[object] = []
@@ -831,7 +863,7 @@ class PostgresGraphStore(GraphStore):
                       AND retracted_edge_id IS NOT NULL
                 ) r ON r.retracted_edge_id = e.id AND r.rn = 1
                 WHERE {where_sql}
-                ORDER BY e.created_at DESC
+                ORDER BY e.created_at DESC, e.id ASC
                 LIMIT %s OFFSET %s
             """  # noqa: S608 -- builder-trusted; values are %s
             rows = await self._fetch_rows(sql, [*params, limit, offset])
