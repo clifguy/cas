@@ -190,8 +190,14 @@ paths:
           across its sections matches -- but the document is ranked by its
           best-matching passage, which is the excerpt returned. A quoted phrase
           is the exception and must be satisfied within a single passage, since
-          adjacency across a passage boundary is not meaningful. A term
-          prefixed with `-` is excluded; terms joined by or admit either. When
+          adjacency across a passage boundary is not meaningful. Terms joined
+          by or admit either, and each alternative is satisfied across the
+          document as a bare term is, so adding an alternative widens. A term
+          prefixed with `-` is excluded, and excluding one narrows the scope of
+          the whole query: a query carrying an exclusion is satisfied within a
+          single passage, terms and alternatives alike, so appending an
+          excluded term can drop a document the same query without it matched.
+          When
           a query of bare terms returns nothing, `hints.warnings` names the
           terms the query parsed to -- stopwords are dropped and the rest
           stemmed, so they are not the words typed. The other forms carry their

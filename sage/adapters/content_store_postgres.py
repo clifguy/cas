@@ -159,22 +159,35 @@ def _skip_quoted(rendered: str, i: int) -> int:
     return i
 
 
-def _split_conjuncts(rendered: str) -> list[str] | None:
-    """The top-level AND operands of a rendered tsquery, or None if it has none.
+def _split_branches(rendered: str) -> list[list[str]] | None:
+    """A rendered tsquery as branches of AND operands, or None if it has none.
 
-    Each operand becomes one document-id arm of the intersection that computes
-    a document-scoped match, so the split has to be exact. ``None`` means the
-    query's shape does not admit the decomposition and the caller must fall
-    back to evaluating it against a single chunk.
+    Each operand becomes one document-id arm of an intersection, and each
+    branch's intersection is unioned with the others, so the split has to be
+    exact. ``None`` means the query's shape does not admit the decomposition
+    and the caller must fall back to evaluating it against a single chunk.
 
-    Two shapes are refused. A negation asks whether text is *absent*, and
-    absence from one chunk is not absence from the document, so the two scopes
-    genuinely disagree and no decision governs which one a caller means. A
-    top-level alternation cannot be split at all: ``&`` binds tighter than
-    ``|``, so ``a | b & c`` is ``a OR (b AND c)`` and cutting it at the ``&``
-    would rewrite the query. An alternation nested *inside* an operand is fine
-    -- a chunk satisfies ``a | b`` exactly when the document does -- so only
-    the top level is checked.
+    One shape is refused. A negation asks whether text is *absent*, and absence
+    from one chunk is not absence from the document, so the two scopes
+    genuinely disagree and no decision governs which one a caller means. It is
+    refused before the scan rather than within it, so a query carrying both a
+    negation and an alternation is refused whole: the alternation does not
+    rescue the shape the negation makes undecidable.
+
+    An alternation is not refused but distributed. ``&`` binds tighter than
+    ``|``, so ``a | b & c`` is ``a OR (b AND c)`` and a split that cut it at
+    the ``&`` alone would rewrite the query -- but cutting at both, into a
+    branch for ``a`` and a branch for ``b & c``, preserves it exactly, and each
+    branch is then a conjunction the document scope already knows how to
+    evaluate (CAS-ADR-048).
+
+    Only the top level is scanned, and at the top level the rendering is
+    already in disjunctive normal form. The text-search configuration has no
+    grouping operator: it discards a caller's parentheses rather than honouring
+    them, so ``(a or b) c`` renders ``a | b & c`` like every other arrangement
+    of those words. Nothing but a negated phrase ever renders a parenthesis, so
+    the depth guard below is what keeps a nested group out of the split rather
+    than a shape the caller can reach.
 
     Lexemes are returned as rendered, including their quotes, because they are
     already stemmed: re-parsing them through ``to_tsquery`` would stem them a
@@ -184,6 +197,7 @@ def _split_conjuncts(rendered: str) -> list[str] | None:
     """
     if "!" in rendered:
         return None
+    branches: list[list[str]] = []
     operands: list[str] = []
     depth = 0
     start = 0
@@ -197,15 +211,17 @@ def _split_conjuncts(rendered: str) -> list[str] | None:
             depth += 1
         elif char == ")":
             depth -= 1
-        elif depth == 0 and char == "|":
-            return None
-        elif depth == 0 and char == "&":
+        elif depth == 0 and char in "|&":
             operands.append(rendered[start:i])
             start = i + 1
+            if char == "|":
+                branches.append(operands)
+                operands = []
         i += 1
     operands.append(rendered[start:])
-    trimmed = [operand.strip() for operand in operands]
-    return trimmed if all(trimmed) else None
+    branches.append(operands)
+    trimmed = [[operand.strip() for operand in branch] for branch in branches]
+    return trimmed if all(all(branch) for branch in trimmed) else None
 
 
 def _or_form(terms: tuple[str, ...]) -> str:
@@ -624,6 +640,13 @@ class PostgresContentStore(ContentStore):
         an arm returns fewer rows than its limit -- there is then nothing for
         the ordering to displace it behind -- which is why nothing writes a
         row without an embedding.
+
+        The outer sort is total, so the same survivors always come back in the
+        same order. The arms' own clauses are not, and deliberately: a tiebreak
+        on a distance order is a clause no vector index can supply, and adding
+        one would cost the full scan of both tables the shape above exists to
+        avoid. Two rows tied at an arm's cutoff can therefore still vary which
+        one that arm keeps. What is fixed here is the half that costs nothing.
         """
         with self._query_timer.measure(
             "search_semantic", params={"limit": limit, "filtered": bool(filters)}
@@ -635,7 +658,7 @@ class PostgresContentStore(ContentStore):
                 " is_document_surface FROM ("
                 " (SELECT document_id, heading_path, content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
-                " false AS is_document_surface FROM chunks"
+                " false AS is_document_surface, chunk_index FROM chunks"
                 f" WHERE {_passage_rows_only()}{' AND ' + where if where else ''}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " UNION ALL"
@@ -648,10 +671,20 @@ class PostgresContentStore(ContentStore):
                 " (SELECT document_id, '' AS heading_path,"
                 " '' AS content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
-                " true AS is_document_surface FROM document_surface"
+                " true AS is_document_surface,"
+                f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index FROM document_surface"
                 f"{predicate}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
-                " ) s WHERE score IS NOT NULL ORDER BY score DESC LIMIT %s"
+                # Two rows can share a score, and a clause stopping there hands
+                # back whichever the scan reached first, so the same call can
+                # answer differently twice. The id makes the order total across
+                # documents; within one, the passage index separates the
+                # passages from each other and from the document-level row,
+                # which sorts at the index the port reserves for it. The
+                # heading will not serve: two passages can share one, and a
+                # passage carrying none ties with its own surface row.
+                " ) s WHERE score IS NOT NULL"
+                " ORDER BY score DESC, document_id, chunk_index LIMIT %s"
             )
             params: list[object] = [
                 query_embedding,
@@ -675,14 +708,23 @@ class PostgresContentStore(ContentStore):
     ) -> list[SearchResult]:
         """Keyword search scoped to the document (CAS-ADR-048).
 
-        The match unit is the document: one intersected arm per top-level
-        operand of the parsed query, each asking whether *some* chunk of the
-        document satisfies that operand. Intersecting on document id makes the
+        The match unit is the document: one intersected arm per operand of the
+        parsed query, each asking whether *some* chunk of the document
+        satisfies that operand. Intersecting on document id makes the
         conjunction hold across the document's chunks rather than within any
         one of them, which is what the document-shaped result already claims.
         The shape also carries the phrase exception without a special case: an
         operand that is a phrase is satisfied only by a chunk holding its terms
         adjacently, so adjacency stays chunk-scoped while bare terms do not.
+
+        A top-level alternation is distributed rather than refused, so the
+        scope reaches it too: ``a | (b & c)`` is an arm for ``a`` unioned with
+        the intersection of arms for ``b`` and ``c``. The rendering is already
+        in disjunctive normal form -- the text-search configuration has no
+        grouping operator to produce anything else -- so this is a split of the
+        query rather than an expansion of it, and the arm count stays linear in
+        the query's length. A conjunction is the single-branch case of the same
+        shape.
 
         Each arm is an indexed predicate over the generated tsvector, which
         covers heading_path (weight A) and content (weight D), so a term
@@ -705,9 +747,9 @@ class PostgresContentStore(ContentStore):
 
         ``_search_bm25_across_document``. Scope: the document. Tokenization:
         the query as the text-search configuration renders it, split into
-        top-level operands and cast back verbatim, since re-parsing a rendered
-        lexeme would stem it a second time. Admitted when the query requires at
-        least one lexeme and ``_split_conjuncts`` accepts its shape.
+        branches of operands and cast back verbatim, since re-parsing a
+        rendered lexeme would stem it a second time. Admitted when the query
+        requires at least one lexeme and ``_split_branches`` accepts its shape.
 
         The folded arm. Not a third scope: the same document scope reached by a
         different tokenization, spliced into the path above as an extra
@@ -735,8 +777,8 @@ class PostgresContentStore(ContentStore):
         ``_search_bm25_within_chunk``. Scope: one unit of text -- a passage, or
         the document surface as a second such unit. Tokenization: the whole
         query, rendered in SQL and never decomposed. Admitted when the query
-        requires no lexeme at all, or when ``_split_conjuncts`` refuses its
-        shape: a negation, or a top-level alternation.
+        requires no lexeme at all, or when ``_split_branches`` refuses its
+        shape, which now means a negation and nothing else.
 
         The set is exhaustive because the dispatch is two decisions over the
         parse, taken in order and jointly total -- whether the query requires a
@@ -764,13 +806,17 @@ class PostgresContentStore(ContentStore):
         where the fallback budgets rows. The port admits both row shapes for
         exactly this reason.
 
-        The fallback covers two shapes rather than one because only the
-        negation's scope is genuinely undecided. A top-level alternation could
-        instead be distributed -- ``a | (b & c)`` as an arm for ``a`` unioned
-        with the intersection of arms for ``b`` and ``c`` -- which would make
-        it document-scoped and leave the fallback to negation alone. That is a
-        recall change no decision has taken: it would newly let a document
-        carrying ``b`` in one passage and ``c`` in another satisfy the branch.
+        The fallback covers the negation and nothing else, because the
+        negation's scope is the only one genuinely undecided. An alternation's
+        was not: refusing to *split* a top-level ``|`` is forced by precedence,
+        but refusing to *distribute* it was where the splitting stopped rather
+        than a position anyone held, and it left a discontinuity a caller could
+        reach -- ``b c`` matched a document carrying the terms in separate
+        passages while the weaker ``a or (b c)`` did not. CAS-ADR-048 now
+        states the scope for both shapes; the recall it adds is a document
+        satisfying a branch across its passages, and, because the folded arm
+        rides on this path, a title an alternation could not previously fold
+        its way to.
         """
         with self._query_timer.measure(
             "search_bm25", params={"limit": limit, "filtered": bool(filters)}
@@ -789,11 +835,11 @@ class PostgresContentStore(ContentStore):
                 # every word was discarded, or the query asked only for
                 # absences, which the decomposition refuses.
                 return await self._search_bm25_within_chunk(query, limit, filters)
-            operands = _split_conjuncts(rendered)
-            if operands is None:
+            branches = _split_branches(rendered)
+            if branches is None:
                 return await self._search_bm25_within_chunk(query, limit, filters)
             return await self._search_bm25_across_document(
-                operands,
+                branches,
                 _or_form(parse.terms),
                 limit,
                 filters,
@@ -827,17 +873,24 @@ class PostgresContentStore(ContentStore):
 
     async def _search_bm25_across_document(
         self,
-        operands: list[str],
+        branches: list[list[str]],
         or_form: str,
         limit: int,
         filters: dict[str, str | list[str]] | None,
         folded: str | None = None,
     ) -> list[SearchResult]:
-        """Resolve each operand across both surfaces, intersect, then rank.
+        """Resolve each operand across both surfaces, intersect, union, then rank.
 
         What this path matches, in what tokenization, when it is admitted, and
         how it sits relative to the other one are stated at ``search_bm25`` and
         are not restated here. What follows is this path's own shape.
+
+        A branch's operands intersect and the branches union, which is the
+        query's own structure read straight off: the rendering arrives in
+        disjunctive normal form, so nothing is expanded to reach this shape and
+        the arm count stays linear in the query's length. A query with no
+        alternation is the single-branch case and emits exactly what it did
+        before the union existed.
 
         ``limit`` bounds documents rather than rows: a matching document is
         returned once, carrying its best-ranking passage as the excerpt and a
@@ -845,6 +898,14 @@ class PostgresContentStore(ContentStore):
         matched only through its document surface is returned with no excerpt
         and a passage count of zero -- the count names passages, so a
         document-level hit must not inflate it.
+
+        Ranking and counting run over ``or_form``, the whole query's lexemes
+        alternated, and so do not distinguish the branch a document matched on:
+        a document is excerpted by its best chunk under any of the query's
+        terms, and counted by the chunks carrying one. That is the same
+        treatment a conjunction already gets -- its arms intersect, while its
+        ranking asks only that a chunk carry *some* term -- rather than a
+        looseness the alternation introduces.
         """
         where, where_params = self._build_where(filters)
         # Interpolated into the fragments below. Column names come from a fixed
@@ -863,10 +924,17 @@ class PostgresContentStore(ContentStore):
             " SELECT DISTINCT document_id FROM document_surface"
             f" WHERE tsv_match @@ %s::tsquery{predicate})"
         )
+        # Each branch's arms intersect; the branches union. Parenthesized for
+        # the reader rather than for the parser -- INTERSECT already binds
+        # tighter than UNION -- and in the same shape the folded arm below
+        # splices onto.
         params: list[object] = []
-        for operand in operands:
-            params += [operand, *where_params, operand, *where_params]
-        matched = "\nINTERSECT\n".join([arm] * len(operands))
+        groups: list[str] = []
+        for branch in branches:
+            for operand in branch:
+                params += [operand, *where_params, operand, *where_params]
+            groups.append("(" + "\nINTERSECT\n".join([arm] * len(branch)) + ")")
+        matched = "\nUNION\n".join(groups)
 
         # The normalized whole-query arm, document surface only.
         if folded:
@@ -953,15 +1021,19 @@ class PostgresContentStore(ContentStore):
             # The interpolations are a module constant and a predicate built
             # from a fixed column allowlist; every value stays bound.
             "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score,"  # noqa: S608
-            " false AS is_document_surface"
+            " false AS is_document_surface, chunk_index"
             f" FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
             f" WHERE tsv @@ q AND {_passage_rows_only()}"
         )
         # A document-level row is not a passage, so it carries no excerpt and
-        # no heading, exactly as it does on the arms above.
+        # no heading, exactly as it does on the arms above. It sorts at the
+        # index the port reserves for document-level text, which is the row it
+        # replaced and which neither arm can return, so the value orders the
+        # surface ahead of the passages without colliding with one.
         surface_arm = (
             "SELECT document_id, '' AS heading_path, '' AS content,"  # noqa: S608
-            " ts_rank(tsv_rank, q) AS score, true AS is_document_surface"
+            " ts_rank(tsv_rank, q) AS score, true AS is_document_surface,"
+            f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index"
             f" FROM document_surface, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
             " WHERE tsv_match @@ q"
         )
@@ -976,7 +1048,20 @@ class PostgresContentStore(ContentStore):
         sql = (
             f"SELECT document_id, heading_path, content, score, is_document_surface FROM ("  # noqa: S608
             f" ({chunk_arm}) UNION ALL ({surface_arm})"
-            " ) u ORDER BY score DESC LIMIT %s"
+            # Total, for the reason the semantic verb's own sort gives. Neither
+            # arm limits, so nothing but this clause decides what the outer
+            # limit keeps -- and on this path the id is not breaking a tie
+            # between scores but supplying the order outright: ``ts_rank``
+            # returns its floor against any tsquery carrying a ``!``,
+            # identically for every row, and every query routed here carries
+            # one or requires no lexeme at all. ``score DESC`` stays because it
+            # costs nothing and would order a shape this path does not yet see.
+            #
+            # The final term is the passage index rather than its heading,
+            # which is not unique within a document: two passages can share a
+            # heading, and a document whose passage carries none ties with its
+            # own surface row on the empty string.
+            " ) u ORDER BY score DESC, document_id, chunk_index LIMIT %s"
         )
         params.append(limit)
         rows = await self._fetchall(sql, params)

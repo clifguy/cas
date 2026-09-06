@@ -1829,18 +1829,6 @@ async def test_a_negated_query_still_reaches_a_title(store):
     )
 
 
-async def test_an_alternation_query_still_reaches_a_title(store):
-    """The same for a top-level alternation, the other undecomposable shape."""
-    await store.index_chunks("alternated", [_chunk("alternated", content="unrelated body prose")])
-    await _surface(store, "alternated", matchable="Zetaword Catalog", orienting="")
-
-    hits = await store.search_bm25("zetaword or absentword", limit=10)
-
-    assert [h.document_id for h in hits] == ["alternated"], (
-        "an alternation query could not reach the document's title"
-    )
-
-
 async def test_the_fallback_does_not_make_derived_text_matchable(store):
     """Widening the fallback to the surface must not widen it past the line.
 
@@ -1959,8 +1947,8 @@ async def test_a_negated_query_is_answered_within_one_unit(store):
     )
 
 
-async def test_an_alternation_query_is_answered_within_one_unit(store):
-    """The other undecomposable shape routes the same way."""
+async def test_an_alternation_query_is_answered_at_document_scope(store):
+    """An alternation decomposes too, into one intersection per branch."""
     await _two_chunk_document(store)
 
     rows = [
@@ -1969,8 +1957,103 @@ async def test_an_alternation_query_is_answered_within_one_unit(store):
         if r.document_id == "routed"
     ]
 
-    assert len(rows) == 2, "an alternation must not be answered at document scope"
-    assert [r.matched_chunk_count for r in rows] == [1, 1]
+    assert len(rows) == 1, "a document-scoped answer returns each document once"
+    assert rows[0].matched_chunk_count == 2, (
+        "the row must count both passages carrying the term, not just its excerpt's"
+    )
+
+
+async def test_an_alternation_branch_is_satisfied_across_a_document(store):
+    """A branch's conjuncts may be split between passages, as a bare one may.
+
+    The scope discontinuity this closes: ``deltaword epsilonword`` matched a
+    document carrying one term in each passage, while the weaker ``gammaword or
+    deltaword epsilonword`` did not, because the alternation sent the whole
+    query to the within-unit path and no passage carries both.
+
+    Both branches are given a document to match, and both must come back. A
+    bare conjunction would satisfy every claim below about ``routed`` on its
+    own, so the branch reaching ``disjunct`` is what makes this a test of the
+    alternation rather than a second copy of the conjunction test above -- and
+    it pins the branches as unioned rather than intersected, which would return
+    neither document.
+    """
+    await store.index_chunks(
+        "routed",
+        [
+            _chunk("routed", content="deltaword in the first passage", chunk_index=0),
+            _chunk("routed", content="epsilonword in the second passage", chunk_index=1),
+        ],
+    )
+    await store.index_chunks("disjunct", [_chunk("disjunct", content="gammaword only here")])
+
+    rows = {
+        r.document_id: r
+        for r in await store.search_bm25("gammaword or deltaword epsilonword", limit=10)
+    }
+
+    assert set(rows) == {"routed", "disjunct"}, (
+        "each branch must contribute the documents it matches, and only a union does"
+    )
+    assert rows["routed"].matched_chunk_count == 2, (
+        "a branch's conjuncts held apart in two passages did not match across them"
+    )
+
+
+async def test_a_negation_beside_an_alternation_still_routes_within_one_unit(store):
+    """Negation refuses the decomposition whatever else the query carries.
+
+    The two refusals are ordered, and this is what pins the order: a query
+    carrying both a ``|`` and a ``!`` must still reach the within-unit path. An
+    implementation that split the branches first and looked for the negation
+    afterwards would document-scope a negated query, closing a question
+    deliberately left open rather than answering it.
+    """
+    await _two_chunk_document(store)
+
+    rows = [
+        r
+        for r in await store.search_bm25("deltaword or absentword -otherword", limit=10)
+        if r.document_id == "routed"
+    ]
+
+    assert len(rows) == 2, "a within-unit answer returns one row per matching passage"
+    assert [r.matched_chunk_count for r in rows] == [1, 1], (
+        "a chunk-by-chunk binding leaves the count at its default for the caller to tally"
+    )
+
+
+async def test_an_exclusion_narrows_the_scope_of_the_whole_query(store):
+    """Appending an excluded term can drop a document the query without it matched.
+
+    The disclosed consequence of the negation keeping the scope it had. The
+    refusal is whole-query, so a conjunction that was satisfied across two
+    passages is re-evaluated within one the moment any term is excluded --
+    which makes a strictly weaker query match strictly less, the shape
+    CAS-ADR-048 names as the defect it closes for the alternation and leaves
+    open for the negation (Decision 8).
+
+    Pinned because it is now stated on the caller-facing surfaces, and a
+    contract sentence with no test is a claim rather than a guarantee. If the
+    negation is ever scoped per branch, this test is the one that should fail
+    and be rewritten rather than quietly deleted.
+    """
+    await store.index_chunks(
+        "split",
+        [
+            _chunk("split", content="deltaword in the first passage", chunk_index=0),
+            _chunk("split", content="epsilonword in the second passage", chunk_index=1),
+        ],
+    )
+
+    assert [r.document_id for r in await store.search_bm25("deltaword epsilonword", limit=10)] == [
+        "split"
+    ], "positive control: the conjunction is satisfied across the document"
+
+    assert await store.search_bm25("deltaword epsilonword -absentword", limit=10) == [], (
+        "excluding a term the document does not carry still narrowed it out, "
+        "because the exclusion re-scopes the whole query to one passage"
+    )
 
 
 async def test_an_exclusion_only_query_is_answered_within_one_unit(store):
@@ -1992,6 +2075,188 @@ async def test_an_exclusion_only_query_is_answered_within_one_unit(store):
 
     assert len(rows) == 2, "a query asking only for an absence is answered per unit"
     assert [r.matched_chunk_count for r in rows] == [1, 1]
+
+
+# ---------------------------------------------------------------------------
+# Ordering is total, so two identical calls agree
+#
+# Both verbs rank on a score two rows can share, and a clause that stops there
+# leaves the tied block in whatever order the scan produced. The document
+# scope's own ordering already broke its ties on the id; these cover the two
+# clauses that did not, and each is written the way the tie is actually
+# reachable: rows inserted in descending id order, so insertion order and id
+# order disagree, and the scan order perturbed between two calls, because
+# Postgres will answer a small unperturbed table the same way twice and a test
+# without the perturbation passes against the defect.
+# ---------------------------------------------------------------------------
+
+
+_TIED_CONTENT = "tiedword carried identically"
+_TIED_HEADINGS = {"tie_zulu": "", "tie_alfa": "Shared"}
+_TIED_BRAVO_CONTENT = " ".join(["tiedword"] * 8)
+
+
+def _tied_passages(document_id):
+    """The two passages a tied document carries, built the one way.
+
+    Written in descending index order, so physical order and index order
+    disagree. Without that the two land in the order the assertions expect
+    anyway, and a sort key that ties across them -- the heading, which is not
+    unique within a document -- passes on a table small enough for Postgres to
+    answer the same way twice however it is perturbed.
+    """
+    return [
+        _chunk(
+            document_id,
+            content=f"{_TIED_CONTENT} {index}",
+            heading_path=_TIED_HEADINGS[document_id],
+            chunk_index=index,
+            embedding=_emb(0),
+        )
+        for index in (1, 0)
+    ]
+
+
+async def _perturb_scan_order(store):
+    """Move both tied documents' passages to new physical positions, unchanged.
+
+    ``index_chunks`` is delete-then-insert, so what comes back out is what was
+    there before, at a new scan position -- the content-store counterpart of
+    the graph store's helper of the same name. Rewriting a *different* shape
+    would reshape the fixture rather than perturb it, which is why this rebuilds
+    from ``_tied_passages`` rather than composing a chunk of its own.
+
+    Both, not one. Each tied document carries a different tie -- ``tie_alfa``'s
+    two passages share a heading, ``tie_zulu``'s share the empty one with its
+    surface row -- so perturbing one leaves the other's block in whatever order
+    it was written, which a small table hands back the same way twice. A sort
+    key that ties there then passes.
+    """
+    for document_id in _TIED_HEADINGS:
+        await store.index_chunks(document_id, _tied_passages(document_id))
+
+
+async def _tied_documents(store, content=_TIED_CONTENT):
+    """A tied pair, and one document that outranks it on both verbs.
+
+    The pair is written in descending id order, with identical text and one
+    shared one-hot embedding, so an identical ``ts_rank`` and an identical
+    cosine distance leave nothing but the id to separate them -- a genuine tie
+    rather than a near-miss a float comparison would break.
+
+    Each of the pair carries *two* passages under one heading and a surface,
+    which is what makes the fixture reach the ties inside a document as well as
+    the one between them. A heading is not unique within a document, so a sort
+    ending there leaves those two passages tied; and ``tie_zulu``'s passages
+    carry no heading at all, so on that document the passages tie with the
+    surface row too, which also reports an empty heading. Only the passage
+    index separates all three.
+
+    ``tie_bravo`` is the third document and is not decoration either. It
+    carries the term repeatedly and a different one-hot vector, so it outranks
+    the pair on both verbs, and its id sorts *between* theirs. Without it every
+    row in the fixture is tied, and an ordering that dropped the score entirely
+    and sorted on the id alone would satisfy the assertions below while
+    destroying the ranking -- the rival the tie itself cannot exclude. It
+    carries no document surface, so its higher rank shows up once rather than
+    twice.
+    """
+    for document_id in ("tie_zulu", "tie_alfa"):
+        await store.index_chunks(document_id, _tied_passages(document_id))
+        await store.upsert_document_surface(
+            DocumentSurface(
+                document_id=document_id, matchable=content, orienting="", embedding=_emb(0)
+            )
+        )
+    await store.index_chunks(
+        "tie_bravo",
+        [_chunk("tie_bravo", content=_TIED_BRAVO_CONTENT, embedding=_emb(1))],
+    )
+    return content
+
+
+async def test_a_tied_within_unit_result_orders_on_the_document_id(store):
+    """The fallback's rows are ordered totally, so a rerun cannot disagree.
+
+    Reached by a negation, which is the shape that still routes here -- and on
+    this path the id is not breaking a tie between scores, it is the whole
+    order. ``ts_rank`` returns its floor against any tsquery carrying a ``!``,
+    identically for every row whatever its text, and every query that reaches
+    this path carries one or requires no lexeme at all. So ``score DESC`` here
+    sorts a column that is constant by construction, and before this clause the
+    rows came back in whatever order the scan produced -- which the
+    perturbation below then changes underneath a caller who changed nothing.
+
+    ``tie_bravo`` carries the term eight times and still does not lead, which
+    is that floor stated as behaviour: it outranks the pair on any query
+    without a negation, and ranks level with it on this one. The claim that the
+    score is not merely being ignored belongs to the semantic sibling below,
+    whose path has real scores to order.
+
+    The rows are compared with their excerpts, so the order *within* a document
+    is asserted and not only the order between them. That is where the id alone
+    leaves ties: two passages under one heading, and -- on ``tie_zulu``, whose
+    passages carry no heading -- a passage and the document's own surface row,
+    which reports an empty heading too.
+    """
+    await _tied_documents(store)
+
+    first = [(r.document_id, r.content) for r in await store.search_bm25("tiedword -x", limit=10)]
+    await _perturb_scan_order(store)
+    second = [(r.document_id, r.content) for r in await store.search_bm25("tiedword -x", limit=10)]
+
+    assert first == second, "two identical calls disagreed after a no-op rewrite"
+    assert {r.score for r in await store.search_bm25("tiedword -x", limit=10)} == {1e-20}, (
+        "the floor is the premise of the assertion below; if scores vary here, "
+        "this path orders on something and the id is no longer the whole order"
+    )
+    assert first == [
+        ("tie_alfa", ""),
+        ("tie_alfa", f"{_TIED_CONTENT} 0"),
+        ("tie_alfa", f"{_TIED_CONTENT} 1"),
+        ("tie_bravo", _TIED_BRAVO_CONTENT),
+        ("tie_zulu", ""),
+        ("tie_zulu", f"{_TIED_CONTENT} 0"),
+        ("tie_zulu", f"{_TIED_CONTENT} 1"),
+    ], "rows must order on the id then the passage index, not on the scan"
+
+
+async def test_a_tied_semantic_result_orders_on_the_document_id(store):
+    """The same for the semantic verb's outer sort over its two arms.
+
+    What this buys is bounded, and the bound is worth stating: each arm still
+    takes its own ``LIMIT`` under an order the vector index supplies, and that
+    clause is deliberately left alone, since a tiebreak on it is a clause no
+    index can serve and would cost a full scan of both tables. So a tie *at an
+    arm's cutoff* can still vary the set this sorts. Fixed here is the part
+    that costs nothing: given the same rows, the answer no longer depends on
+    the order they arrived in. The fixture stays well inside both limits, so
+    the set is fixed and the sort is what is under test.
+
+    Queried on ``tie_bravo``'s own vector, so it scores 1 against the pair's 0
+    and must lead. As on the sibling above, the leading claim is what keeps the
+    id a tiebreak rather than the sort, and the excerpts are compared so the
+    order within a document is asserted along with the order between them.
+    """
+    await _tied_documents(store)
+
+    first = [(r.document_id, r.content) for r in await store.search_semantic(_emb(1), limit=10)]
+    await _perturb_scan_order(store)
+    second = [(r.document_id, r.content) for r in await store.search_semantic(_emb(1), limit=10)]
+
+    assert first == second, "two identical calls disagreed after a no-op rewrite"
+    assert first == [
+        ("tie_bravo", _TIED_BRAVO_CONTENT),
+        ("tie_alfa", ""),
+        ("tie_alfa", f"{_TIED_CONTENT} 0"),
+        ("tie_alfa", f"{_TIED_CONTENT} 1"),
+        ("tie_zulu", ""),
+        ("tie_zulu", f"{_TIED_CONTENT} 0"),
+        ("tie_zulu", f"{_TIED_CONTENT} 1"),
+    ], (
+        "the nearer document must lead and the tied set must then order on the id "
+        "and the passage index, not on the order the arms produced it"
+    )
 
 
 async def _folded_surface_document(store, document_id="folded", title="Epsilon Level Text"):
@@ -2038,6 +2303,43 @@ async def test_the_folded_arm_is_reachable_only_from_the_document_scoped_path(st
     assert [r.document_id for r in control] == ["folded"], (
         "positive control: the within-unit path does reach this surface, just not "
         "through a folded compound"
+    )
+
+
+async def test_an_alternation_reaches_the_folded_arm(store):
+    """Routing an alternation to the document-scoped path hands it that path's arm.
+
+    The widening is not confined to what the branches themselves match. The
+    folded arm is spliced into the document-scoped query, so a title reachable
+    only by folding used to become unreachable the moment a disjunct was
+    appended to the query that reached it -- ``epsilonLevelText`` landed and
+    ``epsilonLevelText or absentword`` did not, though the second asks for
+    strictly less.
+    """
+    await _folded_surface_document(store)
+
+    hits = await store.search_bm25("epsilonLevelText or absentword", limit=10)
+
+    assert [r.document_id for r in hits] == ["folded"], (
+        "an alternation did not reach the arm its path carries"
+    )
+
+
+async def test_an_alternation_query_still_reaches_a_title(store):
+    """A branch may be satisfied by the document surface rather than a passage.
+
+    Each arm spans both authored surfaces, so distributing the alternation must
+    distribute that union with it rather than resolving branches against
+    passages alone -- which would leave a document findable by its own name
+    only until a disjunct was added to the query.
+    """
+    await store.index_chunks("alternated", [_chunk("alternated", content="unrelated body prose")])
+    await _surface(store, "alternated", matchable="Zetaword Catalog", orienting="")
+
+    hits = await store.search_bm25("zetaword or absentword", limit=10)
+
+    assert [h.document_id for h in hits] == ["alternated"], (
+        "an alternation query could not reach the document's title"
     )
 
 
@@ -2110,6 +2412,7 @@ async def test_every_keyword_query_is_answered_by_exactly_one_path(store, monkey
         "deltaword",
         "deltaword -absentword",
         "deltaword or absentword",
+        "deltaword or absentword -otherword",
         "-absentword",
         "epsilonLevelText",
     ]

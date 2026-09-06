@@ -59,11 +59,14 @@ class KeywordQueryParse(NamedTuple):
 
     ``all_required`` is false when the parse admits alternatives, so a caller
     cannot describe the query as conjunctive: a document can satisfy it while
-    carrying only some of the terms. ``adjacent`` is true when the parse
-    contains a phrase, whose terms must appear together and in order within a
-    single passage -- a stronger condition than carrying them all, and the one
-    predicate still scoped below the document, so a document can hold every
-    term and still not match.
+    carrying only some of the terms. It says nothing about scope -- each
+    alternative is satisfied across the document, exactly as a lone
+    conjunction's terms are. ``adjacent`` is true when the parse contains a
+    phrase, whose terms must appear together and in order within a single
+    passage -- a stronger condition than carrying them all, so a document can
+    hold every term and still not match. Adjacency is the one predicate scoped
+    below the document by decision; a negation may also be, but only because
+    its scope is undecided rather than settled there.
     """
 
     terms: tuple[str, ...]
@@ -111,6 +114,15 @@ class Chunk:
     chunk without a document to derive it from. A binding falls back to the
     address in that case, so an underived passage keeps the pre-decision
     behaviour rather than dropping out of the index.
+
+    ``chunk_index`` is a passage's position in its document and is unique
+    within it: a caller writing a document's passages numbers them, and passing
+    the default for more than one of them is a defect in the caller. Bindings
+    depend on that -- it is the term their result orderings end on, since
+    nothing else distinguishes two passages of one document (a heading is not
+    unique within one, and a passage may carry none). Two passages sharing an
+    index re-open a tie the orderings are stated to have closed, and no schema
+    constraint catches it.
     """
 
     document_id: str
