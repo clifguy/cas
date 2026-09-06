@@ -3921,10 +3921,11 @@ async def test_recommended_limit_re_pages_within_delivered_bytes(
 
     The **byte assertion** is the guarantee, stated on the bytes the runtime
     delivers rather than on the service's own measurement, which cannot catch
-    a recommendation that is wrong in the same way twice. It is not a discriminator against the old
-    ordering -- a reordered prefix still fits the ceiling whenever the rows it
-    drew from weigh about the same -- and it is not being claimed as one. What
-    it pins is that the number the hint names is honest at the wire.
+    a recommendation that is wrong in the same way twice. It is not a
+    discriminator against the old ordering -- a reordered prefix still fits the
+    ceiling whenever the rows it drew from weigh about the same -- and it is
+    not being claimed as one. What it pins is that the number the hint names is
+    honest at the wire.
 
     The fixture's weight asymmetry is what keeps the byte assertion from being
     vacuous: over a uniform portfolio every prefix of a given length weighs the
@@ -4000,13 +4001,23 @@ async def test_facets_value_order_breaks_a_count_tie_on_the_value(
     the weaker claim and the one a stable-by-accident order also satisfies:
     with ``value ASC`` deleted from the aggregate, two calls still match each
     other while the order is no longer total. So the fixture ties two values on
-    count and seeds them in descending value order, and the assertion is that
-    they come back ascending -- which the aggregate's own emission order does
-    not supply.
+    count, and the assertion is that they come back ascending.
+
+    Be exact about what that buys, because the obvious stronger reading is
+    wrong. With ``value ASC`` deleted the rows reach the sort in the hash
+    aggregate's own emission order -- a function of the two strings and the
+    hash table's size, which neither this fixture nor any ordering of its
+    inserts controls. Deleting the term was *observed* to turn this red here
+    (``ticket`` ahead of ``adr``), so what the test is is a removal guard
+    verified by mutation, not a discriminator by construction: on a server
+    whose buckets fall the other way the mutant would pass and nothing in the
+    test would say so. Widening the tie to five or six values would make an
+    accidentally ascending emission improbable rather than a coin toss, and
+    still would not make it impossible.
     """
     for n in range(4):
         await graph_store.insert_document(
-            _make_doc(_id(f"facettie_{n:02d}"), doc_type="ticket" if n < 2 else "adr")
+            _make_doc(_id(f"facettie_{n:02d}"), doc_type="adr" if n < 2 else "ticket")
         )
 
     response = await retrieval_service.discover(
