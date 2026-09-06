@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.34",
+      "version": "0.35",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.77",
+  "substrate_version": "1.78",
   "revision_history": [
+    {
+      "version": "1.78",
+      "date": "2026-09-06",
+      "summary": "Disclose that catalog ordering is total (sage_core_api.openapi.yaml 0.34 -> 0.35). Every ORDER BY the catalog document query could produce left ties -- the default on lifecycle then document_date, a supplied sort_by on that one column, and the fallback on title alone -- and Postgres may return tied rows in any order, and need not choose the same one twice. Two things depended on it doing so: limit/offset paging, which can skip a row or return it twice when the two queries disagree about where the page boundary falls, and the catalog budget hint, whose recommended_limit is measured by truncating the response already in hand on the premise that a lower limit returns the same rows truncated. The edge enumeration arm carried the same defect, ordering by created_at alone. Two substrate-visible description changes, both on field descriptions rather than the operation description, and both mirrored byte-identically into the Pydantic models per the description-parity gate: DiscoverRequest.sort_by gains 'Ties are broken by document id, so the order is total and paging a filtered set returns each document exactly once.'; DiscoverResponse.results gains 'Both orderings are total -- ties broken by document id for documents, by edge id for edges -- so paging returns each row exactly once.' No parameter, schema, or error-code change; no wire-protocol break. Implementation in sage/storage/postgres/graph_store.py: a new module constant _ORDER_TIEBREAK (', id ASC') is appended by _build_order_clause, restructured so every branch contributes only its primary sort expression and all of them return through one exit -- a branch added later cannot be total-by-oversight, which is how all three came to admit ties; query_edges gains ', e.id ASC' and a docstring stating the same requirement. Premises stated where they are relied on: _response_at_row_count and _facets_response_at_cap in sage/services/retrieval.py (the facets order was already total -- values come from a GROUP BY on the field, so value ASC has no tie left to break -- and is unchanged), and the query_documents port docstring in sage/adapters/interfaces.py. The search MCP tool's sort_by Args entry carries the same sentence. Tests: tests/sage/test_graph_store.py adds a parametrized clause-totality gate derived from _SORTABLE_COLUMNS plus paging, order-stability, and edge-paging tests over fixtures that tie on every sortable column and whose scan order is perturbed between calls; tests/sage/test_retrieval.py adds a re-page test asserting the delivered byte count and the prefix identity, and a facets test pinning that arm's order as already total."
+    },
     {
       "version": "1.77",
       "date": "2026-09-06",

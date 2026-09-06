@@ -1585,7 +1585,9 @@ def register_sage_tools(
                 "lifecycle_status". Ignored by semantic, keyword, and
                 deterministic modes. Default: unset -- catalog falls
                 back to active-lifecycle-first then ``document_date``
-                descending.
+                descending. Ties are broken by document id, so the
+                order is total and paging a filtered set returns each
+                document exactly once.
             sort_order: Sort direction for catalog mode results. One
                 of: "asc", "desc". Ignored by semantic, keyword, and
                 deterministic modes. Default: unset -- ascending when

@@ -23,6 +23,7 @@ from sage.models.schemas import (
     Edge,
 )
 from sage.services.identity import generate_document_id
+from sage.storage.postgres.graph_store import _SORTABLE_COLUMNS, PostgresGraphStore
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -697,6 +698,61 @@ async def test_query_edges_multiple_retracts_earliest_wins(graph_store):
     assert disclaimed.retracted_by_edge_id == r_earliest_id
 
 
+async def test_query_edges_retracts_tie_on_created_at_resolves_by_id(graph_store):
+    """Two retracts edges written together: the pick is by id, not by arrival.
+
+    Its sibling above pins that the *earliest* retraction wins, which leaves
+    the equal-timestamp case open, and nothing forbids that case: a retracts
+    edge carries a null target, so the natural-key index on
+    (source_id, target_id, edge_type) does not fire across two of them, and the
+    link path checks only that the retracted edge exists. Two written in one
+    batch share a created_at, and the row-number window then has a tie to break.
+
+    The two retractions are inserted in descending id order, so insertion order
+    and id order disagree and a window ranking on created_at alone reports
+    whichever the scan reaches first. Fixed ids rather than uuid4 because the
+    assertion is about *which* id wins, and a random pair cannot express that.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_tiesrc")))
+    await graph_store.insert_document(_make_doc(_id("doc_tietgt")))
+
+    e1_id = str(uuid.uuid4())
+    await graph_store.insert_edge(
+        Edge(
+            id=e1_id,
+            source_id=_id("doc_tiesrc"),
+            target_id=_id("doc_tietgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    lower_id = "00000000-0000-4000-8000-000000000001"
+    higher_id = "00000000-0000-4000-8000-000000000002"
+    tied_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    for retracts_id in (higher_id, lower_id):
+        await graph_store.insert_edge(
+            Edge(
+                id=retracts_id,
+                source_id=_id("doc_tiesrc"),
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                source_valid_from_version=_id("doc_tiesrc"),
+                retracted_edge_id=e1_id,
+                created_at=tied_at,
+            )
+        )
+
+    rows, _ = await graph_store.query_edges(filters={"source_id": _id("doc_tiesrc")})
+    disclaimed = next(r for r in rows if r.edge.id == e1_id)
+
+    assert disclaimed.retracted_at == tied_at
+    assert disclaimed.retracted_by_edge_id == lower_id, (
+        "a created_at tie between two retractions must resolve on the edge id, "
+        f"not on which arrived first; got {disclaimed.retracted_by_edge_id}"
+    )
+
+
 async def test_query_edges_null_target_on_retracts_preserved(graph_store):
     """10. Per CAS-ADR-017 retracts edges have target_id=NULL.
     query_edges must preserve the null (not coerce or drop the row).
@@ -1305,3 +1361,222 @@ async def test_find_document_ids_by_source_paths_empty_list_returns_empty_dict(g
     await graph_store.insert_document(_make_doc_at(_id("ids_probe"), "test/ids/probe.md"))
 
     assert await graph_store.find_document_ids_by_source_paths([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# Catalog ordering totality
+# ---------------------------------------------------------------------------
+
+#: The tiebreak every catalog ORDER BY must end in, pinned here rather than
+#: imported so this module states the requirement instead of restating whatever
+#: the store happens to do. Changing the tiebreak means changing this line.
+_EXPECTED_DOCUMENT_TIEBREAK = ", id ASC"
+
+
+def _order_clause_cases() -> list[tuple[str | None, str | None]]:
+    """Every (sort_by, sort_order) pair ``_build_order_clause`` distinguishes.
+
+    Three branches: the default, a recognized column in either direction, and
+    the fallback an unrecognized column takes. Built from
+    ``_SORTABLE_COLUMNS`` rather than a hand-written list so a column added to
+    the allowlist is gated the day it lands instead of the day someone
+    remembers this test.
+    """
+    cases: list[tuple[str | None, str | None]] = [(None, None), (None, "desc")]
+    for column in sorted(_SORTABLE_COLUMNS):
+        cases.append((column, "asc"))
+        cases.append((column, "desc"))
+    cases.append(("no_such_column", None))
+    return cases
+
+
+@pytest.mark.parametrize(("sort_by", "sort_order"), _order_clause_cases())
+def test_order_clause_is_total_in_every_branch(sort_by, sort_order):
+    """Every ORDER BY the catalog document query can produce ends in the primary key.
+
+    The property is *total order*, and the only way to have it is for the last
+    sort term to be unique per row. ``endswith`` on the exact suffix is what
+    makes this a real check: a containment test ("id" appears somewhere) passes
+    against a clause that names the primary key first, or inside another
+    column's name, and a total order needs it last. The case list is derived
+    from ``_SORTABLE_COLUMNS``, so a fourth branch or a new sortable column
+    cannot slip past by being absent from a hand-maintained list.
+    """
+    clause = PostgresGraphStore._build_order_clause(sort_by, sort_order)
+
+    assert clause.endswith(_EXPECTED_DOCUMENT_TIEBREAK), (
+        f"ORDER BY for sort_by={sort_by!r} sort_order={sort_order!r} does not end "
+        f"in a unique-column tiebreak, so it admits ties: {clause!r}"
+    )
+
+
+def _make_tied_doc(doc_id: str) -> Document:
+    """A document that ties with its siblings on every sortable column.
+
+    ``_make_doc`` derives a distinct title from the id, which is enough to
+    break the fallback branch's tie by accident. Every field the three ORDER BY
+    branches read -- title, doc_type, document_date, lifecycle_status -- is
+    held constant here, so the ordering has nothing but the tiebreak to work
+    with and a non-total clause is free to answer differently each call.
+    """
+    doc = _make_doc(doc_id)
+    doc.title = "Tied"
+    doc.doc_type = "ticket"
+    doc.document_date = "2026-05-01"
+    doc.lifecycle_status = "active"
+    return doc
+
+
+async def _seed_tied_documents(graph_store, count: int, prefix: str) -> set[str]:
+    ids: set[str] = set()
+    for n in range(count):
+        doc = _make_tied_doc(_id(f"{prefix}_{n:03d}"))
+        await graph_store.insert_document(doc)
+        ids.add(doc.id)
+    return ids
+
+
+async def _perturb_scan_order(graph_store, doc_id: str) -> None:
+    """Move a row's physical position without touching anything the query reads.
+
+    Rewriting a column to the value it already holds is a semantic no-op, but
+    Postgres answers it with a new tuple version at a new position, so a
+    sequential scan hands the sorter a different input order. Under a total
+    order that cannot change the result; under a clause with ties it is exactly
+    what lets two identical calls disagree. ``last_modified_by`` is in neither
+    ``_SORTABLE_COLUMNS`` nor the default clause, and the write goes through
+    the store's own update path rather than raw SQL.
+    """
+    doc = await graph_store.get_document(doc_id)
+    await graph_store.update_document(doc_id, {"last_modified_by": doc.last_modified_by})
+
+
+async def _perturb_edge_scan_order(graph_store, edge_id: str) -> None:
+    """Move an edge's physical position while leaving the row identical.
+
+    The edge store exposes no update, so the round trip is delete-then-reinsert
+    with the same id and the same fields: what comes back out of a query is
+    byte-for-byte what was there before, at a new scan position. Same purpose
+    as the document-side ``_perturb_scan_order``.
+    """
+    edge = await graph_store.get_edge(edge_id)
+    await graph_store.delete_edge(edge_id)
+    await graph_store.insert_edge(edge)
+
+
+@pytest.mark.parametrize(
+    ("branch", "sort_by", "sort_order"),
+    [
+        ("default", None, None),
+        ("sorted", "document_date", "desc"),
+        ("fallback", "no_such_column", None),
+    ],
+    ids=["default", "sorted", "fallback"],
+)
+async def test_paging_a_tied_set_returns_each_document_exactly_once(
+    graph_store, branch, sort_by, sort_order
+):
+    """limit/offset paging partitions the filtered set: no skips, no duplicates.
+
+    The fixture ties on every sortable column, and the scan order is perturbed
+    between pages. Both halves are load-bearing. Without the ties there is
+    nothing for a non-total clause to reorder; without the perturbation
+    Postgres happens to answer a small unperturbed table the same way twice, so
+    the test passes against the defect and proves nothing. What is perturbed is
+    the page just read, so a clause that lets those rows drift to the end of
+    the tied block returns them again in a later page and drops whatever they
+    displaced -- the skip and the duplicate a non-total order produces, in one shot.
+
+    Run against all three ORDER BY branches -- a tiebreak on the default alone
+    leaves the other two admitting ties.
+    """
+    seeded = await _seed_tied_documents(graph_store, 24, f"tiedpage_{branch}")
+    ordered = sorted(seeded)
+
+    seen: list[str] = []
+    for offset in (0, 8, 16):
+        page, total = await graph_store.query_documents(
+            {"doc_type": "ticket"},
+            limit=8,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        assert total == 24
+        seen.extend(d.id for d in page)
+        for doc in page:
+            await _perturb_scan_order(graph_store, doc.id)
+
+    assert len(seen) == 24, f"paging returned {len(seen)} rows for a 24-row set"
+    assert sorted(seen) == ordered, (
+        "paging a tied set skipped or duplicated documents; "
+        f"missing={sorted(seeded - set(seen))} duplicated="
+        f"{sorted({i for i in seen if seen.count(i) > 1})}"
+    )
+
+
+async def test_two_identical_catalog_calls_agree_on_row_order(graph_store):
+    """Two calls with the same filters return the same rows in the same order.
+
+    The premise the budget hint's prefix simulation rests on, asserted directly.
+    Perturbing between the calls is what separates a total order from one that
+    merely looked stable: the second call sees a different scan order, and only
+    a unique final sort term can undo that.
+    """
+    await _seed_tied_documents(graph_store, 24, "tiedstable")
+
+    first, _ = await graph_store.query_documents({"doc_type": "ticket"}, limit=24, offset=0)
+    assert len(first) == 24, (
+        "two empty results also agree on order; the comparison below says "
+        "nothing unless the query returned the seeded set"
+    )
+    await _perturb_scan_order(graph_store, sorted(d.id for d in first)[12])
+    second, _ = await graph_store.query_documents({"doc_type": "ticket"}, limit=24, offset=0)
+
+    assert [d.id for d in first] == [d.id for d in second]
+
+
+async def test_paging_tied_edges_returns_each_edge_exactly_once(graph_store):
+    """The edge enumeration arm partitions its set too.
+
+    ``query_edges`` orders by ``created_at DESC`` alone, and
+    ``search(mode=catalog, target="edges")`` pages it with the same
+    limit/offset. Same defect as the document query, same fixture shape: every
+    edge shares a ``created_at``, and the page just read is rewritten to move
+    those rows' scan position. Twelve distinct targets rather than twelve edges
+    between one pair -- the edges table carries a unique natural key on
+    (source, target, type), so the one-pair form cannot be seeded at all.
+    """
+    await _seed_tied_documents(graph_store, 13, "tiededge_doc")
+    doc_ids = sorted(
+        d.id for d in (await graph_store.query_documents({"doc_type": "ticket"}, limit=13))[0]
+    )
+    source, targets = doc_ids[0], doc_ids[1:]
+    created = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    edge_ids = set()
+    for target in targets:
+        edge = Edge(
+            id=str(uuid.uuid4()),
+            source_id=source,
+            target_id=target,
+            edge_type=EdgeType.REFERENCES,
+            created_at=created,
+        )
+        await graph_store.insert_edge(edge)
+        edge_ids.add(edge.id)
+
+    seen: list[str] = []
+    for offset in (0, 4, 8):
+        page, total = await graph_store.query_edges(
+            filters={"edge_type": EdgeType.REFERENCES.value}, limit=4, offset=offset
+        )
+        assert total == 12
+        seen.extend(row.edge.id for row in page)
+        for row in page:
+            await _perturb_edge_scan_order(graph_store, row.edge.id)
+
+    assert sorted(seen) == sorted(edge_ids), (
+        "paging tied edges skipped or duplicated rows; "
+        f"missing={sorted(edge_ids - set(seen))} duplicated="
+        f"{sorted({i for i in seen if seen.count(i) > 1})}"
+    )

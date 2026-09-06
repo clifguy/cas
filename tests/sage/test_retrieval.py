@@ -3699,12 +3699,19 @@ async def _seed_portfolio(
     *,
     with_tier3: bool = True,
     id_prefix: str = "t0091_p",
+    tied_date: str | None = None,
 ) -> list[str]:
     """Seed ``n`` ticket-shaped documents with realistic projection-weight fields.
 
     Mirrors the projection shape of real CAS tickets (title, tags,
     source_path, tier3_metadata) so byte counts approximate production
     payload weight per record. Returns the inserted document IDs in order.
+
+    ``tied_date`` puts every record on one ``document_date`` instead of the
+    rotating one, so the catalog sort ties everywhere rather than in groups of
+    two or three. Callers that need the ordering to have something to be total
+    over pass it; the default keeps the rotating dates the byte-weight tests
+    were calibrated against.
     """
     base_date = datetime(2026, 5, 1, tzinfo=timezone.utc)
     inserted: list[str] = []
@@ -3723,7 +3730,7 @@ async def _seed_portfolio(
             doc_id,
             doc_type="ticket",
             tags=["ticket", "phase-2", "sage", "retrieval"],
-            document_date=f"2026-05-{(i % 28) + 1:02d}",
+            document_date=tied_date or f"2026-05-{(i % 28) + 1:02d}",
             source_modified_at=base_date + timedelta(hours=i),
             tier3_metadata=tier3,
         )
@@ -3804,6 +3811,231 @@ async def test_recommended_limit_re_pages_within_budget(
     )
     assert second.hints is None or "recommended_limit" not in second.hints
     assert len(second.results) == recommended
+
+
+async def _perturb_scan_order(graph_store, doc_id: str) -> None:
+    """Move a row's physical position without changing anything it returns.
+
+    Rewriting a column to the value it already holds is a semantic no-op, but
+    Postgres answers it with a new tuple version at a new position, so a
+    subsequent scan hands the sorter a different input order. Under a total
+    order that cannot change the result; under one with ties it is what lets
+    two calls disagree. ``last_modified_by`` is neither a sortable column nor
+    part of the default clause, and the write goes through the store's own
+    update path.
+    """
+    doc = await graph_store.get_document(doc_id)
+    await graph_store.update_document(doc_id, {"last_modified_by": doc.last_modified_by})
+
+
+def _delivered_bytes(resp) -> int:
+    """The byte count the MCP runtime puts on the wire for this response.
+
+    Reproduces both halves of the delivery path -- the tool layer's
+    ``model_dump(mode="json", exclude_none=True)`` and the runtime's
+    ``to_json(..., indent=2)`` -- here in the test rather than calling the
+    service's own ``_serialized_response_bytes``. Calling that helper would
+    measure the recommendation against the same expression that produced it,
+    which is exactly the circularity this assertion exists to escape.
+    """
+    return len(
+        pydantic_core.to_json(
+            resp.model_dump(mode="json", exclude_none=True), fallback=str, indent=2
+        )
+    )
+
+
+def _row_bytes(hit) -> int:
+    """One result row's own encoded weight, envelope excluded.
+
+    Used only to rank rows by weight; the absolute number is meaningless on its
+    own because the response envelope is not in it.
+    """
+    return len(pydantic_core.to_json(hit.model_dump(mode="json", exclude_none=True)))
+
+
+async def _seed_uneven_tied_portfolio(graph_store) -> list[str]:
+    """A tied portfolio whose records differ sharply in byte weight.
+
+    Two properties the ordinary ``_seed_portfolio`` does not have, and the test
+    below needs both. Every record shares one ``document_date`` and one
+    ``lifecycle_status``, so the catalog sort ties across the whole set and has
+    nothing but a tiebreak to order it by. And the records come in two weights:
+    thirty light ones carrying no tags and no tier3, then thirty heavy ones
+    carrying six long tags apiece.
+
+    The weight asymmetry is what makes reordering *cost* something. A uniform
+    portfolio can be reordered freely and every prefix of a given length weighs
+    the same, so a simulation over the wrong rows still lands on the right byte
+    count -- the defect would be real but invisible. Here two selections of the
+    same size can differ by more than the ceiling, and the test asserts that
+    rather than assuming it.
+
+    Note what the two halves do *not* do once the ordering is total: they do
+    not divide the result. The tiebreak orders by document id, which is a hash,
+    so the halves interleave and any prefix is a mixture. Seeding order governs
+    only the physical scan order the perturbation below disturbs.
+
+    Returns the light ids, in seeding order.
+    """
+    light: list[str] = []
+    for i in range(30):
+        doc_id = _id(f"uneven_light_{i:04d}")
+        await graph_store.insert_document(
+            _make_doc(doc_id, doc_type="ticket", document_date="2026-05-01")
+        )
+        light.append(doc_id)
+    for i in range(30):
+        await graph_store.insert_document(
+            _make_doc(
+                _id(f"uneven_heavy_{i:04d}"),
+                doc_type="ticket",
+                document_date="2026-05-01",
+                tags=[f"retrieval-conformance-dimension-{i:04d}-{n}" for n in range(6)],
+                tier3_metadata={
+                    "ticket_id": f"T-8{i:04d}",
+                    "ticket_type": "feature",
+                    "ticket_priority": "medium",
+                },
+            )
+        )
+    return light
+
+
+async def test_recommended_limit_re_pages_within_delivered_bytes(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """A re-page at ``recommended_limit`` returns that prefix, and fits the ceiling.
+
+    Two assertions doing two different jobs, and it is worth being exact about
+    which one carries which.
+
+    The **prefix assertion** is the regression. The hint recommends the largest
+    row count whose re-page fits, found by truncating the response it already
+    has -- sound only if a lower limit returns the same rows in the same order,
+    which is what ``_response_at_row_count`` states and what a non-total order
+    does not supply. Perturbing the scan order between the two calls is enough
+    to break it, and this assertion fails against the ordering as it stood.
+
+    The **byte assertion** is the guarantee, stated on the bytes the runtime
+    delivers rather than on the service's own measurement, which cannot catch
+    a recommendation that is wrong in the same way twice. It is not a
+    discriminator against the old ordering -- a reordered prefix still fits the
+    ceiling whenever the rows it drew from weigh about the same -- and it is
+    not being claimed as one. What it pins is that the number the hint names is
+    honest at the wire.
+
+    The fixture's weight asymmetry is what keeps the byte assertion from being
+    vacuous: over a uniform portfolio every prefix of a given length weighs the
+    same, so the check would hold no matter which rows came back.
+    """
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
+    light = await _seed_uneven_tied_portfolio(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+        limit=100,
+    )
+    first = await retrieval_service.discover(request)
+    assert first.hints is not None
+    recommended = first.hints["recommended_limit"]
+    assert recommended > 1, (
+        "a hint that always names 1 satisfies every assertion below without "
+        "measuring anything; the light rows must admit a prefix wider than one"
+    )
+
+    # The weight asymmetry, read rather than asserted in prose. Some selection
+    # of exactly this many rows overruns the ceiling that the selection
+    # actually returned fits inside, which is what makes the byte assertion
+    # below sensitive to *which* rows come back rather than only to how many.
+    # Without this the asymmetry is inert setup: flattening the fixture to one
+    # weight would leave the test green and its docstring's claim about
+    # non-vacuity unchecked.
+    by_weight = sorted(first.results, key=_row_bytes, reverse=True)
+    heaviest = first.model_copy(update={"results": by_weight[:recommended]})
+    assert _delivered_bytes(heaviest) > 4096, (
+        f"the {recommended} heaviest rows must not fit the ceiling, or the "
+        "fixture carries no weight asymmetry for the byte assertion to detect"
+    )
+
+    for doc_id in light:
+        await _perturb_scan_order(graph_store, doc_id)
+
+    second = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=recommended,
+        )
+    )
+
+    assert len(second.results) == recommended
+    assert [h.document.id for h in first.results[:recommended]] == [
+        h.document.id for h in second.results
+    ], "the re-page must return the prefix the recommendation was measured on"
+    assert _delivered_bytes(second) <= 4096, (
+        f"re-page at the recommended limit {recommended} delivered "
+        f"{_delivered_bytes(second)} bytes against a 4096-byte ceiling"
+    )
+
+
+async def test_facets_value_order_breaks_a_count_tie_on_the_value(
+    graph_store,
+    retrieval_service,
+):
+    """The facets arm needs no document tiebreak, and this is what says so.
+
+    Facet values order by ``doc_count DESC, value ASC`` over a GROUP BY on the
+    field, so a value appears once per row and ``value ASC`` leaves no tie
+    behind. That is the premise ``_facets_response_at_cap`` relies on to
+    simulate a re-call by truncating, and it holds for a reason the document
+    query's ordering does not share -- which is why this arm takes no
+    primary-key tiebreak. Green before the document-side one lands as well as
+    after; a red here would mean the analysis of this arm is wrong, not that
+    this arm needs fixing.
+
+    The assertion is on the *order*, not on two calls agreeing. Agreement is
+    the weaker claim and the one a stable-by-accident order also satisfies:
+    with ``value ASC`` deleted from the aggregate, two calls still match each
+    other while the order is no longer total. So the fixture ties two values on
+    count, and the assertion is that they come back ascending.
+
+    Be exact about what that buys, because the obvious stronger reading is
+    wrong. With ``value ASC`` deleted the rows reach the sort in the hash
+    aggregate's own emission order -- a function of the two strings and the
+    hash table's size, which neither this fixture nor any ordering of its
+    inserts controls. Deleting the term was *observed* to turn this red here
+    (``ticket`` ahead of ``adr``), so what the test is is a removal guard
+    verified by mutation, not a discriminator by construction: on a server
+    whose buckets fall the other way the mutant would pass and nothing in the
+    test would say so. Widening the tie to five or six values would make an
+    accidentally ascending emission improbable rather than a coin toss, and
+    still would not make it impossible.
+    """
+    for n in range(4):
+        await graph_store.insert_document(
+            _make_doc(_id(f"facettie_{n:02d}"), doc_type="adr" if n < 2 else "ticket")
+        )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            facet_fields=["doc_type"],
+        )
+    )
+
+    counts = response.results[0].values
+    assert sorted(counts.values()) == [2, 2], (
+        "the fixture must tie two facet values on count, or the order has no "
+        f"tie to be total over: {counts}"
+    )
+    assert list(counts) == ["adr", "ticket"], (
+        f"count-tied facet values must come back in ascending value order: {counts}"
+    )
 
 
 async def test_response_size_bytes_matches_serialization(
