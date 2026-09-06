@@ -596,15 +596,14 @@ async def test_ensure_vault_local_creates_missing_sources_parent(
 
 
 # ---------------------------------------------------------------------------
-# (unit): _chunk_projection emits body chunks only; identity
-# signals live in the standalone synthetic header chunk built by
-# _build_header_chunk.
+# _chunk_projection emits body chunks only; document-level identity
+# signals live on the document surface (CAS-ADR-049).
 # ---------------------------------------------------------------------------
 
 
 def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
     """_chunk_projection prepends the ATX heading line to body content
-     so the projection round-trips through read_projection. The
+    so the projection round-trips through read_projection. The
     synthetic-header preamble still lives in its own chunk and
     must not leak into body chunks."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult

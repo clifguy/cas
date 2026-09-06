@@ -7,11 +7,11 @@ SAGE vault, doc_type=steering_document). A typed alias is a
 
 1. **Pydantic ``BaseModel`` fields** in modules listed in
    ``_SCOPED_MODULES``. Every shape-bearing field must carry the
-   alias or be pinned in ``KNOWN_VIOLATIONS``. (.)
+   alias or be pinned in ``KNOWN_VIOLATIONS``.
 2. **FastAPI route parameters** in the routers listed in
    ``_FASTAPI_ROUTER_MODULES``. Pattern 1: the alias goes directly on
    the parameter annotation. ``KNOWN_FASTAPI_VIOLATIONS`` is the
-   allowlist. (.)
+   allowlist.
 3. **FastMCP tool entry points** registered on the FastMCP server.
    Pattern 2: signature stays bare ``str``; a module-scope
    ``TypeAdapter[<Alias>]`` is constructed and the tool body calls
@@ -19,7 +19,7 @@ SAGE vault, doc_type=steering_document). A typed alias is a
    parameter. ``pydantic_core.ValidationError`` extends ``ValueError``
    so the existing ``except (SAGEError, ValueError)`` block routes
    shape failures through the SAGE error envelope.
-   ``KNOWN_FASTMCP_VIOLATIONS`` is the allowlist. (.)
+   ``KNOWN_FASTMCP_VIOLATIONS`` is the allowlist.
 
 Allowlist contract — uniform across all three site classes:
 
@@ -57,9 +57,9 @@ extended the gate to ``app.backend.router`` and ``sage.config`` and
 typed the four shape-bearing fields the extension surfaced;
 extended the gate to FastAPI route parameters and FastMCP tool entry
 points and typed every shape-bearing parameter at those boundaries.
-added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
-and the edge-creation MCP tool as ``str | None`` with hash-format
-validation deferred to; retyped those three sites to
+A later change added ``synced_from_content_hash`` to ``Edge`` /
+``LinkRequest`` and the edge-creation MCP tool as ``str | None`` with
+hash-format validation deferred; it retyped those three sites to
 ``Sha256Str``-shaped validation and cleared the three allowlist
 entries. The MCP side rides Pattern 3 rather than Pattern 2: the bulk
 edge-creation tool takes an ``items`` list and validates each entry

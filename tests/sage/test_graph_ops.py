@@ -2052,7 +2052,7 @@ def test_from_traversal_populates_every_traversal_node_field():
 
 def _traversal_row_with_every_document_summary_field() -> dict:
     """Per-ticket sentinel CTE row dict with every ``d_*``-prefixed key set to
-    a distinct non-default value. Local to; the cohort policy is
+    a distinct non-default value. Local to this module; the cohort policy is
     per-ticket sentinels with no shared module.
 
     The sentinel includes ``d_semantic_abstract`` and ``d_tier3_metadata``

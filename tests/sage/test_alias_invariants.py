@@ -1,8 +1,7 @@
 """Property-based tests for typed-alias regexes in sage/models/schemas.py.
 
-Companion tickets: (initial property coverage) and (closure of
-the three latent quirks documented in plan). The example-based tests
-in test_request_validators.py cover hand-picked positive and negative cases.
+The example-based tests in test_request_validators.py cover hand-picked
+positive and negative cases.
 These property tests use Hypothesis to fuzz each alias's accepted and
 rejected language and lock in current behavior. If a validator is widened
 beyond its current behavior without updating the corresponding negative

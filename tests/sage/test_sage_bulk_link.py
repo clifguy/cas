@@ -8,7 +8,7 @@ discipline, and the/response_mode rules.
 
 Each group mirrors the conventions established by
 test_sage_bulk_set_lifecycle.py and test_sage_bulk_update_metadata.py
-(per CAS-ADR-029) and test_link_dry_run.py ( ).
+(per CAS-ADR-029) and test_link_dry_run.py.
 """
 
 from __future__ import annotations

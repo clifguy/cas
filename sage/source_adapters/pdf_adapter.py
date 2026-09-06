@@ -61,7 +61,7 @@ def _decode_safe_cid(text: str) -> str:
     pdfminer.six emits CID glyph indices for Type 1 fonts (Helvetica)
     without a ``/ToUnicode`` CMap when ``ocrmypdf`` has been imported in
     the same process (a global side-effect on pdfminer's font-resolution
-    path; see). For the Helvetica WinAnsiEncoding subset, CID == ASCII
+    path). For the Helvetica WinAnsiEncoding subset, CID == ASCII
     code, so we can recover Unicode for printable codes. Non-printable
     and >127 CIDs survive intact rather than guess at the right codepoint.
     """

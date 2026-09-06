@@ -935,8 +935,8 @@ def test_every_substrate_property_has_description():
     in `docs/fs/`, and every property at every nesting depth, carries a
     non-empty `description`.
 
-    YAML/JSON-side counterpart to test_every_pydantic_field_has_description
-    . docs/fs/ is the formal substrate authority per CAS-ADR-008;
+    YAML/JSON-side counterpart to test_every_pydantic_field_has_description.
+    docs/fs/ is the formal substrate authority per CAS-ADR-008;
     Pydantic descriptions are derived from these files, so any gap here
     propagates to the rendered /docs page when the corresponding Pydantic
     Field reuses the same text.

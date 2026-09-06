@@ -67,8 +67,8 @@ WORKFLOW_DOC_TYPES = frozenset(
 )
 
 # Rationale prefixes mark edges authored by an auto-inference rule.
-# Promoted to a typed, indexed `rationale_kind` column on the edges table
-# in; the prefix is still emitted in evidence/rationale text so
+# Promoted to a typed, indexed `rationale_kind` column on the edges table;
+# the prefix is still emitted in evidence/rationale text so
 # that staging edges (no rationale_kind column) can be classified at
 # promotion time.
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
