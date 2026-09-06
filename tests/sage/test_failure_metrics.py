@@ -117,12 +117,12 @@ class FakeRepo:
         resolve: dict[str, str] | None = None,
         subjects: dict[str, str] | None = None,
         parents: dict[str, str] | None = None,
-        dates: dict[str, date] | None = None,
+        stamps: dict[str, int] | None = None,
     ) -> None:
         self.resolve = resolve or {}
         self.subjects = subjects or {}
         self.parents = parents or {}
-        self.dates = dates or {}
+        self.stamps = stamps or {}
         self.rev_parse_calls: list[str] = []
 
     def rev_parse(self, rev: str) -> str | None:
@@ -135,8 +135,8 @@ class FakeRepo:
     def first_parent(self, sha: str) -> str | None:
         return self.parents.get(sha)
 
-    def commit_date(self, sha: str) -> date | None:
-        return self.dates.get(sha)
+    def commit_timestamp(self, sha: str) -> int | None:
+        return self.stamps.get(sha)
 
 
 def _window(
@@ -156,8 +156,22 @@ def _window(
     )
 
 
-def _merged(sha: str, subject: str = "Merged work", when: date = date(2026, 9, 1)):
-    return MergedCommit(sha=sha, subject=subject, commit_date=when)
+def _epoch(when: date) -> int:
+    return int(datetime(when.year, when.month, when.day, tzinfo=UTC).timestamp())
+
+
+def _merged(
+    sha: str,
+    subject: str = "Merged work",
+    when: date = date(2026, 9, 1),
+    stamp: int | None = None,
+):
+    return MergedCommit(
+        sha=sha,
+        subject=subject,
+        commit_date=when,
+        commit_timestamp=_epoch(when) if stamp is None else stamp,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -746,11 +760,59 @@ def test_the_oldest_eligible_carrier_wins_not_the_newest():
     repo = FakeRepo(
         resolve={"bbbbbbb": SHA_B},
         subjects={SHA_B: "Mid-branch fixup (T-0001)"},
-        dates={SHA_B: date(2026, 8, 19)},
+        stamps={SHA_B: _epoch(date(2026, 8, 19))},
     )
     outcome = map_to_merged_commit("bbbbbbb", repo, merged)
     assert outcome.merged_sha == SHA_A
     assert outcome.reason == TICKET_ID
+
+
+def test_two_squashes_on_the_same_day_order_by_time_not_by_sha():
+    """A calendar date cannot separate two squashes that landed the same day.
+
+    Fifteen such duplicate-ticket groups exist on this branch, and falling back
+    to a lexical tie-break on the SHA orders them by an accident of hashing --
+    which picks the newer squash in four of the fifteen. The fixture is built so
+    the newer commit is also the *lexically smaller* one, so a lexical tie-break
+    gets it wrong and a time-ordered one gets it right; with the older commit
+    lexically first, both rules agree and the test constrains nothing.
+    """
+    day = date(2026, 8, 20)
+    older = _merged(SHA_D, "Work (T-0001) (#40)", when=day, stamp=_epoch(day) + 100)
+    newer = _merged(SHA_A, "Work (T-0001) (#41)", when=day, stamp=_epoch(day) + 900)
+    assert SHA_A < SHA_D, "fixture must make the newer commit the lexical minimum"
+
+    repo = FakeRepo(
+        resolve={"bbbbbbb": SHA_B},
+        subjects={SHA_B: "Branch work (T-0001)"},
+        stamps={SHA_B: _epoch(day)},
+    )
+    outcome = map_to_merged_commit("bbbbbbb", repo, (newer, older))
+    assert outcome.merged_sha == SHA_D
+
+
+def test_the_floor_is_not_looked_up_when_no_candidate_matches():
+    """The ancestry walk consults the floor on every step; most match nothing.
+
+    Fetching a committer time per step to compute a bound that no candidate
+    will be compared against is the walk's dominant cost, and a lookup that
+    happens whether or not it is used is also a lookup whose absence no test
+    would notice.
+    """
+    calls: list[str] = []
+
+    class CountingRepo(FakeRepo):
+        def commit_timestamp(self, sha: str) -> int | None:
+            calls.append(sha)
+            return super().commit_timestamp(sha)
+
+    repo = CountingRepo(
+        resolve={"bbbbbbb": SHA_B},
+        subjects={SHA_B: "Unrelated subject with no ticket"},
+        stamps={SHA_B: _epoch(date(2026, 8, 20))},
+    )
+    map_to_merged_commit("bbbbbbb", repo, (_merged(SHA_A, "Something else (#1)"),))
+    assert calls == []
 
 
 def test_a_candidate_merged_before_the_stored_commit_cannot_carry_it():
@@ -767,7 +829,7 @@ def test_a_candidate_merged_before_the_stored_commit_cannot_carry_it():
     repo = FakeRepo(
         resolve={"bbbbbbb": SHA_B},
         subjects={SHA_B: "Mid-branch fixup (T-0001)"},
-        dates={SHA_B: date(2026, 9, 1)},
+        stamps={SHA_B: _epoch(date(2026, 9, 1))},
     )
     outcome = map_to_merged_commit("bbbbbbb", repo, merged)
     assert outcome.merged_sha == SHA_D
@@ -779,7 +841,7 @@ def test_an_unreadable_commit_date_drops_the_exclusion_rather_than_the_match():
     repo = FakeRepo(
         resolve={"bbbbbbb": SHA_B},
         subjects={SHA_B: "Fixup (T-0001)"},
-        dates={},
+        stamps={},
     )
     outcome = map_to_merged_commit("bbbbbbb", repo, merged)
     assert outcome.merged_sha == SHA_A
@@ -1002,6 +1064,10 @@ def test_a_moved_introduction_count_is_divergence_even_with_a_clean_tally():
     """
     verification = _verification(introduced_within_frozen_population=BASELINE_2_INTRODUCED + 1)
     assert verification.tally_reproduced is True
+    assert verification.introduced_missing == (), (
+        "the count clause has to be pinned on a state the membership clause does "
+        "not already cover, or nothing here tests it"
+    )
     assert verification.diverged is True
 
 
@@ -1058,6 +1124,15 @@ def test_verify_baseline_2_partitions_the_live_corpus_against_the_frozen_one():
     assert verification.introduced_within_frozen_population == 2
     assert [row.failure_id for row in verification.rows] == ["F43", "F45"]
     assert verification.missing_failures[:1] == ("F48",)
+
+    # All three axes, not just the one the fix pass touched. Pinning the
+    # introduced axis alone leaves the other two partitions free to be wired to
+    # the wrong set -- the same asymmetry, one axis over.
+    assert verification.observed_added == ("F999",)
+    assert verification.caught_added == ("F999",)
+    assert verification.observed_within_frozen_population == 2
+    assert verification.caught_within_frozen_population == 2
+    assert "F44" in verification.observed_missing
 
 
 class _FakeEdge:

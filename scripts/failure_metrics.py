@@ -67,7 +67,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -345,11 +345,13 @@ class GitRepo(Protocol):
     def first_parent(self, sha: str) -> str | None:
         """Full SHA of a commit's first parent, or None at a root commit."""
 
-    def commit_date(self, sha: str) -> date | None:
-        """Committer date, or None when the commit is unreadable.
+    def commit_timestamp(self, sha: str) -> int | None:
+        """Committer time in epoch seconds, or None when unreadable.
 
-        Used to exclude merge candidates that predate the commit they would
-        claim to carry.
+        Used to exclude merge candidates that precede the commit they would
+        claim to carry. Epoch seconds rather than a rendered date, so that two
+        squashes landing the same day still order, and so that a committer east
+        of UTC does not compare backwards against one west of it.
         """
 
 
@@ -360,6 +362,16 @@ class MergedCommit:
     sha: str
     subject: str
     commit_date: date
+    #: Committer time as Unix epoch seconds. The ordering and exclusion key,
+    #: kept separate from ``commit_date`` because that one answers a calendar
+    #: question (which window a record falls in) while this one answers a
+    #: sequencing question (which squash could have carried a commit). A date
+    #: cannot separate two squashes that landed the same day -- fifteen such
+    #: groups exist on this branch -- and a rendered date carries the
+    #: committer's own UTC offset, so two commits an hour apart across
+    #: midnight in different zones compare backwards. Epoch seconds have
+    #: neither problem.
+    commit_timestamp: int = 0
 
 
 @dataclass(frozen=True)
@@ -436,7 +448,12 @@ def map_to_merged_commit(
             return MappingOutcome(stored=stored, merged_sha=None, reason=UNRESOLVABLE)
         subject = repo.subject(cursor)
         if subject:
-            not_before = repo.commit_date(cursor)
+            # Deferred: most ancestry steps match no candidate at all, and a
+            # git invocation per step to compute a floor nothing uses is the
+            # walk's dominant cost.
+            def not_before(sha: str = cursor) -> int | None:
+                return repo.commit_timestamp(sha)
+
             hit = _match_by_subject_prefix(subject, merged, not_before)
             if hit is not None:
                 return MappingOutcome(
@@ -457,27 +474,43 @@ def map_to_merged_commit(
     return MappingOutcome(stored=stored, merged_sha=None, reason=UNRESOLVABLE)
 
 
-def _oldest_carrier(candidates: Iterable[MergedCommit], not_before: date | None) -> str | None:
-    """The earliest candidate that could carry a commit dated ``not_before``.
+def _oldest_carrier(
+    candidates: Iterable[MergedCommit], not_before: Callable[[], int | None]
+) -> str | None:
+    """The earliest candidate that could carry the commit being matched.
 
     A squash merge cannot precede the branch commit it carries, so anything
     merged earlier is excluded outright. Among what survives, the earliest is
     the pull request the work landed in; taking the newest instead misattributes
-    every ticket carried by more than one squash to its most recent one. A null
-    ``not_before`` -- the commit's date is unreadable -- drops the exclusion and
-    keeps the oldest, which is the same answer whenever the filter would have
-    been vacuous.
+    every ticket carried by more than one squash to its most recent one.
+
+    Ordering and exclusion are on epoch seconds. A calendar date cannot
+    separate two squashes that landed on the same day, and falling back to a
+    lexical tie-break on the SHA orders by an accident of hashing -- on this
+    branch that picks the *newer* squash in four of the fifteen same-day
+    duplicate-ticket groups, which is the answer this function exists to avoid.
+
+    ``not_before`` is a callable so the git lookup happens only once a candidate
+    actually exists: the ancestry walk consults this on every step, and most
+    steps match nothing.  A null result -- an unreadable commit -- drops the
+    exclusion and keeps the oldest, which is what the filter would have given
+    whenever it was vacuous.
     """
-    eligible = [
-        commit for commit in candidates if not_before is None or commit.commit_date >= not_before
-    ]
+    eligible = list(candidates)
     if not eligible:
         return None
-    return min(eligible, key=lambda commit: (commit.commit_date, commit.sha)).sha
+    floor = not_before()
+    if floor is not None:
+        eligible = [commit for commit in eligible if commit.commit_timestamp >= floor]
+        if not eligible:
+            return None
+    return min(eligible, key=lambda commit: (commit.commit_timestamp, commit.sha)).sha
 
 
 def _match_by_subject_prefix(
-    subject: str, merged: Sequence[MergedCommit], not_before: date | None = None
+    subject: str,
+    merged: Sequence[MergedCommit],
+    not_before: Callable[[], int | None] = lambda: None,
 ) -> str | None:
     """A squash merge keeps the branch head's subject and appends its own suffix."""
     return _oldest_carrier(
@@ -486,7 +519,9 @@ def _match_by_subject_prefix(
 
 
 def _match_by_ticket_id(
-    subject: str, merged: Sequence[MergedCommit], not_before: date | None = None
+    subject: str,
+    merged: Sequence[MergedCommit],
+    not_before: Callable[[], int | None] = lambda: None,
 ) -> str | None:
     """The ticket id survives into the squash even when the subject does not."""
     ids = set(_TICKET_ID_RE.findall(subject))
@@ -873,14 +908,17 @@ class Verification:
 
     Two kinds of difference are separated, because only one is a fault.
 
-    **Corpus growth** -- a record written against the window after the baseline
-    was published -- moves the observation counts upward forever. Treating it
-    as failure would leave this check permanently red and therefore unread.
+    **Corpus growth** -- a record written against the already-closed window
+    after the baseline was published -- raises all three whole-corpus counts
+    forever, on the introduced axis as much as on the observed and caught ones.
+    Treating it as failure would leave this check permanently red and therefore
+    unread.
 
     **A regression** -- a frozen tally row resolving differently, a record
-    leaving a set it was in, or the commit and introduction totals moving --
-    means the mapping changed its answer about settled history, and that is
-    what the check exists to catch.
+    leaving a set it was in, the window's commit count moving, or any of the
+    three figures moving *over the frozen population* -- means the mapping
+    changed its answer about settled history, and that is what the check exists
+    to catch.
     """
 
     rows: tuple[VerificationRow, ...]
@@ -1146,8 +1184,8 @@ def render_verification(verification: Verification) -> str:
         lines.append("  DIVERGED -- the mapping's answer about settled history changed")
     elif verification.grew:
         lines.append(
-            "  reproduced -- tally, window and introduction count exact; "
-            "observation counts higher by later records only"
+            "  reproduced -- tally, window and all three frozen-population figures "
+            "exact; whole-corpus counts higher by later records only"
         )
     else:
         lines.append("  reproduced")
@@ -1241,9 +1279,9 @@ class SubprocessGitRepo:
     def first_parent(self, sha: str) -> str | None:
         return self._git("rev-parse", "--verify", "--quiet", f"{sha}^1^{{commit}}") or None
 
-    def commit_date(self, sha: str) -> date | None:
-        out = self._git("log", "-1", "--format=%cs", sha)
-        return date.fromisoformat(out) if out else None
+    def commit_timestamp(self, sha: str) -> int | None:
+        out = self._git("log", "-1", "--format=%ct", sha)
+        return int(out) if out else None
 
     def is_ancestor(self, candidate: str, of: str) -> bool:
         return self._git("merge-base", "--is-ancestor", candidate, of) is not None
@@ -1255,17 +1293,22 @@ class SubprocessGitRepo:
         ``tip``, which is what the mapping searches.
         """
         revs = f"{base}..{tip}" if base else tip
-        out = self._git("log", "--first-parent", "--format=%H%x1f%cs%x1f%s", revs)
+        out = self._git("log", "--first-parent", "--format=%H%x1f%cs%x1f%ct%x1f%s", revs)
         if out is None:
             return []
         commits: list[MergedCommit] = []
         for line in out.splitlines():
-            parts = line.split("\x1f", 2)
-            if len(parts) != 3:
+            parts = line.split("\x1f", 3)
+            if len(parts) != 4:
                 continue
-            sha, when, subject = parts
+            sha, when, stamp, subject = parts
             commits.append(
-                MergedCommit(sha=sha, subject=subject, commit_date=date.fromisoformat(when))
+                MergedCommit(
+                    sha=sha,
+                    subject=subject,
+                    commit_date=date.fromisoformat(when),
+                    commit_timestamp=int(stamp),
+                )
             )
         return commits
 
