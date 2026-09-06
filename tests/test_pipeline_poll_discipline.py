@@ -172,13 +172,12 @@ STATUS_ONLY_POLL_ALLOWLIST: Final[dict[str, list[str]]] = {
 }
 
 
-# Evidence, anywhere in a polling function's source, that the wait consults the
-# claim as well as the status: the registry itself, or a call to one of the
-# shared helper's entry points, which check it unconditionally. Matched as
-# substrings of the unparsed function so a spelling this suite has not used yet
-# still counts -- the walk is looking for the argument being made, and a false
-# exemption is visible in review, whereas a false report is noise that erodes
-# the gate.
+# Evidence, in a polling function's own body, that the wait consults the claim
+# as well as the status: the registry itself, or one of the shared helper's
+# entry points, which check it unconditionally. Matched as identifiers by
+# ``_consults_claim`` rather than as substrings of the unparsed function -- a
+# false exemption here is silent, and is exactly the shape this arm exists to
+# report.
 CLAIM_AWARE_MARKERS: Final[tuple[str, ...]] = (
     "_inflight",
     "await_pipeline_idle",
@@ -434,7 +433,7 @@ def _status_only_poll_helpers(tree: ast.AST) -> list[tuple[int, str]]:
     another gate. Those yield to nothing and race nothing, and reporting them
     would bury the findings that matter.
     """
-    findings: list[tuple[int, str]] = []
+    findings: list[tuple[int, ast.FunctionDef | ast.AsyncFunctionDef]] = []
 
     def visit(node: ast.AST, func: ast.FunctionDef | ast.AsyncFunctionDef | None) -> None:
         for child in ast.iter_child_nodes(node):
@@ -447,39 +446,60 @@ def _status_only_poll_helpers(tree: ast.AST) -> list[tuple[int, str]]:
                 and "pipeline_status" in ast.unparse(child)
                 and _sleeps(child)
             ):
-                findings.append((child.lineno, func.name))
+                findings.append((child.lineno, func))
             visit(child, func)
 
     visit(tree, None)
 
-    exempt = {
-        name
-        for name, source in _function_sources(tree).items()
-        if any(marker in source for marker in CLAIM_AWARE_MARKERS)
-    }
-    # One entry per function: the first loop is the line an allowlist entry
-    # names and the line a reader has to edit.
-    seen: set[str] = set()
+    # One entry per function -- keyed by the function object, not its name, so
+    # two same-named functions in one module are judged separately. The first
+    # loop is the line a reader has to go and look at.
+    seen: set[int] = set()
     kept: list[tuple[int, str]] = []
-    for lineno, name in sorted(findings):
-        if name in exempt or name in seen:
+    for lineno, func in sorted(findings, key=lambda entry: entry[0]):
+        if id(func) in seen or _consults_claim(func):
             continue
-        seen.add(name)
-        kept.append((lineno, name))
+        seen.add(id(func))
+        kept.append((lineno, func.name))
     return kept
 
 
-def _function_sources(tree: ast.AST) -> dict[str, str]:
-    """Every function in the tree, by name, unparsed back to source.
+def _consults_claim(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether the function's own body consults the in-flight claim.
 
-    Names collide across a module only where one shadows another, in which
-    case the concatenation is what a reader would have to reason about anyway.
+    Matched on identifiers -- a name, an attribute, or the function half of a
+    call -- rather than on unparsed text, and read from the function's own
+    statements only. Text matching over the whole unparsed function read a
+    marker out of two places it does not belong:
+
+    * a **docstring**, which is prose *about* the wait rather than a check the
+      wait performs -- and "deliberately does not consult ``_inflight``" is a
+      natural sentence for exactly the helper this walk exists to report;
+    * a **nested definition**, whose body runs in its own scope and is
+      attributed to that definition by the walk above, so a nested delegating
+      helper would exempt the enclosing function's own status-only loop.
+
+    Both were reachable and neither was hypothetical.
     """
-    sources: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            sources[node.name] = sources.get(node.name, "") + ast.unparse(node)
-    return sources
+
+    def scan(node: ast.AST) -> bool:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return False
+        if isinstance(node, ast.Attribute) and node.attr in CLAIM_AWARE_MARKERS:
+            return True
+        if isinstance(node, ast.Name) and node.id in CLAIM_AWARE_MARKERS:
+            return True
+        return any(scan(child) for child in ast.iter_child_nodes(node))
+
+    body = func.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return any(scan(stmt) for stmt in body)
 
 
 def _format_helper_violations(violations: list[tuple[str, int, str]]) -> str:
@@ -970,3 +990,114 @@ def test_helper_detector_ignores_loops_that_never_sleep() -> None:
     never race anything.
     """
     assert _status_only_poll_helpers(ast.parse(_SYNTHETIC_NON_SLEEPING_LOOP_SOURCE)) == []
+
+
+# A module holding both shapes at once: a status-only helper beside a function
+# that delegates. Every synthetic above holds one function, so none of them can
+# tell per-function exemption from module-wide exemption.
+_SYNTHETIC_MIXED_MODULE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_terminal(graph_store, doc_id):
+        for _ in range(400):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES:
+                return doc
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+
+    async def test_uses_the_shared_helper(graph_store, ingestion_service, doc_id):
+        await await_pipeline_idle(graph_store, doc_id, service=ingestion_service)
+        assert True
+    """
+)
+
+# A status-only helper that *mentions* the claim registry in its docstring.
+_SYNTHETIC_DOCSTRING_MARKER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _await_terminal(graph_store, doc_id):
+        \"\"\"Status-only wait; deliberately does not consult _inflight.\"\"\"
+        for _ in range(400):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES:
+                return doc
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+    """
+)
+
+# A status-only loop in the outer function, with a nested def that delegates.
+_SYNTHETIC_NESTED_MARKER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_outer(graph_store, ingestion_service, doc_id):
+        for _ in range(400):
+            doc = await graph_store.get_document(doc_id)
+            if doc.pipeline_status in _TERMINAL_STATES:
+                break
+            await asyncio.sleep(0.01)
+
+        async def _later(other_id):
+            await await_pipeline_idle(graph_store, other_id, service=ingestion_service)
+    """
+)
+
+
+def test_helper_detector_exempts_per_function_not_per_module() -> None:
+    """A delegating function does not exempt its status-only neighbour.
+
+    Per-function scoping is the whole value of this arm: after the migration
+    every module that polls also contains a marker somewhere, so an
+    implementation that exempted module-wide would leave the live gate green
+    while blind in exactly the modules it guards. Every other synthetic here
+    holds a single function and cannot tell the two apart.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_MIXED_MODULE_SOURCE))
+    assert [name for _, name in found] == ["_await_terminal"]
+
+
+def test_helper_detector_ignores_a_marker_in_a_docstring() -> None:
+    """Prose about the claim is not a check on it.
+
+    "deliberately does not consult ``_inflight``" is a natural sentence for
+    precisely the helper this arm exists to report, so reading the docstring as
+    evidence of a claim arm exempts the defect on the strength of admitting it.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_DOCSTRING_MARKER_SOURCE))
+    assert [name for _, name in found] == ["_await_terminal"]
+
+
+def test_helper_detector_ignores_a_marker_in_a_nested_def() -> None:
+    """A nested definition's body does not exempt its enclosing function.
+
+    The nested def runs in its own scope and is attributed to itself by the
+    walk, so a marker inside it says nothing about the enclosing function's own
+    loop.
+    """
+    found = _status_only_poll_helpers(ast.parse(_SYNTHETIC_NESTED_MARKER_SOURCE))
+    assert [name for _, name in found] == ["test_outer"]
+
+
+def test_status_only_allowlist_has_no_stale_entries() -> None:
+    """Every allowlist entry names a function the walk still reports.
+
+    An entry whose function was since migrated, renamed, or deleted lingers
+    silently: the gate stays green while the allowlist documents an exemption
+    that no longer applies, and the next reader inherits a waiver for something
+    that was fixed. ``KNOWN_VIOLATIONS`` in
+    ``tests/sage/test_router_conformance.py`` carries the same assertion for
+    the same reason.
+    """
+    stale: list[str] = []
+    for rel, names in STATUS_ONLY_POLL_ALLOWLIST.items():
+        path = REPO_ROOT / rel
+        reported = (
+            {name for _, name in _status_only_poll_helpers(ast.parse(path.read_bytes()))}
+            if path.exists()
+            else set()
+        )
+        stale.extend(f"{rel}: {name}" for name in names if name not in reported)
+
+    assert not stale, (
+        "STATUS_ONLY_POLL_ALLOWLIST entries that the walk no longer reports "
+        f"({len(stale)}): {', '.join(stale)}. Drop each one — the poll it "
+        "exempted is gone, so the entry now waives nothing."
+    )

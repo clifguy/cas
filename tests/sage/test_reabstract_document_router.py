@@ -191,7 +191,9 @@ async def test_post_reabstract_document_regardless_of_terminal_status(document_a
     assert resp.json()["status"] == "reabstract_started"
 
     # Let the background job finish so it does not outlive the fixture teardown.
-    await _poll_pipeline_status(services, doc_id)
+    # Asserting the landing keeps what the old caller-supplied accept-set carried:
+    # a job that ends FAILED is a different outcome, not a drained one.
+    assert await _poll_pipeline_status(services, doc_id) == PipelineStatus.ABSTRACTION_COMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +299,9 @@ async def test_post_reabstract_document_concurrent_returns_409(
 
             # Release the gate; the first job completes and drops the claim.
             gated.gate.set()
-            await _poll_pipeline_status(services, doc_id)
+            assert (
+                await _poll_pipeline_status(services, doc_id) == PipelineStatus.ABSTRACTION_COMPLETE
+            )
     finally:
         await asyncio.sleep(0.1)
         app.state.vault_registry[vault_id].close_timing()
