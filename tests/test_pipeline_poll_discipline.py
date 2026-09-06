@@ -467,10 +467,9 @@ def _status_only_poll_helpers(tree: ast.AST) -> list[tuple[int, str]]:
 def _consults_claim(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """Whether the function's own body consults the in-flight claim.
 
-    Matched on identifiers -- a name, an attribute, or the function half of a
-    call -- rather than on unparsed text, and read from the function's own
-    statements only. Text matching over the whole unparsed function read a
-    marker out of two places it does not belong:
+    Matched on identifiers -- a name or an attribute, which between them cover
+    the function half of a call -- rather than on the unparsed text of the
+    function. Text matching read a marker out of two places it does not belong:
 
     * a **docstring**, which is prose *about* the wait rather than a check the
       wait performs -- and "deliberately does not consult ``_inflight``" is a
@@ -479,7 +478,22 @@ def _consults_claim(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
       attributed to that definition by the walk above, so a nested delegating
       helper would exempt the enclosing function's own status-only loop.
 
-    Both were reachable and neither was hypothetical.
+    Both were reachable and neither was hypothetical. Note which change closes
+    which: the nested-definition case is excluded *here*, by the descent
+    stopping at a nested scope, while the docstring case is excluded by the
+    match being over identifiers at all -- a docstring is a string constant,
+    which is neither a name nor an attribute and has no children to descend
+    into. There is deliberately no separate docstring skip: one would pin
+    nothing, and would leave a later reader believing prose is excluded by a
+    guard rather than by the shape of the match. A scan widened to read string
+    content would reopen the case, and should reopen it visibly.
+
+    Scope is the whole body rather than the polling loop's own predicate, so a
+    marker anywhere in the function exempts every loop in it -- including one
+    appearing only in a timeout diagnostic. That is a known limit rather than
+    an oversight: narrowing to the predicate has to keep admitting the
+    sanctioned shape, which binds the registry to a local name *before* its
+    loop and tests that name inside it.
     """
 
     def scan(node: ast.AST) -> bool:
@@ -491,15 +505,7 @@ def _consults_claim(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
             return True
         return any(scan(child) for child in ast.iter_child_nodes(node))
 
-    body = func.body
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    return any(scan(stmt) for stmt in body)
+    return any(scan(stmt) for stmt in func.body)
 
 
 def _format_helper_violations(violations: list[tuple[str, int, str]]) -> str:
