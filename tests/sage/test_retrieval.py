@@ -3812,6 +3812,95 @@ async def test_recommended_limit_re_pages_within_budget(
     assert len(second.results) == recommended
 
 
+#: Rows to seed so a catalog page overruns the production budget on weight
+#: alone. Derived from the budget at a deliberately low per-row estimate --
+#: a seeded ticket record projects well above 500 bytes, so the page clears
+#: the budget with the same roughly-twofold headroom the facets fixtures
+#: keep, and keeps it when the budget is recalibrated.
+_OVER_BUDGET_ROW_COUNT = DEFAULT_MCP_INLINE_BUDGET_BYTES // 500
+
+
+async def test_recommended_limit_re_pages_within_the_production_budget(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """The catalog hint's re-page fits at the shipped budget, not a pinned one.
+
+    Its sibling above runs the same path against a 4,096-byte override,
+    which exercises the plumbing but says nothing about the value
+    callers actually meet. Both facets fixtures cross the production
+    budget; without this the catalog half of that guarantee rests on a
+    number no caller ever sees.
+
+    Anti-coincidental-pass: the crossing is asserted on the measured
+    response rather than assumed from the row count, so a seeding change
+    that stopped overrunning the budget reddens here instead of passing
+    vacuously. The recommendation is asserted strictly above the floor
+    and strictly below the rows in hand -- the fit assertion alone is
+    satisfied by an implementation that always names 1, which would hand
+    a caller one row out of ninety, and equally by one that names the
+    count it was given and shrinks nothing.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    await _seed_portfolio(graph_store, _OVER_BUDGET_ROW_COUNT)
+
+    first = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=_OVER_BUDGET_ROW_COUNT,
+        )
+    )
+    # Keyed on the reason rather than on hints being present: the dict is
+    # shared with the vocabulary warnings, so a page that did not cross can
+    # still arrive carrying one, and testing presence alone reports the miss
+    # as a KeyError several lines later instead of as the fixture's own.
+    assert first.hints is not None and (
+        first.hints.get("reason") == "response_exceeds_inline_budget"
+    ), (
+        f"{_OVER_BUDGET_ROW_COUNT} seeded rows did not overrun the "
+        f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte budget; the fixture no longer "
+        "crosses the line it exists to cross"
+    )
+    assert first.hints["budget_bytes"] == DEFAULT_MCP_INLINE_BUDGET_BYTES
+    assert first.hints["response_size_bytes"] > DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+    recommended = first.hints["recommended_limit"]
+    assert 1 < recommended < _OVER_BUDGET_ROW_COUNT
+
+    second = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=recommended,
+        )
+    )
+    assert second.hints is None or "recommended_limit" not in second.hints, (
+        f"the re-page at the recommended limit {recommended} still carries a "
+        "budget hint, so the recommendation did not fit"
+    )
+    assert len(second.results) == recommended
+
+    # Fitting is not the promise; the largest fitting page is. One more row
+    # must not fit, or a recommendation far below the maximum satisfies every
+    # assertion above while costing the caller pages it did not need -- the
+    # same defect as the floor collapse, just less visible.
+    one_more = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=recommended + 1,
+        )
+    )
+    assert one_more.hints is not None and (
+        one_more.hints.get("reason") == "response_exceeds_inline_budget"
+    ), (
+        f"a page of {recommended + 1} rows also fits the budget, so "
+        f"{recommended} was not the largest fitting re-page"
+    )
+
+
 async def _perturb_scan_order(graph_store, doc_id: str) -> None:
     """Move a row's physical position without changing anything it returns.
 
@@ -4124,6 +4213,38 @@ async def test_budget_hint_respects_env_override(
     assert loose.hints is None or "recommended_limit" not in loose.hints
 
 
+def test_inline_budget_stays_below_the_measured_ceiling():
+    """The default budget sits under the ceiling, by the margin claimed.
+
+    The budget is a measurement minus a margin, and both halves of that
+    are constants a later edit can move independently. Nothing else
+    would notice a budget raised to or past the ceiling it was derived
+    from: every hint would keep firing, every fixture would keep
+    passing, and the only symptom would be responses the hints called
+    safe arriving by disk round-trip instead.
+
+    The margin is asserted as a floor rather than an equality so that
+    re-measuring against a new client can move the ceiling without
+    editing this, while a budget that creeps up toward whatever ceiling
+    is recorded still reddens.
+    """
+    from sage.services.retrieval import _MEASURED_INLINE_CEILING_BYTES
+
+    assert DEFAULT_MCP_INLINE_BUDGET_BYTES < _MEASURED_INLINE_CEILING_BYTES, (
+        f"budget {DEFAULT_MCP_INLINE_BUDGET_BYTES} is not below the measured "
+        f"ceiling {_MEASURED_INLINE_CEILING_BYTES}; a response the hints "
+        "declare inline would fall back to the disk round-trip"
+    )
+    # Integer arithmetic on purpose: the intended budget is exactly nine
+    # tenths of the ceiling, and in binary floating point that difference
+    # lands a hair under 0.10 and reddens a margin that is in fact met.
+    assert DEFAULT_MCP_INLINE_BUDGET_BYTES * 10 <= _MEASURED_INLINE_CEILING_BYTES * 9, (
+        f"budget {DEFAULT_MCP_INLINE_BUDGET_BYTES} leaves less than the 10% "
+        f"below {_MEASURED_INLINE_CEILING_BYTES} that the constant's comment "
+        "claims; either restore the margin or restate the claim"
+    )
+
+
 async def test_budget_hint_accounts_for_tier3_metadata(
     graph_store,
     retrieval_service,
@@ -4181,7 +4302,14 @@ async def test_conformance_full_ticket_portfolio_fits_inline_at_default_limit(
     graph_store,
     retrieval_service,
 ):
-    """120-doc ticket portfolio at default limit=10 fits inline under 24 KB."""
+    """120-doc ticket portfolio at default limit=10 fits inline.
+
+    Anchored to the budget rather than to a number of its own, so that
+    recalibrating the budget re-poses this question instead of leaving
+    it asserting against a figure nothing uses. The absent hint and the
+    measured size are two readings of the same claim: the first is what
+    the service concluded, the second what a caller would weigh.
+    """
     await _seed_portfolio(graph_store, 120)
 
     request = DiscoverRequest(
@@ -4194,8 +4322,9 @@ async def test_conformance_full_ticket_portfolio_fits_inline_at_default_limit(
     payload_size = len(
         json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8")
     )
-    assert payload_size < 24576, (
-        f"Default-limit portfolio response {payload_size}B exceeds 24 KB ceiling."
+    assert payload_size < DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+        f"Default-limit portfolio response {payload_size}B exceeds the "
+        f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte inline budget."
     )
 
 
@@ -6117,10 +6246,13 @@ async def test_catalog_facets_total_distinct_on_small_and_empty_vaults(
 # ---------------------------------------------------------------------------
 
 #: Tag width at which fifty values alone overrun the production inline
-#: budget. Chosen so the arithmetic guard in the test below holds with
-#: room to spare rather than at the margin, where a serialization detail
-#: could decide the outcome.
-_WIDE_TAG_WIDTH = 1000
+#: budget. Derived from the budget rather than fixed, so the guard in
+#: the test below keeps its room to spare when the budget is
+#: recalibrated; a literal width silently walks toward the margin, where
+#: a serialization detail rather than the property under test decides
+#: the outcome. Two budgets' worth of tag content across the fifty
+#: values the cap admits, which is the ratio the original literal had.
+_WIDE_TAG_WIDTH = 2 * DEFAULT_MCP_INLINE_BUDGET_BYTES // DEFAULT_FACET_VALUE_LIMIT
 
 
 async def test_facets_budget_hint_fires_on_wide_tags_at_the_production_budget(
@@ -6270,6 +6402,26 @@ async def test_facets_budget_hint_omits_the_recommendation_when_it_could_not_shr
 # ---------------------------------------------------------------------------
 
 
+#: The budget the synthetic payloads below were dimensioned against by
+#: hand. Recorded as the origin of a scale rather than used as a bound:
+#: what those fixtures need is a proportion -- how much of the response
+#: is heavy row and how much is fixed part -- and scaling every width
+#: from a single origin preserves it exactly, where re-tuning one width
+#: against a new budget would not. Nothing asserts against this figure.
+_SYNTHETIC_ORIGIN_BUDGET = 24576
+
+
+def _scaled_width(width: int) -> int:
+    """A hand-dimensioned width carried to the budget now in force.
+
+    Widths fixed in characters stop being over budget the moment the
+    budget rises past them, and a fixture that no longer crosses the
+    line it was built to cross does not fail -- it passes for a reason
+    that has nothing to do with the property it names.
+    """
+    return max(1, round(width * DEFAULT_MCP_INLINE_BUDGET_BYTES / _SYNTHETIC_ORIGIN_BUDGET))
+
+
 def _facets_payload(rows: dict[str, dict[str, int]]) -> DiscoverResponse:
     """A facets response over the given field -> values mapping."""
     return DiscoverResponse(
@@ -6348,9 +6500,9 @@ def test_facets_recommendation_accounts_for_the_response_fixed_part(monkeypatch)
     budget = DEFAULT_MCP_INLINE_BUDGET_BYTES
     payload = _facets_payload(
         {
-            "tags": {f"tag-{i:03d}-".ljust(1000, "x"): 3 for i in range(50)},
-            "doc_type": {f"vocab-{i:03d}-".ljust(70, "y"): 7 for i in range(25)},
-            "source_type": {f"other-{i:03d}-".ljust(70, "z"): 7 for i in range(25)},
+            "tags": {f"tag-{i:03d}-".ljust(_scaled_width(1000), "x"): 3 for i in range(50)},
+            "doc_type": {f"vocab-{i:03d}-".ljust(_scaled_width(70), "y"): 7 for i in range(25)},
+            "source_type": {f"other-{i:03d}-".ljust(_scaled_width(70), "z"): 7 for i in range(25)},
         }
     )
     size = _payload_bytes(payload)
@@ -6388,7 +6540,9 @@ def test_facets_recommendation_shrinks_the_heaviest_row_not_the_widest(monkeypat
     payload = _facets_payload(
         {
             "doc_type": {f"cheap-{i:03d}": 4 for i in range(50)},
-            "tags": {f"tag-{i:03d}-".ljust(2500, "x"): 9 for i in range(heavy_width)},
+            "tags": {
+                f"tag-{i:03d}-".ljust(_scaled_width(2500), "x"): 9 for i in range(heavy_width)
+            },
         }
     )
     assert _payload_bytes(payload) > budget

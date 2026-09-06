@@ -1330,7 +1330,10 @@ class TestSageDiscoverCatalog:
         gs = services.graph_store
         now = datetime.now(timezone.utc)
 
-        tag_width = 1000
+        # Derived from the budget rather than fixed against it: a literal
+        # width keeps its distance from this guard only until the budget
+        # moves, and then narrows toward it without anything going red.
+        tag_width = 2 * DEFAULT_MCP_INLINE_BUDGET_BYTES // DEFAULT_FACET_VALUE_LIMIT
         assert DEFAULT_FACET_VALUE_LIMIT * tag_width > DEFAULT_MCP_INLINE_BUDGET_BYTES
 
         for i in range(DEFAULT_FACET_VALUE_LIMIT):
@@ -1392,21 +1395,28 @@ class TestSageDiscoverCatalog:
         The fixture is high-cardinality with short values, not the wide
         tags the sibling tests use, and that choice is what makes the
         test discriminate. Indentation costs bytes per element rather
-        than per byte of content, so on fifty thousand-character tags
-        the two encodings differ by about 1% and a compact measurement
-        still lands under; on six hundred forty-character tags they
-        differ by 17%, and a compact search recommends 518 values whose
-        delivered payload overruns by more than four kilobytes. Verified
-        by mutation: this test goes green against the compact encoding
-        on the wide-tag shape and red on this one.
+        than per byte of content, so on tags a couple of thousand
+        characters wide the two encodings differ by about 1% and a
+        compact measurement still lands under; on a vocabulary of
+        forty-character tags they differ by around 17%, and a compact
+        search recommends a cap whose delivered payload overruns by
+        kilobytes. Verified by mutation: this test goes green against
+        the compact encoding on the wide-tag shape and red on this one.
+
+        The vocabulary is sized from the budget -- one value per tag
+        width -- so the crossing stays a crossing when the budget is
+        recalibrated. Fixed at a literal, it would stop overrunning the
+        budget entirely the first time the budget rose past it, and the
+        mutation property above would go with it.
         """
         from mcp.types import TextContent
 
         from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 
-        vocabulary = 600
+        tag_width = 40
+        vocabulary = DEFAULT_MCP_INLINE_BUDGET_BYTES // tag_width
         services, _ = single_vault
-        await self._seed_short_tags(services, vocabulary, tags_per_doc=10, tag_width=40)
+        await self._seed_short_tags(services, vocabulary, tags_per_doc=10, tag_width=tag_width)
 
         async def delivered(**kwargs) -> tuple[int, dict]:
             out = await _mcp.mcp.call_tool(
