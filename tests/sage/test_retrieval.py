@@ -17,6 +17,7 @@ import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
+import pydantic_core
 import pytest
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
@@ -3810,7 +3811,17 @@ async def test_response_size_bytes_matches_serialization(
     retrieval_service,
     monkeypatch,
 ):
-    """response_size_bytes matches the actual JSON serialization length."""
+    """response_size_bytes matches the length the runtime delivers.
+
+    Exact, not within a tolerance, and denominated in the delivered
+    encoding rather than a compact one. The earlier form restated
+    ``json.dumps(model_dump(...))`` — the same expression the
+    implementation used — inside a 1% band, so it could confirm only
+    that the reported number matched a second copy of the measurement,
+    and not that either matched the wire. The runtime encodes the dict
+    the tool layer returns with ``to_json(..., indent=2)``, which on a
+    high-cardinality payload runs 17% above the compact form.
+    """
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
     await _seed_portfolio(graph_store, 60)
 
@@ -3823,14 +3834,39 @@ async def test_response_size_bytes_matches_serialization(
     )
 
     assert response.hints is not None
-    actual_bytes = len(
-        json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8")
-    )
     reported = response.hints["response_size_bytes"]
-    tolerance = max(64, actual_bytes // 100)
-    assert abs(reported - actual_bytes) <= tolerance, (
-        f"reported={reported}, actual={actual_bytes}, tolerance={tolerance}"
+
+    def delivered(resp) -> int:
+        return len(
+            pydantic_core.to_json(
+                resp.model_dump(mode="json", exclude_none=True), fallback=str, indent=2
+            )
+        )
+
+    # The size is measured before the hint is attached, so the response
+    # it describes is this one minus the hint's own four keys.
+    without_hint = response.model_copy(
+        update={
+            "hints": {
+                k: v
+                for k, v in response.hints.items()
+                if k not in ("reason", "response_size_bytes", "budget_bytes", "recommended_limit")
+            }
+            or None
+        }
     )
+    assert reported == delivered(without_hint), (
+        f"reported={reported}, delivered={delivered(without_hint)}"
+    )
+
+    # Two anti-coincidental checks. The encodings must actually differ
+    # on this payload, or the equality above holds against the compact
+    # one too and says nothing about which was measured. And the hint
+    # must cost something, or the "before it is attached" clause above
+    # is untested scaffolding rather than the reason for the exclusion.
+    compact = len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    assert delivered(without_hint) > compact
+    assert delivered(response) > reported
 
 
 async def test_budget_hint_respects_env_override(
@@ -6017,19 +6053,44 @@ def _facets_payload(rows: dict[str, dict[str, int]]) -> DiscoverResponse:
 
 
 def _payload_bytes(response: DiscoverResponse) -> int:
-    """Serialized size, spelled out rather than imported.
+    """Delivered size, reached through the runtime rather than restated.
 
-    Deliberately a second expression of the encoding under test: a
-    helper that shares the implementation's own measurement cannot
-    report that the implementation measures the wrong thing.
+    Independence here has to be from the *runtime's* encoding, not from
+    the implementation's spelling of it. An earlier version of this
+    helper claimed the latter and re-expressed
+    ``json.dumps(model_dump(...))`` -- the same expression the
+    implementation used, spelled twice -- so it could report nothing the
+    implementation would not, and did not report that the implementation
+    was measuring a compact encoding the runtime does not deliver.
+    ``pydantic_core.to_json(..., indent=2)`` on the dict the tool layer
+    hands over is what actually reaches the wire.
     """
-    return len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    dumped = response.model_dump(mode="json", exclude_none=True)
+    return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
 
 
 def _payload_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:
-    """The payload a re-call at ``cap`` would carry."""
-    return _facets_payload(
-        {row.field: dict(list(row.values.items())[:cap]) for row in response.results}
+    """The payload a re-call at ``cap`` would carry.
+
+    ``total_distinct`` is carried through rather than recomputed: the
+    real re-call reports the true distinct count, which is computed
+    before any cap and does not move with it. Rebuilding it from the
+    truncated length costs a byte per row whose digit count changes,
+    which is small and in the safe direction, but makes the helper
+    something other than the re-call its name claims.
+    """
+    return DiscoverResponse(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        results=[
+            FacetHit(
+                field=row.field,
+                values=dict(list(row.values.items())[:cap]),
+                total_distinct=row.total_distinct,
+            )
+            for row in response.results
+        ],
+        total_available=response.total_available,
     )
 
 

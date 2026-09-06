@@ -18,12 +18,14 @@ Deterministic mode:
   - Returns 404 for non-existent heading paths (BH-030).
 """
 
-import json
 import logging
 import math
 import os
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
+
+import pydantic_core
 
 from sage.adapters.interfaces import (
     DOCUMENT_FACET_FIELDS,
@@ -133,12 +135,67 @@ def _resolve_mcp_inline_budget_bytes() -> int:
 def _serialized_response_bytes(response: DiscoverResponse) -> int:
     """Size of the response in the encoding the MCP runtime delivers.
 
-    Pydantic ``model_dump(mode="json", exclude_none=True)`` then UTF-8
-    JSON. Shared by both budget hints so the two measure the same thing;
-    a hint that fires on a different encoding than the one that busts the
-    ceiling reports a size the caller cannot act on.
+    The tool layer hands the runtime a plain dict --
+    ``model_dump(mode="json", exclude_none=True)`` -- and the runtime
+    encodes it with ``pydantic_core.to_json(..., indent=2)``. Both
+    halves are reproduced here, so this is the delivered byte count
+    rather than an approximation of it.
+
+    Indentation is not a rounding error at this scale. It costs bytes
+    per element rather than per byte of content, so the delta grows
+    with value count: about 1% on fifty thousand-character tags, and
+    17% on the high-cardinality short-value vocabularies the per-field
+    count cap exists for. A compact measurement therefore understates
+    the delivered size most in exactly the shape the budget hint is
+    for, and the facets recommendation is fitted to this number with no
+    margin to absorb the difference.
     """
-    return len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    dumped = response.model_dump(mode="json", exclude_none=True)
+    return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
+
+
+def _largest_fitting_prefix(
+    response: DiscoverResponse,
+    budget: int,
+    ceiling: int,
+    truncate: Callable[[DiscoverResponse, int], DiscoverResponse],
+) -> int | None:
+    """Largest ``n`` in ``[1, ceiling]`` whose truncated response fits.
+
+    Measured rather than modelled, and shared by both budget hints
+    because both were modelled the same wrong way. Scaling a count by
+    ``budget / size`` treats the response's fixed part -- the envelope,
+    and anything else that does not shrink with the count -- as though
+    it shrank too, so it names more than fits and the re-call lands
+    above budget by that fixed part times the fraction the response was
+    over.
+
+    Size is monotone in ``n`` (raising it never removes a row or a
+    value), so the search is a binary one, and the responses these hints
+    annotate are small enough that a logarithmic number of
+    serializations is not worth modelling around. Returns None when
+    nothing in range fits; what that means is the caller's to decide.
+    """
+    low, high = 1, ceiling
+    best: int | None = None
+    while low <= high:
+        mid = (low + high) // 2
+        if _serialized_response_bytes(truncate(response, mid)) <= budget:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+def _response_at_row_count(response: DiscoverResponse, count: int) -> DiscoverResponse:
+    """The response a re-page at ``limit=count`` would produce.
+
+    A lower limit returns the same rows in the same order, truncated,
+    and leaves ``total_available`` alone -- it counts what matched, not
+    what was returned.
+    """
+    return response.model_copy(update={"results": response.results[:count]})
 
 
 def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
@@ -146,10 +203,15 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
 
     Measures the serialized response in bytes via
     ``_serialized_response_bytes``. When the size is over budget,
-    computes a ``recommended_limit`` proportional to the number of
-    records that would fit, and merges the hint into
-    ``response.hints``. No-op when there are no results — empty
-    responses are trivially inline.
+    computes the largest ``recommended_limit`` whose re-page fits, and
+    merges the hint into ``response.hints``. No-op when there are no
+    results — empty responses are trivially inline.
+
+    ``recommended_limit`` is always present, unlike its facets sibling,
+    because callers have been able to rely on that since it shipped.
+    Where no limit fits -- a single record wider than the whole budget
+    -- it falls back to 1, which is the smallest re-page there is and
+    the same answer the previous proportional model gave in that case.
 
     Advisory only — the response is not truncated.
     """
@@ -159,10 +221,10 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
     budget = _resolve_mcp_inline_budget_bytes()
     if size <= budget:
         return
-    recommended = max(
-        1,
-        int(len(response.results) * budget / size * _BUDGET_RECOMMEND_SAFETY_FACTOR),
+    fitting = _largest_fitting_prefix(
+        response, budget, len(response.results) - 1, _response_at_row_count
     )
+    recommended = fitting if fitting is not None else 1
     budget_hint: dict[str, object] = {
         "reason": "response_exceeds_inline_budget",
         "response_size_bytes": size,
@@ -196,43 +258,27 @@ def _facets_response_at_cap(response: DiscoverResponse, cap: int) -> DiscoverRes
 def _facets_recommended_value_limit(response: DiscoverResponse, budget: int) -> int | None:
     """Largest cap below the one in force whose re-call fits the budget.
 
-    Measured rather than modelled. Scaling the cap in force by
-    ``budget / size``, as the catalog hint scales its row count, is
-    wrong twice over on this target. It treats the response's fixed
-    part -- the envelope, and every vocabulary row already shorter than
-    the cap -- as though it shrank with the cap, and so lands the
-    re-call *above* budget by that fixed part times the fraction the
-    response was over. And it scales the widest row, which need not be
-    the heaviest: a wide row of short vocabulary values and a narrow row
-    of long tags put the bytes and the entry count in different rows,
-    and only the entry count is what the model reads.
-
-    Simulating the re-call has neither problem, and the payload is small
-    enough to make the cost irrelevant -- at most one row per facet
-    field, serialized a logarithmic number of times. Size is monotone in
-    the cap (raising it never removes a value), so the search is a
-    binary one.
+    The search is ``_largest_fitting_prefix``; what this adds is the
+    range. Beyond the fixed part that helper's docstring describes, a
+    proportional model has a second error here: it would scale the
+    widest row, which need not be the heaviest. A wide row of short
+    vocabulary values and a narrow row of long tags put the bytes and
+    the entry count in different rows, and only the entry count is what
+    such a model reads. Simulation truncates every row and measures the
+    result, so both errors fall out together.
 
     Returns None when no cap below the one in force fits, which is the
     caller's signal to omit the recommendation rather than name a
     re-call that would not help. That covers both the degenerate cap of
     one and the case where a single value is wider than the whole
-    budget.
+    budget. The facets hint can omit the key where the catalog hint
+    cannot: it is new here, so nothing has been able to rely on it.
     """
     cap_in_force = max(
         (len(row.values) for row in response.results if isinstance(row, FacetHit)),
         default=0,
     )
-    low, high = 1, cap_in_force - 1
-    best: int | None = None
-    while low <= high:
-        mid = (low + high) // 2
-        if _serialized_response_bytes(_facets_response_at_cap(response, mid)) <= budget:
-            best = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-    return best
+    return _largest_fitting_prefix(response, budget, cap_in_force - 1, _facets_response_at_cap)
 
 
 def _apply_facets_budget_hint(response: DiscoverResponse) -> None:

@@ -214,7 +214,9 @@ paths:
         The facets value cap is denominated in values rather than bytes,
         so a facets response whose serialized size exceeds the MCP
         inline ceiling carries a `facets_response_exceeds_inline_budget`
-        hint naming the `recommended_facet_value_limit` to re-call at.
+        hint, naming the `recommended_facet_value_limit` to re-call at
+        whenever a smaller cap would fit and omitting it when none
+        would.
       tags: [Retrieval]
       parameters:
         - $ref: "#/components/parameters/VaultId"
