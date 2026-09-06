@@ -34,6 +34,20 @@ class StubContentStore(ContentStore):
     Supports indexing, removal, semantic search (cosine similarity),
     BM25-style keyword search, and heading prefix retrieval for
     deterministic mode.
+
+    **The passage reads model a migrated store.** A caller can seed a legacy
+    document-level row here -- the port's marker block states when a real vault
+    still holds one -- and the reads that merely enumerate or return passages
+    (``get_heading_paths``, ``get_all_chunks``, ``search_semantic``) will include
+    it, where the Postgres binding's passage scoping excludes it. The divergence
+    is deliberate: the guarded behaviour is a property of the real binding, so a
+    test asserting that a passage read excludes a legacy row is evidence about
+    that binding and has to be written against it.
+
+    ``search_bm25`` is guarded all the same, and that asymmetry is the point:
+    there the marker changes what *matches*, and a double that let a legacy
+    row's derived text satisfy a caller's term would be modelling the wrong
+    contract rather than a narrower one.
     """
 
     def __init__(self) -> None:
@@ -404,18 +418,7 @@ class StubContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        Unguarded, which is a divergence from the Postgres binding rather than
-        an absence of the condition: a caller can seed a legacy document-level
-        row into this double, and its sentinel path would be enumerated here
-        where the binding's passage scoping excludes it.
-
-        The divergence is deliberate and safe. This double models a store that
-        has run its migration, and the guarded behaviour is a property of the
-        real binding, so a test asserting that enumeration excludes a legacy row
-        is evidence about the binding and has to be written against it. The
-        keyword arm is guarded all the same, because there the marker changes
-        what *matches*, and a double that let derived text satisfy a term would
-        be modelling the wrong contract rather than a narrower one.
+        Unguarded, as this class's passage reads are; see the class docstring.
         """
         chunks = self._store.get(document_id, [])
         seen: set[str] = set()
@@ -431,7 +434,10 @@ class StubContentStore(ContentStore):
         return len(self._store.get(document_id, [])) > 0
 
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
-        """Return all chunks for a document in document order."""
+        """Return all chunks for a document in document order.
+
+        Unguarded, as this class's passage reads are; see the class docstring.
+        """
         chunks = self._store.get(document_id, [])
         return sorted(chunks, key=lambda c: c.chunk_index)
 

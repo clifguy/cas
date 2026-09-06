@@ -31,10 +31,13 @@ from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 #
 # This block is where the window such a row can appear in is stated, and it is
 # the only place that states it. The window is open and is not expected to
-# close. Every vault in the fleet has been migrated, but a store restored from a
+# close. Every known vault having been migrated is not what would close it,
+# because it does not stop another arriving unmigrated: a store restored from a
 # backup taken before the decision is reprovisioned by the schema layer's
-# ``IF NOT EXISTS`` bootstrap and opens without complaint, so an unmigrated
-# vault can still arrive -- from a restore, or from a newly attached tenant.
+# ``IF NOT EXISTS`` bootstrap and opens without complaint, and the relocation
+# runs only when an operator runs the migration, never at vault open. So an
+# unmigrated vault can still arrive -- from a restore, or from a newly attached
+# tenant.
 # The migration surface below therefore stays, and so do the read-path guards
 # that keep a legacy row from reaching a caller in the meantime: on the Postgres
 # binding as a predicate scoping every passage read to indexes above

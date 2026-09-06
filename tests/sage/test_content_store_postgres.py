@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import math
 import os
+import re
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -1713,12 +1714,27 @@ def test_the_passage_surface_scoping_is_expressed_once():
 
     This test's own job is the narrower one: keeping the condition stated once
     rather than re-spelled, unexplained, at each site.
+
+    Matched by operator rather than by one spelling. A substring test for a
+    single rendering (``"chunk_index >"``) is evaded by the same predicate
+    written without the space, and ruff does not normalise inside a string
+    literal, so the evading spelling survives the formatter. Ordering comparisons
+    and ``BETWEEN`` are the operators a passage-surface predicate can be built
+    from, in either operand order; bare ``=`` is deliberately not among them,
+    because it is how the column is bound in Python (``chunk_index=row[4]``) and
+    is not a scoping predicate in any spelling.
     """
     source = Path(inspect.getfile(PostgresContentStore)).read_text(encoding="utf-8")
 
-    assert "chunk_index >" not in source, (
-        "the passage-surface predicate is spelled inline somewhere; route it "
-        "through _passage_rows_only so the condition stays named once"
+    # After this change the only legitimate comparison against the column lives
+    # inside the helper, which builds it from a variable and so matches neither.
+    inline = re.search(
+        r"chunk_index\s*(?:<|>|BETWEEN\b)|(?:<|>)=?\s*chunk_index", source, re.IGNORECASE
+    )
+    assert inline is None, (
+        "the passage-surface predicate is spelled inline somewhere "
+        f"({inline.group(0)!r} if matched); route it through _passage_rows_only "
+        "so the condition stays named once"
     )
     # One definition plus a call at every passage read.
     assert source.count("_passage_rows_only(") >= 2, (
