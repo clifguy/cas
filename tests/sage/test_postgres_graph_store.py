@@ -14,7 +14,7 @@ uniqueness behaving identically to SQLite) is covered by the parametrized
 import asyncio
 import inspect
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from pydantic_core import PydanticUndefined
@@ -54,6 +54,7 @@ def _doc(
     document_date: str | None = None,
     semantic_abstract: str | None = None,
     source_modified_at: datetime | None = None,
+    authority_scope: str | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -75,6 +76,7 @@ def _doc(
         document_date=document_date,
         semantic_abstract=semantic_abstract,
         source_modified_at=source_modified_at,
+        authority_scope=authority_scope,
     )
 
 
@@ -819,24 +821,28 @@ def _metadata_doc(i: int, **kwargs) -> Document:
     every document built here lands in the same match-quality bucket and only
     the salience order can separate them.
     """
-    return _doc(i, title="Shared Boost Title", tags=[_BOOST_TERM], **kwargs)
+    kwargs.setdefault("title", "Shared Boost Title")
+    kwargs.setdefault("tags", [_BOOST_TERM])
+    return _doc(i, **kwargs)
 
 
 def _abstract_doc(i: int, **kwargs) -> Document:
     """A document ``search_abstracts`` admits by its abstract alone."""
-    return _doc(
-        i,
-        title="Shared Boost Title",
-        tags=["a"],
-        semantic_abstract=f"Concerning {_BOOST_TERM} matters.",
-        **kwargs,
-    )
+    kwargs.setdefault("title", "Shared Boost Title")
+    kwargs.setdefault("tags", ["a"])
+    kwargs.setdefault("semantic_abstract", f"Concerning {_BOOST_TERM} matters.")
+    return _doc(i, **kwargs)
 
 
 _BOOST_HELPERS = [
     pytest.param("search_metadata", _metadata_doc, id="metadata"),
     pytest.param("search_abstracts", _abstract_doc, id="abstracts"),
 ]
+
+# The tags each helper's factory relies on to be admitted. A test that stamps
+# its own tags has to carry these forward or the document stops matching, which
+# would make the test pass by matching nothing.
+_ADMITTING_TAGS = {"search_metadata": [_BOOST_TERM], "search_abstracts": ["a"]}
 
 
 @pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
@@ -1009,4 +1015,338 @@ async def test_source_path_quality_outranks_salience(postgres_graph_store):
 
     assert [d.id for d in found] == [path_match.id, salient.id], (
         "the salience keys were placed between the two match-quality keys"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C9: the boost helpers rank their cut over the documents the filter admits
+#
+# C8 above fixed *which* of the matching documents survive the cut. This
+# section fixes *what the cut ranks over*. Both helpers cap their match set,
+# and their caller applies its own constraints to what comes back -- so a
+# caller asking for a lifecycle the ranking sorts last received a capful of
+# documents its filter then discarded, and no boost at all. The filters reach
+# the WHERE clause instead, and the cut is drawn from the eligible documents.
+#
+# Parametrized across both helpers for the reason C8 is: the shape is shared
+# and a repair to one alone reds the other arm here.
+# ---------------------------------------------------------------------------
+
+
+def _dated(n: int) -> str:
+    """The nth day of an ascending run of distinct authored dates."""
+    return (datetime(2020, 1, 1, tzinfo=timezone.utc) + timedelta(days=n)).date().isoformat()
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_the_cut_is_drawn_from_the_documents_the_filter_admits(
+    postgres_graph_store, helper_name, make_doc
+):
+    """A caller filtering to a non-active lifecycle receives the documents it asked for.
+
+    150 documents match through the helper's admitting field; every fifth is
+    superseded, which interleaves the two lifecycles across the id space so
+    the 30 superseded documents are not a contiguous block the cut could
+    reach by accident. The unfiltered control below asserts what makes this
+    test discriminate: the cut ranks active documents first, so an unfiltered
+    hundred holds no superseded document at all, and a filter applied to that
+    hundred can only return nothing.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    superseded_ids: list[str] = []
+    for i in range(1000, 1150):
+        is_superseded = (i - 1000) % 5 == 0
+        doc = make_doc(i, lifecycle_status="superseded" if is_superseded else "active")
+        await postgres_graph_store.insert_document(doc)
+        if is_superseded:
+            superseded_ids.append(doc.id)
+    assert len(superseded_ids) == 30, "fixture: 30 of the 150 matching documents are superseded"
+
+    # The trap, asserted rather than assumed: the cap starves this caller only
+    # because the unfiltered cut is entirely active. On a corpus small enough
+    # to fit inside the cap, or one the ranking did not sort this way, the
+    # assertion below would pass against filter-after-cut too.
+    unfiltered = await helper(_BOOST_TERM, limit=100)
+    assert len(unfiltered) == 100, "fixture: the match set must exceed the cap"
+    assert not set(d.id for d in unfiltered) & set(superseded_ids), (
+        "fixture: the unfiltered cut must hold no superseded document, or a "
+        "filter applied after the cut would have had something to return"
+    )
+
+    found = await helper(_BOOST_TERM, filters={"lifecycle_status": "superseded"}, limit=100)
+
+    assert [d.id for d in found] == superseded_ids, (
+        "the cut was ranked over the whole match set, so the filter had only "
+        "active documents to discard"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_a_minority_doc_type_survives_the_cut(postgres_graph_store, helper_name, make_doc):
+    """The same holds on ``doc_type``: a minority type is not crowded out of the cap.
+
+    All 150 documents are active, so the lifecycle key cannot separate them
+    and the starvation here is purely one of capacity -- 130 documents of one
+    type fill a cap of 100 before the 20 of the type asked for are reached.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    wanted_ids: list[str] = []
+    for i in range(1200, 1350):
+        is_wanted = (i - 1200) >= 130
+        doc = make_doc(i, doc_type="adr" if is_wanted else "note")
+        await postgres_graph_store.insert_document(doc)
+        if is_wanted:
+            wanted_ids.append(doc.id)
+    assert len(wanted_ids) == 20, "fixture: 20 of the 150 matching documents are adrs"
+
+    unfiltered = await helper(_BOOST_TERM, limit=100)
+    assert not set(d.id for d in unfiltered) & set(wanted_ids), (
+        "fixture: the 130 notes must fill the cap ahead of every adr"
+    )
+
+    found = await helper(_BOOST_TERM, filters={"doc_type": "adr"}, limit=100)
+
+    assert [d.id for d in found] == wanted_ids, (
+        "the cut was ranked over every matching type rather than the one asked for"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_the_filtered_cut_keeps_the_salience_order(
+    postgres_graph_store, helper_name, make_doc
+):
+    """Pushing the filters down must not displace the ranking C8 established.
+
+    The obvious wrong fix routes the whole statement through the shared
+    document query, which orders by the *browsing* order rather than the boost
+    cut's. Here 150 admitted documents carry ascending dates against ascending
+    ids, so date order and id order disagree: the expected survivors are the
+    100 most recent, which are the 100 *highest* ids, and any fix that lost
+    the date keys returns the 100 lowest instead.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    ids_by_date: list[str] = []
+    for n, i in enumerate(range(1400, 1550)):
+        doc = make_doc(i, lifecycle_status="superseded", document_date=_dated(n))
+        await postgres_graph_store.insert_document(doc)
+        ids_by_date.append(doc.id)
+    expected = list(reversed(ids_by_date))[:100]
+
+    found = await helper(_BOOST_TERM, filters={"lifecycle_status": "superseded"}, limit=100)
+
+    assert [d.id for d in found] == expected, (
+        "the filtered cut lost the boost ordering: the survivors were not the "
+        "100 most recently dated documents"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_the_default_failed_exclusion_survives_the_filter_pushdown(
+    postgres_graph_store, helper_name, make_doc
+):
+    """Failed documents are excluded by default and admitted on an explicit filter.
+
+    Routing the filters through the shared WHERE builder brings its
+    failed-pipeline default with them, and both arms are asserted because
+    either one alone is satisfied by a constant. A pushdown hardcoding the
+    exclusion off passes the second arm; one hardcoding it on passes the first.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    healthy = make_doc(1600)
+    failed = make_doc(1601)
+    failed.pipeline_status = PipelineStatus.FAILED
+    await postgres_graph_store.insert_document(healthy)
+    await postgres_graph_store.insert_document(failed)
+
+    by_default = await helper(_BOOST_TERM)
+    assert [d.id for d in by_default] == [healthy.id], (
+        "a failed document reached the boost with no filter asking for it"
+    )
+
+    on_request = await helper(_BOOST_TERM, filters={"pipeline_status": "failed"})
+    assert [d.id for d in on_request] == [failed.id], (
+        "an explicit pipeline_status filter did not override the default exclusion"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_a_tag_filter_admits_only_documents_carrying_every_tag(
+    postgres_graph_store, helper_name, make_doc
+):
+    """The tag branch of the shared builder is reached through the new parameter.
+
+    Tags resolve through a correlated EXISTS per tag rather than a column
+    predicate, so a pushdown that handled only the scalar columns passes every
+    test above and drops this one. The filter names two tags and the fixture
+    gives one of them to every document, so a builder that treated the list as
+    a disjunction returns all 150.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    shared_tag = "sharedboosttag"
+    wanted_ids: list[str] = []
+    for i in range(1700, 1850):
+        is_wanted = (i - 1700) >= 135
+        tags = [shared_tag, "narrowing"] if is_wanted else [shared_tag]
+        doc = make_doc(i, tags=[*_ADMITTING_TAGS[helper_name], *tags])
+        await postgres_graph_store.insert_document(doc)
+        if is_wanted:
+            wanted_ids.append(doc.id)
+    assert len(wanted_ids) == 15, "fixture: 15 of the 150 documents carry both tags"
+
+    found = await helper(_BOOST_TERM, filters={"tags": [shared_tag, "narrowing"]}, limit=100)
+
+    assert [d.id for d in found] == wanted_ids, (
+        "the tag filter did not narrow to documents carrying every named tag"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_a_tier3_filter_reaches_the_cut(postgres_graph_store, helper_name, make_doc):
+    """A tier3 filter narrows the cut like any other.
+
+    This is the one filter the caller's own post-cut gate never applied, so
+    before the pushdown a boosted document could reach a caller whose tier3
+    filter excluded it. The fixture is over-cap so the test fails on the
+    filter rather than on the cap.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    wanted_ids: list[str] = []
+    for i in range(1900, 2050):
+        is_wanted = (i - 1900) >= 140
+        doc = make_doc(
+            i,
+            tier3={"ticket_id": "T-WANTED"} if is_wanted else {"ticket_id": "T-OTHER"},
+        )
+        await postgres_graph_store.insert_document(doc)
+        if is_wanted:
+            wanted_ids.append(doc.id)
+    assert len(wanted_ids) == 10, "fixture: 10 of the 150 documents carry the wanted value"
+
+    found = await helper(
+        _BOOST_TERM, filters={"tier3_metadata": {"ticket_id": "T-WANTED"}}, limit=100
+    )
+
+    assert [d.id for d in found] == wanted_ids, "the tier3 filter did not reach the WHERE clause"
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_an_unfiltered_cut_is_unchanged(postgres_graph_store, helper_name, make_doc):
+    """No filters means the behaviour C8 pinned, unchanged.
+
+    The control for this section rather than a discriminator: it passes
+    against a ``filters`` parameter that is accepted and ignored, and it is
+    here so that a regression in the unfiltered path -- the one every ordinary
+    caller takes -- is attributed to this change rather than hunted for.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    expected_active: list[str] = []
+    for i in range(2100, 2250):
+        superseded = (i - 2100) % 3 == 0
+        doc = make_doc(i, lifecycle_status="superseded" if superseded else "active")
+        await postgres_graph_store.insert_document(doc)
+        if not superseded:
+            expected_active.append(doc.id)
+    assert len(expected_active) == 100, "fixture: exactly 100 of the 150 documents are active"
+
+    found = await helper(_BOOST_TERM, filters=None, limit=100)
+
+    assert [d.id for d in found] == expected_active, (
+        "an unfiltered call no longer returns the 100 documents C8 pinned"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_an_authority_scope_predicate_reaches_the_cut(
+    postgres_graph_store, helper_name, make_doc
+):
+    """``has_authority_scope`` narrows the ranked set like a column filter does.
+
+    The retrieval layer's authoritative scope is a rule about a column rather
+    than a value to match, so it has no equality filter to travel on and needs
+    a predicate of its own. Without it a caller asking for authoritative
+    documents receives a cut ranked over every document and keeps only what
+    survives its own gate -- the same starvation the filters above close.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    wanted_ids: list[str] = []
+    for i in range(2300, 2450):
+        is_wanted = (i - 2300) >= 140
+        doc = make_doc(i, authority_scope="canonical" if is_wanted else None)
+        await postgres_graph_store.insert_document(doc)
+        if is_wanted:
+            wanted_ids.append(doc.id)
+    assert len(wanted_ids) == 10, "fixture: 10 of the 150 documents carry an authority scope"
+
+    unfiltered = await helper(_BOOST_TERM, limit=100)
+    assert not set(d.id for d in unfiltered) & set(wanted_ids), (
+        "fixture: the 140 unscoped documents must fill the cap ahead of every scoped one"
+    )
+
+    found = await helper(_BOOST_TERM, filters={"has_authority_scope": True}, limit=100)
+
+    assert [d.id for d in found] == wanted_ids, (
+        "the authority-scope predicate did not reach the WHERE clause"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_an_empty_authority_scope_is_not_an_authority_scope(
+    postgres_graph_store, helper_name, make_doc
+):
+    """The predicate tests the column's truthiness, not merely its presence.
+
+    The service-layer gate this mirrors rejects a document on ``not
+    doc.authority_scope``, which an empty string satisfies. A predicate written
+    as ``IS NOT NULL`` alone passes the sibling above -- every document there is
+    either unscoped or properly scoped -- and admits the empty one here, which
+    is a document the caller's own gate would then discard: the cut would be
+    spent on a row that cannot survive, which is the defect rather than a
+    smaller version of it.
+    """
+    helper = getattr(postgres_graph_store, helper_name)
+    scoped = make_doc(2500, authority_scope="canonical")
+    blank = make_doc(2501, authority_scope="")
+    await postgres_graph_store.insert_document(scoped)
+    await postgres_graph_store.insert_document(blank)
+
+    found = await helper(_BOOST_TERM, filters={"has_authority_scope": True})
+
+    assert [d.id for d in found] == [scoped.id], (
+        "a document whose authority_scope is the empty string was admitted"
+    )
+
+
+async def test_a_filter_binds_over_the_whole_metadata_disjunction(postgres_graph_store):
+    """A title match is subject to the filter rather than exempted by it.
+
+    ``search_metadata`` admits through a disjunction, so a filter has to be
+    conjoined to the *whole* of it. Written without the parentheses --
+    ``title OR tags AND filters`` -- SQL binds it as ``title OR (tags AND
+    filters)`` and every title match comes back whatever the caller asked for.
+
+    Nothing else in this section can see that. Every other fixture here admits
+    its documents through the helper's own field, which for the metadata arm
+    is the tag, so the left arm of the disjunction is never satisfied and the
+    misparenthesised rival returns the right answer throughout. Both documents
+    below match by *title* and by nothing else, which puts the whole weight of
+    the result on where the filter binds.
+    """
+    excluded = _doc(2600, title=f"{_BOOST_TERM} Digest", tags=["a"])
+    admitted = _doc(2601, title=f"{_BOOST_TERM} Review", tags=["a"], lifecycle_status="superseded")
+    await postgres_graph_store.insert_document(excluded)
+    await postgres_graph_store.insert_document(admitted)
+
+    unfiltered = await postgres_graph_store.search_metadata(_BOOST_TERM)
+    assert {d.id for d in unfiltered} == {excluded.id, admitted.id}, (
+        "fixture: both documents must be admitted by title, or the filter is "
+        "not the only thing separating them below"
+    )
+
+    found = await postgres_graph_store.search_metadata(
+        _BOOST_TERM, filters={"lifecycle_status": "superseded"}
+    )
+
+    assert [d.id for d in found] == [admitted.id], (
+        "a title match was returned past a filter that excludes it: the filter "
+        "binds to one arm of the admitting disjunction rather than to all of it"
     )

@@ -8323,3 +8323,275 @@ def test_every_target_forbidden_parameter_is_reachable(target, param, default, a
         "cannot fire and states a rule nothing enforces."
     )
     assert ctx["target"] == target.value
+
+
+# ---------------------------------------------------------------------------
+# The relevance boosts rank their cut over the documents the caller's filters
+# admit, rather than over the whole corpus.
+#
+# Both boosts cap the match set they ask the graph store for. That cut is
+# ranked active-first, so a caller filtering to a non-active lifecycle -- a
+# supersession audit, say -- on a query matching more documents than the cap
+# received a capful of active documents its own filter then discarded, and no
+# boost at all. Every test here needs a corpus larger than the cap for that
+# starvation to be reachable, which is why the fixtures are as large as they
+# are.
+# ---------------------------------------------------------------------------
+
+# One over the cap the boosts take, so the fixture corpora below fill it with
+# documents the filter under test excludes.
+_OVER_CAP = 120
+
+_BOOST_TAG = "phiword"
+
+
+async def test_a_non_active_filter_still_receives_a_metadata_boost(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A caller filtering to a non-active lifecycle gets the boost it asked for.
+
+    Nothing here is chunk-indexed, so the term search has nothing to return
+    and the metadata boost is the only route into the response -- which is what
+    makes this a test of the boost rather than of BM25. The unfiltered control
+    rules out the rival explanation for an empty filtered response: that the
+    boost's own search matched nothing.
+    """
+    for n in range(_OVER_CAP):
+        await graph_store.insert_document(_make_doc(_id(f"lb_active_{n}"), tags=[_BOOST_TAG]))
+    wanted = _make_doc(_id("lb_superseded"), lifecycle_status="superseded", tags=[_BOOST_TAG])
+    await graph_store.insert_document(wanted)
+
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query=_BOOST_TAG)
+    )
+    assert control.results, "precondition: the boost's own search must match this corpus"
+    assert control.total_available == 100, (
+        "fixture: the corpus must exceed the boost's cap, or the filter would "
+        "have had the superseded document to keep either way"
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query=_BOOST_TAG,
+            filters=RetrievalFilters(lifecycle_status="superseded"),
+        )
+    )
+
+    assert [h.document.id for h in response.results] == [wanted.id], (
+        "the boost's cut was taken over the whole corpus, so the caller's "
+        "lifecycle filter had only active documents to discard"
+    )
+
+
+async def test_a_minority_doc_type_still_receives_a_metadata_boost(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """The same property on the other axis the acceptance criteria name.
+
+    Every document here is active, so the lifecycle key cannot separate them.
+    The notes carry an authored date and the adr does not, which puts the adr
+    last under the cut's ordering -- and so reliably outside the cap. Leaving
+    every document undated would leave the ordering to the primary key, and
+    whether the adr fell inside the cap would then turn on where its id hashed.
+    """
+    for n in range(_OVER_CAP):
+        await graph_store.insert_document(
+            _make_doc(
+                _id(f"dt_note_{n}"),
+                doc_type="note",
+                tags=[_BOOST_TAG],
+                document_date="2025-01-01",
+            )
+        )
+    wanted = _make_doc(_id("dt_adr"), doc_type="adr", tags=[_BOOST_TAG])
+    await graph_store.insert_document(wanted)
+
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query=_BOOST_TAG)
+    )
+    assert control.total_available == 100, (
+        "fixture: the notes must fill the boost's cap ahead of the adr"
+    )
+    assert wanted.id not in [h.document.id for h in control.results], (
+        "fixture: the undated adr must rank below every note"
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query=_BOOST_TAG,
+            filters=RetrievalFilters(doc_type="adr"),
+        )
+    )
+
+    assert [h.document.id for h in response.results] == [wanted.id], (
+        "the boost's cut was taken over every doc_type rather than the one asked for"
+    )
+
+
+async def test_a_non_active_filter_still_receives_an_abstract_boost(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """The abstract boost fires for a filtered caller, measured against its own control.
+
+    The abstract boost only multiplies the scores of documents already in the
+    result, so asserting that the matching document is *present* passes whether
+    or not the boost fired. The discriminator is the score itself: the same
+    request run with the prefilter disabled is the baseline, and the boosted
+    run must differ from it by exactly the boost factor. The second superseded
+    document -- in the result, abstract not matching -- is the control that
+    keeps a global rescaling from satisfying the first assertion.
+    """
+
+    for n in range(_OVER_CAP):
+        await graph_store.insert_document(
+            _make_doc(_id(f"ab_active_{n}"), semantic_abstract=f"Concerning {_BOOST_TAG} matters.")
+        )
+
+    boosted = _make_doc(
+        _id("ab_with_abstract"),
+        lifecycle_status="superseded",
+        document_date="2025-01-01",
+        semantic_abstract=f"Concerning {_BOOST_TAG} matters.",
+    )
+    unboosted = _make_doc(
+        _id("ab_without_abstract"),
+        lifecycle_status="superseded",
+        document_date="2025-01-01",
+        semantic_abstract="Concerning unrelated matters.",
+    )
+    for doc in (boosted, unboosted):
+        await graph_store.insert_document(doc)
+        await _index_doc_chunks(
+            stub_content_store,
+            seeded_embedding_provider,
+            doc.id,
+            [("Section 1", f"A passage about {_BOOST_TAG} and its consequences.")],
+            lifecycle_status="superseded",
+        )
+
+    async def _run(use_prefilter: bool) -> dict[str, float]:
+        response = await retrieval_service.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.KEYWORD,
+                query=_BOOST_TAG,
+                filters=RetrievalFilters(lifecycle_status="superseded"),
+                use_abstract_prefilter=use_prefilter,
+            )
+        )
+        return {h.document.id: h.relevance_score for h in response.results}
+
+    # The 120 active documents are what make this test discriminate, and
+    # nothing below reads them, so their being load-bearing is asserted here
+    # rather than left to the docstring: delete them and the cut is no longer
+    # full, the abstract-matching document survives it unfiltered, and the
+    # test passes against the very order it exists to reject.
+    unfiltered_cut = await graph_store.search_abstracts(_BOOST_TAG, limit=100)
+    assert boosted.id not in {d.id for d in unfiltered_cut}, (
+        "fixture: the active documents must fill the abstract cut ahead of the superseded one"
+    )
+
+    baseline = await _run(False)
+    boosted_scores = await _run(True)
+
+    assert boosted.id in baseline and unboosted.id in baseline, (
+        "precondition: both superseded documents must reach the result through "
+        "the term search, since the abstract boost can only rescale what is there"
+    )
+    assert boosted_scores[unboosted.id] == pytest.approx(baseline[unboosted.id]), (
+        "the control document's score moved, so the difference below is not the abstract boost"
+    )
+    assert boosted_scores[boosted.id] == pytest.approx(baseline[boosted.id] * 1.30), (
+        "the abstract boost did not fire: its cut was filled with active "
+        "documents the caller's lifecycle filter excludes"
+    )
+
+
+async def test_a_tier3_filter_no_longer_leaks_through_the_boost(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A boosted document must satisfy the caller's tier3 filter like any other.
+
+    The boost's post-cut gate never checked tier3, so a document the filter
+    excludes could be prepended to a result the filter had otherwise narrowed.
+    Asserting that the wanted document is present would pass without the fix;
+    the assertion that discriminates is the *absence* of the excluded one, and
+    the sibling run without the tier3 filter proves the query reaches it.
+    """
+    wanted = _make_doc(_id("t3_wanted"), tier3_metadata={"ticket_id": "T-WANTED"})
+    excluded = _make_doc(_id("t3_excluded"), tier3_metadata={"ticket_id": "T-OTHER"})
+    for doc in (wanted, excluded):
+        await graph_store.insert_document(doc)
+
+    # Both titles carry the query term, so both are admitted by the boost's own
+    # search and only the filter can separate them.
+    unfiltered = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="t3_")
+    )
+    unfiltered_ids = [h.document.id for h in unfiltered.results]
+    assert wanted.id in unfiltered_ids and excluded.id in unfiltered_ids, (
+        "precondition: the boost's search must admit both documents, or the "
+        "absence asserted below would be an unmatched query rather than a filter"
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="t3_",
+            filters=RetrievalFilters(tier3_metadata={"ticket_id": "T-WANTED"}),
+        )
+    )
+
+    assert excluded.id not in [h.document.id for h in response.results], (
+        "a boosted document reached the caller past a tier3 filter that excludes it"
+    )
+    assert wanted.id in [h.document.id for h in response.results], (
+        "the tier3 filter dropped the document it was meant to admit"
+    )
+
+
+async def test_an_authoritative_scope_still_receives_a_metadata_boost(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Authoritative scope is a constraint on the cut like any filter.
+
+    Scope reaches the boost through the request rather than through
+    ``RetrievalFilters``, so it travels on its own key and a repair that
+    threaded only the filter object leaves this caller starved exactly as
+    before. Nothing is chunk-indexed, so the boost is the only route in.
+
+    The unscoped documents carry an authored date and the scoped one does not,
+    which puts it last under the cut's ordering. Leaving every document undated
+    would leave the cut to the primary key, and whether the scoped document
+    fell inside the cap would turn on where its id happened to hash.
+    """
+    for n in range(_OVER_CAP):
+        await graph_store.insert_document(
+            _make_doc(_id(f"as_plain_{n}"), tags=[_BOOST_TAG], document_date="2025-01-01")
+        )
+    wanted = _make_doc(_id("as_scoped"), authority_scope="canonical", tags=[_BOOST_TAG])
+    await graph_store.insert_document(wanted)
+
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query=_BOOST_TAG)
+    )
+    assert control.total_available == 100, (
+        "fixture: the unscoped documents must fill the boost's cap"
+    )
+    assert wanted.id not in [h.document.id for h in control.results], (
+        "fixture: the undated scoped document must rank below every unscoped one"
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query=_BOOST_TAG,
+            scope=RetrievalScope.AUTHORITATIVE,
+        )
+    )
+
+    assert [h.document.id for h in response.results] == [wanted.id], (
+        "the boost's cut was ranked over every document rather than the "
+        "authoritative ones the caller scoped to"
+    )

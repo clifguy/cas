@@ -530,11 +530,12 @@ class PostgresGraphStore(GraphStore):
     ) -> tuple[str, list[object]]:
         """Translate a document filter dict into a WHERE clause plus params.
 
-        Shared by ``query_documents`` and ``query_document_facets`` so both
-        surfaces resolve identical filter semantics. Returns ``("TRUE", [])``
-        when nothing constrains the query. The tag predicate is a correlated
-        ``EXISTS`` subquery qualified as ``documents.id``, so every consumer
-        must keep the outer ``documents`` table unaliased.
+        Shared by ``query_documents``, ``query_document_facets`` and the boost
+        helpers' cut, so every surface resolves identical filter semantics.
+        Returns ``("TRUE", [])`` when nothing constrains the query. The tag
+        predicate is a correlated ``EXISTS`` subquery qualified as
+        ``documents.id``, so every consumer must keep the outer ``documents``
+        table unaliased.
         """
         where_clauses: list[str] = []
         params: list[object] = []
@@ -554,6 +555,15 @@ class PostgresGraphStore(GraphStore):
                 if col in filters and filters[col]:
                     where_clauses.append(f"{col} = %s")
                     params.append(filters[col])
+            # A rule about the column rather than a value to match, so it
+            # cannot travel as an equality the way every key above does. The
+            # retrieval layer's authoritative scope reads this column's
+            # truthiness, and an empty string is not an authority scope there
+            # -- a document carrying one must fail this predicate too, or the
+            # cut it survives is spent on a row that cannot survive the gate.
+            if filters.get("has_authority_scope"):
+                where_clauses.append("authority_scope IS NOT NULL AND authority_scope <> %s")
+                params.append("")
             if "document_ids" in filters and filters["document_ids"]:
                 placeholders = ",".join("%s" for _ in filters["document_ids"])
                 where_clauses.append(f"id IN ({placeholders})")
@@ -624,7 +634,61 @@ class PostgresGraphStore(GraphStore):
             )
             return [self._row_to_document(r) for r in rows]
 
-    async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
+    async def _boost_cut(
+        self,
+        operation: str,
+        admits_sql: str,
+        admits_params: list[object],
+        order_sql: str,
+        order_params: list[object],
+        limit: int,
+        filters: dict[str, object] | None,
+    ) -> list[Document]:
+        """Rank and truncate a boost helper's match set over the eligible rows.
+
+        The two helpers differ only in what admits a document and what ranks
+        the admitted; everything else about their statements is one shape, and
+        the part that had to be got right in both places is the composition
+        below. The admitting predicate is parenthesised before the filters are
+        conjoined to it, because ``search_metadata`` admits through a
+        disjunction: ``a OR b AND f`` binds as ``a OR (b AND f)`` and would
+        return every title match whatever the filter said.
+
+        The filter clause comes from the same builder ``query_documents``
+        uses, so a filter resolves identically whichever surface a caller
+        reaches it through -- including the tag and tier3 predicates, which are
+        subqueries rather than column comparisons and are the ones a
+        hand-rolled second copy would get wrong or omit.
+        """
+        with self._query_timer.measure(operation):
+            # ``default_exclude_failed`` is not a knob the boosts need: the
+            # builder already skips its own exclusion when the filters name a
+            # ``pipeline_status``, which is exactly when a boost's caller has
+            # asked for failed documents.
+            where_sql, where_params = self._build_document_where(
+                filters, default_exclude_failed=True
+            )
+            # The filter predicates are the one part of this statement built
+            # from caller input, so a driver rejection is the caller's to hear
+            # about rather than the driver's words about a statement it did
+            # not write. Scoped as it is on ``query_documents``.
+            try:
+                rows = await self._fetch_rows(
+                    f"SELECT * FROM documents WHERE ({admits_sql}) AND ({where_sql}) "  # noqa: S608 -- builder-trusted; values are %s
+                    f"ORDER BY {order_sql}{_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
+                    "LIMIT %s",
+                    [*admits_params, *where_params, *order_params, limit],
+                )
+            except pg_errors.Error as exc:
+                raise StorageQueryError(operation, str(exc)) from exc
+            return [self._row_to_document(r) for r in rows]
+
+    async def search_metadata(
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict[str, object] | None = None,
+    ) -> list[Document]:
         """Documents whose authored metadata carries the query as a substring.
 
         The title and the tags admit a document; the source path does not.
@@ -643,26 +707,32 @@ class PostgresGraphStore(GraphStore):
         anyway, rather than whichever ones the scan reached first. Those keys
         sit behind the match-quality keys, not in front, so a better match
         still outranks a more salient one.
-        """
-        with self._query_timer.measure("search_metadata"):
-            # The query is text to find, not a pattern to apply: a caller's
-            # own '%' or '_' would otherwise be read as this operator's
-            # wildcards and silently widen the result.
-            pattern = f"%{escape_like(query)}%"
-            rows = await self._fetch_rows(
-                "SELECT * FROM documents "  # noqa: S608 -- order from module constants; values are %s
-                "WHERE title ILIKE %s "
-                "   OR tags::text ILIKE %s "
-                "ORDER BY "
-                "  CASE WHEN title ILIKE %s THEN 0 ELSE 1 END, "
-                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END, "
-                f" {_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
-                "LIMIT %s",
-                (pattern, pattern, pattern, pattern, limit),
-            )
-            return [self._row_to_document(r) for r in rows]
 
-    async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+        ``filters`` narrows what is ranked, not what is returned from a rank
+        already taken -- so a caller constrained to a lifecycle this ordering
+        sorts last still receives a full cut of the documents it can use.
+        """
+        # The query is text to find, not a pattern to apply: a caller's own
+        # '%' or '_' would otherwise be read as this operator's wildcards and
+        # silently widen the result.
+        pattern = f"%{escape_like(query)}%"
+        return await self._boost_cut(
+            "search_metadata",
+            "title ILIKE %s OR tags::text ILIKE %s",
+            [pattern, pattern],
+            "CASE WHEN title ILIKE %s THEN 0 ELSE 1 END, "
+            "CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END, ",
+            [pattern, pattern],
+            limit,
+            filters,
+        )
+
+    async def search_abstracts(
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict[str, object] | None = None,
+    ) -> list[Document]:
         """Documents whose generated abstract carries the query as a substring.
 
         Ordered on the same grounds as the sibling above and with the same two
@@ -671,19 +741,22 @@ class PostgresGraphStore(GraphStore):
         is no match-quality key to rank the set by first. Without the ordering
         the truncation is a slice of whatever the scan reached, which Postgres
         need not choose the same way twice.
+
+        ``filters`` narrows the ranked set for the reason it does above.
         """
-        with self._query_timer.measure("search_abstracts"):
-            # Escaped for the same reason the sibling above is: this result
-            # feeds the abstract boost, which is another path into a caller's
-            # result set, and a caller's own % or _ is text to find.
-            pattern = f"%{escape_like(query)}%"
-            rows = await self._fetch_rows(
-                "SELECT * FROM documents WHERE semantic_abstract ILIKE %s "  # noqa: S608 -- order from module constants; values are %s
-                f"ORDER BY {_BOOST_CUT_ORDER}{_ORDER_TIEBREAK} "
-                "LIMIT %s",
-                (pattern, limit),
-            )
-            return [self._row_to_document(r) for r in rows]
+        # Escaped for the same reason the sibling above is: this result feeds
+        # the abstract boost, which is another path into a caller's result set,
+        # and a caller's own % or _ is text to find.
+        pattern = f"%{escape_like(query)}%"
+        return await self._boost_cut(
+            "search_abstracts",
+            "semantic_abstract ILIKE %s",
+            [pattern],
+            "",
+            [],
+            limit,
+            filters,
+        )
 
     # ------------------------------------------------------------------
     # Tier3 unique indexes (CAS-ADR-031)
