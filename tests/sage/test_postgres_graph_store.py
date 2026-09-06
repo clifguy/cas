@@ -50,6 +50,9 @@ def _doc(
     title: str | None = None,
     source_path: str | None = None,
     tags: list[str] | None = None,
+    lifecycle_status: str = "active",
+    document_date: str | None = None,
+    semantic_abstract: str | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -57,7 +60,7 @@ def _doc(
         title=f"Doc {i}" if title is None else title,
         source_type=SourceType.MARKDOWN,
         source_path=f"/x/{i}.md" if source_path is None else source_path,
-        lifecycle_status="active",
+        lifecycle_status=lifecycle_status,
         source_content_hash=f"sha256:{i:064x}",
         adapter_version="1",
         created_by="t",
@@ -68,6 +71,8 @@ def _doc(
         tags=["a", "b"] if tags is None else tags,
         doc_type=doc_type,
         tier3_metadata=tier3,
+        document_date=document_date,
+        semantic_abstract=semantic_abstract,
     )
 
 
@@ -782,4 +787,188 @@ async def test_a_wildcard_in_an_abstract_query_matches_literally(postgres_graph_
 
     assert [d.id for d in found] == [literal.id], (
         "the query's '%' acted as a wildcard against the abstract"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C8: the boost helpers' truncation is ranked, not arbitrary (server)
+#
+# Both helpers feed a service-layer relevance boost and both cut at ``limit``.
+# The predicate either side of that cut is a bare ILIKE containment, which
+# carries no notion of a better match, so the survivors are ordered by the
+# salience the retrieval layer already applies a few steps later: active
+# first (BH-069), then document_date descending with nulls last (BH-070),
+# then the primary key to make the order total. search_metadata keeps its own
+# match-quality keys -- title match, then source-path match -- ahead of that
+# block, so a better match still outranks a more salient one.
+#
+# The shared tests are parametrized across both helpers deliberately. The rule
+# has to hold for both, and a fix applied to one alone reds the other arm here
+# rather than passing review on a promise.
+# ---------------------------------------------------------------------------
+
+_BOOST_TERM = "omicronword"
+
+
+def _metadata_doc(i: int, **kwargs) -> Document:
+    """A document ``search_metadata`` admits by its tag alone.
+
+    The title is shared and the source path carries nothing of the term, so
+    every document built here lands in the same match-quality bucket and only
+    the salience order can separate them.
+    """
+    return _doc(i, title="Shared Boost Title", tags=[_BOOST_TERM], **kwargs)
+
+
+def _abstract_doc(i: int, **kwargs) -> Document:
+    """A document ``search_abstracts`` admits by its abstract alone."""
+    return _doc(
+        i,
+        title="Shared Boost Title",
+        tags=["a"],
+        semantic_abstract=f"Concerning {_BOOST_TERM} matters.",
+        **kwargs,
+    )
+
+
+_BOOST_HELPERS = [
+    pytest.param("search_metadata", _metadata_doc, id="metadata"),
+    pytest.param("search_abstracts", _abstract_doc, id="abstracts"),
+]
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_truncation_keeps_the_active_matches(postgres_graph_store, helper_name, make_doc):
+    """The cut takes the documents that would have ranked highest anyway.
+
+    150 documents match through the helper's own admitting field and are
+    otherwise indistinguishable, so nothing but the salience order separates
+    them. Every third is superseded, which interleaves the two lifecycles
+    across the id space: the 100 active documents are deliberately *not* the
+    100 lowest ids. That is what makes this test pin the rule adopted rather
+    than reproducibility alone -- appending only the primary key returns a
+    stable slice that still cuts active documents in favour of superseded
+    ones, and reds here.
+    """
+    expected_active: list[str] = []
+    for i in range(800, 950):
+        superseded = (i - 800) % 3 == 0
+        doc = make_doc(i, lifecycle_status="superseded" if superseded else "active")
+        await postgres_graph_store.insert_document(doc)
+        if not superseded:
+            expected_active.append(doc.id)
+    assert len(expected_active) == 100, "fixture: exactly 100 of the 150 documents are active"
+
+    found = await getattr(postgres_graph_store, helper_name)(_BOOST_TERM, limit=100)
+
+    assert [d.id for d in found] == expected_active, (
+        "the truncation admitted superseded documents while active matches were cut"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_truncation_is_total_among_equals(postgres_graph_store, helper_name, make_doc):
+    """Equal matches are cut on the primary key, so the slice is the same one twice.
+
+    Comparing the two calls to each other would pass against the unordered
+    truncation as readily as against the fix: one plan, one heap order, no
+    concurrent writer. The assertion carrying this test is the second one --
+    the survivors are the 100 lowest ids. The documents are inserted in
+    *descending* id order so heap order and id order disagree, and the
+    unordered truncation returns the 100 highest instead.
+    """
+    all_ids = sorted(make_doc(i).id for i in range(800, 950))
+    for i in reversed(range(800, 950)):
+        await postgres_graph_store.insert_document(make_doc(i))
+
+    first = await getattr(postgres_graph_store, helper_name)(_BOOST_TERM, limit=100)
+    second = await getattr(postgres_graph_store, helper_name)(_BOOST_TERM, limit=100)
+
+    assert [d.id for d in first] == [d.id for d in second], (
+        "two identical calls over an unchanged corpus returned different slices"
+    )
+    assert [d.id for d in first] == all_ids[:100], (
+        "the surviving 100 were heap order rather than the 100 lowest ids"
+    )
+
+
+@pytest.mark.parametrize("helper_name, make_doc", _BOOST_HELPERS)
+async def test_recency_orders_the_truncation(postgres_graph_store, helper_name, make_doc):
+    """Among equally-matching active documents the recent survive; the undated sort last.
+
+    Inserted oldest-id first with the newest document last, so neither
+    insertion order nor ``id ASC`` yields the expected pair. A fix that
+    stopped at the primary key keeps the undated document and cuts the 2026
+    one, and reds here.
+    """
+    undated = make_doc(960, document_date=None)
+    older = make_doc(961, document_date="2025-01-15")
+    newer = make_doc(962, document_date="2026-01-15")
+    for doc in (undated, older, newer):
+        await postgres_graph_store.insert_document(doc)
+
+    found = await getattr(postgres_graph_store, helper_name)(_BOOST_TERM, limit=2)
+
+    assert [d.id for d in found] == [newer.id, older.id], (
+        "the cut ignored document_date: an undated document survived a dated one"
+    )
+
+
+async def test_metadata_match_quality_outranks_salience(postgres_graph_store):
+    """The salience block sits behind the match-quality keys, never in front of them.
+
+    A superseded *title* match against an active *tag-only* match. The title
+    match is the better match and ranks first, though the other document is
+    the more salient one. This is the inverted-fix trap: prepending the
+    lifecycle key rather than appending it satisfies every other test in this
+    section while silently demoting every title match below every tag match.
+    """
+    title_match = _doc(
+        970,
+        title=f"{_BOOST_TERM} Digest",
+        tags=["a"],
+        lifecycle_status="superseded",
+    )
+    tag_match = _doc(971, title="Unrelated Title", tags=[_BOOST_TERM])
+    await postgres_graph_store.insert_document(title_match)
+    await postgres_graph_store.insert_document(tag_match)
+
+    found = await postgres_graph_store.search_metadata(_BOOST_TERM)
+
+    assert [d.id for d in found] == [title_match.id, tag_match.id], (
+        "the salience keys were placed ahead of the match-quality keys"
+    )
+
+
+async def test_source_path_quality_outranks_salience(postgres_graph_store):
+    """The salience block sits behind *both* match-quality keys, not between them.
+
+    The sibling above pins only the boundary above the title key. A salience
+    block inserted between the title key and the source-path key passes it --
+    neither document there carries a matching source path, so the misplaced
+    keys are never exercised -- and passes
+    ``test_source_path_still_orders_among_admitted_documents`` too, whose two
+    documents are both active and both undated, leaving the salience keys tied
+    and the source-path key still deciding. Two of the ordering's three
+    boundaries were pinned; this is the third.
+
+    A superseded document matching by tag *and* source path against an active
+    one matching by tag alone. The source-path match is the better match and
+    ranks first.
+    """
+    path_match = _doc(
+        980,
+        title="Unrelated Title",
+        source_path=f"/imports/{_BOOST_TERM}-review.md",
+        tags=[_BOOST_TERM],
+        lifecycle_status="superseded",
+    )
+    salient = _doc(981, title="Unrelated Title", source_path="/x/plain.md", tags=[_BOOST_TERM])
+    await postgres_graph_store.insert_document(path_match)
+    await postgres_graph_store.insert_document(salient)
+
+    found = await postgres_graph_store.search_metadata(_BOOST_TERM)
+
+    assert [d.id for d in found] == [path_match.id, salient.id], (
+        "the salience keys were placed between the two match-quality keys"
     )

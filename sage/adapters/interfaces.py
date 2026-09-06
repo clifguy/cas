@@ -783,11 +783,25 @@ class GraphStore(ABC):
         The title and the tags are authored and admit a document. The source
         path is derived -- incidental to how the document arrived -- so it may
         order the admitted but never widen them (CAS-ADR-049 Decision 4).
+
+        Ordered by match quality first -- a title match above a source-path
+        match -- and then, among matches of equal quality, by salience: active
+        documents first, most recently dated next, undated last, ties broken on
+        the primary key. Callers truncate this result, so the ordering decides
+        which matches survive the cut; the salience terms are what keep that
+        cut reproducible and stop it dropping an active match in favour of a
+        superseded one.
         """
 
     @abstractmethod
     async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
-        """Keyword search over generated semantic abstracts."""
+        """Keyword search over generated semantic abstracts.
+
+        Ordered by salience alone -- the same terms the sibling above applies
+        beneath its match-quality keys, and for the same reason. Containment in
+        an abstract admits a document and says nothing about how well it
+        matched, so there is no quality signal to rank the set by first.
+        """
 
     # --- Tier3 unique indexes ---
     @abstractmethod

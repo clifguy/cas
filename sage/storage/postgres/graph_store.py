@@ -90,6 +90,19 @@ _SORTABLE_COLUMNS: frozenset[str] = frozenset(
 # order is the same one twice, not which of two tied rows comes first.
 _ORDER_TIEBREAK: Final[str] = ", id ASC"
 
+# Salience order: active documents first, then the most recently dated, with
+# undated documents last. Named here because two unrelated paths want it and
+# want the same one -- the default document enumeration order, and the ranked
+# truncation the two boost helpers apply to a match set they cannot otherwise
+# rank. It mirrors what the retrieval layer's own reranking applies downstream
+# (active above non-active, then a decaying recency boost), which is what makes
+# it the defensible order for a cut taken before that reranking runs.
+_SALIENCE_ORDER: Final[str] = (
+    "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
+    "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
+    "document_date DESC"
+)
+
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).
 # Mirrors the embedded store's ``trg_tier3_chain_head_on_supersedes``: any
 # supersedes edge insertion flips the target's ``is_chain_head`` to false, so
@@ -559,11 +572,7 @@ class PostgresGraphStore(GraphStore):
         ties in the first place.
         """
         if sort_by is None:
-            primary = (
-                "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
-                "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
-                "document_date DESC"
-            )
+            primary = _SALIENCE_ORDER
         elif sort_by not in _SORTABLE_COLUMNS:
             primary = "title"
         else:
@@ -593,6 +602,15 @@ class PostgresGraphStore(GraphStore):
         path into a caller's result set, not the retrieval surfaces alone. The
         source path keeps its place in the ordering, where it can only arrange
         documents an authored field has already admitted.
+
+        Beneath those two keys the match set is unranked -- containment either
+        holds or does not, so two tag matches are equally good matches -- and
+        the caller truncates. ``_SALIENCE_ORDER`` decides which of them survive
+        and ``_ORDER_TIEBREAK`` makes that decision reproducible: the cut takes
+        the documents the caller's own reranking would have raised anyway,
+        rather than whichever ones the scan reached first. The salience keys
+        sit behind the match-quality keys, not in front, so a better match
+        still outranks a more salient one.
         """
         with self._query_timer.measure("search_metadata"):
             # The query is text to find, not a pattern to apply: a caller's
@@ -600,25 +618,37 @@ class PostgresGraphStore(GraphStore):
             # wildcards and silently widen the result.
             pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
-                "SELECT * FROM documents "
+                "SELECT * FROM documents "  # noqa: S608 -- order from module constants; values are %s
                 "WHERE title ILIKE %s "
                 "   OR tags::text ILIKE %s "
                 "ORDER BY "
                 "  CASE WHEN title ILIKE %s THEN 0 ELSE 1 END, "
-                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END "
+                "  CASE WHEN source_path ILIKE %s THEN 0 ELSE 1 END, "
+                f" {_SALIENCE_ORDER}{_ORDER_TIEBREAK} "
                 "LIMIT %s",
                 (pattern, pattern, pattern, pattern, limit),
             )
             return [self._row_to_document(r) for r in rows]
 
     async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+        """Documents whose generated abstract carries the query as a substring.
+
+        Ordered on the same grounds as the sibling above and with the same two
+        terms, but with nothing ahead of them: containment in an abstract
+        admits a document and says nothing about how well it matched, so there
+        is no match-quality key to rank the set by first. Without the ordering
+        the truncation is a slice of whatever the scan reached, which Postgres
+        need not choose the same way twice.
+        """
         with self._query_timer.measure("search_abstracts"):
             # Escaped for the same reason the sibling above is: this result
             # feeds the abstract boost, which is another path into a caller's
             # result set, and a caller's own % or _ is text to find.
             pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
-                "SELECT * FROM documents WHERE semantic_abstract ILIKE %s LIMIT %s",
+                "SELECT * FROM documents WHERE semantic_abstract ILIKE %s "  # noqa: S608 -- order from module constants; values are %s
+                f"ORDER BY {_SALIENCE_ORDER}{_ORDER_TIEBREAK} "
+                "LIMIT %s",
                 (pattern, limit),
             )
             return [self._row_to_document(r) for r in rows]
