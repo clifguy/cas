@@ -3813,6 +3813,95 @@ async def test_recommended_limit_re_pages_within_budget(
     assert len(second.results) == recommended
 
 
+#: Rows to seed so a catalog page overruns the production budget on weight
+#: alone. Derived from the budget at a deliberately low per-row estimate --
+#: a seeded ticket record projects well above 500 bytes, so the page clears
+#: the budget with the same roughly-twofold headroom the facets fixtures
+#: keep, and keeps it when the budget is recalibrated.
+_OVER_BUDGET_ROW_COUNT = DEFAULT_MCP_INLINE_BUDGET_BYTES // 500
+
+
+async def test_recommended_limit_re_pages_within_the_production_budget(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """The catalog hint's re-page fits at the shipped budget, not a pinned one.
+
+    Its sibling above runs the same path against a 4,096-byte override,
+    which exercises the plumbing but says nothing about the value
+    callers actually meet. Both facets fixtures cross the production
+    budget; without this the catalog half of that guarantee rests on a
+    number no caller ever sees.
+
+    Anti-coincidental-pass: the crossing is asserted on the measured
+    response rather than assumed from the row count, so a seeding change
+    that stopped overrunning the budget reddens here instead of passing
+    vacuously. The recommendation is asserted strictly above the floor
+    and strictly below the rows in hand -- the fit assertion alone is
+    satisfied by an implementation that always names 1, which would hand
+    a caller one row out of ninety, and equally by one that names the
+    count it was given and shrinks nothing.
+    """
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    await _seed_portfolio(graph_store, _OVER_BUDGET_ROW_COUNT)
+
+    first = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=_OVER_BUDGET_ROW_COUNT,
+        )
+    )
+    # Keyed on the reason rather than on hints being present: the dict is
+    # shared with the vocabulary warnings, so a page that did not cross can
+    # still arrive carrying one, and testing presence alone reports the miss
+    # as a KeyError several lines later instead of as the fixture's own.
+    assert first.hints is not None and (
+        first.hints.get("reason") == "response_exceeds_inline_budget"
+    ), (
+        f"{_OVER_BUDGET_ROW_COUNT} seeded rows did not overrun the "
+        f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte budget; the fixture no longer "
+        "crosses the line it exists to cross"
+    )
+    assert first.hints["budget_bytes"] == DEFAULT_MCP_INLINE_BUDGET_BYTES
+    assert first.hints["response_size_bytes"] > DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+    recommended = first.hints["recommended_limit"]
+    assert 1 < recommended < _OVER_BUDGET_ROW_COUNT
+
+    second = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=recommended,
+        )
+    )
+    assert second.hints is None or "recommended_limit" not in second.hints, (
+        f"the re-page at the recommended limit {recommended} still carries a "
+        "budget hint, so the recommendation did not fit"
+    )
+    assert len(second.results) == recommended
+
+    # Fitting is not the promise; the largest fitting page is. One more row
+    # must not fit, or a recommendation far below the maximum satisfies every
+    # assertion above while costing the caller pages it did not need -- the
+    # same defect as the floor collapse, just less visible.
+    one_more = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=recommended + 1,
+        )
+    )
+    assert one_more.hints is not None and (
+        one_more.hints.get("reason") == "response_exceeds_inline_budget"
+    ), (
+        f"a page of {recommended + 1} rows also fits the budget, so "
+        f"{recommended} was not the largest fitting re-page"
+    )
+
+
 async def _perturb_scan_order(graph_store, doc_id: str) -> None:
     """Move a row's physical position without changing anything it returns.
 

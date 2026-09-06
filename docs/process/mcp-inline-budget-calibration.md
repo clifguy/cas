@@ -45,8 +45,21 @@ budget is the conservative side of that difference and needs no allowance.
 Use catalog-mode `search` against a vault with enough documents, and vary
 `limit` (and `offset`, for finer steps than a whole row).
 
-The exact size of any candidate call can be read **for free** from the REST
-surface, because the budget hint reports it:
+**First, pin the budget low on the server you are probing** —
+`SAGE_MCP_INLINE_BUDGET_BYTES=1024`, or any value below the smallest probe you
+intend to take. The hint that reports a probe's size is attached only when the
+response exceeds the budget in force (`_apply_catalog_budget_hint` returns
+before attaching anything at or under it), so at the shipped budget a probe
+below it reports nothing. That is not a corner case: a client whose ceiling
+sits *below* SAGE's budget is exactly what the margin exists for, and exactly
+where a bisection would otherwise get no readings at all. Pinning the budget
+low costs nothing — the constant under calibration takes no part in the
+measurement, which is a property of the client. The resolver reads the variable
+per call rather than at import, but it reads it in the *serving* process, so
+set it in that process's environment before starting the server.
+
+With that pinned, the exact size of any candidate call can be read **for free**
+from the REST surface, because the budget hint reports it:
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/sage_vaults/cas/discover" \
@@ -155,3 +168,9 @@ they should be re-run and re-reasoned, not assumed:
 | Envelope expansion | 1.1072–1.1075 across four samples |
 | Ceiling adopted | 50,000 |
 | Budget adopted | 45,000 (10% margin) |
+
+The budget in force during this run was the pre-calibration 24,576, so every
+probe near the ceiling reported its own size and §2's pinning step was not
+needed. At the budget this run adopted it would be: probes under 45,000 report
+nothing. The step is written down because the next calibration needs it and
+this one did not.
