@@ -781,7 +781,7 @@ def register_sage_tools(
                 potentially large ``semantic_abstract``); ``"light"`` strips
                 the ``document`` field to identity + status + warnings +
                 error so the response stays inside the MCP inline budget
-                (default 24 KiB; override via
+                (default 45,000 bytes; override via
                 ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries always
                 carry the full error envelope. When unset, defaults to
                 ``"light"`` for ``len(items) > 5``, else ``"full"``
@@ -1053,7 +1053,7 @@ def register_sage_tools(
                 potentially large ``semantic_abstract``); ``"light"`` strips
                 the ``document`` field to identity + status + warnings +
                 error so the response stays inside the MCP inline budget
-                (default 24 KiB; override via
+                (default 45,000 bytes; override via
                 ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries always
                 carry the full error envelope. When unset, defaults to
                 ``"light"`` for ``len(items) > 5``, else ``"full"``
@@ -1615,7 +1615,7 @@ def register_sage_tools(
             re-page with ``limit=recommended_limit`` (or re-call with
             ``facet_value_limit=recommended_facet_value_limit``) to keep
             the response inline and avoid the disk/jq fallback. The
-            budget defaults to 24 KiB and is configurable per process
+            budget defaults to 45,000 bytes and is configurable per process
             via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
 
         Error modes:

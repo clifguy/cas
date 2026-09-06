@@ -41,7 +41,14 @@ from sage.models.enums import (
     RetrievalMode,
 )
 from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
+from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
+
+#: How the inline budget is spelled on the tool surface. Derived, so that
+#: recalibrating the budget either carries the docstrings with it or
+#: reddens the gates below -- rather than leaving them pinning a figure
+#: no surface states any more, which is what a literal here did.
+_BUDGET_FIGURE = f"{DEFAULT_MCP_INLINE_BUDGET_BYTES:,} bytes"
 
 # CAS-ADR-029 v4 plural-noun collapse: the pre-CAS-ADR-029 singleton tools
 # (create_edge, update_lifecycle, bulk_update_lifecycle, bulk_update_metadata)
@@ -481,10 +488,18 @@ def test_discover_docstring_carries_pagination_and_response_mode_guidance():
       (a) reference to ``response_mode="light"`` (or equivalent) as the
           size mitigation,
       (b) reference to ``offset`` for pagination,
-      (c) the 24 KiB / DEFAULT_MCP_INLINE_BUDGET_BYTES budget callout.
+      (c) the budget callout: both the rendered
+          DEFAULT_MCP_INLINE_BUDGET_BYTES figure and the override knob.
 
-    Anti-coincidental-pass: deleting the 24 KiB budget reference fails
-    the third check.
+    The figure is derived from the constant rather than written out, so
+    recalibrating the budget cannot leave this gate pinning a number no
+    surface states any more.
+
+    Anti-coincidental-pass: (c) requires both halves rather than either.
+    Joined by ``or`` it recorded nothing -- every one of these docstrings
+    names the environment variable, so that half was satisfied outright
+    and the figure could be deleted with the gate still green, which is
+    the opposite of what this test was written to hold.
     """
     doc = _docstring(search)
     assert "response_mode" in doc and "light" in doc, (
@@ -493,9 +508,10 @@ def test_discover_docstring_carries_pagination_and_response_mode_guidance():
     assert "offset" in doc, (
         "search docstring must reference ``offset`` for catalog-mode pagination."
     )
-    assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
-        "search docstring must cite the 24 KiB inline budget or "
-        "the SAGE_MCP_INLINE_BUDGET_BYTES override knob."
+    assert _BUDGET_FIGURE in doc and "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
+        f"search docstring must cite the {_BUDGET_FIGURE} inline budget *and* "
+        "the SAGE_MCP_INLINE_BUDGET_BYTES override knob; a caller needs the "
+        "figure to size a call and the knob to change it."
     )
 
 
@@ -505,19 +521,20 @@ def test_bulk_set_lifecycle_docstring_carries_response_mode_note():
     Required ingredients:
       (a) reference to ``response_mode`` parameter,
       (b) the 5-item default-to-light threshold rule,
-      (c) the inline budget / 24 KiB callout.
+      (c) the inline budget callout: figure and override knob both.
 
     Regression guard for the existing documentation, extended to
-    require the 24 KiB anchor for parity with search.
+    require the budget anchor for parity with search -- including that
+    anchor's anti-coincidental shape, described in T5.1.
     """
     doc = _docstring(bulk_update_lifecycle)
     assert "response_mode" in doc
     assert "5" in doc, (
         "bulk_update_lifecycle docstring must document the 5-item default-to-light threshold."
     )
-    assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
-        "bulk_update_lifecycle docstring must cite the 24 KiB inline "
-        "budget so callers see the same anchor as search."
+    assert _BUDGET_FIGURE in doc and "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
+        f"bulk_update_lifecycle docstring must cite the {_BUDGET_FIGURE} inline "
+        "budget and its override knob, so callers see the same anchor as search."
     )
 
 
@@ -529,9 +546,9 @@ def test_bulk_update_metadata_docstring_carries_response_mode_note():
     doc = _docstring(bulk_update_metadata)
     assert "response_mode" in doc
     assert "5" in doc
-    assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
-        "bulk_update_metadata docstring must cite the 24 KiB inline "
-        "budget so callers see the same anchor as search."
+    assert _BUDGET_FIGURE in doc and "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
+        f"bulk_update_metadata docstring must cite the {_BUDGET_FIGURE} inline "
+        "budget and its override knob, so callers see the same anchor as search."
     )
 
 

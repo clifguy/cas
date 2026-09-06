@@ -681,7 +681,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "store_status": ERROR_DETAIL_KEY,
     },
     ("sage_core", "search"): {
-        "KiB": "prose: the unit the inline budget is stated in",
         "null": "prose: the JSON literal, in a worked filter example",
         "failure_record": "example doc_type value in a worked example",
         "fix_commit": "example tier-3 metadata key in a worked example",
@@ -757,7 +756,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
         ),
-        "KiB": "prose: the unit the inline budget is stated in",
         # Key of the untyped ``invalid_lifecycle_transition`` detail,
         # named in the per-item error-code paragraph.
         "valid_actions": ERROR_DETAIL_KEY,
@@ -768,7 +766,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
         ),
-        "KiB": "prose: the unit the inline budget is stated in",
         "current_version": ERROR_DETAIL_KEY,
         # Codes built as f"{field}_add_conflict" at the raise site, so
         # the literal never appears in source for the AST scan to find.

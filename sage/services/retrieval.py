@@ -91,18 +91,34 @@ _FETCH_MULTIPLIER_NONE = 5
 _FETCH_MULTIPLIER_PUSHDOWN = 3
 _FETCH_MULTIPLIER_MIXED = 10
 
-# Default budget (bytes) below which the Claude Code MCP runtime will
-# deliver a tool result inline; above it the runtime falls back to the
-# disk/jq round-trip. The default is empirical; override per-process via
-# the ``SAGE_MCP_INLINE_BUDGET_BYTES`` environment variable. Catalog mode
-# attaches a ``recommended_limit`` hint when the serialized response
-# exceeds this budget.
-DEFAULT_MCP_INLINE_BUDGET_BYTES = 24576
+# Size of a tool result at which the reference client stops delivering it
+# inline and falls back to the disk round-trip. Measured 2026-09-06 against
+# Claude Code by bisecting catalog responses on a live MCP surface: 49,977
+# delivered bytes arrived inline and 50,193 did not, which brackets a round
+# 50,000 to within 23 bytes. The bound is on the tool result's own text, not
+# on the JSON-escaped envelope the client wraps it in -- that envelope
+# measured 55,341 and 55,583 at the same two points, landing on nothing
+# round. So the ceiling and the budget below are denominated in the same
+# unit ``_serialized_response_bytes`` reports.
+#
+# The client counts characters where this counts bytes. The two coincide for
+# ASCII and diverge upward for anything multibyte, so a byte budget is on the
+# conservative side of that difference and needs no allowance for it.
+#
+# This is a property of the caller, not of SAGE, and another client may bound
+# something else entirely. See docs/process/mcp-inline-budget-calibration.md
+# for the procedure, which is worth re-running when the client changes.
+_MEASURED_INLINE_CEILING_BYTES = 50000
 
-# Safety factor applied when computing ``recommended_limit`` so the
-# re-paged response stays comfortably under budget. The hint itself adds
-# bytes the first measurement does not see; a 5% margin absorbs that.
-_BUDGET_RECOMMEND_SAFETY_FACTOR = 0.95
+# Default budget below which a tool result is delivered inline. Ten percent
+# under the measured ceiling, and that margin is a margin rather than a
+# measurement: it absorbs the hint's own bytes, which are merged after the
+# size is taken and so are absent from it (155 bytes on the catalog shape),
+# and it leaves room for a client whose ceiling sits somewhat below the one
+# above. Override per-process via ``SAGE_MCP_INLINE_BUDGET_BYTES``. Catalog
+# mode attaches a ``recommended_limit`` hint when the serialized response
+# exceeds this budget.
+DEFAULT_MCP_INLINE_BUDGET_BYTES = 45000
 
 # Per-field value cap applied to facet aggregation when the request
 # carries no explicit ``facet_value_limit``. Declared vocabularies sit
@@ -149,6 +165,14 @@ def _serialized_response_bytes(response: DiscoverResponse) -> int:
     the delivered size most in exactly the shape the budget hint is
     for, and the facets recommendation is fitted to this number with no
     margin to absorb the difference.
+
+    One thing it does not include: a hint is merged into the response
+    after its size is taken, so a response that ends up carrying a
+    budget hint is delivered that many bytes larger than this reports
+    -- 155 on the catalog shape. That reaches nothing. The response it
+    understates is the over-budget one, which is not delivered inline
+    on any reading of the number, and a re-call at the recommendation
+    fits and so carries no hint to account for.
     """
     dumped = response.model_dump(mode="json", exclude_none=True)
     return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
