@@ -473,19 +473,28 @@ def test_secret_scan_merge_group_arm_scopes_to_the_group_commits() -> None:
 
 
 def test_captured_ruleset_contexts_are_real_ci_jobs() -> None:
-    """Every required status check names a job this workflow actually defines.
+    """Every required status check names a context this workflow actually reports.
 
     The process document is the source of truth for the ruleset, and the ruleset
-    names its checks by job name. A renamed job leaves the ruleset waiting on a
-    context nothing will ever report, which stalls the queue rather than failing
-    it.
+    names its checks by the context a job reports under. A renamed job leaves the
+    ruleset waiting on a context nothing will ever report, which stalls the queue
+    rather than failing it.
+
+    A job's context is its ``name:`` when it sets one, and its ``jobs:`` key
+    otherwise -- the two coincide for most jobs here, which is why an earlier
+    version of this gate compared against keys alone and passed. It stopped
+    coinciding when a job carrying a ``name:`` became required, and comparing
+    against keys would then reject the one spelling that actually works while
+    accepting the spelling that would block every merge. Deriving the context the
+    way GitHub does is what makes the check answer the question it asks.
     """
     ruleset = _captured_ruleset(BRANCH_PROTECTION_DOC.read_text(encoding="utf-8"))
-    jobs = set(_load(CI_WORKFLOW).get("jobs") or {})
-    unknown = [c for c in _required_contexts(ruleset) if c not in jobs]
+    jobs = _load(CI_WORKFLOW).get("jobs") or {}
+    contexts = {(job or {}).get("name") or key for key, job in jobs.items()}
+    unknown = [c for c in _required_contexts(ruleset) if c not in contexts]
     assert not unknown, (
-        f"captured ruleset requires status checks with no matching ci.yml job: "
-        f"{unknown}. Jobs defined: {sorted(jobs)}"
+        f"captured ruleset requires status checks no ci.yml job reports: "
+        f"{unknown}. Contexts reported: {sorted(contexts)}"
     )
 
 

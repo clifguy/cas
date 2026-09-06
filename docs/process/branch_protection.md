@@ -58,10 +58,13 @@ The following CI jobs from [`.github/workflows/ci.yml`](../../.github/workflows/
 | `lint-imports` | `import-linter` contract enforcement. |
 | `gitleaks` | Secret-scanning over the commits the event introduced. |
 | `eslint` | Frontend eslint (`npm run lint` = `eslint . --max-warnings 0`) over `app/`. |
+| `storage tests on the deploy floor (pg16)` | `tests/sage/` plus the BFF session store against PostgreSQL 16, the deployed Flexible Server major. |
 
-These five names match the `jobs:` keys in `ci.yml` verbatim. If a job is renamed, this document and the corresponding ruleset definition must be updated together.
+**A required context is a job's *display* name, which is its `jobs:` key only when the job sets no `name:`.** The first five are bare keys; the sixth is the `name:` value of the `storage-deploy-floor` job, and naming that job's key here instead would create a required check that never reports — which blocks every merge, since GitHub waits on a context that never arrives. If a job is renamed *or gains or loses a `name:` key*, this document and the ruleset definition must be updated together. Read the live contexts with `gh api repos/<owner>/<repo>/commits/<sha>/check-runs --jq '.check_runs[].name'` rather than inferring them from the workflow.
 
-Unlike the four Python jobs, `eslint` is **path-gated** on `app/**` (via the `paths-filter` job, like `vitest`/`playwright-e2e`): a pull request that touches no `app/` files skips the job, and GitHub counts a skipped required check as satisfied. The gate therefore blocks a merge only when the change can affect frontend lint, while remaining mandatory whenever `app/` is touched.
+The deploy-floor job exists because every other Postgres this repository runs against — the `test` job, the image build, and the workstation — is major 17, while the deployed target is Flexible Server 16. A statement valid only on 17 would otherwise pass every gate and fail at deploy.
+
+Unlike the five backend jobs, `eslint` is **path-gated** on `app/**` (via the `paths-filter` job, like `vitest`/`playwright-e2e`): a pull request that touches no `app/` files skips the job, and GitHub counts a skipped required check as satisfied. The gate therefore blocks a merge only when the change can affect frontend lint, while remaining mandatory whenever `app/` is touched.
 
 The `paths-filter` job needs no special checkout depth for this. The filter resolves each event's base itself — the merge group's `base_sha`, the push event's `before` — and fetches that commit when the checkout does not already carry it.
 
@@ -106,7 +109,8 @@ The following is the live ruleset definition (captured via `gh api repos/<owner>
           { "context": "lint",         "integration_id": 15368 },
           { "context": "lint-imports", "integration_id": 15368 },
           { "context": "gitleaks",     "integration_id": 15368 },
-          { "context": "eslint",       "integration_id": 15368 }
+          { "context": "eslint",       "integration_id": 15368 },
+          { "context": "storage tests on the deploy floor (pg16)", "integration_id": 15368 }
         ]
       }
     },
