@@ -11,10 +11,16 @@ lexeme a caller might type is present however the author wrote it.
 conjunctive query does not demand a compound the index never carried.
 
 The asymmetry is load-bearing and is pinned by
-``test_index_superset_and_query_fold_are_deliberately_asymmetric``.
+``test_index_superset_and_query_fold_are_deliberately_asymmetric``. The
+relation the asymmetry exists to produce -- that a folded query's requirements
+are always a subset of what expanded index text supplies -- is pinned over
+generated inputs in the final section; the examples above it are the cases that
+motivated the pair rather than the statement of the relation.
 """
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from sage.utils.text_normalization import expand_for_index, fold_for_query
 
@@ -248,3 +254,143 @@ def test_expand_for_index_handles_a_mixed_compound_and_version_token() -> None:
     """The whole shape a source filename tends to carry, in one string."""
     tokens = _lexemes(expand_for_index("PortfolioDashboard_Template_v3"))
     assert {"portfolio", "dashboard", "template", "v3"} <= tokens
+
+
+# ---------------------------------------------------------------------------
+# The subset invariant, over generated inputs
+#
+# The example-based tests above name the cases that motivated the pair. These
+# state the relation itself: whatever a folded query asks for, expanded index
+# text supplies. The generators define the rendering space the relation holds
+# over, which is narrower than "any two strings" and is the reason each one
+# builds its title and its query from a shared sequence of units rather than
+# drawing them independently.
+# ---------------------------------------------------------------------------
+
+
+NORMALIZATION_SETTINGS = settings(max_examples=200, deadline=400)
+
+_WORD = st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=2, max_size=8)
+_ACRONYM = st.text(alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ", min_size=2, max_size=5)
+_DIGITS = st.text(alphabet="0123456789", min_size=1, max_size=4)
+
+# A unit is a token no rendering splits further: a word, an acronym run, or a
+# digit run. Renderings differ in how units are joined and cased, never in
+# which units are present.
+_UNIT = st.one_of(_WORD, _ACRONYM, _DIGITS)
+_UNITS = st.lists(_UNIT, min_size=1, max_size=5)
+
+_SEPARATOR = st.sampled_from([" ", "-", "_"])
+_CASING = st.sampled_from([str, str.lower, str.upper, str.capitalize])
+
+
+@st.composite
+def _separator_rendering(draw: st.DrawFn, units: list[str]) -> str:
+    """Join ``units`` with independently drawn separators and per-unit casing."""
+    out = draw(_CASING)(units[0])
+    for unit in units[1:]:
+        out += draw(_SEPARATOR) + draw(_CASING)(unit)
+    return out
+
+
+@given(st.text())
+@NORMALIZATION_SETTINGS
+def test_a_folded_query_never_out_demands_expanded_index_text(raw: str) -> None:
+    """For one source string, the query can never ask for more than the index has.
+
+    The same-string form of the invariant, and the one that holds for any text
+    at all rather than only for a rendering of a title. It is true by
+    construction -- ``expand_for_index`` is defined over ``fold_for_query``'s
+    output -- so what it pins is that construction: an edit that computes the
+    expansion some other way has to keep the containment.
+
+    Containment alone is satisfied by a transform that asks for nothing, so the
+    second assertion is what stops this passing against one. Its guard is the
+    weakest thing that makes the claim true: folding rewrites the two separator
+    characters and splits compounds, and neither can consume a token carrying
+    an alphanumeric, while a token of only separators legitimately folds away.
+    """
+    assert _lexemes(fold_for_query(raw)) <= _lexemes(expand_for_index(raw))
+    if any(ch.isalnum() for ch in raw):
+        assert _lexemes(fold_for_query(raw)), f"{raw!r} folded to nothing"
+
+
+@given(units=_UNITS, data=st.data())
+@NORMALIZATION_SETTINGS
+def test_a_separator_rendering_of_a_title_is_reachable(
+    units: list[str], data: st.DataObject
+) -> None:
+    """A title and a query built from the same units, separated any way, match.
+
+    The cross-string form, over the rendering space a caller actually varies:
+    hyphen, underscore and space are interchangeable, and case is free. Both
+    strings are drawn from one unit sequence, because the relation is about
+    renderings of the same authored text and says nothing about two unrelated
+    strings.
+    """
+    title = data.draw(_separator_rendering(units))
+    query = data.draw(_separator_rendering(units))
+    demanded = _lexemes(fold_for_query(query))
+    supplied = _lexemes(expand_for_index(title))
+    assert demanded, "the generator produced a query asking for nothing"
+    assert demanded <= supplied, (
+        f"query {query!r} demands {demanded - supplied} which title {title!r} does not carry"
+    )
+
+
+@given(words=st.lists(_WORD, min_size=3, max_size=4), data=st.data())
+@NORMALIZATION_SETTINGS
+def test_a_compound_rendering_of_a_title_is_reachable(
+    words: list[str], data: st.DataObject
+) -> None:
+    """A compound and its separated form each reach the other.
+
+    Drawn at three or more words so both compound spellings carry the two
+    capitals ``_split_compound`` requires: ``PascalCase`` reaches that at two
+    words, ``lowerCamel`` only at three, and the narrower bound covers both.
+    Where that bound sits is pinned separately by
+    ``test_a_two_word_lower_camel_compound_is_not_split``, so a later edit to
+    the threshold reds there rather than silently emptying this domain.
+    """
+    pascal = "".join(w.capitalize() for w in words)
+    lower_camel = words[0] + "".join(w.capitalize() for w in words[1:])
+    separated = data.draw(_separator_rendering(words))
+
+    for title, query in (
+        (pascal, separated),
+        (separated, pascal),
+        (lower_camel, separated),
+        (separated, lower_camel),
+    ):
+        demanded = _lexemes(fold_for_query(query))
+        supplied = _lexemes(expand_for_index(title))
+        assert demanded, "the generator produced a query asking for nothing"
+        assert demanded <= supplied, (
+            f"query {query!r} demands {demanded - supplied} which title {title!r} does not carry"
+        )
+
+
+def test_a_two_word_lower_camel_compound_is_not_split() -> None:
+    """One internal capital is below the splitting threshold.
+
+    ``_split_compound`` asks for two or more capitals, which a two-word
+    ``lowerCamel`` token does not reach. The bound is stated here because it is
+    what the compound property above is drawn around: without it, a later
+    reader widening that generator to two words gets a failure whose cause is
+    this threshold rather than the generator.
+    """
+    assert _lexemes(fold_for_query("graphLevel")) == {"graphlevel"}
+
+
+@given(st.text())
+@NORMALIZATION_SETTINGS
+def test_both_transforms_are_idempotent_for_any_generated_text(raw: str) -> None:
+    """Re-normalizing changes nothing, for text neither transform has seen.
+
+    The generated form of the example-based idempotence test above. Both
+    transforms are applied to already-normalized text in production -- the
+    migration may re-run over rows it rewrote, and a query may be folded by
+    more than one layer -- so a drift here is a drift in stored index text.
+    """
+    assert _lexemes(fold_for_query(fold_for_query(raw))) == _lexemes(fold_for_query(raw))
+    assert _lexemes(expand_for_index(expand_for_index(raw))) == _lexemes(expand_for_index(raw))
