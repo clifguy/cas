@@ -1412,7 +1412,9 @@ def register_sage_tools(
                 is the excerpt returned. A quoted phrase is the exception and
                 must be satisfied within a single passage, since adjacency
                 across a passage boundary is not meaningful. A term prefixed
-                with "-" is excluded; terms joined by or admit either. When a
+                with "-" is excluded; terms joined by or admit either, and each
+                alternative is satisfied across the document as a bare term is,
+                so adding an alternative only widens. When a
                 query of bare terms returns nothing, hints.warnings names the
                 terms the query parsed to -- stopwords are dropped and the
                 rest stemmed, so they are not the words typed. The other forms

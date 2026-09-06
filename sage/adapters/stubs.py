@@ -254,10 +254,15 @@ class StubContentStore(ContentStore):
         must be written against.
 
         Matching is substring containment over lowercased text, and the parse
-        splits the query on whitespace. Stopwords, stemming, exclusion,
-        alternation and phrase adjacency are not modelled -- the parse reports
-        their absence rather than pretending otherwise -- so a test turning on
-        any of those belongs against a real backend.
+        splits the query on whitespace. Stopwords, stemming, exclusion and
+        phrase adjacency are not modelled -- the parse reports their absence
+        rather than pretending otherwise -- so a test turning on any of those
+        belongs against a real backend. Alternation is the near miss: the
+        matching rule above honours a parse that reports one, at the same
+        document scope the production binding gives it, but this double's own
+        parse never reports one, so a query written with ``or`` arrives here as
+        terms that include the word. Only a substituted parse reaches the rule,
+        which is what the pin in the conformance suite supplies.
         """
         parse = await self.parse_keyword_query(query)
         terms = parse.terms
@@ -387,7 +392,9 @@ class StubContentStore(ContentStore):
         recognises exclusion, alternation, and phrases; this double does none of
         that, so it reports no exclusions, ``all_required=True``, and no
         adjacency. Assertions about stopwords, stemming, negation, ``or``, or
-        quoted phrases belong against a real backend rather than here.
+        quoted phrases belong against a real backend rather than here -- ``or``
+        included, even though ``search_bm25`` honours an alternation it is
+        handed, because nothing this method returns is one.
 
         ``search_bm25`` reads ``terms`` and ``all_required`` from what this
         returns, so those two agree by construction: whatever a substituted

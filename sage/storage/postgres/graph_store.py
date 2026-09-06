@@ -83,11 +83,14 @@ _SORTABLE_COLUMNS: frozenset[str] = frozenset(
     {"title", "doc_type", "document_date", "lifecycle_status"}
 )
 
-# Final sort term on every document enumeration, making the ordering total.
-# ``id`` is the documents table's primary key, so appending it breaks every tie
-# the sort columns leave without disturbing the primary sort a caller asked
-# for. The direction is arbitrary -- what the two consumers need is that the
-# order is the same one twice, not which of two tied rows comes first.
+# Final sort term on every enumeration this store orders, making the ordering
+# total. ``id`` is the primary key of each table it is appended for -- documents
+# and staging edges alike -- so appending it breaks every tie the sort columns
+# leave without disturbing the primary sort a caller asked for. The direction is
+# arbitrary: what the consumers need is that the order is the same one twice,
+# not which of two tied rows comes first. It earns its place wherever one batch
+# can write several rows at a single timestamp and the sort stops at that
+# timestamp, which is every enumeration keyed on ``created_at``.
 _ORDER_TIEBREAK: Final[str] = ", id ASC"
 
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).
@@ -1181,13 +1184,14 @@ class PostgresGraphStore(GraphStore):
             # bound as isoformat strings.
             if until is None:
                 rows = await self._fetch_rows(
-                    "SELECT * FROM documents WHERE created_at >= %s ORDER BY created_at",
+                    "SELECT * FROM documents WHERE created_at >= %s "  # noqa: S608 -- module constant; values are %s
+                    f"ORDER BY created_at{_ORDER_TIEBREAK}",
                     (since.isoformat(),),
                 )
             else:
                 rows = await self._fetch_rows(
-                    "SELECT * FROM documents WHERE created_at >= %s AND created_at < %s "
-                    "ORDER BY created_at",
+                    "SELECT * FROM documents WHERE created_at >= %s AND created_at < %s "  # noqa: S608 -- module constant; values are %s
+                    f"ORDER BY created_at{_ORDER_TIEBREAK}",
                     (since.isoformat(), until.isoformat()),
                 )
             return [self._row_to_document(r) for r in rows]
@@ -1198,7 +1202,9 @@ class PostgresGraphStore(GraphStore):
 
     async def list_staging_edges(self) -> list[StagingEdge]:
         with self._query_timer.measure("list_staging_edges"):
-            rows = await self._fetch_rows("SELECT * FROM staging_edges ORDER BY created_at")
+            rows = await self._fetch_rows(
+                f"SELECT * FROM staging_edges ORDER BY created_at{_ORDER_TIEBREAK}"  # noqa: S608 -- module constant; no values
+            )
             return [self._row_to_staging_edge(r) for r in rows]
 
     async def get_staging_edge(self, edge_id: str) -> StagingEdge | None:

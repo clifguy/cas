@@ -59,11 +59,14 @@ class KeywordQueryParse(NamedTuple):
 
     ``all_required`` is false when the parse admits alternatives, so a caller
     cannot describe the query as conjunctive: a document can satisfy it while
-    carrying only some of the terms. ``adjacent`` is true when the parse
-    contains a phrase, whose terms must appear together and in order within a
-    single passage -- a stronger condition than carrying them all, and the one
-    predicate still scoped below the document, so a document can hold every
-    term and still not match.
+    carrying only some of the terms. It says nothing about scope -- each
+    alternative is satisfied across the document, exactly as a lone
+    conjunction's terms are. ``adjacent`` is true when the parse contains a
+    phrase, whose terms must appear together and in order within a single
+    passage -- a stronger condition than carrying them all, so a document can
+    hold every term and still not match. Adjacency is the one predicate scoped
+    below the document by decision; a negation may also be, but only because
+    its scope is undecided rather than settled there.
     """
 
     terms: tuple[str, ...]

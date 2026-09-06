@@ -21,6 +21,7 @@ from sage.models.enums import (
 from sage.models.schemas import (
     Document,
     Edge,
+    StagingEdge,
 )
 from sage.services.identity import generate_document_id
 from sage.storage.postgres.graph_store import _SORTABLE_COLUMNS, PostgresGraphStore
@@ -1534,6 +1535,85 @@ async def test_two_identical_catalog_calls_agree_on_row_order(graph_store):
     second, _ = await graph_store.query_documents({"doc_type": "ticket"}, limit=24, offset=0)
 
     assert [d.id for d in first] == [d.id for d in second]
+
+
+async def test_the_ingestion_window_orders_documents_totally(graph_store):
+    """The two enumerations outside ``query_documents`` need the tiebreak too.
+
+    ``find_documents_ingested_between`` sorts on ``created_at`` alone, and a
+    batch writes its documents at one timestamp, so the whole window can be a
+    single tied block. It takes no ``limit``, so the *set* is complete either
+    way and only the order within the block moves -- which is enough for two
+    identical calls to disagree.
+
+    Both windows are exercised, because the bounded and unbounded forms are
+    separate statements and a tiebreak added to one is easy to miss on the
+    other.
+    """
+    tied_at = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    for name in ("winzulu", "winalfa", "winmike"):
+        doc = _make_doc(_id(name))
+        doc.created_at = tied_at
+        await graph_store.insert_document(doc)
+
+    since = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 4, 1, tzinfo=timezone.utc)
+
+    unbounded = [d.id for d in await graph_store.find_documents_ingested_between(since)]
+    bounded = [d.id for d in await graph_store.find_documents_ingested_between(since, until)]
+    await _perturb_scan_order(graph_store, _id("winalfa"))
+    again = [d.id for d in await graph_store.find_documents_ingested_between(since)]
+    again_bounded = [d.id for d in await graph_store.find_documents_ingested_between(since, until)]
+
+    assert len(unbounded) == 3, (
+        "two empty results also agree on order; the comparisons below say "
+        "nothing unless the window returned the seeded set"
+    )
+    assert unbounded == again, "the unbounded window disagreed after a no-op rewrite"
+    assert bounded == again_bounded, "the bounded window disagreed after a no-op rewrite"
+    assert unbounded == sorted(unbounded), "a tied window must resolve on the id"
+
+
+async def test_staging_edge_enumeration_orders_totally(graph_store):
+    """The staging queue is written in batches and sorted on ``created_at`` alone.
+
+    Same shape as the window above: one inference pass stages its edges at a
+    single timestamp, so the queue a reviewer reads is one tied block, and
+    without a final sort term the second read of an unchanged queue can put it
+    in a different order.
+    """
+    await graph_store.insert_document(_make_doc(_id("stagesrc")))
+    tied_at = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    # Written in descending id order so insertion order and id order disagree,
+    # and to a target apiece because the natural key spans the endpoints.
+    ids = [
+        "00000000-0000-4000-8000-00000000000c",
+        "00000000-0000-4000-8000-00000000000a",
+        "00000000-0000-4000-8000-00000000000b",
+    ]
+    for position, edge_id in enumerate(ids):
+        target = _id(f"stagetgt{position}")
+        await graph_store.insert_document(_make_doc(target))
+        await graph_store.insert_staging_edge(
+            StagingEdge(
+                id=edge_id,
+                source_id=_id("stagesrc"),
+                target_id=target,
+                edge_type=EdgeType.REFERENCES,
+                inference_evidence="seeded for the ordering pin",
+                created_at=tied_at,
+            )
+        )
+
+    first = [e.id for e in await graph_store.list_staging_edges()]
+    second = [e.id for e in await graph_store.list_staging_edges()]
+
+    assert len(first) == 3, (
+        "two empty results also agree on order; the comparison below says "
+        "nothing unless the queue returned the seeded set"
+    )
+    assert first == second, "two identical reads of an unchanged queue disagreed"
+    assert first == sorted(ids), "a tied queue must resolve on the id"
 
 
 async def test_paging_tied_edges_returns_each_edge_exactly_once(graph_store):
