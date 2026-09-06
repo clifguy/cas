@@ -8,7 +8,7 @@ beyond its current behavior without updating the corresponding negative
 strategy, the affected negative test will start passing strings it was meant
 to reject, surfacing the regression.
 
-The three latent quirks from were resolved in and are now
+The three latent quirks were resolved and are now
 exercised here: ``trailing_newline`` negatives lock in re.fullmatch (Quirk 1)
 across DocumentIdStr / Sha256Str / DocumentDateStr; ``calendar_invalid``
 negatives lock in the date.fromisoformat check on DocumentDateStr (Quirk 2);
@@ -103,7 +103,7 @@ DOC_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
 
 # ---------------------------------------------------------------------------
 # EdgeIdStr -- uuid.UUID() constructor with normalize-to-canonical (Quirk 3,
-# resolved in). The validator now returns str(uuid.UUID(v)), so any
+# resolved). The validator now returns str(uuid.UUID(v)), so any
 # RFC 4122 input form is accepted but rewritten to canonical hyphenated
 # lowercase. Canonical is the only form that satisfies validate(v) == v;
 # the other forms validate but mutate, exercised by

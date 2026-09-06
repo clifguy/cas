@@ -10,8 +10,8 @@ declares each surface; per-element parametrized tests assert that the
 MCP surface and the OpenAPI surface agree on names, operation coverage,
 and per-argument shapes. An allowlist drains as drift is remediated.
 
-Conformance interpretation: schema-subset ( planning
-session). Each MCP tool argument must match a parameter or
+Conformance interpretation: schema-subset. Each MCP tool argument
+must match a parameter or
 requestBody field of its OpenAPI counterpart by name and compatible
 type. Tools may expose a strict subset of OpenAPI inputs. The MCP
 transport's JSON-string-as-carrier convention is encoded in the type

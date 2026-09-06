@@ -57,11 +57,11 @@ extended the gate to ``app.backend.router`` and ``sage.config`` and
 typed the four shape-bearing fields the extension surfaced;
 extended the gate to FastAPI route parameters and FastMCP tool entry
 points and typed every shape-bearing parameter at those boundaries.
-A later change added ``synced_from_content_hash`` to ``Edge`` /
-``LinkRequest`` and the edge-creation MCP tool as ``str | None`` with
-hash-format validation deferred; it retyped those three sites to
-``Sha256Str``-shaped validation and cleared the three allowlist
-entries. The MCP side rides Pattern 3 rather than Pattern 2: the bulk
+One change added ``synced_from_content_hash`` to ``Edge`` /
+``LinkRequest`` and the edge-creation MCP tool as ``str | None``,
+with hash-format validation deferred; a later one retyped those
+three sites to ``Sha256Str``-shaped validation and cleared the
+three allowlist entries. The MCP side rides Pattern 3 rather than Pattern 2: the bulk
 edge-creation tool takes an ``items`` list and validates each entry
 through ``BulkLinkItem.model_validate``, whose fields carry the alias.
 Widened the registry to the plural forms of its suffix patterns and

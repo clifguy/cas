@@ -3,8 +3,8 @@
 Exercises the boundary contract (vault_id and per-item shape validation,
 registry membership check, round-trip of BulkLinkResponse through the
 MCP serialize path), the per-item error-code parity with create_edge, the
-natural-key idempotency on each item, the/dry-run
-discipline, and the/response_mode rules.
+natural-key idempotency on each item, the dry-run
+discipline, and the response_mode rules.
 
 Each group mirrors the conventions established by
 test_sage_bulk_set_lifecycle.py and test_sage_bulk_update_metadata.py
