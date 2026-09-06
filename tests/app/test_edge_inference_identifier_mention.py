@@ -3,16 +3,16 @@
 Spec (plain English):
 
 T1 -- Happy path: ADR mention creates a `references` edge.
-  Inputs: Pre-seeded ADR document with tag `adr` and title `ADR-099:...`.
+  Inputs: Pre-seeded ADR document with tag `adr` and title `ADR-099: ...`.
            A new ticket markdown whose body contains the literal `CAS-ADR-099`.
   Expect: One `references` edge from the ticket's just-ingested doc id to
            the ADR's doc id; rationale_kind == REFERENCES_MENTION; evidence
            starts with `[references_mention]`.
-  Why: Core acceptance criterion of.
+  Why: Core acceptance criterion of the inference rule.
 
 T2 -- Happy path: ticket id mention creates a `references` edge.
-  Inputs: Pre-seeded ticket document with tag `id:`. New doc whose
-           body mentions ``.
+  Inputs: Pre-seeded ticket document carrying an `id:` tag. New doc whose
+           body mentions a ticket id.
   Expect: One `references` edge from the new doc to the ticket.
   Why: Covers the second default pattern surface.
 
@@ -49,7 +49,7 @@ T6 -- Manual `references` edges are not touched.
 
 T7 -- Pattern config drives behavior (per-vault configurability).
   Inputs: Vault config that omits the `T-NNNN` pattern. Ingest a doc whose
-           body mentions both `CAS-ADR-099` and ``.
+           body mentions both `CAS-ADR-099` and a ticket id.
   Expect: ADR edge created; no ticket edge created.
   Why: The ticket requires per-vault pattern configurability; vaults
            that don't use ticket grammar must be able to disable that
@@ -343,8 +343,8 @@ async def test_t1_adr_mention_creates_references_edge(tmp_path, services):
 async def test_t2_ticket_mention_creates_references_edge(tmp_path, services):
     """Ticket mentions resolve via tier3_metadata.ticket_id, not tags.
 
-    The seeded ticket carries `tier3_metadata={"ticket_id": ""}` and
-    no `id:` tag, matching the cas vault's post-ticket
+    The seeded ticket carries its id in `tier3_metadata["ticket_id"]` and
+    no `id:` tag, matching the cas vault's current ticket
     convention (CAS-ADR-028). A decoy ticket seeded after the target
     ensures the assertion fails if the resolver falls back to a
     doc_type-only lookup — the decoy would win on `updated_at`.
@@ -382,7 +382,7 @@ async def test_t2_ticket_mention_creates_references_edge(tmp_path, services):
 
 @pytest.mark.asyncio
 async def test_t2b_ticket_mention_distinguishes_among_tickets(tmp_path, services):
-    """anti-coincidence: tier3 filter must discriminate among tickets.
+    """Anti-coincidence: tier3 filter must discriminate among tickets.
 
     Without the tier3 filter, the resolver would return the most-recently-
     updated active ticket (a doc_type-only query). The decoy is seeded
@@ -431,7 +431,7 @@ async def test_t2c_unresolved_ticket_mention_creates_no_edge(tmp_path, services)
     without the tier3 filter, the resolver's doc_type-only fallback
     would return the decoy and emit a spurious edge. The fix's tier3
     filter rejects the decoy because its ticket_id does not match
-    .
+    the mentioned id.
     """
     decoy_id = _doc_id("ticket_decoy_t2c")
     await _seed_document(
@@ -718,7 +718,7 @@ async def test_t7_disabled_pattern_skips_matches(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t8_failed_pipeline_target_still_resolves(tmp_path, services):
-    """family: a pipeline_status=FAILED target must remain resolvable.
+    """A pipeline_status=FAILED target must remain resolvable.
 
     The chain-identity argument from applies here too: tags,
     tier3_metadata, and doc_type are populated by adapters at ingest time,
@@ -1007,7 +1007,7 @@ async def test_t6_sage_ingest_manual_references_edge_is_preserved(tmp_path, serv
 
 @pytest.mark.asyncio
 async def test_t9_batch_ingest_service_does_not_import_identifier_mention():
-    """boundary: BatchIngestService source no longer references the
+    """Boundary: BatchIngestService source no longer references the
     relocated inference function or the new sage module.
 
     This is a structural anti-coincidental-pass check: if a future commit
@@ -1114,7 +1114,7 @@ def _edge_inference_block_with_pattern(pattern: dict) -> dict:
 def test_pattern_schema_accepts_target_tier3_only():
     """A pattern with target_tier3 and no target_tags must validate.
 
-    This is the post-shape used by the cas vault's ticket pattern.
+    This is the current shape used by the cas vault's ticket pattern.
     """
     schema = _load_edge_inference_schema()
     pattern = {

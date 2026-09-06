@@ -132,7 +132,7 @@ async def ingested_doc(
 
 
 async def test_bh038_path_traversal_denied(utilities_service, ingested_doc):
-    """Relative path with../ that escapes storage_root is rejected."""
+    """Relative path with ../ that escapes storage_root is rejected."""
     from sage.api.errors import PathTraversalDeniedError
 
     with pytest.raises(PathTraversalDeniedError) as exc_info:

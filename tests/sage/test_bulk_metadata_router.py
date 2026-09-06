@@ -134,7 +134,7 @@ _BLOAT_PROBE_ABSTRACT = "Test abstract used as the bulk-mode bloat probe."
 
 @pytest.fixture
 async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
-    """fixture for the HTTP router. Six active docs each with
+    """Fixture for the HTTP router. Six active docs each with
     doc_type='note', tags=['a'], populated semantic_abstract."""
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = VaultConfig.model_validate(minimal_vault_config_dict)

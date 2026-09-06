@@ -186,7 +186,7 @@ def _write_md(
 
 
 def _write_docx(tmp_vault_dir: Path, relative_path: str) -> Path:
-    """Write a minimal empty.docx at the given vault-relative path."""
+    """Write a minimal empty .docx at the given vault-relative path."""
     full_path = tmp_vault_dir / "sources" / relative_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
     doc = _docx_pkg.Document()

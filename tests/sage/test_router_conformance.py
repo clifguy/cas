@@ -194,7 +194,7 @@ def _route_requires_vault_id(tree: RouterTree, router_name: str, route: APIRoute
 def _handler_uses_body_scoped_vault_id(route: APIRoute, service_callables: set[Callable]) -> bool:
     """True iff some service-factory dependency binds a body with ``vault_id``.
 
-    The body-scoped vault_id pattern (CAS App, post-): the handler
+    The body-scoped vault_id pattern (CAS App): the handler
     declares ``body: SomeRequest`` plus ``service: SomeService =
     Depends(get_xxx_service)``, and the service factory's own signature also
     binds the request body and reads ``body.vault_id`` to resolve the vault.

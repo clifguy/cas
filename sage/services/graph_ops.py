@@ -231,7 +231,7 @@ class GraphOpsService:
     async def _create_edge(self, request: LinkRequest) -> tuple[Edge, bool]:
         """Idempotent variant of ``_create_edge_strict``. Returns ``(edge, created)``.
 
-        Under, the edges table carries a UNIQUE constraint on
+        The edges table carries a UNIQUE constraint on
         ``(source_id, target_id, edge_type)``. ``_create_edge`` swallows
         the duplicate-key error and returns the pre-existing edge with
         ``created=False``. The caller's rationale and notes are discarded
@@ -340,7 +340,7 @@ class GraphOpsService:
                         target_id=item.target_id,
                         edge_type=item.edge_type,
                         status="success",
-                        # light mode: drop the edge body. Caller
+                        # Light mode: drop the edge body. Caller
                         # still has source_id/target_id/edge_type echoed,
                         # plus the created flag and existing_rationale,
                         # which are the only natural-key idempotency
@@ -459,7 +459,7 @@ class GraphOpsService:
                         synced_from_version=request.synced_from_version,
                     )
 
-            # natural-key pre-check — DRY-RUN ONLY. The
+            # Natural-key pre-check — DRY-RUN ONLY. The
             # storage uniqueness constraint never fires on dry-run
             # (no insert happens), so without this pre-check a dry-run
             # would silently report ``created=True`` for what would
@@ -533,7 +533,7 @@ class GraphOpsService:
             if request.edge_type == EdgeType.MERGED_FROM:
                 # merge_atomic is transaction-critical (couples the
                 # merged_from insert with tombstone updates). The
-                # storage layer does NOT noop inside the
+                # The storage layer does NOT noop inside the
                 # atomic op; the duplicate-key path rolls back the
                 # whole transaction and we recover here by looking
                 # up the existing merged_from edge to honor the
@@ -973,7 +973,7 @@ class GraphOpsService:
             # the tombstone field (valid_until_version) silently
             # default to None on traversal-returned edges regardless of
             # what is stored. The rationale_kind drop was a documented
-            # regression; the four parallel fields had the same
+            # regression, and the four parallel fields had the same
             # defect, fixed here in the same pass.
             # Read every storage-layer edge field that ``_traverse_sync``
             # carries through its row dict; without this, the CAS-ADR-017
@@ -981,7 +981,7 @@ class GraphOpsService:
             # the tombstone field (valid_until_version) silently
             # default to None on traversal-returned edges regardless of
             # what is stored. The rationale_kind drop was a documented
-            # regression; the four parallel fields had the same
+            # regression, and the four parallel fields had the same
             # defect, fixed here in the same pass.
             #
             # BH-101: excluded projection point.

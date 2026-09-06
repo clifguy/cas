@@ -3,7 +3,7 @@
 Asserts that the MCP tool surface documents valid vocabulary, payload
 shapes, and response-size characteristics directly via tool signatures
 and docstrings, so callers do not have to learn by erroring. Anchored
-in the field-use report consolidated into.
+in the field-use report.
 
 Each criterion in the ticket maps to one or more tests below. The tests
 prefer structural assertions (set-equality against source-of-truth
@@ -305,7 +305,7 @@ def test_discover_filters_args_documents_closed_key_set():
 
     Filters can't be typed as ``RetrievalFilters | None`` at the MCP
     boundary because routes the raw dict through DiscoverRequest
-    so the ValidationError loc carries the ``("filters",...)`` prefix
+    so the ValidationError loc carries the ``("filters", ...)`` prefix
     that the error translator needs. The documentation must compensate:
     explicitly list the accepted keys AND state that no other keys are
     accepted.

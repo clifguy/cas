@@ -195,7 +195,7 @@ async def _resolve_identifier(
         }
     if pattern.get("target_doc_type"):
         filters["doc_type"] = pattern["target_doc_type"]
-    # family: identifier-resolution filters (tags, tier3, doc_type) are
+    # Identifier-resolution filters (tags, tier3, doc_type) are
     # populated by adapters at ingest time, BEFORE abstraction runs. A
     # pipeline_status=failed target still carries valid identifier-resolution
     # metadata; opting out of BH-020 here keeps the Python active-lifecycle

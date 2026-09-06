@@ -719,7 +719,7 @@ class StorageQueryFailedError(SAGEError):
 class UnknownFilterKeyError(SAGEError):
     """400: a key in `filters` is not in RetrievalFilters.
 
-    Pre-, unknown filter keys were silently dropped by Pydantic's
+    Previously, unknown filter keys were silently dropped by Pydantic's
     default extra="ignore" behavior — a typo footgun where a misspelled
     `tickett_id` matched every row. ``extra="forbid"`` on RetrievalFilters
     now surfaces these typos as a typed error.
@@ -1889,7 +1889,7 @@ class MissingDocumentIdentifierError(SAGEError):
     """400: caller supplied neither the canonical parameter nor any
     accepted alias for the document identifier.
 
-    Companion to:class:`AmbiguousDocumentIdentifierError`. Distinct
+    Companion to :class:`AmbiguousDocumentIdentifierError`. Distinct
     from ``document_not_found`` (404) and from a downstream Pydantic
     ``ValidationError``: this code fires before the service layer is
     invoked, when no document identifier was supplied at all. The

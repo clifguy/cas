@@ -1005,7 +1005,7 @@ def register_sage_tools(
 
         List-valued field patch shape (per-item ``tags``)::
 
-            {"add": ["x",...], "remove": ["y",...]}
+            {"add": ["x", ...], "remove": ["y", ...]}
 
         At least one key required and non-empty; ``add`` values must NOT be
         present on the field, ``remove`` values MUST be present (strict
@@ -1013,7 +1013,7 @@ def register_sage_tools(
 
         Tier3 patch shape (per-item ``tier3_metadata``)::
 
-            {"set": {"key": "value",...}, "unset": ["other_key",...]}
+            {"set": {"key": "value", ...}, "unset": ["other_key", ...]}
 
         The merged result is validated against the resolved doc_type's
         ``metadata_schema``.
@@ -1428,7 +1428,7 @@ def register_sage_tools(
         Edge enumeration:
             When ``target="edges"`` (only valid with ``mode="catalog"``),
             results are edge rows rather than document rows. Filter by any
-            subset of ``{"source_id":..., "target_id":..., "edge_type":...}``;
+            subset of ``{"source_id": ..., "target_id": ..., "edge_type": ...}``;
             an empty filter returns all edges in the vault, paginated. Each
             row carries the edge id (required for ``delete_edge`` and the
             ``retracts`` edge_type), endpoints, edge_type, anchor versions,
@@ -1695,7 +1695,7 @@ def register_sage_tools(
             v = get_vault(vault_id)
             # Pass the raw dict so DiscoverRequest performs the
             # nested RetrievalFilters validation. This keeps the
-            # ValidationError loc prefixed with ``("filters",...)``, which
+            # ValidationError loc prefixed with ``("filters", ...)``, which
             # the translator in sage.api.errors needs to map into typed
             # ``unknown_filter_key`` / ``invalid_filter_shape`` envelopes.
             request = DiscoverRequest(

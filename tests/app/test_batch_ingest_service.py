@@ -473,7 +473,7 @@ class TestEdgePlanConstruction:
             assert ei.parsed.project == "EXAMPLE"
 
     # ---------------------------------------------------------------------
-    # — filter pushdown for the existing-doc fetch in
+    # Filter pushdown for the existing-doc fetch in
     # _build_edge_plan. The site at app/backend/ingest_service.py
     # historically pulled the entire vault and filtered in Python.
     # ---------------------------------------------------------------------
@@ -1480,7 +1480,7 @@ class _MockGraphState:
 
     async def insert_staging_edge(self, staging, on_conflict: str = "raise") -> tuple:
         # Tracking only; no real staging in unit tests. Returns the
-        # tuple shape: (edge, created).
+        # Tuple shape: (edge, created).
         if not hasattr(self, "staged_edges"):
             self.staged_edges = []
         self.staged_edges.append(staging)
@@ -1951,7 +1951,7 @@ class TestChainRepair:
         """T8. The CAS-ADR-019 provenance gate downgrades chain repair to
         Tier 2 when an existing supersedes edge has rationale_kind=manual,
         even if its rationale text happens to start with
-        ``[version_chain]`` (a stale rationale string from before).
+        ``[version_chain]`` (a stale rationale string from an earlier scheme).
         The discriminator now lives in the typed column, not the prefix.
         """
         V1_ID = "ffffffff_v1"

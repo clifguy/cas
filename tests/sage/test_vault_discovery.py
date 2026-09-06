@@ -120,7 +120,7 @@ def test_loose_file_at_root_is_ignored(vault_root, minimal_vault_config_dict):
 
 
 def test_hidden_directories_are_skipped(vault_root, minimal_vault_config_dict):
-    """#6: Dot-prefixed dirs (e.g.,.DS_Store) are not treated as vaults."""
+    """#6: Dot-prefixed dirs (e.g., .DS_Store) are not treated as vaults."""
     _materialize_vault(vault_root, "real_vault", minimal_vault_config_dict)
 
     # Materialize a hidden directory that *does* contain a vault_config.yaml

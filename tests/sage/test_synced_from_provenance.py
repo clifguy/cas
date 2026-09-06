@@ -1,4 +1,4 @@
-"""tests: synced-from provenance attributes on edges.
+"""Tests for synced-from provenance attributes on edges.
 
 Schema-only ship. Covers:
 
@@ -12,7 +12,7 @@ TEST-4 (migration idempotency on a pre-migration DB) lives in
 The OpenAPI conformance regression (TEST-6) is covered by
 ``tests/sage/test_openapi_conformance.py``; no new test required.
 
-/ CAS-ADR-017.
+CAS-ADR-017.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ async def test_t1_round_trip_both_attributes_via_link_and_traverse(
     """
     src = _id("t1_src")
     tgt = _id("t1_tgt")
-    # chain-membership guard: synced_from_version must be a member
+    # Chain-membership guard: synced_from_version must be a member
     # of target_id's supersedes chain. tgt itself is a one-element chain;
     # synced_from = tgt is valid (recorded == head → "current" per the
     # detector's classification).
@@ -213,7 +213,7 @@ async def test_t3_one_attribute_set_other_null_no_coupled_enforcement(
     """
     src = _id("t3_src")
     tgt = _id("t3_tgt")
-    # chain-membership guard: synced_from_version must be a member
+    # Chain-membership guard: synced_from_version must be a member
     # of target_id's supersedes chain.
     synced_from = tgt
 

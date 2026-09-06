@@ -726,7 +726,7 @@ requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not availa
 
 
 def _make_docx(tmp_path: Path, filename: str = "test.docx") -> Path:
-    """Create a minimal empty.docx and return its path."""
+    """Create a minimal empty .docx and return its path."""
     doc = docx.Document()
     path = tmp_path / filename
     doc.save(str(path))
@@ -1002,7 +1002,7 @@ class TestDocxAdapter:
         assert "the" not in result3.title.lower().split()
 
     async def test_ad_040_content_hash_is_raw_bytes(self, tmp_path):
-        """AD-040: content_hash is SHA-256 of raw.docx bytes."""
+        """AD-040: content_hash is SHA-256 of raw .docx bytes."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -1183,7 +1183,7 @@ class TestDocxAdapter:
         doc = docx.Document()
         _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
 
-        # H1 -> H2, H2 -> H1 -> H2 (second H2 should restart at.1)
+        # H1 -> H2, H2 -> H1 -> H2 (second H2 should restart at .1)
         p1 = doc.add_paragraph("Part A", style="Heading 1")
         _set_paragraph_numbering(p1, num_id=100, ilvl=0)
         p2 = doc.add_paragraph("Sub One", style="Heading 2")
@@ -1349,7 +1349,7 @@ class TestDocxAdapterADRTier3Extraction:
         assert "adapter_tier3_metadata" not in result.metadata
 
 
-# ── Docx Adapter:.dotx template support ──────────────────────────
+# ── Docx Adapter: .dotx template support ──────────────────────────
 
 
 def _add_custom_style(
@@ -1413,9 +1413,9 @@ def _attach_numbering_to_builtin_style(doc, style_id: str, num_id: int) -> None:
 
 
 def _convert_docx_to_dotx(docx_path: Path, dotx_path: Path) -> None:
-    """Rewrite a.docx's content-type entry to template flavor and save as.dotx.
+    """Rewrite a .docx's content-type entry to template flavor and save as .dotx.
 
-    Creates a structurally valid.dotx (OPC content type set to template)
+    Creates a structurally valid .dotx (OPC content type set to template)
     that python-docx will reject at load unless the adapter's workaround
     applies, so this fixture exercises the real format path.
     """
@@ -1434,7 +1434,7 @@ def _convert_docx_to_dotx(docx_path: Path, dotx_path: Path) -> None:
 
 
 def _build_template_fixture(tmp_path: Path, filename: str) -> Path:
-    """Build a.dotx fixture with the style surface required by AD-071/073.
+    """Build a .dotx fixture with the style surface required by AD-071/073.
 
     The fixture contains:
     - AppendixHeading (custom, paragraph, no numbering)
@@ -1486,17 +1486,17 @@ def _build_template_fixture(tmp_path: Path, filename: str) -> Path:
 
 @requires_docx
 class TestDocxAdapterDotxSupport:
-    """AD-068 through AD-073:.dotx template support in DocxAdapter."""
+    """AD-068 through AD-073: .dotx template support in DocxAdapter."""
 
     async def test_ad_068_extensions_includes_dotx(self):
-        """AD-068: DocxAdapter.EXTENSIONS contains both.docx and.dotx."""
+        """AD-068: DocxAdapter.EXTENSIONS contains both .docx and .dotx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         assert ".docx" in DocxAdapter.EXTENSIONS
         assert ".dotx" in DocxAdapter.EXTENSIONS
 
     async def test_ad_069_dotx_loads_without_error(self, tmp_path):
-        """AD-069: A.dotx file is parsed successfully despite template content type."""
+        """AD-069: A .dotx file is parsed successfully despite template content type."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -1508,7 +1508,7 @@ class TestDocxAdapterDotxSupport:
         assert isinstance(result.content_hash, str)
         assert len(result.content_hash) == 64
         assert len(result.headings) >= 1
-        # content_hash is over raw.dotx bytes, not the shadow copy
+        # content_hash is over raw .dotx bytes, not the shadow copy
         assert result.content_hash == hashlib.sha256(dotx_path.read_bytes()).hexdigest()
 
     async def test_ad_074_unreadable_docx_and_dotx_name_the_source_not_the_shadow(self, tmp_path):
@@ -1576,13 +1576,13 @@ class TestDocxAdapterDotxSupport:
         assert "shadow.docx" not in message, message
 
     async def test_ad_070_dotx_has_inventory_docx_does_not(self, tmp_path):
-        """AD-070: template_style_inventory is.dotx-only; absent on.docx."""
+        """AD-070: template_style_inventory is .dotx-only; absent on .docx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "t.dotx")
 
-        # Equivalent.docx with the same body content and custom styles
+        # Equivalent .docx with the same body content and custom styles
         doc = docx.Document()
         doc.add_paragraph("Intro", style="Heading 1")
         doc.add_paragraph("Body paragraph.")
@@ -1678,13 +1678,13 @@ class TestDocxAdapterDotxSupport:
         )
 
     async def test_ad_073_dotx_emits_tags_docx_does_not(self, tmp_path):
-        """AD-073:.dotx emits adapter_tags with prescribed namespacing;.docx does not."""
+        """AD-073: .dotx emits adapter_tags with prescribed namespacing; .docx does not."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "tags.dotx")
 
-        # Equivalent.docx (custom styles added but no template content type)
+        # Equivalent .docx (custom styles added but no template content type)
         doc = docx.Document()
         doc.add_paragraph("Intro", style="Heading 1")
         _add_custom_style(doc, "AppendixHeading", "Appendix Heading", "paragraph")
@@ -1719,7 +1719,7 @@ class TestDocxAdapterDotxSupport:
         assert "adapter_tag_prefixes" not in docx_result.metadata
 
     async def test_ad_074_dotx_synthesizes_non_empty_text(self, tmp_path):
-        """AD-074:.dotx projection produces non-empty style-surface text."""
+        """AD-074: .dotx projection produces non-empty style-surface text."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -1886,7 +1886,7 @@ class TestDocxAdapterDotxSupport:
         assert plain["numbering_detail"] is None
 
     async def test_ad_074_docx_projection_unchanged(self, tmp_path):
-        """AD-074 (negative):.docx projection does not receive synthesized text."""
+        """AD-074 (negative): .docx projection does not receive synthesized text."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -1934,7 +1934,7 @@ def _make_multisheet_xlsx(
 ) -> Path:
     """Create a workbook with named sheets and cell data.
 
-    sheets_data: {"SheetName": [[row1_values], [row2_values],...]}
+    sheets_data: {"SheetName": [[row1_values], [row2_values], ...]}
     """
     wb = openpyxl.Workbook()
     # Remove default sheet
@@ -2103,7 +2103,7 @@ class TestXlsxAdapter:
         assert result.title == "my_data"
 
     async def test_ad_062_content_hash_raw_bytes(self, tmp_path):
-        """AD-062: content_hash is SHA-256 of raw.xlsx file bytes."""
+        """AD-062: content_hash is SHA-256 of raw .xlsx file bytes."""
         from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
         adapter = XlsxAdapter()
@@ -2274,7 +2274,7 @@ def _make_pdf_with_pages(
 ) -> Path:
     """Create a multi-page PDF with given lines per page.
 
-    pages: [[line1, line2,...], [line1, line2,...],...]
+    pages: [[line1, line2, ...], [line1, line2, ...], ...]
     Each inner list is the lines of one page.
     """
     from reportlab.lib.pagesizes import letter
@@ -2474,7 +2474,7 @@ class TestPdfAdapter:
     # ── Section 8.1 — Registration & basic projection ────────────
 
     def test_ad_076_extension_registration(self):
-        """AD-076: PdfAdapter registers.pdf as a supported extension."""
+        """AD-076: PdfAdapter registers .pdf as a supported extension."""
         import re
 
         from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -2859,7 +2859,7 @@ class TestPdfAdapter:
         from sage.source_adapters import pdf_adapter as pdf_adapter_mod
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
-        # Fake ocrmypdf module whose.ocr() raises mid-call.
+        # Fake ocrmypdf module whose .ocr() raises mid-call.
         fake_ocrmypdf = types.ModuleType("ocrmypdf")
 
         def _failing_ocr(*args, **kwargs):

@@ -397,7 +397,7 @@ def test_live_openapi_matches_yaml_error_envelope(
     3. carries a description matching the YAML description after
        whitespace normalization (re.sub(r'\\s+', ' ', s).strip()).
 
-    Regression gate for. Per-operation parametrization so failures
+    Regression gate. Per-operation parametrization so failures
     attribute to one (path, method, status) rather than aggregating into a
     single multi-line message. Forward-declared operations
     (SPEC_FORWARD_DECLARATIONS) are excluded at parametrize-build time.
@@ -1144,12 +1144,12 @@ def test_pydantic_descriptions_match_yaml_verbatim(
     text equals the YAML property description verbatim (after whitespace
     normalization).
 
-    Closes the drift class left open: authored Pydantic
-    descriptions independently while YAML descriptions were absent;
-    filled the YAML gaps. Without this gate, the two sides can
-    silently diverge because no existing test asserts text equality --
-    only presence on each side. Per CAS-ADR-008 the YAML is authoritative,
-    so Pydantic is expected to match it.
+    Closes a drift class left open by earlier work: Pydantic
+    descriptions were authored independently while YAML descriptions
+    were absent, and the YAML gaps were filled later. Without this gate,
+    the two sides can silently diverge because no existing test asserts
+    text equality -- only presence on each side. Per CAS-ADR-008 the YAML
+    is authoritative, so Pydantic is expected to match it.
 
     Intentional divergences live in DESCRIPTION_DIVERGENCE_ALLOWLIST with
     a justification comment.
@@ -1501,7 +1501,7 @@ def test_every_sage_config_field_has_description():
     Mirror of test_every_pydantic_field_has_description, scoped to
     sage.config rather than sage.models.schemas. Closes the gap surfaced as
     an F4 finding during the commit-time cas-code-review pass: the
-    module walk does not reach sage.config, so the vault-config
+    original module walk does not reach sage.config, so the vault-config
     Pydantic models could carry zero descriptions without tripping any
     existing gate. Per CAS-ADR-008 these models derive from the JSON
     Schemas under docs/fs/sage/, so missing descriptions are drift from
@@ -1636,7 +1636,7 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
     scope; their absence from the YAML, if a drift, is tracked separately.
 
     Scope: SAGE Core API spec only. Parallel parity assertion for
-    `docs/fs/cas_app_api.openapi.yaml` is tracked by. The ROOT
+    `docs/fs/cas_app_api.openapi.yaml` is tracked separately. The ROOT
     Harness OpenAPI spec has no Python implementation yet (only the
     spec exists), so YAML<->Pydantic parity is not yet meaningful for
     that surface.
@@ -1725,7 +1725,7 @@ def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
     asserted by `test_every_pydantic_field_has_a_yaml_property` below.
 
     Scope: SAGE Core API spec only. Parallel parity assertion for
-    `docs/fs/cas_app_api.openapi.yaml` is tracked separately by.
+    `docs/fs/cas_app_api.openapi.yaml` is tracked separately.
     The ROOT Harness OpenAPI spec has no Python implementation yet (only
     the spec exists), so YAML<->Pydantic parity is not yet meaningful
     for that surface.

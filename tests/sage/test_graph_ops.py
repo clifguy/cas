@@ -158,7 +158,7 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, gra
 # ---------------------------------------------------------------------------
 # BH-031 (update): Duplicate edges are now blocked
 # ---------------------------------------------------------------------------
-# Pre-, BH-031 asserted that re-calling `link` with the same
+# Previously, BH-031 asserted that re-calling `link` with the same
 # natural-key triple produced a second edge with a fresh id. That is
 # now an invariant violation; the UNIQUE constraint on
 # (source_id, target_id, edge_type) prevents duplicate rows. The
@@ -334,7 +334,7 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, extended_graph_ops_ser
 # BH-037: Traversal collapses multi-path hits to one node per target
 # ---------------------------------------------------------------------------
 #
-# Under, the UNIQUE (source_id, target_id, edge_type) constraint
+# Under the UNIQUE (source_id, target_id, edge_type) constraint
 # prevents storage-level duplicates, so the original BH-037 scenario
 # (three duplicate edges between the same pair) is no longer
 # constructable. The multi-path collapse responsibility of
@@ -594,9 +594,9 @@ async def test_multiple_retracts_with_null_target_allowed(graph_store, graph_ops
 
 
 async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
-    """contract: the legacy BH-037 setup (three duplicate edges
+    """Contract: the legacy BH-037 setup (three duplicate edges
     between the same pair via direct INSERT) is now blocked at the
-    storage layer. This test pins the post-invariant.
+    storage layer. This test pins the current invariant.
     """
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
@@ -982,7 +982,7 @@ async def test_check_preconditions_nonexistent_function_raises_404(graph_store, 
 async def _create_linear_chain(graph_store, count: int = 5):
     """Create a linear supersedes chain of `count` documents.
 
-    Returns list of doc IDs in order [v1, v2,..., vN] where each
+    Returns list of doc IDs in order [v1, v2, ..., vN] where each
     supersedes its predecessor (source=newer, target=older).
     """
     doc_ids = []
@@ -1232,7 +1232,7 @@ async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
 
 
 async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
-    # reshape: a single (source, target, edge_type) row per
+    # Reshape: a single (source, target, edge_type) row per
     # natural-key triple is enforced. The "mixed types" invariant is
     # preserved by attaching one of each edge_type between doc_a and
     # doc_b; the edge_counts map should record both keys.
@@ -1319,7 +1319,7 @@ async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
 
 
 async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
-    # reshape: one edge per natural-key triple. The invariant
+    # Reshape: one edge per natural-key triple. The invariant
     # under test (edge_type filter excludes other types from counts)
     # holds with single-row attachments.
     doc_a = _make_doc(_id("doc_a"))
@@ -1370,7 +1370,7 @@ async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
 
 
 async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
-    # reshape: at most one (source, target, edge_type) per
+    # Reshape: at most one (source, target, edge_type) per
     # natural-key triple. Multi-depth invariant is preserved with
     # one of each edge_type per hop.
     for name in ["doc_a", "doc_b", "doc_c"]:
@@ -1836,7 +1836,7 @@ def _build_edge_from_cte_row(representative: dict) -> Edge:
 
 
 def test_edge_cte_row_parity_with_row_to_edge():
-    """(F4 closure pair, T2 -- parity guard on the BH-101 excluded
+    """F4 closure pair, T2 -- parity guard on the BH-101 excluded
     projection point): the inline ``Edge`` construction at
     sage/services/graph_ops.py:663 and the canonical factory
     ``PostgresGraphStore._row_to_edge`` (sage/storage/postgres/graph_store.py)

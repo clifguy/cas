@@ -222,8 +222,7 @@ async def _index_doc_chunks(
     chunks_data: list of (heading_path, content) tuples.
     doc_type, lifecycle_status, project: optional document-level scalars
     to stamp on the chunks for pre-filter testing. Production ingest
-    stamps all three from the parent ``Document`` (for doc_type,
-    for the other two); tests opt in per-call.
+    stamps all three from the parent ``Document``; tests opt in per-call.
     """
     chunks = []
     for i, (heading_path, content) in enumerate(chunks_data):
@@ -3361,7 +3360,7 @@ async def test_bh_087_response_mode_unset_preserves_chunk_content(
     retrieval_service,
 ):
     """Default response_mode (omitted) preserves chunk content on
-    semantic/keyword (post-response_level retirement)."""
+    semantic/keyword (after the response_level retirement)."""
     await _seed_response_level_docs(
         graph_store,
         stub_content_store,
@@ -3392,7 +3391,7 @@ async def test_bh_088_response_mode_full_ignored_by_catalog_chunk_content(
     retrieval_service,
 ):
     """Catalog mode never emits chunk_content regardless of response_mode
-    (post-response_level retirement)."""
+    (after the response_level retirement)."""
     for doc_id in (_id("cat_a"), _id("cat_b")):
         doc = _make_doc(doc_id, doc_type="design_spec")
         await graph_store.insert_document(doc)
@@ -4208,7 +4207,7 @@ async def test_bh_104_response_mode_light_preserves_abstract(
     retrieval_service,
 ):
     """response_mode=light suppresses chunk_content but preserves
-    semantic_abstract (post-response_level retirement)."""
+    semantic_abstract (after the response_level retirement)."""
     abstract_text = "Overview of insulin pump safety requirements."
     doc = _make_doc(_id("rl_doc"), semantic_abstract=abstract_text)
     await graph_store.insert_document(doc)
@@ -5445,7 +5444,7 @@ def _summary_with_every_discover_hit_field() -> DocumentSummary:
     return DocumentSummary.from_document(_doc_with_every_summary_field())
 
 
-# T1: exhaustive fields — the keystone F4-closure test for.
+# T1: exhaustive fields — the keystone F4-closure test.
 def test_from_summary_populates_every_discover_hit_field():
     summary = _summary_with_every_discover_hit_field()
     hit = DiscoverHit.from_summary(

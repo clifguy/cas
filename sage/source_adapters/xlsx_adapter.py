@@ -3,9 +3,9 @@
 Produces a lightweight projection with sheet names as headings, column
 headers, dimensions, and configurable preview rows rendered as
 pipe-delimited tables. Designed for discovery, not full-content search;
-agents retrieve the source.xlsx file for programmatic access.
+agents retrieve the source .xlsx file for programmatic access.
 
-Computes SHA-256 of raw.xlsx bytes for content_hash.
+Computes SHA-256 of raw .xlsx bytes for content_hash.
 """
 
 import hashlib

@@ -230,7 +230,7 @@ async def test_reindex_skips_documents_with_no_chunks(graph_store, stub_content_
 async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store):
     """Re-index must preserve ``chunk.doc_type``. A read→re-embed→write
     cycle that drops doc_type wipes the column for every chunk and breaks
-    ``filters={"doc_type":...}`` queries vault-wide. Regression guard for
+    ``filters={"doc_type": ...}`` queries vault-wide. Regression guard for
     the live-data incident on 2026-05-04 (Example Portfolio).
     """
     doc = _make_doc(doc_id=_id("doc_dtype"), adapter_version="0.1.0")

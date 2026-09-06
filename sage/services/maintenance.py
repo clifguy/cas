@@ -1418,7 +1418,7 @@ class MaintenanceService:
 
                 # PDFs first: each surfaces as a single ``skipped`` event
                 # (no dispatch, no wait). Aggregator order preserves the
-                # pre-behavior in which PDF entries lead the
+                # earlier behavior in which PDF entries lead the
                 # report.
                 for doc in pdf_skipped:
                     entry = ReabstractReportEntry(

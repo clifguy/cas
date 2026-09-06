@@ -167,7 +167,7 @@ async def test_tier3_schema_violation_envelope_identical_under_dry_run(
 async def test_tier3_doc_type_change_stale_keys_envelope_identical_under_dry_run(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
 ):
-    """case: stale keys on doc_type change raise the same
+    """Stale keys on a doc_type change raise the same
     Tier3DocTypeChangeStaleKeysError in both paths."""
     _write_md(tmp_vault_dir, "d.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(

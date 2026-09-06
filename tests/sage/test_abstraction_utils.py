@@ -243,7 +243,7 @@ class TestTrimToSentenceBoundary:
 
 # ---------------------------------------------------------------------------
 # StackAbstractionConfig.provider (dispatch pattern, re-anchored at
-# stack scope by CAS-ADR-030 /)
+# stack scope by CAS-ADR-030)
 # ---------------------------------------------------------------------------
 
 

@@ -156,7 +156,7 @@ async def test_bulk_link_partial_success_on_unknown_document(graph_store, graph_
 async def test_bulk_link_idempotency_returns_existing_edge_with_created_false(
     graph_store, graph_ops_service
 ):
-    """per-item idempotency contract: a duplicate natural-key
+    """Per-item idempotency contract: a duplicate natural-key
     triple returns the existing edge with created=False and
     existing_rationale populated. No second edge persisted."""
     src = _id("doc_idem_src")
@@ -245,7 +245,7 @@ async def test_bulk_link_response_mode_light_drops_edge_body(graph_store, graph_
     for entry in response.results:
         assert entry.status == "success"
         assert entry.edge is None
-        # signals preserved under light per the response_mode contract.
+        # Signals preserved under light per the response_mode contract.
         assert entry.created is True
 
 

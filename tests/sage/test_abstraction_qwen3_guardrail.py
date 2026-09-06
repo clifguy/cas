@@ -1,4 +1,4 @@
-"""guardrail tests for Qwen3AbstractionProvider.
+"""Guardrail tests for Qwen3AbstractionProvider.
 
 Asserts the two MLX/Metal OOM guardrails on
 ``Qwen3AbstractionProvider.generate_abstract``:

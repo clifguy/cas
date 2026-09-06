@@ -658,7 +658,7 @@ async def test_export_projection_200(app, client):
 
 
 async def test_export_projection_path_traversal_400(client):
-    """POST /documents/{id}/export with../ path returns 400."""
+    """POST /documents/{id}/export with ../ path returns 400."""
     # Ingest first
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",

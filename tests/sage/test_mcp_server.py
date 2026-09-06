@@ -1756,7 +1756,7 @@ async def test_discover_mode_parameter_mismatch_deterministic_with_query(vault_s
 
 async def test_discover_semantic_missing_query_still_typed(vault_services):
     """Regression guard: the existing service-layer missing_query envelope
-    must not be folded into mode_parameter_mismatch by."""
+    must not be folded into mode_parameter_mismatch."""
     result = _parse(await search("test_vault", "semantic"))
     assert result["error"] == "missing_query"
 

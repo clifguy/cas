@@ -3,7 +3,7 @@
 heading line.
 
 A chunking fix changed the persisted shape of ``Chunk.content``: each
-body chunk now holds its own ATX heading line ("#...", "##...",...)
+body chunk now holds its own ATX heading line ("#...", "##...", ...)
 followed by the body text. The fix lives in ``IngestionService._chunk_projection``
 and is source-type-agnostic: it iterates ``projection.headings`` produced
 by whatever adapter ran Stage 1. Every adapter that emits ``HeadingNode``
@@ -26,7 +26,7 @@ Per-document flow:
    ``--allow-hash-drift``).
 5. Snapshot the document's current ``pipeline_status``.
 6. Call ``IngestionService._stage2_indexing`` to re-chunk (now with the
-   fix), re-embed, and atomically replace stored chunks. The
+   heading fix), re-embed, and atomically replace stored chunks. The
    synthetic header chunk is rebuilt as part of Stage 2.
 7. Restore the snapshotted ``pipeline_status`` if it was a terminal
    state (``abstraction_complete``, ``abstraction_skipped``,

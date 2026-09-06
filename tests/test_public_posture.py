@@ -277,6 +277,34 @@ _BUILD_ARTIFACTS: Final[frozenset[str]] = frozenset(
     {".coverage", "coverage.xml", "repo_file_inventory.xlsx"}
 )
 
+# Prose run into a file-extension or attribute token, e.g. ``rejects.dotx``
+# where ``rejects .dotx`` was meant. Four arms, because a bare ``word.ext``
+# match cannot tell damaged prose from an ordinary filename:
+#
+# 1. any word fused to a binary-format extension -- those do not appear as
+#    unquoted path stems in this repo's prose, so the word may be anything;
+# 2. a wider extension set, but only after one of an enumerated word list.
+#    That list is damage-derived vocabulary, not a closed grammatical class:
+#    it holds articles and prepositions alongside ``raw``, ``real``,
+#    ``empty``, ``minimal``, ``valid``, ``whose`` and ``read``, each observed
+#    at an actual damage site. It grows by edit as new sites appear; do not
+#    prune it toward "function words only";
+# 3-4. the same fusion after punctuation rather than after a word
+#    (``Adapter:.dotx``, ``e.g.,.DS_Store``, ``with../``), which arms 1-2
+#    cannot see because both require a letter immediately before the dot.
+#
+# The lookbehind keeps arms 1-2 off path- and identifier-qualified names
+# (``doc_a.docx``, ``sage/app.py``).
+FUSED_EXTENSION_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w/\\.\-])[A-Za-z][a-z]+\.(?:docx|dotx|xlsx|pptx|pdf)\b"
+    r"|(?<![\w/\\.\-])(?:a|an|the|and|or|for|from|in|of|on|to|as|at|is|are|both|raw"
+    r"|real|empty|minimal|valid|whose|with|per|into|via|read)"
+    r"\.(?:docx|dotx|xlsx|pptx|pdf|md|txt|csv|json|ya?ml|py|ocr|is_alive)\b"
+    r"|(?<=[:;,])\.(?:docx|dotx|xlsx|pptx|pdf|DS_Store)\b"
+    r"|(?<=[a-z])\.\./",
+    re.IGNORECASE,
+)
+
 # Maximum number of violations to enumerate in a single pytest.fail message.
 _MAX_REPORTED_VIOLATIONS: Final[int] = 30
 
@@ -329,6 +357,12 @@ BINDING_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
 # ``.py`` sink detector and the substrate text scan); line-keyed like
 # ``TICKET_REF_ALLOWLIST`` because both arms attribute hits to lines.
 PUBLISHED_TICKET_REF_ALLOWLIST: Final[dict[str, list[int]]] = {}
+
+# path (relative to repo root) → list of line numbers where a
+# word-fused extension token is allowlisted. Line-keyed like
+# ``TICKET_REF_ALLOWLIST`` because T16 attributes hits to the docstring
+# or comment line the extraction reports.
+FUSED_EXTENSION_ALLOWLIST: Final[dict[str, list[int]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1147,55 @@ def test_no_ticket_refs_in_published_substrate_files() -> None:
 
 
 # ---------------------------------------------------------------------------
+# T16 — Word-fused extension tokens
+# ---------------------------------------------------------------------------
+
+
+def test_no_word_fused_extension_tokens() -> None:
+    """T16: a word must not run into a file-extension token in ``.py`` prose.
+
+    Guards the residue a whitespace-collapsing sweep leaves behind:
+    ``python-docx rejects .dotx`` reduced to ``rejects.dotx``. The damage
+    is invisible to a reader skimming for meaning and survives review,
+    so it needs a mechanical gate rather than another pass of eyes.
+
+    Scope is docstrings and ``#`` comments, the same surface T2 and T4
+    walk. String literals stay out: a fixture filename is a value, not
+    prose, and ``"probe_alpha.docx"`` is correct as written.
+    """
+    violations: list[tuple[str, int, str]] = []
+    spans_scanned = 0
+    for path in _tracked_files_with_suffixes((".py",)):
+        rel = str(path.relative_to(REPO_ROOT))
+        allowed_lines = set(FUSED_EXTENSION_ALLOWLIST.get(rel, []))
+        for line_no, text in _extract_docstring_and_comment_spans(path):
+            spans_scanned += 1
+            if line_no in allowed_lines:
+                continue
+            for match in FUSED_EXTENSION_RE.finditer(text):
+                violations.append((rel, line_no, match.group(0)))
+
+    # Paired observable. "No violations" alone is satisfied just as well by a
+    # walk that visited nothing -- an empty corpus, a suffix that matches no
+    # file -- and the regex self-test cannot see that, because it exercises the
+    # pattern in isolation and never touches the walk. Zero violations AND a
+    # populated corpus is reachable only by a scan that actually ran.
+    #
+    # The floor sits near the corpus (~21,800 spans at the time of writing)
+    # rather than far below it, so that dropping a large subtree also trips it.
+    # It is deliberately not exact: the corpus grows with the repo, and a floor
+    # that has to be edited on every commit is one that gets raised without
+    # being read.
+    assert spans_scanned > 10_000, (
+        f"T16 scanned only {spans_scanned} docstring/comment spans; the corpus "
+        "walk is broken or badly narrowed, so a clean result proves nothing"
+    )
+
+    if violations:
+        pytest.fail(_format_violations(violations, header="T16 fused-extension"))
+
+
+# ---------------------------------------------------------------------------
 # Anti-coincidental-pass checks
 #
 # These are the safety net the test-first methodology calls for: they
@@ -1122,6 +1205,57 @@ def test_no_ticket_refs_in_published_substrate_files() -> None:
 # the gate fails with a precise message, revert) is a step in the cleanup
 # verification plan, not an automated test here.
 # ---------------------------------------------------------------------------
+
+
+def test_t16_regex_separates_damage_from_real_filenames() -> None:
+    """T16's regex fires on every damage shape the sweep produced and on
+    none of the filename shapes that legitimately appear in prose.
+
+    The negative cases are the whole reason the pattern has two arms: a
+    single ``word.ext`` rule flags ``doc_a.docx`` and ``sage/app.py`` as
+    readily as it flags ``rejects.dotx``, which is how a shape-only scan
+    produces confident noise in both directions.
+    """
+    damaged = [
+        "python-docx rejects.dotx at load time",
+        "SHA-256 of raw.docx bytes",
+        "Load a.docx or.dotx into a python-docx Document",
+        "For.dotx files the adapter",
+        "metadata and text stay lean for.docx files",
+        "agents retrieve the source.xlsx file",
+        "PdfAdapter registers.pdf as a supported extension",
+        "template_style_inventory is.dotx-only; absent on.docx",
+        "Find the.md file",
+        "Fake ocrmypdf module whose.ocr() raises mid-call",
+        "read.is_alive() off the inner thread",
+        # Punctuation-fused: arms 1-2 cannot see these, because both require a
+        # letter immediately before the dot. Every one is a shape the sweep
+        # actually produced.
+        "Docx Adapter:.dotx template support",
+        "AD-073:.dotx emits adapter_tags",
+        "prescribed namespacing;.docx does not",
+        "Dot-prefixed dirs (e.g.,.DS_Store) are not vaults",
+        "export with../ path returns 400",
+    ]
+    for sample in damaged:
+        assert FUSED_EXTENSION_RE.search(sample) is not None, sample
+
+    intact = [
+        'source_path: Path to source file (e.g., "reports/doc_a.docx")',
+        "Relocated verbatim from tests/sage/test_adapters.py",
+        "_write_office_file(tmp_path, probe_alpha.docx)",
+        "the ocrmypdf.ocr module is stubbed",
+        "README.md and docs/fs/manifest.json are tracked",
+        "Replaces seed_bulk_e2e.py",
+        "sage/app.py:_initialize_vault -- FastAPI lifespan",
+        "python-docx rejects .dotx at load time",
+        "SHA-256 of raw .docx bytes",
+        "Docx Adapter: .dotx template support",
+        "Dot-prefixed dirs (e.g., .DS_Store) are not vaults",
+        "export with ../ path returns 400",
+    ]
+    for sample in intact:
+        assert FUSED_EXTENSION_RE.search(sample) is None, sample
 
 
 def test_t1_regex_word_boundary_negative_case() -> None:

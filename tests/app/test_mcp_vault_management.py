@@ -224,7 +224,7 @@ class TestSageCreateVault:
     async def test_create_vault_populates_config_path_on_services(
         self, vaults_root, empty_registry
     ):
-        """/F10 regression — create_vault must populate
+        """F10 regression — create_vault must populate
         ``SAGEServices.config_path`` so a subsequent ``reload_vault`` after
         an on-disk YAML edit re-reads from disk instead of silently no-op'ing
         on the in-memory ``VaultConfig``.
@@ -248,7 +248,7 @@ class TestSageGetVaultConfig:
     async def test_mcp_035_returns_full_config_and_errors_on_unknown(self, registered_vault):
         """Returns full config for known vault; error for unknown.
 
-        Also asserts (CAS-ADR-030 /) that the vault-config response
+        Also asserts (CAS-ADR-030) that the vault-config response
         no longer carries `abstraction.provider` or `abstraction.model`;
         those moved to stack scope. The `get_stack_config` MCP tool
         is the canonical surface for them.
@@ -273,7 +273,7 @@ class TestSageGetVaultConfig:
 
     async def test_mcp_get_stack_config_returns_provider_and_model(self, registered_vault):
         """`get_stack_config` surfaces the stack-wide abstraction config
-        (CAS-ADR-030). Shape: `{"abstraction": {"provider":..., "model":...}}`.
+        (CAS-ADR-030). Shape: `{"abstraction": {"provider": ..., "model": ...}}`.
         """
         from sage.mcp_server import get_stack_config
 

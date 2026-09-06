@@ -1,4 +1,4 @@
-"""pre-merge metadata tests.
+"""Pre-merge metadata tests.
 
 Validates the partial-metadata window closure: IngestionService.ingest()
 must compute all metadata in memory before the atomic insert, so a failure
@@ -231,7 +231,7 @@ async def test_a3_failure_on_force_reingest_leaves_existing_record_unchanged(
 
 
 # ---------------------------------------------------------------------------
-# Group B: regression (folded into)
+# Group B: regression (codes-as-list polymorphism)
 # ---------------------------------------------------------------------------
 
 

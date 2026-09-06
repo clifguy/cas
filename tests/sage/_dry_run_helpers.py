@@ -1,4 +1,4 @@
-"""dry-run test helpers.
+"""Dry-run test helpers.
 
 Provides ``state_snapshot`` and ``assert_state_unchanged`` — the
 universal "no state was written" proof used by the per-service dry-run
@@ -47,7 +47,7 @@ class StateFingerprint:
     document_metadata_confirmed: dict[str, bool | None] = field(default_factory=dict)
     # edge_id -> serializable dict of the edge
     edges: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # document_id -> [{chunk_index, doc_type, lifecycle_status, project},...]
+    # document_id -> [{chunk_index, doc_type, lifecycle_status, project}, ...]
     chunk_metadata: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # path string -> (mtime_ns, size)
     file_state: dict[str, tuple[int, int]] = field(default_factory=dict)

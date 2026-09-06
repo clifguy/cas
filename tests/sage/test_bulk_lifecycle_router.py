@@ -129,7 +129,7 @@ _BLOAT_PROBE_ABSTRACT = "Test abstract used as the bulk-mode bloat probe."
 
 @pytest.fixture
 async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
-    """fixture for the HTTP router. Boot an app with six active
+    """Fixture for the HTTP router. Boot an app with six active
     documents each carrying a populated `semantic_abstract`. Six items so
     the threshold-default tests can cross the >5 boundary in either
     direction by slicing."""

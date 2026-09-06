@@ -61,7 +61,7 @@ async def http_client(app_with_vault):
 
 
 class TestDependenciesModuleSurface:
-    """requires app.backend.dependencies to host the new
+    """app.backend.dependencies must host the new
     Depends factories. These are the architectural commitments that
     the migration must satisfy; the integration tests below verify
     they wire correctly end-to-end."""

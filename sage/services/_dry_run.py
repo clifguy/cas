@@ -1,4 +1,4 @@
-"""shared constants for dry-run mode across mutation services.
+"""Shared constants for dry-run mode across mutation services.
 
 Centralized so that ``LifecycleService`` (would-be ``supersedes`` edge),
 ``GraphOpsService`` (would-be ``_create_edge_strict`` edge), the MCP-tool wrappers,

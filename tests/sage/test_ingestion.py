@@ -1831,7 +1831,7 @@ async def test_recompute_pipeline_source_path_missing_raises(
 #
 # These tests exercise the adapter_tags / adapter_tag_prefixes convention
 # between the source adapter layer and the ingestion service. The
-# DocxAdapter is the first adapter to use this channel (for.dotx template
+# DocxAdapter is the first adapter to use this channel (for .dotx template
 # style inventory), but the contract is generic so any adapter can
 # contribute to document.tags from projection metadata.
 
@@ -1840,7 +1840,7 @@ class _TagEmittingStubAdapter:
     """Stub adapter that emits configurable adapter_tags in projection metadata.
 
     Used to exercise the ingestion-level tag-merge plumbing (BH-131..133)
-    without the real.dotx machinery. Each instance can be reconfigured
+    without the real .dotx machinery. Each instance can be reconfigured
     between calls to simulate an updated adapter version, supporting
     the BH-132 stale-tag-stripping scenario.
     """
@@ -2265,7 +2265,7 @@ requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not availa
 
 
 def _write_styled_docx(path: Path, paragraphs: list[tuple[str, str]]) -> None:
-    """Write a.docx with the given (text, style) paragraphs.
+    """Write a .docx with the given (text, style) paragraphs.
 
     Style names must already exist in the document's style set. Built-in
     styles like "Title", "Heading 1", "Subtitle", "Normal" are pre-defined
