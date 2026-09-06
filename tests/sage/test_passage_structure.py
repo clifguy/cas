@@ -17,6 +17,7 @@ Decision 3 explicitly preserves that weight for headings within the document.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,22 @@ def test_nothing_restates_the_separator():
     consuming half unobserved, which is what a narrower earlier version of this
     scan did.
 
+    The scan reads string *constants* rather than source lines, and looks for
+    the delimiter at an edge of one. A line-oriented scan for the quoted form
+    ``" > "`` misses the two spellings that matter most: the LIKE pattern
+    ``" > %"``, where the character after the delimiter is not a quote, and an
+    f-string join ``f"{a} > {b}"``. The first of those is the child-heading
+    prefix query -- one of the three sites this scan was widened to cover, and
+    the one that decides what a section read returns -- so the earlier predicate
+    could not hold the site it was written for.
+
+    The edge test is what separates a spelling from prose. A restatement puts
+    the delimiter at the start or the end of its literal (``" > "``, ``" > %"``,
+    and the constant an f-string join leaves between two placeholders are all
+    exactly that); prose mentioning a path puts it in the middle
+    (``"Section 3 > Definitions"``), which is why three field descriptions in
+    the models are not flagged and need no allowlist to stay unflagged.
+
     Anti-coincidental-pass: the assertion is bracketed by a positive control
     that the tree was actually read. A glob that matched nothing would otherwise
     report a clean scan. The module that *defines* the constant is the one
@@ -194,16 +211,26 @@ def test_nothing_restates_the_separator():
     assert len(modules) >= 50, "the sage package was not read; the scan proves nothing"
 
     definition = root / "adapters" / "interfaces.py"
-    restated = {
-        str(path.relative_to(root)): [
-            number
-            for number, line in enumerate(path.read_text().splitlines(), start=1)
-            if f'"{HEADING_PATH_SEPARATOR}"' in line or f"'{HEADING_PATH_SEPARATOR}'" in line
-        ]
-        for path in modules
-        if path != definition
-    }
-    restated = {name: lines for name, lines in restated.items() if lines}
+    restated: dict[str, list[int]] = {}
+    for path in modules:
+        if path == definition:
+            continue
+        tree = ast.parse(path.read_text())
+        lines = sorted(
+            {
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and (
+                    node.value.startswith(HEADING_PATH_SEPARATOR)
+                    or node.value.endswith(HEADING_PATH_SEPARATOR)
+                )
+            }
+        )
+        if lines:
+            restated[str(path.relative_to(root))] = lines
+
     assert not restated, (
         f"these modules spell the heading-path delimiter themselves: {restated}; "
         "import HEADING_PATH_SEPARATOR from sage.adapters.interfaces instead"

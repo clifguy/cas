@@ -457,11 +457,20 @@ class PostgresContentStore(ContentStore):
         under a concurrent exclusive lock and so reads a settled answer. But
         that serialization is an artifact of how a catalog view happens to be
         evaluated rather than a documented guarantee, and this table is rebuilt
-        on a different major version from the one the tests run against. An
-        explicit lock costs nothing uncontended, since the rebuild takes it
-        anyway, and does not rest on that detail holding. The contention it
-        covers is not two operators but one, re-invoking after a client timed
-        out on a call still running.
+        on a different major version from the one the tests run against. The
+        contention it covers is not two operators but one, re-invoking after a
+        client timed out on a call still running.
+
+        ``SHARE UPDATE EXCLUSIVE``, and the mode is load-bearing rather than
+        incidental -- do not "strengthen" it. What this lock has to do is stop
+        two migrators from both deciding to rebuild, and that mode conflicts
+        with itself, so it does exactly that. What it must *not* do is stop
+        anyone else: the decision is followed by a plain ``UPDATE`` whenever the
+        vector is already current and only rows are outstanding, and taking an
+        exclusive lock there would hold every search and ingest on the vault
+        behind a backfill that does not need it. On the rebuild path the
+        ``DROP`` escalates to ``ACCESS EXCLUSIVE`` on its own, so the stronger
+        lock is still taken exactly where it is needed and no earlier.
 
         Expensive and exclusive when the rebuild does run: the re-add rewrites
         the passage table and every index over it, including the HNSW index
@@ -472,7 +481,7 @@ class PostgresContentStore(ContentStore):
         with self._query_timer.measure("migrate_indexed_structure", params={"pairs": len(derived)}):
             written = 0
             async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute("LOCK TABLE chunks IN ACCESS EXCLUSIVE MODE")
+                await conn.execute("LOCK TABLE chunks IN SHARE UPDATE EXCLUSIVE MODE")
                 rebuilding = not await self._vector_ranks_indexed_structure(conn)
                 drop, add, index = CHUNKS_TSV_REBUILD
 

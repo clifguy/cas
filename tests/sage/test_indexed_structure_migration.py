@@ -321,28 +321,95 @@ async def test_the_migration_takes_the_table_lock_before_it_decides(
             rows = await cur.fetchall()
         return " | ".join(r[0] for r in rows)
 
-    async with pg_pool.connection() as blocker:
-        async with blocker.transaction():
-            await blocker.execute("LOCK TABLE chunks IN ACCESS EXCLUSIVE MODE")
+    async def _wait_until_blocked(timeout: float = 10.0) -> str:
+        """Poll until the migration is waiting on a lock, or give up.
 
-            migrating = asyncio.create_task(store.migrate_indexed_structure(derived))
-            await asyncio.sleep(0.5)
+        Polled rather than slept: a fixed pause is a bet on how quickly a loaded
+        runner gets the second connection to its first statement, and the bet is
+        wrong in the direction that reports a clean result -- observing before
+        the migration has blocked at all finds nothing waiting, which the empty
+        control below would report as "observing nothing" rather than as a race.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            waiting = await _blocked_statement()
+            if waiting:
+                return waiting
+            await asyncio.sleep(0.05)
+        return ""
 
-            waiting_on = await _blocked_statement()
-            assert waiting_on, (
-                "control: the migration must be blocked on the held lock, or "
-                "this test is observing nothing"
-            )
-            assert "LOCK TABLE" in waiting_on.upper(), (
-                "the migration is waiting at "
-                f"{waiting_on!r}, past its own decision -- the check ran against "
-                "a catalog another caller was mid-change, so both would rebuild"
-            )
+    migrating: asyncio.Task[int] | None = None
+    try:
+        async with pg_pool.connection() as blocker:
+            async with blocker.transaction():
+                await blocker.execute("LOCK TABLE chunks IN ACCESS EXCLUSIVE MODE")
 
-        written = await asyncio.wait_for(migrating, timeout=30)
+                migrating = asyncio.create_task(store.migrate_indexed_structure(derived))
+                waiting_on = await _wait_until_blocked()
+
+                assert waiting_on, (
+                    "control: the migration never blocked on the held lock, so "
+                    "this test observed nothing"
+                )
+                assert "LOCK TABLE" in waiting_on.upper(), (
+                    "the migration is waiting at "
+                    f"{waiting_on!r}, past its own decision -- the check ran "
+                    "against a catalog another caller was mid-change"
+                )
+
+            written = await asyncio.wait_for(migrating, timeout=30)
+            migrating = None
+    finally:
+        # An assertion above leaves the migration blocked on a lock this test
+        # holds; without this it outlives the test and the next one inherits a
+        # connection stuck behind it.
+        if migrating is not None:
+            migrating.cancel()
 
     assert written == len(derived), "the pass completes once the lock is released"
     assert await store.passage_vector_ranks_indexed_structure()
+
+
+async def test_a_backfill_does_not_hold_readers_out(store, pre_change_vault, pg_pool):
+    """The lock stops rival migrators, not ordinary traffic.
+
+    The decision's lock is followed by a plain ``UPDATE`` on the path where the
+    vector is already current and only rows are outstanding. An exclusive lock
+    there would hold every search and ingest on the vault behind a backfill that
+    does not need it -- a regression against the pre-lock behaviour, where that
+    path took ``ROW EXCLUSIVE`` and readers went through.
+
+    Anti-coincidental-pass: a reader is held open in its own transaction for the
+    whole of the backfill, so its ``ACCESS SHARE`` lock is live when the
+    migration takes its own. Under ``ACCESS EXCLUSIVE`` the migration cannot
+    proceed and this times out; under ``SHARE UPDATE EXCLUSIVE`` it completes.
+    The two modes are distinguished by whether the call returns at all, which is
+    why the reader is held rather than merely taken and released.
+    """
+    # Reach the backfill-only state: vector current, some rows underived.
+    pending = await store.passages_awaiting_indexed_structure()
+    await store.migrate_indexed_structure(
+        [(doc, path, indexed_structure(path, _TITLE)) for doc, path in pending]
+    )
+    assert await store.passage_vector_ranks_indexed_structure(), "the vector is current"
+    async with pg_pool.connection() as conn:
+        await conn.execute("UPDATE chunks SET indexed_structure = NULL")
+    still_pending = await store.passages_awaiting_indexed_structure()
+    assert still_pending, "control: there is a backfill to run without a rebuild"
+
+    async with pg_pool.connection() as reader:
+        async with reader.transaction():
+            cur = await reader.execute("SELECT count(*) FROM chunks")
+            assert (await cur.fetchone())[0], "control: the reader holds a live lock"
+
+            written = await asyncio.wait_for(
+                store.migrate_indexed_structure(
+                    [(doc, path, indexed_structure(path, _TITLE)) for doc, path in still_pending]
+                ),
+                timeout=10,
+            )
+
+    assert written == len(still_pending)
 
 
 # ---------------------------------------------------------------------------
