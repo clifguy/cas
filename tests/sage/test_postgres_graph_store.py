@@ -762,3 +762,24 @@ async def test_an_underscore_in_the_query_matches_literally(postgres_graph_store
     assert [d.id for d in found] == [literal.id], (
         "the query's '_' matched any single character instead of an underscore"
     )
+
+
+async def test_a_wildcard_in_an_abstract_query_matches_literally(postgres_graph_store):
+    """The abstract lookup escapes its pattern for the same reason.
+
+    It feeds the abstract boost, which is another path into a caller's result
+    set, and it splices the query into the same operator. A sibling of a fixed
+    site with the identical shape is where a sweep stops one method short.
+    """
+    literal = _doc(711, title="Alpha", source_path="/x/e.md", tags=["alpha"])
+    literal.semantic_abstract = "Coverage reached 80% Report thresholds."
+    decoy = _doc(712, title="Beta", source_path="/x/f.md", tags=["alpha"])
+    decoy.semantic_abstract = "Coverage reached 80 Quarterly Report thresholds."
+    await postgres_graph_store.insert_document(literal)
+    await postgres_graph_store.insert_document(decoy)
+
+    found = await postgres_graph_store.search_abstracts("80% Report")
+
+    assert [d.id for d in found] == [literal.id], (
+        "the query's '%' acted as a wildcard against the abstract"
+    )

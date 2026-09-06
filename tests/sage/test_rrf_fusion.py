@@ -220,3 +220,41 @@ def test_rrf_keeps_the_larger_count_across_arms() -> None:
     assert fused.matched_chunk_count == 3, (
         "the keyword arm's passage count was discarded by the fusion"
     )
+
+
+def test_rrf_carries_a_passage_excerpt_when_the_surface_outranks_it() -> None:
+    """A document that matched passages is returned carrying one of them.
+
+    A document surface out-ranking the document's own passages is what the
+    surface exists to do for a title-shaped query, so the highest-ranked row
+    for such a document is routinely the one that carries no excerpt. Taking
+    it as the representative reports a document as having matched two
+    passages while showing neither -- an empty excerpt and no heading beside
+    a count of two.
+    """
+    vector = [_surface_result("d1"), _result("d1", heading_path="S1")]
+    keyword = [_result("d1", heading_path="S2")]
+
+    [fused] = rrf_fuse(vector, keyword, limit=10)
+
+    assert fused.heading_path == "S1", "the surface row was carried forward"
+    assert fused.content == "content of d1"
+    assert fused.matched_chunk_count == 2
+    assert fused.is_document_surface is False
+
+
+def test_rrf_keeps_the_surface_row_when_the_document_has_no_passage() -> None:
+    """Preferring a passage must not invent one.
+
+    The rival to the fix above: a rule that always looks past a surface row
+    would leave a document that matched through nothing else with no
+    representative at all, or with a passage belonging to another document.
+    """
+    vector = [_surface_result("d1")]
+    keyword = [_surface_result("d1")]
+
+    [fused] = rrf_fuse(vector, keyword, limit=10)
+
+    assert fused.is_document_surface is True
+    assert fused.heading_path == ""
+    assert fused.content == ""

@@ -1156,16 +1156,27 @@ class RetrievalService:
         seen_docs: dict[str, DiscoverHit] = {}
         chunk_counts: dict[str, int] = {}
         carried_counts: dict[str, int] = {}
+        surface_sourced: dict[str, bool] = {}
         doc_cache: dict[str, object | None] = {}
+        include_content = request.response_mode != ResponseMode.LIGHT
 
         for result in results:
             # Count additional chunks for already-seen documents. A row can
             # arrive after the one that won the excerpt -- a document's surface
-            # ranks below its own passage on the semantic arm -- so the
+            # ranks above its own passages for a title-shaped query -- so the
             # passage test belongs on both branches, not only the first.
             if result.document_id in seen_docs:
                 if not result.is_document_surface:
                     chunk_counts[result.document_id] += 1
+                    # The excerpt belongs to a passage. Where the surface
+                    # outranked them the held hit has none, so the document's
+                    # best-ranking passage supplies it -- leaving the score
+                    # alone, which is the document's best across both surfaces.
+                    if surface_sourced[result.document_id]:
+                        held = seen_docs[result.document_id]
+                        held.chunk_content = result.content if include_content else None
+                        held.heading_path = result.heading_path or None
+                        surface_sourced[result.document_id] = False
                 continue
 
             # Cache document lookups
@@ -1195,7 +1206,7 @@ class RetrievalService:
             # response_mode=light; heading_path preserved as cheap "why
             # this matched" context. When response_mode is unset, default
             # is full-equivalent (chunk content included).
-            include_content = request.response_mode != ResponseMode.LIGHT
+            #
             # A document matched only through its document surface carries no
             # excerpt, so its heading path is empty rather than a sentinel
             # needing masking (CAS-ADR-049).
@@ -1209,6 +1220,7 @@ class RetrievalService:
             seen_docs[result.document_id] = hit
             chunk_counts[result.document_id] = 0 if result.is_document_surface else 1
             carried_counts[result.document_id] = result.matched_chunk_count
+            surface_sourced[result.document_id] = result.is_document_surface
 
         # Stamp matched_chunk_count on each hit
         for doc_id, hit in seen_docs.items():

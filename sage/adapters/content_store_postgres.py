@@ -910,16 +910,6 @@ class PostgresContentStore(ContentStore):
         return int(rows[0][0]) if rows and rows[0][0] is not None else 0
 
     @staticmethod
-    def _row_to_result(row: tuple) -> SearchResult:
-        """A four-column passage row, from a query that reads chunks only."""
-        return SearchResult(
-            document_id=row[0],
-            heading_path=row[1],
-            content=row[2],
-            score=float(row[3]),
-        )
-
-    @staticmethod
     def _row_to_semantic_result(row: tuple) -> SearchResult:
         """A row from the semantic union, which spans both surfaces.
 

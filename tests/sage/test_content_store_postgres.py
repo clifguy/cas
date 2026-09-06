@@ -1720,3 +1720,39 @@ async def test_the_fallback_does_not_make_derived_text_matchable(store):
     assert [h.document_id for h in control] == ["derived"], (
         "positive control: authored text on the same row is reachable this way"
     )
+
+
+async def test_a_headingless_passage_is_not_mistaken_for_a_document_surface(store):
+    """An empty heading path does not make a row document-level.
+
+    The reason the surface is named by a field rather than inferred: a
+    document whose source carries no headings has a genuine passage whose
+    heading path is empty, and it is indistinguishable from a document-level
+    row by that property alone. Nothing else in the suite holds a headingless
+    passage, so a tally "simplified" back to the heading-path heuristic would
+    go green everywhere else and wrong here.
+    """
+    await store.index_chunks(
+        "headless",
+        [
+            _chunk(
+                "headless",
+                content="zetaword catalog in a document that has no headings",
+                heading_path="",
+                embedding=_emb(0),
+            )
+        ],
+    )
+
+    [keyword_hit] = await store.search_bm25("zetaword", limit=10)
+    assert keyword_hit.heading_path == "", "the fixture is not a headingless passage"
+    assert keyword_hit.is_document_surface is False, (
+        "a headingless passage was classified as a document-level row"
+    )
+    assert keyword_hit.matched_chunk_count == 1, "a genuine passage counts as one"
+
+    semantic = [h for h in await store.search_semantic(_emb(0), limit=10)]
+    assert [h.is_document_surface for h in semantic] == [False]
+    assert semantic[0].content.startswith("zetaword catalog"), (
+        "the passage's excerpt was suppressed as if it were document-level"
+    )

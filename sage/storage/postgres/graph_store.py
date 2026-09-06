@@ -589,7 +589,10 @@ class PostgresGraphStore(GraphStore):
 
     async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
         with self._query_timer.measure("search_abstracts"):
-            pattern = f"%{query}%"
+            # Escaped for the same reason the sibling above is: this result
+            # feeds the abstract boost, which is another path into a caller's
+            # result set, and a caller's own % or _ is text to find.
+            pattern = f"%{escape_like(query)}%"
             rows = await self._fetch_rows(
                 "SELECT * FROM documents WHERE semantic_abstract ILIKE %s LIMIT %s",
                 (pattern, limit),

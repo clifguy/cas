@@ -828,17 +828,11 @@ async def test_camelcase_title_searchable_via_split_tokens(
     )
     await graph_store.insert_document(doc)
 
-    body_content = "[Placeholder content. Template body is structurally minimal.]"
-
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_portfolio"),
-        [("Sheet1", body_content)],
-    )
-    # Document-level text lives on the document surface. Its authored half
-    # carries the case-split expansion of the compound title, which is what
-    # makes "dashboard" reach "PortfolioDashboard".
+    # No passage at all. The document surface is then the only thing that can
+    # answer, so the document-level hit below is evidence about the surface
+    # rather than about a body chunk that would have been returned anyway.
+    # Its authored half carries the case-split expansion of the compound
+    # title, which is what makes "dashboard" reach "PortfolioDashboard".
     await _index_document_surface(
         stub_content_store, seeded_embedding_provider, _id("doc_portfolio"), doc
     )
@@ -879,12 +873,9 @@ async def test_camelcase_title_searchable_via_split_tokens(
         assert _id("doc_portfolio") in doc_ids, (
             f"doc_portfolio missing from top 5 for {mode_kwargs!r}; got {doc_ids}"
         )
-        # The case-split expansion of the compound title lives only on the
-        # document surface, so a document-level hit is what shows the surface
-        # was actually consulted. Without it the body chunk alone would return
-        # the document and the assertion above would pass unchanged. The hit
-        # itself is the evidence: it carries no excerpt to inspect, because a
-        # document-level hit is not a passage (CAS-ADR-049).
+        # The hit itself is the evidence: it carries no excerpt to inspect,
+        # because a document-level hit is not a passage (CAS-ADR-049), and the
+        # document has no passage that could have supplied one instead.
         hit = _document_level_hit(response, _id("doc_portfolio"))
         assert hit is not None, (
             f"no document-level hit for {mode_kwargs!r}; the document surface "
@@ -912,12 +903,8 @@ async def test_semantic_abstract_drives_a_semantic_match(
     )
     await graph_store.insert_document(doc)
 
-    await _index_doc_chunks(
-        stub_content_store,
-        seeded_embedding_provider,
-        _id("doc_abstract_only"),
-        [("Sheet1", "[empty]")],
-    )
+    # No passage, so nothing but the document surface can answer for this
+    # document and the document-level hit below is evidence about it.
     await _index_document_surface(
         stub_content_store, seeded_embedding_provider, _id("doc_abstract_only"), doc
     )
@@ -930,12 +917,12 @@ async def test_semantic_abstract_drives_a_semantic_match(
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_abstract_only") in doc_ids
 
-    # The abstract is carried by the document surface and nowhere else, so the
-    # hit reached by its terms must be the document-level one. Asserting only
-    # that the document was returned would pass against a store that never
-    # stored a surface at all, since the body chunk returns it either way. The
-    # hit carries no excerpt to read the abstract back from -- a document-level
-    # hit is not a passage (CAS-ADR-049) -- so its presence is the evidence.
+    # The abstract is carried by the document surface and nowhere else, and
+    # the document has no passage, so the hit can only have come from the
+    # surface. It carries no excerpt to read the abstract back from -- a
+    # document-level hit is not a passage (CAS-ADR-049) -- so its presence,
+    # and the absence of any other row that could have produced it, is the
+    # evidence.
     hit = _document_level_hit(response, _id("doc_abstract_only"))
     assert hit is not None, "the abstract's document-level hit is absent"
 
@@ -2824,6 +2811,53 @@ async def test_a_surface_row_does_not_inflate_a_passage_count(
     assert len(hits) == 1, "the document is deduplicated to one hit"
     assert hits[0].matched_chunk_count == 2, (
         "the surface row was tallied as if it were a third passage"
+    )
+
+
+async def test_a_passage_supplies_the_excerpt_when_the_surface_outranks_it(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document that matched passages is served one of them.
+
+    The service dedupes to the document's best-ranking row, and for a
+    title-shaped query that row is routinely the document surface -- which is
+    what the surface is for. Left there, the hit reports the passages it
+    matched and carries neither an excerpt nor a heading for any of them. The
+    score stays the document's best across both surfaces; only the excerpt
+    moves.
+
+    Pure vector rather than the fused default, so the rows reach the service
+    separately and the handoff under test is the service's own.
+    """
+    doc = _make_doc(_id("surface_outranks"))
+    doc.title = "Zetaword Accumulator Catalog"
+    doc.tags = ["design"]
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("surface_outranks"),
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+    )
+    await _index_document_surface(
+        stub_content_store, seeded_embedding_provider, _id("surface_outranks"), doc
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.SEMANTIC,
+            query="zetaword accumulator catalog",
+            use_hybrid=False,
+        )
+    )
+
+    [hit] = [h for h in response.results if h.document.id == _id("surface_outranks")]
+    assert hit.matched_chunk_count == 1, "the document matched one passage"
+    assert hit.heading_path == "Section 1", (
+        "the hit kept the surface row's absent heading despite matching a passage"
+    )
+    assert hit.chunk_content == "Clinical normalization of respiratory signals.", (
+        "the hit carries no excerpt for the passage it reports having matched"
     )
 
 
