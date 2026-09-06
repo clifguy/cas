@@ -92,14 +92,104 @@ def test_chunks_table_has_vector_fts_and_indexes():
     generated tsvector full-text column, and their HNSW + GIN indexes."""
     assert "vector(768)" in pgschema.CHUNKS_TABLE
     assert "tsvector" in pgschema.CHUNKS_TABLE
-    # The generated tsv weaves heading_path (weight A) and content (weight D)
-    # so keyword search matches terms that appear only in a heading.
-    assert "to_tsvector('english', heading_path)" in pgschema.CHUNKS_TABLE
+    # The generated tsv weaves the passage's structure relative to its document
+    # (weight A) with its content (weight D), so keyword search still matches a
+    # term appearing only in a heading -- but not a document title the source
+    # format happened to make that document's top-level heading (CAS-ADR-049).
+    assert "to_tsvector('english', coalesce(indexed_structure, heading_path))" in (
+        pgschema.CHUNKS_TABLE
+    )
     assert "to_tsvector('english', content)" in pgschema.CHUNKS_TABLE
     assert "setweight" in pgschema.CHUNKS_TABLE
     content_idx = "\n".join(pgschema.CONTENT_INDEXES)
     assert "USING GIN (tsv)" in content_idx
     assert "USING hnsw (embedding vector_cosine_ops)" in content_idx
+
+
+def test_the_passage_vector_ranks_structure_rather_than_the_address():
+    """Weight A reads the relative structure, and the address is no longer there.
+
+    Anti-coincidental-pass: asserting only that ``indexed_structure`` appears
+    somewhere in the expression would pass an implementation that added it at
+    weight D beside the content and left ``heading_path`` ranking at 'A'. The
+    negative assertion is what makes this a replacement rather than an addition.
+    """
+    assert pgschema.CHUNKS_INDEXED_STRUCTURE_EXPRESSION in pgschema.CHUNKS_TSV_EXPRESSION
+    weight_a, _, weight_d = pgschema.CHUNKS_TSV_EXPRESSION.partition("||")
+    assert "indexed_structure" in weight_a and "'A'" in weight_a
+    assert "content" in weight_d and "'D'" in weight_d
+    assert "to_tsvector('english', heading_path)" not in pgschema.CHUNKS_TSV_EXPRESSION, (
+        "the address must no longer be the weight-A argument; only the relative "
+        "structure is, reached through the coalesce"
+    )
+
+
+def test_the_indexed_structure_column_is_nullable_with_no_default():
+    """``NULL`` has to mean "not yet derived", so nothing may supply a default.
+
+    An empty relative structure is a legitimate value -- the top-level heading's
+    own passage carries it -- so ``''`` cannot double as the sentinel. Worse,
+    ``DEFAULT ''`` would make the coalesce return the empty string for every row
+    of a vault that took the column but not yet the backfill, emptying weight A
+    across the whole passage surface.
+
+    Anti-coincidental-pass: both existing bootstrap gates accept
+    ``ADD COLUMN IF NOT EXISTS indexed_structure text NOT NULL DEFAULT ''``
+    without complaint -- it is idempotent and non-destructive. Nothing else in
+    the suite catches the one form that would silently empty the index.
+    """
+    (statement,) = [s for s in pgschema.ADDITIVE_COLUMNS if "indexed_structure" in s]
+    assert "NOT NULL" not in statement.upper()
+    assert "DEFAULT" not in statement.upper()
+
+
+def test_the_vector_rebuild_is_written_to_the_postgres_16_floor():
+    """The rebuild drops and re-adds rather than altering the expression.
+
+    ``ALTER COLUMN ... SET EXPRESSION AS`` is PostgreSQL 17. The workstation
+    runs 17 and all three CI service containers are pinned to ``pg17``, while
+    the deployed target is Flexible Server major 16 -- so the 17-only form would
+    pass every test this repository runs and fail only at deploy.
+
+    Anti-coincidental-pass: there is none available, and that is the point. No
+    runtime test can reach this, because nothing we run is version 16. A static
+    assertion over the DDL text is the only place the floor can be enforced.
+    """
+    rebuild = "\n".join(pgschema.CHUNKS_TSV_REBUILD)
+    assert "SET EXPRESSION" not in rebuild.upper(), (
+        "SET EXPRESSION is a PostgreSQL 17 feature and the deploy target is 16"
+    )
+    assert "DROP COLUMN IF EXISTS tsv" in rebuild
+    assert "ADD COLUMN tsv tsvector GENERATED ALWAYS AS" in rebuild
+    assert pgschema.CHUNKS_TSV_EXPRESSION in rebuild, (
+        "the rebuilt column must carry the same expression a fresh vault gets"
+    )
+
+
+def test_the_vector_rebuild_stays_out_of_the_bootstrap():
+    """The rebuild rewrites the table, and the bootstrap runs on every open.
+
+    Anti-coincidental-pass: ``test_no_bootstrap_statement_is_destructive``
+    already catches the DROP leaking in, but it reports "destructive statement"
+    without naming what leaked. This names it, and it also catches the
+    non-destructive ``ADD COLUMN ... GENERATED`` half, which that gate would
+    only reach incidentally through its missing ``IF NOT EXISTS``.
+    """
+    bootstrap = pgschema.schema_statements(schema="sage_test_x", extensions=["vector"])
+    for statement in pgschema.CHUNKS_TSV_REBUILD:
+        if statement == pgschema.IDX_CHUNKS_TSV_GIN:
+            continue  # the index itself is legitimately in both
+        assert statement not in bootstrap, f"the rebuild leaked into the bootstrap: {statement!r}"
+
+
+def test_the_gin_index_over_the_vector_is_defined_once():
+    """The bootstrap and the rebuild build the same index, from one string.
+
+    A rebuild that recreated a differently-defined index would leave a vault's
+    keyword arm working but differently-shaped from a freshly provisioned one.
+    """
+    assert pgschema.IDX_CHUNKS_TSV_GIN in pgschema.CONTENT_INDEXES
+    assert pgschema.IDX_CHUNKS_TSV_GIN in pgschema.CHUNKS_TSV_REBUILD
 
 
 def test_graph_tables_present_and_typed():

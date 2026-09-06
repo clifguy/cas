@@ -159,6 +159,84 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  storage-deploy-floor:
+    # The deployed target is Postgres Flexible Server major 16, while every
+    # other Postgres this repository runs against -- the `test` job above, the
+    # image build, and the workstation -- is 17. A statement valid only on 17
+    # therefore passes every gate and fails at deploy, where it surfaces as a
+    # broken release rather than a red check. `ALTER COLUMN ... SET EXPRESSION`
+    # is one such statement, and it will not be the only one.
+    #
+    # This job closes that by running the storage-touching tests against the
+    # floor: `tests/sage/`, plus the BFF session store, which is the one module
+    # outside that tree issuing its own SQL against the service database.
+    # Scoped rather than whole-suite because the risk is version-specific SQL
+    # and DDL, and running the rest would double the runner minutes to re-prove
+    # behaviour that never opens a connection. No coverage upload: the pg17 job
+    # above owns that, and two reports of the same lines would race on the
+    # artifact name.
+    #
+    # Deliberately a separate job rather than a `strategy.matrix` leg on `test`,
+    # though a matrix would keep the two setups in lockstep and this one is a
+    # hand-maintained copy. A matrix renames the check to `test (pg17)`, which
+    # silently drops the branch ruleset's required `test` context — trading a
+    # duplicated setup block for a disabled required check. If the ruleset is
+    # ever updated to match, prefer the matrix.
+    name: storage tests on the deploy floor (pg16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          prune-cache: true
+          python-version: "3.14"
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-nomic-embed-text-v1.5-rev1
+          restore-keys: |
+            hf-${{ runner.os }}-nomic-embed-text-v1.5-
+
+      - name: Install dependencies (from lockfile)
+        run: uv sync --locked --extra test
+
+      - name: Pre-cache nomic-embed-text model (via runtime path)
+        run: |
+          .venv/bin/python -c "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()"
+
+      - name: Run the storage-touching tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          SAGE_TEST_STUB_PROVIDERS: "1"
+          SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
+        run: |
+          .venv/bin/pytest -v --tb=short -n auto tests/sage/ tests/app/test_bff_session_store.py
+
   container:
     # Container packaging path: build both images and run the smoke tests
     # (SMK/BSMK) on every event this workflow answers, so a Dockerfile regression cannot merge

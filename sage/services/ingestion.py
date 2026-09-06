@@ -80,6 +80,7 @@ from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
 from sage.services.metadata import _wire_version
+from sage.services.passage_structure import indexed_structure
 from sage.services.vault_source_errors import report_refusal_as
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
@@ -1541,12 +1542,24 @@ class IngestionService:
         # are all stable per-document fields whose values must
         # ride along with each chunk row so the content store can
         # pre-filter at top-K time without a graph-store round trip.
+        #
+        # The passage's structure relative to its document is derived here too,
+        # from the same record and by the same function the migration uses
+        # (CAS-ADR-049 Decision 3), so a re-ingested document and a migrated one
+        # carry identical structure for the same source. The stored heading path
+        # is untouched: it is the passage's address, and enumeration, section
+        # reads and any cached path resolve exactly as before.
+        #
+        # A document that vanished mid-pipeline leaves the field underived,
+        # which the binding reads as the pre-decision behaviour rather than as
+        # an empty structure.
         if doc and body_chunks:
             for chunk in body_chunks:
                 if doc.doc_type:
                     chunk.doc_type = doc.doc_type
                 chunk.lifecycle_status = doc.lifecycle_status
                 chunk.project = doc.project
+                chunk.indexed_structure = indexed_structure(chunk.heading_path, doc.title)
 
         # The passage surface holds authored passages only (CAS-ADR-049);
         # document-level text goes to its own surface, written below.
@@ -1556,6 +1569,11 @@ class IngestionService:
         # semantic search can reach chunks via heading-text-only queries
         # (the equivalent of Word's Find on a heading). Stored chunk.content
         # is unchanged — heading_path travels with the embedder input only.
+        #
+        # The *address* is what the embedder sees, deliberately and unchanged.
+        # CAS-ADR-049 Decision 3 moves the keyword arm's top weight to the
+        # relative structure and leaves the vector arm alone, so no corpus needs
+        # re-embedding to take that change.
         if chunks:
             texts = [
                 f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content for c in chunks

@@ -805,8 +805,18 @@ class PostgresFTSBackend:
         """Recreate the schema and load ``(document_id, heading_path, content)`` rows.
 
         Rows are grouped by document and written through the store's own
-        ``index_chunks``, so the corpus is laid down exactly as an ingest would
-        lay it down. Returns the number of rows loaded.
+        ``index_chunks``, so the corpus takes the write path a caller takes.
+
+        One deliberate departure from ingest: the passages carry no derived
+        indexed structure, so the keyword vector's top weight reads the address
+        (CAS-ADR-049 Decision 3, through the generated column's coalesce). This
+        harness has no per-document title to derive one from -- it is handed
+        paths and content, not records. Holding the indexing fixed is also what
+        a comparability harness wants: it measures two keyword backends against
+        each other, so the one thing that must not vary between its arms is how
+        the corpus was indexed.
+
+        Returns the number of rows loaded.
         """
         rows = list(chunks)
         grouped: dict[str, list[Chunk]] = {}

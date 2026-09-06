@@ -28,6 +28,7 @@ from typing import Literal
 import yaml
 
 from sage.adapters.interfaces import (
+    HEADING_PATH_SEPARATOR,
     ContentStore,
     EmbeddingProvider,
     GraphStore,
@@ -135,7 +136,7 @@ def _rank_candidate_matches(
 
     scored: list[tuple[int, int, str]] = []  # (tier, length, heading_path)
     for hp in available:
-        segments = hp.split(" > ")
+        segments = hp.split(HEADING_PATH_SEPARATOR)
         leaf = segments[-1].casefold()
         leaf_stripped = leaf.strip()
         if leaf_stripped == needle:

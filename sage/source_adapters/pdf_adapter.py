@@ -31,6 +31,7 @@ from pathlib import Path
 import pdfplumber
 import pypdf
 
+from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
 from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
 
 _DEFAULT_MAX_PAGES = 1000
@@ -153,7 +154,7 @@ def _build_outline_headings(
         while ancestor_stack and ancestor_stack[-1][0] >= level:
             ancestor_stack.pop()
         path_parts = [a[1] for a in ancestor_stack] + [text]
-        path = " > ".join(path_parts)
+        path = HEADING_PATH_SEPARATOR.join(path_parts)
 
         if i + 1 < len(in_range):
             end_page = min(in_range[i + 1][2], pages_extracted)

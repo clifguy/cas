@@ -28,6 +28,7 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
+from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
 from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
@@ -327,7 +328,7 @@ class DocxAdapter(SourceAdapter):
                         stack.pop()
                     stack.append((level, heading_text))
 
-                    path = " > ".join(h[1] for h in stack)
+                    path = HEADING_PATH_SEPARATOR.join(h[1] for h in stack)
 
                     headings.append(
                         HeadingNode(

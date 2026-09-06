@@ -10,6 +10,7 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 from mdit_py_plugins.front_matter import front_matter_plugin
 
+from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
 from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
@@ -86,7 +87,7 @@ class MarkdownAdapter(SourceAdapter):
             while stack and stack[-1][0] >= level:
                 stack.pop()
             stack.append((level, heading_text))
-            path = " > ".join(h[1] for h in stack)
+            path = HEADING_PATH_SEPARATOR.join(h[1] for h in stack)
 
             next_start = raw[idx + 1][2] if idx + 1 < len(raw) else len(lines)
             content = "\n".join(lines[end:next_start]).strip()

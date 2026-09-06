@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sage.adapters.interfaces import (
+    HEADING_PATH_SEPARATOR,
     LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     NON_CANONICAL_SOURCE_PATH_PATTERN,
     AbstractionProvider,
@@ -59,6 +60,27 @@ class StubContentStore(ContentStore):
         """Return the stored document-level row, for assertions in tests."""
         return self._surfaces.get(document_id)
 
+    async def update_document_surface_text(
+        self, document_id: str, matchable: str, orienting: str
+    ) -> bool:
+        surface = self._surfaces.get(document_id)
+        if surface is None:
+            return False
+        surface.matchable = matchable
+        surface.orienting = orienting
+        return True
+
+    async def update_indexed_structure(
+        self, document_id: str, derived: Sequence[tuple[str, str]]
+    ) -> int:
+        wanted = dict(derived)
+        written = 0
+        for chunk in self._store.get(document_id, []):
+            if chunk.heading_path in wanted:
+                chunk.indexed_structure = wanted[chunk.heading_path]
+                written += 1
+        return written
+
     async def remove_document(self, document_id: str) -> None:
         self._store.pop(document_id, None)
         self._surfaces.pop(document_id, None)
@@ -80,6 +102,41 @@ class StubContentStore(ContentStore):
             removed += len(chunks) - len(kept)
             self._store[document_id] = kept
         return removed
+
+    # -- migration to the relative indexed structure (CAS-ADR-049 Decision 3) --
+
+    async def passages_awaiting_indexed_structure(self) -> list[tuple[str, str]]:
+        seen: dict[tuple[str, str], None] = {}
+        for document_id, chunks in self._store.items():
+            for chunk in chunks:
+                if chunk.indexed_structure is None:
+                    seen.setdefault((document_id, chunk.heading_path))
+        return list(seen)
+
+    async def passage_vector_ranks_indexed_structure(self) -> bool:
+        """Always true: this double has no generated vector that could be stale.
+
+        The Postgres binding's keyword vector is a stored generated column, so a
+        vault provisioned before the decision carries one built from the address
+        until a rebuild replaces it. Nothing here corresponds to that, and
+        reporting a repair as pending would make the double ask for work it
+        cannot perform.
+        """
+        return True
+
+    async def migrate_indexed_structure(self, derived: Sequence[tuple[str, str, str]]) -> int:
+        wanted = {(doc, path): structure for doc, path, structure in derived}
+        written = 0
+        for document_id, chunks in self._store.items():
+            for chunk in chunks:
+                if chunk.indexed_structure is not None:
+                    continue
+                structure = wanted.get((document_id, chunk.heading_path))
+                if structure is None:
+                    continue
+                chunk.indexed_structure = structure
+                written += 1
+        return written
 
     async def search_semantic(
         self,
@@ -175,10 +232,12 @@ class StubContentStore(ContentStore):
         turning on a title or a tag satisfying a match, or on derived text
         failing to, belongs against a real backend.
 
-        A chunk's indexed text is its heading path and its content, so a term
-        present only in a heading is findable. The two are not weighted apart
-        here; the production binding ranks a heading match above a body one,
-        which a test turning on that ordering must be written against.
+        A chunk's indexed text is its structure relative to its document and
+        its content, so a term present only in a heading is findable while a
+        document title that merely roots the path is not (CAS-ADR-049 Decision
+        3). The two are not weighted apart here; the production binding ranks a
+        heading match above a body one, which a test turning on that ordering
+        must be written against.
 
         Matching is substring containment over lowercased text, and the parse
         splits the query on whitespace. Stopwords, stemming, exclusion,
@@ -192,7 +251,16 @@ class StubContentStore(ContentStore):
             return []
 
         def _searchable(chunk: Chunk) -> str:
-            """The chunk's indexed text: its heading path and its content.
+            """The chunk's indexed text: its structure and its content.
+
+            The structure is the passage's own, relative to its document
+            (CAS-ADR-049 Decision 3) -- so a document title a source format made
+            its top-level heading is not searchable through every passage of
+            that document. A passage that carries no derived structure falls
+            back to its address, which is parity with the binding's generated
+            column rather than a divergence: both reproduce the pre-decision
+            behaviour for a vault that has taken the column but not yet the
+            migration.
 
             A legacy document-header row is the exception. Its
             ``heading_path`` is an internal sentinel rather than a heading
@@ -211,7 +279,12 @@ class StubContentStore(ContentStore):
             """
             if chunk.heading_path == LEGACY_DOCUMENT_HEADER_HEADING_PATH:
                 return chunk.content.lower()
-            return f"{chunk.heading_path} {chunk.content}".lower()
+            structure = (
+                chunk.indexed_structure
+                if chunk.indexed_structure is not None
+                else chunk.heading_path
+            )
+            return f"{structure} {chunk.content}".lower()
 
         results: list[SearchResult] = []
         for document_id, chunks in self._store.items():
@@ -317,7 +390,8 @@ class StubContentStore(ContentStore):
         matched = [
             c
             for c in chunks
-            if c.heading_path == heading_prefix or c.heading_path.startswith(heading_prefix + " > ")
+            if c.heading_path == heading_prefix
+            or c.heading_path.startswith(heading_prefix + HEADING_PATH_SEPARATOR)
         ]
         matched.sort(key=lambda c: c.chunk_index)
         return matched

@@ -5,11 +5,11 @@ synthetic header row per document among its passages. The migration moves that
 text to the new surface, and must be safe to run again on a vault it has
 already repaired.
 
-Stored heading paths are deliberately not rewritten here. CAS-ADR-049 also
-places a passage's structure relative to its document, but for a source whose
-title is also its top-level heading the two clauses of that decision name the
-same string, and rewriting the paths changes how every section of such a
-document is addressed. That half is tracked separately.
+Stored heading paths are deliberately not rewritten here, and not by the sibling
+pass that derives a passage's structure relative to its document either: an
+address does not change, and the indexed structure is carried by a field of its
+own (CAS-ADR-049 Decision 3). That pass is covered in
+``tests/sage/test_indexed_structure_migration.py``.
 """
 
 from datetime import datetime, timezone

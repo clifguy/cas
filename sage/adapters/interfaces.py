@@ -65,9 +65,34 @@ class KeywordQueryParse(NamedTuple):
 NON_CANONICAL_SOURCE_PATH_PATTERN = r"(^|/)[.](/|$)|//|/$"
 
 
+# The delimiter a heading path's elements are joined with. Shared by every
+# source adapter that builds a path and by the rule that reads one back
+# (CAS-ADR-049 Decision 3) rather than written once per format: a path is
+# produced in one place and split in another, and the two cannot be allowed to
+# answer differently. A heading whose own text contains the delimiter is
+# ambiguous to every consumer that splits on it; the adapters join without
+# escaping, so nothing downstream can recover the distinction.
+HEADING_PATH_SEPARATOR = " > "
+
+
 @dataclass
 class Chunk:
-    """A chunk of document content for indexing."""
+    """A chunk of document content for indexing.
+
+    ``heading_path`` is the passage's *address*: the path exactly as the source
+    adapter produced it, which is what heading enumeration returns and what a
+    section read accepts. ``indexed_structure`` is the passage's structure
+    *relative to its document* -- that path with a root element equal to the
+    document title removed, because the title is document-level and the document
+    surface carries it. CAS-ADR-049 Decision 3 separates the two roles; only the
+    second reaches the keyword arm's top ranking weight.
+
+    ``indexed_structure`` is ``None`` when it has not been derived -- a vault
+    that has taken the column but not yet the backfill, or a caller that built a
+    chunk without a document to derive it from. A binding falls back to the
+    address in that case, so an underived passage keeps the pre-decision
+    behaviour rather than dropping out of the index.
+    """
 
     document_id: str
     heading_path: str
@@ -77,6 +102,7 @@ class Chunk:
     doc_type: str | None = None
     lifecycle_status: str | None = None
     project: str | None = None
+    indexed_structure: str | None = None
 
 
 @dataclass
@@ -194,6 +220,37 @@ class ContentStore(ABC):
         """Remove a document's document-level row (idempotent)."""
 
     @abstractmethod
+    async def update_document_surface_text(
+        self, document_id: str, matchable: str, orienting: str
+    ) -> bool:
+        """Rewrite a document-level row's text, leaving its vector in place.
+
+        The counterpart of ``update_chunk_metadata`` for the document surface:
+        a metadata edit changes what the document says it is, so the keyword
+        halves must be recomposed, but nothing about the edit warrants
+        re-embedding a corpus. The stored vector therefore keeps describing the
+        text as it read when the document was last indexed -- the same posture
+        passages already have, where a metadata edit never re-embeds either.
+
+        Returns whether a row was updated; false when the document has no
+        document-level row.
+        """
+
+    @abstractmethod
+    async def update_indexed_structure(
+        self, document_id: str, derived: Sequence[tuple[str, str]]
+    ) -> int:
+        """Rewrite one document's derived structure, by ``(heading_path, structure)``.
+
+        Distinct from the migration's writer, which fills only what is
+        underived: a title edit changes the *correct* value for passages that
+        already carry one, so this overwrites. Scoped to a single document,
+        because a title belongs to one.
+
+        Returns the number of rows written.
+        """
+
+    @abstractmethod
     async def remove_document(self, document_id: str) -> None:
         """Remove a document's passages and its document surface (idempotent).
 
@@ -218,6 +275,51 @@ class ContentStore(ABC):
     @abstractmethod
     async def delete_legacy_document_header_rows(self) -> int:
         """Delete every legacy header row; returns the number removed."""
+
+    # -- migration to the relative indexed structure (CAS-ADR-049 Decision 3) --
+    # A vault provisioned before a passage's structure was separated from its
+    # address indexes the whole heading path at the top ranking weight, and
+    # carries no derived structure at all. These three repair that, and have no
+    # caller outside the migration.
+
+    @abstractmethod
+    async def passages_awaiting_indexed_structure(self) -> list[tuple[str, str]]:
+        """Return the distinct ``(document_id, heading_path)`` still underived.
+
+        Distinct rather than per-row because the derived value is a function of
+        exactly that pair, so one derivation serves every passage sharing it.
+        An empty result means the backfill has nothing to do -- which, with the
+        vector rebuild reported separately, is not on its own enough to
+        conclude that the vault is migrated.
+        """
+
+    @abstractmethod
+    async def passage_vector_ranks_indexed_structure(self) -> bool:
+        """Whether the keyword arm already ranks the relative structure.
+
+        Reported separately from whether any passage still awaits derivation,
+        because the two can disagree: a migration interrupted after its backfill
+        leaves nothing to derive and a vector still built from the address, so a
+        caller guarding only on the backfill would never repair it.
+        """
+
+    @abstractmethod
+    async def migrate_indexed_structure(self, derived: Sequence[tuple[str, str, str]]) -> int:
+        """Apply ``(document_id, heading_path, structure)`` and repair the vector.
+
+        Keyed on the pair rather than on a row identity because the passage
+        surface carries no primary key, and because the value is a function of
+        exactly that pair -- so applying it to every row sharing it is correct
+        rather than merely convenient. A row that already carries a derived
+        value is left alone, so a re-run cannot overwrite what a later ingest
+        wrote from a newer title.
+
+        Atomic, and it also brings the keyword vector to the relative structure
+        if it is not there yet -- one operation because a binding may be able to
+        order the two so that the cheaper one runs under the other's cover.
+
+        Returns the number of rows the derivation wrote.
+        """
 
     @abstractmethod
     async def search_semantic(

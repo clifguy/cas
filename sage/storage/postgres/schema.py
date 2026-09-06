@@ -183,20 +183,44 @@ CREATE TABLE IF NOT EXISTS document_tags (
 # pgvector embedding column and a generated tsvector full-text column)
 # ---------------------------------------------------------------------------
 
+# CAS-ADR-049 Decision 3 separates a passage's *address* -- ``heading_path``,
+# unchanged, what enumeration returns and a section read accepts -- from its
+# *indexed structure*, that path relative to the document. Only the second
+# reaches the top ranking weight, so a title that a source format made its
+# top-level heading stops being indexed into every passage of its document.
+#
+# ``coalesce`` is a compatibility clause rather than a shorthand.
+# ``indexed_structure`` reaches an existing vault through ADDITIVE_COLUMNS on
+# its next open and is filled by the migration; between those two moments every
+# row is NULL and this expression reproduces the pre-decision behaviour exactly.
+# That window is not hypothetical -- it is every vault, from the first open
+# after deploy until an operator runs the migration.
+#
+# The column is nullable with no default because an empty relative structure is
+# a legitimate value: it is what the top-level heading's own passage carries.
+# ``NULL`` therefore has to be what "not yet derived" means. ``DEFAULT ''``
+# would make ``coalesce`` return the empty string for every unmigrated row and
+# index nothing at all at weight A.
+CHUNKS_INDEXED_STRUCTURE_EXPRESSION = "coalesce(indexed_structure, heading_path)"
+
+CHUNKS_TSV_EXPRESSION = (
+    f"setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
+    f"{CHUNKS_INDEXED_STRUCTURE_EXPRESSION}), 'A')"
+    f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', content), 'D')"
+)
+
 CHUNKS_TABLE = f"""\
 CREATE TABLE IF NOT EXISTS chunks (
     document_id text NOT NULL,
     heading_path text NOT NULL,
+    indexed_structure text,
     content text NOT NULL,
     chunk_index integer NOT NULL,
     embedding vector({EMBEDDING_DIM}),
     doc_type text,
     lifecycle_status text,
     project text,
-    tsv tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', heading_path), 'A')
-        || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', content), 'D')
-    ) STORED
+    tsv tsvector GENERATED ALWAYS AS ({CHUNKS_TSV_EXPRESSION}) STORED
 );
 """
 
@@ -277,9 +301,14 @@ UNIQUE_NATURAL_KEY_INDEXES: tuple[str, ...] = (
     "ON staging_edges(source_id, target_id, edge_type);",
 )
 
+# Hoisted because the generated-column rebuild has to recreate this index: a
+# dropped column takes its indexes with it. One string, so a rebuilt index
+# cannot be defined differently from the one the bootstrap builds.
+IDX_CHUNKS_TSV_GIN = "CREATE INDEX IF NOT EXISTS idx_chunks_tsv_gin ON chunks USING GIN (tsv);"
+
 CONTENT_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);",
-    "CREATE INDEX IF NOT EXISTS idx_chunks_tsv_gin ON chunks USING GIN (tsv);",
+    IDX_CHUNKS_TSV_GIN,
     "CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw "
     "ON chunks USING hnsw (embedding vector_cosine_ops);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_document_surface_document_id "
@@ -312,6 +341,51 @@ _TABLES: tuple[str, ...] = (
 # like the table and index DDL it runs alongside.
 ADDITIVE_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS stored_content_hash text;",
+    # Nullable with no default, deliberately: NULL is what "not yet derived"
+    # means, and it is the value CHUNKS_TSV_EXPRESSION's coalesce reads to keep
+    # an unmigrated vault on the pre-decision behaviour. A default of '' would
+    # empty the top ranking weight for every row it touched. Adding a nullable
+    # column with no default is catalog-only, so this is safe to run on every
+    # vault open even on a table of tens of thousands of passages.
+    "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS indexed_structure text;",
+)
+
+
+# The generated-column rebuild. Deliberately NOT in ``ddl_statements()``: the
+# drop is destructive and the add is not idempotent, so both bootstrap gates
+# would reject them -- correctly, since the bootstrap runs on every vault open
+# and this rewrites the table. It runs once per vault, from the migration.
+#
+# Drop-and-re-add rather than ``ALTER COLUMN tsv SET EXPRESSION AS (...)``,
+# which is a PostgreSQL 17 feature. The workstation and every CI service
+# container run 17 while the deployed target is Flexible Server 16, so the
+# 17-only form would pass every test this repository runs and fail only at
+# deploy. Nothing here can catch that at runtime; the DDL is written to the
+# floor and a static test pins it.
+#
+# Dropping the column drops the GIN index over it, so the index is recreated in
+# the same statement list.
+CHUNKS_TSV_REBUILD: tuple[str, ...] = (
+    "ALTER TABLE chunks DROP COLUMN IF EXISTS tsv;",
+    "ALTER TABLE chunks ADD COLUMN tsv tsvector GENERATED ALWAYS AS "
+    f"({CHUNKS_TSV_EXPRESSION}) STORED;",
+    IDX_CHUNKS_TSV_GIN,
+)
+
+# Whether a vault's passage vector already ranks the relative structure.
+#
+# The test is whether the stored expression *names the column*, not whether it
+# equals CHUNKS_TSV_EXPRESSION: Postgres stores its own normalization of a
+# generated expression -- `'english'::regconfig`, `'A'::"char"`, added
+# parentheses -- so a whole-string comparison would report "not yet migrated"
+# forever and rewrite the table on every migration call. The column name is the
+# minimal discriminator that survives that normalization, and it is exactly the
+# property that matters: does weight A read the relative structure, or the
+# address?
+CHUNKS_TSV_GENERATION_EXPRESSION_PROBE = (
+    "SELECT generation_expression FROM information_schema.columns"
+    " WHERE table_schema = current_schema()"
+    " AND table_name = 'chunks' AND column_name = 'tsv'"
 )
 
 
