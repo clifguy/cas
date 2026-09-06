@@ -83,6 +83,7 @@ from sage.models.schemas import Document, IngestRequest, LinkRequest
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.identifier_mention_inference import (
     IDENTIFIER_MENTION_RATIONALE_PREFIX,
+    _identifier_mention_rules,
     infer_identifier_mentions_for_document,
     plan_reference_reconcile,
 )
@@ -138,10 +139,17 @@ CAS_IDENTIFIER_MENTION_PATTERNS = [ADR_PATTERN, TICKET_PATTERN, FAILURE_PATTERN]
 # can never establish.
 #
 # Both halves carry weight. The accepted ids fail a pattern that is too
-# narrow (the ``F\d{1,2}`` bound that dropped every three-digit failure
-# id); the rejected ids fail
-# one widened past its id space, which is how a too-narrow pattern tends to
-# get "repaired".
+# narrow; the rejected ids fail one widened past its id space, which is how
+# a too-narrow pattern tends to get "repaired".
+#
+# Each reject set covers both word boundaries, and they fail to different
+# inputs. A lost *trailing* boundary shows up on an id one character too
+# long, which over-matches. A lost *leading* boundary shows up only on a
+# valid id embedded in a longer token -- ``REF12``, ``0xF3``, ``XT-0001``
+# -- because every id tested on its own starts at a boundary whether the
+# pattern demands one or not. Without the embedded cases a pattern missing
+# its leading ``\b`` passes every assertion here while matching mid-word in
+# real prose, which is what the schema's own regex guidance warns against.
 # ---------------------------------------------------------------------------
 
 _ID_SPACE_CASES = [
@@ -149,14 +157,15 @@ _ID_SPACE_CASES = [
         ADR_PATTERN,
         ["CAS-ADR-001", "CAS-ADR-042", "CAS-ADR-999"],
         # Two and four digits both fall outside the fixed three-digit width;
-        # a bare ``ADR-042`` lacks the project prefix the pattern anchors on.
-        ["CAS-ADR-42", "CAS-ADR-1000", "ADR-042"],
+        # a bare ``ADR-042`` lacks the project prefix the pattern anchors on;
+        # ``XCAS-ADR-001`` embeds a valid id and needs the leading boundary.
+        ["CAS-ADR-42", "CAS-ADR-1000", "ADR-042", "XCAS-ADR-001"],
         id="adr",
     ),
     pytest.param(
         TICKET_PATTERN,
-        ["T-0001", "T-0581", "T-9999"],
-        ["T-001", "T-00001"],
+        ["T-0001", "T-0042", "T-9999"],
+        ["T-001", "T-00001", "XT-0001"],
         id="ticket",
     ),
     pytest.param(
@@ -164,7 +173,7 @@ _ID_SPACE_CASES = [
         # F100 and F1000 carry the three-and-more-digit case no other test
         # exercises; the superseded two-digit bound reached neither.
         ["F1", "F3", "F12", "F100", "F1000", "BASELINE", "BASELINE-2"],
-        ["F", "FX", "F1a"],
+        ["F", "FX", "F1a", "REF12", "0xF3"],
         id="failure_record",
     ),
 ]
@@ -241,39 +250,37 @@ def test_identifier_mention_regexes_span_the_cas_id_space(
 _REAL_VAULT_ROOT = default_vault_root()
 
 
-def _identifier_mention_patterns(config: dict) -> list[dict] | None:
-    """Return every identifier_mention pattern a vault config declares.
+def _patterns_the_engine_would_apply(config: dict) -> list[dict]:
+    """Return the vault's identifier_mention patterns as the engine reads them.
 
-    ``None`` when the config declares no such rule at all, which the caller
-    reports differently from a rule whose patterns diverge.
+    Selection is delegated to the engine's own reader rather than
+    re-implemented, so the pin compares against what production actually
+    applies. Two behaviours a private re-implementation kept getting wrong,
+    both of which the reader has: it accumulates across every
+    ``identifier_mention`` rule (``inference_rules`` is a list and nothing
+    forbids two, so a first-match read leaves the second free to hold a
+    stale pattern), and it honours each pattern's ``enabled`` flag, which
+    the schema defaults to true and the engine uses to skip a pattern
+    without removing it.
 
-    Accumulates across rules rather than returning the first match.
-    ``inference_rules`` is a list and nothing forbids two entries carrying
-    ``method: identifier_mention``; a first-match read would compare one of
-    them and leave the other free to hold a stale pattern that the engine
-    still applies — the divergence this pin exists to catch, hidden from
-    the pin itself.
+    ``enabled`` is then dropped from what is returned. A disabled pattern is
+    already gone, so the key that survives is always true and carries no
+    information — leaving it in would red the pin on a config that spells
+    out a default the engine treats as identical.
     """
-    edge_inference = config.get("edge_inference") or {}
-    patterns: list[dict] = []
-    found_rule = False
-    for assignment in edge_inference.get("tier_assignments") or []:
-        if assignment.get("edge_type") != "references":
-            continue
-        for rule in assignment.get("inference_rules") or []:
-            if rule.get("method") == "identifier_mention":
-                found_rule = True
-                patterns.extend(rule.get("patterns") or [])
-    return patterns if found_rule else None
+    patterns = _identifier_mention_rules(config.get("edge_inference"))
+    return [{k: v for k, v in pattern.items() if k != "enabled"} for pattern in patterns]
 
 
 def test_cas_vault_config_matches_canonical_patterns() -> None:
     """The cas vault's identifier_mention patterns equal this file's copy.
 
-    Compared literal-for-literal against the config file's own text rather
-    than through ``VaultConfig.model_validate``: the question is what the
-    vault declares, and a loader that expands paths or normalises shapes
-    would answer a slightly different one.
+    The config file's own text is the input, read rather than loaded
+    through ``VaultConfig.model_validate``: the question is what the vault
+    declares, and a loader that expands paths or normalises shapes would
+    answer a slightly different one. Which patterns that text *applies* is
+    a separate question, and the engine's reader answers it -- see
+    ``_patterns_the_engine_would_apply``.
     """
     config_path = _REAL_VAULT_ROOT / "cas" / "vault_config.yaml"
     if not config_path.exists():
@@ -283,11 +290,12 @@ def test_cas_vault_config_matches_canonical_patterns() -> None:
         )
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    live_patterns = _identifier_mention_patterns(config)
-    assert live_patterns is not None, (
-        f"{config_path} declares no identifier_mention rule under its "
-        f"`references` tier assignment. Every mention in the vault has "
-        f"stopped producing edges; restore the rule with `update_vault_config`."
+    live_patterns = _patterns_the_engine_would_apply(config)
+    assert live_patterns, (
+        f"{config_path} applies no identifier_mention pattern at all -- the "
+        f"rule is absent from its `references` tier assignment, or every "
+        f"pattern it declares is `enabled: false`. Every mention in the vault "
+        f"has stopped producing edges; repair with `update_vault_config`."
     )
 
     by_regex = sorted(live_patterns, key=lambda p: p["regex"])
@@ -296,7 +304,9 @@ def test_cas_vault_config_matches_canonical_patterns() -> None:
     expected_regexes = [p["regex"] for p in expected]
     assert live_regexes == expected_regexes, (
         f"Identifier-mention regexes diverge between {config_path} and this "
-        f"file's CAS_IDENTIFIER_MENTION_PATTERNS.\n"
+        f"file's CAS_IDENTIFIER_MENTION_PATTERNS. A regex present here and "
+        f"missing from the vault list is either absent from the config or "
+        f"disabled there.\n"
         f"  vault: {live_regexes}\n"
         f"  suite: {expected_regexes}\n"
         f"Whichever is stale is a repair, not a fixture edit: correct the "
@@ -1624,12 +1634,8 @@ async def test_adr_resolution_via_tier3_adr_num_substitution(tmp_path, services)
 # (no dashed F- prefix). The legacy regex ``\bF-\d+\b`` matched none of
 # these. The current regex ``\bF\d+\b|\bBASELINE(?:-\d+)?\b`` covers both
 # shapes over an unbounded digit run. Tier3 substitution uses ``{id}`` so
-# the matched literal becomes the canonical filter value directly.
-#
-# The digit run is unbounded deliberately. An earlier ``\bF\d{1,2}\b``
-# tracked a ``failure_id`` schema that has since widened to ``F\d+``, and
-# the mention regex went unswept -- so three-digit failure ids stopped
-# resolving while the suite stayed green against its own drifted copy.
+# the matched literal becomes the canonical filter value directly. The
+# digit run is unbounded deliberately; see the module header for why.
 # ---------------------------------------------------------------------------
 
 
