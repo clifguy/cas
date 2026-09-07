@@ -8112,9 +8112,8 @@ async def test_keyword_query_answered_within_one_passage_does_not_claim_document
     assert "not necessarily together in one passage" not in joined, (
         "the terms did have to appear together; that is why the result is empty"
     )
-    assert "absentword" in joined and "dropping it" in joined, (
-        "the exclusion narrowed the scope, and dropping it is the remedy"
-    )
+    assert "absentword" in joined, "the excluded term is half the match condition"
+    assert "dropping the exclusion" in joined, "the actionable remedy is to drop the exclusion"
 
 
 async def test_keyword_within_passage_advisory_does_not_require_an_exclusion(
@@ -8232,7 +8231,7 @@ async def test_keyword_phrase_beside_an_exclusion_keeps_the_adjacency_advisory(
     assert response.results == []
     joined = " ".join((response.hints or {}).get("warnings") or [])
     assert "adjacent" in joined, "the stricter condition is the one that failed"
-    assert "dropping it" not in joined, (
+    assert "dropping the exclusion" not in joined, (
         "dropping the exclusion would not make an unsatisfied adjacency match"
     )
 

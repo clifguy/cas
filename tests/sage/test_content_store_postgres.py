@@ -2734,8 +2734,61 @@ async def test_a_negated_conjunction_is_not_told_no_document_carries_its_terms(
         "a document does carry both terms apart; the query was not evaluated that way"
     )
     assert "No document" not in joined, "a document carries every term -- the miss is per passage"
-    assert "absentword" in joined, "the advisory must name the exclusion that narrowed the scope"
-    assert "dropping it" in joined, "the actionable remedy is to drop the exclusion"
+    assert "absentword" in joined, "the advisory must name the exclusion the match had to avoid"
+    assert "dropping the exclusion" in joined, "the actionable remedy is to drop the exclusion"
+
+
+async def test_a_passage_carrying_the_excluded_term_is_not_reported_as_carrying_nothing(
+    store, graph_store, stub_embedding_provider, minimal_config
+):
+    """An exclusion removes units as well as narrowing them, and the sentence must say both.
+
+    The scope claim alone is not the whole condition. A passage carrying every
+    required term *and* an excluded one satisfies the conjunction and is
+    dropped anyway, so "no passage carries all of them together" is false for
+    exactly that corpus -- the same false-claim shape the branch exists to
+    close, on the input its first fixture could not carry. The fixture that
+    separates them holds the excluded term in the same passage as the required
+    ones; a corpus where the excluded term is genuinely absent passes against
+    the defect, because then no passage does carry them all.
+    """
+    from sage.models.schemas import DiscoverRequest, RetrievalMode
+
+    await _insert_document(graph_store, "0000dd04_together", "Together Catalog", "active")
+    await store.index_chunks(
+        "0000dd04_together",
+        [
+            _chunk(
+                "0000dd04_together",
+                content="deltaword and epsilonword together with absentword here",
+            )
+        ],
+    )
+
+    service = await _keyword_service(store, graph_store, stub_embedding_provider, minimal_config)
+
+    control = await service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword")
+    )
+    assert [h.document.id for h in control.results] == ["0000dd04_together"], (
+        "precondition: one passage carries both required terms, together"
+    )
+
+    response = await service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword -absentword")
+    )
+
+    assert response.results == [], "precondition: the exclusion empties the result"
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "matches only a passage carrying all of them together" not in joined, (
+        "a passage does carry them all together; the exclusion is what removed it"
+    )
+    assert "carrying none of the terms it excludes" in joined, (
+        "the match condition includes avoiding the excluded terms, not only carrying the rest"
+    )
+    assert "beside an excluded term" in joined, (
+        "the sentence must name the removal, not only the narrowed scope"
+    )
 
 
 async def test_total_available_agrees_across_the_two_keyword_paths(
