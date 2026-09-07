@@ -659,10 +659,10 @@ def _module_ingest_helpers(tree: ast.AST) -> frozenset[str]:
     )
 
 
-def _first_ingest_line(
+def _ingest_lines(
     func: ast.FunctionDef | ast.AsyncFunctionDef, helpers: frozenset[str]
-) -> int | None:
-    """The line of the function's earliest ingestion call, or None if it makes none.
+) -> list[int]:
+    """Every line at which the function puts a document into the pipeline.
 
     Scoped to the whole body, nested definitions included: a document put into
     the pipeline by a nested helper is in the pipeline just the same, and the
@@ -672,14 +672,38 @@ def _first_ingest_line(
     ``_module_ingest_helpers``. A call to one of them counts as an ingestion at
     the line of the *call*, which is where the document enters the pipeline as
     far as this function is concerned -- and is the line a reader comparing it
-    against a following sleep has to look at.
+    against a following sleep or yield has to look at.
+
+    The two name sets are matched differently, and the difference is load
+    bearing. An entry point is matched by ``_called_name``, so the bare call
+    and ``service.ingest_document(...)`` both count -- the tool and the
+    service method are the same ingestion. A module-local helper is matched
+    only as a bare ``Name``, because that is the only way one can be reached
+    from inside its own module; admitting the attribute spelling would let any
+    method that happens to share a helper's name -- ``handle.reload()`` beside
+    a module-level ``reload`` that ingests -- qualify a sleep it has nothing
+    to do with.
+
+    Every line rather than the earliest, because a function may ingest more
+    than once and a wait covering the first says nothing about the last.
     """
-    lines = [
-        node.lineno
-        for node in ast.walk(func)
-        if isinstance(node, ast.Call) and _called_name(node.func) in (INGEST_CALLS | helpers)
-    ]
-    return min(lines) if lines else None
+    lines: list[int] = []
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        if _called_name(node.func) in INGEST_CALLS:
+            lines.append(node.lineno)
+        elif isinstance(node.func, ast.Name) and node.func.id in helpers:
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+def _first_ingest_line(
+    func: ast.FunctionDef | ast.AsyncFunctionDef, helpers: frozenset[str]
+) -> int | None:
+    """The line of the function's earliest ingestion call, or None if it makes none."""
+    lines = _ingest_lines(func, helpers)
+    return lines[0] if lines else None
 
 
 def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
@@ -805,32 +829,38 @@ def _module_wait_helpers(tree: ast.AST) -> frozenset[str]:
     )
 
 
-def _first_pipeline_wait_line(
+def _pipeline_wait_lines(
     func: ast.FunctionDef | ast.AsyncFunctionDef, wait_helpers: frozenset[str]
-) -> int | None:
-    """The line of the function's earliest wait on the pipeline, or None if it makes none.
+) -> list[int]:
+    """Every line at which the function waits on the pipeline.
 
-    A wait is either a consultation of the claim in the function's own body --
-    the shared helper's entry points or the registry, matched exactly as
-    ``_consults_claim`` matches them -- or a call to one of the module's own
-    waiting helpers, from ``_module_wait_helpers``.
+    A wait is either a consultation of the claim -- the shared helper's entry
+    points or the registry, matched exactly as ``_consults_claim`` matches
+    them -- or a call to one of the module's own waiting helpers, from
+    ``_module_wait_helpers``.
 
-    ``_consults_claim``'s two exclusions are reproduced rather than relaxed,
-    because both bite here for the same reasons they bite there. The match is
-    on identifiers, so a docstring saying the fixture deliberately does not
-    wait is a string constant and cannot match. The descent stops at a nested
-    scope, so a nested helper's wait does not exempt the body that encloses
-    it.
+    ``_consults_claim``'s *identifier* exclusion is reproduced: the match is on
+    a name or an attribute, so a docstring saying the fixture deliberately does
+    not wait is a string constant and cannot match.
 
-    A *line* rather than a boolean, because for the arm below the position is
-    the whole question: a fixture that waits only after handing control on has
-    not waited for its tests, and a walk that reads the body as an unordered
-    set cannot tell the two apart.
+    Its *nested-scope* exclusion is deliberately **not** reproduced, and the
+    asymmetry is the point. That exclusion exists in the poll arms because they
+    attribute a nested helper's loop to the nested helper under its own name,
+    so letting its wait also exempt the enclosing body would waive a finding
+    twice over. The arm below attributes nothing to a nested definition -- a
+    nested ``def`` is not a fixture -- so the same stop would simply lose the
+    wait, while ``_ingest_lines`` descends and keeps the ingest beside it. A
+    fixture that seeds and waits inside one nested helper would then be
+    reported for a document it demonstrably waited for.
+
+    Lines rather than a boolean, and every line rather than the earliest,
+    because for the arm below position is the whole question: what matters is
+    whether some wait falls between the last document put in flight and the
+    handoff, which neither an unordered read nor a single earliest line can
+    answer.
     """
 
     def scan(node: ast.AST) -> list[int]:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            return []
         if isinstance(node, ast.Attribute) and node.attr in CLAIM_AWARE_MARKERS:
             return [node.lineno]
         if isinstance(node, ast.Name) and node.id in CLAIM_AWARE_MARKERS:
@@ -844,8 +874,7 @@ def _first_pipeline_wait_line(
             found.extend(scan(child))
         return found
 
-    lines = [line for stmt in func.body for line in scan(stmt)]
-    return min(lines) if lines else None
+    return sorted(line for stmt in func.body for line in scan(stmt))
 
 
 def _is_fixture(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -890,19 +919,27 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
       ``_first_ingest_line`` resolves it for the arm above. A fixture whose
       only ingest follows its ``yield`` is doing teardown work, and has no
       document in flight at the moment it hands control on.
-    * **Not waiting before that yield**, by ``_first_pipeline_wait_line``.
-      Delegation is the sanctioned form and is invisible here by
-      construction, whether the fixture calls the shared helper or the
-      module's own adapter for it -- but only a wait that *precedes* the
-      handoff exempts one. Both conditions are positional against the same
-      line, and deliberately so: a wait in a ``finally`` runs after every
-      test has already had the document, and reading the body as an unordered
-      set would exempt a fixture on the strength of a wait its tests never
-      benefited from. That is not a hypothetical spelling. Both attested
-      instances carry a teardown drain, so the natural next cleanup -- retire
-      the drain's allowlist entry by making it a real wait -- writes exactly
-      that fixture, and a position-blind walk would go quiet on it while
-      still printing "wait before the yield".
+    * **Not waiting between the last such ingestion and that yield**, by
+      ``_pipeline_wait_lines``. Delegation is the sanctioned form and is
+      invisible here by construction, whether the fixture calls the shared
+      helper or the module's own adapter for it -- but only a wait standing
+      *between* the document going into flight and the handoff exempts one,
+      and the walk is ordered against both ends for a reason each.
+
+      Against the handoff, because a wait in a ``finally`` runs after every
+      test has already had the document. That spelling is not hypothetical:
+      both attested instances carry a teardown drain, so the natural cleanup
+      -- retire the drain's allowlist entry by making it a real wait --
+      writes exactly that fixture, and a walk reading the body as an
+      unordered set would go quiet on it while still printing "wait before
+      the yield".
+
+      Against the last ingestion rather than the first, because a fixture may
+      seed more than once. Waiting for the opening document and then seeding
+      another leaves the second in flight at the handoff, and a walk anchored
+      on the earliest ingest reads that as covered -- which is what appending
+      a document to an existing multi-document fixture, below its wait,
+      produces.
 
     The walk has no opinion about *what* the tests then do with the document.
     It cannot: they are other functions, often in other files by the time a
@@ -926,19 +963,24 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _is_fixture(node):
             continue
-        ingest_line = _first_ingest_line(node, ingest_helpers)
-        if ingest_line is None:
+        ingest_lines = _ingest_lines(node, ingest_helpers)
+        if not ingest_lines:
             continue
         yields = [
             inner.lineno
             for inner in ast.walk(node)
-            if isinstance(inner, (ast.Yield, ast.YieldFrom)) and inner.lineno > ingest_line
+            if isinstance(inner, (ast.Yield, ast.YieldFrom)) and inner.lineno > ingest_lines[0]
         ]
         if not yields:
             continue
         handoff = min(yields)
-        wait_line = _first_pipeline_wait_line(node, wait_helpers)
-        if wait_line is not None and wait_line < handoff:
+        # The document at risk is the *last* one put in flight before the
+        # handoff, so that is what the wait has to follow. Taking the first
+        # instead exempts a fixture that waits for its opening document and
+        # then seeds another, which is what the natural edit to a multi-document
+        # fixture produces.
+        last_ingest = max(line for line in ingest_lines if line < handoff)
+        if any(last_ingest < wait < handoff for wait in _pipeline_wait_lines(node, wait_helpers)):
             continue
         findings.append((handoff, node.name))
     return sorted(findings)
@@ -1893,6 +1935,43 @@ def test_bare_sleep_detector_ignores_a_call_the_module_does_not_define() -> None
     assert _bare_sleep_waits(ast.parse(_SYNTHETIC_FOREIGN_HELPER_CALL_SOURCE)) == []
 
 
+# A method call that happens to share a module-local ingest helper's name. The
+# module defines ``reload`` and it ingests; ``handle.reload()`` is somebody
+# else's method entirely.
+_SYNTHETIC_ATTRIBUTE_NAMED_LIKE_A_HELPER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def reload(vault_id):
+        return _parse(await ingest_document(vault_id, "test/sample.md", "markdown"))
+
+
+    async def test_reloads_a_handle(vault_services, handle):
+        handle.reload()
+        await asyncio.sleep(0.5)
+        return handle.state
+    """
+)
+
+
+def test_bare_sleep_detector_ignores_an_attribute_sharing_a_helper_name() -> None:
+    """A module-local helper is resolved as a bare name, never as an attribute.
+
+    ``_called_name`` reduces ``service.ingest_document(...)`` to its attribute,
+    which is right for the entry points -- the tool and the service method are
+    the same ingestion however it is spelled. Carried over to the helper set it
+    over-reaches, because a helper local to a module can only be reached from
+    that module as a bare name; the attribute spelling necessarily names
+    something else. Here that something else is a handle's ``reload``, and the
+    sleep after it waits on a reload rather than on a document.
+
+    The narrowing costs nothing measurable: no attribute call anywhere in the
+    tracked tree collides with a module ingest-helper name today. It is pinned
+    because the collision is silent when it happens -- a finding against a
+    function that ingested nothing, whose remedy text names a pipeline the
+    reader will not find.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_ATTRIBUTE_NAMED_LIKE_A_HELPER_SOURCE)) == []
+
+
 # Four definitions for the resolution set to sort: one module-level function
 # that ingests directly, one synchronous one that ingests, one that does not
 # ingest at all, and one that ingests only through a ``def`` nested in its own
@@ -2056,6 +2135,109 @@ def test_unwaited_fixture_detector_flags_a_wait_that_runs_only_in_teardown() -> 
     assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_TEARDOWN_WAIT_FIXTURE_SOURCE)) == [
         (8, "vault_services")
     ]
+
+
+# The same post-handoff wait with no ``try`` around it at all. Structurally
+# ordinary; only its position is wrong.
+_SYNTHETIC_BARE_POST_YIELD_WAIT_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(services):
+        doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+        yield services
+        await await_pipeline_idle(
+            services.graph_store, doc["id"], service=services.ingestion_service
+        )
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_a_wait_below_a_bare_yield() -> None:
+    """The condition is position, not the shape of the block the wait sits in.
+
+    The companion to the teardown case, and the control that tells the two
+    readings apart. A walk that simply skips a ``Try``'s handlers and
+    ``finally`` -- "a wait in teardown is teardown" -- reports that one and is
+    green on every other fixture-arm test, so it cannot be excluded there. It
+    is the wrong rule, and this source is where it fails: the wait is in no
+    block at all, and is still a wait the fixture's tests never received.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_BARE_POST_YIELD_WAIT_SOURCE)) == [
+        (5, "vault_services")
+    ]
+
+
+# A fixture that waits for its first document and then seeds a second below the
+# wait. The shape an ordinary edit produces: a multi-document fixture that grows
+# one more document, appended after the loop that waits for the others.
+_SYNTHETIC_WAIT_THEN_SEED_AGAIN_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(services):
+        first = _parse(await ingest_document("test_vault", "test/a.md", "markdown"))
+        await await_pipeline_idle(
+            services.graph_store, first["id"], service=services.ingestion_service
+        )
+        second = _parse(await ingest_document("test_vault", "test/b.md", "markdown"))
+        yield services
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_a_second_seed_below_the_wait() -> None:
+    """A wait covers the documents in flight when it runs, not the ones after it.
+
+    Both a real ingest and a real wait sit before the handoff here, so this is
+    red under a walk that reads either the earliest ingest or the earliest wait
+    -- which is what makes it the discriminating case rather than a variation
+    on the teardown one. The wait is genuine and correctly placed for
+    ``first``; ``second`` is still moving when the tests get it.
+
+    Not contrived: the live fixture this arm was written for seeds two
+    documents and waits for both in a loop, and appending a third below that
+    loop is the ordinary way it would grow.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_WAIT_THEN_SEED_AGAIN_SOURCE)) == [
+        (9, "vault_services")
+    ]
+
+
+# A fixture whose seeding and waiting both happen inside one nested helper. The
+# ingest side descends into a nested definition; the wait side has to as well,
+# or the ingest is seen and the wait beside it is not.
+_SYNTHETIC_NESTED_SEED_AND_WAIT_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(services):
+        async def _seed(name):
+            doc = _parse(await ingest_document("test_vault", name, "markdown"))
+            await await_pipeline_idle(
+                services.graph_store, doc["id"], service=services.ingestion_service
+            )
+            return doc
+
+        await _seed("test/sample.md")
+        yield services
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_nested_seed_that_waits() -> None:
+    """The two sides descend alike, so a nested helper's wait is not lost.
+
+    ``_ingest_lines`` reads nested definitions, on the ground that a document
+    a nested helper puts in flight is in flight just the same. Stopping the
+    wait scan at the same boundary would see that ingest and miss the wait
+    written beside it, reporting a fixture for a document it demonstrably
+    waited for -- a false positive against the sanctioned shape.
+
+    The poll arms above do stop at a nested scope, and that is right there for
+    a reason that does not reach here: they attribute a nested helper's loop
+    to the helper under its own name, so a wait exempting the enclosing body
+    as well would waive the same finding twice. This arm attributes nothing to
+    a nested definition, since a nested ``def`` is not a fixture.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_NESTED_SEED_AND_WAIT_SOURCE)) == []
 
 
 # The same wait written through the module's own adapter, which is how a module
