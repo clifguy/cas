@@ -890,6 +890,33 @@ async def test_parse_keyword_query_separates_exclusion_only_from_discarded_input
     )
 
 
+async def test_parse_keyword_query_reports_the_scope_a_negated_conjunction_was_given(store):
+    """A negated conjunction is conjunctive *and* answered within one passage.
+
+    The two facts are separate and neither implies the other: every term is
+    required, which is what ``all_required`` says, and they had to be carried
+    together by one passage, which nothing else in the parse says. A caller
+    reading only ``all_required`` describes the query at document scope, which
+    is the scope the binding declined to use for it.
+
+    The bare conjunction beside it is the control. Its terms and its
+    ``all_required`` are identical, so only the scope field separates the two
+    parses.
+    """
+    negated = await store.parse_keyword_query("deltaword epsilonword -absentword")
+
+    assert negated.terms == ("deltaword", "epsilonword")
+    assert negated.excluded == ("absentword",)
+    assert negated.all_required is True, "every reported term is still required"
+    assert negated.document_scoped is False, (
+        "the negation routed this query within one passage; the parse must say so"
+    )
+
+    bare = await store.parse_keyword_query("deltaword epsilonword")
+    assert bare.terms == negated.terms and bare.all_required is True
+    assert bare.document_scoped is True, "a bare conjunction is evaluated across the document"
+
+
 async def test_parse_keyword_query_reports_a_quoted_phrase_as_adjacent(store):
     """A phrase requires adjacency, which is stronger than carrying every term.
 
@@ -2659,6 +2686,58 @@ async def test_a_negated_query_does_not_drop_the_active_head_for_its_predecessor
     assert ids[0] == "0000bb02_adr_v2", "the active head was fetched but did not rank first"
 
 
+async def test_a_negated_conjunction_is_not_told_no_document_carries_its_terms(
+    store, graph_store, stub_embedding_provider, minimal_config
+):
+    """The advisory for an empty negated result must claim the scope that produced it.
+
+    The document below carries every required term, in separate passages. That
+    is the whole fixture: the exclusion re-scopes the query to one passage, no
+    passage carries both, and the result is empty *although* a document holds
+    them all. An advisory saying the query "matches only a document carrying
+    all of them, though not necessarily together in one passage. No document
+    does" is false twice over for this corpus, and sends the caller to drop a
+    term when the exclusion is what narrowed them out.
+
+    A single-passage fixture cannot observe any of that -- the query would
+    match, and no advisory would be emitted at all -- which is why the two
+    passages are the control rather than scenery.
+    """
+    from sage.models.schemas import DiscoverRequest, RetrievalMode
+
+    await _insert_document(graph_store, "0000cc03_split", "Split Catalog", "active")
+    await store.index_chunks(
+        "0000cc03_split",
+        [
+            _chunk("0000cc03_split", content="deltaword in the first passage", chunk_index=0),
+            _chunk("0000cc03_split", content="epsilonword in the second passage", chunk_index=1),
+        ],
+    )
+
+    service = await _keyword_service(store, graph_store, stub_embedding_provider, minimal_config)
+
+    control = await service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword")
+    )
+    assert [h.document.id for h in control.results] == ["0000cc03_split"], (
+        "precondition: one document carries every term, across its two passages"
+    )
+
+    response = await service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="deltaword epsilonword -absentword")
+    )
+
+    assert response.results == [], "precondition: the exclusion empties the result"
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "single passage" in joined, "the advisory must name the scope that answered"
+    assert "not necessarily together in one passage" not in joined, (
+        "a document does carry both terms apart; the query was not evaluated that way"
+    )
+    assert "No document" not in joined, "a document carries every term -- the miss is per passage"
+    assert "absentword" in joined, "the advisory must name the exclusion that narrowed the scope"
+    assert "dropping it" in joined, "the actionable remedy is to drop the exclusion"
+
+
 async def test_total_available_agrees_across_the_two_keyword_paths(
     store, graph_store, stub_embedding_provider, minimal_config
 ):
@@ -3045,6 +3124,64 @@ async def test_every_keyword_query_is_answered_by_exactly_one_path(store, monkey
         await store.search_bm25(query, limit=10)
     assert set(entered) == {"_search_bm25_across_document", "_search_bm25_within_chunk"}, (
         "the matrix must reach both paths, or a path could be removed without failing"
+    )
+
+
+async def test_the_reported_scope_is_the_scope_the_query_was_answered_at(store, monkeypatch):
+    """``document_scoped`` names the path the same query enters, for every shape.
+
+    The field exists so a caller can be told which scope answered them, and a
+    field derived beside the dispatch rather than from it is free to disagree
+    with it -- silently, and only for the shapes nobody wrote a case for. So
+    the claim pinned here is agreement across the whole matrix rather than a
+    value for one query: a second derivation that happened to get the negation
+    right would still have to get the empty-lexeme and alternation shapes right
+    to survive.
+
+    The matrix is the one above's, for the same reason it was chosen there --
+    it reaches both paths, so neither a constant ``True`` nor a constant
+    ``False`` passes -- plus one query that matrix had no need of. An
+    all-stopword query is the only shape that separates the reported scope from
+    the presence of an exclusion: it renders nothing, so it is answered within
+    one unit while excluding nothing, and a rival reading the scope off
+    ``excluded`` calls it document-scoped. Every other query in the matrix
+    agrees on both readings, so without this one the rival survives.
+    """
+    await _two_chunk_document(store)
+    entered: list[str] = []
+
+    for name in ("_search_bm25_across_document", "_search_bm25_within_chunk"):
+        original = getattr(type(store), name)
+
+        def spy(self, *args, _name=name, _original=original, **kwargs):
+            entered.append(_name)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(store), name, spy)
+
+    queries = [
+        "deltaword",
+        "deltaword -absentword",
+        "deltaword or absentword",
+        "deltaword or absentword -otherword",
+        "-absentword",
+        "epsilonLevelText",
+        "the a of",
+    ]
+    across: set[bool] = set()
+    for query in queries:
+        entered.clear()
+        await store.search_bm25(query, limit=10)
+        answered_across_document = entered == ["_search_bm25_across_document"]
+        parse = await store.parse_keyword_query(query)
+        assert parse.document_scoped is answered_across_document, (
+            f"{query!r} reported document_scoped={parse.document_scoped} but was "
+            f"answered by {entered}"
+        )
+        across.add(answered_across_document)
+
+    assert across == {True, False}, (
+        "the matrix must reach both scopes, or a constant would satisfy every case"
     )
 
 

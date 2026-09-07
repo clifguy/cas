@@ -694,10 +694,18 @@ class RetrievalService:
 
         The terms come from the backend's own parse, because the words typed
         are not the terms required -- stopwords are dropped and the rest
-        stemmed. Two shapes get their own treatment: a query the backend read
+        stemmed. Three shapes get their own treatment: a query the backend read
         as admitting alternatives is not conjunctive and gets no conjunction
-        advisory, and a query whose every word was discarded gets an advisory
-        of its own, since nothing was searched for at all.
+        advisory; a query whose every word was discarded gets an advisory of
+        its own, since nothing was searched for at all; and a query the backend
+        answered within a single passage is described at that scope rather than
+        at the document's, since the two make different sentences true of the
+        same empty result.
+
+        The scope comes from the parse for the same reason the terms do. It
+        cannot be inferred from the query text without re-deriving the
+        backend's own dispatch, and it cannot be read off ``all_required``,
+        which says every term is required and nothing about where.
         """
         if raw_count:
             return []
@@ -746,6 +754,31 @@ class RetrievalService:
                 f"contains a phrase. No passage does{scope} -- terms held apart, or "
                 "split across two passages of one document, do not match. Try "
                 'unquoting the phrase, using fewer terms, or mode="semantic".'
+            ]
+        if not parse.document_scoped:
+            # Ordered after adjacency because a phrase already names the
+            # passage and names the stricter condition; leading with the scope
+            # would replace a precise sentence with a vaguer one.
+            #
+            # The sentence below the ordering is the whole point of the branch.
+            # Describing this query at document scope tells a caller that no
+            # document carries their terms, when one may carry every one of
+            # them across its passages -- and that is exactly why the result is
+            # empty. The remedy is the exclusion rather than the terms, and
+            # naming it is what the document-scoped sentence cannot do.
+            narrowed = (
+                f" The exclusion ({', '.join(repr(t) for t in parse.excluded)}) is what "
+                "narrowed the scope -- dropping it lets the terms be satisfied across a "
+                "whole document."
+                if parse.excluded
+                else ""
+            )
+            return [
+                f"This query was evaluated within a single passage: it parsed to "
+                f"{len(parse.terms)} terms ({rendered}) and matches only a passage carrying "
+                f"all of them together. No passage does{scope} -- a document holding them "
+                f"in separate passages does not match.{narrowed} Try fewer terms, or use "
+                'mode="semantic".'
             ]
         # No remedy here may make the query stricter. The match is already
         # over the whole document, so quoting a phrase -- which adds an

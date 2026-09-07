@@ -7777,6 +7777,7 @@ async def test_keyword_warning_reports_the_backend_parse_not_a_word_split(
             excluded=(),
             all_required=True,
             adjacent=False,
+            document_scoped=True,
         )
 
     monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse)
@@ -7887,7 +7888,9 @@ async def test_keyword_all_stopword_query_gets_its_own_advisory(
     )
 
     async def _parse_to_nothing(query: str) -> KeywordQueryParse:
-        return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
+        return KeywordQueryParse(
+            terms=(), excluded=(), all_required=True, adjacent=False, document_scoped=True
+        )
 
     # Positive control, taken before the parse is replaced: the corpus is
     # searchable, so the empty result below is about the query, not the vault.
@@ -7934,6 +7937,7 @@ async def test_keyword_or_query_gets_no_conjunction_advisory(
             excluded=(),
             all_required=False,
             adjacent=False,
+            document_scoped=True,
         )
 
     # Positive control, taken before the parse is replaced: the corpus is
@@ -7979,7 +7983,13 @@ async def test_keyword_exclusion_only_query_is_not_called_all_stopwords(
 
     async def _parse_exclusion_only(query: str) -> KeywordQueryParse:
         return KeywordQueryParse(
-            terms=(), excluded=("alphaword",), all_required=True, adjacent=False
+            terms=(),
+            excluded=("alphaword",),
+            all_required=True,
+            adjacent=False,
+            # The binding answers an exclusion-only query within one passage;
+            # the advisory this test reads fires before the scope is consulted.
+            document_scoped=False,
         )
 
     monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_exclusion_only)
@@ -8021,7 +8031,11 @@ async def test_keyword_phrase_query_reports_adjacency_not_bare_conjunction(
 
     async def _parse_phrase(query: str) -> KeywordQueryParse:
         return KeywordQueryParse(
-            terms=("alphaword", "betaword"), excluded=(), all_required=True, adjacent=True
+            terms=("alphaword", "betaword"),
+            excluded=(),
+            all_required=True,
+            adjacent=True,
+            document_scoped=True,
         )
 
     monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_phrase)
@@ -8036,6 +8050,226 @@ async def test_keyword_phrase_query_reports_adjacency_not_bare_conjunction(
     assert "quote a phrase" not in joined, (
         "advising a caller to quote what they already quoted inverts the fix"
     )
+
+
+async def _seed_unsearchable_corpus(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, doc_id
+):
+    """A corpus that is reachable but carries none of the substituted terms.
+
+    The double scores on substring containment, so the indexed text must share
+    no fragment with the query words. The control is taken before any parse is
+    replaced, so a later empty result is the query's doing rather than an
+    unindexed vault.
+    """
+    await graph_store.insert_document(_make_doc(_id(doc_id)))
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id(doc_id),
+        [("Section 1", "zzz qqq vvv.")],
+    )
+    control = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zzz")
+    )
+    assert control.results, "precondition: the indexed corpus must be searchable"
+
+
+async def test_keyword_query_answered_within_one_passage_does_not_claim_document_scope(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """A query the binding answered per passage must not be described per document.
+
+    Paired with the test below, which differs in ``document_scoped`` and in
+    nothing else -- same corpus, same term tuple, same ``all_required``, same
+    term count. An implementation reading the terms, the count, or
+    ``all_required`` cannot separate them, so only the scope field can satisfy
+    both. Keying on ``excluded`` instead would pass this arm while re-deriving
+    the binding's dispatch from a proxy the port does not promise.
+    """
+    await _seed_unsearchable_corpus(
+        graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, "kw_warn_o"
+    )
+
+    async def _parse_within_passage(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword", "betaword"),
+            excluded=("absentword",),
+            all_required=True,
+            adjacent=False,
+            document_scoped=False,
+        )
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_within_passage)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword -absentword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "single passage" in joined, "the advisory must name the scope that answered"
+    assert "not necessarily together in one passage" not in joined, (
+        "the terms did have to appear together; that is why the result is empty"
+    )
+    assert "absentword" in joined and "dropping it" in joined, (
+        "the exclusion narrowed the scope, and dropping it is the remedy"
+    )
+
+
+async def test_keyword_within_passage_advisory_does_not_require_an_exclusion(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """The scope claim follows the reported scope, not the presence of an exclusion.
+
+    An exclusion is what narrows the scope on today's backend, which makes
+    ``excluded`` a proxy accurate enough to pass the pair above and wrong in
+    principle: the port reports the scope a binding used, and leaves a binding
+    free to narrow it for a reason of its own. A rival keyed on the proxy tells
+    this caller their terms need only be carried by the document, which is the
+    same false sentence in a case the proxy cannot see.
+
+    This is also the only arm that reaches the sentence without its exclusion
+    clause, so it pins that the clause is conditional rather than assumed.
+    """
+    await _seed_unsearchable_corpus(
+        graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, "kw_warn_s"
+    )
+
+    async def _parse_narrowed_without_exclusion(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword", "betaword"),
+            excluded=(),
+            all_required=True,
+            adjacent=False,
+            document_scoped=False,
+        )
+
+    monkeypatch.setattr(
+        stub_content_store, "parse_keyword_query", _parse_narrowed_without_exclusion
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "single passage" in joined, "the reported scope is what the sentence must follow"
+    assert "not necessarily together in one passage" not in joined, (
+        "a rival reading the exclusion instead would describe this at document scope"
+    )
+    assert "exclusion" not in joined, "there is no exclusion here to name as the cause"
+
+
+async def test_keyword_bare_conjunction_still_claims_document_scope(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """The document-scoped advisory keeps its wording and its term reporting.
+
+    The other half of the pair. Nothing about the bare conjunction changed, and
+    a fix that narrowed every conjunction's sentence to one passage would be
+    false here in the opposite direction.
+    """
+    await _seed_unsearchable_corpus(
+        graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, "kw_warn_p"
+    )
+
+    async def _parse_across_document(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword", "betaword"),
+            excluded=(),
+            all_required=True,
+            adjacent=False,
+            document_scoped=True,
+        )
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_across_document)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "conjunctive" in joined, "a document-scoped conjunction is still described as one"
+    assert "not necessarily together in one passage" in joined, (
+        "the document-scoped claim is correct here and must survive"
+    )
+    assert "alphaword" in joined and "betaword" in joined, "the parsed terms are still reported"
+
+
+async def test_keyword_phrase_beside_an_exclusion_keeps_the_adjacency_advisory(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """Adjacency is the stricter condition, so it still owns the sentence.
+
+    A phrase carried beside an exclusion is both adjacent and answered within
+    one passage. The adjacency advisory already names the passage and names the
+    condition that actually failed; ordering the scope branch ahead of it would
+    replace a precise sentence with a vaguer one and lose the "unquote the
+    phrase" remedy.
+    """
+    await _seed_unsearchable_corpus(
+        graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, "kw_warn_q"
+    )
+
+    async def _parse_phrase_with_exclusion(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword", "betaword"),
+            excluded=("absentword",),
+            all_required=True,
+            adjacent=True,
+            document_scoped=False,
+        )
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_phrase_with_exclusion)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query='"alphaword betaword" -absentword')
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "adjacent" in joined, "the stricter condition is the one that failed"
+    assert "dropping it" not in joined, (
+        "dropping the exclusion would not make an unsatisfied adjacency match"
+    )
+
+
+async def test_keyword_single_term_query_answered_per_passage_gets_no_scope_advisory(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """One term selects the same documents at either scope, so there is nothing to explain.
+
+    Guards the placement of the scope branch below the two-term gate. A single
+    term is carried by a document exactly when some passage carries it, so a
+    sentence contrasting the two scopes would draw a distinction the caller
+    cannot act on.
+    """
+    await _seed_unsearchable_corpus(
+        graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, "kw_warn_r"
+    )
+
+    async def _parse_one_term(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword",),
+            excluded=("absentword",),
+            all_required=True,
+            adjacent=False,
+            document_scoped=False,
+        )
+
+    monkeypatch.setattr(stub_content_store, "parse_keyword_query", _parse_one_term)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword -absentword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "single passage" not in joined, "one term is carried at either scope alike"
+    assert "conjunctive" not in joined, "a single term carries no conjunction to explain"
 
 
 async def test_keyword_empty_filters_object_does_not_claim_a_filter_scope(
