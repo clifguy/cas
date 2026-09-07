@@ -8161,6 +8161,49 @@ async def test_keyword_within_passage_advisory_does_not_require_an_exclusion(
     assert "exclusion" not in joined, "there is no exclusion here to name as the cause"
 
 
+async def test_keyword_exclusion_at_document_scope_gets_the_document_scoped_advisory(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """An exclusion does not by itself mean the query was answered per passage.
+
+    The mirror of the test above, and together they pin the port's claim that
+    the scope is a report rather than a rule: narrowed scope without an
+    exclusion gets the passage sentence, and an exclusion without narrowed
+    scope does not. Neither direction is reachable on today's bindings -- the
+    Postgres binding refuses decomposition on any negation and the double
+    reports no exclusion at all -- so the arrangement is pinned here or in
+    prose only, and prose does not red when the nesting inverts.
+    """
+    await _seed_unsearchable_corpus(
+        graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, "kw_warn_t"
+    )
+
+    async def _parse_excluded_at_document_scope(query: str) -> KeywordQueryParse:
+        return KeywordQueryParse(
+            terms=("alphaword", "betaword"),
+            excluded=("absentword",),
+            all_required=True,
+            adjacent=False,
+            document_scoped=True,
+        )
+
+    monkeypatch.setattr(
+        stub_content_store, "parse_keyword_query", _parse_excluded_at_document_scope
+    )
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword betaword -absentword")
+    )
+
+    assert response.results == []
+    joined = " ".join((response.hints or {}).get("warnings") or [])
+    assert "conjunctive" in joined, "the reported scope is the document's, so the sentence is too"
+    assert "single passage" not in joined, (
+        "an exclusion sentence reached without the scope check would claim a scope "
+        "this parse did not report"
+    )
+
+
 async def test_keyword_bare_conjunction_still_claims_document_scope(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
 ):

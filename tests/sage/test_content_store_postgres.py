@@ -2746,11 +2746,11 @@ async def test_a_passage_carrying_the_excluded_term_is_not_reported_as_carrying_
     The scope claim alone is not the whole condition. A passage carrying every
     required term *and* an excluded one satisfies the conjunction and is
     dropped anyway, so "no passage carries all of them together" is false for
-    exactly that corpus -- the same false-claim shape the branch exists to
-    close, on the input its first fixture could not carry. The fixture that
-    separates them holds the excluded term in the same passage as the required
-    ones; a corpus where the excluded term is genuinely absent passes against
-    the defect, because then no passage does carry them all.
+    exactly that corpus -- the same false-claim shape the scope sentence exists
+    to close, on an input the separate-passages fixture beside it cannot carry.
+    The fixture that separates them holds the excluded term in the same passage
+    as the required ones; a corpus where the excluded term is genuinely absent
+    passes against the defect, because then no passage does carry them all.
     """
     from sage.models.schemas import DiscoverRequest, RetrievalMode
 
