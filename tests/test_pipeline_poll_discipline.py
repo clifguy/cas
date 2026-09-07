@@ -607,43 +607,56 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
 
     * **Outside a loop.** A sleeping loop is a poll, and belongs to the arms
       above; flagging it here would report the sanctioned shape twice.
-    * **After an ingestion call.** A sleep in a function that ingests nothing
-      waits for something else -- a worker unwinding, a thread joining, a
-      registry slot swapping -- and this walk has no opinion about it.
+    * **After an ingestion call in the sleeping function or any function
+      enclosing it.** A sleep in a scope that ingests nothing waits for
+      something else -- a worker unwinding, a thread joining, a registry slot
+      swapping -- and this walk has no opinion about it. The qualifier reads
+      the enclosing chain rather than the innermost body alone, because a test
+      that ingests and then sleeps inside a nested helper is the same race
+      written one scope down; reading only the innermost body drops it.
     * **Attributed to the innermost enclosing function**, so a nested helper is
-      judged under its own name rather than its caller's.
+      judged under its own name rather than its caller's. Attribution and
+      qualification therefore look in opposite directions, which is deliberate:
+      the name a finding carries is the one a reader has to go and open, while
+      the ingest that makes the sleep a race can live further out.
 
     Delegation is invisible by construction, as in the arm above: a function
     that waits through the shared helper has no bare sleep for this walk to
     anchor on. A function that does both keeps its sleep and needs an
     allowlist entry saying what the sleep is really for.
     """
-    findings: list[tuple[int, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+    findings: list[
+        tuple[int, ast.FunctionDef | ast.AsyncFunctionDef, ast.FunctionDef | ast.AsyncFunctionDef]
+    ] = []
 
     def visit(
         node: ast.AST,
         func: ast.FunctionDef | ast.AsyncFunctionDef | None,
+        outermost: ast.FunctionDef | ast.AsyncFunctionDef | None,
         in_loop: bool,
     ) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                visit(child, child, False)
+                visit(child, child, outermost or child, False)
                 continue
             nested = in_loop or isinstance(child, (ast.For, ast.AsyncFor, ast.While))
             if (
                 func is not None
+                and outermost is not None
                 and not nested
                 and isinstance(child, ast.Call)
                 and _called_name(child.func) == "sleep"
             ):
-                findings.append((child.lineno, func))
-            visit(child, func, nested)
+                findings.append((child.lineno, func, outermost))
+            visit(child, func, outermost, nested)
 
-    visit(tree, None, False)
+    visit(tree, None, None, False)
 
     kept: list[tuple[int, str]] = []
-    for lineno, func in sorted(findings, key=lambda entry: entry[0]):
-        ingest_line = _first_ingest_line(func)
+    for lineno, func, outermost in sorted(findings, key=lambda entry: entry[0]):
+        # Qualify against the outermost enclosing function, whose subtree walk
+        # covers every ingest in the chain including the sleeping scope's own.
+        ingest_line = _first_ingest_line(outermost)
         if ingest_line is None or lineno <= ingest_line:
             continue
         kept.append((lineno, func.name))
@@ -1409,3 +1422,37 @@ def test_bare_sleep_allowlist_has_no_stale_entries() -> None:
         f"({len(stale)}): {', '.join(stale)}. Drop each one — the sleep it "
         "exempted is gone, so the entry now waives nothing."
     )
+
+
+# A helper nested inside a function that ingests, sleeping in its own body. The
+# outer function ingests; the inner one is where the sleep lives. Attribution
+# decides which name the finding — and therefore any allowlist entry — carries.
+_SYNTHETIC_NESTED_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_outer(vault_services):
+        doc = _parse(await ingest_document("v", "test/sample.md", "markdown"))
+
+        async def _settle():
+            await asyncio.sleep(0.5)
+
+        await _settle()
+        return doc
+    """
+)
+
+
+def test_bare_sleep_detector_attributes_a_nested_sleep_to_the_inner_function() -> None:
+    """A nested helper is judged under its own name, not its caller's.
+
+    The status-only arm pins this property for its own walk; without the same
+    pin here, an implementation attributing every sleep to the *outermost*
+    enclosing function passes all five synthetics above. That rival is not
+    academic: the allowlist is keyed by function name, so under it an entry
+    naming an outer test would silently exempt sleeps in every helper nested
+    inside it.
+
+    The inner function ingests nothing itself, so this also pins that the
+    ingest qualifier reaches the enclosing scope's call rather than requiring
+    the ingest and the sleep to sit in the same body.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_NESTED_SLEEP_SOURCE)) == [(6, "_settle")]

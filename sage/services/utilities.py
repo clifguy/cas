@@ -22,7 +22,7 @@ refresh_views: Regenerate symlink-based browsable folder views.
 import logging
 import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 import yaml
@@ -82,16 +82,26 @@ _EVAL_DIAGNOSTIC_FACTOR = 5
 Delivery = Literal["inline", "spill", "auto"]
 
 
-def _validate_write_to_path_shape(write_to_path: str) -> None:
-    """Verify write_to_path is absolute, without inspecting any filesystem.
+def _validate_caller_write_path_shape(write_to_path: str) -> None:
+    """Verify write_to_path is absolute on the machine that will write it.
 
-    Absoluteness is a property of the path itself, so it is answerable
-    wherever the path eventually resolves. The remaining checks in
-    ``_validate_write_to_path`` interrogate the filesystem the path names,
-    and are meaningful only where this process can see it -- which is not
-    the case when the path names a caller this process cannot reach.
+    Absoluteness is **not** intrinsic to a path -- it is relative to the
+    platform reading it. This check runs where the path names a filesystem
+    this process cannot see, so it cannot assume its own platform's
+    semantics: a Windows caller's ``C:\\out.md`` and ``\\\\host\\share\\out.md``
+    are absolute on the machine that will write them, while ``PosixPath``
+    reads both as relative. Accept a path absolute under either flavour;
+    a genuinely relative spelling is relative under both, which is what
+    this is here to refuse.
+
+    The filesystem checks in ``_validate_write_to_path`` cannot be widened
+    the same way and are deliberately not applied on that arm: they
+    interrogate the filesystem the path names, and only the local arm's
+    process can see it.
     """
-    if not Path(write_to_path).is_absolute():
+    if not (
+        PurePosixPath(write_to_path).is_absolute() or PureWindowsPath(write_to_path).is_absolute()
+    ):
         raise WritePathInvalidError(write_to_path, "path must be absolute")
 
 
@@ -104,9 +114,16 @@ def _validate_write_to_path(write_to_path: str) -> None:
     must-be-dir / must-be-writable check. Raises the same typed errors
     so MCP and REST callers see a consistent envelope across the two
     write-to-disk surfaces.
+
+    This is the arm where *this* process is the writer, so the platform's
+    own ``Path`` semantics are the right ones and a spelling absolute only
+    on some other platform is correctly refused -- unlike
+    ``_validate_caller_write_path_shape``, which answers for a machine it
+    cannot see.
     """
-    _validate_write_to_path_shape(write_to_path)
     target = Path(write_to_path)
+    if not target.is_absolute():
+        raise WritePathInvalidError(write_to_path, "path must be absolute")
     if target.exists():
         raise WritePathExistsError(write_to_path)
     parent = target.parent
@@ -328,13 +345,14 @@ class UtilitiesService:
             # before any read: validating after the fetch would answer the same
             # call differently depending on whether the projection happened to
             # exist yet, reporting no_projection where the argument was the
-            # problem. Each arm validates exactly what it can answer for -- the
-            # path's shape is intrinsic, while the target-and-parent checks
-            # interrogate a filesystem only the local arm can see.
+            # problem. Each arm validates what it can answer for, and the two
+            # arms do not answer for the same machine -- so the shape check
+            # differs between them rather than merely being a prefix of the
+            # local one.
             if not caller_local_filesystem_reachable():
                 from sage.services.transfer import mint_download_recipe_for_projection
 
-                _validate_write_to_path_shape(write_to_path)
+                _validate_caller_write_path_shape(write_to_path)
                 doc, projection_text = await self._get_projection_text(document_id)
                 return mint_download_recipe_for_projection(
                     self._config.vault.id,
@@ -351,8 +369,17 @@ class UtilitiesService:
             return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
 
         # write-to-disk delivery: the path was validated above, before the read.
+        # The exclusive-create mode is what actually enforces the
+        # target-must-not-exist contract: the awaited fetch now sits between
+        # that check and this write, and a plain "wb" would silently truncate a
+        # file that appeared in the window. The earlier check stays as the fast
+        # refusal, so a caller naming an occupied path still pays no read.
         data = projection_text.encode("utf-8")
-        Path(write_to_path).write_bytes(data)
+        try:
+            with open(write_to_path, "xb") as out:
+                out.write(data)
+        except FileExistsError:
+            raise WritePathExistsError(write_to_path) from None
 
         response = ReadProjectionResponse.from_document(doc, projection_text=projection_text)
         response.projection_text = None
