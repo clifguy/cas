@@ -44,6 +44,7 @@ from sage.api.errors import (
     TransferNotStagedError,
     TransferTokenInvalidError,
 )
+from sage.services.caller_paths import caller_basename, caller_path_is_absolute
 
 if TYPE_CHECKING:
     from sage.models.schemas import UploadRecipe
@@ -70,13 +71,19 @@ def max_transfer_bytes() -> int:
 
 
 def staging_name(filename: str | None, fallback: str) -> str:
-    """Reduce a caller-supplied filename to a safe basename for temp staging.
+    """Reduce a server-owned name to a safe basename for temp staging.
 
     ``Path(...).name`` strips any directory components, so a path-shaped
-    filename cannot escape the staging directory. Degenerate inputs whose
+    name cannot escape the staging directory. Degenerate inputs whose
     basename is empty or a directory reference (``""``, ``"."``, ``".."``)
     fall back to the synthetic name rather than resolving to the staging
     directory itself and failing with an unstructured OS error.
+
+    This process's own ``Path`` semantics, which is what the remaining
+    callers want: a vault-relative source path and two server-generated
+    download names. A name the *caller* authored reduces through
+    ``sage.services.caller_paths.caller_basename`` instead, because which
+    characters separate components is the reading platform's business.
     """
     name = Path(filename).name if filename else ""
     if name in ("", ".", ".."):
@@ -178,13 +185,23 @@ class TransferStore:
         and they are the same value at different reductions, so deriving one
         from the other is what keeps them from disagreeing and makes an entry
         without a caller-facing spelling unrepresentable.
+
+        The reduction is the caller-aware one, and this is the only name in
+        this module derived from a path this process did not author -- the
+        other three reduce a vault-relative source path and two
+        server-generated download names. The separator a path splits on is
+        the reading platform's business, so the server's own would leave a
+        Windows caller's upload staged -- and retained -- under its entire
+        path. (The batch upload page reduces a caller-authored name too, but
+        a browser sends a bare filename rather than a path, and it does not
+        reach this channel.)
         """
         with self._lock:
             self._sweep_locked()
             minted, entry = self._new_entry_locked(
                 direction="upload", vault_id=vault_id, ttl_seconds=ttl_seconds
             )
-            entry.filename = staging_name(source, "transfer_source")
+            entry.filename = caller_basename(source, "transfer_source")
             entry.declared_source = source
         return minted
 
@@ -573,6 +590,23 @@ class ResolvedDelivery:
     #: The path to read: a redeemed token's staging location, or the caller's
     #: own path when this process shares its filesystem.
     path: str
+    #: Whether the gate read this declaration's caller-named source as absolute
+    #: on the machine that named it. Published rather than left to be
+    #: recomputed: a consumer with no vault-relative reading of its source --
+    #: a restore, which has no such reading of "the bytes to repair" -- has to
+    #: refuse what the gate judged relative, and deriving that again at the
+    #: call site is how the predicate came to differ between sites before. The
+    #: reading is arm-dependent and this is the arm's own answer: absolute
+    #: under either platform's conventions where the caller's environment
+    #: writes, absolute under this platform's where this process does.
+    #: ``True`` for a redeemed token, whose bytes are already staged and whose
+    #: spelling carries no vault-relative reading to fall back on.
+    #:
+    #: Deliberately carries no default. Either answer is wrong somewhere --
+    #: ``True`` would wave a relative source past a restore, ``False`` would
+    #: refuse a staged one -- so a construction site added later has to decide
+    #: rather than inherit.
+    caller_absolute: bool
     #: The path the caller named, when it differs from ``path`` -- ``None``
     #: when the two agree. Offered rather than required: a consumer that
     #: reports a path back to the caller threads this down so a refusal names
@@ -619,6 +653,15 @@ def caller_local_delivery(
     resolves (CAS-ADR-043), so it is never minted for and is passed through
     unchanged.
 
+    Which spellings count as absolute follows from whose machine the path
+    names, and so differs between the two arms. Where this process cannot
+    reach the caller, the source belongs to a machine whose conventions are
+    not knowably this one's, and a spelling absolute under either flavour is
+    absolute; where the two are co-located, the caller is this machine and its
+    own semantics govern. The answer the gate reached is published on each
+    resolved delivery so a consumer downstream reads it rather than deriving
+    it again.
+
     Minting happens before any redemption, so a call the gate answers with a
     recipe consumes no token.
 
@@ -640,9 +683,15 @@ def caller_local_delivery(
         if declaration.source is None and declaration.transfer_token is None:
             raise MissingIngestSourceError()
 
-    if not caller_local_filesystem_reachable():
+    reachable = caller_local_filesystem_reachable()
+
+    def _is_caller_absolute(source: str) -> bool:
+        """Absoluteness as the arm that will read the path would judge it."""
+        return Path(source).is_absolute() if reachable else caller_path_is_absolute(source)
+
+    if not reachable:
         unreachable = [
-            d.source for d in declarations if d.source is not None and Path(d.source).is_absolute()
+            d.source for d in declarations if d.source is not None and _is_caller_absolute(d.source)
         ]
         if unreachable:
             yield DeliveryPlan(recipe=mint_upload_recipe(vault_id, unreachable))
@@ -661,11 +710,17 @@ def caller_local_delivery(
                 resolved.append(
                     ResolvedDelivery(
                         path=str(entry.staged_path),
+                        caller_absolute=True,
                         declared_source=entry.declared_source,
                     )
                 )
             else:
-                resolved.append(ResolvedDelivery(path=declaration.source))
+                resolved.append(
+                    ResolvedDelivery(
+                        path=declaration.source,
+                        caller_absolute=_is_caller_absolute(declaration.source),
+                    )
+                )
         yield DeliveryPlan(resolved=tuple(resolved))
     except BaseException:
         # The work the tokens were redeemed for did not happen, so they were

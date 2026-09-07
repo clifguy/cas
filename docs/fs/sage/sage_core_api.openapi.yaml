@@ -805,12 +805,21 @@ paths:
           in: query
           required: false
           description: >-
-            Absolute filesystem path. When supplied, SAGE writes the
-            vault-local file bytes to this path and returns metadata
-            (`written_to`, `content_size`, `content_hash`) without
-            inlining the bytes in the response. Target path must not
-            already exist; its parent directory must exist and be
-            writable. Mutually exclusive with `include_content`.
+            Absolute filesystem path, resolved on the machine running the
+            SAGE server process where that machine shares the caller's
+            filesystem: SAGE writes the vault-local file bytes there and
+            returns metadata (`written_to`, `content_size`,
+            `content_hash`) without inlining the bytes in the response,
+            the target must not already exist, and its parent directory
+            must exist and be writable. Where it does not, the response is
+            a download recipe carrying this path for the caller's own
+            environment to write, and the path is read with that
+            environment's conventions -- a Windows drive-letter or UNC
+            spelling is accepted on that arm, since it is absolute on the
+            machine that will write it. The path must be absolute either
+            way, and is checked before the document is read, so a
+            malformed path reports `write_path_invalid` whether or not the
+            document exists. Mutually exclusive with `include_content`.
           schema:
             type: string
             nullable: true
@@ -7251,6 +7260,15 @@ components:
             the caller supplies the bytes to restore. The target document
             is resolved from their digest, which is why the bytes must be
             the originals rather than a corrected or re-exported version.
+            Absolute on the machine that will read the file. This request
+            model is the REST surface, where that machine is the server:
+            the path is read with the server's own conventions, and a
+            spelling absolute only on another platform is refused. The
+            caller-local transfer channel, where an unreachable caller's
+            path earns an upload recipe instead, is offered by the MCP
+            tool of the same name and is not reachable here. Unlike an
+            ingest, a relative path has no vault-relative reading either
+            way.
         document_id:
           type: string
           nullable: true

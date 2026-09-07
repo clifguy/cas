@@ -8,7 +8,6 @@ staging edges, pending metadata).
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -654,13 +653,22 @@ def register_sage_tools(
             include_content: When true, add `content` (base64) and
                 `content_size` to the response. Default: false.
             write_to_path: Absolute filesystem path, resolved on the
-                machine running the SAGE server process. When set, SAGE
-                streams the retained source bytes there (from the vault's
-                configured source store, unbounded by the inline-content
-                ceiling) and populates `written_to`, `content_size`, and
-                `content_hash` in the response. The target must not exist;
-                its parent must exist and be writable. Mutually exclusive
-                with `include_content`.
+                machine running the SAGE server process where that machine
+                shares the caller's filesystem: SAGE streams the retained
+                source bytes there (from the vault's configured source
+                store, unbounded by the inline-content ceiling) and
+                populates `written_to`, `content_size`, and `content_hash`
+                in the response, the target must not exist, and its parent
+                must exist and be writable. Where it does not, the response
+                is a download recipe carrying this path for the caller's
+                own environment to write, and the path is read with that
+                environment's conventions -- a Windows drive-letter or UNC
+                spelling is accepted on that arm, since it is absolute on
+                the machine that will write it. The path must be absolute
+                either way, and is checked before the document is read, so
+                a malformed path reports ``write_path_invalid`` whether or
+                not the document exists. Mutually exclusive with
+                `include_content`.
         """
         try:
             # Validate each id-bearing parameter by its literal name (so the
@@ -2941,6 +2949,13 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             source: Absolute path to a file holding the originally-ingested
                 bytes. Exactly one of ``source`` or ``transfer_token``.
+                Absolute on the machine that holds the file: where the server
+                cannot reach the caller's filesystem the path is read with the
+                calling environment's conventions, so a Windows drive-letter
+                or UNC spelling earns an upload recipe rather than a refusal.
+                Where the two are co-located the server is the reader and its
+                own conventions apply. Unlike an ingest, a relative path has
+                no vault-relative reading here and is refused either way.
             document_id: Optional pin naming the document to restore.
             transfer_token: Completion handle from a prior ``upload_required``
                 recipe; supply instead of ``source``.
@@ -2984,7 +2999,13 @@ def register_sage_tools(
                 # recipe the caller's environment could not resolve either.
                 # Settled after the delivery shape, so supplying both shapes
                 # still refuses as ambiguous rather than on the path.
-                if source is not None and not Path(source).is_absolute():
+                #
+                # The gate's own reading, not a second one taken here. Which
+                # spellings count depends on whose machine the path names, and
+                # the gate has already answered that to decide whether to mint;
+                # asking again would be a copy of the question free to drift
+                # from the answer minting was decided on.
+                if source is not None and not delivery.caller_absolute:
                     raise RestoreSourceNotAbsoluteError(source)
 
                 report = await v.maintenance_service.restore_vault_source_file(

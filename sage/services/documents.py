@@ -27,7 +27,6 @@ from sage.api.errors import (
     DownloadUrlNotAvailableError,
     LocalOpenNotAvailableError,
     WritePathExistsError,
-    WritePathInvalidError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES
@@ -38,6 +37,10 @@ from sage.models.schemas import (
     DownloadRecipe,
     OpenDocumentResponse,
     ReadMeta,
+)
+from sage.services.caller_paths import (
+    validate_caller_write_path_shape,
+    validate_write_to_path,
 )
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.vault_source_binding import SupportsSourceDownloadUrl, VaultSourceStore
@@ -110,31 +113,33 @@ def _deliver_to_path(
     to the caller-specified local path, so no hop holds the whole file and
     the delivery is not bounded by the inline-content ceiling.
 
-    Raises WritePathInvalidError, WritePathExistsError, or
-    ContentFileMissingError on failure.
+    The path arrived already validated: the caller settles it before the
+    document is fetched, so a malformed one is answered as the argument error
+    it is rather than as a fact about the document.
+
+    Raises WritePathExistsError or ContentFileMissingError on failure.
     """
     target = Path(write_to_path)
-    if not target.is_absolute():
-        raise WritePathInvalidError(write_to_path, "path must be absolute")
-
-    if target.exists():
-        raise WritePathExistsError(write_to_path)
-
-    parent = target.parent
-    if not parent.exists():
-        raise WritePathInvalidError(write_to_path, f"parent directory does not exist: {parent}")
-    if not parent.is_dir():
-        raise WritePathInvalidError(write_to_path, f"parent is not a directory: {parent}")
-    if not os.access(parent, os.W_OK):
-        raise WritePathInvalidError(write_to_path, f"parent directory is not writable: {parent}")
 
     if not store.source_exists(vault_id, storage_root, doc.source_path):
         raise ContentFileMissingError(doc.id, doc.source_path)
 
     digest = hashlib.sha256()
     size = 0
+    # The exclusive-create mode is what actually enforces the
+    # target-must-not-exist contract: the document fetch and the store's own
+    # reads sit between the caller's check and this write, and a plain "wb"
+    # would silently truncate a file that appeared in the window. The earlier
+    # check stays as the fast refusal, so a caller naming an occupied path
+    # still pays no read.
     try:
-        with target.open("wb") as out:
+        out = target.open("xb")
+    except FileExistsError:
+        # Opened outside the cleanup block below on purpose: a file this
+        # delivery did not create is not this delivery's to remove.
+        raise WritePathExistsError(write_to_path) from None
+    try:
+        with out:
             for chunk in store.iter_source(vault_id, storage_root, doc.source_path):
                 out.write(chunk)
                 digest.update(chunk)
@@ -222,9 +227,18 @@ class DocumentsService:
                 resolve_stack_vault_source_store,
             )
 
+            # A malformed write_to_path is an argument error, so it is settled
+            # before any read: validating after the fetch would answer the same
+            # call differently depending on whether the document happened to
+            # exist, reporting document_not_found where the argument was the
+            # problem. Each arm validates what it can answer for, and the two
+            # arms do not answer for the same machine -- so the shape check
+            # differs between them rather than merely being a prefix of the
+            # local one.
             if not caller_local_filesystem_reachable():
                 from sage.services.transfer import mint_download_recipe_for_source
 
+                validate_caller_write_path_shape(write_to_path)
                 doc = await self._store.get_document(document_id)
                 if doc is None:
                     raise DocumentNotFoundError(
@@ -247,6 +261,8 @@ class DocumentsService:
                     content_size=store.source_size(vault_id, storage_root, doc.source_path),
                     write_to_path=write_to_path,
                 )
+
+            validate_write_to_path(write_to_path)
 
         doc = await self._store.get_document(document_id)
         if doc is None:
