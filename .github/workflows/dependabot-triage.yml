@@ -25,13 +25,14 @@ jobs:
     # Shared-component version manifest as job outputs, the same mechanism the
     # other workflows use so there is one way to consume a declared version
     # rather than one per workflow. See `docs/process/shared-version-parity.md`.
-    # The reads are `echo "k=$(jq -er ...)"` rather than assignments on purpose.
-    # An assignment would let `set -e` fail this job on a bad manifest path, and
-    # a failed prelude *skips* the jobs that need it -- which the forge counts as
-    # satisfied required checks. The echo form writes `k=null` and succeeds, so
-    # the consuming job fails loudly instead. Revisit once `versions` is itself a
-    # required context; `tests/infra/test_shared_version_parity.py` catches a bad
-    # path before either can happen.
+    # The reads are assignments, so `set -e` fails this job on a manifest path
+    # that does not resolve. That is safe because `versions` is itself a required
+    # status check: a failed prelude reports FAILURE and blocks the merge, rather
+    # than being laundered into the satisfied-by-skip that a required check
+    # missing from the ruleset would produce. Before that context existed the
+    # echo form was the safer of the two -- it wrote `k=null` and let the
+    # consuming job fail loudly instead. Do not revert to it while `versions`
+    # remains required.
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -44,7 +45,8 @@ jobs:
       - id: declared
         run: |
           set -euo pipefail
-          echo "python=$(jq -er .python.version versions.json)" >> "$GITHUB_OUTPUT"
+          python="$(jq -er .python.version versions.json)"
+          echo "python=$python" >> "$GITHUB_OUTPUT"
 
   triage:
     needs: versions
