@@ -11,7 +11,8 @@ name: build-images
 # regression gate, and its images are discarded. The deploy pipeline calls it
 # with push on and skips them: it is reached only for a commit whose own CI run
 # concluded green, and because every base image is digest-pinned, that run built
-# the same bytes from the same commit. The images it builds are the artifact.
+# from the same bases and the same locked dependency sets. The images it builds
+# are the artifact.
 #
 # One gap follows, and is deliberate rather than overlooked. Nothing in this
 # repository enforces the green-commit rule -- it lives in the operator tooling
@@ -129,7 +130,7 @@ jobs:
       # nothing, reads nothing, and reports no error: caching that reads as
       # configured and never happens. Docker's documentation for the backend
       # calls out the manual exposure a hand-invoked buildx needs.
-      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: crazy-max/ghaction-github-runtime@v4
 
       - name: Log in to Azure (OIDC)
         # Ahead of the builds, because the registry arm now pushes from inside
@@ -217,7 +218,7 @@ jobs:
       - name: Run container smoke tests (SAGE + BFF)
         # Non-push arm only. The deploy caller reaches this workflow solely for
         # a commit whose own CI run concluded green, and that run built from the
-        # same digest-pinned bases and smoked the result -- so running the suite
+        # same digest-pinned bases, and smoked the result -- so running the suite
         # again here re-proves a settled fact against the clock. The one gap is
         # that the green-commit rule is operator-side, not enforced here, so a
         # dispatch that skips it ships an image these tests never saw.

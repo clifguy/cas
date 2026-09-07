@@ -247,8 +247,8 @@ jobs:
     #
     # This job is the only place the container smoke tests run. The deploy arm
     # skips them and accepts its artifact on the strength of this run having
-    # built the same bytes from the same commit — which holds because the base
-    # images are digest-pinned. Weakening either half weakens the deploy.
+    # built from the same bases and locked dependency sets — which holds because
+    # the base images are digest-pinned. Weakening either half weakens the deploy.
     uses: ./.github/workflows/build-images.yml
     with:
       push: false

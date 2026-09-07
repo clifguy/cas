@@ -116,11 +116,17 @@ def test_ignore_inverts_sage_for_frontend() -> None:
 def test_base_images_are_digest_pinned() -> None:
     """Every external image this Dockerfile resolves is pinned to a digest.
 
-    A floating tag lets two builds of the same commit resolve different bytes.
-    That matters here beyond ordinary reproducibility: the deploy pipeline no
-    longer smokes the image it pushes, resting instead on the CI run for that
-    commit having smoked the same build. A moving base breaks exactly that
-    equivalence, and breaks it silently.
+    A floating tag lets two builds of the same commit start from different
+    bases. That matters here beyond ordinary reproducibility: the deploy
+    pipeline no longer smokes the image it pushes, resting instead on the CI run
+    for that commit having built from the same bases and the same locked
+    dependency sets.
+
+    The pins do not deliver byte-equality and this gate does not claim it -- the
+    apt layer and the embedder weights float, and are shared between the two
+    builds only while the layer cache serves them. What a moving base would
+    break is the weaker guarantee the skip actually rests on, and it would break
+    it silently.
     """
     refs = external_image_refs(_dockerfile_text())
 

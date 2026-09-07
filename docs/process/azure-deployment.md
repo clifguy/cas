@@ -252,14 +252,25 @@ the artifact it provisions is built from the committed commit and lands in that
 tenant's registry.
 
 **The smoke tests run on the CI arm only.** The deploy arm builds and pushes
-without re-running them, and the reason it is entitled to is a chain of two
-facts. A deploy dispatches `origin/main` HEAD and refuses a commit whose own CI
-run is not green, so the commit it ships has already been through the arm that
-smokes — though note that rule lives in the operator tooling, not in this
-repository, and any `workflow_dispatch` reaches the build with the push on. And every base image both Dockerfiles resolve is digest-pinned, so a
-rebuild of that commit produces the same bytes rather than merely the same
-recipe. Break either half — force a deploy past its precheck, or let a base
-image float again — and the deploy is pushing an artifact nothing has tested.
+without re-running them, and two facts are what entitle it to. A deploy
+dispatches `origin/main` HEAD and refuses a commit whose own CI run is not
+green, so the commit it ships has already been through the arm that smokes —
+though note that rule lives in the operator tooling, not in this repository, and
+any `workflow_dispatch` reaches the build with the push on. And every base image
+both Dockerfiles resolve is digest-pinned, so a rebuild of that commit starts
+from the same bases and the same locked dependency sets rather than merely from
+the same recipe.
+
+Be precise about how far that second fact reaches, because it is easy to
+overstate. It is not byte-equality: the SAGE runtime stage installs its apt
+packages from moving indexes, and the embedder weights are fetched from a
+floating model ref, so those two layers are identical across the CI build and
+the deploy build only while the layer cache still serves them — and are rebuilt,
+possibly differently, once it does not. What the pins guarantee is the stronger
+half of the recipe; the cache supplies the rest, for as long as it survives.
+
+Break either fact — force a deploy past its precheck, or let a base image float
+again — and the deploy is pushing an artifact nothing has tested.
 
 Because the deploy arm pushes from inside the build rather than from a later
 step, `az acr login` runs *before* the images are built there. Nothing loads an

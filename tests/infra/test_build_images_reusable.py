@@ -11,9 +11,12 @@ authenticates through the OIDC deploy identity (no stored secret) and stays
 dormant until the registry coordinate is configured.
 
 The deploy arm does not re-run the smoke tests. It is reached only for a commit
-whose own CI run concluded green, and that run smoked the same build from the
-same digest-pinned bases — so a third execution would re-prove a settled fact
-against the clock.
+whose own CI run concluded green, and that run built from the same
+digest-pinned bases and the same locked dependency sets, then smoked the result
+— so a third execution would re-prove a settled fact against the clock. The
+pins do not make the two builds byte-identical (the apt and model-weight layers
+float, and are equal only while the layer cache serves them); they make the
+recipe equal, which is what the skip rests on.
 
 These checks read the tracked workflow YAML only — no Actions runner or Azure
 tooling — so they run in the ordinary Python test job. The deployment-profile
@@ -235,6 +238,12 @@ def test_images_are_pushed_from_the_build_step() -> None:
             "registry arm, `--load` where the smoke tests need a local image"
         )
         assert "PUSH_TO_REGISTRY" in run, "the output mode must branch on the resolved push flag"
+        assert re.search(r'"\$\{PUSH_TO_REGISTRY\}"\s*=\s*"true"', run), (
+            "the push flag must be compared against the lowercase `true` a GitHub "
+            "expression renders. Compared against anything else -- `True`, `1` -- the "
+            "branch is never taken, the deploy arm silently loads instead of pushing, "
+            "and every other assertion here still holds"
+        )
         fallback = re.search(r"^\s*else\s*$", run, re.MULTILINE)
         assert fallback is not None, (
             "the output mode has no fallback branch; a caller with no registry "

@@ -1,9 +1,12 @@
 """Collect the external image references a Dockerfile resolves at build time.
 
 Shared by the two Dockerfile structural gates. A reference that names a mutable
-tag lets two builds of the same commit resolve different bytes, which breaks the
-one property the deploy path depends on: that the image CI smoked and the image
-the deploy pushes are the same artifact.
+tag lets two builds of the same commit resolve different bases, which breaks the
+property the deploy path leans on: that the image CI smoked and the image the
+deploy pushes were built from the same bases and the same locked dependency
+sets. That is weaker than byte-equality and is deliberately so -- the apt and
+model-weight layers float regardless, and are shared only while the layer cache
+serves them.
 
 The scan deliberately covers three sites, not one. ``FROM`` alone would miss
 every reference this repository actually floats -- both Dockerfiles indirect
@@ -21,31 +24,45 @@ _ARG_IMAGE_RE: Final[re.Pattern[str]] = re.compile(
 )
 _COPY_FROM_RE: Final[re.Pattern[str]] = re.compile(r"^COPY\s+--from=(\S+)", re.MULTILINE)
 _FROM_RE: Final[re.Pattern[str]] = re.compile(r"^FROM\s+(\S+)", re.MULTILINE)
+_STAGE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^FROM\s+\S+\s+AS\s+(\S+)", re.MULTILINE | re.IGNORECASE
+)
 
 
-def _names_a_registry_image(value: str) -> bool:
-    """True for a registry coordinate, false for a build-arg or a stage name.
+def _stage_names(dockerfile_text: str) -> set[str]:
+    """The named build stages, lowercased -- stage references are case-folded."""
+    return {name.lower() for name in _STAGE_RE.findall(dockerfile_text)}
 
-    ``COPY --from=builder`` names an earlier stage and resolves to nothing
-    external; ``FROM ${PYTHON_IMAGE}`` defers to the ARG the scan already reads.
-    A registry coordinate always carries a tag or a registry host, so it always
-    carries a ``:`` or a ``/``.
+
+def _is_external(value: str, stage_names: set[str]) -> bool:
+    """True for a reference the build resolves from a registry.
+
+    Stated as an exclusion rather than as a recognizer. The recognizer form --
+    "a registry coordinate always carries a ``:`` or a ``/``" -- reads as
+    equivalent and is not: it silently drops the one shape that floats hardest,
+    a bare ``FROM debian`` or ``COPY --from=alpine``, which carries neither and
+    resolves to ``:latest``. Excluding the three things that are demonstrably
+    not registry references, and treating everything else as one, cannot lose a
+    site that way; it can only over-collect, which fails loudly.
     """
-    if value.startswith("$"):
+    if value.startswith("$"):  # deferred to an ARG this scan reads directly
         return False
-    return ":" in value or "/" in value
+    if value.lower() == "scratch":  # the empty base, not a registry image
+        return False
+    return value.lower() not in stage_names  # an earlier stage, not external
 
 
 def external_image_refs(dockerfile_text: str) -> dict[str, str]:
     """Map a human-readable source site to the image reference it resolves."""
+    stage_names = _stage_names(dockerfile_text)
     refs: dict[str, str] = {}
     for name, value in _ARG_IMAGE_RE.findall(dockerfile_text):
         refs[f"ARG {name}"] = value
     for value in _COPY_FROM_RE.findall(dockerfile_text):
-        if _names_a_registry_image(value):
+        if _is_external(value, stage_names):
             refs[f"COPY --from={value}"] = value
     for value in _FROM_RE.findall(dockerfile_text):
-        if _names_a_registry_image(value):
+        if _is_external(value, stage_names):
             refs[f"FROM {value}"] = value
     return refs
 
