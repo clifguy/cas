@@ -85,8 +85,10 @@ def _surface_bloat_sql(*expressions: str) -> str:
 
     ``pgstattuple`` is STRICT, so the NULL regclass an absent surface resolves
     to yields NULL columns rather than an error, and ``COALESCE`` floors each
-    sum to zero. The join predicate keeps the function off a NULL argument
-    besides, so the tolerance does not rest on strictness alone.
+    sum to zero. The tolerance rests on that strictness and on nothing else:
+    the ``ON`` predicate shapes the joined row, and a lateral function is
+    invoked per outer row before its ``ON`` clause is applied, so substituting
+    a non-strict function here raises rather than reading zero.
 
     Each surface's heap is scanned once per call however many expressions are
     asked for, because the function is joined rather than invoked per column.
@@ -1269,9 +1271,11 @@ class PostgresContentStore(ContentStore):
         """Reclaim bloat with ``VACUUM (FULL, ANALYZE)``; snapshot pre/post.
 
         Removes dead tuples, returns free space to the OS, and shrinks the
-        relation, so the retained-version, fragment, and byte signals all drop.
-        ``cleanup_older_than`` is accepted for the port contract but has no
-        Postgres analog: VACUUM has no age threshold and reclaims every
+        relations, so the retained-version, fragment, and byte signals all drop.
+        Reclaims the surfaces the schema actually holds, so the scope matches
+        the readings the snapshot is taken with rather than merely naming the
+        same set. ``cleanup_older_than`` is accepted for the port contract but
+        has no Postgres analog: VACUUM has no age threshold and reclaims every
         eligible dead tuple, a superset of the LanceDB age-based pruning.
         Runs on an autocommit connection (VACUUM cannot run inside a
         transaction block).
@@ -1281,7 +1285,9 @@ class PostgresContentStore(ContentStore):
             async with self._pool.connection() as conn:
                 await conn.set_autocommit(True)
                 pre = await self._bloat_snapshot(conn)
-                await conn.execute(f"VACUUM (FULL, ANALYZE) {', '.join(_CONTENT_STORE_SURFACES)}")
+                present = await self._present_surfaces(conn, _CONTENT_STORE_SURFACES)
+                if present:
+                    await conn.execute(f"VACUUM (FULL, ANALYZE) {', '.join(present)}")
                 post = await self._bloat_snapshot(conn)
             return ContentStoreOptimizeSnapshot(
                 pre_bytes=pre["bytes"],
@@ -1295,6 +1301,28 @@ class PostgresContentStore(ContentStore):
             )
 
     # -- internals ----------------------------------------------------------
+
+    @staticmethod
+    async def _present_surfaces(conn: AsyncConnection, surfaces: Sequence[str]) -> tuple[str, ...]:
+        """Those of ``surfaces`` the connection's schema actually holds.
+
+        VACUUM resolves its whole relation list before it processes any of it,
+        so naming one absent surface reclaims nothing at all -- not the absent
+        one and not the present ones either. Every reading above tolerates an
+        absent surface individually; filtering here is what gives the
+        reclamation the same scope, rather than one that merely names the same
+        set. A partly provisioned schema is where the two come apart, and it is
+        the shape a single-surface reclamation could afford to ignore.
+        """
+        values = ", ".join(["(%s)"] * len(surfaces))
+        # noqa below: the only interpolation is a placeholder list sized from the
+        # surface set; every surface name travels as a bound parameter.
+        sql = (
+            f"SELECT n.name FROM (VALUES {values}) AS n(name) WHERE to_regclass(n.name) IS NOT NULL"  # noqa: S608, E501
+        )
+        async with conn.cursor() as cur:
+            await cur.execute(sql, tuple(surfaces))
+            return tuple(row[0] for row in await cur.fetchall())
 
     @staticmethod
     async def _bloat_snapshot(conn: AsyncConnection) -> dict[str, int]:

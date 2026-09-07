@@ -175,6 +175,33 @@ async def test_stub_content_store_reports_zero_retained_versions():
     assert await store.count_retained_versions() == 0
 
 
+async def test_stub_content_store_counts_both_of_its_surfaces():
+    """The stub honours the port's row count: passages plus document-level rows.
+
+    The stub keeps its two surfaces in two dicts, and counting only the passages
+    reports a store smaller than the one it serves -- which is what the port's
+    live-row figure is divided into elsewhere. The second document carries a
+    document-level row and no passages, so a count that walks the passage dict
+    alone reads 2 against the 4 asserted here.
+    """
+    from sage.adapters.interfaces import Chunk, DocumentSurface
+    from sage.adapters.stubs import StubContentStore
+
+    store = StubContentStore()
+    await store.index_chunks(
+        "d1",
+        [
+            Chunk(document_id="d1", heading_path="H", content="a", embedding=[0.0], chunk_index=0),
+            Chunk(document_id="d1", heading_path="H", content="b", embedding=[0.0], chunk_index=1),
+        ],
+    )
+    for doc_id in ("d1", "d2"):
+        await store.upsert_document_surface(
+            DocumentSurface(document_id=doc_id, matchable="Title", orienting="abstract")
+        )
+    assert await store.count_rows() == 4
+
+
 async def test_stub_content_store_reports_zero_small_fragments():
     """StubContentStore has no on-disk fragments, so count_small_fragments is 0.
 

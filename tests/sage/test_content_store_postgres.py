@@ -1509,6 +1509,26 @@ async def test_stat_reads_report_the_surface_that_is_present(pg_dsn, present):
             assert await s.count_rows() > 0
             assert await s.measured_byte_size() > 0
             assert await s.count_retained_versions() > 0
+            # count_small_fragments is deliberately not asserted here: a churned
+            # but unvacuumed surface has no free space yet, and ">= 0" is true of
+            # every implementation including one that measured nothing. It shares
+            # its statement builder with the dead-tuple read above, so the arm
+            # that discriminates it is the sum assertion in the companion test.
+
+            # The reclamation has to tolerate the absent surface the same way,
+            # and one statement naming both does not: VACUUM resolves its whole
+            # relation list before processing any of it, so the absent name
+            # aborts the command and the present surface keeps every dead tuple
+            # it had. That is a reclaim of nothing reported as a reclaim.
+            await _await_reclaimable_horizon(pool)
+            snap = await s.optimize(timedelta(0))
+            assert snap["pre_versions"] > 0
+            if snap["post_versions"] != 0:
+                pytest.fail(
+                    f"VACUUM FULL kept {snap['post_versions']} dead tuples on a partly "
+                    f"provisioned schema:\n{await _horizon_diagnostics(pool)}"
+                )
+            assert await s.count_retained_versions() == 0
         finally:
             await pool.close()
     finally:
@@ -2032,6 +2052,10 @@ def test_the_content_store_surface_set_is_expressed_once():
     reintroduced here would be a quoted one. The constant's own definition is
     excluded by construction -- it is not a member of the class.
     """
+    # Every member that builds a statement over the surfaces: none may spell one
+    # inline. ``_present_surfaces`` is here for that assertion and not for the
+    # one below, because it receives the set as a parameter rather than reading
+    # it -- the member that names the set it reclaims is ``optimize``.
     members = (
         PostgresContentStore.count_rows,
         PostgresContentStore.count_retained_versions,
@@ -2039,7 +2063,9 @@ def test_the_content_store_surface_set_is_expressed_once():
         PostgresContentStore.measured_byte_size,
         PostgresContentStore.optimize,
         PostgresContentStore._bloat_snapshot,
+        PostgresContentStore._present_surfaces,
     )
+    reads_the_set = tuple(m for m in members if m is not PostgresContentStore._present_surfaces)
     for member in members:
         source = inspect.getsource(member)
         for surface in _CONTENT_STORE_SURFACES:
@@ -2048,13 +2074,19 @@ def test_the_content_store_surface_set_is_expressed_once():
                 f"{member.__name__} spells the surface {surface!r} inline; render it "
                 "from _CONTENT_STORE_SURFACES so the set stays named once"
             )
+        if member not in reads_the_set:
+            continue
         assert "_CONTENT_STORE_SURFACES" in source, (
             f"{member.__name__} reads neither the surface set nor a surface name -- "
             "it no longer describes the content store's surfaces"
         )
-        # Naming the set and then indexing into it is the one way to satisfy
-        # the two assertions above while still measuring a single surface --
-        # and the way that reads, at a glance, exactly like the correct code.
+        # Indexing into the set satisfies the two assertions above while still
+        # measuring a single surface, and reads at a glance exactly like the
+        # correct code. It is not the only such form -- unpacking the tuple or
+        # taking the first of an iterator over it evade this too -- so this
+        # assertion is the cheap guard against the shape most likely to be
+        # written, not a closed proof. What excludes the others is behavioural:
+        # every member listed here is also covered by the tests above.
         assert "_CONTENT_STORE_SURFACES[" not in source, (
             f"{member.__name__} subscripts the surface set; it must read the whole "
             "set, not one member of it"
