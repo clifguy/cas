@@ -1893,28 +1893,53 @@ async def test_a_headingless_passage_is_not_mistaken_for_a_document_surface(stor
 # The tests above cover what each path matches. These cover the dispatch: which
 # of the two paths answers a given query shape, where the folded arm sits
 # relative to them, and that nothing else answers at all. They read the path
-# from the row shape rather than from the method that produced it, because the
-# row shape is the published difference -- a binding that declines a query at
-# document scope returns one row per matching chunk with matched_chunk_count
-# left at its default, and the caller tallies -- so these survive a rename of
-# the private methods and would fail a consolidation that changed what a caller
-# sees.
+# from what a caller sees rather than from the method that produced it, so they
+# survive a rename of the private methods and would fail a consolidation that
+# changed the answer.
+#
+# The observable is the match unit, not the row shape. Both paths now return
+# one row per matching document and budget limit by documents, so the row shape
+# no longer distinguishes them; what still does is which text has to satisfy
+# the query and therefore what matched_chunk_count counts. The document scope
+# counts a document's passages carrying a required lexeme, the within-unit path
+# counts those satisfying the whole query, and a passage carrying an excluded
+# term separates the two.
 # ---------------------------------------------------------------------------
 
 
 async def _two_chunk_document(store, document_id="routed", term="deltaword"):
     """A document whose term is carried by two passages, not one.
 
-    Two is what makes the row shape legible: a document-scoped answer collapses
-    them into one row carrying a count of two, and a within-unit answer returns
-    both rows carrying the default count of one. With a single passage the two
-    shapes are identical and the assertions below would hold either way.
+    Two is what makes the count legible: either path collapses the document
+    into one row, and only the count says how many passages stood behind it.
+    With a single passage the count is one on any scope and the assertions
+    below would hold against a binding that never counted at all.
     """
     await store.index_chunks(
         document_id,
         [
             _chunk(document_id, content=f"{term} in the first passage", chunk_index=0),
             _chunk(document_id, content=f"{term} in the second passage", chunk_index=1),
+        ],
+    )
+
+
+async def _one_passage_excludes(store, document_id="routed"):
+    """Both passages carry the term; only one also carries the excluded word.
+
+    This is what separates the two match units now that both answer with one
+    row per document. Against ``deltaword -absentword`` the document scope
+    would count both passages -- it ranks and counts on the query's *required*
+    lexemes, of which ``absentword`` is not one -- while the within-unit path
+    counts only the passage that satisfies the query entire. A fixture whose
+    passages both satisfy the exclusion counts two either way and would leave
+    the routing unasserted.
+    """
+    await store.index_chunks(
+        document_id,
+        [
+            _chunk(document_id, content="deltaword in the first passage", chunk_index=0),
+            _chunk(document_id, content="deltaword absentword together", chunk_index=1),
         ],
     )
 
@@ -1932,8 +1957,8 @@ async def test_a_decomposable_query_is_answered_at_document_scope(store):
 
 
 async def test_a_negated_query_is_answered_within_one_unit(store):
-    """A negation is evaluated per unit, so each passage answers for itself."""
-    await _two_chunk_document(store)
+    """A negation is evaluated per unit, so a passage answers for itself."""
+    await _one_passage_excludes(store)
 
     rows = [
         r
@@ -1941,9 +1966,10 @@ async def test_a_negated_query_is_answered_within_one_unit(store):
         if r.document_id == "routed"
     ]
 
-    assert len(rows) == 2, "a within-unit answer returns one row per matching passage"
-    assert [r.matched_chunk_count for r in rows] == [1, 1], (
-        "a chunk-by-chunk binding leaves the count at its default for the caller to tally"
+    assert len(rows) == 1, "a document is represented once whichever path answered"
+    assert rows[0].matched_chunk_count == 1, (
+        "the passage carrying the excluded term was counted, so the query was "
+        "evaluated across the document rather than within one passage"
     )
 
 
@@ -2009,17 +2035,18 @@ async def test_a_negation_beside_an_alternation_still_routes_within_one_unit(sto
     afterwards would document-scope a negated query, closing a question
     deliberately left open rather than answering it.
     """
-    await _two_chunk_document(store)
+    await _one_passage_excludes(store)
 
     rows = [
         r
-        for r in await store.search_bm25("deltaword or absentword -otherword", limit=10)
+        for r in await store.search_bm25("deltaword -absentword or gammaword", limit=10)
         if r.document_id == "routed"
     ]
 
-    assert len(rows) == 2, "a within-unit answer returns one row per matching passage"
-    assert [r.matched_chunk_count for r in rows] == [1, 1], (
-        "a chunk-by-chunk binding leaves the count at its default for the caller to tally"
+    assert len(rows) == 1, "a document is represented once whichever path answered"
+    assert rows[0].matched_chunk_count == 1, (
+        "the passage carrying the excluded term was counted, so the branches "
+        "were split before the negation was looked for"
     )
 
 
@@ -2073,8 +2100,250 @@ async def test_an_exclusion_only_query_is_answered_within_one_unit(store):
         r for r in await store.search_bm25("-absentword", limit=50) if r.document_id == "routed"
     ]
 
-    assert len(rows) == 2, "a query asking only for an absence is answered per unit"
-    assert [r.matched_chunk_count for r in rows] == [1, 1]
+    assert len(rows) == 1, "a query asking only for an absence still reaches the document"
+    assert rows[0].matched_chunk_count == 2, (
+        "both passages satisfy an absence, and the row must say so; the "
+        "document scope cannot answer this shape at all, having no lexeme to rank on"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The within-unit path budgets limit by documents
+#
+# The scope stays within one unit of text; what the rows below pin is that the
+# budget does not. A path returning one row per matching passage under a single
+# outer limit lets one document spend the whole of it, so another document --
+# including the active head of the crowder's own supersedes chain -- never
+# reaches the caller at all, and no downstream re-rank can recover a row that
+# was never fetched.
+#
+# Every query here carries a negation, because a plain one routes to the
+# document scope and would pass against the defect.
+# ---------------------------------------------------------------------------
+
+
+async def _crowder_and_victim(store, passages=4, crowder="a_crowder", victim="b_victim"):
+    """One document with many matching passages beside one with a single passage.
+
+    The relative order of the ids is load-bearing and not decorative. For a
+    query of this shape ``ts_rank`` returns its floor identically for every
+    row, so the score orders nothing and the document id supplies the order
+    outright. The crowder must sort *first* or a row budget spends itself on
+    the victim, which is already the document the assertions look for, and the
+    test passes against the defect it exists to catch. Callers reaching the
+    graph store pass well-formed ids that keep that order.
+    """
+    await store.index_chunks(
+        crowder,
+        [_chunk(crowder, content=f"alphaword passage {i}", chunk_index=i) for i in range(passages)],
+    )
+    await store.index_chunks(victim, [_chunk(victim, content="alphaword once only")])
+
+
+async def test_a_within_unit_limit_is_a_document_budget(store):
+    """``limit`` bounds documents on this path too, not the rows it fetched.
+
+    The crowder carries four matching passages against a limit of two, so a row
+    budget is spent inside it before the victim is reached and the victim is
+    the document that never comes back.
+
+    A third matching document is what makes this a test of the budget rather
+    than of the row shape. Without it the corpus holds exactly as many
+    documents as the limit admits, and a binding applying no limit at all
+    returns the same two ids and passes.
+    """
+    await _crowder_and_victim(store)
+    await store.index_chunks("c_surplus", [_chunk("c_surplus", content="alphaword here too")])
+
+    rows = await store.search_bm25("alphaword -absentword", limit=2)
+
+    assert {r.document_id for r in rows} == {"a_crowder", "b_victim"}, (
+        "two documents, not four passages of one; a row budget answers with one id, "
+        "and a binding that never applies the limit answers with three"
+    )
+
+
+async def test_the_two_keyword_paths_budget_limit_alike(store):
+    """The same corpus and terms answer with the same documents on either path.
+
+    The negation is the only difference between the two calls, and it changes
+    which path answers. Nothing about the corpus or the query changed, so a
+    caller who appends an excluded term must not thereby lose a document the
+    query without it returned.
+    """
+    await _crowder_and_victim(store)
+
+    document_scoped = await store.search_bm25("alphaword", limit=2)
+    within_unit = await store.search_bm25("alphaword -absentword", limit=2)
+
+    assert {r.document_id for r in within_unit} == {r.document_id for r in document_scoped}, (
+        "appending an exclusion dropped a document by changing what limit counts"
+    )
+
+
+async def test_a_within_unit_row_prefers_a_passage_excerpt_over_the_surface(store):
+    """A document matching on both surfaces is represented by its best passage.
+
+    The surface row sorts at the index the port reserves for document-level
+    text, which is ahead of every passage, so a representative chosen on that
+    order alone is the surface row -- and the document comes back excerptless
+    and marked document-level despite its passages having matched.
+    """
+    await store.index_chunks("both", [_chunk("both", content="zetaword in the body prose")])
+    await _surface(store, "both", matchable="Zetaword Catalog", orienting="")
+
+    [row] = await store.search_bm25("zetaword -absentword", limit=10)
+
+    assert row.is_document_surface is False, (
+        "a document whose passage matched was reported as document-level"
+    )
+    assert "zetaword" in row.content, "the surface row displaced the passage's excerpt"
+    assert row.heading_path, "the surface row displaced the passage's heading"
+    assert row.matched_chunk_count == 1, "the matching passage was not counted"
+
+
+async def test_a_within_unit_document_matched_only_by_its_surface_is_document_level(store):
+    """No passage matched, so the row is document-level and counts none.
+
+    The complement of the test above, and what keeps its fix from flooring
+    every document at one passage: a document reached through nothing but its
+    title must still answer zero, which is what the field's published
+    description promises (CAS-ADR-049 Decision 5).
+    """
+    await store.index_chunks("titled", [_chunk("titled", content="unrelated body prose")])
+    await _surface(store, "titled", matchable="Zetaword Catalog", orienting="")
+
+    [row] = await store.search_bm25("zetaword -absentword", limit=10)
+
+    assert row.is_document_surface is True, "only the title matched, so the row is document-level"
+    assert row.matched_chunk_count == 0, "a document-level row stands for no passage"
+    assert not row.content, "a document-level row carries no excerpt"
+
+
+async def _keyword_service(store, graph_store, stub_embedding_provider, minimal_config):
+    """A retrieval service over the real binding rather than the double.
+
+    The in-memory double implements no within-unit path, so a service test of
+    that path has nowhere else to run.
+    """
+    from sage.services.retrieval import RetrievalService
+
+    return RetrievalService(
+        graph_store=graph_store,
+        content_store=store,
+        embedding_provider=stub_embedding_provider,
+        config=minimal_config,
+    )
+
+
+async def _insert_document(graph_store, document_id, title, lifecycle_status):
+    from datetime import datetime, timezone
+
+    from sage.models.enums import PipelineStatus, SourceType
+    from sage.models.schemas import Document
+
+    now = datetime.now(timezone.utc)
+    await graph_store.insert_document(
+        Document(
+            id=document_id,
+            title=title,
+            source_type=SourceType.MARKDOWN,
+            source_path=f"imports/{document_id}.md",
+            lifecycle_status=lifecycle_status,
+            source_content_hash="sha256:" + "ab" * 32,
+            adapter_version="1",
+            created_by="t",
+            created_at=now,
+            last_modified_by="t",
+            updated_at=now,
+            pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        )
+    )
+
+
+async def test_a_negated_query_does_not_drop_the_active_head_for_its_predecessor(
+    store, graph_store, stub_embedding_provider, minimal_config
+):
+    """The active head of a chain outranks its own predecessor at any limit.
+
+    The lifecycle guarantee sorts the hits it was given, so it is silent about
+    which hits those were: a predecessor carrying more matching passages than
+    the whole fetch budget leaves the head unfetched, and an agent asking a
+    negation-shaped question is handed a retired version with no sign that a
+    newer one exists and matched better.
+
+    The predecessor's passage count is derived from the service's own
+    over-fetch rather than written as a literal, so only a change to what the
+    budget *counts* satisfies this. A literal count large enough for today's
+    multiplier would leave a rival the docstring could not honestly exclude:
+    raising the multiplier would clear that threshold and turn the test green
+    while the shape it describes stood untouched.
+    """
+    from sage.models.schemas import DiscoverRequest, RetrievalMode
+    from sage.services.retrieval import _FETCH_MULTIPLIER_NONE
+
+    limit = 2
+    crowding_passages = limit * _FETCH_MULTIPLIER_NONE + 2
+
+    await _insert_document(graph_store, "0000aa01_adr_v1", "Retired Catalog", "archived")
+    await _insert_document(graph_store, "0000bb02_adr_v2", "Current Catalog", "active")
+    await store.index_chunks(
+        "0000aa01_adr_v1",
+        [
+            _chunk("0000aa01_adr_v1", content=f"alphaword passage {i}", chunk_index=i)
+            for i in range(crowding_passages)
+        ],
+    )
+    await store.index_chunks(
+        "0000bb02_adr_v2", [_chunk("0000bb02_adr_v2", content="alphaword stated once")]
+    )
+
+    service = await _keyword_service(store, graph_store, stub_embedding_provider, minimal_config)
+    response = await service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alphaword -absentword", limit=limit)
+    )
+
+    ids = [h.document.id for h in response.results]
+    assert "0000bb02_adr_v2" in ids, "the active head was crowded out by its own predecessor"
+    assert ids[0] == "0000bb02_adr_v2", "the active head was fetched but did not rank first"
+
+
+async def test_total_available_agrees_across_the_two_keyword_paths(
+    store, graph_store, stub_embedding_provider, minimal_config
+):
+    """A caller reading ``total_available`` to decide whether to page sees one number.
+
+    It counts the documents surviving dedup over the rows that were fetched, so
+    a path spending its budget on one document's passages reports a total the
+    corpus does not support -- and reports a different one at each limit, for a
+    query and a corpus that did not change.
+    """
+    from sage.models.schemas import DiscoverRequest, RetrievalMode
+    from sage.services.retrieval import _FETCH_MULTIPLIER_NONE
+
+    await _crowder_and_victim(
+        store,
+        passages=2 * _FETCH_MULTIPLIER_NONE + 2,
+        crowder="0000aa01_crowder",
+        victim="0000bb02_victim",
+    )
+    await _insert_document(graph_store, "0000aa01_crowder", "Crowder", "active")
+    await _insert_document(graph_store, "0000bb02_victim", "Victim", "active")
+
+    service = await _keyword_service(store, graph_store, stub_embedding_provider, minimal_config)
+
+    async def _total(query, limit):
+        response = await service.discover(
+            DiscoverRequest(mode=RetrievalMode.KEYWORD, query=query, limit=limit)
+        )
+        return response.total_available
+
+    assert await _total("alphaword -absentword", 2) == await _total("alphaword", 2), (
+        "the two paths disagree on how many documents match the same terms"
+    )
+    assert await _total("alphaword -absentword", 2) == await _total("alphaword -absentword", 3), (
+        "the total moved with the page size, for a fixed query and corpus"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2178,14 +2447,16 @@ async def _tied_documents(store, content=_TIED_CONTENT):
 async def test_a_tied_within_unit_result_orders_on_the_document_id(store):
     """The fallback's rows are ordered totally, so a rerun cannot disagree.
 
-    Reached by a negation, which is the shape that still routes here -- and on
-    this path the id is not breaking a tie between scores, it is the whole
-    order. ``ts_rank`` returns its floor against any tsquery carrying a ``!``,
-    identically for every row whatever its text, and every query that reaches
-    this path carries one or requires no lexeme at all. So ``score DESC`` here
-    sorts a column that is constant by construction, and before this clause the
-    rows came back in whatever order the scan produced -- which the
-    perturbation below then changes underneath a caller who changed nothing.
+    Reached by a negation, which is the shape that still routes here -- and for
+    a query of this shape the id is not breaking a tie between scores, it is
+    the whole order. ``ts_rank`` returns its floor wherever a negation is what
+    the match turns on, identically for every row whatever its text, so
+    ``doc_score DESC`` here sorts a column that is constant by construction and
+    before this clause the rows came back in whatever order the scan produced
+    -- which the perturbation below then changes underneath a caller who
+    changed nothing. The floor is not a property of every query reaching this
+    path: an alternation one of whose branches carries no exclusion scores
+    above it, which is why the score clause is not merely decorative.
 
     ``tie_bravo`` carries the term eight times and still does not lead, which
     is that floor stated as behaviour: it outranks the pair on any query
@@ -2194,10 +2465,11 @@ async def test_a_tied_within_unit_result_orders_on_the_document_id(store):
     whose path has real scores to order.
 
     The rows are compared with their excerpts, so the order *within* a document
-    is asserted and not only the order between them. That is where the id alone
-    leaves ties: two passages under one heading, and -- on ``tie_zulu``, whose
-    passages carry no heading -- a passage and the document's own surface row,
-    which reports an empty heading too.
+    is asserted and not only the order between them. A document answers once,
+    so that order is no longer visible as rows but as which passage represents
+    it: the same ``chunk_index`` tiebreak, moved from the outer clause into the
+    window that picks the representative, and still the only thing separating
+    two passages under one heading.
     """
     await _tied_documents(store)
 
@@ -2211,14 +2483,10 @@ async def test_a_tied_within_unit_result_orders_on_the_document_id(store):
         "this path orders on something and the id is no longer the whole order"
     )
     assert first == [
-        ("tie_alfa", ""),
         ("tie_alfa", f"{_TIED_CONTENT} 0"),
-        ("tie_alfa", f"{_TIED_CONTENT} 1"),
         ("tie_bravo", _TIED_BRAVO_CONTENT),
-        ("tie_zulu", ""),
         ("tie_zulu", f"{_TIED_CONTENT} 0"),
-        ("tie_zulu", f"{_TIED_CONTENT} 1"),
-    ], "rows must order on the id then the passage index, not on the scan"
+    ], "documents must order on the id, and each be represented by its first passage"
 
 
 async def test_a_tied_semantic_result_orders_on_the_document_id(store):
