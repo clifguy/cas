@@ -36,7 +36,7 @@ try:
     from sage.adapters.embedding_nomic import NomicEmbeddingProvider
 
     _HAS_EMBEDDING = True
-except (ImportError, RuntimeError):
+except ImportError, RuntimeError:
     _HAS_EMBEDDING = False
 
 try:
@@ -45,7 +45,7 @@ try:
     from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 
     _HAS_QWEN3 = True
-except (ImportError, RuntimeError):
+except ImportError, RuntimeError:
     _HAS_QWEN3 = False
 
 

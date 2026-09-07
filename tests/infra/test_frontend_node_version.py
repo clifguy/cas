@@ -12,6 +12,11 @@ one. ``@types/node`` ahead of the lowest build/test runtime is the real hazard:
 it lets code reference newer-Node-only APIs that pass ``tsc`` but do not exist
 where the bundle is actually built.
 
+The canonical major itself is declared in ``versions.json`` alongside the other
+shared-component versions, and the CI pins read it through the ``versions``
+prelude job -- so this gate covers the sites that cannot read it and must
+restate it instead. See ``docs/process/shared-version-parity.md``.
+
 This gate reads the tracked config only (no Actions runner, no Docker daemon)
 and asserts every one of those sites resolves to a single canonical Node major,
 in the structural-gate style of ``tests/infra/test_build_images_reusable.py``
@@ -29,6 +34,8 @@ from typing import Final
 
 import yaml
 
+from tests.helpers.versions import node_major
+
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 
 CI_WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -36,11 +43,15 @@ DOCKERFILE_BFF: Final[Path] = REPO_ROOT / "Dockerfile.bff"
 APP_PACKAGE_JSON: Final[Path] = REPO_ROOT / "app" / "package.json"
 DEPENDABOT: Final[Path] = REPO_ROOT / ".github" / "dependabot.yml"
 
-# The one Node major the whole frontend toolchain resolves to. Chosen as the
-# Active-LTS line that already backs the container image, so CI and the type
-# definitions rise to meet the container rather than the reverse. Raise this in
-# lockstep with the four sites the tests below cover when the toolchain moves.
-CANONICAL_NODE_MAJOR: Final[int] = 24
+# The one Node major the whole frontend toolchain resolves to: the Active-LTS
+# line that backs the container image, so CI and the type definitions rise to
+# meet the container rather than the reverse. Declared in `versions.json` with
+# the other shared-component versions rather than here, so moving the toolchain
+# is one edit; the tests below hold the sites that restate it.
+CANONICAL_NODE_MAJOR: Final[int] = int(node_major())
+
+# The exact pin a workflow writes to read the major from the versions prelude job.
+_PRELUDE_NODE_PIN: Final[str] = "${{ needs.versions.outputs.node }}"
 
 
 def _node_major(spec: str) -> int:
@@ -80,11 +91,22 @@ def test_ci_setup_node_pins_resolve_to_canonical_major() -> None:
     """
     pins = _ci_setup_node_versions()
     assert pins, f"no actions/setup-node node-version pins found in {CI_WORKFLOW}"
-    majors = {_node_major(p) for p in pins}
-    assert majors == {CANONICAL_NODE_MAJOR}, (
-        f"CI setup-node pins must all be Node {CANONICAL_NODE_MAJOR}; "
-        f"got pins {pins} (majors {sorted(majors)})."
-    )
+    # A pin either reads the versions prelude job's output or names a major
+    # itself, and each form is checked on its own terms. Mapping the expression
+    # form to the canonical major and then asserting it equals the canonical
+    # major would assert nothing -- and since every pin is currently that form,
+    # it would leave the whole check vacuous. Equality rather than containment
+    # for the same reason: a pin merely mentioning the output is not one.
+    for pin in pins:
+        if "needs.versions.outputs" in pin:
+            assert pin.strip() == _PRELUDE_NODE_PIN, (
+                f"a pin reading the versions prelude must be exactly "
+                f"{_PRELUDE_NODE_PIN!r}; got {pin!r}"
+            )
+        else:
+            assert _node_major(pin) == CANONICAL_NODE_MAJOR, (
+                f"CI setup-node pins must be Node {CANONICAL_NODE_MAJOR}; got {pin!r}"
+            )
 
 
 def test_dockerfile_bff_node_image_is_canonical_major() -> None:

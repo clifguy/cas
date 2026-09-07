@@ -485,7 +485,7 @@ def _extract_docstring_and_comment_spans(path: Path) -> list[tuple[int, str]]:
             for tok in tokenize.tokenize(fh.readline):
                 if tok.type == tokenize.COMMENT:
                     spans.append((tok.start[0], tok.string))
-    except (tokenize.TokenizeError, SyntaxError, UnicodeDecodeError):
+    except tokenize.TokenizeError, SyntaxError, UnicodeDecodeError:
         # Best-effort: a tokenize failure shouldn't crash the whole gate.
         pass
 

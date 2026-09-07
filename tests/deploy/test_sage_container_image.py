@@ -8,13 +8,14 @@ opt-in ``test_container_smoke`` module.
 The runtime image carries the Postgres client (``pg_dump``) because the in-VNet
 maintenance job runs this image and its whole-vault teardown takes a
 ``pg_dump`` schema snapshot before destroying anything. The client major must
-track the Flexible Server major (``infra/modules/postgres.bicep``): an older
-client refuses to dump a newer server, which would fail the snapshot and abort
-the teardown. ``test_pg_client_major_matches_flexible_server`` binds the two so a
-future server-version bump that forgets the image is caught here.
+track the Flexible Server major: an older client refuses to dump a newer server,
+which would fail the snapshot and abort the teardown.
+``test_pg_client_major_matches_flexible_server`` binds the image to the major
+declared in ``versions.json``, so a future server-version bump that forgets the
+image is caught here. The template's own agreement with that declaration is a
+separate check, in ``tests/infra/test_shared_version_parity.py``.
 """
 
-import re
 from pathlib import Path
 
 from tests.deploy._image_refs import (
@@ -23,10 +24,10 @@ from tests.deploy._image_refs import (
     image_names,
     unpinned,
 )
+from tests.helpers.versions import postgres_deploy_major
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKERFILE = _REPO_ROOT / "Dockerfile"
-_POSTGRES_BICEP = _REPO_ROOT / "infra" / "modules" / "postgres.bicep"
 
 
 def _dockerfile_text() -> str:
@@ -48,10 +49,13 @@ def _runtime_stage_text() -> str:
 
 
 def _flexible_server_major() -> str:
-    """The Postgres Flexible Server major version, read from the infra module."""
-    match = re.search(r"postgresVersion\s+string\s*=\s*'(\d+)'", _POSTGRES_BICEP.read_text())
-    assert match is not None, "could not read postgresVersion default from postgres.bicep"
-    return match.group(1)
+    """The Postgres Flexible Server major version.
+
+    Read from the shared-component manifest, which is what the infrastructure
+    template loads for its own default -- so this reads the declaration rather
+    than re-deriving it from the template's text.
+    """
+    return postgres_deploy_major()
 
 
 def test_dockerfile_sage_exists() -> None:
@@ -77,7 +81,7 @@ def test_pg_client_major_matches_flexible_server() -> None:
     major = _flexible_server_major()
     assert f"postgresql-client-{major}" in _runtime_stage_text(), (
         f"the runtime stage must install postgresql-client-{major} to match the Flexible "
-        f"Server major {major} (infra/modules/postgres.bicep)"
+        f"Server major {major} (versions.json postgres.deploy_major)"
     )
 
 

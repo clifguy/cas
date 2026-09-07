@@ -129,7 +129,7 @@ def _replace_first_hex_with_non_hex(u: uuid.UUID, non_hex: str) -> str:
 def _is_not_uuid(s: str) -> bool:
     try:
         uuid.UUID(s)
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return True
     return False
 

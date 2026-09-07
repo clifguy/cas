@@ -353,7 +353,7 @@ def _error_codes() -> set[str]:
     for path in _SAGE_PACKAGE.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text())
-        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+        except SyntaxError, UnicodeDecodeError:  # pragma: no cover - defensive
             continue
         for node in ast.walk(tree):
             # ``{"error": "<code>", ...}`` envelopes built at a tool
@@ -1095,7 +1095,7 @@ def test_error_detail_pins_name_real_detail_keys() -> None:
     for path in _SAGE_PACKAGE.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text())
-        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+        except SyntaxError, UnicodeDecodeError:  # pragma: no cover - defensive
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Dict):

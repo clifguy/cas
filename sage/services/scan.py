@@ -111,7 +111,7 @@ def _vault_relative_path(path: Path, storage_root: Path) -> str | None:
     """
     try:
         return str(path.resolve().relative_to(storage_root))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

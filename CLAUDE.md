@@ -13,7 +13,9 @@ A personal experimental agentic ecosystem. See `README.md` for the public-facing
 
 ## Tech stack
 
-Python 3.14+, FastAPI + uvicorn, Pydantic v2, pytest. JSON Schema for schemas, OpenAPI for API specs. Embeddings via nomic-embed-text; semantic abstracts via a local MLX model. LangGraph is planned for ROOT Harness. Exact versions are pinned in `pyproject.toml`.
+Python 3.14+, FastAPI + uvicorn, Pydantic v2, pytest. JSON Schema for schemas, OpenAPI for API specs. Embeddings via nomic-embed-text; semantic abstracts via a local MLX model. LangGraph is planned for ROOT Harness. Exact dependency versions are pinned in `pyproject.toml`.
+
+The versions that several toolchains have to agree on — the Postgres majors, the Python version, the Node major — are declared once in `versions.json` and read from there by the infrastructure template, the workflows, and the test suite. Sites that cannot read a file restate them and are held to that declaration by a gate. Change a version there, not at the site that happens to be in front of you; see `docs/process/shared-version-parity.md` for the scope of the rule and the one change that also needs the live branch ruleset edited.
 
 ## Storage & deployment profiles
 

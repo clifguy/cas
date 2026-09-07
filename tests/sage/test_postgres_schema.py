@@ -147,13 +147,16 @@ def test_the_vector_rebuild_is_written_to_the_postgres_16_floor():
     """The rebuild drops and re-adds rather than altering the expression.
 
     ``ALTER COLUMN ... SET EXPRESSION AS`` is PostgreSQL 17. The workstation
-    runs 17 and all three CI service containers are pinned to ``pg17``, while
-    the deployed target is Flexible Server major 16 -- so the 17-only form would
-    pass every test this repository runs and fail only at deploy.
+    and all but one of the CI service containers run 17, while the deployed
+    target is Flexible Server major 16 -- so the 17-only form would pass on
+    every 17 surface and fail only at deploy. Both majors are declared in
+    ``versions.json``; ``tests/infra/test_shared_version_parity.py`` holds the
+    sites that name them to those declarations.
 
-    Anti-coincidental-pass: there is none available, and that is the point. No
-    runtime test can reach this, because nothing we run is version 16. A static
-    assertion over the DDL text is the only place the floor can be enforced.
+    Anti-coincidental-pass: the deploy-floor CI job runs this tree against the
+    floor major, so a 17-only statement that slipped past this static assertion
+    would red there. That job is the runtime control; this assertion is what
+    catches the same mistake on a workstation, before the push.
     """
     rebuild = "\n".join(pgschema.CHUNKS_TSV_REBUILD)
     assert "SET EXPRESSION" not in rebuild.upper(), (

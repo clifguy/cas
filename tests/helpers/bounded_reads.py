@@ -89,7 +89,7 @@ def _names(target: object, resolved: Path) -> bool:
         return False
     try:
         return Path(os.fsdecode(target)).resolve() == resolved
-    except (TypeError, ValueError, OSError):
+    except TypeError, ValueError, OSError:
         return False
 
 

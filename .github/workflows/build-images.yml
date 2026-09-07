@@ -45,7 +45,42 @@ permissions:
   id-token: write
 
 jobs:
+  versions:
+    # Shared-component version manifest as job outputs. Same shape and same
+    # reason as the prelude in `ci.yml`: a service container's `image` resolves
+    # before any step in its own job runs, so it cannot read a value a sibling
+    # step computed. Declared here rather than taken as a `workflow_call` input
+    # so this reusable workflow stays self-sufficient — every caller gets the
+    # declared versions without having to know they exist.
+    #
+    # See `docs/process/shared-version-parity.md`.
+    # The reads are `echo "k=$(jq -er ...)"` rather than assignments on purpose.
+    # An assignment would let `set -e` fail this job on a bad manifest path, and
+    # a failed prelude *skips* the jobs that need it -- which the forge counts as
+    # satisfied required checks. The echo form writes `k=null` and succeeds, so
+    # the consuming job fails loudly instead. Revisit once `versions` is itself a
+    # required context; `tests/infra/test_shared_version_parity.py` catches a bad
+    # path before either can happen.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      postgres_dev_major: ${{ steps.declared.outputs.postgres_dev_major }}
+      python: ${{ steps.declared.outputs.python }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: versions.json
+          sparse-checkout-cone-mode: false
+      - id: declared
+        run: |
+          set -euo pipefail
+          {
+            echo "postgres_dev_major=$(jq -er .postgres.dev_major versions.json)"
+            echo "python=$(jq -er .python.version versions.json)"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Bind the tenant's Environment only when pushing, so the env-scoped registry
@@ -69,7 +104,7 @@ jobs:
       # cost of keeping one job rather than splitting the build in two, not an
       # oversight.
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg${{ needs.versions.outputs.postgres_dev_major }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -102,7 +137,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
-          python-version: "3.14"
+          python-version: ${{ needs.versions.outputs.python }}
 
       - name: Install test dependencies
         run: uv sync --locked --extra test

@@ -114,7 +114,7 @@ def _compute_build_identity(repo_dir: Path) -> str:
         if status.returncode == 0 and status.stdout.strip():
             identity = f"{identity}-dirty"
         return identity
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return UNKNOWN
 
 
@@ -215,7 +215,7 @@ def _compute_release_version(repo_dir: Path) -> str:
             return UNKNOWN
         parsed = _parse_describe(described.stdout.strip())
         return parsed if parsed is not None else UNKNOWN
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return UNKNOWN
 
 

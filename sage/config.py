@@ -335,7 +335,7 @@ def _sample_identifiers_from_schema_pattern(pattern: str) -> list[str] | None:
     body = pattern[1:-1]
     try:
         samples, index = _expand_alternation(body, 0)
-    except (_UnsupportedSchemaPattern, IndexError):
+    except _UnsupportedSchemaPattern, IndexError:
         return None
     if index != len(body):
         return None

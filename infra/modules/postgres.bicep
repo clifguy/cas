@@ -36,8 +36,12 @@ param vnetId string
 @description('Name of the database SAGE connects to within the server.')
 param databaseName string = 'sage'
 
+// Read from the repository's shared-component version manifest rather than
+// restated here, so the deployed major and the majors the container client,
+// the CI service images and the workstation run cannot drift apart. See
+// `docs/process/shared-version-parity.md`.
 @description('Major PostgreSQL version of the Flexible Server.')
-param postgresVersion string = '16'
+param postgresVersion string = loadJsonContent('../../versions.json').postgres.deploy_major
 
 @description('Compute SKU name of the Flexible Server.')
 param skuName string = 'Standard_B2s'

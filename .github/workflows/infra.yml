@@ -243,10 +243,20 @@ jobs:
           # tenant's v2.0 issuer -- the one APIM validate-jwt and the SAGE backend
           # require. The v1 resource endpoint yields an sts.windows.net issuer that
           # is rejected at the edge.
+          #
+          # The declared Postgres major is read here rather than inside the
+          # preflight script, which parses no JSON so it stays seamable offline.
+          # The check it feeds is the one gate that asks the deployed server
+          # rather than comparing tracked files with each other: the repository
+          # can be entirely self-consistent about a major the live server does
+          # not have.
           AUTH_TOKEN="$(az account get-access-token \
             --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
             BASE_DOMAIN="$BASE_DOMAIN" \
             PREFLIGHT_EXPECTED_VAULTS="$PREFLIGHT_EXPECTED_VAULTS" \
             PREFLIGHT_VAULT_SOURCE="$PREFLIGHT_VAULT_SOURCE" \
             PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="deploy/resource-token-probe.sh" \
+            PREFLIGHT_POSTGRES_VERSION_PROBE_CMD="deploy/postgres-version-probe.sh" \
+            PREFLIGHT_EXPECTED_PG_MAJOR="$(jq -er .postgres.deploy_major versions.json)" \
+            PREFLIGHT_RESOURCE_GROUP="$RESOURCE_GROUP_NAME" \
             deploy/cloud-preflight.sh

@@ -110,5 +110,5 @@ class SchemaValidator:
         try:
             self.validate_sub_schema(schema_path, definition_name, instance)
             return True
-        except (jsonschema.ValidationError, KeyError):
+        except jsonschema.ValidationError, KeyError:
             return False
