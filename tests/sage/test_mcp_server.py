@@ -422,15 +422,15 @@ async def test_ingest_returns_document(vault_services):
 
 
 async def test_ingest_duplicate_returns_error(vault_services):
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await asyncio.sleep(0.1)
+    first = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", first["id"])
     result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     assert result["error"] == "duplicate_content"
 
 
 async def test_ingest_force_bypasses_duplicate(vault_services):
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await asyncio.sleep(0.1)
+    first = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", first["id"])
     result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown", force=True))
     assert "id" in result
     assert "error" not in result
@@ -1121,7 +1121,8 @@ async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persist
     the imported constant, not a literal."""
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     response = _parse(
         await update_lifecycle(
@@ -1188,7 +1189,8 @@ async def test_set_lifecycle_dry_run_invalid_action_error_envelope_matches_real_
 async def test_link_creates_edge(vault_services):
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     result = _parse(
         await create_edge(
@@ -1211,7 +1213,7 @@ async def test_link_creates_edge(vault_services):
 
 async def test_link_self_referential_error(vault_services):
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await create_edge("test_vault", doc["id"], doc["id"], "references"))
     assert result["error"] == "self_referential_edge"
@@ -1226,7 +1228,8 @@ async def test_sage_link_explicit_rationale_kind(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     result = _parse(
         await create_edge(
@@ -1250,7 +1253,8 @@ async def test_sage_link_derives_rationale_kind_from_prefix(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     result = _parse(
         await create_edge(
@@ -1272,7 +1276,8 @@ async def test_sage_link_defaults_to_manual(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     result = _parse(
         await create_edge(
@@ -1293,7 +1298,8 @@ async def test_link_idempotent_returns_created_flag(vault_services):
     returns ``created=False`` and preserves the original rationale."""
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     first = _parse(
         await create_edge(
@@ -1332,7 +1338,7 @@ async def test_link_idempotent_returns_created_flag(vault_services):
 
 async def test_check_preconditions_no_deps(vault_services):
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await verify_preconditions("test_vault", doc["id"]))
     assert result["function_id"] == doc["id"]
@@ -1348,7 +1354,8 @@ async def test_check_preconditions_no_deps(vault_services):
 async def test_traverse_returns_nodes(vault_services):
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
     result = _parse(await traverse("test_vault", doc_a["id"]))
@@ -1359,7 +1366,7 @@ async def test_traverse_returns_nodes(vault_services):
 
 async def test_traverse_no_edges(vault_services):
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await traverse("test_vault", doc["id"]))
     assert result["start_id"] == doc["id"]
@@ -1375,7 +1382,8 @@ async def test_link_transitive_both_requires_anchors(vault_services):
     """covers is transitive_both; omitting anchors via MCP surfaces a 400."""
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     # No anchor fields -> edge_anchor_policy_violation
     result = _parse(await create_edge("test_vault", doc_a["id"], doc_b["id"], "covers"))
@@ -1407,7 +1415,8 @@ async def test_link_retracts_round_trip(vault_services):
     retracted_edge_id."""
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     covers = _parse(
         await create_edge(
@@ -1468,7 +1477,8 @@ async def test_link_retracts_round_trip(vault_services):
 async def test_traverse_debug_populates_resolution_path(vault_services):
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     await create_edge(
         "test_vault",
         doc_a["id"],
@@ -1493,8 +1503,8 @@ async def test_traverse_debug_populates_resolution_path(vault_services):
 
 
 async def test_discover_semantic(vault_services):
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await asyncio.sleep(0.5)
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await search("test_vault", "semantic", query="sample content"))
     assert result["mode"] == "semantic"
@@ -1508,9 +1518,10 @@ async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services
     sort_order values produce reversed orderings. Catches the wrapper silently
     dropping either parameter on the floor.
     """
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await ingest_document("test_vault", "test/second.md", "markdown")
-    await asyncio.sleep(0.3)
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     asc_result = _parse(
         await search(
@@ -1553,7 +1564,7 @@ async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services
 
 async def test_discover_deterministic(vault_services):
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(
         await search(
@@ -1739,7 +1750,7 @@ async def test_discover_mode_parameter_mismatch_catalog_with_heading_path(vault_
 async def test_discover_mode_parameter_mismatch_deterministic_with_query(vault_services):
     """Deterministic mode with query set: deterministic does not search."""
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(
         await search(
             "test_vault",
@@ -1763,8 +1774,8 @@ async def test_discover_semantic_missing_query_still_typed(vault_services):
 
 async def test_discover_semantic_happy_path_unchanged(vault_services):
     """Regression guard: success-path response shape is preserved."""
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await asyncio.sleep(0.5)
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(await search("test_vault", "semantic", query="sample content"))
     assert result["mode"] == "semantic"
     assert isinstance(result["results"], list)
@@ -1777,7 +1788,7 @@ async def test_discover_semantic_happy_path_unchanged(vault_services):
 
 async def test_read_projection(vault_services):
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await read_projection("test_vault", doc["id"]))
     assert result["document_id"] == doc["id"]
@@ -1802,7 +1813,7 @@ async def test_read_projection_write_to_path_writes_file_and_returns_metadata(
     text). Replaces the pre-audit sage_export_projection MCP tool.
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     target = tmp_path / "out.md"
 
     result = _parse(await read_projection("test_vault", doc["id"], write_to_path=str(target)))
@@ -1821,8 +1832,12 @@ async def test_read_projection_write_to_path_writes_file_and_returns_metadata(
 
 
 async def test_read_projection_write_to_path_existing_target_errors(vault_services, tmp_path):
+    """An occupied target is refused, and the occupant is left alone.
+
+    Waits for nothing, for the reason the relative-path test below gives:
+    the target check runs before the projection is read.
+    """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
     target = tmp_path / "existing.md"
     target.write_text("pre-existing")
 
@@ -1834,8 +1849,14 @@ async def test_read_projection_write_to_path_existing_target_errors(vault_servic
 
 
 async def test_read_projection_write_to_path_relative_errors(vault_services):
+    """A relative write_to_path is refused as the argument error it is.
+
+    Deliberately waits for nothing. The path is validated before the
+    projection is read, so the refusal does not depend on the document's
+    pipeline state; waiting here would hide a regression that moved the
+    check back below the fetch, which is what made this test flaky.
+    """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
 
     result = _parse(await read_projection("test_vault", doc["id"], write_to_path="relative.md"))
 
@@ -1845,7 +1866,7 @@ async def test_read_projection_write_to_path_relative_errors(vault_services):
 async def test_read_projection_delivery_inline(vault_services):
     """delivery=inline forces the projection body inline and reports body_length."""
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await read_projection("test_vault", doc["id"], delivery="inline"))
 
@@ -1859,7 +1880,7 @@ async def test_read_projection_delivery_inline(vault_services):
 async def test_read_projection_delivery_spill(vault_services, tmp_path):
     """delivery=spill writes the projection to disk and returns metadata only."""
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     target = tmp_path / "delivery_out.md"
 
     result = _parse(
@@ -1876,7 +1897,7 @@ async def test_read_projection_delivery_spill(vault_services, tmp_path):
 async def test_read_projection_delivery_spill_without_path_errors(vault_services):
     """delivery=spill without a write_to_path target is refused with a structured error."""
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await read_projection("test_vault", doc["id"], delivery="spill"))
 
@@ -1933,8 +1954,8 @@ async def test_refresh_views(vault_services):
 async def test_reload_vault_reinitializes_services(vault_services):
     """Reload replaces services with a fresh instance and returns stats."""
     # Ingest a document so we can verify data survives reload
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await asyncio.sleep(0.3)
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     old_services = _mcp._vaults["test_vault"]
     result = _parse(await reload_vault("test_vault"))
@@ -2139,8 +2160,8 @@ async def test_reload_vault_sees_external_changes(vault_services):
     then reload picks up the new state.
     """
     # Ingest through the current services
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await asyncio.sleep(0.3)
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     # Verify document is visible
     stats_before = _parse(await get_vault_stats("test_vault"))
@@ -2184,7 +2205,10 @@ async def test_reload_vault_sees_external_changes(vault_services):
     finally:
         await external_pool.close()
 
-    # Reload vault to pick up external changes
+    # Reload vault to pick up external changes. The settle below waits for the
+    # registry slot to carry the post-reload bundle, not for any document: the
+    # externally inserted row never enters the ingestion pipeline (it is written
+    # straight to the store, already terminal), so there is nothing to poll for.
     await reload_vault("test_vault")
     await asyncio.sleep(0.1)
 
@@ -2668,8 +2692,11 @@ async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_ser
         # detail["start_time"] is an ISO 8601 string; just confirm it parses.
         datetime.fromisoformat(second["detail"]["start_time"])
     finally:
+        # Releasing the gate lets the held worker run to its terminal status
+        # and drop the claim, which is exactly what the shared wait polls for.
+        # Leaving it as a fixed sleep would let the worker outlive the test.
         gate.set()
-        await asyncio.sleep(0.3)
+        await _await_document_idle(vault_services, "test_vault", doc_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2766,8 +2793,11 @@ async def test_recompute_pipeline_tool_concurrent_returns_409(vault_services):
         assert second["detail"]["document_id"] == doc_id
         datetime.fromisoformat(second["detail"]["start_time"])
     finally:
+        # Releasing the gate lets the held worker run to its terminal status
+        # and drop the claim, which is exactly what the shared wait polls for.
+        # Leaving it as a fixed sleep would let the worker outlive the test.
         gate.set()
-        await asyncio.sleep(0.3)
+        await _await_document_idle(vault_services, "test_vault", doc_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2782,7 +2812,8 @@ async def test_sage_discover_edges_happy_path(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     # supersedes has resolution_policy=none so no anchor version
     # requirements; using it keeps the fixture small while still
     # exercising the edge enumeration path.
@@ -2829,7 +2860,8 @@ async def test_sage_discover_edges_light_round_trips_through_serializer(vault_se
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     link = _parse(await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes"))
 
     result = _parse(
@@ -2917,9 +2949,10 @@ async def test_sage_discover_facets_happy_path(vault_services):
     survives an int-or-None modeling regression that would drop the
     zero case.
     """
-    await ingest_document("test_vault", "test/sample.md", "markdown")
-    await ingest_document("test_vault", "test/second.md", "markdown")
-    await asyncio.sleep(0.3)
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     result = _parse(await search("test_vault", mode="catalog", target="facets"))
 
@@ -2962,11 +2995,16 @@ async def test_sage_discover_facet_params_roundtrip(vault_services):
     the two-tag fixture catches an unforwarded facet_value_limit (the
     default cap of 50 would return both tags instead of one).
     """
-    await ingest_document(
-        "test_vault", "test/sample.md", "markdown", metadata={"tags": ["za", "zb"]}
+    doc_a = _parse(
+        await ingest_document(
+            "test_vault", "test/sample.md", "markdown", metadata={"tags": ["za", "zb"]}
+        )
     )
-    await ingest_document("test_vault", "test/second.md", "markdown", metadata={"tags": ["za"]})
-    await asyncio.sleep(0.3)
+    doc_b = _parse(
+        await ingest_document("test_vault", "test/second.md", "markdown", metadata={"tags": ["za"]})
+    )
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
 
     result = _parse(
         await search(
@@ -3036,7 +3074,8 @@ async def test_traverse_accepts_document_id_alias(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
     result = _parse(await traverse(vault_id="test_vault", document_id=doc_a["id"]))
@@ -3054,7 +3093,8 @@ async def test_traverse_accepts_start_id_kwarg(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
     result = _parse(await traverse(vault_id="test_vault", start_id=doc_a["id"]))
@@ -3070,7 +3110,8 @@ async def test_traverse_accepts_start_id_positional(vault_services):
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
     await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
     result = _parse(await traverse("test_vault", doc_a["id"]))
@@ -3085,7 +3126,7 @@ async def test_traverse_rejects_both_kwargs(vault_services):
     exactly one must be supplied.
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(
         await traverse(
@@ -3120,7 +3161,7 @@ async def test_traverse_rejects_positional_plus_alias_kwarg(vault_services):
     is treated as the both-supplied case, not as silent precedence.
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.3)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await traverse("test_vault", doc["id"], document_id=doc["id"]))
     assert result["error"] == "ambiguous_document_identifier"
@@ -3218,7 +3259,7 @@ async def test_read_projection_accepts_doc_id_alias(vault_services):
     projection.
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(await read_projection(vault_id="test_vault", doc_id=doc["id"]))
     assert result["document_id"] == doc["id"]
     assert len(result["projection_text"]) > 0
@@ -3229,7 +3270,7 @@ async def test_read_section_accepts_doc_id_alias(vault_services):
     section (heading_path supplied alongside the alias).
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(
         await read_section(vault_id="test_vault", doc_id=doc["id"], heading_path="Sample Document")
     )
@@ -3242,7 +3283,7 @@ async def test_list_headings_accepts_doc_id_alias(vault_services):
     heading list.
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(await list_headings(vault_id="test_vault", doc_id=doc["id"]))
     assert result["document_id"] == doc["id"]
     assert "Sample Document" in result["headings"]
@@ -3290,7 +3331,7 @@ async def test_accepts_document_id_keyword(vault_services, tool_fn, extra, echo_
     correct record after the alias is added. Back-compat guard.
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(await tool_fn(vault_id="test_vault", document_id=doc["id"], **extra))
     assert result[echo_key] == doc["id"]
 
@@ -3311,7 +3352,7 @@ async def test_positional_document_id_still_binds(vault_services, tool_fn, echo_
     ahead of the optional id params, so its positional contract changes.)
     """
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
     result = _parse(await tool_fn("test_vault", doc["id"]))
     assert result[echo_key] == doc["id"]
 

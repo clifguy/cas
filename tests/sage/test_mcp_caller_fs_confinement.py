@@ -53,7 +53,24 @@ from sage.mcp_server import (
 from sage.profiles import caller_local_filesystem_available
 from sage.services.transfer import get_transfer_store, reset_transfer_store
 from sage.services.vault_registry import VaultRegistryService
+from tests.helpers.pipeline_wait import await_tool_idle
 from tests.sage.conftest import initialize_services_for_test
+
+
+async def _await_document_idle(services, doc_id):
+    """Wait until a document is safe for a caller to act on, and return it.
+
+    Thin adapter over the shared wait, reading through the tool surface so the
+    poll observes what a caller of these tools would observe. The predicate --
+    terminal status *and* no in-flight claim -- lives in
+    ``tests/helpers/pipeline_wait.py`` for the whole suite.
+    """
+
+    async def fetch():
+        return _parse(await get_document(_VAULT_ID, doc_id))
+
+    return await await_tool_idle(fetch, doc_id, service=services.ingestion_service)
+
 
 _VAULT_ID = "test_vault"
 
@@ -372,9 +389,9 @@ async def test_b4_read_projection_write_to_path_returns_download_recipe(confined
     """B4: ``read_projection(write_to_path=...)`` under the cloud profile
     returns a download recipe whose redemption yields the projection text, and
     no file is written to the container."""
-    _services, _config, _handle = confined_vault
+    services, _config, _handle = confined_vault
     _src, ingest = await _ingest_local_file(tmp_path, "b4_note.md", "# B4\n\nProjection body.")
-    await asyncio.sleep(0.5)  # let the projection land
+    await _await_document_idle(services, ingest["id"])
     target = tmp_path / "caller_out" / "b4_projection.md"
     target.parent.mkdir()
 
@@ -396,14 +413,123 @@ async def test_b4_read_projection_write_to_path_returns_download_recipe(confined
     assert "Projection body." in spooled.decode("utf-8")
 
 
+async def test_recipe_arm_rejects_a_relative_write_to_path(confined_vault, tmp_path):
+    """The recipe arm refuses a relative write_to_path instead of minting for it.
+
+    Absoluteness is the one path check that holds wherever the path resolves,
+    so it applies on this arm too. Before the validation hoist this call was
+    answered with a recipe: the arm returned before reaching any check, and a
+    caller's transfer would then have written to whatever its own working
+    directory happened to be.
+
+    The error code alone does not settle it. A rival that mints first and
+    validates afterwards returns the same refusal while leaving a spooled
+    transfer behind to expire unredeemed, so the store is asserted empty as
+    well: refusing and minting nothing are two observables, and only the pair
+    distinguishes a check that runs before the mint from one that runs after.
+    """
+    _services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "rel_note.md", "# Rel\n\nBody.")
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path="relative.md"))
+
+    assert result["error"] == "write_path_invalid"
+    # The autouse _fresh_transfer_store fixture empties the store per test, so
+    # any entry here was minted by the refused call.
+    assert get_transfer_store()._entries == {}
+
+
+async def test_recipe_arm_accepts_a_parent_this_process_cannot_see(confined_vault, tmp_path):
+    """An absolute caller-local path still mints, even with no such parent here.
+
+    The guard against over-correcting the hoist. ``write_to_path`` names the
+    *caller's* filesystem, which this process cannot inspect on this arm, so
+    the parent-exists and writable checks would refuse paths that are perfectly
+    good on the machine that will actually write them. Only the shape check
+    belongs here; applying the whole local validator would red this test.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "unseen_note.md", "# Unseen\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+    unseen = "/caller/local/no/such/dir/out.md"
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path=unseen))
+
+    assert "error" not in result, result
+    assert result["status"] == "download_required"
+    assert result["write_to_path"] == unseen
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(r"C:\Users\somebody\out.md", id="drive-letter"),
+        pytest.param(r"\\fileserver\share\out.md", id="unc"),
+    ],
+)
+async def test_recipe_arm_accepts_a_windows_absolute_caller_path(
+    confined_vault, tmp_path, spelling
+):
+    """A caller on Windows names an absolute path this server reads as relative.
+
+    Absoluteness is platform-relative, and on this arm the path belongs to the
+    caller's machine -- the same premise that keeps the parent-and-target
+    checks off this arm. A ``PosixPath`` reading of a drive-letter or UNC
+    spelling calls it relative and refuses a path that is perfectly good on the
+    machine that will write it, which is what the caller's own transfer leg
+    does with it.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "win_note.md", "# Win\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path=spelling))
+
+    assert "error" not in result, result
+    assert result["status"] == "download_required"
+    assert result["write_to_path"] == spelling
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("relative.md", id="bare-name"),
+        pytest.param("sub/out.md", id="posix-subpath"),
+        pytest.param(r"sub\out.md", id="windows-subpath"),
+    ],
+)
+async def test_recipe_arm_still_refuses_a_relative_path_under_either_flavour(
+    confined_vault, tmp_path, spelling
+):
+    """Widening to two flavours must not widen to relative paths.
+
+    The companion to the test above, and the reason the check tests both
+    flavours rather than skipping the shape check on this arm: a genuinely
+    relative spelling is relative under *both* readings, so accepting
+    "absolute under either" still refuses every one of these.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "rel_pair.md", "# Rel\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path=spelling))
+
+    assert result["error"] == "write_path_invalid"
+    assert get_transfer_store()._entries == {}
+
+
 async def test_b5_inline_export_still_works_under_cloud(confined_vault, tmp_path):
     """B5: the inline export modes -- ``include_content`` and inline
     ``read_projection`` -- keep returning bytes under the cloud profile. They
     remain available alongside the recipe path and must not be over-gated."""
-    _services, _config, _handle = confined_vault
+    services, _config, _handle = confined_vault
     body = "# B5\n\nInline export body."
     _src, ingest = await _ingest_local_file(tmp_path, "b5_note.md", body)
-    await asyncio.sleep(0.5)  # let the projection land
+    await _await_document_idle(services, ingest["id"])
 
     with _profile("cloud", transfer_base=_BASE):
         doc = _parse(await get_document(_VAULT_ID, ingest["id"], include_content=True))

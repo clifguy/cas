@@ -9,7 +9,6 @@ Direct function calls bypassing MCP transport, matching the pattern in
 tests/app/test_mcp_app_tools.py.
 """
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,23 @@ from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
 from sage.services.vault_registry import VaultRegistryService
+from tests.helpers.pipeline_wait import await_tool_idle
+
+
+async def _await_document_idle(vault_id, doc_id):
+    """Wait until a document is safe for a caller to act on, and return it.
+
+    Thin adapter over the shared wait, reading through the tool surface so the
+    poll observes what a caller of these tools would observe. The services
+    bundle is read from the registry rather than taken from a fixture, because
+    the vault fixtures here yield a config rather than the live services.
+    """
+    from sage.mcp_server import get_document
+
+    async def fetch():
+        return _parse(await get_document(vault_id, doc_id))
+
+    return await await_tool_idle(fetch, doc_id, service=_mcp._vaults[vault_id].ingestion_service)
 
 
 async def update_metadata(vault_id, document_id, **kwargs):
@@ -329,7 +345,7 @@ class TestSageGetVaultConfig:
             sources.mkdir(parents=True, exist_ok=True)
             (sources / "sample.md").write_text("# Sample\n\nContent for triage.")
             ingest_result = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
-            await asyncio.sleep(0.2)
+            await _await_document_idle("test_vault", ingest_result["id"])
             doc_id = ingest_result["id"]
 
             doc_result = _parse(await get_document("test_vault", doc_id))
@@ -435,7 +451,7 @@ class TestSageUpdateVaultConfig:
         sources.mkdir(parents=True, exist_ok=True)
         (sources / "sample.md").write_text("# Sample\n\nContent.")
         ingest_result = await ingest_document("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.2)
+        await _await_document_idle("test_vault", ingest_result["id"])
         await update_metadata("test_vault", ingest_result["id"], doc_type="note")
 
         # Attempt destructive update
@@ -463,7 +479,7 @@ class TestSageUpdateVaultConfig:
         sources.mkdir(parents=True, exist_ok=True)
         (sources / "sample.md").write_text("# Sample\n\nContent.")
         ingest_result = await ingest_document("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.2)
+        await _await_document_idle("test_vault", ingest_result["id"])
         await update_metadata("test_vault", ingest_result["id"], doc_type="note")
 
         result = _parse(

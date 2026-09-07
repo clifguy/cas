@@ -1792,10 +1792,19 @@ def register_sage_tools(
                 Supply exactly one of ``document_id`` or ``doc_id``.
             doc_id: Alias for ``document_id``; supply exactly one.
             write_to_path: Absolute filesystem path, resolved on the
-                machine running the SAGE server process. When set, SAGE
-                writes the projection text to this path and returns
-                metadata only. The target must not exist; its parent
-                must exist and be writable.
+                machine running the SAGE server process where that machine
+                shares the caller's filesystem: SAGE writes the projection
+                text there and returns metadata only, the target must not
+                exist, and its parent must exist and be writable. Where it
+                does not, the response is a download recipe carrying this
+                path for the caller's own environment to write, and the
+                path is read with that environment's conventions -- a
+                Windows drive-letter or UNC spelling is accepted on that
+                arm, since it is absolute on the machine that will write
+                it. The path must be absolute either way, and is checked
+                before the projection is read, so a malformed path reports
+                ``write_path_invalid`` whatever the document's pipeline
+                state.
             delivery: Inline-vs-spill selector (``inline | spill | auto``).
                 ``auto`` keeps the write_to_path-driven default.
         """
