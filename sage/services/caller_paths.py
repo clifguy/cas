@@ -1,4 +1,4 @@
-"""Absoluteness and writability for a path that names the caller's machine.
+"""Reading a path that names the caller's machine, not this one.
 
 Under the caller-local transfer channel (CAS-ADR-045) a path argument does
 not always name this process's filesystem. Where the deployment is
@@ -9,12 +9,20 @@ question -- is this path absolute -- and they must answer it differently,
 because absoluteness is not intrinsic to a path. It is relative to the
 platform reading it.
 
-The two halves live here rather than in either service so more than one
-service can ask without either owning the answer. Four sites ask it: the
+Nor is absoluteness the only reading that turns on the platform. Reducing
+a path to its basename splits on separators, and which characters separate
+is the same question in a different coat -- so ``caller_basename`` lives
+here too, rather than beside the staging code that consumes it.
+
+These live here rather than in any one service so more than one service
+can ask without either owning the answer. Three modules import them: the
 document and projection read paths on the download leg, and the delivery
-gate and the restore tool on the upload leg. They have drifted apart
-before -- one carried no check, two carried the wrong platform's -- and a
-copy per site leaves the next divergence just as available.
+gate on the upload leg. The restore tool asks nothing of its own -- it
+reads the answer the gate already published, which is the shape the rest
+should tend toward, because a site that re-derives is a site free to
+drift. They have drifted apart before -- one carried no check, two carried
+the wrong platform's -- and a copy per site leaves the next divergence
+just as available.
 
 **The two halves are not symmetric, and must not be made so.**
 ``validate_write_to_path`` interrogates the filesystem the path names, so
@@ -56,6 +64,34 @@ def caller_path_is_absolute(path: str) -> bool:
     ``validate_write_to_path``, which does.
     """
     return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
+
+
+def caller_basename(path: str | None, fallback: str) -> str:
+    """Reduce a caller-named path to a safe basename for staging.
+
+    The basename half of the same asymmetry: which characters separate
+    components is the reading platform's business, and this path belongs to
+    a machine that need not be this one. ``PurePosixPath`` splits only on
+    ``/``, so a Windows caller's ``C:\\docs\\note.md`` has no separator it
+    recognizes and reduces to *itself* -- and a staged file, and from it a
+    retained vault path, would carry the caller's whole path as its name.
+
+    The Windows reading is applied only to a path that is absolute under
+    Windows and *not* under POSIX, which is the narrowest test that
+    identifies a Windows spelling. Reducing under both flavours
+    unconditionally would be wrong the other way: a backslash is a legal
+    character in a POSIX filename, so ``/home/x/we\\ird.md`` would lose its
+    leading half.
+
+    Degenerate results (``""``, ``"."``, ``".."``) fall back to the
+    synthetic name rather than resolving to the staging directory itself
+    and failing with an unstructured OS error.
+    """
+    if not path:
+        return fallback
+    windows, posix = PureWindowsPath(path), PurePosixPath(path)
+    name = (windows if windows.is_absolute() and not posix.is_absolute() else posix).name
+    return fallback if name in ("", ".", "..") else name
 
 
 def validate_caller_write_path_shape(write_to_path: str) -> None:

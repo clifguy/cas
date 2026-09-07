@@ -859,23 +859,43 @@ async def test_b7b_restore_source_file_exactly_one_delivery_shape(confined_vault
     ],
 )
 async def test_cloud_arm_mints_for_a_windows_absolute_ingest_source(confined_vault, spelling):
-    """A Windows-absolute ingest source earns an upload recipe.
+    """A Windows-absolute ingest source earns an upload recipe -- and completes.
 
     The upload leg's form of the same question the download arms ask. Read
     with ``PosixPath`` these spellings are relative, so the gate mints
     nothing and ingestion resolves them against the vault tree -- reporting
     ``source_file_not_found`` for a file that is present where the caller
     named it.
+
+    Carried through the byte leg to the completion call rather than stopping
+    at the recipe, because the recipe is not where this can go wrong twice.
+    Minting is only half the caller's round trip, and the staged basename is
+    reduced from the same caller-authored path: read with the server's
+    separators, a drive-letter spelling has none it recognizes and reduces to
+    itself, so the document lands retained under the caller's entire path
+    (``imports/C:\\docs\\note.md``). Asserting ``source_path`` is what
+    distinguishes a recipe that mints from a round trip that lands correctly.
     """
-    _services, _config, _handle = confined_vault
+    _services, config, handle = confined_vault
+    body = b"# Windows source\n\nDelivered from a Windows caller."
 
     with _profile("cloud", transfer_base=_BASE):
         result = _parse(await ingest_document(_VAULT_ID, spelling, "markdown"))
+        assert "error" not in result, result
+        assert result["status"] == "upload_required"
+        assert len(result["uploads"]) == 1
+        assert result["uploads"][0]["source"] == spelling
 
-    assert "error" not in result, result
-    assert result["status"] == "upload_required"
-    assert len(result["uploads"]) == 1
-    assert result["uploads"][0]["source"] == spelling
+        token = result["uploads"][0]["token"]
+        staging_dir = _stage_upload(token, body)
+        completed = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=token)
+        )
+
+    assert "error" not in completed, completed
+    assert completed["source_path"] == "imports/note.md"
+    assert handle.retained_bytes(config.vault.storage_root, "imports/note.md") == body
+    assert not staging_dir.exists(), "the completion leg must reclaim its staging directory"
 
 
 @pytest.mark.parametrize(

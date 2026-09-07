@@ -26,6 +26,7 @@ from sage.api.errors import (
     TransferTokenInvalidError,
 )
 from sage.config import SageCoreConfig
+from sage.services.caller_paths import caller_basename
 from sage.services.transfer import (
     DeliveryDeclaration,
     TransferStore,
@@ -306,6 +307,33 @@ class TestModuleSurface:
         assert staging_name("..", "fallback") == "fallback"
         assert staging_name("", "fallback") == "fallback"
         assert staging_name(None, "fallback") == "fallback"
+
+    def test_caller_basename_reduces_a_windows_spelling_without_breaking_posix(self):
+        """The basename half of the caller-vs-server platform question.
+
+        ``staging_name`` above keeps this platform's separators, which is
+        right for the server-owned names it now serves. A caller-authored
+        path needs the other reading: ``PurePosixPath`` finds no separator in
+        a drive-letter or UNC spelling and hands back the whole path, which
+        becomes the staged and then the retained name.
+
+        The last two cases are the reason the Windows reading is applied
+        conditionally rather than always. A backslash is a legal character in
+        a POSIX filename, so reducing under both flavours unconditionally
+        would truncate ``we\\ird.md`` to ``ird.md`` -- correct-looking, and
+        wrong. The condition is "absolute under Windows and not under POSIX",
+        which no POSIX-absolute path satisfies.
+        """
+        assert caller_basename(r"C:\docs\note.md", "fallback") == "note.md"
+        assert caller_basename(r"\\fileserver\share\note.md", "fallback") == "note.md"
+        assert caller_basename("/tmp/a/b/notes.md", "fallback") == "notes.md"
+        assert caller_basename("docs/notes.md", "fallback") == "notes.md"
+        assert caller_basename("..", "fallback") == "fallback"
+        assert caller_basename("", "fallback") == "fallback"
+        assert caller_basename(None, "fallback") == "fallback"
+        # A literal backslash in a POSIX filename survives intact.
+        assert caller_basename(r"/home/x/we\ird.md", "fallback") == r"we\ird.md"
+        assert caller_basename(r"we\ird.md", "fallback") == r"we\ird.md"
 
 
 class TestGateReportsItsOwnAnswer:
