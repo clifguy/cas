@@ -423,10 +423,15 @@ class ContentStore(ABC):
         constrain: an aggregate index, a per-term intersection, and a two-pass
         resolution are all admissible. A binding may also decline a query whose
         form it cannot express at document scope and evaluate it against a
-        single chunk instead, in which case it returns one row per matching
-        chunk with ``matched_chunk_count`` left at its default and the caller
-        tallies. The row shape a keyword search returns therefore follows the
-        query's form as well as the binding.
+        single chunk instead, which changes what has to satisfy the query and
+        so what ``matched_chunk_count`` counts -- the chunks satisfying it
+        entire rather than those carrying a required term.
+
+        What that does not change is the row shape. A matching document is
+        returned once whatever answered it, and ``limit`` is a document budget
+        on every keyword answer. A binding spending it on rows let one
+        document's chunks fill the budget and returned that document alone,
+        which a caller cannot distinguish from a corpus holding nothing else.
 
         filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings

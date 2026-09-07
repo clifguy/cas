@@ -363,7 +363,12 @@ async def _load(store: PostgresContentStore, chunks, surfaces, titles) -> None:
 
 
 async def _before(store: PostgresContentStore, query: str):
-    """The path an alternation reached before it was distributed."""
+    """The path an alternation reached before it was distributed.
+
+    What this reproduces is the routing, not the path as it stood when the
+    measurement ran: its budget has since moved from rows to documents, so at a
+    given depth it now reaches documents the measured arm could not.
+    """
     return await store._search_bm25_within_chunk(query, _RECALL_DEPTH, None)  # noqa: SLF001
 
 

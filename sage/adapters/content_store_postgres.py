@@ -800,11 +800,16 @@ class PostgresContentStore(ContentStore):
         query itself, which is empty for a query asking only for absences and
         would collapse every row to a document-level one; its excerpt is the
         best-ranking chunk under that alternation, which for a negated query
-        can be a chunk holding the very term the caller excluded; its
+        can be a chunk holding the very term the caller excluded; and its
         ``matched_chunk_count`` counts chunks carrying a required lexeme, which
-        a negation-only query has none of; and its ``limit`` budgets documents
-        where the fallback budgets rows. The port admits both row shapes for
-        exactly this reason.
+        a negation-only query has none of.
+
+        What they no longer differ in is the budget. Both answer with one row
+        per matching document and spend ``limit`` on documents, because a row
+        budget over per-passage rows let one document's passages fill it and
+        left every other document -- including the active head of that
+        document's own supersedes chain -- unfetched, which no downstream
+        re-rank can undo. The scope stayed where it was; only the budget moved.
 
         The fallback covers the negation and nothing else, because the
         negation's scope is the only one genuinely undecided. An alternation's
@@ -974,17 +979,7 @@ class PostgresContentStore(ContentStore):
         )
         params += [or_form, or_form, or_form, or_form, *where_params, limit]
         rows = await self._fetchall(sql, params)
-        return [
-            SearchResult(
-                document_id=row[0],
-                heading_path=row[1],
-                content=row[2],
-                score=float(row[3]),
-                matched_chunk_count=int(row[4]),
-                is_document_surface=bool(row[5]),
-            )
-            for row in rows
-        ]
+        return [self._row_to_document_result(r) for r in rows]
 
     async def _search_bm25_within_chunk(
         self,
@@ -1003,6 +998,15 @@ class PostgresContentStore(ContentStore):
         one: the query is satisfied within one unit of text, not assembled
         across a document.
 
+        The scope is not the budget, and only the scope was ever unsettled.
+        Answering per unit once meant reporting per unit too -- one row for
+        each matching passage under a single outer limit -- so ``limit``
+        counted rows here and documents everywhere else, and a document with
+        more matching passages than the budget was the whole answer. The rows
+        are therefore collapsed to one per document before the limit applies,
+        exactly as the document-scoped path does: the match still has to be
+        satisfied inside one unit, and the caller is still handed documents.
+
         The document surface is a second such unit, not a second scope. A
         document's authored text spans both surfaces (CAS-ADR-049 Decision 7),
         so reading passages alone left a title unreachable by any query of
@@ -1017,55 +1021,53 @@ class PostgresContentStore(ContentStore):
         and orients, and never satisfies a match (Decision 4).
         """
         where, where_params = self._build_where(filters)
-        chunk_arm = (
-            # The interpolations are a module constant and a predicate built
-            # from a fixed column allowlist; every value stays bound.
-            "SELECT document_id, heading_path, content, ts_rank(tsv, q) AS score,"  # noqa: S608
-            " false AS is_document_surface, chunk_index"
-            f" FROM chunks, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
-            f" WHERE tsv @@ q AND {_passage_rows_only()}"
+        predicate = f" AND {where}" if where else ""
+        # The interpolations are a module constant and a predicate built from a
+        # fixed column allowlist; every value stays bound.
+        ranked = (
+            "SELECT c.document_id, c.heading_path, c.content,"  # noqa: S608
+            " max(ts_rank(c.tsv, q)) OVER (PARTITION BY c.document_id) AS chunk_score,"
+            " count(*) OVER (PARTITION BY c.document_id) AS matched_chunks,"
+            " row_number() OVER (PARTITION BY c.document_id ORDER BY"
+            " ts_rank(c.tsv, q) DESC, c.chunk_index) AS rn"
+            f" FROM chunks c, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
+            f" WHERE c.tsv @@ q AND {_passage_rows_only('c')}{predicate}"
         )
-        # A document-level row is not a passage, so it carries no excerpt and
-        # no heading, exactly as it does on the arms above. It sorts at the
-        # index the port reserves for document-level text, which is the row it
-        # replaced and which neither arm can return, so the value orders the
-        # surface ahead of the passages without colliding with one.
-        surface_arm = (
-            "SELECT document_id, '' AS heading_path, '' AS content,"  # noqa: S608
-            " ts_rank(tsv_rank, q) AS score, true AS is_document_surface,"
-            f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index"
-            f" FROM document_surface, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
-            " WHERE tsv_match @@ q"
+        surf = (
+            "SELECT s.document_id, ts_rank(s.tsv_rank, q) AS surf_score"  # noqa: S608
+            f" FROM document_surface s, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
+            f" WHERE s.tsv_match @@ q{predicate}"
         )
-        params: list[object] = [query]
-        if where:
-            chunk_arm += f" AND {where}"
-            params += where_params
-        params.append(query)
-        if where:
-            surface_arm += f" AND {where}"
-            params += where_params
         sql = (
-            f"SELECT document_id, heading_path, content, score, is_document_surface FROM ("  # noqa: S608
-            f" ({chunk_arm}) UNION ALL ({surface_arm})"
-            # Total, for the reason the semantic verb's own sort gives. Neither
-            # arm limits, so nothing but this clause decides what the outer
-            # limit keeps -- and on this path the id is not breaking a tie
+            f"WITH ranked AS ({ranked}), surf AS ({surf}),"  # noqa: S608
+            " matched AS ("
+            " SELECT document_id FROM ranked UNION SELECT document_id FROM surf"
+            " ) SELECT m.document_id,"
+            " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
+            " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
+            " COALESCE(r.matched_chunks, 0) AS matched_chunks,"
+            # No surviving passage row means nothing but the document surface
+            # answered, which is what makes the row a document-level one. The
+            # surface is a second unit of text rather than a second scope, so
+            # it can win the document and cannot win the excerpt: a document
+            # whose passages matched is represented by its best one.
+            " (r.document_id IS NULL) AS is_document_surface"
+            " FROM matched m"
+            " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
+            " LEFT JOIN surf s USING (document_id)"
+            # Total, for the reason the semantic verb's own sort gives. For
+            # much of what reaches this path the id is not breaking a tie
             # between scores but supplying the order outright: ``ts_rank``
-            # returns its floor against any tsquery carrying a ``!``,
-            # identically for every row, and every query routed here carries
-            # one or requires no lexeme at all. ``score DESC`` stays because it
-            # costs nothing and would order a shape this path does not yet see.
-            #
-            # The final term is the passage index rather than its heading,
-            # which is not unique within a document: two passages can share a
-            # heading, and a document whose passage carries none ties with its
-            # own surface row on the empty string.
-            " ) u ORDER BY score DESC, document_id, chunk_index LIMIT %s"
+            # returns its floor wherever the negation is what the match turns
+            # on, identically for every row. It is not the whole path, though
+            # -- an alternation one of whose branches carries no exclusion
+            # ranks above the floor -- so the score clause leads rather than
+            # decorates.
+            " ORDER BY doc_score DESC, m.document_id LIMIT %s"
         )
-        params.append(limit)
+        params: list[object] = [query, *where_params, query, *where_params, limit]
         rows = await self._fetchall(sql, params)
-        return [self._row_to_semantic_result(r) for r in rows]
+        return [self._row_to_document_result(r) for r in rows]
 
     async def _render_tsquery(self, query: str) -> str:
         """The query as the text-search configuration parses it."""
@@ -1265,6 +1267,23 @@ class PostgresContentStore(ContentStore):
         except psycopg.errors.UndefinedTable:
             return 0
         return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+
+    @staticmethod
+    def _row_to_document_result(row: tuple) -> SearchResult:
+        """A row from either keyword path, which both answer per document.
+
+        The passage count is selected alongside the discriminant rather than
+        following from it: the row stands for a whole document, so how many of
+        its passages matched is not recoverable from the row itself.
+        """
+        return SearchResult(
+            document_id=row[0],
+            heading_path=row[1],
+            content=row[2],
+            score=float(row[3]),
+            matched_chunk_count=int(row[4]),
+            is_document_surface=bool(row[5]),
+        )
 
     @staticmethod
     def _row_to_semantic_result(row: tuple) -> SearchResult:
