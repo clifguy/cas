@@ -26,6 +26,8 @@ from sage.api.errors import (
     DocumentNotFoundError,
     IdenticalContentSupersedeError,
     SupersedeTargetNotActiveError,
+    WritePathExistsError,
+    WritePathInvalidError,
 )
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
@@ -834,3 +836,169 @@ async def test_binary_container_without_content_stamps_body_form_binary(
     assert response.content is None
     assert response.read_meta.success is True
     assert response.read_meta.body_present is False
+
+
+# ---------------------------------------------------------------------------
+# The write path is settled before the document is read
+#
+# A malformed write_to_path is an argument error. Resolved after the fetch, the
+# same argument gets a different answer depending on whether the document
+# happens to exist -- a boundary error that depends on timing rather than on
+# what was passed. Each test opens with a positive control proving the document
+# really is absent (or the target really is occupied), so a green result cannot
+# come from the call failing earlier for some unrelated reason.
+# ---------------------------------------------------------------------------
+
+
+async def test_write_path_relative_is_refused_before_the_document_fetch(
+    tmp_vault_dir, graph_store, minimal_config
+):
+    """A relative path outranks a document that does not exist."""
+    service = DocumentsService(graph_store, minimal_config)
+    absent = _id("absent_for_relative")
+
+    # Positive control: this id really does not resolve, so the assertion
+    # below is about precedence rather than about the id happening to exist.
+    with pytest.raises(DocumentNotFoundError):
+        await service.get_document_with_content(absent, include_content=False, write_to_path=None)
+
+    with pytest.raises(WritePathInvalidError) as exc_info:
+        await service.get_document_with_content(
+            absent, include_content=False, write_to_path="relative.md"
+        )
+
+    assert exc_info.value.code == "write_path_invalid"
+    assert "must be absolute" in exc_info.value.detail["reason"]
+
+
+async def test_write_path_absent_parent_is_refused_before_the_document_fetch(
+    tmp_vault_dir, graph_store, minimal_config, tmp_path
+):
+    """A parent this process cannot write to outranks an absent document."""
+    service = DocumentsService(graph_store, minimal_config)
+    absent = _id("absent_for_parent")
+    target = tmp_path / "absent_dir" / "out.md"
+
+    with pytest.raises(DocumentNotFoundError):
+        await service.get_document_with_content(absent, include_content=False, write_to_path=None)
+
+    with pytest.raises(WritePathInvalidError) as exc_info:
+        await service.get_document_with_content(
+            absent, include_content=False, write_to_path=str(target)
+        )
+
+    assert "parent directory does not exist" in exc_info.value.detail["reason"]
+
+
+async def test_write_path_existing_target_is_refused_before_the_document_fetch(
+    tmp_vault_dir, graph_store, minimal_config, tmp_path
+):
+    """An occupied target outranks an absent document, and survives the refusal."""
+    service = DocumentsService(graph_store, minimal_config)
+    absent = _id("absent_for_occupied")
+    occupied = tmp_path / "occupied.md"
+    occupied.write_text("pre-existing")
+
+    with pytest.raises(DocumentNotFoundError):
+        await service.get_document_with_content(absent, include_content=False, write_to_path=None)
+
+    with pytest.raises(WritePathExistsError):
+        await service.get_document_with_content(
+            absent, include_content=False, write_to_path=str(occupied)
+        )
+
+    assert occupied.read_text() == "pre-existing"
+
+
+async def test_write_path_local_arm_refuses_a_foreign_absolute_spelling(
+    tmp_vault_dir, graph_store, minimal_config
+):
+    """Co-located, this process is the writer, so its own semantics govern.
+
+    The asymmetry that keeps the two halves of the shared predicate apart. On
+    the arm where the caller's environment writes, a drive-letter or UNC
+    spelling is absolute and is accepted; here it is a relative name, and
+    accepting it would write a file literally called ``C:\\Users\\...`` into
+    whatever directory this process happens to be running in. A fix that
+    reached for the either-flavour predicate uniformly reds exactly here.
+    """
+    service = DocumentsService(graph_store, minimal_config)
+    original = "# Foreign\n\nBody.\n"
+    _seed_file(tmp_vault_dir, "foreign_spelling.md", original)
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("foreign_spelling"),
+        source_type=SourceType.MARKDOWN,
+        source_path="foreign_spelling.md",
+    )
+
+    # Positive control: the document resolves and delivers, so the refusal
+    # below is the path's doing and not a missing document.
+    delivered = await service.get_document_with_content(
+        doc.id, include_content=True, write_to_path=None
+    )
+    assert base64.b64decode(delivered.content).decode() == original
+
+    with pytest.raises(WritePathInvalidError) as exc_info:
+        await service.get_document_with_content(
+            doc.id, include_content=False, write_to_path=r"C:\Users\somebody\out.md"
+        )
+
+    assert "must be absolute" in exc_info.value.detail["reason"]
+
+
+async def test_write_path_refuses_a_target_that_appears_during_the_delivery(
+    tmp_vault_dir, graph_store, minimal_config, tmp_path, monkeypatch
+):
+    """A target created after the check and before the write is not overwritten.
+
+    The pre-check is a fast refusal, not the enforcement: the store reads that
+    produce the bytes sit between it and the write. The interleaving is forced
+    rather than raced, by having the existence probe create the target on its
+    way past.
+
+    Two assertions, and the second is the one with teeth. A plain ``"wb"``
+    truncates the interloper and reds on content; an exclusive create whose
+    failure is swallowed by a blanket cleanup handler deletes a file this
+    delivery never made, and reds on the same line.
+    """
+    service = DocumentsService(graph_store, minimal_config)
+    _seed_file(tmp_vault_dir, "racy.md", "# Racy\n\nBody.\n")
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("racy"),
+        source_type=SourceType.MARKDOWN,
+        source_path="racy.md",
+    )
+    target = tmp_path / "appears.md"
+    interloper = "written by somebody else"
+
+    # The window is between the caller's check and the exclusive open, and the
+    # store's existence probe is the one call that lands inside it. Wrapping
+    # the resolver rather than the store class reaches the concrete binding the
+    # service actually resolves, whichever backend is active.
+    from sage import mcp_init as mcp_init_module
+
+    real_resolver = mcp_init_module.resolve_stack_vault_source_store
+
+    def _resolver_that_plants_the_target(*args, **kwargs):
+        store = real_resolver(*args, **kwargs)
+        real_exists = store.source_exists
+
+        def _create_then_probe(*a, **k):
+            target.write_text(interloper)
+            return real_exists(*a, **k)
+
+        store.source_exists = _create_then_probe
+        return store
+
+    monkeypatch.setattr(
+        mcp_init_module, "resolve_stack_vault_source_store", _resolver_that_plants_the_target
+    )
+
+    with pytest.raises(WritePathExistsError):
+        await service.get_document_with_content(
+            doc.id, include_content=False, write_to_path=str(target)
+        )
+
+    assert target.read_text() == interloper

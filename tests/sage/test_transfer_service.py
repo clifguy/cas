@@ -13,18 +13,23 @@ identifies the pending transfer from the token header alone; the tests
 exercise the store through the composite form exactly as the endpoints do.
 """
 
+import contextlib
 import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import sage.mcp_init as _mcp_init
 from sage.api.errors import (
     TransferAlreadyStagedError,
     TransferNotStagedError,
     TransferTokenInvalidError,
 )
+from sage.config import SageCoreConfig
 from sage.services.transfer import (
+    DeliveryDeclaration,
     TransferStore,
+    caller_local_delivery,
     get_transfer_store,
     reset_transfer_store,
     staging_name,
@@ -301,3 +306,85 @@ class TestModuleSurface:
         assert staging_name("..", "fallback") == "fallback"
         assert staging_name("", "fallback") == "fallback"
         assert staging_name(None, "fallback") == "fallback"
+
+
+class TestGateReportsItsOwnAnswer:
+    """The gate publishes the absoluteness it decided minting on.
+
+    Consumers downstream of the gate need the same answer -- a restore has no
+    vault-relative reading of "the bytes to repair", so it refuses a source
+    the gate judged relative. Re-deriving it at each consumer is how the
+    predicate came to differ between sites in the first place, so the plan
+    carries the decision and a consumer reads it.
+
+    The profile is pinned rather than the reachability predicate patched, so
+    each arm is reached the way a deployment reaches it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_store(self):
+        reset_transfer_store()
+        yield
+        reset_transfer_store()
+
+    @contextlib.contextmanager
+    def _profile(self, name: str):
+        saved = _mcp_init._stack_config
+        _mcp_init.set_stack_config(
+            SageCoreConfig(profile=name, transfer={"public_base_url": "https://sage.test.example"})
+        )
+        try:
+            yield
+        finally:
+            _mcp_init.set_stack_config(saved)
+
+    def test_caller_absolute_reads_either_flavour_when_unreachable(self):
+        """Where the caller's environment writes, a foreign spelling is absolute.
+
+        A relative source resolves rather than minting, which is what makes
+        the plan observable at all: a caller-absolute source returns a recipe
+        and carries no resolved deliveries. Both halves are asserted, because
+        the pair is what says the flag agrees with the minting decision rather
+        than merely existing.
+
+        Discriminating only alongside its sibling below, and the two must not
+        be collapsed. A gate that hardcoded the flag to ``False`` passes this
+        test whole: the relative source expects ``False`` anyway, and minting
+        reads the predicate directly rather than the flag, so the recipe half
+        is unaffected. Only the reachable-arm test, which expects ``True`` for
+        a posix-absolute source, reds against it. Verified by mutation rather
+        than reasoned.
+        """
+        with self._profile("cloud"):
+            with caller_local_delivery(_VAULT, [DeliveryDeclaration(source="docs/a.md")]) as plan:
+                assert plan.recipe is None
+                (resolved,) = plan.resolved
+                assert resolved.caller_absolute is False
+
+            for spelling in (r"C:\docs\a.md", r"\\host\share\a.md", "/home/x/a.md"):
+                with caller_local_delivery(_VAULT, [DeliveryDeclaration(source=spelling)]) as plan:
+                    assert plan.recipe is not None, f"{spelling} must mint"
+
+    def test_caller_absolute_uses_this_platform_when_reachable(self):
+        """Where this process writes, its own semantics govern.
+
+        The asymmetry the shared predicate turns on: co-located, the caller
+        *is* this machine, so a drive-letter spelling is a relative name here
+        and must report as one. Reading either flavour on this arm would let a
+        foreign spelling through to a consumer that resolves it locally.
+        """
+        with self._profile("local"):
+            with caller_local_delivery(
+                _VAULT,
+                [
+                    DeliveryDeclaration(source="/tmp/a.md"),
+                    DeliveryDeclaration(source=r"C:\docs\a.md"),
+                    DeliveryDeclaration(source="docs/a.md"),
+                ],
+            ) as plan:
+                assert plan.recipe is None
+                posix, windows, relative = plan.resolved
+
+        assert posix.caller_absolute is True
+        assert windows.caller_absolute is False
+        assert relative.caller_absolute is False

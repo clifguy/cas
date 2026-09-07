@@ -522,6 +522,136 @@ async def test_recipe_arm_still_refuses_a_relative_path_under_either_flavour(
     assert get_transfer_store()._entries == {}
 
 
+async def test_document_recipe_arm_rejects_a_relative_write_to_path(confined_vault, tmp_path):
+    """``get_document``'s recipe arm refuses a relative path rather than minting.
+
+    The sibling of the projection-arm refusal above, on the other tool that
+    carries a caller-named ``write_to_path``. This arm returned a recipe
+    before reaching any check, so the caller's transfer leg would have
+    written to whatever its own working directory happened to be.
+
+    Refusing and minting nothing are two observables, and only the pair
+    distinguishes a check that runs before the mint from one that runs after.
+    """
+    _services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "doc_rel.md", "# Rel\n\nBody.")
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path="relative.md"))
+
+    assert result["error"] == "write_path_invalid"
+    # The autouse _fresh_transfer_store fixture empties the store per test, so
+    # any entry here was minted by the refused call.
+    assert get_transfer_store()._entries == {}
+
+
+async def test_document_recipe_arm_validates_before_the_document_fetch(confined_vault):
+    """A malformed path outranks a document that does not exist.
+
+    The store-empty assertion above cannot see where the check sits: this arm
+    fetches the document and asks the store for a hash and a size before it
+    mints, so a check anywhere in that stretch still leaves the store empty on
+    a refusal. Naming an absent document separates them. A check placed after
+    the fetch answers ``document_not_found`` and reds here; one placed before
+    it answers on the argument, which is what makes the refusal independent of
+    the document's own state.
+    """
+    _services, _config, _handle = confined_vault
+
+    with _profile("cloud", transfer_base=_BASE):
+        absent_only = _parse(await get_document(_VAULT_ID, "deadbeef_nonexistent"))
+        both = _parse(
+            await get_document(_VAULT_ID, "deadbeef_nonexistent", write_to_path="relative.md")
+        )
+
+    # Positive control: without the path argument this call really does fail
+    # on the document, so the assertion below is about precedence and not
+    # about the id happening to resolve.
+    assert absent_only["error"] == "document_not_found"
+    assert both["error"] == "write_path_invalid"
+
+
+async def test_document_recipe_arm_accepts_a_parent_this_process_cannot_see(
+    confined_vault, tmp_path
+):
+    """An absolute caller-local path still mints, even with no such parent here.
+
+    The guard against over-correcting the hoist. ``write_to_path`` names the
+    *caller's* filesystem, which this process cannot inspect on this arm, so
+    the parent-exists and writable checks would refuse paths that are
+    perfectly good on the machine that will actually write them. Applying the
+    whole local validator here would red this test.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "doc_unseen.md", "# Unseen\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+    unseen = "/caller/local/no/such/dir/out.md"
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path=unseen))
+
+    assert "error" not in result, result
+    assert result["status"] == "download_required"
+    assert result["write_to_path"] == unseen
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(r"C:\Users\somebody\out.md", id="drive-letter"),
+        pytest.param(r"\\fileserver\share\out.md", id="unc"),
+    ],
+)
+async def test_document_recipe_arm_accepts_a_windows_absolute_caller_path(
+    confined_vault, tmp_path, spelling
+):
+    """A caller on Windows names an absolute path this server reads as relative.
+
+    The same premise that keeps the parent-and-target checks off this arm: the
+    path belongs to the caller's machine. A ``PosixPath`` reading of a
+    drive-letter or UNC spelling calls it relative and refuses a path the
+    caller's own transfer leg would have written without trouble.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "doc_win.md", "# Win\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path=spelling))
+
+    assert "error" not in result, result
+    assert result["status"] == "download_required"
+    assert result["write_to_path"] == spelling
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("relative.md", id="bare-name"),
+        pytest.param("sub/out.md", id="posix-subpath"),
+        pytest.param(r"sub\out.md", id="windows-subpath"),
+    ],
+)
+async def test_document_recipe_arm_still_refuses_a_relative_path_under_either_flavour(
+    confined_vault, tmp_path, spelling
+):
+    """Widening to two flavours must not widen to relative paths.
+
+    The companion to the test above: a genuinely relative spelling is relative
+    under *both* readings, so accepting "absolute under either" still refuses
+    every one of these.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "doc_rel_pair.md", "# Rel\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path=spelling))
+
+    assert result["error"] == "write_path_invalid"
+    assert get_transfer_store()._entries == {}
+
+
 async def test_b5_inline_export_still_works_under_cloud(confined_vault, tmp_path):
     """B5: the inline export modes -- ``include_content`` and inline
     ``read_projection`` -- keep returning bytes under the cloud profile. They
@@ -699,10 +829,100 @@ async def test_b7b_restore_source_file_exactly_one_delivery_shape(confined_vault
         )
         neither = _parse(await restore_vault_source_file(_VAULT_ID))
         relative = _parse(await restore_vault_source_file(_VAULT_ID, source="relative/x.md"))
+        # Absolute on some other platform is not absolute here: this arm's
+        # writer is this process, so its own semantics are the right ones.
+        foreign = _parse(await restore_vault_source_file(_VAULT_ID, source=r"sub\out.md"))
 
     assert both["error"] == "ambiguous_ingest_source", both
     assert neither["error"] == "missing_ingest_source", neither
     assert relative["error"] == "restore_source_not_absolute", relative
+    assert foreign["error"] == "restore_source_not_absolute", foreign
+
+
+# ---------------------------------------------------------------------------
+# The upload leg reads the caller's path with the caller's conventions
+#
+# The download arms above answer for a machine this process cannot see, and
+# so does the delivery gate. A source spelled absolute on the calling machine
+# has to mint an upload recipe; read with this platform's semantics it looks
+# relative instead, mints nothing, and is handed to ingestion as a
+# vault-relative name that resolves against the vault tree and fails
+# not-found -- naming a file that exists on the machine that called.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(r"C:\docs\note.md", id="drive-letter"),
+        pytest.param(r"\\fileserver\share\note.md", id="unc"),
+    ],
+)
+async def test_cloud_arm_mints_for_a_windows_absolute_ingest_source(confined_vault, spelling):
+    """A Windows-absolute ingest source earns an upload recipe.
+
+    The upload leg's form of the same question the download arms ask. Read
+    with ``PosixPath`` these spellings are relative, so the gate mints
+    nothing and ingestion resolves them against the vault tree -- reporting
+    ``source_file_not_found`` for a file that is present where the caller
+    named it.
+    """
+    _services, _config, _handle = confined_vault
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await ingest_document(_VAULT_ID, spelling, "markdown"))
+
+    assert "error" not in result, result
+    assert result["status"] == "upload_required"
+    assert len(result["uploads"]) == 1
+    assert result["uploads"][0]["source"] == spelling
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("docs/note.md", id="posix-subpath"),
+        pytest.param(r"sub\out.md", id="windows-subpath"),
+    ],
+)
+async def test_cloud_arm_still_reads_a_relative_ingest_source_as_vault_relative(
+    confined_vault, spelling
+):
+    """Accepting two flavours must not turn every source into an upload.
+
+    The half that must not move. A relative source is a vault-store reference
+    the active binding resolves, never a caller-local file, so it earns no
+    recipe -- and a fix that widened minting to everything would take that
+    reading away. Neither spelling names a file in this vault, so the refusal
+    is the vault-relative branch answering, which is the branch under test.
+    """
+    _services, _config, _handle = confined_vault
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await ingest_document(_VAULT_ID, spelling, "markdown"))
+
+    assert result["error"] == "source_file_not_found", result
+    assert get_transfer_store()._entries == {}
+
+
+async def test_cloud_arm_mints_for_a_windows_absolute_restore_source(confined_vault):
+    """The restore tool reaches the same answer as the ingest tool.
+
+    The two tools apply one gate, so a caller generalizing from one must not
+    find the other narrower. Read with this platform's semantics the spelling
+    is relative, and the restore's own absoluteness refusal answers
+    ``restore_source_not_absolute`` for a path that is absolute where it was
+    named.
+    """
+    _services, _config, _handle = confined_vault
+    spelling = r"C:\originals\drifted.pdf"
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await restore_vault_source_file(_VAULT_ID, source=spelling))
+
+    assert "error" not in result, result
+    assert result["status"] == "upload_required"
+    assert result["uploads"][0]["source"] == spelling
 
 
 # ---------------------------------------------------------------------------

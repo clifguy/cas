@@ -4231,7 +4231,14 @@ class SourceFileRestoreRequest(BaseModel):
             "ingested. SAGE retains no pristine second copy of a source, so "
             "the caller supplies the bytes to restore. The target document is "
             "resolved from their digest, which is why the bytes must be the "
-            "originals rather than a corrected or re-exported version."
+            "originals rather than a corrected or re-exported version. "
+            "Absolute on the machine that holds the file: where the server "
+            "cannot reach the caller's filesystem the path is read with the "
+            "calling environment's conventions, so a Windows drive-letter or "
+            "UNC spelling earns an upload recipe rather than a refusal; where "
+            "the two are co-located the server is the reader and its own "
+            "conventions apply. Unlike an ingest, a relative path has no "
+            "vault-relative reading here and is refused either way."
         )
     )
     document_id: DocumentIdStr | None = Field(

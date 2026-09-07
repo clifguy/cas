@@ -342,7 +342,7 @@ async def test_read_projection_rejects_existing_target_before_reading_projection
 ):
     """The target-must-not-exist refusal precedes the read as well.
 
-    ``_validate_write_to_path`` makes three refusals; the two tests above pin
+    ``validate_write_to_path`` makes three refusals; the two tests above pin
     the other two ahead of the read, and this one completes the set with the
     same deterministic control rather than leaving it to a timing-dependent
     test at the tool level.

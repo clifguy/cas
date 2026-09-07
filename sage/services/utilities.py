@@ -22,7 +22,7 @@ refresh_views: Regenerate symlink-based browsable folder views.
 import logging
 import os
 import shutil
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -42,7 +42,6 @@ from sage.api.errors import (
     NoProjectionError,
     PathTraversalDeniedError,
     WritePathExistsError,
-    WritePathInvalidError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import RetrievalMode
@@ -58,6 +57,10 @@ from sage.models.schemas import (
     ReadProjectionResponse,
     ReadSectionResponse,
     RefreshViewsResponse,
+)
+from sage.services.caller_paths import (
+    validate_caller_write_path_shape,
+    validate_write_to_path,
 )
 from sage.services.read_diagnostics import build_not_found_detail
 
@@ -80,59 +83,6 @@ _EVAL_DIAGNOSTIC_FACTOR = 5
 #   - "spill":  force write-to-path delivery (requires write_to_path).
 #   - "auto":   preserve the implicit heuristic (spill iff write_to_path given).
 Delivery = Literal["inline", "spill", "auto"]
-
-
-def _validate_caller_write_path_shape(write_to_path: str) -> None:
-    """Verify write_to_path is absolute on the machine that will write it.
-
-    Absoluteness is **not** intrinsic to a path -- it is relative to the
-    platform reading it. This check runs where the path names a filesystem
-    this process cannot see, so it cannot assume its own platform's
-    semantics: a Windows caller's ``C:\\out.md`` and ``\\\\host\\share\\out.md``
-    are absolute on the machine that will write them, while ``PosixPath``
-    reads both as relative. Accept a path absolute under either flavour;
-    a genuinely relative spelling is relative under both, which is what
-    this is here to refuse.
-
-    The filesystem checks in ``_validate_write_to_path`` cannot be widened
-    the same way and are deliberately not applied on that arm: they
-    interrogate the filesystem the path names, and only the local arm's
-    process can see it.
-    """
-    if not (
-        PurePosixPath(write_to_path).is_absolute() or PureWindowsPath(write_to_path).is_absolute()
-    ):
-        raise WritePathInvalidError(write_to_path, "path must be absolute")
-
-
-def _validate_write_to_path(write_to_path: str) -> None:
-    """Verify write_to_path is an absolute path with a writable parent directory.
-
-    Mirrors the path-validation discipline of
-    ``sage.services.documents._deliver_to_path``: absolute-path check,
-    target-must-not-exist check, parent-directory must-exist /
-    must-be-dir / must-be-writable check. Raises the same typed errors
-    so MCP and REST callers see a consistent envelope across the two
-    write-to-disk surfaces.
-
-    This is the arm where *this* process is the writer, so the platform's
-    own ``Path`` semantics are the right ones and a spelling absolute only
-    on some other platform is correctly refused -- unlike
-    ``_validate_caller_write_path_shape``, which answers for a machine it
-    cannot see.
-    """
-    target = Path(write_to_path)
-    if not target.is_absolute():
-        raise WritePathInvalidError(write_to_path, "path must be absolute")
-    if target.exists():
-        raise WritePathExistsError(write_to_path)
-    parent = target.parent
-    if not parent.exists():
-        raise WritePathInvalidError(write_to_path, f"parent directory does not exist: {parent}")
-    if not parent.is_dir():
-        raise WritePathInvalidError(write_to_path, f"parent is not a directory: {parent}")
-    if not os.access(parent, os.W_OK):
-        raise WritePathInvalidError(write_to_path, f"parent directory is not writable: {parent}")
 
 
 def _rank_candidate_matches(
@@ -352,7 +302,7 @@ class UtilitiesService:
             if not caller_local_filesystem_reachable():
                 from sage.services.transfer import mint_download_recipe_for_projection
 
-                _validate_caller_write_path_shape(write_to_path)
+                validate_caller_write_path_shape(write_to_path)
                 doc, projection_text = await self._get_projection_text(document_id)
                 return mint_download_recipe_for_projection(
                     self._config.vault.id,
@@ -361,7 +311,7 @@ class UtilitiesService:
                     write_to_path=write_to_path,
                 )
 
-            _validate_write_to_path(write_to_path)
+            validate_write_to_path(write_to_path)
 
         doc, projection_text = await self._get_projection_text(document_id)
 
