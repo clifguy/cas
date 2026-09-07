@@ -578,11 +578,11 @@ def test_openapi_info_version_matches_api_version(
 
 
 # ---------------------------------------------------------------------------
-# Test 4: VaultStatsResponse documents content_store_chunk_count
+# Test 4: VaultStatsResponse documents content_store_row_count
 # ---------------------------------------------------------------------------
 
 
-def test_vault_stats_response_documents_content_store_chunk_count(
+def test_vault_stats_response_documents_content_store_row_count(
     sage_core_spec: dict | None,
 ):
     """Spot regression guard for the field that motivated this work."""
@@ -593,18 +593,18 @@ def test_vault_stats_response_documents_content_store_chunk_count(
     vault_stats = schemas["VaultStatsResponse"]
 
     properties = vault_stats.get("properties") or {}
-    assert "content_store_chunk_count" in properties, (
-        "VaultStatsResponse.properties.content_store_chunk_count is missing"
+    assert "content_store_row_count" in properties, (
+        "VaultStatsResponse.properties.content_store_row_count is missing"
     )
-    field = properties["content_store_chunk_count"]
+    field = properties["content_store_row_count"]
     assert field.get("type") == "integer", (
-        f"VaultStatsResponse.content_store_chunk_count must have type 'integer', "
+        f"VaultStatsResponse.content_store_row_count must have type 'integer', "
         f"got {field.get('type')!r}"
     )
 
     required = vault_stats.get("required") or []
-    assert "content_store_chunk_count" in required, (
-        "VaultStatsResponse must list 'content_store_chunk_count' in 'required'"
+    assert "content_store_row_count" in required, (
+        "VaultStatsResponse must list 'content_store_row_count' in 'required'"
     )
 
 

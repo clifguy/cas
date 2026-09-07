@@ -42,7 +42,7 @@ export interface VaultStats {
   staging_edge_count: number;
   graph_store_size_bytes: number;
   content_store_size_bytes: number;
-  content_store_chunk_count: number;
+  content_store_row_count: number;
   content_store_version_count: number;
   content_store_small_fragment_count: number;
   last_ingestion_at: string | null;

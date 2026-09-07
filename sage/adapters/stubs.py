@@ -448,8 +448,13 @@ class StubContentStore(ContentStore):
         chunks = self._store.get(document_id, [])
         return sorted(chunks, key=lambda c: c.chunk_index)
 
-    async def count_chunks(self) -> int:
-        """Return the total number of chunk rows across all documents."""
+    async def count_rows(self) -> int:
+        """Return the total number of content-store rows across all documents.
+
+        The stub keeps its document-level text beside each document's passages
+        rather than in a surface of its own, so its own count has one surface
+        to walk where a relational binding has two.
+        """
         return sum(len(chunks) for chunks in self._store.values())
 
     async def count_retained_versions(self) -> int:

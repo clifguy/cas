@@ -3068,9 +3068,9 @@ def register_sage_tools(
     async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
         """Reclaim bloat in the per-vault content store.
 
-        Wraps a ``VACUUM (FULL, ANALYZE)`` against the vault's chunks table:
-        removes dead tuples, returns free space to the OS, and shrinks the
-        relation. Postgres MVCC writes a new row version on every update or
+        Wraps a ``VACUUM (FULL, ANALYZE)`` against every surface of the vault's
+        content store: removes dead tuples, returns free space to the OS, and
+        shrinks the relations. Postgres MVCC writes a new row version on every update or
         delete rather than reclaiming space in place, so disk usage on
         actively-churned vaults grows until this is called.
 
@@ -3081,7 +3081,8 @@ def register_sage_tools(
         settling to seconds.
 
         Returns an OptimizeContentStoreReport with pre/post observations
-        (relation byte size, retained version count, fragment counts) — the
+        (content-store byte size, retained version count, fragment counts),
+        each taken over the same surfaces the reclamation ran against — the
         caller-visible evidence of reclamation, since the underlying
         operation itself returns nothing. ``cleanup_older_than_days`` has no
         Postgres analog (VACUUM reclaims every eligible dead tuple
