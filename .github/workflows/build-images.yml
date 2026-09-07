@@ -54,6 +54,13 @@ jobs:
     # declared versions without having to know they exist.
     #
     # See `docs/process/shared-version-parity.md`.
+    # The reads are `echo "k=$(jq -er ...)"` rather than assignments on purpose.
+    # An assignment would let `set -e` fail this job on a bad manifest path, and
+    # a failed prelude *skips* the jobs that need it -- which the forge counts as
+    # satisfied required checks. The echo form writes `k=null` and succeeds, so
+    # the consuming job fails loudly instead. Revisit once `versions` is itself a
+    # required context; `tests/infra/test_shared_version_parity.py` catches a bad
+    # path before either can happen.
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:

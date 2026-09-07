@@ -83,6 +83,16 @@ EXPECTED_PG_SERVICE_COUNT: Final[int] = 4
 # rather than open so a carve-out cannot quietly exempt anything else.
 EXPECTED_RUFF_CARVE_OUTS: Final[dict[str, str]] = {"deploy/*.py": "py312"}
 
+# The scripts a workflow or shell script runs as a bare `python3`, in a job that
+# provisions no interpreter. These are the reason a carve-out exists, so the
+# carve-out is asserted to cover them by path rather than only to be declared:
+# moving one out from under the glob would otherwise restore the hazard behind a
+# gate still reporting green.
+SYSTEM_INTERPRETER_SCRIPTS: Final[tuple[Path, ...]] = (
+    REPO_ROOT / "deploy" / "mcp_preflight_probe.py",
+    REPO_ROOT / "deploy" / "sharepoint_validate.py",
+)
+
 _PGVECTOR_TAG = re.compile(r"pgvector/pgvector:pg(?P<tag>[^\s\"']+)")
 
 # The exact image reference each Postgres service must carry. Compared by
@@ -108,32 +118,33 @@ def _strip_bicep_comments(text: str) -> str:
     return _BICEP_LINE_COMMENT.sub("", text)
 
 
-class _ModuleParameters:
-    """Which parameters a nested-template deployment is and is not passed."""
+def _emitted_module_overrides(template: dict[str, Any]) -> set[str] | None:
+    """Parameter names the parent supplies to the module declaring ``postgresVersion``.
 
-    def __init__(self, passed: set[str]) -> None:
-        self.passed = passed
+    Returns ``None`` when no nested template declares the parameter -- the module
+    was not located, which is a different fact from "located and overriding
+    nothing". Conflating the two lets an empty template, or a ``resources``
+    block emitted as a dict rather than a list, report every override as absent
+    while one is live.
 
-    @property
-    def absent(self) -> frozenset[str]:
-        return frozenset({"postgresVersion"} - self.passed)
-
-
-def _emitted_module_parameter_names(template: dict[str, Any]) -> _ModuleParameters:
-    """Names the parent supplies to the deployment carrying ``postgresVersion``.
-
-    Reads the ``Microsoft.Resources/deployments`` resource whose nested template
-    declares the parameter, and returns the parameter names its
-    ``properties.parameters`` supplies -- the caller-side overrides.
+    ``resources`` is a list in the emitted ARM today and a dict under symbolic-name
+    codegen, so both are walked.
     """
-    for resource in template.get("resources") or []:
+    resources = template.get("resources")
+    if isinstance(resources, dict):
+        candidates = list(resources.values())
+    elif isinstance(resources, list):
+        candidates = resources
+    else:
+        return None
+    for resource in candidates:
         if not isinstance(resource, dict):
             continue
-        nested = ((resource.get("properties") or {}).get("template") or {}).get("parameters")
+        properties = resource.get("properties") or {}
+        nested = (properties.get("template") or {}).get("parameters")
         if isinstance(nested, dict) and "postgresVersion" in nested:
-            supplied = (resource.get("properties") or {}).get("parameters") or {}
-            return _ModuleParameters(set(supplied.keys()))
-    return _ModuleParameters(set())
+            return set((properties.get("parameters") or {}).keys())
+    return None
 
 
 def _emitted_postgres_version_default(node: Any) -> tuple[str | None, dict[str, Any]]:
@@ -143,12 +154,19 @@ def _emitted_postgres_version_default(node: Any) -> tuple[str | None, dict[str, 
     the parameter and the generated variable holding the loaded manifest live in
     the same nested scope; both are returned together because the assertion
     needs to resolve one against the other.
+
+    A parent-side override is emitted as a sibling ``parameters`` block whose
+    entry carries ``value`` rather than ``defaultValue``. Descending into that
+    block and stopping there would report the default as missing and blame the
+    module for not reaching the ARM, so a block with no ``defaultValue`` is
+    walked past rather than treated as the answer.
     """
     if isinstance(node, dict):
         parameters = node.get("parameters")
         if isinstance(parameters, dict) and "postgresVersion" in parameters:
             default = (parameters["postgresVersion"] or {}).get("defaultValue")
-            return (default if isinstance(default, str) else None, node.get("variables") or {})
+            if isinstance(default, str):
+                return default, node.get("variables") or {}
         for value in node.values():
             found = _emitted_postgres_version_default(value)
             if found[0] is not None:
@@ -315,6 +333,21 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
     assert proc.returncode == 0, f"bicep build failed:\n{proc.stderr}"
 
     template = json.loads(outfile.read_text(encoding="utf-8"))
+
+    # Checked first: an override makes every statement below about the default
+    # irrelevant, and diagnosing it as "the module is missing" sends a reader
+    # somewhere else entirely.
+    overrides = _emitted_module_overrides(template)
+    assert overrides is not None, (
+        "no nested template declaring postgresVersion found in the compiled ARM; the "
+        "Postgres module did not reach it"
+    )
+    assert "postgresVersion" not in overrides, (
+        f"a caller passes postgresVersion to the Postgres module (supplies {sorted(overrides)}), "
+        "so the manifest-derived default is not the deployed value; remove the override or "
+        "make it read the manifest"
+    )
+
     default, variables = _emitted_postgres_version_default(template)
     assert default is not None, (
         "no postgresVersion parameter found in the compiled template; the "
@@ -337,17 +370,6 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
         f"the variable the emitted default reads carries "
         f"{loaded.get('postgres', {}).get('deploy_major')!r}, not the declared "
         f"{postgres_deploy_major()!r}"
-    )
-
-    # A default is only the effective value while no caller overrides it. A
-    # parent-side `postgresVersion:` on the module call is emitted as a
-    # `{value: ...}` entry with no defaultValue, which the walker above skips --
-    # so every assertion so far would stay green while the server deployed a
-    # literal. Assert the override is absent rather than inferring it.
-    overrides = _emitted_module_parameter_names(template)
-    assert "postgresVersion" in overrides.absent, (
-        "a caller passes postgresVersion to the Postgres module, so the manifest-derived "
-        "default is not the deployed value; remove the override or make it read the manifest"
     )
 
 
@@ -492,10 +514,27 @@ def test_versions_prelude_reads_manifest_keys_that_exist() -> None:
 
     This is the drift the prelude mechanism is actually exposed to: rename a
     manifest key, update ``tests/helpers/versions.py`` in the same change, and
-    the four preludes keep reading the old path. ``jq -er`` then exits non-zero,
-    ``set -e`` fails the prelude, and every job that needs it is *skipped* --
-    which the forge counts as a satisfied required check. Nothing else in this
-    suite reads those paths, so nothing else can catch it.
+    the four preludes keep reading the old path.
+
+    What happens then, precisely, because the obvious reading is wrong: the
+    prelude writes ``echo "k=$(jq -er <path> versions.json)"``, and ``set -e``
+    reacts to the exit status of ``echo``, not of the substitution inside its
+    argument. So ``jq`` fails, prints nothing, and the step writes ``k=null``
+    and succeeds. The consuming jobs then run with ``null`` where a version
+    belongs -- ``pgvector/pgvector:pgnull`` -- and fail loudly. The prelude does
+    *not* fail, and no required check is skipped.
+
+    That distinction is load-bearing rather than pedantic, and it is why the
+    reads are deliberately not written as assignments: an assignment would make
+    ``set -e`` fire and fail the prelude, which would *skip* every job needing
+    it -- and a skipped required check counts as satisfied. Under today's
+    ruleset, failing loudly with a garbage tag is the safer of the two. Revisit
+    once ``versions`` is itself a required context (see
+    ``docs/process/branch_protection.md``); until then the echo form is the
+    deliberate choice.
+
+    Either way the value is garbage, and nothing else in this suite reads those
+    paths -- so this check is what catches the typo before any run.
     """
     checked = 0
     for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
@@ -516,6 +555,51 @@ def test_versions_prelude_reads_manifest_keys_that_exist() -> None:
             )
             checked += 1
     assert checked, f"no versions prelude jq reads found under {WORKFLOWS_DIR}"
+
+
+def test_versions_prelude_outputs_resolve_to_the_step_that_writes_them() -> None:
+    """Each output names a step that exists and actually writes its key.
+
+    An output is ``${{ steps.<id>.outputs.<key> }}``, and the write is a line in
+    some step's ``run:``. Checking that the key sets match leaves three ways for
+    the two halves to name different things: a write in a step the output does
+    not name, a writing step with no ``id:`` at all, and a write never redirected
+    to ``$GITHUB_OUTPUT``. Each resolves the output to the empty string at run
+    time -- through the one link the key-set comparison does not cross.
+    """
+    checked = 0
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        prelude = _workflow_jobs(path).get("versions")
+        if prelude is None:
+            continue
+        steps = {
+            str(step.get("id")): str(step.get("run", ""))
+            for step in (prelude.get("steps") or [])
+            if isinstance(step, dict) and step.get("id")
+        }
+        for key, expression in (prelude.get("outputs") or {}).items():
+            match = re.search(r"steps\.(\w+)\.outputs\.(\w+)", str(expression))
+            assert match is not None, (
+                f"{path.name}: output {key!r} is {expression!r}, which names no step output"
+            )
+            step_id, written_key = match.group(1), match.group(2)
+            assert step_id in steps, (
+                f"{path.name}: output {key!r} reads step {step_id!r}, which has no `id:` "
+                f"among the prelude's steps ({sorted(steps)})"
+            )
+            assert written_key == key, (
+                f"{path.name}: output {key!r} reads a differently named step output {written_key!r}"
+            )
+            run = steps[step_id]
+            assert re.search(rf"{re.escape(written_key)}=\$\(jq -er", run), (
+                f"{path.name}: step {step_id!r} does not write {written_key!r}"
+            )
+            assert "GITHUB_OUTPUT" in run, (
+                f"{path.name}: step {step_id!r} never redirects to $GITHUB_OUTPUT, so nothing "
+                f"it echoes becomes an output"
+            )
+            checked += 1
+    assert checked, f"no versions prelude outputs found under {WORKFLOWS_DIR}"
 
 
 def test_versions_prelude_writes_exactly_the_outputs_it_declares() -> None:
@@ -648,6 +732,13 @@ def test_ruff_per_file_target_carve_outs_are_declared() -> None:
     """
     config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     carve_outs = config["tool"]["ruff"].get("per-file-target-version") or {}
+    covered = {path for pattern in carve_outs for path in REPO_ROOT.glob(pattern)}
+    for probe in SYSTEM_INTERPRETER_SCRIPTS:
+        assert probe in covered, (
+            f"{probe.relative_to(REPO_ROOT)} is invoked as a bare `python3` in a job that "
+            f"provisions no interpreter, so it must fall under a per-file carve-out; the "
+            f"declared globs cover {sorted(p.name for p in covered)}"
+        )
     assert set(carve_outs) == set(EXPECTED_RUFF_CARVE_OUTS), (
         f"per-file Ruff targets are pinned to {sorted(EXPECTED_RUFF_CARVE_OUTS)}; found "
         f"{sorted(carve_outs)}. A carve-out exempts its files from the declared Python, so "
@@ -657,6 +748,12 @@ def test_ruff_per_file_target_carve_outs_are_declared() -> None:
         assert target == EXPECTED_RUFF_CARVE_OUTS[pattern], (
             f"carve-out {pattern!r} targets {target!r}; expected "
             f"{EXPECTED_RUFF_CARVE_OUTS[pattern]!r}"
+        )
+        matched = sorted(REPO_ROOT.glob(pattern))
+        assert matched, (
+            f"carve-out {pattern!r} matches no file. Ruff does not validate a per-file glob, "
+            f"so a carve-out whose files moved away reports as held while the files it was "
+            f"written for are formatted at the declared target again."
         )
         assert parse_ruff_target(target) <= parse_ruff_target(
             ruff_target_version(python_version())
