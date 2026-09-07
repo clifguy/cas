@@ -356,16 +356,16 @@ class TestSageVaultStats:
         assert result["graph_store_size_bytes"] > 0
         assert result["content_store_size_bytes"] > 0
         # Chunk count is 0 before any indexing
-        assert result["content_store_chunk_count"] == 0
+        assert result["content_store_row_count"] == 0
 
-    async def test_content_store_chunk_count_nonzero_after_indexing(self, single_vault):
-        """content_store_chunk_count reflects the number of indexed chunk rows."""
+    async def test_content_store_row_count_nonzero_after_indexing(self, single_vault):
+        """content_store_row_count reflects the indexed row count across the surfaces."""
         services, config = single_vault
         await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.5)  # allow indexing to complete
 
         result = _parse(await get_vault_stats("test_vault"))
-        assert result["content_store_chunk_count"] > 0
+        assert result["content_store_row_count"] > 0
 
 
 # ---------------------------------------------------------------------------

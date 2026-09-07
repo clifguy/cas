@@ -1548,8 +1548,8 @@ paths:
         state; counts per `doc_type`; counts per `pipeline_status`;
         storage figures (`graph_store_size_bytes` is the live graph-store
         footprint, `content_store_size_bytes` is the live content-store
-        footprint, `content_store_chunk_count` is the row count from the
-        chunks table); and health indicators.
+        footprint, `content_store_row_count` is the row count across
+        every surface the content store holds); and health indicators.
 
 
         Health indicators include pending metadata reviews, pending
@@ -2845,9 +2845,9 @@ paths:
       description: >-
         Per-vault content-store reclamation operation for the SAGE Core
         API maintenance surface (CAS-ADR-029). Runs a
-        ``VACUUM (FULL, ANALYZE)`` against the per-vault chunks table:
-        removes dead tuples, returns free space to the OS, and shrinks
-        the relation.
+        ``VACUUM (FULL, ANALYZE)`` against every surface of the per-vault
+        content store: removes dead tuples, returns free space to the OS,
+        and shrinks the relations.
 
 
         Postgres MVCC writes a new row version on every update or
@@ -2865,8 +2865,9 @@ paths:
 
         The underlying operation returns nothing; the caller-visible
         evidence of reclamation comes from the pre/post observations of
-        relation byte size, retained version count, and fragment counts
-        captured by this report. ``cleanup_older_than_days`` has no
+        content-store byte size, retained version count, and fragment
+        counts captured by this report, each taken over the same surfaces
+        the reclamation ran against. ``cleanup_older_than_days`` has no
         Postgres analog (VACUUM reclaims every eligible dead tuple
         regardless of age) and is accepted only for the port contract.
       tags: [Maintenance]
@@ -6210,7 +6211,7 @@ components:
         - staging_edge_count
         - graph_store_size_bytes
         - content_store_size_bytes
-        - content_store_chunk_count
+        - content_store_row_count
         - content_store_version_count
         - content_store_small_fragment_count
         - health
@@ -6251,15 +6252,15 @@ components:
         content_store_size_bytes:
           type: integer
           description: On-disk size of the content store in bytes.
-        content_store_chunk_count:
+        content_store_row_count:
           type: integer
-          description: Total chunk row count across all documents.
+          description: Total content-store row count across all documents, summed over every surface the store holds.
         content_store_version_count:
           type: integer
-          description: Count of retained content-store dataset versions for the chunks table; rises with un-optimized write churn.
+          description: Count of retained content-store dataset versions, summed over every surface the store holds; rises with un-optimized write churn.
         content_store_small_fragment_count:
           type: integer
-          description: Count of small (un-compacted) content-store fragments for the chunks table; rises with un-optimized write churn and is merged away by optimize.
+          description: Count of small (un-compacted) content-store fragments, summed over every surface the store holds; rises with un-optimized write churn and is merged away by optimize.
         last_ingestion_at:
           type: string
           format: date-time
@@ -6919,8 +6920,9 @@ components:
         Result of an optimize_vault_content_store call. The underlying
         VACUUM returns nothing; the caller-visible evidence of
         reclamation is the delta between pre- and post-optimize
-        observations of relation byte size, dead-tuple count, and page
-        counts captured by this report.
+        observations of content-store byte size, dead-tuple count, and
+        page counts captured by this report, each summed over every
+        surface the store holds.
       properties:
         vault_id:
           $ref: "#/components/schemas/VaultId"
@@ -6943,42 +6945,39 @@ components:
         pre_bytes:
           type: integer
           minimum: 0
-          description: Total relation size (table plus indexes and toast) immediately before optimize was called.
+          description: Total content-store size (tables plus indexes and toast, summed over every surface) immediately before optimize was called.
         post_bytes:
           type: integer
           minimum: 0
-          description: Total relation size immediately after optimize returned.
+          description: Total content-store size immediately after optimize returned.
         bytes_reclaimed:
           type: integer
           minimum: 0
-          description: >-
-            max(0, pre_bytes - post_bytes). Bounded at zero because
-            optimize can occasionally leave the relation the same size
-            on a near-clean table.
+          description: max(0, pre_bytes - post_bytes). Bounded at zero because optimize can occasionally leave the store the same size on a near-clean store.
         pre_versions:
           type: integer
           minimum: 0
-          description: Dead-tuple count (MVCC row versions pending reclamation) before optimize.
+          description: Dead-tuple count (MVCC row versions pending reclamation) across every surface before optimize.
         post_versions:
           type: integer
           minimum: 0
-          description: Dead-tuple count after optimize.
+          description: Dead-tuple count across every surface after optimize.
         pre_fragments:
           type: integer
           minimum: 0
-          description: Table length in pages before optimize.
+          description: Content-store length in pages, summed over every surface, before optimize.
         post_fragments:
           type: integer
           minimum: 0
-          description: Table length in pages after optimize.
+          description: Content-store length in pages, summed over every surface, after optimize.
         pre_small_fragments:
           type: integer
           minimum: 0
-          description: Free space in pages before optimize.
+          description: Free space in pages, summed over every surface, before optimize.
         post_small_fragments:
           type: integer
           minimum: 0
-          description: Free space in pages after optimize.
+          description: Free space in pages, summed over every surface, after optimize.
 
     ReabstractReportEntry:
       type: object

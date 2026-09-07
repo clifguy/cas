@@ -84,7 +84,7 @@ class VaultConfigService:
 
         graph_store_size_bytes = await self._store.measured_byte_size()
         content_store_size_bytes = await self._content_store.measured_byte_size()
-        content_store_chunk_count = await self._content_store.count_chunks()
+        content_store_row_count = await self._content_store.count_rows()
         content_store_version_count = await self._content_store.count_retained_versions()
         content_store_small_fragment_count = await self._content_store.count_small_fragments()
 
@@ -101,7 +101,7 @@ class VaultConfigService:
             staging_edge_count=staging_count,
             graph_store_size_bytes=graph_store_size_bytes,
             content_store_size_bytes=content_store_size_bytes,
-            content_store_chunk_count=content_store_chunk_count,
+            content_store_row_count=content_store_row_count,
             content_store_version_count=content_store_version_count,
             content_store_small_fragment_count=content_store_small_fragment_count,
             last_ingestion_at=last_ingestion,

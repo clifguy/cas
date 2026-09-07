@@ -3887,45 +3887,47 @@ class OptimizeContentStoreReport(BaseModel):
     pre_bytes: int = Field(
         ge=0,
         description=(
-            "Total relation size (table plus indexes and toast) immediately "
-            "before optimize was called."
+            "Total content-store size (tables plus indexes and toast, summed over every "
+            "surface) immediately before optimize was called."
         ),
     )
     post_bytes: int = Field(
         ge=0,
-        description="Total relation size immediately after optimize returned.",
+        description="Total content-store size immediately after optimize returned.",
     )
     bytes_reclaimed: int = Field(
         ge=0,
         description=(
-            "max(0, pre_bytes - post_bytes). Bounded at zero because "
-            "optimize can occasionally leave the relation the same size "
-            "on a near-clean table."
+            "max(0, pre_bytes - post_bytes). Bounded at zero because optimize can "
+            "occasionally leave the store the same size on a near-clean store."
         ),
     )
     pre_versions: int = Field(
         ge=0,
-        description="Dead-tuple count (MVCC row versions pending reclamation) before optimize.",
+        description=(
+            "Dead-tuple count (MVCC row versions pending reclamation) across every "
+            "surface before optimize."
+        ),
     )
     post_versions: int = Field(
         ge=0,
-        description="Dead-tuple count after optimize.",
+        description="Dead-tuple count across every surface after optimize.",
     )
     pre_fragments: int = Field(
         ge=0,
-        description="Table length in pages before optimize.",
+        description="Content-store length in pages, summed over every surface, before optimize.",
     )
     post_fragments: int = Field(
         ge=0,
-        description="Table length in pages after optimize.",
+        description="Content-store length in pages, summed over every surface, after optimize.",
     )
     pre_small_fragments: int = Field(
         ge=0,
-        description="Free space in pages before optimize.",
+        description="Free space in pages, summed over every surface, before optimize.",
     )
     post_small_fragments: int = Field(
         ge=0,
-        description="Free space in pages after optimize.",
+        description="Free space in pages, summed over every surface, after optimize.",
     )
 
 
@@ -4855,21 +4857,24 @@ class VaultStatsResponse(BaseModel):
         )
     )
     content_store_size_bytes: int = Field(description="On-disk size of the content store in bytes.")
-    content_store_chunk_count: int = Field(
-        description="Total chunk row count across all documents."
+    content_store_row_count: int = Field(
+        description=(
+            "Total content-store row count across all documents, summed over every "
+            "surface the store holds."
+        ),
     )
     content_store_version_count: int = Field(
         description=(
-            "Count of retained content-store dataset versions for the chunks table; "
-            "rises with un-optimized write churn."
-        )
+            "Count of retained content-store dataset versions, summed over every surface "
+            "the store holds; rises with un-optimized write churn."
+        ),
     )
     content_store_small_fragment_count: int = Field(
         description=(
-            "Count of small (un-compacted) content-store fragments for the chunks "
-            "table; rises with un-optimized write churn and is merged away by "
-            "optimize."
-        )
+            "Count of small (un-compacted) content-store fragments, summed over every "
+            "surface the store holds; rises with un-optimized write churn and is merged "
+            "away by optimize."
+        ),
     )
     last_ingestion_at: datetime | None = Field(
         description="Timestamp of the most recent successful ingestion, if any."

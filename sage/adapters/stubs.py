@@ -448,9 +448,14 @@ class StubContentStore(ContentStore):
         chunks = self._store.get(document_id, [])
         return sorted(chunks, key=lambda c: c.chunk_index)
 
-    async def count_chunks(self) -> int:
-        """Return the total number of chunk rows across all documents."""
-        return sum(len(chunks) for chunks in self._store.values())
+    async def count_rows(self) -> int:
+        """Return the total number of content-store rows across all documents.
+
+        Both surfaces, as the port requires: this stub holds its passages and
+        its document-level rows in two dicts, and counting only the first would
+        report a store smaller than the one it is serving.
+        """
+        return sum(len(chunks) for chunks in self._store.values()) + len(self._surfaces)
 
     async def count_retained_versions(self) -> int:
         """Return 0: the in-memory stub has no on-disk version history."""

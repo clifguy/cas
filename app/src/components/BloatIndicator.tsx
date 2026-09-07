@@ -10,23 +10,23 @@ const STATE_STYLE: Record<BloatState, React.CSSProperties> = {
 
 /**
  * Vault-health card for Postgres content-store bloat. Surfaces the dead-tuple
- * fraction of the chunks relation as a thresholded ok/warn/red state (anchored
+ * fraction of the content store as a thresholded ok/warn/red state (anchored
  * to autovacuum's 20% trigger), with the reclaimable free space shown as an
  * informational figure. Points a genuinely bloated store at the Maintenance-page
  * VACUUM action.
  */
 export default function BloatIndicator({
   deadTuples,
-  liveChunks,
+  liveRows,
   freePages,
 }: {
   deadTuples: number;
-  liveChunks: number;
+  liveRows: number;
   freePages: number;
 }) {
-  const state = bloatState(deadTuples, liveChunks);
+  const state = bloatState(deadTuples, liveRows);
   const flagged = state !== 'ok';
-  const pct = deadTupleRatio(deadTuples, liveChunks) * 100;
+  const pct = deadTupleRatio(deadTuples, liveRows) * 100;
   return (
     <div
       data-testid="bloat-card"
@@ -44,7 +44,7 @@ export default function BloatIndicator({
         <span data-testid="bloat-dead-pct">{pct.toFixed(1)}%</span>
       </div>
       <div style={{ fontSize: 12, color: '#666' }}>
-        Dead-row bloat ({deadTuples} dead / {liveChunks} live)
+        Dead-row bloat ({deadTuples} dead / {liveRows} live)
       </div>
       <div data-testid="bloat-reclaimable" style={{ fontSize: 12, color: '#666' }}>
         ~{formatBytes(reclaimableBytes(freePages))} reclaimable

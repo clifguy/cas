@@ -590,7 +590,7 @@ _STATS_BODY = (
     '{"total_documents":42,"by_lifecycle_status":{"active":42},"by_doc_type":{"adr":42},'
     '"by_source_type":{"markdown":42},"total_edges":7,"by_edge_type":{"references":7},'
     '"staging_edge_count":0,"graph_store_size_bytes":1024,"content_store_size_bytes":2048,'
-    '"content_store_chunk_count":10,"content_store_version_count":1,'
+    '"content_store_row_count":10,"content_store_version_count":1,'
     '"content_store_small_fragment_count":0,"health":"ok"}'
 )
 #: GET /config returns VaultConfig.model_dump(), so the schema's required

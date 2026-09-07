@@ -364,8 +364,8 @@ class TestVaultStatistics:
         assert isinstance(body["by_edge_type"], dict)
         assert body["staging_edge_count"] == 1
         assert isinstance(body["content_store_size_bytes"], int)
-        assert isinstance(body["content_store_chunk_count"], int)
-        assert body["content_store_chunk_count"] >= 0
+        assert isinstance(body["content_store_row_count"], int)
+        assert body["content_store_row_count"] >= 0
         assert isinstance(body["content_store_version_count"], int)
         assert body["content_store_version_count"] >= 0
         assert isinstance(body["graph_store_size_bytes"], int)
@@ -419,7 +419,7 @@ class TestVaultStatistics:
         assert body["total_documents"] == 0
         assert body["total_edges"] == 0
         assert body["staging_edge_count"] == 0
-        assert body["content_store_chunk_count"] == 0
+        assert body["content_store_row_count"] == 0
         assert body["last_ingestion_at"] is None
         assert body["by_lifecycle_status"] == {}
         assert body["by_doc_type"] == {}
