@@ -34,10 +34,12 @@ jobs:
       - uses: actions/checkout@v7
       # `prune-cache: true` is pinned rather than left to the action default:
       # setup-uv v9 flipped that default to false (astral-sh/setup-uv#967) to
-      # ease load on PyPI, at the cost of a materially larger saved cache. This
-      # repo already runs near half the 10 GB Actions cache ceiling, and an
-      # unpruned uv cache at every call site would crowd out the entries other
-      # jobs depend on. Drop the pin if the cache budget stops binding.
+      # ease load on PyPI, at the cost of a materially larger saved cache. The
+      # budget is real and has tightened: measured 2026-09-07, the repository
+      # holds 7.18 GiB against a 10 GB ceiling. An unpruned uv cache at every
+      # call site would crowd out entries other jobs depend on, and LRU eviction
+      # would report nothing when it did. Drop the pin if the budget stops
+      # binding; re-measure before assuming it has.
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true

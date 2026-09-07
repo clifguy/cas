@@ -325,3 +325,50 @@ def test_the_registry_gate_is_expressed_identically_everywhere() -> None:
     assert len(set(conditions.values())) == 1, (
         f"the registry gate has drifted between its copies: {conditions}"
     )
+
+
+def test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read() -> None:
+    """Every arm reads the layer cache; only refs with a second reader write it.
+
+    A pull-request ref's cache scope is readable by nothing else and dies with
+    the branch, so writing one spends several GiB of a fixed repository budget
+    to warm a scope no other run will ever open. The eviction that buys comes
+    out of the default branch's entries -- the scope the deploy arm reads -- so
+    an unrestricted write policy degrades exactly the path it was meant to speed
+    up, and does it quietly, because LRU eviction reports nothing.
+
+    Reading is therefore unconditional and writing is gated. The two halves are
+    asserted by position rather than by presence: both flags appear in the file
+    either way, and what distinguishes the correct arrangement from the
+    inverted one is which side of the gate each sits on.
+    """
+    build_steps = [step for step in _steps() if _is_buildx_step(step)]
+    assert len(build_steps) == 2, "expected two image build steps"
+
+    write_conditions: list[str] = []
+    for step in build_steps:
+        run = _run_of(step)
+        env = step.get("env") or {}
+
+        assert "WRITE_CACHE" in env, "the build step resolves no cache-write gate"
+        write_conditions.append(_normalise_expr(str(env["WRITE_CACHE"])))
+
+        gate = run.find('if [ "${WRITE_CACHE}" = "true" ]')
+        assert gate != -1, "the cache write is not gated on the resolved flag"
+
+        cache_from = run.find("--cache-from")
+        cache_to = run.find("--cache-to")
+        assert cache_from != -1 and cache_to != -1, "both cache flags must be present"
+        assert cache_from < gate, (
+            "`--cache-from` sits inside the write gate; reading must be "
+            "unconditional or the arms that do not write also do not read, "
+            "which is the whole benefit"
+        )
+        assert gate < cache_to, (
+            "`--cache-to` sits outside the write gate, so every ref writes its "
+            "own copy of the cache"
+        )
+
+    assert len(set(write_conditions)) == 1, (
+        f"the cache-write gate has drifted between the build steps: {write_conditions}"
+    )

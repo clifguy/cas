@@ -91,10 +91,13 @@ jobs:
       - name: Install uv
         # `prune-cache: true` is pinned rather than left to the action default:
         # setup-uv v9 flipped that default to false (astral-sh/setup-uv#967) to
-        # ease load on PyPI, at the cost of a materially larger saved cache. This
-        # repo already runs near half the 10 GB Actions cache ceiling, and an
-        # unpruned uv cache at every call site would crowd out the entries other
-        # jobs depend on. Drop the pin if the cache budget stops binding.
+        # ease load on PyPI, at the cost of a materially larger saved cache. The
+        # budget is real and has tightened: measured 2026-09-07, the repository
+        # holds 7.18 GiB against a 10 GB ceiling, most of it the buildkit layer
+        # cache the image builds below now populate. An unpruned uv cache at
+        # every call site would crowd out entries other jobs depend on, and LRU
+        # eviction would report nothing when it did. Drop the pin if the budget
+        # stops binding; re-measure before assuming it has.
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
@@ -174,13 +177,25 @@ jobs:
             ${{ inputs.push
             && vars.AZURE_CLIENT_ID != ''
             && vars.ACR_LOGIN_SERVER != '' }}
+          # Write the layer cache only from refs another run can read: the
+          # default branch and the deploy dispatch. Every arm still reads it.
+          # A pull-request ref's cache scope is readable by nothing else and is
+          # discarded with the branch, so writing one spends ~4 GiB of a 10 GiB
+          # repository budget to warm a scope with no second reader -- and the
+          # eviction that buys lands on the default branch's entries, which is
+          # the scope the deploy arm reads.
+          WRITE_CACHE: >-
+            ${{ inputs.push
+            || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
           set -euo pipefail
           args=(--platform linux/amd64
                 --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}"
                 --build-arg "SAGE_BUILD_IDENTITY=${SAGE_BUILD_IDENTITY}"
-                --cache-from "type=gha,scope=sage-image"
-                --cache-to "type=gha,mode=max,scope=sage-image")
+                --cache-from "type=gha,scope=sage-image")
+          if [ "${WRITE_CACHE}" = "true" ]; then
+            args+=(--cache-to "type=gha,mode=max,scope=sage-image")
+          fi
           if [ "${PUSH_TO_REGISTRY}" = "true" ]; then
             # Straight to the registry. Loading into the local daemon first
             # would serialise every layer into docker's image format and
@@ -201,13 +216,25 @@ jobs:
             ${{ inputs.push
             && vars.AZURE_CLIENT_ID != ''
             && vars.ACR_LOGIN_SERVER != '' }}
+          # Write the layer cache only from refs another run can read: the
+          # default branch and the deploy dispatch. Every arm still reads it.
+          # A pull-request ref's cache scope is readable by nothing else and is
+          # discarded with the branch, so writing one spends ~4 GiB of a 10 GiB
+          # repository budget to warm a scope with no second reader -- and the
+          # eviction that buys lands on the default branch's entries, which is
+          # the scope the deploy arm reads.
+          WRITE_CACHE: >-
+            ${{ inputs.push
+            || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
           set -euo pipefail
           args=(--platform linux/amd64
                 -f Dockerfile.bff
                 --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}"
-                --cache-from "type=gha,scope=bff-image"
-                --cache-to "type=gha,mode=max,scope=bff-image")
+                --cache-from "type=gha,scope=bff-image")
+          if [ "${WRITE_CACHE}" = "true" ]; then
+            args+=(--cache-to "type=gha,mode=max,scope=bff-image")
+          fi
           if [ "${PUSH_TO_REGISTRY}" = "true" ]; then
             args+=(--push -t "${ACR}/bff:${IMAGE_TAG}" -t "${ACR}/bff:latest")
           else
