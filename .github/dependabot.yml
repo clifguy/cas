@@ -46,6 +46,27 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # The SPA-builder base tracks the Node *runtime* major the rest of the
+      # frontend toolchain is held to — the `setup-node` pins in ci.yml and the
+      # `@types/node` floor — not the newest published major. This mirrors the
+      # `@types/node` ignore in the npm block below, and exists for the same
+      # reason: those sites move together or the bundle is built on one major
+      # while the type definitions describe another.
+      #
+      # Nothing held this until the base became visible to this ecosystem. On the
+      # first run afterwards it opened a `node:24-slim` → `node:26-slim` bump,
+      # moving the container base on its own; the frontend Node-version gate
+      # caught it, which is that gate working as designed, but an unignored major
+      # recurs on every Node release. The runtime move is coordinated work across
+      # four sites, not a weekly pull request.
+      #
+      # Minor and patch bumps within the major still flow, and so do digest
+      # refreshes on an unchanged tag — which are the upstream security fixes
+      # this ecosystem was enabled to deliver. Raise this in lockstep when the
+      # Node runtime moves.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
 
   # npm version-update PRs ARE enabled (unlike uv above): the
   # pyproject-floor-rewrite defect (dependabot-core#12162) that disables uv

@@ -138,3 +138,36 @@ def test_dependabot_types_node_comment_names_canonical_major() -> None:
         "dependabot.yml still references the EOL'd 'Node 20'; update the "
         f"@types/node note to Node {CANONICAL_NODE_MAJOR}."
     )
+
+
+def test_docker_ecosystem_holds_the_node_base_at_the_canonical_major() -> None:
+    """The container base is held to the canonical major, as `@types/node` is.
+
+    Both ends of the lockstep need holding, not one. The npm block has always
+    pinned `@types/node` below a major bump so the types cannot outrun the
+    runtime; nothing held the *container base* until it became visible to the
+    docker ecosystem, and on the first run afterwards that ecosystem proposed
+    moving it alone. The sibling assertions above would have reported the
+    resulting divergence, which is the point of them — but a divergence proposed
+    weekly is a standing invitation to land it by inattention.
+
+    Read off the parsed config rather than the comment prose, because this is a
+    structural rule: an `ignore` entry that is reworded still holds, and one that
+    is deleted does not, whatever the surrounding comment still says.
+    """
+    config = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+    docker = [u for u in config["updates"] if u.get("package-ecosystem") == "docker"]
+    assert len(docker) == 1, f"expected exactly one docker ecosystem block, got {len(docker)}"
+
+    node_majors = [
+        entry
+        for entry in (docker[0].get("ignore") or [])
+        if entry.get("dependency-name") == "node"
+        and "version-update:semver-major" in (entry.get("update-types") or [])
+    ]
+    assert node_majors, (
+        "the docker ecosystem must ignore `node` semver-major updates so the container "
+        f"base stays on the Node {CANONICAL_NODE_MAJOR} line with the CI pins and the "
+        "@types/node floor; without it Dependabot moves the base alone on every Node "
+        "major. Minor, patch, and digest updates are deliberately still allowed."
+    )
