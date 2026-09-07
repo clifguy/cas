@@ -657,7 +657,16 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
         # Qualify against the outermost enclosing function, whose subtree walk
         # covers every ingest in the chain including the sleeping scope's own.
         ingest_line = _first_ingest_line(outermost)
-        if ingest_line is None or lineno <= ingest_line:
+        if ingest_line is None:
+            continue
+        # The textual ordering test applies only where the sleep runs where it
+        # is written. A nested definition does not: its body runs when the
+        # helper is called, which is necessarily after the enclosing function
+        # reached the call, wherever the ``def`` happens to sit. Comparing a
+        # nested sleeper's line against the ingest asks about definition order
+        # and answers as though it were execution order, dropping the helper
+        # defined above the ingest and called below it.
+        if func is outermost and lineno <= ingest_line:
             continue
         kept.append((lineno, func.name))
     return kept
@@ -1456,3 +1465,39 @@ def test_bare_sleep_detector_attributes_a_nested_sleep_to_the_inner_function() -
     the ingest and the sleep to sit in the same body.
     """
     assert _bare_sleep_waits(ast.parse(_SYNTHETIC_NESTED_SLEEP_SOURCE)) == [(6, "_settle")]
+
+
+# The same nested race with the helper *defined* above the ingest and called
+# below it. Definition order and execution order come apart here, and only the
+# second is what makes the sleep a race.
+_SYNTHETIC_NESTED_SLEEP_DEFINED_FIRST_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_outer(vault_services):
+        async def _settle():
+            await asyncio.sleep(0.5)
+
+        doc = _parse(await ingest_document("v", "test/sample.md", "markdown"))
+        await _settle()
+        return doc
+    """
+)
+
+
+def test_bare_sleep_detector_flags_a_nested_sleeper_defined_before_the_ingest() -> None:
+    """Definition order is not execution order for a nested helper.
+
+    The ordering condition exists so a sleep that *precedes* the ingest is not
+    read as a wait for it. That reasoning holds only where the sleep runs where
+    it is written, which a nested ``def`` does not: its body runs when the
+    helper is called. Comparing its line against the ingest asks about
+    definition order and answers as though it were execution order, so the
+    helper hoisted above the ingest and called below it -- an ordinary way to
+    write one -- would be dropped.
+
+    The companion to ``_ignores_a_sleep_before_the_ingest``, which pins the
+    condition this one bounds: at the top level the textual test is still the
+    right one, and that test keeps it honest.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_NESTED_SLEEP_DEFINED_FIRST_SOURCE)) == [
+        (4, "_settle")
+    ]
