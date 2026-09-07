@@ -483,21 +483,70 @@ def test_non_floor_service_images_are_the_development_major() -> None:
     )
 
 
-def _prelude_jq_writes(prelude: dict[str, Any]) -> dict[str, str]:
-    """Map each output key the prelude writes to the manifest path it reads.
+# A prelude reads each value into a shell variable and echoes the variables into
+# `$GITHUB_OUTPUT`. The two halves are matched separately: the read is what binds
+# a name to a manifest path, the echo is what turns that name into a job output,
+# and a prelude can get either half wrong on its own.
+# Which manifest path each prelude output must carry. The join below proves an
+# output is backed by *a* manifest read; without this it does not prove which,
+# so a prelude reading `.node.major` into an output named `python` resolves to a
+# non-empty string and passes every other check here.
+EXPECTED_PRELUDE_BINDINGS: Final[dict[str, str]] = {
+    "postgres_deploy_major": ".postgres.deploy_major",
+    "postgres_dev_major": ".postgres.dev_major",
+    "python": ".python.version",
+    "node": ".node.major",
+}
+
+_PRELUDE_READ = re.compile(r'(\w+)="\$\(jq -er (\.[\w.]+) versions\.json\)"')
+_PRELUDE_ECHO = re.compile(r'echo "(\w+)=\$(\w+)"')
+
+
+def _prelude_jq_reads(prelude: dict[str, Any]) -> dict[str, str]:
+    """Map each shell variable the prelude assigns to the manifest path it reads.
 
     Parses the prelude's own ``run:`` block, which is the only place the binding
-    between a declared output and a manifest key actually exists. Reading the
-    ``outputs:`` block alone sees names on both sides of a binding that may not
-    hold.
+    between a name and a manifest key actually exists. Reading the ``outputs:``
+    block alone sees names on both sides of a binding that may not hold.
+    """
+    reads: dict[str, str] = {}
+    for step in prelude.get("steps") or []:
+        for key, path in _PRELUDE_READ.findall(str((step or {}).get("run", ""))):
+            reads[key] = path
+    return reads
+
+
+def _prelude_output_writes(prelude: dict[str, Any]) -> dict[str, str]:
+    """Map each key echoed into ``$GITHUB_OUTPUT`` to the variable it echoes.
+
+    Only steps that actually redirect to ``$GITHUB_OUTPUT`` count: an echo that
+    goes nowhere produces no output, and reads identically in the source.
     """
     writes: dict[str, str] = {}
     for step in prelude.get("steps") or []:
-        for key, path in re.findall(
-            r"(\w+)=\$\(jq -er (\.[\w.]+) versions\.json\)", str((step or {}).get("run", ""))
-        ):
-            writes[key] = path
+        run = str((step or {}).get("run", ""))
+        if "GITHUB_OUTPUT" not in run:
+            continue
+        for key, variable in _PRELUDE_ECHO.findall(run):
+            writes[key] = variable
     return writes
+
+
+def _prelude_jq_writes(prelude: dict[str, Any]) -> dict[str, str]:
+    """Map each emitted output key to the manifest path standing behind it.
+
+    Joins the two halves: a key is bound to a path only when it is echoed into
+    ``$GITHUB_OUTPUT`` *and* the variable it echoes was assigned from that path.
+    A key whose variable was never read resolves to the empty string at run time
+    and is deliberately absent here rather than reported with a path it does not
+    have.
+    """
+    reads = _prelude_jq_reads(prelude)
+    return {
+        key: reads[variable]
+        for key, variable in _prelude_output_writes(prelude).items()
+        if variable in reads
+    }
 
 
 def _resolve_manifest_path(path: str) -> Any:
@@ -516,25 +565,23 @@ def test_versions_prelude_reads_manifest_keys_that_exist() -> None:
     manifest key, update ``tests/helpers/versions.py`` in the same change, and
     the four preludes keep reading the old path.
 
-    What happens then, precisely, because the obvious reading is wrong: the
-    prelude writes ``echo "k=$(jq -er <path> versions.json)"``, and ``set -e``
-    reacts to the exit status of ``echo``, not of the substitution inside its
-    argument. So ``jq`` fails, prints nothing, and the step writes ``k=null``
-    and succeeds. The consuming jobs then run with ``null`` where a version
-    belongs -- ``pgvector/pgvector:pgnull`` -- and fail loudly. The prelude does
-    *not* fail, and no required check is skipped.
+    The prelude reads each value into a shell variable, so ``set -e`` fires on a
+    path that does not resolve and the ``versions`` job fails. Because
+    ``versions`` is itself a required status check, that failure blocks the
+    merge rather than being laundered: a job skipped for a failed dependency
+    counts as a satisfied required check, which is what the ruleset entry
+    prevents.
 
-    That distinction is load-bearing rather than pedantic, and it is why the
-    reads are deliberately not written as assignments: an assignment would make
-    ``set -e`` fire and fail the prelude, which would *skip* every job needing
-    it -- and a skipped required check counts as satisfied. Under today's
-    ruleset, failing loudly with a garbage tag is the safer of the two. Revisit
-    once ``versions`` is itself a required context (see
-    ``docs/process/branch_protection.md``); until then the echo form is the
-    deliberate choice.
+    Worth knowing why the form matters, since it changed once already. Written
+    as ``echo "k=$(jq -er <path> versions.json)"``, ``set -e`` reads the exit
+    status of ``echo`` rather than of the substitution inside its argument, so
+    ``jq`` fails and the step writes ``k=null`` and succeeds. That was the safer
+    shape while ``versions`` was not required -- a garbage tag and a loud red
+    beat a silent skip -- and it is the wrong shape now. See
+    ``docs/process/branch_protection.md``.
 
-    Either way the value is garbage, and nothing else in this suite reads those
-    paths -- so this check is what catches the typo before any run.
+    Either way the value never reaches a job, and nothing else in this suite
+    reads those paths -- so this check is what catches the typo before any run.
     """
     checked = 0
     for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
@@ -547,6 +594,15 @@ def test_versions_prelude_reads_manifest_keys_that_exist() -> None:
             f"`<key>=$(jq -er <path> versions.json)` write was found in its run block"
         )
         for key, manifest_path in writes.items():
+            assert key in EXPECTED_PRELUDE_BINDINGS, (
+                f"{path.name}: the versions prelude emits {key!r}, which is not a declared "
+                f"binding ({sorted(EXPECTED_PRELUDE_BINDINGS)})"
+            )
+            assert manifest_path == EXPECTED_PRELUDE_BINDINGS[key], (
+                f"{path.name}: output {key!r} is read from {manifest_path}, not from "
+                f"{EXPECTED_PRELUDE_BINDINGS[key]}; the value would resolve and every other "
+                f"check here would pass while the output carried the wrong version"
+            )
             value = _resolve_manifest_path(manifest_path)
             assert isinstance(value, str) and value.strip(), (
                 f"{path.name}: the versions prelude reads {manifest_path} for output "
@@ -591,8 +647,8 @@ def test_versions_prelude_outputs_resolve_to_the_step_that_writes_them() -> None
                 f"{path.name}: output {key!r} reads a differently named step output {written_key!r}"
             )
             run = steps[step_id]
-            assert re.search(rf"{re.escape(written_key)}=\$\(jq -er", run), (
-                f"{path.name}: step {step_id!r} does not write {written_key!r}"
+            assert re.search(rf'echo "{re.escape(written_key)}=\$\w+"', run), (
+                f"{path.name}: step {step_id!r} does not echo {written_key!r}"
             )
             assert "GITHUB_OUTPUT" in run, (
                 f"{path.name}: step {step_id!r} never redirects to $GITHUB_OUTPUT, so nothing "
@@ -616,7 +672,15 @@ def test_versions_prelude_writes_exactly_the_outputs_it_declares() -> None:
         if prelude is None:
             continue
         declared = set((prelude.get("outputs") or {}).keys())
-        written = set(_prelude_jq_writes(prelude))
+        echoed = _prelude_output_writes(prelude)
+        reads = _prelude_jq_reads(prelude)
+        unbacked = {k: v for k, v in echoed.items() if v not in reads}
+        assert not unbacked, (
+            f"{path.name}: the prelude echoes {sorted(unbacked)} from variables it never "
+            f"assigns from the manifest ({sorted(unbacked.values())}); each resolves to the "
+            f"empty string at run time"
+        )
+        written = set(echoed)
         assert declared == written, (
             f"{path.name}: the versions prelude declares outputs {sorted(declared)} but "
             f"writes {sorted(written)}; an output declared and not written resolves to "
@@ -820,12 +884,15 @@ def test_workflow_node_pins_read_the_manifest() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_control_prelude_jq_parser_detects_a_bad_path_and_a_missing_write() -> None:
-    """Both prelude regressions are visible to the parser that must catch them.
+def test_control_prelude_parser_detects_each_way_the_binding_can_break() -> None:
+    """Every way the read/echo pair can come apart is visible to the parser.
 
-    Arm A is a jq path the manifest does not carry; arm B is a declared output
-    with no write. Each passed the previous gate, which compared output names on
-    both sides of a binding it never read.
+    The prelude binds a manifest path to a job output in two steps -- assign a
+    shell variable from ``jq``, then echo it into ``$GITHUB_OUTPUT`` -- and each
+    half can be wrong without the other. Arm A is a path the manifest does not
+    carry; arm B is a declared output that is never echoed; arm C is an echo
+    whose variable was never assigned, which the single-map parser could not
+    express at all because it read the two halves as one.
     """
     bad_path = yaml.safe_load(
         """
@@ -834,17 +901,17 @@ def test_control_prelude_jq_parser_detects_a_bad_path_and_a_missing_write() -> N
         steps:
           - id: declared
             run: |
-              echo "python=$(jq -er .python.versio versions.json)" >> "$GITHUB_OUTPUT"
+              python="$(jq -er .python.versio versions.json)"
+              echo "python=$python" >> "$GITHUB_OUTPUT"
         """
     )
-    writes = _prelude_jq_writes(bad_path)
-    assert writes == {"python": ".python.versio"}, writes
+    assert _prelude_jq_writes(bad_path) == {"python": ".python.versio"}
     assert _resolve_manifest_path(".python.versio") is None, (
         "the resolver must report a manifest path that does not exist"
     )
     assert _resolve_manifest_path(".python.version") == python_version()
 
-    missing_write = yaml.safe_load(
+    missing_echo = yaml.safe_load(
         """
         outputs:
           python: ${{ steps.declared.outputs.python }}
@@ -852,13 +919,66 @@ def test_control_prelude_jq_parser_detects_a_bad_path_and_a_missing_write() -> N
         steps:
           - id: declared
             run: |
-              echo "python=$(jq -er .python.version versions.json)" >> "$GITHUB_OUTPUT"
+              python="$(jq -er .python.version versions.json)"
+              echo "python=$python" >> "$GITHUB_OUTPUT"
         """
     )
-    declared = set((missing_write.get("outputs") or {}).keys())
-    written = set(_prelude_jq_writes(missing_write))
-    assert declared - written == {"node"}, (
-        "the declared-vs-written comparison must surface the unwritten output"
+    declared = set((missing_echo.get("outputs") or {}).keys())
+    assert declared - set(_prelude_output_writes(missing_echo)) == {"node"}, (
+        "the declared-vs-echoed comparison must surface the output that is never written"
+    )
+
+    unread_variable = yaml.safe_load(
+        """
+        outputs:
+          python: ${{ steps.declared.outputs.python }}
+        steps:
+          - id: declared
+            run: |
+              echo "python=$python" >> "$GITHUB_OUTPUT"
+        """
+    )
+    echoed = _prelude_output_writes(unread_variable)
+    reads = _prelude_jq_reads(unread_variable)
+    assert echoed == {"python": "python"}, echoed
+    assert not reads, "nothing is assigned from the manifest in this arm"
+    assert {k: v for k, v in echoed.items() if v not in reads} == {"python": "python"}, (
+        "an echo of a variable that was never assigned must be reported, not silently "
+        "resolved to a path it does not have"
+    )
+
+    swapped = yaml.safe_load(
+        """
+        outputs:
+          python: ${{ steps.declared.outputs.python }}
+        steps:
+          - id: declared
+            run: |
+              python="$(jq -er .node.major versions.json)"
+              echo "python=$python" >> "$GITHUB_OUTPUT"
+        """
+    )
+    swapped_writes = _prelude_jq_writes(swapped)
+    assert swapped_writes == {"python": ".node.major"}, swapped_writes
+    assert _resolve_manifest_path(".node.major"), (
+        "the swapped path resolves, which is why resolvability alone cannot catch this"
+    )
+    assert swapped_writes["python"] != EXPECTED_PRELUDE_BINDINGS["python"], (
+        "the declared-binding comparison is what separates a readable path from the right one"
+    )
+
+    unredirected = yaml.safe_load(
+        """
+        steps:
+          - id: declared
+            run: |
+              python="$(jq -er .python.version versions.json)"
+              echo "python=$python"
+        """
+    )
+    assert _prelude_jq_reads(unredirected) == {"python": ".python.version"}
+    assert not _prelude_output_writes(unredirected), (
+        "an echo that never reaches $GITHUB_OUTPUT produces no output and must not count"
     )
 
 
