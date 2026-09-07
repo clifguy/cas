@@ -36,6 +36,7 @@ from sage.api.errors import StorageQueryFailedError
 from sage.config import VaultConfig
 from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import ingest_document, mcp
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
 
 # The shape of a real driver rejection: the statement is echoed and the
@@ -58,6 +59,13 @@ LEAK_MARKERS = (
 )
 
 
+def _parse(result: str | dict) -> dict:
+    """Normalize a tool result, which is a dict in process and JSON over the wire."""
+    if isinstance(result, dict):
+        return result
+    return json.loads(result)
+
+
 @pytest.fixture
 async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
     """Register stub-backed services under ``test_vault`` and seed one document."""
@@ -73,11 +81,20 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         test_dir = tmp_vault_dir / "sources" / "test"
         test_dir.mkdir(parents=True, exist_ok=True)
         (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
-        await ingest_document(
-            "test_vault",
-            "test/sample.md",
-            "markdown",
-            metadata={"title": "A Note", "doc_type": "note"},
+        note = _parse(
+            await ingest_document(
+                "test_vault",
+                "test/sample.md",
+                "markdown",
+                metadata={"title": "A Note", "doc_type": "note"},
+            )
+        )
+
+        # The document settles before any test runs. Ingestion dispatches the
+        # pipeline in the background, so a fixture that yields straight from
+        # the ingest hands every test a document still moving.
+        await await_pipeline_idle(
+            services.graph_store, note["id"], service=services.ingestion_service
         )
 
         try:

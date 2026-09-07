@@ -67,6 +67,24 @@ reads nothing and so cannot be waiting on anything. Its exemption is the
 mirror of the others' -- a wait expressed through the shared helper has no
 sleep of its own to anchor on.
 
+That fourth arm reads the ingest through one hop of the call graph as well as
+through the scope chain, because a module that ingests via its own helper puts
+the ingestion in no scope enclosing the sleep -- walking outward never reaches
+it, and the class survived twice in exactly that shape. The hop is one call
+deep and confined to the module being scanned; ``_module_ingest_helpers``
+states why the bound sits where it does.
+
+All four arms so far need a sleep to anchor on, and so all four are blind to
+the wait that was never written. A fifth closes that where it does the most
+damage: a *fixture* that ingests a document and yields without waiting hands
+one still in flight to every test that requests it, and none of those tests
+can repair it -- by the time any of them runs, it has been racing since before
+its first line. Two fixtures stood in exactly that shape while carrying an
+allowlist entry for their teardown drain, so the fourth arm reported them and
+the report said nothing about the gap that mattered; they were found by
+somebody reading the code. The exemption is the others' again, widened to the
+module's own wait adapter as well as the shared helper's entry points.
+
 Allowlist convention follows ``ORPHANED_TEST_ALLOWLIST`` in
 ``tests/test_collection_integrity.py`` and the allowlists in
 ``tests/test_public_posture.py``: empty by default, every entry carrying a
@@ -210,6 +228,23 @@ BARE_SLEEP_WAIT_ALLOWLIST: Final[dict[str, list[str]]] = {
     "tests/sage/test_search_misplaced_filters.py": ["vault_services"],
     "tests/sage/test_storage_query_error_envelope.py": ["vault_services"],
 }
+
+
+# ---------------------------------------------------------------------------
+# Unwaited-fixture allowlist
+#
+# path (relative to repo root) -> names of the fixtures that ingest a document
+# and then yield without waiting for it, where handing a moving document to
+# every test using the fixture is nonetheless correct. Empty by default, and
+# the bar for an entry is high: a fixture's tests cannot each decide to wait,
+# because the fixture is where the document was put in flight.
+#
+# Keyed by function name, for the reason the two allowlists above give. Every
+# entry requires a one-line rationale naming why the tests can act on a
+# document that has not settled.
+# ---------------------------------------------------------------------------
+
+UNWAITED_FIXTURE_YIELD_ALLOWLIST: Final[dict[str, list[str]]] = {}
 
 
 # The ingestion entry points. A function that calls one of these has put a
@@ -577,17 +612,72 @@ def _format_helper_violations(violations: list[tuple[str, int, str]]) -> str:
     )
 
 
-def _first_ingest_line(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int | None:
+def _module_ingest_helpers(tree: ast.AST) -> frozenset[str]:
+    """Names of the module's own top-level functions that ingest.
+
+    A module that ingests through a per-module helper -- write a caller-local
+    file, ingest it, hand the result back -- puts the ingestion outside every
+    scope enclosing the call site, where the lexical walk cannot reach it.
+    Resolving the call is the only way to see it, and this is the set of names
+    worth resolving.
+
+    Two bounds, both deliberate and both pinned by their own tests:
+
+    * **The module's own top-level definitions**, not a name set shared across
+      the tree. Helper names repeat, and a name that ingests in one module may
+      do something else entirely in another -- seeding the graph store
+      directly, say, which puts nothing in the pipeline. Reading each module's
+      definitions answers for that module rather than guessing from a name.
+    * **The helper's own body**, so resolution stops one call deep. A helper
+      that reaches an ingest only through a second helper is not in this set,
+      at the cost of missing a two-hop chain. Following calls to arbitrary
+      depth would make the walk's own reach hard to state, and one hop covers
+      the shape that recurs: a module with a single ingest helper its tests
+      call.
+
+    Only module-level *names* enter the set, though each name is judged on its
+    whole body, nested definitions included -- the scoping ``_first_ingest_line``
+    already uses, and for the same reason: a call that reaches an ingest
+    through a nested helper has ingested. A nested ``def``'s own name stays
+    out, because no sibling can call it: admitting it would let an unrelated
+    call to a same-named function elsewhere qualify a sleep that waits for
+    nothing.
+
+    The match is on the call, not on its effect. A helper that calls an
+    ingestion entry point which declines to ingest -- minting a transfer
+    recipe under the cloud profile rather than taking the document -- counts
+    here regardless, because no static walk can tell the two apart.
+    """
+    return frozenset(
+        node.name
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(inner, ast.Call) and _called_name(inner.func) in INGEST_CALLS
+            for inner in ast.walk(node)
+        )
+    )
+
+
+def _first_ingest_line(
+    func: ast.FunctionDef | ast.AsyncFunctionDef, helpers: frozenset[str]
+) -> int | None:
     """The line of the function's earliest ingestion call, or None if it makes none.
 
     Scoped to the whole body, nested definitions included: a document put into
     the pipeline by a nested helper is in the pipeline just the same, and the
     enclosing function is where the wait for it has to be written.
+
+    ``helpers`` names the module's own ingesting functions, from
+    ``_module_ingest_helpers``. A call to one of them counts as an ingestion at
+    the line of the *call*, which is where the document enters the pipeline as
+    far as this function is concerned -- and is the line a reader comparing it
+    against a following sleep has to look at.
     """
     lines = [
         node.lineno
         for node in ast.walk(func)
-        if isinstance(node, ast.Call) and _called_name(node.func) in INGEST_CALLS
+        if isinstance(node, ast.Call) and _called_name(node.func) in (INGEST_CALLS | helpers)
     ]
     return min(lines) if lines else None
 
@@ -607,13 +697,19 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
 
     * **Outside a loop.** A sleeping loop is a poll, and belongs to the arms
       above; flagging it here would report the sanctioned shape twice.
-    * **After an ingestion call in the sleeping function or any function
-      enclosing it.** A sleep in a scope that ingests nothing waits for
-      something else -- a worker unwinding, a thread joining, a registry slot
-      swapping -- and this walk has no opinion about it. The qualifier reads
-      the enclosing chain rather than the innermost body alone, because a test
-      that ingests and then sleeps inside a nested helper is the same race
-      written one scope down; reading only the innermost body drops it.
+    * **After an ingestion call in the sleeping function, in any function
+      enclosing it, or in a module-local helper one of those calls.** A sleep
+      in a scope that ingests nothing waits for something else -- a worker
+      unwinding, a thread joining, a registry slot swapping -- and this walk
+      has no opinion about it. The qualifier reads the enclosing chain rather
+      than the innermost body alone, because a test that ingests and then
+      sleeps inside a nested helper is the same race written one scope down;
+      reading only the innermost body drops it. It then resolves calls to the
+      module's own ingesting helpers, from ``_module_ingest_helpers``, because
+      a *sibling* helper is in no enclosing scope at all: walking outward
+      never reaches it, however far it goes. That resolution is one call deep
+      and confined to the module, which is a known limit rather than an
+      oversight -- the bounds and the reasons for them are stated there.
     * **Attributed to the innermost enclosing function**, so a nested helper is
       judged under its own name rather than its caller's. Attribution and
       qualification therefore look in opposite directions, which is deliberate:
@@ -625,6 +721,7 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
     anchor on. A function that does both keeps its sleep and needs an
     allowlist entry saying what the sleep is really for.
     """
+    helpers = _module_ingest_helpers(tree)
     findings: list[
         tuple[int, ast.FunctionDef | ast.AsyncFunctionDef, ast.FunctionDef | ast.AsyncFunctionDef]
     ] = []
@@ -655,8 +752,9 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
     kept: list[tuple[int, str]] = []
     for lineno, func, outermost in sorted(findings, key=lambda entry: entry[0]):
         # Qualify against the outermost enclosing function, whose subtree walk
-        # covers every ingest in the chain including the sleeping scope's own.
-        ingest_line = _first_ingest_line(outermost)
+        # covers every ingest in the chain including the sleeping scope's own,
+        # plus the calls that reach one of the module's own ingest helpers.
+        ingest_line = _first_ingest_line(outermost, helpers)
         if ingest_line is None:
             continue
         # The textual ordering test applies only where the sleep runs where it
@@ -687,6 +785,131 @@ def _format_bare_sleep_violations(violations: list[tuple[str, int, str]]) -> str
         "its own next call rejects. Delegate to await_pipeline_idle / "
         "await_tool_idle in tests/helpers/pipeline_wait.py, which poll the "
         "terminal status and the in-flight claim together."
+    )
+
+
+def _module_wait_helpers(tree: ast.AST) -> frozenset[str]:
+    """Names of the module's own top-level functions that wait on the claim.
+
+    The mirror of ``_module_ingest_helpers``, and bounded the same way: the
+    module's own top-level definitions, each judged on its whole body. A
+    module that waits through a thin local adapter -- one that reads through
+    the tool surface, say, and hands the predicate to the shared helper -- has
+    waited, and a walk that only recognized the shared helper's own names
+    would report every one of those call sites.
+    """
+    return frozenset(
+        node.name
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _consults_claim(node)
+    )
+
+
+def _awaits_the_pipeline(
+    func: ast.FunctionDef | ast.AsyncFunctionDef, wait_helpers: frozenset[str]
+) -> bool:
+    """Whether a function waits on the pipeline, directly or through the module.
+
+    Either the function consults the claim itself -- the shared helper's entry
+    points or the registry, as ``_consults_claim`` reads them -- or it calls
+    one of the module's own waiting helpers.
+    """
+    if _consults_claim(func):
+        return True
+    return any(
+        isinstance(node, ast.Call) and _called_name(node.func) in wait_helpers
+        for node in ast.walk(func)
+    )
+
+
+def _is_fixture(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether a function carries a pytest fixture decorator.
+
+    Matched on the decorator's bare name, so ``@pytest.fixture``,
+    ``@pytest.fixture(scope=...)`` and a directly imported ``@fixture`` all
+    count.
+    """
+    return any(
+        _called_name(decorator.func if isinstance(decorator, ast.Call) else decorator) == "fixture"
+        for decorator in func.decorator_list
+    )
+
+
+def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(yield lineno, fixture name)`` for every fixture that ingests a
+    document and then yields without waiting for it.
+
+    The four arms above all need a *sleep* to anchor on: each asks what a wait
+    reads, and the last asks whether a wait that reads nothing is standing in
+    for one. None of them asks whether a wait was written at all, so a fixture
+    that ingests and yields straight through passes every one untouched -- and
+    that is the worst form of the race rather than the mildest. A fixture is
+    setup for every test that requests it, so an unsettled document is handed
+    to all of them at once, and none of those tests can fix it: by the time
+    one runs, the document has been in flight since before its first line.
+
+    That shape was not theoretical either. Two fixtures seeded documents and
+    yielded with no wait; both carried an allowlist entry for the *teardown*
+    drain, which is a different sleep and correctly exempt, so the arm above
+    reported them and the report said nothing about the gap that mattered.
+    They were found by somebody reading the code.
+
+    Three conditions:
+
+    * **A fixture**, by its decorator. A plain helper that ingests and returns
+      is out of scope: its caller is a single function, which is where the
+      wait can be written and where the arms above already look.
+    * **Yielding after an ingestion** -- reached directly, through the
+      enclosing chain, or through one module-local helper, exactly as
+      ``_first_ingest_line`` resolves it for the arm above. A fixture whose
+      only ingest follows its ``yield`` is doing teardown work, and has no
+      document in flight at the moment it hands control on.
+    * **Waiting for nothing**, by ``_awaits_the_pipeline``. Delegation is the
+      sanctioned form and is invisible here by construction, whether the
+      fixture calls the shared helper or the module's own adapter for it.
+
+    The walk has no opinion about *what* the tests then do with the document.
+    It cannot: they are other functions, often in other files by the time a
+    fixture is shared. A fixture that ingests owes its tests a settled
+    document whether or not this walk can prove one of them reads a field the
+    pipeline writes.
+    """
+    ingest_helpers = _module_ingest_helpers(tree)
+    wait_helpers = _module_wait_helpers(tree)
+
+    findings: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _is_fixture(node):
+            continue
+        ingest_line = _first_ingest_line(node, ingest_helpers)
+        if ingest_line is None:
+            continue
+        yields = [
+            inner.lineno
+            for inner in ast.walk(node)
+            if isinstance(inner, (ast.Yield, ast.YieldFrom)) and inner.lineno > ingest_line
+        ]
+        if not yields or _awaits_the_pipeline(node, wait_helpers):
+            continue
+        findings.append((min(yields), node.name))
+    return sorted(findings)
+
+
+def _format_unwaited_fixture_violations(violations: list[tuple[str, int, str]]) -> str:
+    """Render an unwaited-fixture violation list as a pytest.fail message."""
+    head = violations[:_MAX_REPORTED]
+    body = "\n".join(f"  {path}:{line} → in {name}()" for path, line, name in head)
+    overflow = len(violations) - len(head)
+    tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
+    return (
+        f"Fixtures that ingest a document and yield without waiting for it "
+        f"({len(violations)} found):\n{body}{tail}\n"
+        "Ingestion dispatches the pipeline in the background, so a fixture "
+        "that yields straight from the ingest hands a document still in "
+        "flight to every test that requests it -- and no test can repair "
+        "that, because it was already racing before its first line ran. Wait "
+        "before the yield, via await_pipeline_idle / await_tool_idle in "
+        "tests/helpers/pipeline_wait.py."
     )
 
 
@@ -783,6 +1006,27 @@ def test_no_bare_sleep_waits_on_ingested_documents() -> None:
 
     if violations:
         pytest.fail(_format_bare_sleep_violations(violations))
+
+
+def test_no_fixture_yields_an_unsettled_document() -> None:
+    """No tracked test module may seed a document in a fixture and yield unwaited."""
+    violations: list[tuple[str, int, str]] = []
+    for path in _tracked_test_modules():
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            # A syntactically broken test module fails its own collection
+            # loudly; not this gate's concern.
+            continue
+        allowed = set(UNWAITED_FIXTURE_YIELD_ALLOWLIST.get(rel, []))
+        for lineno, name in _unwaited_fixture_yields(tree):
+            if name in allowed:
+                continue
+            violations.append((rel, lineno, name))
+
+    if violations:
+        pytest.fail(_format_unwaited_fixture_violations(violations))
 
 
 # ---------------------------------------------------------------------------
@@ -1501,3 +1745,350 @@ def test_bare_sleep_detector_flags_a_nested_sleeper_defined_before_the_ingest() 
     assert _bare_sleep_waits(ast.parse(_SYNTHETIC_NESTED_SLEEP_DEFINED_FIRST_SOURCE)) == [
         (4, "_settle")
     ]
+
+
+# The same race with the ingest moved out to a *sibling* helper -- the shape a
+# module grows once more than one of its tests needs a caller-local file. The
+# ingest is now in no scope enclosing the sleep, so only a walk that resolves
+# the call sees it.
+_SYNTHETIC_HELPER_INGEST_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _ingest_local_file(tmp_path, name, body):
+        src = tmp_path / name
+        src.write_text(body)
+        return _parse(await ingest_document("v", str(src), "markdown"))
+
+
+    async def test_reads_a_projection(vault_services, tmp_path):
+        doc = await _ingest_local_file(tmp_path, "sample.md", "# S")
+        await asyncio.sleep(0.5)
+        return _parse(await read_projection("v", doc["id"]))
+    """
+)
+
+
+def test_bare_sleep_detector_flags_an_ingest_through_a_module_helper() -> None:
+    """A sibling helper's ingest qualifies the sleep that follows the call.
+
+    The enclosing-chain walk cannot reach this on its own: a module-level
+    helper encloses nothing, so no amount of walking outward from the sleep
+    arrives at the ingest. The finding is attributed to the *test*, whose body
+    holds the sleep, rather than to the helper that ingests -- the two live in
+    different functions here, which is what makes the pairing worth asserting.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_HELPER_INGEST_SOURCE)) == [
+        (10, "test_reads_a_projection")
+    ]
+
+
+# The same shape with one more hop: the helper the test calls does not ingest
+# itself, it calls a second helper that does. This is the far side of the
+# resolution bound.
+_SYNTHETIC_INDIRECT_HELPER_INGEST_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _ingests(tmp_path):
+        return _parse(await ingest_document("v", "test/sample.md", "markdown"))
+
+
+    async def _outer(tmp_path):
+        return await _ingests(tmp_path)
+
+
+    async def test_reads_a_projection(vault_services, tmp_path):
+        doc = await _outer(tmp_path)
+        await asyncio.sleep(0.5)
+        return _parse(await read_projection("v", doc["id"]))
+    """
+)
+
+
+def test_bare_sleep_detector_ignores_an_ingest_two_helpers_away() -> None:
+    """Call resolution stops one hop out, and the limit is asserted here.
+
+    The companion to ``_flags_an_ingest_through_a_module_helper``: that one
+    fails and this one passes under a walk that resolves nothing, so only a
+    walk resolving exactly one hop passes both. Without the pair, "one level"
+    would be a claim in a docstring rather than a property of the code.
+
+    Following calls to arbitrary depth is not the goal. The reach of a walk
+    that does is hard to state and harder to predict from a call site, and one
+    hop covers the shape this arm exists for -- a module with its own ingest
+    helper. A two-hop chain is missed, and that is the cost.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_INDIRECT_HELPER_INGEST_SOURCE)) == []
+
+
+# A call to an ingest helper the module does not define -- imported, or simply
+# named the same as one elsewhere in the tree. The other side of the bound: the
+# resolution reads definitions, not names.
+_SYNTHETIC_FOREIGN_HELPER_CALL_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_reads_a_projection(vault_services, tmp_path):
+        doc = await _ingest_local_file(tmp_path, "sample.md", "# S")
+        await asyncio.sleep(0.5)
+        return _parse(await read_projection("v", doc["id"]))
+    """
+)
+
+
+def test_bare_sleep_detector_ignores_a_call_the_module_does_not_define() -> None:
+    """An unresolvable call is not an ingest, whatever the name suggests.
+
+    ``_ingest_local_file`` is a real ingesting helper in more than one module
+    of this tree, which is the point: a walk keyed on a set of names collected
+    across the tree reports this source, and a walk keyed on the scanned
+    module's own definitions does not. Helper names repeat, and the same name
+    seeds the graph store directly in one module while ingesting in another --
+    so a shared name set would waive nothing and report the wrong thing.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_FOREIGN_HELPER_CALL_SOURCE)) == []
+
+
+# Four definitions for the resolution set to sort: one module-level function
+# that ingests directly, one synchronous one that ingests, one that does not
+# ingest at all, and one that ingests only through a ``def`` nested in its own
+# body. The inert one is ``async`` and the second ingesting one is not, so
+# neither membership nor absence can be explained by the kind of ``def``.
+_SYNTHETIC_HELPER_RESOLUTION_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _ingests(tmp_path):
+        return _parse(await ingest_document("v", "test/sample.md", "markdown"))
+
+
+    def _ingests_sync(client):
+        return client.call(ingest_document("v", "test/sample.md", "markdown"))
+
+
+    async def _inert(payload):
+        return payload["id"]
+
+
+    async def _nests_its_own(vault_services):
+        async def _seed():
+            return _parse(await ingest_document("v", "test/sample.md", "markdown"))
+
+        return await _seed()
+    """
+)
+
+
+def test_module_ingest_helpers_reads_module_level_names_and_whole_bodies() -> None:
+    """The set holds every ingesting top-level name, and only top-level names.
+
+    Four properties, one synthetic. ``_inert`` pins that the scan reads each
+    definition's body rather than admitting every module-level function.
+    ``_nests_its_own`` pins that a body is read whole, nested definitions
+    included -- calling it ingests, so a sleep after that call is a race, and
+    the scoping matches ``_first_ingest_line``'s. ``_seed`` pins the other
+    half: its enclosing function is in the set but its own name is not, so a
+    walk from the module root -- which would collect every ``FunctionDef``
+    anywhere in the file -- fails here. That rival is the likely one, and
+    under it a call to any same-named function in an unrelated module would
+    qualify a sleep waiting for nothing.
+
+    ``_ingests_sync`` closes a rival the other three admit: a scan that reads
+    only ``AsyncFunctionDef``. Every helper the live tree ingests through is
+    ``async``, so such a scan is green on all of them and on the absence of an
+    ``async`` ``_inert``, while silently dropping a synchronous ingest helper.
+    Carrying one ingesting plain ``def`` and one inert ``async def`` makes both
+    membership and absence attributable to the body rather than to the kind of
+    definition.
+    """
+    assert _module_ingest_helpers(ast.parse(_SYNTHETIC_HELPER_RESOLUTION_SOURCE)) == {
+        "_ingests",
+        "_ingests_sync",
+        "_nests_its_own",
+    }
+
+
+# The defective shape the fifth arm exists for: seed a document, hand it to
+# every test that asks for the fixture, wait for nothing. The teardown drain is
+# carried too, because the real instances of this had one -- and its presence
+# is what let the arm above report the fixture while saying nothing about the
+# gap at the yield.
+_SYNTHETIC_UNWAITED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(config, tmp_vault_dir):
+        async with initialize_services_for_test(config) as services:
+            _mcp_vaults["test_vault"] = services
+            await ingest_document("test_vault", "test/sample.md", "markdown")
+
+            try:
+                yield services
+            finally:
+                await asyncio.sleep(0.5)
+                _mcp_vaults.pop("test_vault", None)
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_an_ingest_then_yield() -> None:
+    """The arm has teeth: a fixture that seeds and yields unwaited is reported.
+
+    The finding is anchored at the ``yield`` rather than at the ingest, which
+    is the line a reader has to edit -- the wait goes immediately above it.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_UNWAITED_FIXTURE_SOURCE)) == [
+        (9, "vault_services")
+    ]
+
+
+# The sanctioned form: the same fixture waiting before it yields. The teardown
+# drain stays, so this also pins that a sleep somewhere in the fixture is not
+# what the arm reads.
+_SYNTHETIC_WAITED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(config, tmp_vault_dir):
+        async with initialize_services_for_test(config) as services:
+            _mcp_vaults["test_vault"] = services
+            doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+            await await_pipeline_idle(
+                services.graph_store, doc["id"], service=services.ingestion_service
+            )
+
+            try:
+                yield services
+            finally:
+                await asyncio.sleep(0.5)
+                _mcp_vaults.pop("test_vault", None)
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_delegated_wait() -> None:
+    """The sanctioned form is invisible because the wait is there to find."""
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_WAITED_FIXTURE_SOURCE)) == []
+
+
+# The same wait written through the module's own adapter, which is how a module
+# with many wait sites actually spells it. Both the ingest and the wait are one
+# call away from the fixture here.
+_SYNTHETIC_ADAPTED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _ingest_local_file(tmp_path, name, body):
+        return _parse(await ingest_document("v", str(tmp_path / name), "markdown"))
+
+
+    async def _await_document_idle(services, doc_id):
+        async def fetch():
+            return _parse(await get_document("v", doc_id))
+
+        return await await_tool_idle(fetch, doc_id, service=services.ingestion_service)
+
+
+    @pytest.fixture
+    async def seeded_vault(services, tmp_path):
+        doc = await _ingest_local_file(tmp_path, "sample.md", "# S")
+        await _await_document_idle(services, doc["id"])
+        yield services
+
+
+    @pytest.fixture
+    async def unsettled_vault(services, tmp_path):
+        await _ingest_local_file(tmp_path, "other.md", "# O")
+        yield services
+    """
+)
+
+
+def test_unwaited_fixture_detector_resolves_a_wait_through_a_module_adapter() -> None:
+    """A wait reached through the module's own adapter still counts as a wait.
+
+    Both hops matter here and they pull opposite ways: the ingest resolves
+    through ``_ingest_local_file``, which is what puts a fixture in scope at
+    all, and the wait resolves through ``_await_document_idle``, which takes
+    it back out. A walk that resolved only the first reports every fixture in
+    a module that spells its waits this way -- which is the common spelling,
+    so the false-positive rate would be most of them.
+
+    The two fixtures share a module and differ only in the second hop, which
+    is what makes the discrimination checkable. A rival that exempts a fixture
+    for calling *any* module-local helper is green on ``seeded_vault`` alone
+    -- and that rival is the false-negative form of the same mistake, since a
+    fixture calling only the ingest helper is precisely the shape this arm
+    exists to report. Asserting the pair excludes it; asserting the exempted
+    one by itself does not.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_ADAPTED_FIXTURE_SOURCE)) == [
+        (23, "unsettled_vault")
+    ]
+
+
+# A fixture whose only ingestion happens after the yield, on the teardown side.
+# Nothing is in flight at the moment control is handed on.
+_SYNTHETIC_TEARDOWN_INGEST_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(config):
+        async with initialize_services_for_test(config) as services:
+            yield services
+            await ingest_document("test_vault", "test/teardown.md", "markdown")
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_an_ingest_after_the_yield() -> None:
+    """An ingestion the yield precedes is not a document the tests received.
+
+    The ordering condition, and the same one the arm above carries: without
+    it the walk keys on mere co-occurrence and reports a fixture that hands
+    its tests nothing at all. The remedy it would print -- wait before the
+    yield -- would name a document that does not yet exist.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_TEARDOWN_INGEST_FIXTURE_SOURCE)) == []
+
+
+# An ingesting context manager: it ingests and yields, exactly as the fixture
+# does, and carries no fixture decorator. The whole of the difference is the
+# decorator, which is what makes it the control for that condition.
+_SYNTHETIC_INGESTING_NON_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @contextlib.asynccontextmanager
+    async def seeded_document(config):
+        doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+        yield doc
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_plain_ingesting_helper() -> None:
+    """Only fixtures are in scope, and the decorator is what says so.
+
+    A helper that ingests and yields hands its document to whoever entered
+    it -- one call site, which can wait around it; a fixture hands its
+    document to every test that requests it, none of which can. That
+    asymmetry is the whole reason this arm keys on the decorator.
+
+    The control ingests *and* yields, so its absence from the report is
+    attributable to the missing fixture decorator and to nothing else. A
+    version that merely returned would be excluded by the yield condition
+    instead, leaving a walk that ignores the decorator entirely green here --
+    which is to say, leaving the condition this test is named for unpinned.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_INGESTING_NON_FIXTURE_SOURCE)) == []
+
+
+def test_unwaited_fixture_allowlist_has_no_stale_entries() -> None:
+    """Every unwaited-fixture allowlist entry names a fixture the walk still reports.
+
+    Carried for the reason the two staleness tests above give: an entry whose
+    fixture was since given its wait, renamed or deleted lingers silently, and
+    the next reader inherits a waiver for something already fixed.
+    """
+    stale: list[str] = []
+    for rel, names in UNWAITED_FIXTURE_YIELD_ALLOWLIST.items():
+        path = REPO_ROOT / rel
+        reported = (
+            {name for _, name in _unwaited_fixture_yields(ast.parse(path.read_bytes()))}
+            if path.exists()
+            else set()
+        )
+        stale.extend(f"{rel}: {name}" for name in names if name not in reported)
+
+    assert not stale, (
+        "UNWAITED_FIXTURE_YIELD_ALLOWLIST entries that the walk no longer "
+        f"reports ({len(stale)}): {', '.join(stale)}. Drop each one — the "
+        "fixture it exempted now waits, so the entry waives nothing."
+    )

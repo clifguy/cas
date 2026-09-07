@@ -30,6 +30,7 @@ from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
 from sage.mcp_server import bulk_ingest_document, get_document, ingest_document, read_projection
 from sage.services.transfer import get_transfer_store, reset_transfer_store
 from sage.vault_source_binding import FilesystemVaultSourceStore
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.helpers.store_refusal import STORE_BODY, store_refusal
 
 _VAULT_ID = "test_vault"
@@ -311,11 +312,14 @@ async def test_download_round_trip_source(client, tmp_path):
     assert resp.headers["content-length"] == str(recipe["content_size"])
 
 
-async def test_download_round_trip_projection(client, tmp_path):
+async def test_download_round_trip_projection(app, client, tmp_path):
     """Mint via ``read_projection(write_to_path=...)`` -> GET -> the streamed
     bytes are the projection text the recipe promised."""
     ingested = await _ingest_locally(tmp_path, "dl_proj.md", "# DP\n\nProjection body here.")
-    await asyncio.sleep(0.5)  # let the projection land
+    services = app.state.vault_registry[_VAULT_ID]
+    await await_pipeline_idle(
+        services.graph_store, ingested["id"], service=services.ingestion_service
+    )
 
     with _profile("cloud"):
         recipe = _parse(
