@@ -145,6 +145,21 @@ target-version = "py314"
 line-length = 100
 extend-exclude = [".venv"]
 
+[tool.ruff.per-file-target-version]
+# The deploy probes are invoked as a bare `python3` — by `cloud-preflight.sh`'s
+# default probe command and by the SharePoint validation workflow — in jobs that
+# provision no interpreter, so they run on the runner image's system Python
+# rather than the one `versions.json` declares. They are written to depend on
+# nothing for exactly that reason.
+#
+# The target here is a floor, not a claim about the runner: it keeps the
+# formatter from rewriting these two files into syntax a system interpreter
+# older than the declared version cannot parse. `except (A, B):` becoming the
+# PEP 758 `except A, B:` under a 3.14 target is the live instance — it would
+# turn the deploy preflight into a SyntaxError on the runner. The formatter
+# honors this mapping, not only the linter.
+"deploy/*.py" = "py312"
+
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "S"]
 preview = false

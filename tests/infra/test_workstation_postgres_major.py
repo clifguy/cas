@@ -33,6 +33,25 @@ class PostgresMajorDriftWarning(UserWarning):
 
 _CI_ENV_VAR: Final[str] = "CI"
 
+# A CI job whose Postgres is deliberately not the development major names the
+# major it expects here. Only the deploy-floor job does; every other job runs
+# the development major and leaves this unset.
+_EXPECTED_MAJOR_ENV_VAR: Final[str] = "SAGE_TEST_EXPECTED_PG_MAJOR"
+
+
+def expected_major() -> int:
+    """The major the server under test should be running.
+
+    Defaults to the declared development major, which is what the workstation
+    and every CI service container but one run. A job standing up the deploy
+    floor instead overrides it, so widening that job's path list to reach this
+    module reports a real mismatch rather than a spurious one.
+    """
+    override = os.environ.get(_EXPECTED_MAJOR_ENV_VAR, "").strip()
+    if override:
+        return major_of(override)
+    return major_of(postgres_dev_major())
+
 
 def server_major(version_num: int) -> int:
     """Return the major from a ``server_version_num`` reading.
@@ -83,7 +102,7 @@ def test_server_major_matches_the_declared_development_major() -> None:
 
     report_major_drift(
         server_major(int(row[0])),
-        major_of(postgres_dev_major()),
+        expected_major(),
         in_ci=bool(os.environ.get(_CI_ENV_VAR)),
     )
 
@@ -115,6 +134,26 @@ def test_control_drift_warns_off_ci() -> None:
     """A mismatch warns, and does not raise, on the workstation arm."""
     with pytest.warns(PostgresMajorDriftWarning, match="major 16"):
         report_major_drift(16, 17, in_ci=False)
+
+
+def test_control_expected_major_prefers_the_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job naming its own major is believed; otherwise the declared one stands.
+
+    Without the override branch, the deploy-floor job would be held to the
+    development major and would red claiming the derivation failed -- the
+    misleading message this selection exists to prevent. Both branches are
+    exercised because a default that silently won would produce exactly that.
+    """
+    monkeypatch.delenv(_EXPECTED_MAJOR_ENV_VAR, raising=False)
+    assert expected_major() == major_of(postgres_dev_major())
+
+    monkeypatch.setenv(_EXPECTED_MAJOR_ENV_VAR, "16")
+    assert expected_major() == 16
+
+    # An empty value is the shape a workflow produces when an output it reads
+    # does not exist, and must fall back rather than parse to nothing.
+    monkeypatch.setenv(_EXPECTED_MAJOR_ENV_VAR, "")
+    assert expected_major() == major_of(postgres_dev_major())
 
 
 def test_control_server_major_extraction() -> None:

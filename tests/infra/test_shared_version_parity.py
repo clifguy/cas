@@ -43,6 +43,7 @@ from tests.helpers.versions import (
     declared_versions,
     major_of,
     node_major,
+    parse_ruff_target,
     postgres_deploy_major,
     postgres_dev_major,
     python_version,
@@ -76,6 +77,12 @@ DEPLOY_FLOOR_JOB: Final[str] = "storage-deploy-floor"
 # or one that silently disappears from the walk -- fails here.
 EXPECTED_PG_SERVICE_COUNT: Final[int] = 4
 
+# Files permitted to lint and format below the declared Python, and the target
+# each uses. The deploy probes run on the runner's system interpreter rather
+# than a provisioned one; see the reason recorded in `pyproject.toml`. Pinned
+# rather than open so a carve-out cannot quietly exempt anything else.
+EXPECTED_RUFF_CARVE_OUTS: Final[dict[str, str]] = {"deploy/*.py": "py312"}
+
 _PGVECTOR_TAG = re.compile(r"pgvector/pgvector:pg(?P<tag>[^\s\"']+)")
 
 # The exact image reference each Postgres service must carry. Compared by
@@ -99,6 +106,34 @@ def _strip_bicep_comments(text: str) -> str:
     literals in this repository carry no ``//``, so a naive strip is safe here.
     """
     return _BICEP_LINE_COMMENT.sub("", text)
+
+
+class _ModuleParameters:
+    """Which parameters a nested-template deployment is and is not passed."""
+
+    def __init__(self, passed: set[str]) -> None:
+        self.passed = passed
+
+    @property
+    def absent(self) -> frozenset[str]:
+        return frozenset({"postgresVersion"} - self.passed)
+
+
+def _emitted_module_parameter_names(template: dict[str, Any]) -> _ModuleParameters:
+    """Names the parent supplies to the deployment carrying ``postgresVersion``.
+
+    Reads the ``Microsoft.Resources/deployments`` resource whose nested template
+    declares the parameter, and returns the parameter names its
+    ``properties.parameters`` supplies -- the caller-side overrides.
+    """
+    for resource in template.get("resources") or []:
+        if not isinstance(resource, dict):
+            continue
+        nested = ((resource.get("properties") or {}).get("template") or {}).get("parameters")
+        if isinstance(nested, dict) and "postgresVersion" in nested:
+            supplied = (resource.get("properties") or {}).get("parameters") or {}
+            return _ModuleParameters(set(supplied.keys()))
+    return _ModuleParameters(set())
 
 
 def _emitted_postgres_version_default(node: Any) -> tuple[str | None, dict[str, Any]]:
@@ -304,6 +339,17 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
         f"{postgres_deploy_major()!r}"
     )
 
+    # A default is only the effective value while no caller overrides it. A
+    # parent-side `postgresVersion:` on the module call is emitted as a
+    # `{value: ...}` entry with no defaultValue, which the walker above skips --
+    # so every assertion so far would stay green while the server deployed a
+    # literal. Assert the override is absent rather than inferring it.
+    overrides = _emitted_module_parameter_names(template)
+    assert "postgresVersion" in overrides.absent, (
+        "a caller passes postgresVersion to the Postgres module, so the manifest-derived "
+        "default is not the deployed value; remove the override or make it read the manifest"
+    )
+
 
 def test_container_pg_client_matches_the_deploy_major() -> None:
     """The shipped image's Postgres client major matches the deployed server.
@@ -415,6 +461,87 @@ def test_non_floor_service_images_are_the_development_major() -> None:
     )
 
 
+def _prelude_jq_writes(prelude: dict[str, Any]) -> dict[str, str]:
+    """Map each output key the prelude writes to the manifest path it reads.
+
+    Parses the prelude's own ``run:`` block, which is the only place the binding
+    between a declared output and a manifest key actually exists. Reading the
+    ``outputs:`` block alone sees names on both sides of a binding that may not
+    hold.
+    """
+    writes: dict[str, str] = {}
+    for step in prelude.get("steps") or []:
+        for key, path in re.findall(
+            r"(\w+)=\$\(jq -er (\.[\w.]+) versions\.json\)", str((step or {}).get("run", ""))
+        ):
+            writes[key] = path
+    return writes
+
+
+def _resolve_manifest_path(path: str) -> Any:
+    node: Any = declared_versions()
+    for segment in path.lstrip(".").split("."):
+        if not isinstance(node, dict) or segment not in node:
+            return None
+        node = node[segment]
+    return node
+
+
+def test_versions_prelude_reads_manifest_keys_that_exist() -> None:
+    """Every ``jq`` path a prelude reads resolves to a value in the manifest.
+
+    This is the drift the prelude mechanism is actually exposed to: rename a
+    manifest key, update ``tests/helpers/versions.py`` in the same change, and
+    the four preludes keep reading the old path. ``jq -er`` then exits non-zero,
+    ``set -e`` fails the prelude, and every job that needs it is *skipped* --
+    which the forge counts as a satisfied required check. Nothing else in this
+    suite reads those paths, so nothing else can catch it.
+    """
+    checked = 0
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        prelude = _workflow_jobs(path).get("versions")
+        if prelude is None:
+            continue
+        writes = _prelude_jq_writes(prelude)
+        assert writes, (
+            f"{path.name}: the versions prelude declares outputs but no "
+            f"`<key>=$(jq -er <path> versions.json)` write was found in its run block"
+        )
+        for key, manifest_path in writes.items():
+            value = _resolve_manifest_path(manifest_path)
+            assert isinstance(value, str) and value.strip(), (
+                f"{path.name}: the versions prelude reads {manifest_path} for output "
+                f"{key!r}, which does not resolve to a non-empty string in "
+                f"{VERSIONS_MANIFEST.name}"
+            )
+            checked += 1
+    assert checked, f"no versions prelude jq reads found under {WORKFLOWS_DIR}"
+
+
+def test_versions_prelude_writes_exactly_the_outputs_it_declares() -> None:
+    """Each declared output is written, and each written key is declared.
+
+    A declared-but-unwritten output resolves to the empty string at run time --
+    an image tag of ``pgvector/pgvector:pg`` -- rather than failing the workflow
+    parse, so the consuming job runs against nothing. A written-but-undeclared
+    key is dead work that reads as a binding.
+    """
+    checked = 0
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        prelude = _workflow_jobs(path).get("versions")
+        if prelude is None:
+            continue
+        declared = set((prelude.get("outputs") or {}).keys())
+        written = set(_prelude_jq_writes(prelude))
+        assert declared == written, (
+            f"{path.name}: the versions prelude declares outputs {sorted(declared)} but "
+            f"writes {sorted(written)}; an output declared and not written resolves to "
+            f"the empty string in every job that reads it"
+        )
+        checked += 1
+    assert checked, f"no versions prelude found under {WORKFLOWS_DIR}"
+
+
 def test_versions_prelude_outputs_every_consumed_key() -> None:
     """Each workflow's prelude job declares the outputs its jobs consume.
 
@@ -506,6 +633,39 @@ def test_ruff_target_version_matches_the_manifest() -> None:
     )
 
 
+def test_ruff_per_file_target_carve_outs_are_declared() -> None:
+    """Only the deploy probes may lint below the declared Python, and they must.
+
+    A per-file target is how a file that runs on an interpreter this manifest
+    does not govern avoids being rewritten into syntax that interpreter cannot
+    parse. It is also, unchecked, the way to silently exempt anything at all
+    from the Python parity claim -- so the carve-out set is pinned rather than
+    merely permitted, and a new entry has to be added here deliberately.
+
+    The deploy probes qualify because ``cloud-preflight.sh`` invokes them as a
+    bare ``python3`` and the SharePoint validation workflow runs them in a job
+    that provisions no interpreter.
+    """
+    config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    carve_outs = config["tool"]["ruff"].get("per-file-target-version") or {}
+    assert set(carve_outs) == set(EXPECTED_RUFF_CARVE_OUTS), (
+        f"per-file Ruff targets are pinned to {sorted(EXPECTED_RUFF_CARVE_OUTS)}; found "
+        f"{sorted(carve_outs)}. A carve-out exempts its files from the declared Python, so "
+        f"each one is a deliberate entry here with its reason in pyproject.toml."
+    )
+    for pattern, target in carve_outs.items():
+        assert target == EXPECTED_RUFF_CARVE_OUTS[pattern], (
+            f"carve-out {pattern!r} targets {target!r}; expected "
+            f"{EXPECTED_RUFF_CARVE_OUTS[pattern]!r}"
+        )
+        assert parse_ruff_target(target) <= parse_ruff_target(
+            ruff_target_version(python_version())
+        ), (
+            f"carve-out {pattern!r} targets {target!r}, which is above the declared "
+            f"Python {python_version()}; a carve-out is a floor, never a raise"
+        )
+
+
 def test_python_base_images_match_the_manifest() -> None:
     """Both container images build on the declared Python.
 
@@ -561,6 +721,48 @@ def test_workflow_node_pins_read_the_manifest() -> None:
 # Each proves one detector above fires on the regression it targets, so a      #
 # green check means the site was found and compared rather than missed.        #
 # --------------------------------------------------------------------------- #
+
+
+def test_control_prelude_jq_parser_detects_a_bad_path_and_a_missing_write() -> None:
+    """Both prelude regressions are visible to the parser that must catch them.
+
+    Arm A is a jq path the manifest does not carry; arm B is a declared output
+    with no write. Each passed the previous gate, which compared output names on
+    both sides of a binding it never read.
+    """
+    bad_path = yaml.safe_load(
+        """
+        outputs:
+          python: ${{ steps.declared.outputs.python }}
+        steps:
+          - id: declared
+            run: |
+              echo "python=$(jq -er .python.versio versions.json)" >> "$GITHUB_OUTPUT"
+        """
+    )
+    writes = _prelude_jq_writes(bad_path)
+    assert writes == {"python": ".python.versio"}, writes
+    assert _resolve_manifest_path(".python.versio") is None, (
+        "the resolver must report a manifest path that does not exist"
+    )
+    assert _resolve_manifest_path(".python.version") == python_version()
+
+    missing_write = yaml.safe_load(
+        """
+        outputs:
+          python: ${{ steps.declared.outputs.python }}
+          node: ${{ steps.declared.outputs.node }}
+        steps:
+          - id: declared
+            run: |
+              echo "python=$(jq -er .python.version versions.json)" >> "$GITHUB_OUTPUT"
+        """
+    )
+    declared = set((missing_write.get("outputs") or {}).keys())
+    written = set(_prelude_jq_writes(missing_write))
+    assert declared - written == {"node"}, (
+        "the declared-vs-written comparison must surface the unwritten output"
+    )
 
 
 def test_control_comment_stripping_hides_a_commented_out_load() -> None:
@@ -625,6 +827,24 @@ def test_control_ruff_target_deriver_rejects_a_malformed_version() -> None:
     for bad in ("3", "3.14.1", "py314", "", "3.x"):
         with pytest.raises(ValueError):
             ruff_target_version(bad)
+
+
+def test_control_ruff_target_token_parses_major_and_minor_separately() -> None:
+    """A Ruff target token is not a dotted version and must not be read as one.
+
+    ``py312`` carries no separator, so parsing the digits as a single integer
+    yields 312 and compares it against a major of 3 -- which is what the first
+    draft of the carve-out check did, and what made it red against a correct
+    configuration. Ordering is the property the check needs, so ordering is what
+    is asserted.
+    """
+    assert parse_ruff_target("py312") == (3, 12)
+    assert parse_ruff_target("py314") == (3, 14)
+    assert parse_ruff_target("py312") < parse_ruff_target("py314")
+    assert parse_ruff_target(ruff_target_version("3.14")) == (3, 14)
+    for bad in ("312", "py", "py3", "python314", "py3.14", ""):
+        with pytest.raises(ValueError):
+            parse_ruff_target(bad)
 
 
 def test_control_major_parser_rejects_an_unresolvable_spec() -> None:

@@ -95,3 +95,17 @@ def ruff_target_version(version: str) -> str:
     if len(parts) != 2 or not all(part.isdigit() for part in parts):
         raise ValueError(f"expected a major.minor Python version; got {version!r}")
     return f"py{parts[0]}{parts[1]}"
+
+
+def parse_ruff_target(token: str) -> tuple[int, int]:
+    """Parse a Ruff ``target-version`` token into ``(major, minor)``.
+
+    ``'py314'`` becomes ``(3, 14)``. Ruff writes the major as a single leading
+    digit and the minor as the remainder, so the two cannot be split on a
+    separator; parsing them as one integer compares ``312`` against ``3`` and is
+    the mistake this exists to prevent. Raises ``ValueError`` on any other shape.
+    """
+    if not token.startswith("py") or not token[2:].isdigit() or len(token) < 4:
+        raise ValueError(f"expected a Ruff target token like 'py314'; got {token!r}")
+    digits = token[2:]
+    return int(digits[0]), int(digits[1:])

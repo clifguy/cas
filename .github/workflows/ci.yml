@@ -283,6 +283,14 @@ jobs:
           TRANSFORMERS_OFFLINE: "1"
           SAGE_TEST_STUB_PROVIDERS: "1"
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
+          # This is the one CI job whose Postgres is the deploy floor rather
+          # than the development major, so it names the major it expects.
+          # `tests/infra/test_workstation_postgres_major.py` compares the server
+          # it connects to against this when it is set, and against the declared
+          # development major otherwise. Without it, widening the path list below
+          # to reach `tests/infra` would red this job with a message claiming the
+          # version derivation failed, when the derivation worked as intended.
+          SAGE_TEST_EXPECTED_PG_MAJOR: ${{ needs.versions.outputs.postgres_deploy_major }}
         run: |
           .venv/bin/pytest -v --tb=short -n auto tests/sage/ tests/app/test_bff_session_store.py
 

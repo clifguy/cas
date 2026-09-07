@@ -24,9 +24,10 @@ because the workstation must not read cloud IaC to learn what to install.
 
 ## Readers and gated restatements
 
-The steering document's enforcement layer 1 says a consumer that restates the value is a
-defect rather than a convenience. Some consumers structurally cannot read a file, so this
-repository splits them and gates the second group.
+The steering document's enforcement layer 1 holds that an *ungated* restatement is the
+defect: a consumer that cannot read a file is not forbidden, it is required to be gated, and
+a site in neither class is the drift the discipline exists to prevent. The tables below are
+this repository's classification of every site into one class or the other.
 
 | Reads the declaration | Mechanism |
 |---|---|
