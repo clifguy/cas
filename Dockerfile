@@ -27,15 +27,27 @@
 # two builds only while the layer cache serves them, and rebuilt when it does
 # not. A moving tag would break even the weaker guarantee, and break it silently.
 # Keep the readable tag ahead of the digest when bumping.
-ARG PYTHON_IMAGE=python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
+#
+# Every pin below sits on a FROM line, and has to stay on one. Dependabot's
+# docker ecosystem is what keeps these pins from ageing into missed upstream
+# security fixes, and it reads FROM lines and nothing else: it does not resolve
+# an `ARG *_IMAGE` default, substitute a build arg, or look at `COPY --from=`. A
+# pin moved to any of those keeps its digest and keeps passing the pinning gate
+# while silently receiving no further updates. The `python-base` alias below is how
+# several stages share one definition point without hiding it from the updater.
+# `tests/deploy/test_dependabot_base_image_coverage.py` enforces this.
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS python-base
+
+# uv drives the install from the committed lockfile (byte-identical to CI). It is
+# a stage rather than a bare `COPY --from=<image>` for the visibility reason above.
+FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
 
 # --------------------------------------------------------------------------
 # Builder: resolve the locked runtime dependencies and pre-bake model weights.
 # --------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS builder
+FROM python-base AS builder
 
-# uv drives the install from the committed lockfile (byte-identical to CI).
-COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /usr/local/bin/uv
+COPY --from=uv /uv /usr/local/bin/uv
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -66,7 +78,7 @@ RUN .venv/bin/python -c "from sage.adapters.embedding_nomic import NomicEmbeddin
 # --------------------------------------------------------------------------
 # Runtime: non-root, minimized, offline model cache, health check.
 # --------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS runtime
+FROM python-base AS runtime
 
 RUN groupadd --system sage \
     && useradd --system --gid sage --create-home --home-dir /home/sage sage

@@ -27,11 +27,20 @@ updates:
   # built a different copy of the same commit. A pin that nothing bumps stops
   # receiving upstream security fixes, so the ecosystem is enabled to move them.
   #
-  # Coverage is worth checking rather than assuming: this ecosystem is built
-  # around `FROM` lines, while both files reach their bases through an
-  # `ARG *_IMAGE` default and pull the uv binary via `COPY --from=<image>`. If
-  # those sites turn out not to be updated here, they need bumping by hand and
-  # this comment should say so.
+  # Coverage was checked rather than assumed, against the ecosystem's own parser
+  # on 2026-09-07. It reads `FROM` lines and nothing else: it does not resolve an
+  # `ARG *_IMAGE` default, substitute a build arg into `FROM ${...}`, or look at
+  # `COPY --from=<image>`. Both Dockerfiles used all three of those shapes, so on
+  # the day this block was added it matched no image in either file and every pin
+  # was inert — the failure is silent, since an ecosystem with nothing to update
+  # and an ecosystem that cannot see anything report identically.
+  #
+  # Both files were restructured to declare every base on its own `FROM` line,
+  # sharing one definition point through a stage alias where several stages need
+  # the same base. `tests/deploy/test_dependabot_base_image_coverage.py` binds
+  # every reference the image scan collects to the parser's own matcher, so a
+  # future edit that parks a pin back on an `ARG` or a `COPY --from` fails there
+  # instead of quietly going stale again.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:

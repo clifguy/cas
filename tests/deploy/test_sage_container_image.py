@@ -20,6 +20,7 @@ from pathlib import Path
 from tests.deploy._image_refs import (
     digest_without_readable_tag,
     external_image_refs,
+    image_names,
     unpinned,
 )
 
@@ -182,11 +183,12 @@ def test_base_images_are_digest_pinned() -> None:
     refs = external_image_refs(_dockerfile_text())
 
     # Non-vacuity. A scan that quietly matched nothing would satisfy every
-    # assertion below, so pin the sites this file is known to carry.
-    assert "ARG PYTHON_IMAGE" in refs and len(refs) == 2, (
-        "the image-reference scan lost a known site; this Dockerfile carries a\n"
-        "PYTHON_IMAGE arg and a uv COPY --from, so a scan finding anything else\n"
-        f"has stopped reaching them: {sorted(refs)}"
+    # assertion below, so pin the images this file is known to resolve. Named
+    # without their digests, which move on every routine base bump.
+    assert image_names(refs) == {"python", "ghcr.io/astral-sh/uv"} and len(refs) == 2, (
+        "the image-reference scan lost a known site; this Dockerfile resolves a\n"
+        "Python base and the uv binary, so a scan finding anything else has\n"
+        f"stopped reaching them: {sorted(refs)}"
     )
 
     floating = unpinned(refs)

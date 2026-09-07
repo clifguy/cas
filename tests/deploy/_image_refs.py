@@ -8,10 +8,18 @@ sets. That is weaker than byte-equality and is deliberately so -- the apt and
 model-weight layers float regardless, and are shared only while the layer cache
 serves them.
 
-The scan deliberately covers three sites, not one. ``FROM`` alone would miss
-every reference this repository actually floats -- both Dockerfiles indirect
-their bases through ``ARG *_IMAGE`` defaults, and both pull the uv binary from a
-registry via ``COPY --from=``.
+The scan deliberately covers three sites, not one, and keeps doing so even
+though both Dockerfiles now declare every base on a ``FROM`` line. They declare
+them there because Dependabot's docker ecosystem reads FROM lines and nothing
+else, so a pin parked on an ``ARG *_IMAGE`` default or a ``COPY --from=`` keeps
+its digest while silently ageing out of upstream security fixes.
+
+That is exactly why those two arms stay. They are what lets the coverage gate
+*report* a regression instead of missing it: a base moved back to either shape is
+still collected here, so it still reaches the pinning checks below and still
+fails ``test_dependabot_base_image_coverage``. A ``FROM``-only scan would drop
+such a reference on the floor and leave every gate reporting clean on a file that
+had quietly lost the property.
 """
 
 from __future__ import annotations
@@ -65,6 +73,24 @@ def external_image_refs(dockerfile_text: str) -> dict[str, str]:
         if _is_external(value, stage_names):
             refs[f"FROM {value}"] = value
     return refs
+
+
+def image_names(refs: dict[str, str]) -> set[str]:
+    """The registry coordinates in ``refs``, with tag and digest stripped.
+
+    Lets a gate name the images a file is expected to resolve without restating
+    their digests, which move on every Dependabot bump and would otherwise red
+    the gate on a routine update.
+    """
+    names: set[str] = set()
+    for ref in refs.values():
+        name = ref.split("@", 1)[0]
+        # Only a colon in the final path segment is a tag. An earlier one is a
+        # registry port (``localhost:5000/foo``) and has to survive the strip.
+        prefix, _, last = name.rpartition("/")
+        last = last.split(":", 1)[0]
+        names.add(f"{prefix}/{last}" if prefix else last)
+    return names
 
 
 def unpinned(refs: dict[str, str]) -> dict[str, str]:
