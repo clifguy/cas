@@ -223,6 +223,27 @@ def test_image_ref_scan_collects_bare_untagged_references() -> None:
     assert set(unpinned(refs)) == {"FROM debian", "COPY --from=alpine"}
 
 
+def test_image_ref_scan_folds_instruction_keyword_case() -> None:
+    """A lowercase instruction keyword is still an instruction.
+
+    Dockerfile keywords are case-insensitive and Dependabot's parser reads them
+    that way, so a case-sensitive scan drops a lowercase pin from *both* gates at
+    once: the pinning check never sees it float, and the visibility check never
+    sees it at all. The per-file reference counts do not cover the gap either --
+    they notice a known site being converted, not an unknown-cased site being
+    added alongside them.
+    """
+    text = (
+        "from python:3.14-slim@sha256:aa AS builder\n"
+        "copy --from=ghcr.io/astral-sh/uv:0.12.10 /uv /usr/local/bin/uv\n"
+    )
+
+    refs = external_image_refs(text)
+
+    assert refs.get("FROM python:3.14-slim@sha256:aa") == "python:3.14-slim@sha256:aa"
+    assert refs.get("COPY --from=ghcr.io/astral-sh/uv:0.12.10") == "ghcr.io/astral-sh/uv:0.12.10"
+
+
 def test_image_ref_scan_excludes_stages_args_and_scratch() -> None:
     """The three things that are not registry references stay excluded.
 

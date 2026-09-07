@@ -34,21 +34,37 @@ _EXPECTED_REF_COUNTS = {"Dockerfile": 2, "Dockerfile.bff": 3}
 #
 #   docker/lib/dependabot/docker/file_parser.rb
 #       FROM_LINE, and the parse loop: `next unless FROM_LINE.match?(line)`
-#       followed by `next unless version`.
+#       followed by `next unless version`. Also `FROM = /FROM/i`, `TAG`, and
+#       `DIGEST = /(?<digest>[0-9a-f]{64})/` -- all three OVERRIDE the shared
+#       module's definitions, and the docker-specific forms are what is ported
+#       here. The shared `DIGEST` is `/@(?<digest>[^\s]+)/`, so a re-sync that
+#       reads these three from the shared file would change the port wrongly.
 #   docker/lib/dependabot/shared/shared_file_parser.rb
-#       REGISTRY, IMAGE, TAG, NAME, and `version_from` (tag or digest).
+#       REGISTRY, IMAGE, NAME, and `version_from` (tag or digest).
 #
 # Those two files are the entirety of what the ecosystem reads out of a
 # Dockerfile. There is no ARG handling and no build-arg substitution anywhere in
 # the parser, which is why a base reached through `FROM ${SOME_ARG}` is invisible
 # to it -- the interpolation never resolves, and the line matches nothing.
 #
-# This is a copy and can drift from upstream. It drifts in the safe direction: if
-# the parser widens to read more shapes, this port stays stricter and the gate
-# still passes. The controls at the bottom of this module are what keep the copy
-# honest about which shapes it currently rejects -- without them a matcher that
-# accepted everything would satisfy the visibility test no matter how the
-# Dockerfiles were written.
+# This is a copy and can drift from upstream. Only one direction of drift is
+# dangerous, and it is worth being precise about which: a port that is STRICTER
+# than the parser fails closed -- it reports a reference as unreachable that the
+# ecosystem can in fact read, which is a false red someone must look at. A port
+# that is LOOSER passes a reference the ecosystem cannot actually see, which is
+# the silent failure this whole module exists to prevent. So a future upstream
+# that widens is harmless here; a port that quietly widens is not.
+#
+# `re.ASCII` is part of holding that line. Ruby's `\w`, `\d`, and `\s` are ASCII,
+# Python's are Unicode by default, and the difference lands in the looser
+# direction (`_TAG` would otherwise accept `python:3é`, which upstream reads as
+# untagged). Unreachable through a valid Docker reference, whose grammar is
+# ASCII -- fixed anyway, because the whole argument above rests on the port not
+# being looser, and an exception to it is not worth carrying.
+#
+# The controls at the bottom of this module are what keep the copy honest about
+# which shapes it rejects -- without them a matcher that accepted everything
+# would satisfy the visibility test no matter how the Dockerfiles were written.
 #
 # Three sub-patterns are transcription rather than coverage, named here so they
 # are not mistaken for controls. Deleting any of them leaves every assertion in
@@ -84,7 +100,7 @@ _PLATFORM = r"--platform\=(?P<platform>\S+)"
 _FROM_LINE = re.compile(
     rf"^(?i:FROM)\s+(?:{_PLATFORM}\s+)?(?:{_REGISTRY}/)?"
     rf"{_IMAGE}(?:{_TAG})?(?:@sha256:{_DIGEST})?(?:{_STAGE})?",
-    re.VERBOSE,
+    re.VERBOSE | re.ASCII,
 )
 
 
@@ -104,13 +120,21 @@ def _dependabot_version(line: str) -> str | None:
 def _declaring_line(text: str, site: str) -> str:
     """The source line the image scan collected ``site`` from.
 
-    Site keys are built from the line's own opening (``FROM <ref>``,
-    ``COPY --from=<ref>``, ``ARG <NAME>``), so a prefix match recovers the line
-    for every shape the scan recognizes -- including the shapes this gate exists
-    to reject, which is what lets it report them rather than skip them.
+    Site keys are rebuilt from the line's own opening (``FROM <ref>``,
+    ``COPY --from=<ref>``, ``ARG <NAME>``), so the line can be recovered by
+    matching that opening back -- including for the shapes this gate exists to
+    reject, which is what lets it report them rather than skip them.
+
+    Matched as a whitespace-tolerant, case-folded regex rather than by
+    ``startswith``. The scan accepts ``\\s+`` after a keyword and folds the
+    keyword's case, but rebuilds every key with a single space and an uppercase
+    keyword, so a legal ``FROM  python:...`` or ``from python:...`` is collected
+    and then fails a literal-prefix lookup -- raising below with a message that
+    blames the scan for losing a site it in fact found.
     """
+    opening = re.compile(r"\s+".join(re.escape(part) for part in site.split()), re.IGNORECASE)
     for line in text.splitlines():
-        if line.startswith(site):
+        if opening.match(line):
             return line
     raise AssertionError(f"no line in the Dockerfile declares the collected site {site!r}")
 
@@ -185,6 +209,44 @@ def test_ported_matcher_reads_every_visible_from_shape(
     -- every other line here carries a tag, and the tag wins first.
     """
     assert _dependabot_version(line) == expected, f"the port cannot read a {shape} reference"
+
+
+def test_ported_matcher_reads_word_characters_as_ascii() -> None:
+    """The port matches Ruby's ASCII ``\\w``, not Python's Unicode default.
+
+    Ruby's character classes are ASCII, Python's are Unicode, and this one
+    difference lands in the *looser* direction -- the direction the drift
+    argument above says must not happen, because a port that accepts more than
+    the parser does reports a reference as visible that the ecosystem cannot
+    read. Upstream stops the tag at the first non-ASCII byte; without
+    ``re.ASCII`` this port would swallow it.
+
+    Not reachable through a valid Docker reference. Pinned because the argument
+    the module rests on is that the port is never looser, and an untested
+    exception to that is how the exception grows.
+    """
+    assert _dependabot_version("FROM python:3é") == "3"
+
+
+def test_declaring_line_tolerates_legal_spacing_and_keyword_case() -> None:
+    """The line lookup accepts every spelling the scan itself accepts.
+
+    The scan takes ``\\s+`` after a keyword and folds the keyword's case, but
+    rebuilds each site key with a single space and an uppercase keyword. A
+    literal-prefix lookup therefore fails on a legal ``FROM  python:...`` or
+    ``from python:...`` -- and fails by *raising*, with a message saying no line
+    declares a site the scan had just collected from one. A false red on a legal
+    Dockerfile, blamed on the wrong module.
+    """
+    for text in (
+        f"FROM  python:3.14-slim@sha256:{'c' * 64} AS base",
+        f"FROM\tpython:3.14-slim@sha256:{'c' * 64} AS base",
+        f"from python:3.14-slim@sha256:{'c' * 64} AS base",
+    ):
+        refs = external_image_refs(text)
+        assert refs, f"the scan collected nothing from {text!r}"
+        for site in refs:
+            assert _declaring_line(text, site) == text
 
 
 def test_ported_matcher_reports_no_version_for_an_unpinned_image() -> None:

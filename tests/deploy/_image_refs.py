@@ -27,11 +27,20 @@ from __future__ import annotations
 import re
 from typing import Final
 
+# Dockerfile instruction keywords are case-insensitive, and Dependabot's own
+# parser reads them that way (`FROM = /FROM/i`). A case-sensitive scan drops a
+# lowercase `from` pin entirely: neither the pinning check nor the visibility
+# check ever sees it, and the per-file reference counts notice only a *converted*
+# known site, never an *added* one in an unrecognized case. `_ARG_IMAGE_RE` folds
+# its keyword for the same reason but keeps its captured name case-sensitive,
+# because build-arg names -- unlike instruction keywords -- are.
 _ARG_IMAGE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^ARG\s+([A-Za-z_][A-Za-z0-9_]*IMAGE)=(\S+)", re.MULTILINE
+    r"^(?i:ARG)\s+([A-Za-z_][A-Za-z0-9_]*IMAGE)=(\S+)", re.MULTILINE
 )
-_COPY_FROM_RE: Final[re.Pattern[str]] = re.compile(r"^COPY\s+--from=(\S+)", re.MULTILINE)
-_FROM_RE: Final[re.Pattern[str]] = re.compile(r"^FROM\s+(\S+)", re.MULTILINE)
+_COPY_FROM_RE: Final[re.Pattern[str]] = re.compile(
+    r"^COPY\s+--from=(\S+)", re.MULTILINE | re.IGNORECASE
+)
+_FROM_RE: Final[re.Pattern[str]] = re.compile(r"^FROM\s+(\S+)", re.MULTILINE | re.IGNORECASE)
 _STAGE_RE: Final[re.Pattern[str]] = re.compile(
     r"^FROM\s+\S+\s+AS\s+(\S+)", re.MULTILINE | re.IGNORECASE
 )
@@ -103,7 +112,8 @@ def digest_without_readable_tag(refs: dict[str, str]) -> dict[str, str]:
 
     ``node:24-slim@sha256:...`` and ``node@sha256:...`` pull identical bytes, but
     only the first leaves the major version legible to a reader -- and to the
-    frontend Node-version gate, which reads the tag out of the ARG default.
+    frontend Node-version gate, which reads the tag off the SPA-builder's
+    ``FROM`` line.
     """
     offenders: dict[str, str] = {}
     for site, ref in refs.items():
