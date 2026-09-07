@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field
 
 from sage.adapters.interfaces import GraphStore
-from sage.config import pattern_is_discriminating
+from sage.config import enabled_identifier_mention_patterns, pattern_is_discriminating
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import LinkRequest
 from sage.services.graph_ops import GraphOpsService
@@ -104,22 +104,13 @@ def _identifier_mention_rules(edge_inference_config: object) -> list[dict]:
     ``references`` tier_assignment whose ``inference_rules`` use the
     ``identifier_mention`` method. Empty list when the vault doesn't
     configure the rule.
+
+    Delegates to ``sage.config``, which the config-load warning passes read
+    through as well, so which patterns are live is decided in one place. The
+    alias is retained because this is the name the ingest path and the suite
+    already call.
     """
-    if not edge_inference_config:
-        return []
-    if not isinstance(edge_inference_config, dict):
-        return []
-    patterns: list[dict] = []
-    for assignment in edge_inference_config.get("tier_assignments", []) or []:
-        if assignment.get("edge_type") != "references":
-            continue
-        for rule in assignment.get("inference_rules", []) or []:
-            if rule.get("method") != "identifier_mention":
-                continue
-            for pat in rule.get("patterns", []) or []:
-                if pat.get("enabled", True):
-                    patterns.append(pat)
-    return patterns
+    return enabled_identifier_mention_patterns(edge_inference_config)
 
 
 def _format_tag(template: str, *, identifier: str) -> str:

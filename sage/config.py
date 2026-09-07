@@ -5,6 +5,7 @@ transition table used by LifecycleService for state machine validation.
 """
 
 import logging
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
@@ -36,6 +37,35 @@ def pattern_is_discriminating(pattern: dict) -> bool:
     )
 
 
+def enabled_identifier_mention_patterns(edge_inference: object) -> list[dict]:
+    """The identifier_mention patterns a vault's config actually applies.
+
+    One walk of ``tier_assignments`` -> ``references`` -> ``identifier_mention``
+    -> ``patterns``, honoring the per-pattern ``enabled`` flag. Every consumer
+    reads through here -- the resolver that applies the patterns and both
+    config-load warning passes -- so which patterns are live is answered once
+    rather than transcribed per caller. Transcription is what let the warning
+    passes and the resolver disagree about ``enabled``: a per-pattern flag
+    added to one walk and not the others is invisible until a vault sets it.
+
+    Accepts the parsed ``edge_inference`` block or any non-mapping (an absent
+    or malformed section yields no patterns rather than raising).
+    """
+    if not isinstance(edge_inference, dict):
+        return []
+    patterns: list[dict] = []
+    for assignment in edge_inference.get("tier_assignments", []) or []:
+        if assignment.get("edge_type") != "references":
+            continue
+        for rule in assignment.get("inference_rules", []) or []:
+            if rule.get("method") != "identifier_mention":
+                continue
+            for pattern in rule.get("patterns", []) or []:
+                if pattern.get("enabled", True):
+                    patterns.append(pattern)
+    return patterns
+
+
 def identifier_mention_pattern_warnings(edge_inference: dict) -> list[str]:
     """Return non-fatal warnings for misconfigured identifier_mention patterns.
 
@@ -53,35 +83,419 @@ def identifier_mention_pattern_warnings(edge_inference: dict) -> list[str]:
       it (see ``identifier_mention_inference._resolve_identifier``), so its
       mentions silently produce no edges.
 
+    Patterns the vault has disabled are skipped, matching the reader the
+    engine itself applies (``identifier_mention_inference``): a pattern that
+    will never run cannot break resolution, and warning about one describes
+    behavior that cannot occur.
+
     Warnings only; callers log them. Returning a value (rather than raising)
     keeps a vault whose config predates the tier3 migration loadable.
     """
     warnings: list[str] = []
-    if not isinstance(edge_inference, dict):
-        return warnings
-    for assignment in edge_inference.get("tier_assignments", []) or []:
-        if assignment.get("edge_type") != "references":
+    for pattern in enabled_identifier_mention_patterns(edge_inference):
+        regex = pattern.get("regex", "<no-regex>")
+        if "target_title_prefix" in pattern:
+            warnings.append(
+                f"identifier_mention pattern {regex!r} carries the "
+                "unsupported key 'target_title_prefix'; the resolver "
+                "ignores it (title-prefix matching was removed in the "
+                "tier3 migration)."
+            )
+        if not pattern_is_discriminating(pattern):
+            warnings.append(
+                f"identifier_mention pattern {regex!r} is "
+                "non-discriminating (no target_tier3 and no "
+                "placeholder-bearing target_tags); it cannot resolve a "
+                "specific identifier and the resolver will refuse to "
+                "link its mentions."
+            )
+    return warnings
+
+
+# Tier3 template meaning "the whole matched literal" -- the only template the
+# id-space check can measure. See ``identifier_mention_id_space_warnings``.
+_WHOLE_MATCH_TEMPLATE = "{id}"
+
+# Bounds on sample generation. The samples exist to expose a regex that stops
+# short of its id space, not to enumerate that space, so the set stays small
+# enough to build and compare on every config load.
+_MAX_ID_SAMPLES = 48
+_UNBOUNDED_RUN_LENGTHS = (1, 2, 3, 4)
+_MAX_BOUNDED_RUN_SPREAD = 4
+_MAX_GROUP_REPETITION = 3
+
+
+class _UnsupportedSchemaPattern(Exception):
+    """Raised internally when a schema pattern leaves the supported subset.
+
+    Caught by :func:`_sample_identifiers_from_schema_pattern`, which converts
+    it to ``None``. Refusing is the point: a guess at an unsupported construct
+    yields strings the schema does not admit, and every one of them would read
+    as an identifier the mention regex misses.
+    """
+
+
+def _cap_samples(samples: Iterable[str]) -> list[str]:
+    """Deduplicate preserving order, then truncate to the sample ceiling."""
+    return list(dict.fromkeys(samples))[:_MAX_ID_SAMPLES]
+
+
+def _digit_runs(length: int) -> list[str]:
+    """A few representative digit strings of exactly ``length`` digits."""
+    if length <= 0:
+        return [""]
+    ascending = ("123456789" * (length // 9 + 1))[:length]
+    return list(dict.fromkeys(["0" * length, "1" * length, ascending]))
+
+
+def _expand_atom(source: str, index: int) -> tuple[str, list[str], int]:
+    r"""Parse one atom. Returns ``(kind, samples, next_index)``.
+
+    ``kind`` is ``"digit"`` for ``\d`` -- a quantifier over a digit expands to
+    runs of the right length rather than to combinations of single digits --
+    and ``"other"`` for groups and literal characters.
+    """
+    char = source[index]
+    if char == "(":
+        index += 1
+        if source.startswith("?:", index):
+            index += 2
+        elif source.startswith("?", index):
+            # Lookaround, named groups, inline flags: all outside the subset.
+            raise _UnsupportedSchemaPattern
+        samples, index = _expand_alternation(source, index)
+        if index >= len(source) or source[index] != ")":
+            raise _UnsupportedSchemaPattern
+        return "other", samples, index + 1
+    if char == "\\":
+        if index + 1 >= len(source):
+            raise _UnsupportedSchemaPattern
+        escaped = source[index + 1]
+        if escaped == "d":
+            return "digit", _digit_runs(1), index + 2
+        if not escaped.isalnum():
+            # An escaped punctuation character is that character, in every
+            # dialect. Schema authors escape `-` and `.` routinely, and
+            # refusing them dropped ordinary identifier spaces out of
+            # measurement for a reason no reader of the pattern could see.
+            return "other", [escaped], index + 2
+        # Every other class escape (`\w`, `\s`, `\b`, a backreference) is
+        # outside the subset.
+        raise _UnsupportedSchemaPattern
+    if char in "[.^$*+?{":
+        raise _UnsupportedSchemaPattern
+    return "other", [char], index + 1
+
+
+def _repetition_bounds(source: str, index: int) -> tuple[int, int, int]:
+    """Parse a ``{n}`` or ``{n,m}`` quantifier. Returns ``(low, high, next)``."""
+    close = source.find("}", index)
+    if close == -1:
+        raise _UnsupportedSchemaPattern
+    spec = source[index + 1 : close]
+    low_text, separator, high_text = spec.partition(",")
+    if not low_text.isdigit():
+        raise _UnsupportedSchemaPattern
+    low = int(low_text)
+    if not separator:
+        high = low
+    elif high_text.isdigit():
+        high = int(high_text)
+    else:
+        # `{n,}` is unbounded, and an unbounded repetition of anything but a
+        # digit run has no principled sample set.
+        raise _UnsupportedSchemaPattern
+    if high < low:
+        raise _UnsupportedSchemaPattern
+    return low, high, close + 1
+
+
+def _expand_piece(source: str, index: int) -> tuple[list[str], int]:
+    """Parse one atom plus its optional quantifier."""
+    kind, samples, index = _expand_atom(source, index)
+    if index >= len(source):
+        return samples, index
+    quantifier = source[index]
+    if quantifier == "*":
+        # Unbounded from zero. Sampling it would be possible, but every vault
+        # identifier space seen so far is `+` or bounded, so refusing keeps the
+        # subset to shapes that are actually exercised.
+        raise _UnsupportedSchemaPattern
+    if quantifier == "?":
+        return _cap_samples(["", *samples]), index + 1
+    if quantifier == "+":
+        if kind == "digit":
+            return (
+                _cap_samples(
+                    run for length in _UNBOUNDED_RUN_LENGTHS for run in _digit_runs(length)
+                ),
+                index + 1,
+            )
+        return _cap_samples([*samples, *_interleaved_product(samples, samples)]), index + 1
+    if quantifier == "{":
+        low, high, index = _repetition_bounds(source, index)
+        high = min(high, low + _MAX_BOUNDED_RUN_SPREAD)
+        if kind == "digit":
+            return (
+                _cap_samples(run for length in range(low, high + 1) for run in _digit_runs(length)),
+                index,
+            )
+        if high > _MAX_GROUP_REPETITION:
+            raise _UnsupportedSchemaPattern
+        expanded: list[str] = []
+        for count in range(low, high + 1):
+            repeated = [""]
+            for _ in range(count):
+                repeated = _interleaved_product(repeated, samples)
+            expanded.extend(repeated)
+        return _cap_samples(expanded), index
+    return samples, index
+
+
+def _interleaved_product(prefixes: list[str], suffixes: list[str]) -> list[str]:
+    """Concatenate two sample sets so the cap truncates both sides evenly.
+
+    A plain nested loop is prefix-major, so the ceiling keeps every suffix of
+    the first few prefixes and no later prefix at all. On an identifier space
+    with two unbounded runs that drops every long *leading* run while keeping
+    the long trailing ones, and a regex bounded on the leading run then
+    measures clean -- the one shape this check exists to report, missed in the
+    one direction that matters.
+
+    The order here emits the two axes first: every prefix paired with the
+    first suffix, then every suffix paired with the first prefix. That costs
+    ``len(prefixes) + len(suffixes) - 1`` of the ceiling and buys the property
+    the ceiling otherwise takes away -- **every** sample of each side survives
+    truncation, so no run length is dropped from an axis entirely. The
+    interior combinations then fill diagonally, by the larger of the two
+    indices, so what the ceiling does cut is cut evenly.
+
+    A purely diagonal walk is not enough on its own: it emits ``2d + 1``
+    samples at depth ``d``, so a 48-sample ceiling reaches depth 6 of an
+    11-sample axis and the longest runs never appear on either side.
+    """
+    if not prefixes or not suffixes:
+        return []
+    ordered: list[str] = [prefix + suffixes[0] for prefix in prefixes]
+    ordered.extend(prefixes[0] + suffix for suffix in suffixes[1:])
+    for depth in range(1, max(len(prefixes), len(suffixes))):
+        if depth < len(suffixes):
+            for i in range(1, min(depth + 1, len(prefixes))):
+                ordered.append(prefixes[i] + suffixes[depth])
+        if depth < len(prefixes):
+            for j in range(1, min(depth, len(suffixes))):
+                ordered.append(prefixes[depth] + suffixes[j])
+    return _cap_samples(ordered)
+
+
+def _expand_sequence(source: str, index: int) -> tuple[list[str], int]:
+    """Parse a concatenation, stopping at ``|`` or a closing paren."""
+    accumulated = [""]
+    while index < len(source) and source[index] not in "|)":
+        piece, index = _expand_piece(source, index)
+        accumulated = _interleaved_product(accumulated, piece)
+    return accumulated, index
+
+
+def _expand_alternation(source: str, index: int) -> tuple[list[str], int]:
+    """Parse one or more ``|``-separated sequences."""
+    branches, index = _expand_sequence(source, index)
+    while index < len(source) and source[index] == "|":
+        alternative, index = _expand_sequence(source, index + 1)
+        branches = _cap_samples([*branches, *alternative])
+    return branches, index
+
+
+def _sample_identifiers_from_schema_pattern(pattern: str) -> list[str] | None:
+    r"""Sample identifiers a tier3 ``pattern`` constraint admits, or ``None``.
+
+    General regex-language inclusion is not decidable by any procedure worth
+    running at config load, so this expands a deliberately narrow subset and
+    refuses everything else. ``None`` means "not measured" -- never "matches
+    nothing".
+
+    Supported: a fully anchored ``^...$`` pattern built from literal
+    characters -- including an escaped punctuation literal such as ``\-`` or
+    ``\.`` -- plus ``\d``, groups (``(...)`` and ``(?:...)``), alternation,
+    and the quantifiers ``{n}``, ``{n,m}``, ``+`` and ``?``.
+
+    Refused: unanchored patterns, and any pattern whose anchors are per-branch
+    rather than around the whole (``^A$|^B$``); character classes, ``.``,
+    ``\w``, ``\s``, and every other class escape; ``*``, open-ended ``{n,}``,
+    backreferences, lookaround, and repetition of a group beyond a small
+    bound.
+
+    The result is a sample, not the id space: it is sized to cross the width
+    boundaries where a mention regex tends to stop short, not to enumerate
+    every identifier. A regex that misses an identifier no sample names goes
+    unreported, which is why the caller warns rather than rejects.
+    """
+    if len(pattern) < 3 or not pattern.startswith("^") or not pattern.endswith("$"):
+        return None
+    body = pattern[1:-1]
+    try:
+        samples, index = _expand_alternation(body, 0)
+    except (_UnsupportedSchemaPattern, IndexError):
+        return None
+    if index != len(body):
+        return None
+    return [sample for sample in samples if sample] or None
+
+
+def _matches_as_whole_identifier(compiled: re.Pattern, identifier: str) -> bool:
+    """True when the regex yields ``identifier`` itself as a matched literal.
+
+    The inference engine runs ``finditer`` over a document body and feeds each
+    match's span to the resolver as the identifier. A partial match therefore
+    does not resolve the identifier it was found inside -- it resolves a
+    different, truncated one -- so covering an identifier means matching all
+    of it.
+
+    The identifier is padded before matching because the engine meets it
+    surrounded by prose, and a regex may say so: a ``(?<=\\s)`` lookbehind
+    matches every real mention and none of a bare identifier, which without
+    the padding would report a working pattern as spanning nothing on every
+    load. One space on each side is enough for the assertions that occur --
+    word boundaries and lookarounds over whitespace behave as they do
+    mid-body.
+
+    The padding cannot make a broken pattern look sound, because the span
+    still has to equal the identifier. A regex that *consumes* its context
+    rather than asserting it -- a leading ``\\s`` instead of a lookbehind --
+    yields a span carrying the space, which is not the identifier: this
+    reports it, and so does the engine, whose resolver would look up an
+    identifier with a leading space and find nothing. The two shapes read
+    alike and behave oppositely, which is why only the asserting one is
+    described here as cured.
+    """
+    probe = f" {identifier} "
+    return any(match.group(0) == identifier for match in compiled.finditer(probe))
+
+
+def _id_space_warnings_for_pattern(pattern: dict, metadata_schemas: dict[str, dict]) -> list[str]:
+    """Measure one identifier_mention pattern against its target's id space."""
+    regex = pattern.get("regex")
+    target_doc_type = pattern.get("target_doc_type")
+    target_tier3 = pattern.get("target_tier3")
+    if not isinstance(regex, str) or not isinstance(target_doc_type, str):
+        return []
+    if not isinstance(target_tier3, dict):
+        return []
+    schema = metadata_schemas.get(target_doc_type)
+    if not isinstance(schema, dict):
+        logger.debug(
+            "identifier_mention pattern %r: target doc_type %r declares no "
+            "metadata_schema, so its identifier space is undeclared and unmeasured",
+            regex,
+            target_doc_type,
+        )
+        return []
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    try:
+        compiled_mention = re.compile(regex)
+    except re.error:
+        # A regex that will not compile breaks the engine outright and is a
+        # different defect; measuring its reach would not describe it.
+        return []
+
+    warnings: list[str] = []
+    for key, template in target_tier3.items():
+        if template != _WHOLE_MATCH_TEMPLATE:
+            logger.debug(
+                "identifier_mention pattern %r: tier3 key %r uses template %r, "
+                "which derives the identifier from the match rather than being "
+                "the match; the comparison is undefined and is not measured",
+                regex,
+                key,
+                template,
+            )
             continue
-        for rule in assignment.get("inference_rules", []) or []:
-            if rule.get("method") != "identifier_mention":
-                continue
-            for pattern in rule.get("patterns", []) or []:
-                regex = pattern.get("regex", "<no-regex>")
-                if "target_title_prefix" in pattern:
-                    warnings.append(
-                        f"identifier_mention pattern {regex!r} carries the "
-                        "unsupported key 'target_title_prefix'; the resolver "
-                        "ignores it (title-prefix matching was removed in the "
-                        "tier3 migration)."
-                    )
-                if not pattern_is_discriminating(pattern):
-                    warnings.append(
-                        f"identifier_mention pattern {regex!r} is "
-                        "non-discriminating (no target_tier3 and no "
-                        "placeholder-bearing target_tags); it cannot resolve a "
-                        "specific identifier and the resolver will refuse to "
-                        "link its mentions."
-                    )
+        constraint = properties.get(key)
+        if not isinstance(constraint, dict):
+            continue
+        schema_pattern = constraint.get("pattern")
+        if not isinstance(schema_pattern, str):
+            continue
+        samples = _sample_identifiers_from_schema_pattern(schema_pattern)
+        if samples is None:
+            logger.debug(
+                "identifier_mention pattern %r: schema pattern %r for tier3 key "
+                "%r is outside the sampled subset and is not measured",
+                regex,
+                schema_pattern,
+                key,
+            )
+            continue
+        try:
+            compiled_schema = re.compile(schema_pattern)
+        except re.error:
+            continue
+        # Discard anything the schema would not actually accept, so a bug in
+        # the sampler can only under-report, never invent a divergence.
+        admitted = [s for s in samples if compiled_schema.fullmatch(s)]
+        missed = [s for s in admitted if not _matches_as_whole_identifier(compiled_mention, s)]
+        if not missed:
+            continue
+        shown = ", ".join(repr(s) for s in missed[:3])
+        if len(missed) > 3:
+            shown += f" (and {len(missed) - 3} more sampled)"
+        warnings.append(
+            f"identifier_mention pattern {regex!r} does not span the identifier "
+            f"space its target doc_type {target_doc_type!r} declares for tier3 "
+            f"key {key!r}: the schema pattern {schema_pattern!r} admits {shown}, "
+            f"none of which the regex matches as a whole identifier. Mentions "
+            f"of those identifiers create no edge, which is indistinguishable "
+            f"from a document that cites none."
+        )
+    return warnings
+
+
+def identifier_mention_id_space_warnings(
+    edge_inference: dict,
+    doc_types: "Iterable[DocTypeEntry]",
+) -> list[str]:
+    """Warn where a mention regex no longer reaches its target's id space.
+
+    An ``identifier_mention`` pattern declares a regex matched against
+    document bodies and a ``target_tier3`` filter that resolves the matched
+    literal. Which identifiers that filter can resolve is declared elsewhere
+    -- in the target ``doc_type``'s ``metadata_schema``. Nothing joins the
+    two, and a divergence is silent in both directions: a mention the regex
+    cannot match produces no edge, and an absent edge is the correct result
+    for a document citing nothing, so no return value, error, or status check
+    tells them apart.
+
+    The check is deliberately narrow and refuses rather than guesses. It
+    measures a pattern only where every hop below holds, and is silent
+    otherwise -- which is most vaults, and is not a defect:
+
+    * the tier3 template is exactly ``{id}``, so the matched literal *is* the
+      value looked up. A template that derives the value from the match has no
+      inverse, so there is no way to ask which mentions would produce a given
+      identifier;
+    * the pattern names a ``target_doc_type`` the vault declares, and that
+      doc_type declares a ``metadata_schema`` constraining the named key with
+      a ``pattern``;
+    * that pattern falls inside the subset
+      :func:`_sample_identifiers_from_schema_pattern` expands.
+
+    Because the comparison runs over a sample, silence is not proof: a regex
+    may still miss an identifier nothing sampled. Warnings only -- callers log
+    them. Rejecting would be wrong on both paths rather than just at load: a
+    vault may legitimately scope a mention regex more narrowly than its id
+    space, and a heuristic that refused a write would block a correct
+    configuration while naming no defect its author could repair.
+    """
+    warnings: list[str] = []
+    metadata_schemas = {
+        doc_type.value: doc_type.metadata_schema
+        for doc_type in doc_types
+        if isinstance(doc_type.metadata_schema, dict)
+    }
+    for pattern in enabled_identifier_mention_patterns(edge_inference):
+        warnings.extend(_id_space_warnings_for_pattern(pattern, metadata_schemas))
     return warnings
 
 
@@ -1152,6 +1566,14 @@ class VaultConfig(BaseModel):
         """
         self.build_tier3_validators()
         for warning in identifier_mention_pattern_warnings(self.edge_inference):
+            logger.warning("vault '%s': %s", self.vault.id, warning)
+        # Runs here rather than on a DocTypeEntry validator because the
+        # relation spans two sections: the pattern lives in edge_inference and
+        # the identifier space it must reach lives in a doc_type's
+        # metadata_schema. This is the first scope where both are in hand.
+        for warning in identifier_mention_id_space_warnings(
+            self.edge_inference, self.document_types.doc_types
+        ):
             logger.warning("vault '%s': %s", self.vault.id, warning)
 
     def valid_doc_type_values(self) -> set[str]:

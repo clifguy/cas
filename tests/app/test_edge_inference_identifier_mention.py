@@ -1914,6 +1914,43 @@ def test_ts5_identifier_mention_pattern_warnings_flags_bad_patterns():
     assert identifier_mention_pattern_warnings(clean) == []
 
 
+def test_ts5_warning_pass_skips_patterns_the_vault_has_disabled():
+    """A disabled pattern draws no warning, because it never runs.
+
+    ``_identifier_mention_rules`` -- the reader the engine itself applies --
+    drops disabled patterns before resolution, so the defects this pass flags
+    cannot occur for one. Two arms make the silence attributable to the flag
+    rather than to the pass having stopped looking: the identical pattern
+    warns twice with the flag absent, and again with it explicitly true.
+
+    The explicitly-true arm is the one that holds the parity claim. The engine
+    reads the flag's *value*, and an implementation skipping on the key's mere
+    presence agrees with the other two arms while disagreeing with the engine
+    on exactly the config that turns a pattern on by writing it out.
+    """
+    degenerate = {
+        "regex": r"\bCAS-ADR-\d{3}\b",
+        "target_tags": ["adr"],
+        "target_title_prefix": "ADR-{adr_num}:",
+        "target_doc_type": "adr",
+    }
+
+    def _block(pattern: dict) -> dict:
+        return {
+            "tier_assignments": [
+                {
+                    "edge_type": "references",
+                    "tier": 1,
+                    "inference_rules": [{"method": "identifier_mention", "patterns": [pattern]}],
+                }
+            ]
+        }
+
+    assert len(identifier_mention_pattern_warnings(_block(degenerate))) >= 2
+    assert len(identifier_mention_pattern_warnings(_block({**degenerate, "enabled": True}))) >= 2
+    assert identifier_mention_pattern_warnings(_block({**degenerate, "enabled": False})) == []
+
+
 def test_ts6_plan_reference_reconcile_delete_wrong_keep_manual_create_missing():
     """Reconcile deletes inferred wrong-target edges, never touches manual
     edges, and creates planned targets not already linked.
