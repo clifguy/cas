@@ -1,127 +1,88 @@
-# Shared-component version parity
+# Shared-component version parity — the mechanics
 
-Some versions have to be the same across surfaces that are built and run by
-different toolchains. When each surface names its own, nothing relates them, and
-they drift apart quietly — the failure is not a red check but a statement that
-works everywhere it is tested and breaks where it is deployed.
+The rule this implements, the classification that decides what it applies to, and the
+upgrade choreography are **not** stated here. They are the *CAS Version Parity Discipline*
+steering document in the cas vault (`doc_type=steering_document`), which is authoritative:
+where a component exists in more than one profile and its version is a free choice, hold it
+identical across every environment and gate the identity; where it cannot be identical, make
+the difference explicit and tested. That document also classifies which differences are
+parity candidates and which are the profile switch working as designed, and it explains why
+those differences are out of scope.
 
-[`versions.json`](../../versions.json) at the repository root is the single
-declaration of every version held in parity. This document states which those
-are, how each consumer gets the value, and which differences between surfaces
-are structural and therefore deliberately *not* held.
+This file carries only what is specific to this repository: where the declaration lives, how
+each consumer reaches it, and the one hazard that constrains how a value can be moved.
 
-## What is held
+## The declaration
 
-| Component | Key | What it governs |
-|---|---|---|
-| PostgreSQL, deploy floor | `postgres.deploy_major` | The Flexible Server the cloud profile provisions, the Postgres client shipped in the SAGE image, and the CI job that runs the storage tests against that major. |
-| PostgreSQL, development | `postgres.dev_major` | The workstation server and the CI service containers. |
-| Python | `python.version` | The interpreter every workflow sets up, the container base images, the project's `requires-python` floor, and Ruff's language target. |
-| Node | `node.major` | The frontend CI jobs, the SPA-builder container base, and the `@types/node` floor. |
+[`versions.json`](../../versions.json) at the repository root, holding the Postgres majors,
+the Python version and the Node major.
 
-**The two Postgres majors are not drift.** They are two named values with
-different jobs. The deployed server sits on the floor; the workstation and CI
-run ahead of it. The gap is what makes a statement valid only on the newer major
-— `ALTER COLUMN ... SET EXPRESSION AS` is the worked example — detectable before
-it reaches a deploy, and the `storage-deploy-floor` CI job exists to detect it.
-The parity rule holds each value to its own consumers; it does not collapse the
-two. `dev_major` may not fall below `deploy_major`, and that is asserted.
+JSON rather than the YAML this repository prefers for human-edited configuration: Bicep can
+read JSON and text at compile time and has no YAML loader, and the manifest is read by four
+toolchains, so the one inflexible consumer picks the format. Repo root rather than `infra/`
+because the workstation must not read cloud IaC to learn what to install.
 
-## How each consumer gets the value
+## Readers and gated restatements
 
-Consumers that can read a file at the moment they need the value **read** it.
-Consumers that structurally cannot **restate** it, and a gate holds the
-restatement to the declaration. The distinction matters: a reader cannot drift,
-while a restating site can and is only as safe as the gate over it.
+The steering document's enforcement layer 1 says a consumer that restates the value is a
+defect rather than a convenience. Some consumers structurally cannot read a file, so this
+repository splits them and gates the second group.
 
-### Readers
-
-- **The infrastructure template.** `infra/modules/postgres.bicep` defaults its
-  `postgresVersion` parameter from `loadJsonContent('../../versions.json')`. The
-  manifest's contents are embedded in the compiled ARM template at build time.
-- **The workflows.** Each workflow that needs a version carries a small
-  `versions` prelude job that emits the declared values as job outputs, and its
-  other jobs read `needs.versions.outputs.*`. A prelude job rather than a step
-  because a service container's `image` resolves before any step in its own job
-  runs, so it cannot read a value a sibling step computed — but it can read
-  `needs.<job>.outputs`. The `python-version` and `node-version` pins go through
-  the same outputs so there is one mechanism rather than two.
-- **The test suite.** `tests/helpers/versions.py` reads the manifest directly.
-
-### Restating sites, and why each cannot read
-
-| Site | Why it cannot read |
+| Reads the declaration | Mechanism |
 |---|---|
-| `Dockerfile`, `Dockerfile.bff` `FROM` lines | A `FROM` line takes no file input, and the readable tag has to stay on that line ahead of the digest for Dependabot's `docker` ecosystem to parse it. |
+| `infra/modules/postgres.bicep` | `loadJsonContent` at compile time |
+| `ci.yml`, `build-images.yml`, `dependabot-triage.yml`, `ruleset-drift.yml` | a `versions` prelude job's outputs |
+| the test suite | `tests/helpers/versions.py` |
+
+A prelude job rather than a step because a service container's `image` resolves before any
+step in its own job runs, so it cannot read a value a sibling step computed — but it can read
+`needs.<job>.outputs`. The `python-version` and `node-version` pins go through the same
+outputs, so there is one mechanism rather than two.
+
+| Restates it, and is gated | Why it cannot read |
+|---|---|
+| `Dockerfile`, `Dockerfile.bff` `FROM` lines | A `FROM` line takes no file input, and the readable tag must stay on it ahead of the digest for Dependabot's `docker` ecosystem to parse it. |
 | `pyproject.toml` — `requires-python`, `[tool.ruff] target-version` | Static TOML; no interpolation. |
-| The `storage-deploy-floor` job's `name:` | See below — it must stay a literal. |
-| `docs/process/postgres-local-runtime.md`, `postgres-backup-restore.md` | Prose a person follows by hand. |
-| `README.md`, `CLAUDE.md` | Prose. |
-| `.github/dependabot.yml`'s `@types/node` note | Prose inside a config comment. |
+| the deploy-floor job's `name:` | It is a required check context — see below. |
+| the Postgres runbooks, `README.md`, `CLAUDE.md`, the Dependabot `@types/node` note | Prose. |
 
-`tests/infra/test_shared_version_parity.py` and
-`tests/infra/test_frontend_node_version.py` hold every one of those to the
-manifest, and each check proves it located its site before comparing, so a
-parser that silently matched nothing cannot pass.
+`tests/infra/test_shared_version_parity.py` and `tests/infra/test_frontend_node_version.py`
+are enforcement layer 2, holding every restating site to the declaration. Each check proves
+it located its site before comparing, so a parser that silently matched nothing cannot pass.
 
-## The required check context is a literal, on purpose
+Layer 3 is the deploy preflight's `postgres_major` check, which reads the live server's major
+from the Azure control plane through `deploy/postgres-version-probe.sh` — a control-plane
+read, because the server integrates privately into a delegated subnet and is not reachable
+from a runner. Layer 4 is `tests/infra/test_workstation_postgres_major.py`, which fails under
+CI, where the service container's tag is derived from the declaration so a mismatch means the
+derivation did not take effect, and warns on a workstation, where the server is the
+developer's own and the steering document permits the workstation to lag.
 
-The CI job that runs the storage tests on the deploy floor is named
-`storage tests on the deploy floor (pg16)`, and that name is a **required status
-check context** in the branch ruleset. It is not templated from the prelude job's
-output, because a context that changes whenever the declared major does would
-block every merge while GitHub waited on a context that never arrives.
+## The two Postgres majors are a transition, not a design
 
-The consequence is that the floor major appears in four places that must move
-together, and only three of them are in this repository:
+The manifest declares `postgres.deploy_major` and `postgres.dev_major` separately, and today
+they differ. Read that as the steering document does: **parity is the resting state, and this
+skew is a bounded transition that has not yet completed** — not two values with standing
+jobs. The `storage-deploy-floor` CI job that tests the delta is the cost of the skew, not a
+feature of it; the discipline's own conclusion is that testing a version delta is strictly
+worse than not having one, because converging removes the class by construction.
 
-1. the job's `name:` in `.github/workflows/ci.yml`,
-2. the required-check table in [`branch_protection.md`](branch_protection.md),
-3. the captured ruleset JSON in the same document,
-4. **the live GitHub ruleset**, which no test can reach.
+Two names exist so that every consumer of each value is bound to a declaration while the
+transition is open, rather than being bound to nothing. When the convergence lands, the two
+collapse to one: set both to the same major, delete the deploy-floor job with its required
+check context, and the second name goes away. `dev_major` may not fall below `deploy_major`,
+and that is asserted.
 
-Changing `postgres.deploy_major` therefore means editing the live ruleset in the
-same change. See `branch_protection.md` for how.
+## The required check context constrains how the floor moves
 
-## Beyond the repository: the live server
+The deploy-floor job is named `storage tests on the deploy floor (pg16)`, and that name is a
+required status check in the branch ruleset. It is **not** templated from the prelude job's
+output: a context that changed whenever the declared major did would block every merge while
+GitHub waited on a context that never arrives.
 
-Every check above compares tracked files with each other, which establishes that
-the repository is self-consistent — a weaker claim than it looks, because the
-repository can agree with itself about a major the deployed server does not have.
-That is not hypothetical on this surface: configuration applied outside the
-template has drifted here before.
-
-So the deploy preflight (`deploy/cloud-preflight.sh`, check `postgres_major`)
-reads the **live** server's major from the Azure control plane through
-`deploy/postgres-version-probe.sh` and compares it with the declaration. A
-control-plane read rather than a database connection, because the server
-integrates privately into a delegated subnet and is not reachable from a runner.
-The probe is seamed like the other authenticated probes: unset, the check skips,
-so an operator shell without an `az` session does not fail the gate on a
-question it cannot ask.
-
-The test suite makes the same check for the server it is itself running against
-(`tests/infra/test_workstation_postgres_major.py`). It **fails under CI**, where
-the service container's tag is derived from the manifest and a mismatch means
-the derivation did not take effect, and **warns on a workstation**, where the
-server is the developer's own and failing the suite over its major would make it
-unusable during an upgrade.
-
-## What is deliberately not held
-
-These differ between the local and cloud profiles by design (CAS-ADR-042). They
-are not parity failures and no gate should be written for them:
-
-- **Managed identity.** The cloud profile authenticates through Entra; the local
-  profile has no directory and no managed identity to hold in common.
-- **The vault-source binding.** Local and cloud profiles bind different source
-  stores. The binding is a profile property, not a version.
-- **The host platform.** The cloud runs Linux containers; the workstation is
-  macOS on Apple Silicon. Package managers, paths and service supervision differ
-  throughout, and the runbooks are written to each.
-- **The abstraction provider.** The MLX-accelerated model is Apple-Silicon-only.
-  CI and the deployed containers stub it. There is no shared version to declare.
-
-The test for whether something belongs here: would two surfaces disagreeing
-about it produce a statement that passes every gate and fails at deploy? If not,
-it is a difference, not drift.
+So the floor major appears in four places that must move together, and only three are in this
+repository — the job's `name:` in `ci.yml`, the required-check table in
+[`branch_protection.md`](branch_protection.md), the captured ruleset JSON in that same
+document, and **the live GitHub ruleset**, which no test can reach. Changing
+`postgres.deploy_major` is therefore not a repository-only change. See `branch_protection.md`,
+which also records why the `versions` prelude job should itself become a required context.
