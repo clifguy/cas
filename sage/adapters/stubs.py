@@ -400,12 +400,24 @@ class StubContentStore(ContentStore):
         returns, so those two agree by construction: whatever a substituted
         parse reports required is what the search requires. It reads neither
         ``excluded`` nor ``adjacent``, because it models neither. The agreement
-        therefore spans two of the four fields, and a parse that began
+        therefore spans two of the five fields, and a parse that began
         reporting the other two would widen the search silently -- extend the
         search alongside the parse, not the parse alone.
+
+        ``document_scoped`` is the exception to that caution rather than
+        another instance of it. This double matches over the union of a
+        document's chunks and has no narrower unit to fall back to, so
+        reporting document scope unconditionally states what its matching
+        actually does; the field is true here because nothing about it is
+        stubbed out, not because true is the quiet default. A test needing the
+        other scope substitutes a parse, as it does for exclusion and adjacency.
         """
         return KeywordQueryParse(
-            terms=tuple(query.lower().split()), excluded=(), all_required=True, adjacent=False
+            terms=tuple(query.lower().split()),
+            excluded=(),
+            all_required=True,
+            adjacent=False,
+            document_scoped=True,
         )
 
     async def get_chunks_by_heading_prefix(

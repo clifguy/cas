@@ -296,19 +296,36 @@ def _or_form(terms: tuple[str, ...]) -> str:
     return " | ".join("'" + term.replace("'", "''") + "'" for term in terms)
 
 
-def _parse_rendered(query: str, rendered: str) -> KeywordQueryParse:
+def _parse_rendered(
+    query: str, rendered: str, branches: list[list[str]] | None
+) -> KeywordQueryParse:
     """Read a rendered tsquery, alongside the text it came from, as a parse.
 
     Split out from ``parse_keyword_query`` so the dispatcher can reuse a
     rendering it already has rather than asking the backend for a second one.
     Everything here is pure; the round-trip is the caller's.
+
+    ``branches`` is the decomposition ``_split_branches`` returned for this
+    same rendering, and is what the reported scope is read from. It is passed
+    in rather than recomputed so that the scope reported and the scope used are
+    one derivation and not two: a parse deriving the predicate for itself would
+    be free to disagree with the dispatch for any shape nobody wrote a case
+    for, which is how the report came to claim document scope for a query
+    answered within one passage.
     """
     required, excluded = _split_negation(rendered)
     spans = _required_phrase_spans(query)
+    terms = tuple(lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required))
     return KeywordQueryParse(
-        terms=tuple(lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required)),
+        terms=terms,
         excluded=tuple(excluded),
         all_required="|" not in required,
+        # The two conditions the dispatch below routes on, read here in the
+        # same order and from the same values: a query requiring no lexeme has
+        # nothing to intersect on, and one whose shape refused decomposition
+        # has nothing to intersect with. Either sends the query to the
+        # within-unit path, so either makes this false.
+        document_scoped=bool(terms) and branches is not None,
         # Both halves are load-bearing, and each is read from its own source.
         # The rendered operator alone over-reports: the tokenizer emits
         # adjacency for every compound it splits, so "CAS-ADR-048" would read
@@ -893,13 +910,13 @@ class PostgresContentStore(ContentStore):
             # renders the query itself, and rendering is the only thing either
             # decision below needs the backend for.
             rendered, folded = await self._render_query_forms(query)
-            parse = _parse_rendered(query, rendered)
+            branches = _split_branches(rendered)
+            parse = _parse_rendered(query, rendered, branches)
             if not parse.terms:
                 # Nothing to rank against, and nothing to intersect on: either
                 # every word was discarded, or the query asked only for
                 # absences, which the decomposition refuses.
                 return await self._search_bm25_within_chunk(query, limit, filters)
-            branches = _split_branches(rendered)
             if branches is None:
                 return await self._search_bm25_within_chunk(query, limit, filters)
             return await self._search_bm25_across_document(
@@ -1156,11 +1173,21 @@ class PostgresContentStore(ContentStore):
         phrase renders adjacency, which is stronger than carrying every term
         and is the one predicate still scoped to a single chunk: a document
         can hold them all, apart, and still not match.
+
+        The scope is reported from the same decomposition ``search_bm25``
+        routes on, so a query this binding answers within one passage says so
+        rather than being described at the scope the usual query gets.
         """
         with self._query_timer.measure("parse_keyword_query"):
             if not query or not query.strip():
-                return KeywordQueryParse(terms=(), excluded=(), all_required=True, adjacent=False)
-            return _parse_rendered(query, await self._render_tsquery(query))
+                # Nothing was rendered, so nothing was refused a scope. The
+                # blank query is reported at the ordinary one rather than at a
+                # narrowing no shape asked for.
+                return KeywordQueryParse(
+                    terms=(), excluded=(), all_required=True, adjacent=False, document_scoped=True
+                )
+            rendered = await self._render_tsquery(query)
+            return _parse_rendered(query, rendered, _split_branches(rendered))
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

@@ -694,10 +694,18 @@ class RetrievalService:
 
         The terms come from the backend's own parse, because the words typed
         are not the terms required -- stopwords are dropped and the rest
-        stemmed. Two shapes get their own treatment: a query the backend read
+        stemmed. Three shapes get their own treatment: a query the backend read
         as admitting alternatives is not conjunctive and gets no conjunction
-        advisory, and a query whose every word was discarded gets an advisory
-        of its own, since nothing was searched for at all.
+        advisory; a query whose every word was discarded gets an advisory of
+        its own, since nothing was searched for at all; and a query the backend
+        answered within a single passage is described at that scope rather than
+        at the document's, since the two make different sentences true of the
+        same empty result.
+
+        The scope comes from the parse for the same reason the terms do. It
+        cannot be inferred from the query text without re-deriving the
+        backend's own dispatch, and it cannot be read off ``all_required``,
+        which says every term is required and nothing about where.
         """
         if raw_count:
             return []
@@ -746,6 +754,45 @@ class RetrievalService:
                 f"contains a phrase. No passage does{scope} -- terms held apart, or "
                 "split across two passages of one document, do not match. Try "
                 'unquoting the phrase, using fewer terms, or mode="semantic".'
+            ]
+        if not parse.document_scoped:
+            # Ordered after adjacency because a phrase already names the
+            # passage and names the stricter condition; leading with the scope
+            # would replace a precise sentence with a vaguer one.
+            #
+            # The sentence below the ordering is the whole point of the branch.
+            # Describing this query at document scope tells a caller that no
+            # document carries their terms, when one may carry every one of
+            # them across its passages -- and that is exactly why the result is
+            # empty.
+            #
+            # An exclusion gets its own sentence because it does two things and
+            # a sentence naming one of them is false about the other. It
+            # narrows the unit, which is what the scope claim covers; it also
+            # *removes* units that carry an excluded term, and a passage
+            # carrying every required term beside one of those satisfies the
+            # conjunction and is dropped anyway. Saying "no passage carries all
+            # of them" is false for exactly that corpus, so the condition is
+            # stated whole rather than split. The remedy names dropping the
+            # exclusion without claiming the exclusion is what set the scope:
+            # the port lets a binding narrow for a reason of its own, and this
+            # sentence is read wherever it did.
+            if parse.excluded:
+                excluded = ", ".join(repr(t) for t in parse.excluded)
+                return [
+                    f"This query was evaluated within a single passage: it parsed to "
+                    f"{len(parse.terms)} terms ({rendered}) that one passage must carry "
+                    f"together while carrying none of the terms it excludes ({excluded}). "
+                    f"No passage does{scope} -- a document holding the terms in separate "
+                    "passages does not match, and neither does a passage carrying them all "
+                    "beside an excluded term. Try dropping the exclusion, using fewer "
+                    'terms, or mode="semantic".'
+                ]
+            return [
+                f"This query was evaluated within a single passage: it parsed to "
+                f"{len(parse.terms)} terms ({rendered}) and matches only a passage carrying "
+                f"all of them together. No passage does{scope} -- a document holding them "
+                'in separate passages does not match. Try fewer terms, or use mode="semantic".'
             ]
         # No remedy here may make the query stricter. The match is already
         # over the whole document, so quoting a phrase -- which adds an

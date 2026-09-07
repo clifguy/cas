@@ -479,7 +479,11 @@ async def test_stub_search_bm25_requires_the_terms_its_own_parse_reports(store, 
 
     async def _parse(query: str) -> KeywordQueryParse:
         return KeywordQueryParse(
-            terms=("zzlexeme",), excluded=(), all_required=True, adjacent=False
+            terms=("zzlexeme",),
+            excluded=(),
+            all_required=True,
+            adjacent=False,
+            document_scoped=True,
         )
 
     monkeypatch.setattr(store, "parse_keyword_query", _parse)
@@ -507,7 +511,11 @@ async def test_stub_search_bm25_matches_a_parsed_term_the_query_text_lacks(store
 
     async def _parse(query: str) -> KeywordQueryParse:
         return KeywordQueryParse(
-            terms=("alphaword",), excluded=(), all_required=True, adjacent=False
+            terms=("alphaword",),
+            excluded=(),
+            all_required=True,
+            adjacent=False,
+            document_scoped=True,
         )
 
     monkeypatch.setattr(store, "parse_keyword_query", _parse)
@@ -533,7 +541,11 @@ async def test_stub_search_bm25_honours_a_parse_that_does_not_require_every_term
 
     async def _parse_alternation(query: str) -> KeywordQueryParse:
         return KeywordQueryParse(
-            terms=("alphaword", "betaword"), excluded=(), all_required=False, adjacent=False
+            terms=("alphaword", "betaword"),
+            excluded=(),
+            all_required=False,
+            adjacent=False,
+            document_scoped=True,
         )
 
     monkeypatch.setattr(store, "parse_keyword_query", _parse_alternation)
@@ -629,6 +641,9 @@ async def test_stub_parse_keyword_query_reports_a_whitespace_split_and_models_no
     assert parse.excluded == ()
     assert parse.all_required is True
     assert parse.adjacent is False
+    assert parse.document_scoped is True, (
+        "this double's matching is always document-scoped, so its parse says so"
+    )
 
     blank = await store.parse_keyword_query("   ")
     assert blank.terms == (), (

@@ -67,12 +67,24 @@ class KeywordQueryParse(NamedTuple):
     hold every term and still not match. Adjacency is the one predicate scoped
     below the document by decision; a negation may also be, but only because
     its scope is undecided rather than settled there.
+
+    ``document_scoped`` is that undecidedness made legible. It reports the
+    scope this backend evaluated *this query* at: true when the terms were
+    required of the document, false when they were required of a single
+    passage. It is a report and not a rule -- CAS-ADR-048 Decision 8 leaves a
+    negation's scope to the binding, and this field says which way the binding
+    went rather than fixing which way it must. Nothing else in the parse
+    carries it: ``all_required`` says every term is required and is silent on
+    where, so the two are orthogonal and a conjunction can be reported at
+    either scope. A backend that always matches at document scope reports true
+    unconditionally, which is a claim about its own matching and not a default.
     """
 
     terms: tuple[str, ...]
     excluded: tuple[str, ...]
     all_required: bool
     adjacent: bool
+    document_scoped: bool
 
 
 # The spellings a plain POSIX form reduces: a `.` segment (bounded by a
@@ -382,6 +394,14 @@ class ContentStore(ABC):
         excludes are omitted, and a query admitting alternatives reports
         ``all_required=False`` -- describing such a query as conjunctive would
         state the opposite of what the caller wrote.
+
+        The scope is reported for the same reason the terms are. A binding may
+        answer a query at a unit below the document where the contract leaves
+        the scope to it, and a caller told an empty result means no *document*
+        carries the terms has been told something false whenever one carries
+        them all across its passages. ``document_scoped`` is that disclosure,
+        so the report matches what the search did rather than what the usual
+        case would have done.
 
         Carries no terms for a blank query, matching ``search_bm25``. A
         non-blank query can also carry none, when every word in it is a
