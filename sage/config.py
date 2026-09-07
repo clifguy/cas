@@ -231,7 +231,7 @@ def _expand_piece(source: str, index: int) -> tuple[list[str], int]:
                 ),
                 index + 1,
             )
-        return _cap_samples([*samples, *(a + b for a in samples for b in samples)]), index + 1
+        return _cap_samples([*samples, *_interleaved_product(samples, samples)]), index + 1
     if quantifier == "{":
         low, high, index = _repetition_bounds(source, index)
         high = min(high, low + _MAX_BOUNDED_RUN_SPREAD)
@@ -246,7 +246,7 @@ def _expand_piece(source: str, index: int) -> tuple[list[str], int]:
         for count in range(low, high + 1):
             repeated = [""]
             for _ in range(count):
-                repeated = _cap_samples(a + b for a in repeated for b in samples)
+                repeated = _interleaved_product(repeated, samples)
             expanded.extend(repeated)
         return _cap_samples(expanded), index
     return samples, index
@@ -260,16 +260,30 @@ def _interleaved_product(prefixes: list[str], suffixes: list[str]) -> list[str]:
     with two unbounded runs that drops every long *leading* run while keeping
     the long trailing ones, and a regex bounded on the leading run then
     measures clean -- the one shape this check exists to report, missed in the
-    one direction that matters. Walking the product diagonally, ordered by the
-    larger of the two indices, takes both sides to the same depth instead.
+    one direction that matters.
+
+    The order here emits the two axes first: every prefix paired with the
+    first suffix, then every suffix paired with the first prefix. That costs
+    ``len(prefixes) + len(suffixes) - 1`` of the ceiling and buys the property
+    the ceiling otherwise takes away -- **every** sample of each side survives
+    truncation, so no run length is dropped from an axis entirely. The
+    interior combinations then fill diagonally, by the larger of the two
+    indices, so what the ceiling does cut is cut evenly.
+
+    A purely diagonal walk is not enough on its own: it emits ``2d + 1``
+    samples at depth ``d``, so a 48-sample ceiling reaches depth 6 of an
+    11-sample axis and the longest runs never appear on either side.
     """
-    ordered: list[str] = []
-    for depth in range(max(len(prefixes), len(suffixes))):
+    if not prefixes or not suffixes:
+        return []
+    ordered: list[str] = [prefix + suffixes[0] for prefix in prefixes]
+    ordered.extend(prefixes[0] + suffix for suffix in suffixes[1:])
+    for depth in range(1, max(len(prefixes), len(suffixes))):
         if depth < len(suffixes):
-            for i in range(min(depth + 1, len(prefixes))):
+            for i in range(1, min(depth + 1, len(prefixes))):
                 ordered.append(prefixes[i] + suffixes[depth])
         if depth < len(prefixes):
-            for j in range(min(depth, len(suffixes))):
+            for j in range(1, min(depth, len(suffixes))):
                 ordered.append(prefixes[depth] + suffixes[j])
     return _cap_samples(ordered)
 
@@ -338,13 +352,21 @@ def _matches_as_whole_identifier(compiled: re.Pattern, identifier: str) -> bool:
     of it.
 
     The identifier is padded before matching because the engine meets it
-    surrounded by prose, and a regex may say so: a leading ``\\s`` or a
-    ``(?<=\\s)`` lookbehind matches every real mention and none of a bare
-    identifier, which would report a working pattern as spanning nothing on
-    every load. One space on each side is enough for the assertions that
-    occur -- word boundaries and lookarounds over whitespace all behave as
-    they do mid-body -- and cannot introduce a match, since the padding is
-    not part of the identifier the span must equal.
+    surrounded by prose, and a regex may say so: a ``(?<=\\s)`` lookbehind
+    matches every real mention and none of a bare identifier, which without
+    the padding would report a working pattern as spanning nothing on every
+    load. One space on each side is enough for the assertions that occur --
+    word boundaries and lookarounds over whitespace behave as they do
+    mid-body.
+
+    The padding cannot make a broken pattern look sound, because the span
+    still has to equal the identifier. A regex that *consumes* its context
+    rather than asserting it -- a leading ``\\s`` instead of a lookbehind --
+    yields a span carrying the space, which is not the identifier: this
+    reports it, and so does the engine, whose resolver would look up an
+    identifier with a leading space and find nothing. The two shapes read
+    alike and behave oppositely, which is why only the asserting one is
+    described here as cured.
     """
     probe = f" {identifier} "
     return any(match.group(0) == identifier for match in compiled.finditer(probe))
@@ -423,9 +445,9 @@ def _id_space_warnings_for_pattern(pattern: dict, metadata_schemas: dict[str, di
             f"identifier_mention pattern {regex!r} does not span the identifier "
             f"space its target doc_type {target_doc_type!r} declares for tier3 "
             f"key {key!r}: the schema pattern {schema_pattern!r} admits {shown}, "
-            f"none of which the regex matches. Mentions of those identifiers "
-            f"create no edge, which is indistinguishable from a document that "
-            f"cites none."
+            f"none of which the regex matches as a whole identifier. Mentions "
+            f"of those identifiers create no edge, which is indistinguishable "
+            f"from a document that cites none."
         )
     return warnings
 

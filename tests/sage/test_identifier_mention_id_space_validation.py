@@ -120,6 +120,7 @@ import pytest
 import yaml
 
 from sage.config import (
+    _UNBOUNDED_RUN_LENGTHS,
     DocTypeEntry,
     VaultConfig,
     _sample_identifiers_from_schema_pattern,
@@ -475,12 +476,57 @@ def test_ts7_both_runs_of_a_two_run_space_are_sampled_past_the_bound() -> None:
     """
     samples = _sample_identifiers_from_schema_pattern(r"^\d+-\d+$")
     assert samples
-    assert any(re.fullmatch(r"\d{3,}-\d+", s) for s in samples), (
-        f"no sample carries a long leading run: {samples}"
+    # The bound asserted is the longest run the generator claims to sample,
+    # not merely one past the two-digit case. An assertion pinned at three
+    # would be satisfied by a walk that reaches part of each axis, which is
+    # what a purely diagonal order does under the ceiling.
+    longest = max(_UNBOUNDED_RUN_LENGTHS)
+    assert any(re.fullmatch(rf"\d{{{longest}}}-\d+", s) for s in samples), (
+        f"no sample carries a full-length leading run: {samples}"
     )
-    assert any(re.fullmatch(r"\d+-\d{3,}", s) for s in samples), (
-        f"no sample carries a long trailing run: {samples}"
+    assert any(re.fullmatch(rf"\d+-\d{{{longest}}}", s) for s in samples), (
+        f"no sample carries a full-length trailing run: {samples}"
     )
+
+
+def test_ts7_a_repeated_group_is_sampled_past_one_instance() -> None:
+    """A repetition count is a boundary the samples have to cross too.
+
+    The widths this generator crosses are not only digit-run lengths: a
+    regex that stops at two components spans nothing of an id space whose
+    third component the samples never reach. The group's multi-instance
+    samples sit after all its single-instance ones, so an order that starves
+    one axis drops every one of them.
+    """
+    samples = _sample_identifiers_from_schema_pattern(r"^\d+(?:\.\d+)+$")
+    assert samples
+    assert any(s.count(".") >= 2 for s in samples), (
+        f"the repeated group was never sampled past a single instance: {samples}"
+    )
+
+
+def test_ts1_a_regex_narrow_on_the_first_component_of_a_repeated_group_warns() -> None:
+    """The starved-axis defect is fixed wherever the product is built.
+
+    A repeated group folds its instances together the same way a
+    concatenation folds its pieces, and the fix has to reach both: with the
+    repetition sites left prefix-major, the leading component here is one
+    digit in every sample and a regex bounded on it measures clean, while
+    the arm bounded on the second component reports correctly. The pair is
+    the assertion, for the same reason as in the two-run case.
+    """
+    for regex in (r"\b\d{1,2}-\d+-\d+\b", r"\b\d+-\d{1,2}-\d+\b"):
+        warnings = identifier_mention_id_space_warnings(
+            _edge_inference(
+                {
+                    "regex": regex,
+                    "target_doc_type": "record",
+                    "target_tier3": {"record_id": "{id}"},
+                }
+            ),
+            [_doc_type("record", "record_id", r"^(?:\d+-){2}\d+$")],
+        )
+        assert len(warnings) == 1, f"{regex} does not span the space; got {warnings}"
 
 
 def test_ts1_a_regex_narrow_on_either_run_of_a_two_run_space_warns() -> None:
@@ -517,6 +563,15 @@ def test_ts1_a_context_dependent_regex_is_not_reported_as_missing_everything() -
     The second arm is the control: an equivalent pattern written with
     ``(?<!\\w)`` was silent even before the padding, so the first arm alone
     could be passed by a check that had simply stopped measuring.
+
+    The fourth arm is the boundary of the fix, and it reads as the opposite
+    of the first. A regex that *consumes* the space rather than asserting it
+    -- a leading ``\\s`` where the first arm has a lookbehind -- yields a
+    match spanning the space, which is not the identifier. That pattern is
+    broken in production too: the engine hands its resolver a value with a
+    leading space and resolves nothing. So the padding must not rescue it,
+    and this arm is what shows the padding cannot make a broken pattern
+    look sound. The two shapes read alike and behave oppositely.
     """
 
     def _warnings_for(regex: str) -> list[str]:
@@ -538,6 +593,11 @@ def test_ts1_a_context_dependent_regex_is_not_reported_as_missing_everything() -
     assert _warnings_for(r"(?<!\w)F\d+(?!\w)") == []
     assert len(_warnings_for(r"(?<=\s)F\d{1,2}\b")) == 1, (
         "a context assertion must not make a genuinely narrow regex measure clean"
+    )
+    assert len(_warnings_for(r"\sF\d+\b")) == 1, (
+        "a regex that consumes its context spans the space as well as the "
+        "identifier, so the engine would resolve a value no document carries; "
+        "the padding must not report that as covered"
     )
 
 
