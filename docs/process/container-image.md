@@ -132,5 +132,8 @@ The same checks run as an opt-in, Docker-gated pytest module:
 SAGE_TEST_DOCKER=1 .venv/bin/python -m pytest tests/deploy/test_container_smoke.py -q
 ```
 
-A CI container-build job (multi-arch, registry push) is out of scope here and is
-tracked as a separate CI/build ticket.
+CI builds this image on every pull request, merge-group entry, and push to
+`main`, and runs the smoke tests above against it, via the reusable
+[`build-images`](../../.github/workflows/build-images.yml) workflow. The push to
+a tenant registry happens on the deploy pipeline's call to that same workflow;
+see [Container images and the ACR push](azure-deployment.md#container-images-and-the-acr-push).

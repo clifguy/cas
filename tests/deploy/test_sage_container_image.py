@@ -17,6 +17,12 @@ future server-version bump that forgets the image is caught here.
 import re
 from pathlib import Path
 
+from tests.deploy._image_refs import (
+    digest_without_readable_tag,
+    external_image_refs,
+    unpinned,
+)
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKERFILE = _REPO_ROOT / "Dockerfile"
 _POSTGRES_BICEP = _REPO_ROOT / "infra" / "modules" / "postgres.bicep"
@@ -156,3 +162,76 @@ def test_runtime_docs_fs_files_survive_the_dockerignore() -> None:
         assert f"!{relative}" in ignore_lines, (
             f"{relative} is COPYed but not re-included in .dockerignore; the build would fail"
         )
+
+
+def test_base_images_are_digest_pinned() -> None:
+    """Every external image this Dockerfile resolves is pinned to a digest.
+
+    A floating tag lets two builds of the same commit start from different
+    bases. That matters here beyond ordinary reproducibility: the deploy
+    pipeline no longer smokes the image it pushes, resting instead on the CI run
+    for that commit having built from the same bases and the same locked
+    dependency sets.
+
+    The pins do not deliver byte-equality and this gate does not claim it -- the
+    apt layer and the embedder weights float, and are shared between the two
+    builds only while the layer cache serves them. What a moving base would
+    break is the weaker guarantee the skip actually rests on, and it would break
+    it silently.
+    """
+    refs = external_image_refs(_dockerfile_text())
+
+    # Non-vacuity. A scan that quietly matched nothing would satisfy every
+    # assertion below, so pin the sites this file is known to carry.
+    assert "ARG PYTHON_IMAGE" in refs and len(refs) == 2, (
+        "the image-reference scan lost a known site; this Dockerfile carries a\n"
+        "PYTHON_IMAGE arg and a uv COPY --from, so a scan finding anything else\n"
+        f"has stopped reaching them: {sorted(refs)}"
+    )
+
+    floating = unpinned(refs)
+    assert not floating, (
+        f"these image references float and must carry an @sha256: digest: {floating}"
+    )
+
+    untagged = digest_without_readable_tag(refs)
+    assert not untagged, (
+        "a digest pin must keep its readable tag (`name:tag@sha256:...`) so the "
+        f"version stays legible to a reader and to the version gates: {untagged}"
+    )
+
+
+def test_image_ref_scan_collects_bare_untagged_references() -> None:
+    """A reference with no tag and no registry host is still external.
+
+    ``FROM debian`` resolves to ``debian:latest`` -- the hardest-floating shape
+    there is -- while carrying neither the ``:`` nor the ``/`` an earlier
+    recognizer keyed on. It was dropped before the pin check ever saw it, so the
+    gate reported clean on the one form it most needed to catch.
+    """
+    text = (
+        "ARG PYTHON_IMAGE=python:3.14-slim@sha256:aa\n"
+        "FROM ${PYTHON_IMAGE} AS builder\n"
+        "FROM debian AS extras\n"
+        "COPY --from=alpine /bin/sh /sh\n"
+    )
+    refs = external_image_refs(text)
+    assert refs.get("FROM debian") == "debian"
+    assert refs.get("COPY --from=alpine") == "alpine"
+    assert set(unpinned(refs)) == {"FROM debian", "COPY --from=alpine"}
+
+
+def test_image_ref_scan_excludes_stages_args_and_scratch() -> None:
+    """The three things that are not registry references stay excluded.
+
+    The inverted discriminator over-collects rather than under-collects, so
+    these are the cases that keep it from flagging every multi-stage build.
+    """
+    text = (
+        "ARG PYTHON_IMAGE=python:3.14-slim@sha256:aa\n"
+        "FROM ${PYTHON_IMAGE} AS Builder\n"
+        "FROM scratch AS empty\n"
+        "COPY --from=builder /opt /opt\n"
+        "COPY --from=empty /x /x\n"
+    )
+    assert set(external_image_refs(text)) == {"ARG PYTHON_IMAGE"}

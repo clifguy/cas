@@ -14,6 +14,12 @@ differences so a verbatim copy of the SAGE Dockerfile would not satisfy them.
 
 from pathlib import Path
 
+from tests.deploy._image_refs import (
+    digest_without_readable_tag,
+    external_image_refs,
+    unpinned,
+)
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKERFILE = _REPO_ROOT / "Dockerfile.bff"
 _IGNORE = _REPO_ROOT / "Dockerfile.bff.dockerignore"
@@ -105,3 +111,39 @@ def test_ignore_inverts_sage_for_frontend() -> None:
     assert "app/src" not in excl, "app/src must not be excluded -- the Node stage needs it"
     # The stack-config schema the runtime validator reads is re-included.
     assert "sage_core_config.schema.json" in text, "the config schema must be re-included"
+
+
+def test_base_images_are_digest_pinned() -> None:
+    """Every external image this Dockerfile resolves is pinned to a digest.
+
+    A floating tag lets two builds of the same commit start from different
+    bases. That matters here beyond ordinary reproducibility: the deploy
+    pipeline no longer smokes the image it pushes, resting instead on the CI run
+    for that commit having built from the same bases and the same locked
+    dependency sets.
+
+    This image installs no apt packages and bakes no model weights, so the pins
+    plus the two lockfiles cover every input its build resolves -- byte-equality
+    holds here whether or not the layer cache is warm, which is more than the
+    SAGE image can say. A moving base would give that up silently.
+    """
+    refs = external_image_refs(_dockerfile_text())
+
+    # Non-vacuity. A scan that quietly matched nothing would satisfy every
+    # assertion below, so pin the sites this file is known to carry.
+    assert {"ARG NODE_IMAGE", "ARG PYTHON_IMAGE"} <= set(refs) and len(refs) == 3, (
+        "the image-reference scan lost a known site; this Dockerfile carries\n"
+        "NODE_IMAGE and PYTHON_IMAGE args and a uv COPY --from, so a scan\n"
+        f"finding anything else has stopped reaching them: {sorted(refs)}"
+    )
+
+    floating = unpinned(refs)
+    assert not floating, (
+        f"these image references float and must carry an @sha256: digest: {floating}"
+    )
+
+    untagged = digest_without_readable_tag(refs)
+    assert not untagged, (
+        "a digest pin must keep its readable tag (`name:tag@sha256:...`) so the "
+        f"version stays legible to a reader and to the version gates: {untagged}"
+    )

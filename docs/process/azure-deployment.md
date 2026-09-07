@@ -251,10 +251,45 @@ same reusable workflow with the push **enabled** and the tenant's Environment, s
 the artifact it provisions is built from the committed commit and lands in that
 tenant's registry.
 
+**The smoke tests run on the CI arm only.** The deploy arm builds and pushes
+without re-running them, and two facts are what entitle it to. A deploy
+dispatches `origin/main` HEAD and refuses a commit whose own CI run is not
+green, so the commit it ships has already been through the arm that smokes —
+though note that rule lives in the operator tooling, not in this repository, and
+any `workflow_dispatch` reaches the build with the push on. And every base image
+both Dockerfiles resolve is digest-pinned, so a rebuild of that commit starts
+from the same bases and the same locked dependency sets rather than merely from
+the same recipe.
+
+Be precise about how far that second fact reaches, because it is easy to
+overstate. It is not byte-equality: the SAGE runtime stage installs its apt
+packages from moving indexes, and the embedder weights are fetched from a
+floating model ref, so those two layers are identical across the CI build and
+the deploy build only while the layer cache still serves them — and are rebuilt,
+possibly differently, once it does not. What the pins guarantee is the stronger
+half of the recipe; the cache supplies the rest, for as long as it survives.
+
+Which makes it worth knowing who fills that cache. It is written from two places
+only — the push-to-`main` CI run of a commit, and the deploy dispatch itself —
+because those are the refs another run can read. Pull-request runs read that
+scope and never write to it, so a branch cannot warm the cache a deploy will
+use, and a deploy of a commit whose `main` run has since been evicted rebuilds
+the floating layers rather than reusing them. The repository's Actions cache is
+capped at 10 GB and evicts least-recently-used entries without reporting it.
+
+Break either fact — force a deploy past its precheck, or let a base image float
+again — and the deploy is pushing an artifact nothing has tested.
+
+Because the deploy arm pushes from inside the build rather than from a later
+step, `az acr login` runs *before* the images are built there. Nothing loads an
+image into the local daemon on that arm; a build that is going to the registry
+writes to the registry.
+
 Images are tagged `{version}-{short-sha}` (the version is
 `sage.build_info.RELEASE_VERSION`, so the registry tag matches the stamp the
 running container reports) plus a moving `latest`; deployments pin the immutable
-`{version}-{short-sha}` tag, never `latest`.
+`{version}-{short-sha}` tag, never `latest`. Both tags are applied as arguments
+to the build itself.
 
 The push is dormant until the tenant's `AZURE_CLIENT_ID` and `ACR_LOGIN_SERVER`
 variables are set. The registry login host is a Bicep output (`acrLoginServer`),

@@ -121,5 +121,8 @@ SAGE_TEST_DOCKER=1 .venv/bin/python -m pytest tests/deploy/test_bff_container_sm
 The structural conventions (multi-stage Node + Python build, non-root, version
 arg, health check, the frontend-keeping ignore) are additionally asserted by
 `tests/deploy/test_bff_container_image.py`, which runs in the default suite with
-no Docker daemon. A CI container-build job (multi-arch, registry push) is out of
-scope here and is tracked as a separate CI/build ticket.
+no Docker daemon. CI builds this image and runs the
+smoke tests against it on every pull request, merge-group entry, and push to
+`main`, via the reusable
+[`build-images`](../../.github/workflows/build-images.yml) workflow; the push to
+a tenant registry happens on the deploy pipeline's call to that same workflow.

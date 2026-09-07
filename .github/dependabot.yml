@@ -21,6 +21,23 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
+  # The two root Dockerfiles digest-pin every base image they resolve, so that
+  # two builds of one commit start from the same bases — the property the deploy
+  # path leans on when it accepts an image on the strength of a CI run that
+  # built a different copy of the same commit. A pin that nothing bumps stops
+  # receiving upstream security fixes, so the ecosystem is enabled to move them.
+  #
+  # Coverage is worth checking rather than assuming: this ecosystem is built
+  # around `FROM` lines, while both files reach their bases through an
+  # `ARG *_IMAGE` default and pull the uv binary via `COPY --from=<image>`. If
+  # those sites turn out not to be updated here, they need bumping by hand and
+  # this comment should say so.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
   # npm version-update PRs ARE enabled (unlike uv above): the
   # pyproject-floor-rewrite defect (dependabot-core#12162) that disables uv
   # version-updates is specific to the uv ecosystem and does not affect npm,
