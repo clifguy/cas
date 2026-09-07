@@ -1919,9 +1919,14 @@ def test_ts5_warning_pass_skips_patterns_the_vault_has_disabled():
 
     ``_identifier_mention_rules`` -- the reader the engine itself applies --
     drops disabled patterns before resolution, so the defects this pass flags
-    cannot occur for one. The enabled arm is what makes the silence
-    attributable to the flag rather than to the pass having stopped looking:
-    the identical pattern warns twice with the flag absent.
+    cannot occur for one. Two arms make the silence attributable to the flag
+    rather than to the pass having stopped looking: the identical pattern
+    warns twice with the flag absent, and again with it explicitly true.
+
+    The explicitly-true arm is the one that holds the parity claim. The engine
+    reads the flag's *value*, and an implementation skipping on the key's mere
+    presence agrees with the other two arms while disagreeing with the engine
+    on exactly the config that turns a pattern on by writing it out.
     """
     degenerate = {
         "regex": r"\bCAS-ADR-\d{3}\b",
@@ -1942,6 +1947,7 @@ def test_ts5_warning_pass_skips_patterns_the_vault_has_disabled():
         }
 
     assert len(identifier_mention_pattern_warnings(_block(degenerate))) >= 2
+    assert len(identifier_mention_pattern_warnings(_block({**degenerate, "enabled": True}))) >= 2
     assert identifier_mention_pattern_warnings(_block({**degenerate, "enabled": False})) == []
 
 

@@ -68,15 +68,31 @@ TS7 -- The sample generator, directly.
   Inputs: supported and unsupported schema patterns.
   Expect: every sample is admitted by the pattern it came from; an
            unbounded digit run yields runs long enough to cross a
-           two-digit bound; an unsupported construct yields None.
+           two-digit bound; escaped punctuation stays measurable; an
+           unsupported construct yields None.
   Why: a generator that only ever emitted short runs would leave TS1
-           green and the check inert.
+           green and the check inert. A two-run space adds the arm no
+           single-run space can carry: the product of two unbounded runs
+           exceeds the sample ceiling, so the order it is built in decides
+           which samples survive, and built prefix-major it starves the
+           leading run while keeping the trailing one -- silent on exactly
+           the defect the check exists to report. Both halves of that
+           assertion are needed; either alone passes the starved order.
 
-TS8 -- A disabled pattern is not measured.
-  Inputs: the TS1 config with ``enabled: false``.
-  Expect: no warnings.
+TS8 -- What is measured, and what is skipped.
+  Inputs: the TS1 pattern with ``enabled`` false, true, and absent; a rule
+           whose *second* pattern diverges; a pattern whose *second* tier3
+           key diverges.
+  Expect: silence only for the disabled arm; one warning for each of the
+           others.
   Why: the engine's own reader skips disabled patterns, so warning about
-           one describes behavior that will never occur.
+           one describes behavior that will never occur -- but the claim is
+           parity with that reader, which reads the flag's value, so the
+           explicitly-true arm is what separates it from a check keying on
+           the key's presence. The second-pattern and second-key arms are
+           here for the same reason: every other fixture in this module
+           carries one pattern and one key, so a check reading only the
+           first agrees with all of them.
 
 TS9 -- The check is wired into the load path.
   Inputs: a divergent config written to disk and loaded.
@@ -419,27 +435,205 @@ def test_ts7_unbounded_digit_run_yields_runs_past_a_two_digit_bound() -> None:
 
 @pytest.mark.parametrize(
     "schema_pattern",
-    [r"\d+", r"^[A-Z]{2}-\d+$", r"^.+$", r"^F\w*$", r"^F\d*$"],
+    [r"\d+", r"^[A-Z]{2}-\d+$", r"^.+$", r"^F\w*$", r"^F\d*$", r"^F\d+$|^B\d+$"],
 )
 def test_ts7_unsupported_constructs_refuse_rather_than_guess(schema_pattern: str) -> None:
     """Outside the supported subset the generator returns nothing at all."""
     assert _sample_identifiers_from_schema_pattern(schema_pattern) is None
 
 
-def test_ts8_disabled_pattern_is_not_measured() -> None:
+@pytest.mark.parametrize("schema_pattern", [r"^T\-\d{4}$", r"^R-\d+\.\d+$"])
+def test_ts7_escaped_punctuation_is_a_literal_not_a_refusal(schema_pattern: str) -> None:
+    """An escaped `-` or `.` is that character, and stays measurable.
+
+    Schema authors escape punctuation routinely, and refusing it dropped
+    ordinary identifier spaces out of measurement entirely -- silently, since
+    an unmeasured pattern and a spanning one are both simply quiet.
+    """
+    samples = _sample_identifiers_from_schema_pattern(schema_pattern)
+    assert samples, f"{schema_pattern} should be measurable"
+    for sample in samples:
+        assert re.fullmatch(schema_pattern, sample), (
+            f"generator emitted {sample!r} for {schema_pattern}, which does not admit it"
+        )
+
+
+def test_ts7_both_runs_of_a_two_run_space_are_sampled_past_the_bound() -> None:
+    """Neither run of a two-run id space is starved by the sample ceiling.
+
+    The product of two unbounded runs exceeds the ceiling, so the order it is
+    built in decides which samples survive. Built prefix-major, every long
+    *leading* run is discarded while the trailing ones are kept -- and a regex
+    bounded on the leading run then measures clean, which is precisely the
+    defect this check exists to report, missed in the one direction that
+    matters.
+
+    The pair is the assertion. Either half alone passes against the
+    prefix-major order: the trailing-run half was never at risk, and a
+    single-run space has no second run to starve, so no other test here can
+    see it.
+    """
+    samples = _sample_identifiers_from_schema_pattern(r"^\d+-\d+$")
+    assert samples
+    assert any(re.fullmatch(r"\d{3,}-\d+", s) for s in samples), (
+        f"no sample carries a long leading run: {samples}"
+    )
+    assert any(re.fullmatch(r"\d+-\d{3,}", s) for s in samples), (
+        f"no sample carries a long trailing run: {samples}"
+    )
+
+
+def test_ts1_a_regex_narrow_on_either_run_of_a_two_run_space_warns() -> None:
+    """The check is symmetric across the runs of a two-run identifier space.
+
+    The behavioural counterpart of the sampler assertion above: with the
+    product built prefix-major, the leading-run arm here is silent while the
+    trailing-run arm warns, so the two arms together are what show the check
+    reads the whole identifier rather than its tail.
+    """
+    for regex in (r"\b\d{1,2}-\d+\b", r"\b\d+-\d{1,2}\b"):
+        warnings = identifier_mention_id_space_warnings(
+            _edge_inference(
+                {
+                    "regex": regex,
+                    "target_doc_type": "record",
+                    "target_tier3": {"record_id": "{id}"},
+                }
+            ),
+            [_doc_type("record", "record_id", r"^\d+-\d+$")],
+        )
+        assert len(warnings) == 1, f"{regex} does not span the space; got {warnings}"
+
+
+def test_ts1_a_context_dependent_regex_is_not_reported_as_missing_everything() -> None:
+    """A regex asserting surrounding context matches real mentions, and here.
+
+    The engine meets an identifier inside prose. A regex that says so -- a
+    lookbehind for whitespace, a leading ``\\s`` -- matches every real mention
+    and none of a bare identifier string, so measuring against the bare string
+    reports a working pattern as spanning nothing, on every single load, with
+    no config edit short of rewriting the regex able to silence it.
+
+    The second arm is the control: an equivalent pattern written with
+    ``(?<!\\w)`` was silent even before the padding, so the first arm alone
+    could be passed by a check that had simply stopped measuring.
+    """
+
+    def _warnings_for(regex: str) -> list[str]:
+        return identifier_mention_id_space_warnings(
+            _edge_inference(
+                {
+                    "regex": regex,
+                    "target_doc_type": "failure_record",
+                    "target_tier3": {"failure_id": "{id}"},
+                }
+            ),
+            [_doc_type("failure_record", "failure_id", r"^F\d+$")],
+        )
+
+    assert _warnings_for(r"(?<=\s)F\d+\b") == [], (
+        "a whitespace lookbehind matches every real mention; measuring it "
+        "against a bare identifier must not report it as spanning nothing"
+    )
+    assert _warnings_for(r"(?<!\w)F\d+(?!\w)") == []
+    assert len(_warnings_for(r"(?<=\s)F\d{1,2}\b")) == 1, (
+        "a context assertion must not make a genuinely narrow regex measure clean"
+    )
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        pytest.param(_failure_pattern(NARROW_FAILURE_REGEX, enabled=False), 0, id="disabled"),
+        pytest.param(_failure_pattern(NARROW_FAILURE_REGEX, enabled=True), 1, id="explicitly_on"),
+        pytest.param(_failure_pattern(NARROW_FAILURE_REGEX), 1, id="flag_absent"),
+    ],
+)
+def test_ts8_only_a_disabled_pattern_is_skipped(pattern: dict, expected: int) -> None:
     """A pattern the engine will never apply is not worth a warning.
 
-    The engine's own reader filters on ``enabled`` before it applies
-    anything, so a warning about a disabled pattern describes behavior that
-    cannot occur.
+    The engine's own reader filters on ``enabled`` before it applies anything,
+    so a warning about a disabled pattern describes behavior that cannot
+    occur. The claim is parity with that reader, which reads the flag's
+    *value*.
+
+    The explicitly-on arm is what holds that claim. Without it, an
+    implementation skipping on the key's mere presence -- ``if "enabled" in
+    pattern`` -- agrees on the other two arms and disagrees with the engine on
+    exactly the config that says ``enabled: true``.
     """
     assert (
-        identifier_mention_id_space_warnings(
-            _edge_inference(_failure_pattern(NARROW_FAILURE_REGEX, enabled=False)),
-            [_doc_type("failure_record", "failure_id", FAILURE_ID_PATTERN)],
+        len(
+            identifier_mention_id_space_warnings(
+                _edge_inference(pattern),
+                [_doc_type("failure_record", "failure_id", FAILURE_ID_PATTERN)],
+            )
         )
-        == []
+        == expected
     )
+
+
+def test_ts8_every_pattern_in_a_rule_is_measured_not_only_the_first() -> None:
+    """A divergent pattern is found wherever it sits in the rule.
+
+    Every other fixture here either carries one pattern or carries several
+    that are all silent, so an implementation stopping after the first passes
+    them all. Putting the divergence second is what separates measuring the
+    rule from measuring its head.
+    """
+    warnings = identifier_mention_id_space_warnings(
+        _edge_inference(
+            _failure_pattern(WIDE_FAILURE_REGEX),
+            {
+                "regex": r"\bT-\d{3}\b",
+                "target_doc_type": "ticket",
+                "target_tier3": {"ticket_id": "{id}"},
+            },
+        ),
+        [
+            _doc_type("failure_record", "failure_id", FAILURE_ID_PATTERN),
+            _doc_type("ticket", "ticket_id", TICKET_ID_PATTERN),
+        ],
+    )
+    assert len(warnings) == 1, f"the second pattern's divergence was not reported: {warnings}"
+    assert repr(r"\bT-\d{3}\b") in warnings[0]
+
+
+def test_ts8_every_tier3_key_is_measured_not_only_the_first() -> None:
+    """The same, one level down: a rule's second tier3 key is measured too.
+
+    ``target_tier3`` pairs AND together at resolution, so every key templated
+    on the whole match has to be spanned. Every other fixture carries a single
+    key, so a check reading only the first agrees with them all.
+    """
+    warnings = identifier_mention_id_space_warnings(
+        _edge_inference(
+            {
+                "regex": r"\bF\d{1,2}\b",
+                "target_doc_type": "pair",
+                "target_tier3": {"wide_id": "{id}", "narrow_id": "{id}"},
+            }
+        ),
+        [
+            DocTypeEntry.model_validate(
+                {
+                    "value": "pair",
+                    "label": "Pair",
+                    "metadata_schema": {
+                        "type": "object",
+                        "properties": {
+                            # Spanned by the regex, so a check reading only the
+                            # first key finds nothing to report.
+                            "wide_id": {"type": "string", "pattern": r"^F\d{1,2}$"},
+                            "narrow_id": {"type": "string", "pattern": r"^F\d+$"},
+                        },
+                    },
+                }
+            )
+        ],
+    )
+    assert len(warnings) == 1, f"the second tier3 key was not measured: {warnings}"
+    assert "narrow_id" in warnings[0]
 
 
 def test_ts9_divergence_is_surfaced_on_the_load_path(

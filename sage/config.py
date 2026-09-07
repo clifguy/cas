@@ -37,6 +37,35 @@ def pattern_is_discriminating(pattern: dict) -> bool:
     )
 
 
+def enabled_identifier_mention_patterns(edge_inference: object) -> list[dict]:
+    """The identifier_mention patterns a vault's config actually applies.
+
+    One walk of ``tier_assignments`` -> ``references`` -> ``identifier_mention``
+    -> ``patterns``, honoring the per-pattern ``enabled`` flag. Every consumer
+    reads through here -- the resolver that applies the patterns and both
+    config-load warning passes -- so which patterns are live is answered once
+    rather than transcribed per caller. Transcription is what let the warning
+    passes and the resolver disagree about ``enabled``: a per-pattern flag
+    added to one walk and not the others is invisible until a vault sets it.
+
+    Accepts the parsed ``edge_inference`` block or any non-mapping (an absent
+    or malformed section yields no patterns rather than raising).
+    """
+    if not isinstance(edge_inference, dict):
+        return []
+    patterns: list[dict] = []
+    for assignment in edge_inference.get("tier_assignments", []) or []:
+        if assignment.get("edge_type") != "references":
+            continue
+        for rule in assignment.get("inference_rules", []) or []:
+            if rule.get("method") != "identifier_mention":
+                continue
+            for pattern in rule.get("patterns", []) or []:
+                if pattern.get("enabled", True):
+                    patterns.append(pattern)
+    return patterns
+
+
 def identifier_mention_pattern_warnings(edge_inference: dict) -> list[str]:
     """Return non-fatal warnings for misconfigured identifier_mention patterns.
 
@@ -63,33 +92,23 @@ def identifier_mention_pattern_warnings(edge_inference: dict) -> list[str]:
     keeps a vault whose config predates the tier3 migration loadable.
     """
     warnings: list[str] = []
-    if not isinstance(edge_inference, dict):
-        return warnings
-    for assignment in edge_inference.get("tier_assignments", []) or []:
-        if assignment.get("edge_type") != "references":
-            continue
-        for rule in assignment.get("inference_rules", []) or []:
-            if rule.get("method") != "identifier_mention":
-                continue
-            for pattern in rule.get("patterns", []) or []:
-                if not pattern.get("enabled", True):
-                    continue
-                regex = pattern.get("regex", "<no-regex>")
-                if "target_title_prefix" in pattern:
-                    warnings.append(
-                        f"identifier_mention pattern {regex!r} carries the "
-                        "unsupported key 'target_title_prefix'; the resolver "
-                        "ignores it (title-prefix matching was removed in the "
-                        "tier3 migration)."
-                    )
-                if not pattern_is_discriminating(pattern):
-                    warnings.append(
-                        f"identifier_mention pattern {regex!r} is "
-                        "non-discriminating (no target_tier3 and no "
-                        "placeholder-bearing target_tags); it cannot resolve a "
-                        "specific identifier and the resolver will refuse to "
-                        "link its mentions."
-                    )
+    for pattern in enabled_identifier_mention_patterns(edge_inference):
+        regex = pattern.get("regex", "<no-regex>")
+        if "target_title_prefix" in pattern:
+            warnings.append(
+                f"identifier_mention pattern {regex!r} carries the "
+                "unsupported key 'target_title_prefix'; the resolver "
+                "ignores it (title-prefix matching was removed in the "
+                "tier3 migration)."
+            )
+        if not pattern_is_discriminating(pattern):
+            warnings.append(
+                f"identifier_mention pattern {regex!r} is "
+                "non-discriminating (no target_tier3 and no "
+                "placeholder-bearing target_tags); it cannot resolve a "
+                "specific identifier and the resolver will refuse to "
+                "link its mentions."
+            )
     return warnings
 
 
@@ -149,9 +168,20 @@ def _expand_atom(source: str, index: int) -> tuple[str, list[str], int]:
             raise _UnsupportedSchemaPattern
         return "other", samples, index + 1
     if char == "\\":
-        if index + 1 >= len(source) or source[index + 1] != "d":
+        if index + 1 >= len(source):
             raise _UnsupportedSchemaPattern
-        return "digit", _digit_runs(1), index + 2
+        escaped = source[index + 1]
+        if escaped == "d":
+            return "digit", _digit_runs(1), index + 2
+        if not escaped.isalnum():
+            # An escaped punctuation character is that character, in every
+            # dialect. Schema authors escape `-` and `.` routinely, and
+            # refusing them dropped ordinary identifier spaces out of
+            # measurement for a reason no reader of the pattern could see.
+            return "other", [escaped], index + 2
+        # Every other class escape (`\w`, `\s`, `\b`, a backreference) is
+        # outside the subset.
+        raise _UnsupportedSchemaPattern
     if char in "[.^$*+?{":
         raise _UnsupportedSchemaPattern
     return "other", [char], index + 1
@@ -222,12 +252,34 @@ def _expand_piece(source: str, index: int) -> tuple[list[str], int]:
     return samples, index
 
 
+def _interleaved_product(prefixes: list[str], suffixes: list[str]) -> list[str]:
+    """Concatenate two sample sets so the cap truncates both sides evenly.
+
+    A plain nested loop is prefix-major, so the ceiling keeps every suffix of
+    the first few prefixes and no later prefix at all. On an identifier space
+    with two unbounded runs that drops every long *leading* run while keeping
+    the long trailing ones, and a regex bounded on the leading run then
+    measures clean -- the one shape this check exists to report, missed in the
+    one direction that matters. Walking the product diagonally, ordered by the
+    larger of the two indices, takes both sides to the same depth instead.
+    """
+    ordered: list[str] = []
+    for depth in range(max(len(prefixes), len(suffixes))):
+        if depth < len(suffixes):
+            for i in range(min(depth + 1, len(prefixes))):
+                ordered.append(prefixes[i] + suffixes[depth])
+        if depth < len(prefixes):
+            for j in range(min(depth, len(suffixes))):
+                ordered.append(prefixes[depth] + suffixes[j])
+    return _cap_samples(ordered)
+
+
 def _expand_sequence(source: str, index: int) -> tuple[list[str], int]:
     """Parse a concatenation, stopping at ``|`` or a closing paren."""
     accumulated = [""]
     while index < len(source) and source[index] not in "|)":
         piece, index = _expand_piece(source, index)
-        accumulated = _cap_samples(prefix + suffix for prefix in accumulated for suffix in piece)
+        accumulated = _interleaved_product(accumulated, piece)
     return accumulated, index
 
 
@@ -249,12 +301,15 @@ def _sample_identifiers_from_schema_pattern(pattern: str) -> list[str] | None:
     nothing".
 
     Supported: a fully anchored ``^...$`` pattern built from literal
-    characters, ``\d``, groups (``(...)`` and ``(?:...)``), alternation, and
-    the quantifiers ``{n}``, ``{n,m}``, ``+`` and ``?``.
+    characters -- including an escaped punctuation literal such as ``\-`` or
+    ``\.`` -- plus ``\d``, groups (``(...)`` and ``(?:...)``), alternation,
+    and the quantifiers ``{n}``, ``{n,m}``, ``+`` and ``?``.
 
-    Refused: unanchored patterns, character classes, ``.``, ``\w``, ``\s``,
-    ``*``, open-ended ``{n,}``, backreferences, lookaround, and repetition of
-    a group beyond a small bound.
+    Refused: unanchored patterns, and any pattern whose anchors are per-branch
+    rather than around the whole (``^A$|^B$``); character classes, ``.``,
+    ``\w``, ``\s``, and every other class escape; ``*``, open-ended ``{n,}``,
+    backreferences, lookaround, and repetition of a group beyond a small
+    bound.
 
     The result is a sample, not the id space: it is sized to cross the width
     boundaries where a mention regex tends to stop short, not to enumerate
@@ -281,8 +336,18 @@ def _matches_as_whole_identifier(compiled: re.Pattern, identifier: str) -> bool:
     does not resolve the identifier it was found inside -- it resolves a
     different, truncated one -- so covering an identifier means matching all
     of it.
+
+    The identifier is padded before matching because the engine meets it
+    surrounded by prose, and a regex may say so: a leading ``\\s`` or a
+    ``(?<=\\s)`` lookbehind matches every real mention and none of a bare
+    identifier, which would report a working pattern as spanning nothing on
+    every load. One space on each side is enough for the assertions that
+    occur -- word boundaries and lookarounds over whitespace all behave as
+    they do mid-body -- and cannot introduce a match, since the padding is
+    not part of the identifier the span must equal.
     """
-    return any(match.group(0) == identifier for match in compiled.finditer(identifier))
+    probe = f" {identifier} "
+    return any(match.group(0) == identifier for match in compiled.finditer(probe))
 
 
 def _id_space_warnings_for_pattern(pattern: dict, metadata_schemas: dict[str, dict]) -> list[str]:
@@ -402,26 +467,13 @@ def identifier_mention_id_space_warnings(
     configuration while naming no defect its author could repair.
     """
     warnings: list[str] = []
-    if not isinstance(edge_inference, dict):
-        return warnings
     metadata_schemas = {
         doc_type.value: doc_type.metadata_schema
         for doc_type in doc_types
         if isinstance(doc_type.metadata_schema, dict)
     }
-    for assignment in edge_inference.get("tier_assignments", []) or []:
-        if assignment.get("edge_type") != "references":
-            continue
-        for rule in assignment.get("inference_rules", []) or []:
-            if rule.get("method") != "identifier_mention":
-                continue
-            for pattern in rule.get("patterns", []) or []:
-                # The engine's own reader skips disabled patterns before it
-                # applies anything, so warning about one would describe
-                # behavior that cannot occur.
-                if not pattern.get("enabled", True):
-                    continue
-                warnings.extend(_id_space_warnings_for_pattern(pattern, metadata_schemas))
+    for pattern in enabled_identifier_mention_patterns(edge_inference):
+        warnings.extend(_id_space_warnings_for_pattern(pattern, metadata_schemas))
     return warnings
 
 
