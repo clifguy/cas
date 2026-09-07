@@ -16,7 +16,12 @@
 # Override config at deploy time via SAGE_CONFIG_PATH. See
 # docs/process/container-image.md.
 
-ARG PYTHON_IMAGE=python:3.14-slim
+# Base images are digest-pinned so two builds of one commit resolve the same
+# bytes. The deploy path depends on it: the image the deploy pushes is not
+# smoke-tested itself, but is accepted on the strength of the CI run for that
+# commit having smoked the same build. A moving tag breaks that equivalence
+# silently. Keep the readable tag ahead of the digest when bumping.
+ARG PYTHON_IMAGE=python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 # --------------------------------------------------------------------------
 # Builder: resolve the locked runtime dependencies and pre-bake model weights.
@@ -24,7 +29,7 @@ ARG PYTHON_IMAGE=python:3.14-slim
 FROM ${PYTHON_IMAGE} AS builder
 
 # uv drives the install from the committed lockfile (byte-identical to CI).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /usr/local/bin/uv
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \

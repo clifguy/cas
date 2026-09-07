@@ -251,10 +251,26 @@ same reusable workflow with the push **enabled** and the tenant's Environment, s
 the artifact it provisions is built from the committed commit and lands in that
 tenant's registry.
 
+**The smoke tests run on the CI arm only.** The deploy arm builds and pushes
+without re-running them, and the reason it is entitled to is a chain of two
+facts. A deploy dispatches `origin/main` HEAD and refuses a commit whose own CI
+run is not green, so the commit it ships has already been through the arm that
+smokes — though note that rule lives in the operator tooling, not in this
+repository, and any `workflow_dispatch` reaches the build with the push on. And every base image both Dockerfiles resolve is digest-pinned, so a
+rebuild of that commit produces the same bytes rather than merely the same
+recipe. Break either half — force a deploy past its precheck, or let a base
+image float again — and the deploy is pushing an artifact nothing has tested.
+
+Because the deploy arm pushes from inside the build rather than from a later
+step, `az acr login` runs *before* the images are built there. Nothing loads an
+image into the local daemon on that arm; a build that is going to the registry
+writes to the registry.
+
 Images are tagged `{version}-{short-sha}` (the version is
 `sage.build_info.RELEASE_VERSION`, so the registry tag matches the stamp the
 running container reports) plus a moving `latest`; deployments pin the immutable
-`{version}-{short-sha}` tag, never `latest`.
+`{version}-{short-sha}` tag, never `latest`. Both tags are applied as arguments
+to the build itself.
 
 The push is dormant until the tenant's `AZURE_CLIENT_ID` and `ACR_LOGIN_SERVER`
 variables are set. The registry login host is a Bicep output (`acrLoginServer`),

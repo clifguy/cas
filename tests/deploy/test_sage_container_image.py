@@ -17,6 +17,12 @@ future server-version bump that forgets the image is caught here.
 import re
 from pathlib import Path
 
+from tests.deploy._image_refs import (
+    digest_without_readable_tag,
+    external_image_refs,
+    unpinned,
+)
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKERFILE = _REPO_ROOT / "Dockerfile"
 _POSTGRES_BICEP = _REPO_ROOT / "infra" / "modules" / "postgres.bicep"
@@ -156,3 +162,34 @@ def test_runtime_docs_fs_files_survive_the_dockerignore() -> None:
         assert f"!{relative}" in ignore_lines, (
             f"{relative} is COPYed but not re-included in .dockerignore; the build would fail"
         )
+
+
+def test_base_images_are_digest_pinned() -> None:
+    """Every external image this Dockerfile resolves is pinned to a digest.
+
+    A floating tag lets two builds of the same commit resolve different bytes.
+    That matters here beyond ordinary reproducibility: the deploy pipeline no
+    longer smokes the image it pushes, resting instead on the CI run for that
+    commit having smoked the same build. A moving base breaks exactly that
+    equivalence, and breaks it silently.
+    """
+    refs = external_image_refs(_dockerfile_text())
+
+    # Non-vacuity. A scan that quietly matched nothing would satisfy every
+    # assertion below, so pin the sites this file is known to carry.
+    assert "ARG PYTHON_IMAGE" in refs and len(refs) == 2, (
+        "the image-reference scan lost a known site; this Dockerfile carries a\n"
+        "PYTHON_IMAGE arg and a uv COPY --from, so a scan finding anything else\n"
+        f"has stopped reaching them: {sorted(refs)}"
+    )
+
+    floating = unpinned(refs)
+    assert not floating, (
+        f"these image references float and must carry an @sha256: digest: {floating}"
+    )
+
+    untagged = digest_without_readable_tag(refs)
+    assert not untagged, (
+        "a digest pin must keep its readable tag (`name:tag@sha256:...`) so the "
+        f"version stays legible to a reader and to the version gates: {untagged}"
+    )

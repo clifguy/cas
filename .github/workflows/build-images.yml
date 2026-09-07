@@ -1,13 +1,23 @@
 name: build-images
 
-# Reusable container-image build. Builds the SAGE and CAS BFF images, runs the
-# container smoke tests (SMK/BSMK), and — when called with push enabled and the
-# target registry configured — pushes the immutable {version}-{short-sha} tag to
-# that tenant's Azure Container Registry. The CI workflow calls it with push off
-# (build + smoke as the regression gate); the deploy pipeline calls it with push
-# on and the tenant's Environment, so the artifact it provisions is built from
-# the committed commit. Authoring the build once here keeps the two callers from
-# drifting.
+# Reusable container-image build. Builds the SAGE and CAS BFF images and — when
+# called with push enabled and the target registry configured — pushes the
+# immutable {version}-{short-sha} tag, plus a moving latest, to that tenant's
+# Azure Container Registry. Authoring the build once here keeps the two callers
+# from drifting.
+#
+# The two callers differ in one respect beyond the push. The CI workflow calls
+# it with push off and gets the container smoke tests (SMK/BSMK) — it is the
+# regression gate, and its images are discarded. The deploy pipeline calls it
+# with push on and skips them: it is reached only for a commit whose own CI run
+# concluded green, and because every base image is digest-pinned, that run built
+# the same bytes from the same commit. The images it builds are the artifact.
+#
+# One gap follows, and is deliberate rather than overlooked. Nothing in this
+# repository enforces the green-commit rule -- it lives in the operator tooling
+# that normally dispatches a deploy, and any workflow_dispatch reaches this
+# workflow with the push on. A dispatch that bypasses that tooling therefore
+# pushes an image no smoke test has seen.
 on:
   workflow_call:
     inputs:
@@ -52,6 +62,11 @@ jobs:
       # Postgres (CAS-ADR-042). The storage harness creates disposable schemas
       # in this throwaway container DB; SAGE_TEST_PG_DSN (set on the smoke
       # step) points at it.
+      #
+      # It starts on the push arm too, where nothing consumes it, because
+      # `services:` cannot be conditioned on a workflow input. That is a known
+      # cost of keeping one job rather than splitting the build in two, not an
+      # oversight.
       postgres:
         image: pgvector/pgvector:pg17
         env:
@@ -107,36 +122,106 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # The GitHub Actions cache backend authenticates with ACTIONS_RUNTIME_TOKEN
+      # and ACTIONS_RESULTS_URL. The forge injects those into JavaScript actions
+      # but not into `run:` steps, and the builds below are `run:` steps -- so
+      # without this the `type=gha` exporter is unauthenticated. It then writes
+      # nothing, reads nothing, and reports no error: caching that reads as
+      # configured and never happens. Docker's documentation for the backend
+      # calls out the manual exposure a hand-invoked buildx needs.
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Log in to Azure (OIDC)
+        # Ahead of the builds, because the registry arm now pushes from inside
+        # the build rather than from a later step. Authenticates with the
+        # selected Environment's federated deploy identity; stays dormant until
+        # both the AZURE_CLIENT_ID and ACR_LOGIN_SERVER variables are
+        # configured. The condition is step-level deliberately -- a job-level
+        # `if` cannot see environment-scoped variables and would evaluate empty.
+        if: >
+          inputs.push
+          && vars.AZURE_CLIENT_ID != ''
+          && vars.ACR_LOGIN_SERVER != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to the tenant's registry
+        # Exchanges the workload-identity token for a registry token, which the
+        # build steps below need in place before they push.
+        if: >
+          inputs.push
+          && vars.AZURE_CLIENT_ID != ''
+          && vars.ACR_LOGIN_SERVER != ''
+        env:
+          ACR: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          set -euo pipefail
+          az acr login --name "${ACR%.azurecr.io}"
+
       - name: Build SAGE image
         env:
           SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
           SAGE_BUILD_IDENTITY: ${{ steps.ver.outputs.sage_build_identity }}
+          IMAGE_TAG: ${{ steps.ver.outputs.image_tag }}
+          ACR: ${{ vars.ACR_LOGIN_SERVER }}
+          # Both halves of the registry gate, resolved once. Step-level env: a
+          # job-level one cannot carry a `steps.` context.
+          PUSH_TO_REGISTRY: >-
+            ${{ inputs.push
+            && vars.AZURE_CLIENT_ID != ''
+            && vars.ACR_LOGIN_SERVER != '' }}
         run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
-            --build-arg "SAGE_BUILD_IDENTITY=${SAGE_BUILD_IDENTITY}" \
-            --cache-from "type=gha,scope=sage-image" \
-            --cache-to "type=gha,mode=max,scope=sage-image" \
-            --load \
-            -t cas-sage:ci \
-            .
+          set -euo pipefail
+          args=(--platform linux/amd64
+                --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}"
+                --build-arg "SAGE_BUILD_IDENTITY=${SAGE_BUILD_IDENTITY}"
+                --cache-from "type=gha,scope=sage-image"
+                --cache-to "type=gha,mode=max,scope=sage-image")
+          if [ "${PUSH_TO_REGISTRY}" = "true" ]; then
+            # Straight to the registry. Loading into the local daemon first
+            # would serialise every layer into docker's image format and
+            # reimport it, only to upload the same bytes a step later.
+            args+=(--push -t "${ACR}/sage:${IMAGE_TAG}" -t "${ACR}/sage:latest")
+          else
+            # The smoke step below runs against this local tag.
+            args+=(--load -t cas-sage:ci)
+          fi
+          docker buildx build "${args[@]}" .
 
       - name: Build BFF image
         env:
           SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          IMAGE_TAG: ${{ steps.ver.outputs.image_tag }}
+          ACR: ${{ vars.ACR_LOGIN_SERVER }}
+          PUSH_TO_REGISTRY: >-
+            ${{ inputs.push
+            && vars.AZURE_CLIENT_ID != ''
+            && vars.ACR_LOGIN_SERVER != '' }}
         run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            -f Dockerfile.bff \
-            --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
-            --cache-from "type=gha,scope=bff-image" \
-            --cache-to "type=gha,mode=max,scope=bff-image" \
-            --load \
-            -t cas-bff:ci \
-            .
+          set -euo pipefail
+          args=(--platform linux/amd64
+                -f Dockerfile.bff
+                --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}"
+                --cache-from "type=gha,scope=bff-image"
+                --cache-to "type=gha,mode=max,scope=bff-image")
+          if [ "${PUSH_TO_REGISTRY}" = "true" ]; then
+            args+=(--push -t "${ACR}/bff:${IMAGE_TAG}" -t "${ACR}/bff:latest")
+          else
+            args+=(--load -t cas-bff:ci)
+          fi
+          docker buildx build "${args[@]}" .
 
       - name: Run container smoke tests (SAGE + BFF)
+        # Non-push arm only. The deploy caller reaches this workflow solely for
+        # a commit whose own CI run concluded green, and that run built from the
+        # same digest-pinned bases and smoked the result -- so running the suite
+        # again here re-proves a settled fact against the clock. The one gap is
+        # that the green-commit rule is operator-side, not enforced here, so a
+        # dispatch that skips it ships an image these tests never saw.
+        if: ${{ !inputs.push }}
         env:
           SAGE_TEST_DOCKER: "1"
           SAGE_TEST_IMAGE: "cas-sage:ci"
@@ -151,37 +236,3 @@ jobs:
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
           .venv/bin/pytest -v --tb=short tests/deploy/
-
-      - name: Log in to Azure (OIDC)
-        # The push targets the tenant's own registry and authenticates with that
-        # Environment's federated deploy identity; it stays dormant until both the
-        # AZURE_CLIENT_ID and ACR_LOGIN_SERVER variables are configured.
-        if: >
-          inputs.push
-          && vars.AZURE_CLIENT_ID != ''
-          && vars.ACR_LOGIN_SERVER != ''
-        uses: azure/login@v3
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Push images to ACR
-        if: >
-          inputs.push
-          && vars.AZURE_CLIENT_ID != ''
-          && vars.ACR_LOGIN_SERVER != ''
-        env:
-          ACR: ${{ vars.ACR_LOGIN_SERVER }}
-          IMAGE_TAG: ${{ steps.ver.outputs.image_tag }}
-        run: |
-          set -euo pipefail
-          az acr login --name "${ACR%.azurecr.io}"
-          docker tag cas-sage:ci "${ACR}/sage:${IMAGE_TAG}"
-          docker tag cas-sage:ci "${ACR}/sage:latest"
-          docker push "${ACR}/sage:${IMAGE_TAG}"
-          docker push "${ACR}/sage:latest"
-          docker tag cas-bff:ci "${ACR}/bff:${IMAGE_TAG}"
-          docker tag cas-bff:ci "${ACR}/bff:latest"
-          docker push "${ACR}/bff:${IMAGE_TAG}"
-          docker push "${ACR}/bff:latest"

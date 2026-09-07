@@ -239,11 +239,16 @@ jobs:
 
   container:
     # Container packaging path: build both images and run the smoke tests
-    # (SMK/BSMK) on every event this workflow answers, so a Dockerfile regression cannot merge
-    # silently. Together with the native `test` job above this forms the
-    # native/container profile matrix. Pushing to a registry is the deploy
+    # (SMK/BSMK) on every event this workflow answers, so a Dockerfile regression
+    # cannot merge silently. Together with the native `test` job above this forms
+    # the native/container profile matrix. Pushing to a registry is the deploy
     # pipeline's job — each tenant has its own registry, so the per-tenant push
     # lives in infra.yml; here the shared reusable build runs with push disabled.
+    #
+    # This job is the only place the container smoke tests run. The deploy arm
+    # skips them and accepts its artifact on the strength of this run having
+    # built the same bytes from the same commit — which holds because the base
+    # images are digest-pinned. Weakening either half weakens the deploy.
     uses: ./.github/workflows/build-images.yml
     with:
       push: false
