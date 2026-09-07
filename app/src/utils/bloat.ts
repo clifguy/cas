@@ -15,11 +15,14 @@ const DEAD_TUPLE_WARN_RATIO = 0.2;
 const DEAD_TUPLE_RED_RATIO = 0.4;
 
 /**
- * Dead-tuple fraction of the chunks relation: dead / (dead + live). Returns 0
- * for an empty table so the ratio is well-defined before any rows exist.
+ * Dead-tuple fraction of the content store: dead / (dead + live). Both counts
+ * span every surface the store holds, so the fraction is taken over one scope:
+ * a numerator covering the store and a denominator covering one of its tables
+ * would describe neither. Returns 0 for an empty store so the ratio is
+ * well-defined before any rows exist.
  */
-export function deadTupleRatio(deadTuples: number, liveChunks: number): number {
-  const total = deadTuples + liveChunks;
+export function deadTupleRatio(deadTuples: number, liveRows: number): number {
+  const total = deadTuples + liveRows;
   return total === 0 ? 0 : deadTuples / total;
 }
 
@@ -29,8 +32,8 @@ export function deadTupleRatio(deadTuples: number, liveChunks: number): number {
  * reused by future inserts and is not itself a health problem, so it must not
  * drive the alarm.
  */
-export function bloatState(deadTuples: number, liveChunks: number): BloatState {
-  const ratio = deadTupleRatio(deadTuples, liveChunks);
+export function bloatState(deadTuples: number, liveRows: number): BloatState {
+  const ratio = deadTupleRatio(deadTuples, liveRows);
   if (ratio >= DEAD_TUPLE_RED_RATIO) return 'red';
   if (ratio >= DEAD_TUPLE_WARN_RATIO) return 'warn';
   return 'ok';

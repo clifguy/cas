@@ -1,7 +1,8 @@
 // Vitest specs for the Dashboard's content-store bloat + last-optimize wiring.
 //
 // Proves the Dashboard threads content_store_version_count (dead tuples),
-// content_store_chunk_count (live rows), and content_store_small_fragment_count
+// content_store_row_count (live rows across every content-store surface), and
+// content_store_small_fragment_count
 // (free pages) from the stats payload into the BloatIndicator card (ok below the
 // autovacuum-anchored dead-tuple threshold, flagged above it, and unmoved by
 // free space alone), and renders the last-optimize summary card from
@@ -34,7 +35,7 @@ const mockVault: VaultSummary = {
 
 function makeStats(
   deadTuples: number,
-  liveChunks: number,
+  liveRows: number,
   freePages = 0,
   lastOptimize: LastOptimizeSummary | null = null,
 ): VaultStats {
@@ -48,7 +49,7 @@ function makeStats(
     staging_edge_count: 0,
     graph_store_size_bytes: 800,
     content_store_size_bytes: 1000,
-    content_store_chunk_count: liveChunks,
+    content_store_row_count: liveRows,
     content_store_version_count: deadTuples,
     content_store_small_fragment_count: freePages,
     last_ingestion_at: null,

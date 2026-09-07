@@ -10,9 +10,12 @@ Bloat and size signals are read from real Postgres internals
 (``pgstattuple`` for dead-tuple and free-space accounting,
 ``pg_total_relation_size`` for the on-disk footprint) and ``optimize`` reclaims
 via ``VACUUM (FULL, ANALYZE)``, so the dashboard's content-store indicators stay
-substrate-agnostic.
+substrate-agnostic. Both describe the store rather than one of its tables: the
+store carries a passage surface and a document-level surface (CAS-ADR-049), and
+every reading and the reclamation are summed across the set named once at
+``_CONTENT_STORE_SURFACES``.
 
-The store operates on the unqualified ``chunks`` table and relies on the pool's
+The store operates on unqualified table names and relies on the pool's
 ``search_path`` to select the active vault's schema; each vault binds its own
 ``search_path``-scoped pool. The pool is expected to be pgvector-registered
 (``register_vector_async`` runs per connection), so embeddings round-trip as
@@ -50,6 +53,60 @@ from sage.utils.text_normalization import fold_for_query
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from psycopg import AsyncConnection
     from psycopg_pool import AsyncConnectionPool
+
+# The tables that constitute the content store (CAS-ADR-049): a passage surface
+# and a document-level surface. Its size, bloat, and reclamation describe the
+# store rather than either table, so every accounting statement below is
+# rendered from this one set. A reading written against a single table measures
+# part of the store and reports the number as though it were the whole -- which
+# is what a second surface arriving quietly turned each of these reads into.
+_CONTENT_STORE_SURFACES: tuple[str, ...] = ("chunks", "document_surface")
+
+# The surface set as a VALUES list, one placeholder per surface. The names
+# travel as *values* into ``to_regclass`` rather than as interpolated
+# identifiers, which is what makes the tolerance per-surface: an absent surface
+# resolves to NULL and contributes nothing, where a name spelled into the
+# statement would raise and take every other surface's reading down with it. A
+# vault part-way through provisioning is exactly when that matters, and
+# reporting zero for a store that has rows reads as a pristine one.
+_SURFACE_VALUES = ", ".join(["(%s)"] * len(_CONTENT_STORE_SURFACES))
+
+# Total relation size across the surfaces. Catalog-only: no heap is read, so
+# this stays cheap enough for the dashboard to call on every load.
+_SURFACE_SIZE_SQL = f"""
+    SELECT COALESCE(SUM(pg_total_relation_size(r.rel)), 0)
+    FROM (VALUES {_SURFACE_VALUES}) AS n(name)
+    CROSS JOIN LATERAL (SELECT to_regclass(n.name) AS rel) r
+"""  # noqa: S608 -- interpolates one fixed constant; the surface names are parameters
+
+
+def _surface_bloat_sql(*expressions: str) -> str:
+    """Sum per-surface ``pgstattuple`` expressions across the content store.
+
+    ``pgstattuple`` is STRICT, so the NULL regclass an absent surface resolves
+    to yields NULL columns rather than an error, and ``COALESCE`` floors each
+    sum to zero. The join predicate keeps the function off a NULL argument
+    besides, so the tolerance does not rest on strictness alone.
+
+    Each surface's heap is scanned once per call however many expressions are
+    asked for, because the function is joined rather than invoked per column.
+    """
+    columns = ",\n           ".join(f"COALESCE(SUM({e}), 0)" for e in expressions)
+    return f"""
+    SELECT {columns}
+    FROM (VALUES {_SURFACE_VALUES}) AS n(name)
+    CROSS JOIN LATERAL (SELECT to_regclass(n.name) AS rel) r
+    LEFT JOIN LATERAL pgstattuple(r.rel) s ON r.rel IS NOT NULL
+"""  # noqa: S608 -- interpolates module constants only; the surface names are parameters
+
+
+# Free space and table length are reported in whole pages, so a tightly packed
+# store reads near zero whatever its absolute size.
+_PAGES = "current_setting('block_size')::bigint"
+_DEAD_TUPLES = "s.dead_tuple_count"
+_TABLE_PAGES = f"s.table_len / {_PAGES}"
+_FREE_PAGES = f"s.free_space / {_PAGES}"
+
 
 # Chunk-level columns the port accepts as pre-filter predicates. Filter keys
 # outside this allowlist are ignored, and only these fixed identifiers are ever
@@ -1155,45 +1212,58 @@ class PostgresContentStore(ContentStore):
 
     # -- stats / bloat ------------------------------------------------------
 
-    async def count_chunks(self) -> int:
-        """Total chunk rows across all documents; 0 when the table is absent."""
-        with self._query_timer.measure("count_chunks"):
-            return await self._scalar_or_zero("SELECT count(*) FROM chunks")
+    async def count_rows(self) -> int:
+        """Total content-store rows across every surface; 0 for an absent surface.
+
+        Counts the store rather than one of its tables, because this is the
+        live-row figure the dead-tuple count below is read against: a fraction
+        whose numerator spans both surfaces and whose denominator spans one
+        describes neither.
+        """
+        with self._query_timer.measure("count_rows"):
+            counts = [
+                await self._scalar_or_zero(f"SELECT count(*) FROM {surface}")  # noqa: S608
+                for surface in _CONTENT_STORE_SURFACES
+            ]
+            return sum(counts)
 
     async def count_retained_versions(self) -> int:
         """Dead MVCC tuples awaiting VACUUM -- retained old row versions.
 
-        Rises with un-optimized write churn (each re-index is a delete+insert),
-        independent of corpus size, and is reset by ``optimize``. Read via
-        ``pgstattuple``; 0 when the table is absent.
+        Rises with un-optimized write churn, independent of corpus size, and is
+        reset by ``optimize``. Both surfaces accumulate them by construction
+        rather than by accident: a passage re-index and a document-level write
+        are each a delete-then-insert, and the document-level one runs on every
+        metadata change and every abstract refresh. Read via ``pgstattuple``;
+        an absent surface contributes 0.
         """
         with self._query_timer.measure("count_retained_versions"):
-            return await self._scalar_or_zero("SELECT dead_tuple_count FROM pgstattuple('chunks')")
+            return await self._scalar_or_zero(
+                _surface_bloat_sql(_DEAD_TUPLES), _CONTENT_STORE_SURFACES
+            )
 
     async def count_small_fragments(self) -> int:
         """Reclaimable free-space pages -- the un-compacted-fragment analog.
 
         After churn is vacuumed, dead tuples become in-page free space;
         ``optimize`` (VACUUM FULL) returns it to the OS. Reported as whole
-        pages so a tightly packed store reads near zero. 0 when the table is
-        absent.
+        pages so a tightly packed store reads near zero. An absent surface
+        contributes 0.
         """
         with self._query_timer.measure("count_small_fragments"):
-            import psycopg
-
-            try:
-                rows = await self._fetchall(
-                    "SELECT free_space / current_setting('block_size')::bigint "
-                    "FROM pgstattuple('chunks')"
-                )
-            except psycopg.errors.UndefinedTable:
-                return 0
-            return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+            return await self._scalar_or_zero(
+                _surface_bloat_sql(_FREE_PAGES), _CONTENT_STORE_SURFACES
+            )
 
     async def measured_byte_size(self) -> int:
-        """On-disk footprint of the chunks relation (heap + indexes + toast)."""
+        """On-disk footprint of the content store (heap + indexes + toast).
+
+        Summed across the surfaces. Neither store reported the document-level
+        surface's footprint before it was summed here: the graph store's own
+        size names its five tables explicitly and this one named the passages.
+        """
         with self._query_timer.measure("measured_byte_size"):
-            return await self._scalar_or_zero("SELECT pg_total_relation_size('chunks'::regclass)")
+            return await self._scalar_or_zero(_SURFACE_SIZE_SQL, _CONTENT_STORE_SURFACES)
 
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """Reclaim bloat with ``VACUUM (FULL, ANALYZE)``; snapshot pre/post.
@@ -1211,7 +1281,7 @@ class PostgresContentStore(ContentStore):
             async with self._pool.connection() as conn:
                 await conn.set_autocommit(True)
                 pre = await self._bloat_snapshot(conn)
-                await conn.execute("VACUUM (FULL, ANALYZE) chunks")
+                await conn.execute(f"VACUUM (FULL, ANALYZE) {', '.join(_CONTENT_STORE_SURFACES)}")
                 post = await self._bloat_snapshot(conn)
             return ContentStoreOptimizeSnapshot(
                 pre_bytes=pre["bytes"],
@@ -1228,22 +1298,21 @@ class PostgresContentStore(ContentStore):
 
     @staticmethod
     async def _bloat_snapshot(conn: AsyncConnection) -> dict[str, int]:
-        """Capture (bytes, versions, fragments, small_fragments) for chunks."""
-        import psycopg
+        """Capture (bytes, versions, fragments, small_fragments) for the store.
 
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT pg_total_relation_size('chunks'::regclass), "
-                    "dead_tuple_count, "
-                    "table_len / current_setting('block_size')::bigint, "
-                    "free_space / current_setting('block_size')::bigint "
-                    "FROM pgstattuple('chunks')"
-                )
-                row = await cur.fetchone()
-        except psycopg.errors.UndefinedTable:
-            row = None
-        if row is None:
+        Summed over the same surfaces the reclamation runs against, so the
+        pre/post pair a caller compares is denominated in the scope that was
+        actually reclaimed.
+        """
+        async with conn.cursor() as cur:
+            await cur.execute(
+                _surface_bloat_sql(
+                    "pg_total_relation_size(r.rel)", _DEAD_TUPLES, _TABLE_PAGES, _FREE_PAGES
+                ),
+                _CONTENT_STORE_SURFACES,
+            )
+            row = await cur.fetchone()
+        if row is None:  # pragma: no cover -- an aggregate always returns one row
             return {"bytes": 0, "versions": 0, "fragments": 0, "small_fragments": 0}
         return {
             "bytes": int(row[0]),

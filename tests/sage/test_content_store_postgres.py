@@ -19,7 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from sage.adapters.content_store_postgres import PostgresContentStore
+from sage.adapters.content_store_postgres import (
+    _CONTENT_STORE_SURFACES,
+    PostgresContentStore,
+)
 from sage.adapters.interfaces import (
     LEGACY_DOCUMENT_HEADER_CHUNK_INDEX,
     LEGACY_DOCUMENT_HEADER_HEADING_PATH,
@@ -108,9 +111,44 @@ def _fat_chunks(doc_id: str, k: int) -> list[Chunk]:
 async def _churn(store: PostgresContentStore, doc_id: str = "bloat"):
     """Create measurable, vacuum-reclaimable bloat: a large write followed by a
     tiny replacement, leaving most rows dead. index_chunks is delete-then-insert,
-    so the 200 prior rows become dead MVCC tuples awaiting reclamation."""
+    so the 200 prior rows become dead MVCC tuples awaiting reclamation.
+
+    Scoped to the passage surface. The document surface has its own churn helper
+    below, and the tests that discriminate the two surfaces need each reachable
+    without the other."""
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=200))
     await store.index_chunks(doc_id, _fat_chunks(doc_id, k=5))
+
+
+def _fat_surface(doc_id: str, generation: int) -> DocumentSurface:
+    """A document-level row heavy enough to register on the bloat signals.
+
+    The same weight argument as ``_fat_chunks``: a sparse embedding compresses to
+    almost nothing and a short text keeps the heap under a single page, so a
+    churned surface built from either would read as zero bloat however the
+    accounting is written -- a fixture that cannot distinguish the two
+    implementations this file is about."""
+    body = "lorem ipsum dolor sit amet surface padding " * 21  # ~900 chars
+    return DocumentSurface(
+        document_id=doc_id,
+        matchable=f"Title {doc_id}",
+        orienting=f"{generation} {body}",
+        embedding=_dense_embedding(generation),
+    )
+
+
+async def _churn_document_surface(
+    store: PostgresContentStore, *, docs: int = 40, rewrites: int = 5
+) -> None:
+    """Create vacuum-reclaimable bloat on the document surface alone.
+
+    ``upsert_document_surface`` is delete-then-insert, which is the write the
+    surface takes on every metadata change and every abstract refresh, so each
+    rewrite past the first leaves one dead row behind: ``docs * (rewrites - 1)``
+    of them. The passage surface is not touched."""
+    for generation in range(rewrites):
+        for i in range(docs):
+            await store.upsert_document_surface(_fat_surface(f"surface-{i}", generation))
 
 
 # Every other backend that currently pins part of the reclaim horizon. The two
@@ -249,14 +287,55 @@ async def _await_reclaimable_horizon(pg_pool: AsyncConnectionPool, timeout: floa
 
 
 async def _disable_autovacuum(pg_pool) -> None:
-    """Pin autovacuum off on the chunks table for the duration of a bloat test.
+    """Pin autovacuum off on every content-store surface for a bloat test.
 
     Bloat is observed by deliberately *not* reclaiming dead tuples; with
     autovacuum live, the launcher could clear them mid-test and make the signal
     vanish. Test-only determinism -- production leaves autovacuum on (it is the
-    binding's self-healing path, with optimize() as the forcing function)."""
+    binding's self-healing path, with optimize() as the forcing function).
+
+    Reads the surface set from the binding rather than naming the tables here. A
+    surface the accounting measures but this helper does not pin would let the
+    launcher clear the very dead tuples the test asserts on, which reds
+    intermittently rather than outright -- the worst way for a fixture to be
+    wrong."""
     async with pg_pool.connection() as conn:
-        await conn.execute("ALTER TABLE chunks SET (autovacuum_enabled = false)")
+        for surface in _CONTENT_STORE_SURFACES:
+            await conn.execute(f"ALTER TABLE {surface} SET (autovacuum_enabled = false)")
+
+
+# Per-surface bloat readings, spelled as direct SQL rather than reused from the
+# binding. The totals are asserted against these, and a control taken through the
+# code under test would agree with it by construction whatever it measured.
+_SURFACE_STATS_SQL = """
+    SELECT pg_total_relation_size(%s::regclass),
+           dead_tuple_count,
+           table_len / current_setting('block_size')::bigint,
+           free_space / current_setting('block_size')::bigint
+    FROM pgstattuple(%s)
+"""
+
+
+async def _surface_stats(pg_pool: AsyncConnectionPool, surface: str) -> dict[str, int]:
+    """``bytes`` / ``versions`` / ``fragments`` / ``small_fragments`` for one surface."""
+    async with pg_pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(_SURFACE_STATS_SQL, (surface, surface))
+        row = await cur.fetchone()
+    assert row is not None, f"pgstattuple returned no row for {surface!r}"
+    return {
+        "bytes": int(row[0]),
+        "versions": int(row[1]),
+        "fragments": int(row[2]),
+        "small_fragments": int(row[3]),
+    }
+
+
+async def _surface_row_count(pg_pool: AsyncConnectionPool, surface: str) -> int:
+    """Live row count for one surface, read outside the binding."""
+    async with pg_pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(f"SELECT count(*) FROM {surface}")  # noqa: S608 -- fixed constant
+        row = await cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 @pytest.fixture
@@ -356,7 +435,7 @@ async def test_index_chunks_replaces_not_appends(store):
         ],
     )
     await store.index_chunks("d1", [_chunk("d1", content="only", chunk_index=0)])
-    assert await store.count_chunks() == 1
+    assert await store.count_rows() == 1
     assert [c.content for c in await store.get_all_chunks("d1")] == ["only"]
 
 
@@ -1300,13 +1379,43 @@ async def test_search_filter_document_id_in_clause(store):
 # ---------------------------------------------------------------------------
 
 
-async def test_count_chunks(store):
-    assert await store.count_chunks() == 0
+async def test_count_rows(store):
+    assert await store.count_rows() == 0
     await store.index_chunks(
         "d1", [_chunk("d1", content="a"), _chunk("d1", content="b", chunk_index=1)]
     )
     await store.index_chunks("d2", [_chunk("d2", content="c")])
-    assert await store.count_chunks() == 3
+    assert await store.count_rows() == 3
+
+
+async def test_count_rows_counts_every_content_store_surface(store):
+    """The row count spans the store, not the passage table alone.
+
+    The count is the live denominator the dashboard divides the dead-tuple
+    count by, so it has to describe the same scope the dead-tuple count does.
+
+    Anti-coincidental-pass. A passage-only count returns 3 and reds. The second
+    document carries a document-level row and no passages, which is what closes
+    the near-rival: counting passages plus *distinct documents in the passage
+    table* also reaches the right answer whenever every document has both, and
+    the surface holds one row per document, so that is the shape a plausible
+    implementation takes. It reads 4 against the 5 asserted here, and it is
+    wrong for exactly the vault this fixture builds -- one whose document-level
+    rows and passage-bearing documents are not the same set, which any removal
+    or any document indexed before its surface is written produces."""
+    await store.index_chunks(
+        "d1",
+        [
+            _chunk("d1", content="a", chunk_index=0),
+            _chunk("d1", content="b", chunk_index=1),
+            _chunk("d1", content="c", chunk_index=2),
+        ],
+    )
+    for doc_id in ("d1", "d2"):
+        await store.upsert_document_surface(
+            DocumentSurface(document_id=doc_id, matchable="Title", orienting="abstract")
+        )
+    assert await store.count_rows() == 5
 
 
 async def test_count_retained_versions_rises_with_churn(store, pg_pool):
@@ -1344,10 +1453,62 @@ async def test_count_methods_zero_when_table_absent(pg_dsn):
         await pool.open()
         try:
             s = PostgresContentStore(pool)
-            assert await s.count_chunks() == 0
+            assert await s.count_rows() == 0
             assert await s.count_retained_versions() == 0
             assert await s.count_small_fragments() == 0
             assert await s.measured_byte_size() == 0
+        finally:
+            await pool.close()
+    finally:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+@pytest.mark.parametrize("present", ["chunks", "document_surface"])
+async def test_stat_reads_report_the_surface_that_is_present(pg_dsn, present):
+    """An absent surface does not zero the readings of the one that exists.
+
+    Guards the tolerance's granularity, not merely its existence. Wrapping the
+    whole reading in one table-absent handler -- the shape a single-surface
+    accounting could afford -- makes a schema missing any surface report zero
+    for all of them, which reads as a pristine store rather than a partly
+    provisioned one. A vault mid-provision is exactly when that lie is told.
+
+    Run in both directions, because one direction is not a gate. With only the
+    passage surface provisioned, an accounting that reads the passages and
+    nothing else reports every figure correctly -- the arm is silent about the
+    rival it most needs to exclude. The document-surface arm is the one that
+    reds against it, and it is the reason this is parametrized rather than
+    written once.
+
+    Each arm churns its surface so the dead-tuple reading carries signal:
+    against a freshly written surface it is legitimately zero, which is also
+    what a reading that measured nothing returns, and an assertion that cannot
+    tell those apart is not one."""
+    import psycopg
+
+    from sage.storage.postgres.pool import pool_from_conninfo
+    from sage.storage.postgres.schema import CHUNKS_TABLE, DOCUMENT_SURFACE_TABLE
+
+    ddl = {"chunks": CHUNKS_TABLE, "document_surface": DOCUMENT_SURFACE_TABLE}[present]
+    schema = "sage_test_partial_" + os.urandom(4).hex()
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        await conn.execute(f'SET search_path TO "{schema}", public')
+        await conn.execute(ddl)
+        await conn.execute(f"ALTER TABLE {present} SET (autovacuum_enabled = false)")
+    try:
+        pool = pool_from_conninfo(pg_dsn, search_path=f"{schema},public")
+        await pool.open()
+        try:
+            s = PostgresContentStore(pool)
+            if present == "chunks":
+                await _churn(s)
+            else:
+                await _churn_document_surface(s, docs=10, rewrites=3)
+            assert await s.count_rows() > 0
+            assert await s.measured_byte_size() > 0
+            assert await s.count_retained_versions() > 0
         finally:
             await pool.close()
     finally:
@@ -1392,6 +1553,116 @@ async def test_optimize_accepts_nonzero_threshold(store, pg_pool):
             f"the reclaim horizon that the wait does not model:\n"
             f"{await _horizon_diagnostics(pg_pool)}"
         )
+
+
+async def test_optimize_reclaims_the_document_surface_leaving_passages_alone(store, pg_pool):
+    """The document surface is observed and reclaimed; the passages are untouched.
+
+    The surface takes a delete-then-insert on every metadata change and every
+    abstract refresh, so it accumulates dead tuples by construction. Nothing
+    reported them and nothing reclaimed them.
+
+    The passages here are written exactly once and never rewritten, which is
+    what makes the reading discriminating: the passage surface holds no dead
+    tuple of its own, so a dead-tuple total above zero can only have come from
+    the other surface. Churning both would let a passage-only accounting satisfy
+    every assertion below unchanged.
+
+    Two rivals this test does *not* exclude, named so its silence is not read
+    as coverage. Substituting one surface for the other rather than summing
+    them satisfies everything here, because only one surface carries churn; the
+    companion test below is where that is caught. And an ``optimize`` narrowed
+    to the document surface alone also passes, because the passages this test
+    keeps have no dead tuples for a reclamation to miss; the pre-existing
+    passage-side reclaim test is what holds that end."""
+    await _disable_autovacuum(pg_pool)
+    await store.index_chunks("kept", _fat_chunks("kept", k=30))
+    passages_before = [c.content for c in await store.get_all_chunks("kept")]
+    passages_only = await store.measured_byte_size()
+
+    await _churn_document_surface(store)
+
+    passage_stats = await _surface_stats(pg_pool, "chunks")
+    assert passage_stats["versions"] == 0, (
+        "the passage surface was rewritten, so a nonzero total below would no "
+        "longer isolate the document surface"
+    )
+    assert await store.count_retained_versions() > 0, (
+        "the document surface's dead tuples are invisible to the dead-tuple total"
+    )
+    assert await store.measured_byte_size() > passages_only, (
+        "the document surface's footprint is absent from the size total"
+    )
+
+    await _await_reclaimable_horizon(pg_pool)
+    snap = await store.optimize(timedelta(0))
+    assert snap["pre_versions"] > 0
+    if snap["post_versions"] != 0:
+        pytest.fail(
+            f"VACUUM FULL kept {snap['post_versions']} dead tuples, so something pinned "
+            f"the reclaim horizon that the wait does not model:\n"
+            f"{await _horizon_diagnostics(pg_pool)}"
+        )
+    assert snap["post_bytes"] < snap["pre_bytes"]
+    assert await store.count_retained_versions() == 0
+
+    # The passage surface came through the widened reclamation intact. Its byte
+    # size is deliberately not asserted: VACUUM FULL rewrites a relation even
+    # when it has nothing to reclaim, so a byte equality here would be a flake
+    # rather than a control.
+    assert (await _surface_stats(pg_pool, "chunks"))["versions"] == 0
+    assert await _surface_row_count(pg_pool, "chunks") == 30
+    assert [c.content for c in await store.get_all_chunks("kept")] == passages_before
+
+
+async def test_the_bloat_totals_sum_the_surfaces_rather_than_substituting(store, pg_pool):
+    """Each total equals the sum of its per-surface parts, with both parts nonzero.
+
+    The companion to the test above, against a different wrong implementation.
+    Reading one surface in place of the other -- a substitution rather than a
+    sum -- satisfies "the document surface is now observed" completely, and is
+    invisible whenever either surface is empty. Churning both to different
+    magnitudes and asserting the arithmetic closes that, and closes
+    double-counting one surface at the same time.
+
+    The surfaces are named here rather than read from the binding, and the
+    binding's own set is asserted to be exactly them. A control taken from
+    ``_CONTENT_STORE_SURFACES`` would narrow along with it: dropping a surface
+    from the constant drops it from both sides of the equality, and the test
+    passes having measured the narrowing it exists to catch -- as this one did,
+    until the probe that broke the constant found it still green. Adding a third
+    surface is meant to red this test, so the control is extended deliberately
+    rather than by inheriting whatever the constant says.
+
+    Reads the totals only; it never calls ``optimize``, so an implementation
+    that reports both surfaces and reclaims one passes here. The test above is
+    what excludes that."""
+    assert _CONTENT_STORE_SURFACES == ("chunks", "document_surface"), (
+        "the content store's surface set changed; extend this test's own control "
+        "to name every surface, rather than reading the set under test"
+    )
+    surfaces = ("chunks", "document_surface")
+
+    await _disable_autovacuum(pg_pool)
+    await _churn(store)
+    await _churn_document_surface(store)
+
+    parts = {s: await _surface_stats(pg_pool, s) for s in surfaces}
+    for surface, stats in parts.items():
+        assert stats["versions"] > 0, f"{surface} carries no dead tuples; the sum would not bind"
+        assert stats["bytes"] > 0
+
+    assert await store.count_retained_versions() == sum(s["versions"] for s in parts.values())
+    assert await store.measured_byte_size() == sum(s["bytes"] for s in parts.values())
+
+    async with pg_pool.connection() as conn:
+        await conn.set_autocommit(True)
+        for surface in surfaces:
+            await conn.execute(f"VACUUM {surface}")  # dead tuples -> in-page free space
+    free = {s: await _surface_stats(pg_pool, s) for s in surfaces}
+    for surface, stats in free.items():
+        assert stats["small_fragments"] > 0, f"{surface} freed no pages; the sum would not bind"
+    assert await store.count_small_fragments() == sum(s["small_fragments"] for s in free.values())
 
 
 # ---------------------------------------------------------------------------
@@ -1740,6 +2011,54 @@ def test_the_passage_surface_scoping_is_expressed_once():
     assert source.count("_passage_rows_only(") >= 2, (
         "_passage_rows_only is defined but never called -- the passage reads are no longer scoped"
     )
+
+
+def test_the_content_store_surface_set_is_expressed_once():
+    """The accounting names its surfaces from one place rather than by literal.
+
+    This is the decay the accounting already suffered once: the reads and the
+    reclaim statement each spelled the passage table by name, so a second
+    surface arrived and every one of them kept measuring the first. Stating the
+    set once means a third surface is one edit, and a reading added without it
+    is visible as one.
+
+    Scoped to the accounting members rather than to the module. Both surface
+    names appear as literals throughout the CRUD statements, legitimately and
+    unavoidably -- a module-wide scan would be satisfied by nothing and would
+    catch nothing.
+
+    Matched on the quoted token, because that is the only form a table name can
+    take inside these statements: each is interpolated into SQL, so a literal
+    reintroduced here would be a quoted one. The constant's own definition is
+    excluded by construction -- it is not a member of the class.
+    """
+    members = (
+        PostgresContentStore.count_rows,
+        PostgresContentStore.count_retained_versions,
+        PostgresContentStore.count_small_fragments,
+        PostgresContentStore.measured_byte_size,
+        PostgresContentStore.optimize,
+        PostgresContentStore._bloat_snapshot,
+    )
+    for member in members:
+        source = inspect.getsource(member)
+        for surface in _CONTENT_STORE_SURFACES:
+            spelled = re.search(rf"""['"]{re.escape(surface)}\b""", source)
+            assert spelled is None, (
+                f"{member.__name__} spells the surface {surface!r} inline; render it "
+                "from _CONTENT_STORE_SURFACES so the set stays named once"
+            )
+        assert "_CONTENT_STORE_SURFACES" in source, (
+            f"{member.__name__} reads neither the surface set nor a surface name -- "
+            "it no longer describes the content store's surfaces"
+        )
+        # Naming the set and then indexing into it is the one way to satisfy
+        # the two assertions above while still measuring a single surface --
+        # and the way that reads, at a glance, exactly like the correct code.
+        assert "_CONTENT_STORE_SURFACES[" not in source, (
+            f"{member.__name__} subscripts the surface set; it must read the whole "
+            "set, not one member of it"
+        )
 
 
 async def test_service_reports_zero_passages_for_a_keyword_document_level_hit(
