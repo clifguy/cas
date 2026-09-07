@@ -451,11 +451,11 @@ class StubContentStore(ContentStore):
     async def count_rows(self) -> int:
         """Return the total number of content-store rows across all documents.
 
-        The stub keeps its document-level text beside each document's passages
-        rather than in a surface of its own, so its own count has one surface
-        to walk where a relational binding has two.
+        Both surfaces, as the port requires: this stub holds its passages and
+        its document-level rows in two dicts, and counting only the first would
+        report a store smaller than the one it is serving.
         """
-        return sum(len(chunks) for chunks in self._store.values())
+        return sum(len(chunks) for chunks in self._store.values()) + len(self._surfaces)
 
     async def count_retained_versions(self) -> int:
         """Return 0: the in-memory stub has no on-disk version history."""
