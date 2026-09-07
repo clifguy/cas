@@ -36,7 +36,7 @@
                 "method": {
                   "type": "string",
                   "enum": ["version_chain", "re_ingestion", "filename_code_match", "filename_co_location", "content_reference", "identifier_mention"],
-                  "description": "Inference method. version_chain: filename version numbers (v15 supersedes v14 through v1); chain identity is (title, project, doc_type), so documents with different doc_types do not chain even if they share a title. re_ingestion: change detection triggered re-ingestion. filename_code_match: target document code appears in this document's filename. filename_co_location: documents share a code and workflow stage. content_reference: textual cross-references within document content (placeholder; superseded by identifier_mention). identifier_mention: verbatim canonical-identifier mentions in the ingested document's projected body text resolve to vault-resident targets via tag and title-prefix lookups; pattern set is declared in the `patterns` array on the inference rule."
+                  "description": "Inference method. version_chain: filename version numbers (v15 supersedes v14 through v1); chain identity is (title, project, doc_type), so documents with different doc_types do not chain even if they share a title. re_ingestion: change detection triggered re-ingestion. filename_code_match: target document code appears in this document's filename. filename_co_location: documents share a code and workflow stage. content_reference: textual cross-references within document content (placeholder; superseded by identifier_mention). identifier_mention: verbatim canonical-identifier mentions in the ingested document's projected body text resolve to vault-resident targets via tag and `tier3_metadata` lookups; pattern set is declared in the `patterns` array on the inference rule."
                 },
                 "pattern": {
                   "type": "string",
@@ -61,16 +61,16 @@
                       "target_tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags the resolved target document must carry. May contain `{id}` as a placeholder for the matched identifier literal (e.g., `id:{id}` resolves to `id:CAS-ADR-042` for a `CAS-ADR-042` mention). All tags AND together. Mutually exclusive in practice with `target_tier3`, but the schema permits combining them; both filters AND together at query time."
+                        "description": "Tags the resolved target document must carry. May contain a placeholder substituted per match (e.g., `id:{id}` resolves to `id:CAS-ADR-042` for a `CAS-ADR-042` mention). All tags AND together. Two placeholders are substituted per match: `{id}` is the whole matched literal, and `{adr_num}` is its trailing digit run (`042` for a `CAS-ADR-042` mention), for identifier grammars whose stored value drops a prefix the mention carries. Mutually exclusive in practice with `target_tier3`, but the schema permits combining them; both filters AND together at query time."
                       },
                       "target_tier3": {
                         "type": "object",
                         "additionalProperties": {"type": "string"},
-                        "description": "Tier-3 metadata fields (CAS-ADR-028) the resolved target document's `tier3_metadata` dict must carry as exact-match values. Each value may contain `{id}` as a placeholder for the matched identifier literal (e.g., `{ticket_id: \"{id}\"}` carries the matched literal as the required `ticket_id` value). All pairs AND together. Used for doc_types whose canonical identity lives in `tier3_metadata` rather than tags."
+                        "description": "Tier-3 metadata fields (CAS-ADR-028) the resolved target document's `tier3_metadata` dict must carry as exact-match values. Each value may contain a placeholder substituted per match (e.g., `{ticket_id: \"{id}\"}` carries the matched literal as the required `ticket_id` value). All pairs AND together. Two placeholders are substituted per match: `{id}` is the whole matched literal, and `{adr_num}` is its trailing digit run (`042` for a `CAS-ADR-042` mention), for identifier grammars whose stored value drops a prefix the mention carries. A value of exactly `{id}` additionally makes the pattern's reach over the target doc_type's declared identifier space measurable at config load; a derived placeholder is not invertible and is left unmeasured. Used for doc_types whose canonical identity lives in `tier3_metadata` rather than tags."
                       },
                       "target_title_prefix": {
                         "type": "string",
-                        "description": "Optional title-prefix filter applied after tag/tier3 filtering. May contain `{id}` as a placeholder. Used for ADR-style identifiers where the tag is generic (`adr`) but title carries the id prefix (e.g., `ADR-{adr_num}:`)."
+                        "description": "Retired, and ignored by the resolver: title-prefix matching was removed when identifier resolution moved to `tier3_metadata`. Still accepted so a configuration written before that move keeps loading, and reported as a warning at config load so it is visible rather than silently inert. A pattern relying on it resolves on its remaining filters, which for the ADR-style case it was built for -- a generic `adr` tag, with the id in the title -- leaves nothing that discriminates one document from another. Use `target_tier3` instead."
                       },
                       "target_doc_type": {
                         "type": "string",

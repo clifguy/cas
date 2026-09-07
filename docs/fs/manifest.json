@@ -65,7 +65,7 @@
       "path": "sage/edge_inference.schema.json",
       "title": "SAGE Edge Inference Configuration",
       "status": "draft",
-      "version": "0.3",
+      "version": "0.4",
       "role": "Defines three-tier edge inference model: tier assignments, inference rules, and staging table behavior.",
       "instantiation_checklist_items": [
         6
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.78",
+  "substrate_version": "1.79",
   "revision_history": [
+    {
+      "version": "1.79",
+      "date": "2026-09-06",
+      "summary": "Correct the identifier_mention prose to the resolver that exists (edge_inference.schema.json 0.3 -> 0.4). Three descriptions described behavior the engine had moved on from. The inference-method enum said identifier_mention resolves via tag and title-prefix lookups; title matching was removed when identifier resolution moved to tier3_metadata, and the configuration loader has warned about the leftover target_title_prefix key ever since -- so the schema advertised as a resolution path the very thing the loader reports as inert. That key was itself still described as a live filter applied after tag/tier3 filtering, and now states that it is retired, ignored by the resolver, accepted only so a pre-migration configuration keeps loading, and surfaced as a load warning -- with the reason a pattern leaning on it resolves nothing useful: its remaining filters are a generic tag matching every document of the type. And both placeholder-bearing fields documented {id} alone, where the substitution helper has always also supplied {adr_num}, the matched literal trailing digit run, which is what a vault whose stored identifier drops a prefix the mention carries must use -- as the canonical vault ADR pattern does. target_tags and target_tier3 now name both placeholders and say what each substitutes. target_tier3 additionally records the consequence of choosing between them: a value of exactly {id} makes the pattern reach over the target doc_type declared identifier space measurable at config load, where a derived placeholder is not invertible and is left unmeasured. That is the boundary of the new identifier_mention_id_space_warnings pass in sage/config.py, stated where a configuration author chooses between the two rather than only in the code that enforces it. Description text only: no property, type, constraint, or required-key change, and nothing mirrored into a Pydantic model, since edge_inference is carried as a passed-through dict rather than a modeled section."
+    },
     {
       "version": "1.78",
       "date": "2026-09-06",
