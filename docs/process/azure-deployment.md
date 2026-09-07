@@ -269,6 +269,14 @@ the deploy build only while the layer cache still serves them — and are rebuil
 possibly differently, once it does not. What the pins guarantee is the stronger
 half of the recipe; the cache supplies the rest, for as long as it survives.
 
+Which makes it worth knowing who fills that cache. It is written from two places
+only — the push-to-`main` CI run of a commit, and the deploy dispatch itself —
+because those are the refs another run can read. Pull-request runs read that
+scope and never write to it, so a branch cannot warm the cache a deploy will
+use, and a deploy of a commit whose `main` run has since been evicted rebuilds
+the floating layers rather than reusing them. The repository's Actions cache is
+capped at 10 GB and evicts least-recently-used entries without reporting it.
+
 Break either fact — force a deploy past its precheck, or let a base image float
 again — and the deploy is pushing an artifact nothing has tested.
 

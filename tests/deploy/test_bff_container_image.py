@@ -122,11 +122,10 @@ def test_base_images_are_digest_pinned() -> None:
     for that commit having built from the same bases and the same locked
     dependency sets.
 
-    The pins do not deliver byte-equality and this gate does not claim it -- the
-    apt layer and the embedder weights float, and are shared between the two
-    builds only while the layer cache serves them. What a moving base would
-    break is the weaker guarantee the skip actually rests on, and it would break
-    it silently.
+    This image installs no apt packages and bakes no model weights, so the pins
+    plus the two lockfiles cover every input its build resolves -- byte-equality
+    holds here whether or not the layer cache is warm, which is more than the
+    SAGE image can say. A moving base would give that up silently.
     """
     refs = external_image_refs(_dockerfile_text())
 

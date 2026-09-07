@@ -19,12 +19,11 @@
 # smoke-tested itself, but is accepted on the strength of the CI run for that
 # commit having built from the same bases and the same locked dependency sets.
 #
-# Note what this does and does not buy. It does not make the build byte-identical
-# -- the runtime stage's apt layer resolves from moving indexes, and the embedder
-# weights are fetched from a floating ref -- so those layers are identical across
-# two builds only while the layer cache serves them, and rebuilt when it does
-# not. A moving tag would break even the weaker guarantee, and break it silently.
-# Keep the readable tag ahead of the digest when bumping.
+# This image reaches further than the SAGE one does. It installs no apt packages
+# and bakes no model weights, so the pins plus `package-lock.json` and `uv.lock`
+# cover every input the build resolves -- two builds of one commit really are
+# byte-identical here, cache or no cache. A moving tag would give that up
+# silently. Keep the readable tag ahead of the digest when bumping.
 ARG NODE_IMAGE=node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
 ARG PYTHON_IMAGE=python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 

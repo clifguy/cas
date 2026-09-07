@@ -198,7 +198,8 @@ def test_container_smoke_runs_only_on_the_non_push_arm() -> None:
     """The smoke step exists, and is gated off the deploy arm.
 
     The deploy caller reaches this workflow only for a commit whose own CI run
-    concluded green, and that run smoked the same build. Running the suite a
+    concluded green, and that run built from the same digest-pinned bases and
+    the same locked dependency sets, then smoked the result. Running the suite a
     third time on the push arm re-proves it against the clock.
     """
     smoke = [step for step in _steps() if _SMOKE_RE.search(_run_of(step))]
@@ -356,6 +357,12 @@ def test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read() 
         gate = run.find('if [ "${WRITE_CACHE}" = "true" ]')
         assert gate != -1, "the cache write is not gated on the resolved flag"
 
+        # Containment, not order. `--cache-to` placed after the closing `fi`
+        # satisfies "later than the gate" while every ref writes again, so the
+        # flag has to fall inside the branch the gate opens.
+        closing = run.find("\nfi", gate)
+        assert closing != -1, "the cache-write gate is never closed"
+
         cache_from = run.find("--cache-from")
         cache_to = run.find("--cache-to")
         assert cache_from != -1 and cache_to != -1, "both cache flags must be present"
@@ -364,11 +371,26 @@ def test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read() 
             "unconditional or the arms that do not write also do not read, "
             "which is the whole benefit"
         )
-        assert gate < cache_to, (
-            "`--cache-to` sits outside the write gate, so every ref writes its "
-            "own copy of the cache"
+        assert gate < cache_to < closing, (
+            "`--cache-to` sits outside the write gate's body, so every ref "
+            "writes its own copy of the cache"
         )
 
     assert len(set(write_conditions)) == 1, (
         f"the cache-write gate has drifted between the build steps: {write_conditions}"
+    )
+
+    # Equality is not enough: two steps can agree on a condition that is wrong
+    # in the same way. A constant `true` writes from every ref, and an inverted
+    # expression writes from exactly the refs nothing reads -- both identical
+    # across the pair, both correctly positioned, both defeating the policy.
+    condition = write_conditions[0]
+    assert "inputs.push" in condition, (
+        f"the write gate does not admit the deploy dispatch: {condition!r}"
+    )
+    assert "refs/heads/main" in condition, (
+        f"the write gate does not admit the default branch's push: {condition!r}"
+    )
+    assert "pull_request" not in condition, (
+        f"the write gate admits pull-request refs, whose cache nothing reads: {condition!r}"
     )
