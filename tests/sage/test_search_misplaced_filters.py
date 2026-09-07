@@ -73,13 +73,6 @@ MISPLACED_VALUES: dict[str, object] = {
 }
 
 
-def _parse(result: str | dict) -> dict:
-    """Normalize a tool result, which is a dict in process and JSON over the wire."""
-    if isinstance(result, dict):
-        return result
-    return json.loads(result)
-
-
 @pytest.fixture
 async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
     """Initialize SAGE services, register them, and seed two typed documents.

@@ -805,21 +805,47 @@ def _module_wait_helpers(tree: ast.AST) -> frozenset[str]:
     )
 
 
-def _awaits_the_pipeline(
+def _first_pipeline_wait_line(
     func: ast.FunctionDef | ast.AsyncFunctionDef, wait_helpers: frozenset[str]
-) -> bool:
-    """Whether a function waits on the pipeline, directly or through the module.
+) -> int | None:
+    """The line of the function's earliest wait on the pipeline, or None if it makes none.
 
-    Either the function consults the claim itself -- the shared helper's entry
-    points or the registry, as ``_consults_claim`` reads them -- or it calls
-    one of the module's own waiting helpers.
+    A wait is either a consultation of the claim in the function's own body --
+    the shared helper's entry points or the registry, matched exactly as
+    ``_consults_claim`` matches them -- or a call to one of the module's own
+    waiting helpers, from ``_module_wait_helpers``.
+
+    ``_consults_claim``'s two exclusions are reproduced rather than relaxed,
+    because both bite here for the same reasons they bite there. The match is
+    on identifiers, so a docstring saying the fixture deliberately does not
+    wait is a string constant and cannot match. The descent stops at a nested
+    scope, so a nested helper's wait does not exempt the body that encloses
+    it.
+
+    A *line* rather than a boolean, because for the arm below the position is
+    the whole question: a fixture that waits only after handing control on has
+    not waited for its tests, and a walk that reads the body as an unordered
+    set cannot tell the two apart.
     """
-    if _consults_claim(func):
-        return True
-    return any(
-        isinstance(node, ast.Call) and _called_name(node.func) in wait_helpers
-        for node in ast.walk(func)
-    )
+
+    def scan(node: ast.AST) -> list[int]:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return []
+        if isinstance(node, ast.Attribute) and node.attr in CLAIM_AWARE_MARKERS:
+            return [node.lineno]
+        if isinstance(node, ast.Name) and node.id in CLAIM_AWARE_MARKERS:
+            return [node.lineno]
+        found = (
+            [node.lineno]
+            if isinstance(node, ast.Call) and _called_name(node.func) in wait_helpers
+            else []
+        )
+        for child in ast.iter_child_nodes(node):
+            found.extend(scan(child))
+        return found
+
+    lines = [line for stmt in func.body for line in scan(stmt)]
+    return min(lines) if lines else None
 
 
 def _is_fixture(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -864,15 +890,34 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
       ``_first_ingest_line`` resolves it for the arm above. A fixture whose
       only ingest follows its ``yield`` is doing teardown work, and has no
       document in flight at the moment it hands control on.
-    * **Waiting for nothing**, by ``_awaits_the_pipeline``. Delegation is the
-      sanctioned form and is invisible here by construction, whether the
-      fixture calls the shared helper or the module's own adapter for it.
+    * **Not waiting before that yield**, by ``_first_pipeline_wait_line``.
+      Delegation is the sanctioned form and is invisible here by
+      construction, whether the fixture calls the shared helper or the
+      module's own adapter for it -- but only a wait that *precedes* the
+      handoff exempts one. Both conditions are positional against the same
+      line, and deliberately so: a wait in a ``finally`` runs after every
+      test has already had the document, and reading the body as an unordered
+      set would exempt a fixture on the strength of a wait its tests never
+      benefited from. That is not a hypothetical spelling. Both attested
+      instances carry a teardown drain, so the natural next cleanup -- retire
+      the drain's allowlist entry by making it a real wait -- writes exactly
+      that fixture, and a position-blind walk would go quiet on it while
+      still printing "wait before the yield".
 
     The walk has no opinion about *what* the tests then do with the document.
     It cannot: they are other functions, often in other files by the time a
     fixture is shared. A fixture that ingests owes its tests a settled
     document whether or not this walk can prove one of them reads a field the
     pipeline writes.
+
+    Two bounds worth stating, both measured empty on the tree today. The walk
+    sees only the modules ``_tracked_test_modules`` enumerates, whose basename
+    must begin with ``test_`` -- so a fixture defined in a ``conftest.py`` is
+    invisible to it, and that is where a widely shared fixture would most
+    naturally live. And it anchors on a ``yield``, so a fixture that ingests
+    and *returns* hands its tests an unsettled document just the same while
+    going unreported. Neither is closed here; both are named so a later
+    reader does not mistake an unexercised limit for coverage.
     """
     ingest_helpers = _module_ingest_helpers(tree)
     wait_helpers = _module_wait_helpers(tree)
@@ -889,9 +934,13 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
             for inner in ast.walk(node)
             if isinstance(inner, (ast.Yield, ast.YieldFrom)) and inner.lineno > ingest_line
         ]
-        if not yields or _awaits_the_pipeline(node, wait_helpers):
+        if not yields:
             continue
-        findings.append((min(yields), node.name))
+        handoff = min(yields)
+        wait_line = _first_pipeline_wait_line(node, wait_helpers)
+        if wait_line is not None and wait_line < handoff:
+            continue
+        findings.append((handoff, node.name))
     return sorted(findings)
 
 
@@ -1935,8 +1984,11 @@ def test_unwaited_fixture_detector_flags_an_ingest_then_yield() -> None:
 
 
 # The sanctioned form: the same fixture waiting before it yields. The teardown
-# drain stays, so this also pins that a sleep somewhere in the fixture is not
-# what the arm reads.
+# drain is carried for shape parity with the unwaited synthetic above, so the
+# two differ in one thing only. It pins nothing by itself -- this fixture is
+# exempt by its real wait whether or not the drain is there -- and the rival
+# that reads a sleep as a wait is excluded above, where its presence does make
+# the difference.
 _SYNTHETIC_WAITED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
     """
     @pytest.fixture
@@ -1962,11 +2014,59 @@ def test_unwaited_fixture_detector_ignores_a_delegated_wait() -> None:
     assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_WAITED_FIXTURE_SOURCE)) == []
 
 
+# The same real wait, moved to the teardown side. Every identifier the walk
+# looks for is present in the body; the only thing wrong with it is where it
+# runs. This is the shape the arm's own remedy path produces -- retire the
+# drain's allowlist entry by turning it into a wait -- so it is the rival most
+# likely to be written, not the most contrived.
+_SYNTHETIC_TEARDOWN_WAIT_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def vault_services(config):
+        async with initialize_services_for_test(config) as services:
+            doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+
+            try:
+                yield services
+            finally:
+                await await_pipeline_idle(
+                    services.graph_store, doc["id"], service=services.ingestion_service
+                )
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_a_wait_that_runs_only_in_teardown() -> None:
+    """A wait after the handoff is not a wait the fixture's tests received.
+
+    The condition is positional, and this is the test that makes it so. A walk
+    reading the body as an unordered set finds ``await_pipeline_idle`` and
+    every marker it looks for, and exempts this fixture -- while each test
+    using it got its document while the pipeline was still moving, which is
+    the entire defect. Position is the only thing separating this source from
+    ``_SYNTHETIC_WAITED_FIXTURE_SOURCE``, so the pair isolates it.
+
+    Worth pinning rather than documenting as a limit, because the arm's own
+    failure message points a reader here: both attested fixtures carry an
+    allowlisted teardown drain, and the obvious way to retire those entries is
+    to make the drain a real wait. Under the position-blind reading that edit
+    silently disarms the arm for that fixture while the message still says to
+    wait before the yield.
+    """
+    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_TEARDOWN_WAIT_FIXTURE_SOURCE)) == [
+        (8, "vault_services")
+    ]
+
+
 # The same wait written through the module's own adapter, which is how a module
 # with many wait sites actually spells it. Both the ingest and the wait are one
 # call away from the fixture here.
 _SYNTHETIC_ADAPTED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
     """
+    def _parse(result):
+        return result if isinstance(result, dict) else json.loads(result)
+
+
     async def _ingest_local_file(tmp_path, name, body):
         return _parse(await ingest_document("v", str(tmp_path / name), "markdown"))
 
@@ -1987,7 +2087,7 @@ _SYNTHETIC_ADAPTED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
 
     @pytest.fixture
     async def unsettled_vault(services, tmp_path):
-        await _ingest_local_file(tmp_path, "other.md", "# O")
+        doc = _parse(await _ingest_local_file(tmp_path, "other.md", "# O"))
         yield services
     """
 )
@@ -2010,9 +2110,18 @@ def test_unwaited_fixture_detector_resolves_a_wait_through_a_module_adapter() ->
     fixture calling only the ingest helper is precisely the shape this arm
     exists to report. Asserting the pair excludes it; asserting the exempted
     one by itself does not.
+
+    ``unsettled_vault`` calls ``_parse`` as well as the ingest helper, which
+    closes the nearer rival: *exempt on a call to any module-local helper that
+    is not an ingest helper*. Without that call the reported fixture calls
+    nothing but the ingest helper, so that rival is green on the pair too --
+    and on the live tree it would exempt both real fixtures, since both spell
+    their ingest through ``_parse``. The exemption has to be attributable to
+    the adapter consulting the claim and to nothing else about the shape of
+    the call.
     """
     assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_ADAPTED_FIXTURE_SOURCE)) == [
-        (23, "unsettled_vault")
+        (27, "unsettled_vault")
     ]
 
 
