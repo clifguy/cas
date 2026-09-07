@@ -64,7 +64,19 @@ The following CI jobs from [`.github/workflows/ci.yml`](../../.github/workflows/
 
 The deploy-floor job exists because every other Postgres this repository runs against — the `test` job, the image build, and the workstation — is major 17, while the deployed target is Flexible Server 16. A statement valid only on 17 would otherwise pass every gate and fail at deploy.
 
+**Both majors are declared in [`versions.json`](../../versions.json), and the floor major appears in this context name as a literal.** The job's `name:` is deliberately *not* templated from the version manifest: a required context that changed whenever the declared major did would block every merge, for exactly the reason the paragraph above gives. The literal is held to the declaration by `tests/infra/test_shared_version_parity.py`, which also covers the two copies in this document — the table row above and the captured ruleset JSON below.
+
+That gate cannot reach the **live ruleset**, so changing `postgres.deploy_major` is not a repository-only change. Move all four together in one change: the job's `name:` in `ci.yml`, the table row, the captured JSON, and the live ruleset (Settings → Rules → Rulesets, or `gh api`). Landing the first three without the fourth leaves the ruleset requiring a context no job reports, which blocks every merge until it is fixed. See [`shared-version-parity.md`](shared-version-parity.md).
+
 Unlike the five backend jobs, `eslint` is **path-gated** on `app/**` (via the `paths-filter` job, like `vitest`/`playwright-e2e`): a pull request that touches no `app/` files skips the job, and GitHub counts a skipped required check as satisfied. The gate therefore blocks a merge only when the change can affect frontend lint, while remaining mandatory whenever `app/` is touched.
+
+### Prelude jobs and the skipped-check rule
+
+That last property — a skipped required check counts as satisfied — cuts both ways, and the surface it applies to has grown. `test`, `storage-deploy-floor`, `lint-imports` and `eslint` all now declare `needs: versions`, the prelude job that reads `versions.json`. A job whose dependency fails is *skipped*, not failed, so a `versions` failure would leave four required contexts reported as skipped and therefore satisfied, and the merge would go through having proved nothing.
+
+The prelude is built to make that unlikely: it sparse-checks out one tracked file and runs `jq` over it, and `tests/infra/test_shared_version_parity.py` fails if that file is malformed or missing a key a workflow consumes. But unlikely is not the same as guarded.
+
+**The guard is to make `versions` itself a required context**, so its failure blocks the merge directly rather than being laundered into four skips. That is a live-ruleset edit — add `{ "context": "versions", "integration_id": 15368 }` to the required checks below and in the GitHub UI. Until it is added, treat a run where `versions` failed as a run with no backend coverage, whatever the merge button says.
 
 The `paths-filter` job needs no special checkout depth for this. The filter resolves each event's base itself — the merge group's `base_sha`, the push event's `before` — and fetches that commit when the checkout does not already carry it.
 

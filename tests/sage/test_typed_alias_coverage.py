@@ -483,7 +483,7 @@ def _discover_fastapi_route_params() -> list[tuple[Callable, str, type]]:
     for handler in callables:
         try:
             sig = inspect.signature(handler)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         for param_name, param in sig.parameters.items():
             expected = _expected_alias(param_name)
@@ -600,7 +600,7 @@ def _module_typeadapter_bindings(module: ModuleType) -> dict[str, type]:
     bindings: dict[str, type] = {}
     try:
         src = inspect.getsource(module)
-    except (OSError, TypeError):
+    except OSError, TypeError:
         _TYPEADAPTER_BINDINGS_CACHE[id(module)] = bindings
         return bindings
 
@@ -667,7 +667,7 @@ def _validate_python_calls_in_function(fn: Callable) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     try:
         src = inspect.getsource(fn)
-    except (OSError, TypeError):
+    except OSError, TypeError:
         _VALIDATE_PYTHON_CALLS_CACHE[id(fn)] = out
         return out
 
@@ -759,7 +759,7 @@ def _discover_fastmcp_tool_params() -> list[tuple[Callable, str, type]]:
     for tool_fn in _registered_fastmcp_tools():
         try:
             sig = inspect.signature(tool_fn)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         for param_name, param in sig.parameters.items():
             expected = _expected_alias(param_name)

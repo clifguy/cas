@@ -68,7 +68,7 @@ def _git_owner() -> str | None:
             text=True,
             check=True,
         ).stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         return None
     match = re.search(r"[:/]([^/]+)/[^/]+?(?:\.git)?$", url)
     return match.group(1) if match else None

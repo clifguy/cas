@@ -642,7 +642,7 @@ class DocxAdapter(SourceAdapter):
             if abs_ref is not None:
                 try:
                     num_map[num_id] = int(abs_ref.get(qn("w:val")))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
 
             # Capture lvlOverride entries. A lvlOverride may contain a
@@ -694,14 +694,14 @@ class DocxAdapter(SourceAdapter):
             return None
         try:
             num_id_val = int(num_id_elem.get(qn("w:val")))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
         ilvl_elem = numPr.find(qn("w:ilvl"))
         ilvl_val = 0
         if ilvl_elem is not None:
             try:
                 ilvl_val = int(ilvl_elem.get(qn("w:val")))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 ilvl_val = 0
         return num_id_val, ilvl_val
 

@@ -154,7 +154,7 @@ class _RecordCollector(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             payload = json.loads(record.getMessage())
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return
         if isinstance(payload, dict):
             self.record = payload

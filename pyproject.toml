@@ -138,7 +138,10 @@ torch = [
 include = ["sage*", "root_harness*", "app*"]
 
 [tool.ruff]
-target-version = "py312"
+# Held to the Python version declared in `versions.json` by the parity gate in
+# `tests/infra/test_shared_version_parity.py`. A Ruff target below the version
+# the project requires lints against a language level nothing here runs.
+target-version = "py314"
 line-length = 100
 extend-exclude = [".venv"]
 

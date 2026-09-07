@@ -28,7 +28,26 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  versions:
+    # Shared-component version manifest as job outputs, the same mechanism the
+    # other workflows use so there is one way to consume a declared version
+    # rather than one per workflow. See `docs/process/shared-version-parity.md`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      python: ${{ steps.declared.outputs.python }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: versions.json
+          sparse-checkout-cone-mode: false
+      - id: declared
+        run: |
+          set -euo pipefail
+          echo "python=$(jq -er .python.version versions.json)" >> "$GITHUB_OUTPUT"
+
   compare:
+    needs: versions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -44,7 +63,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
-          python-version: "3.14"
+          python-version: ${{ needs.versions.outputs.python }}
       - run: uv sync --locked
       - run: .venv/bin/python -m scripts.check_ruleset_drift
         env:

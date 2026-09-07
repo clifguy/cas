@@ -64,6 +64,17 @@
 #                              the registration check; CI arms it with
 #                              <script-dir>/resource-token-probe.sh, which needs
 #                              an authenticated az session)
+#   PREFLIGHT_POSTGRES_VERSION_PROBE_CMD  live Postgres major probe invoked as
+#                              `<cmd> <resource-group>`; prints the major on
+#                              stdout, exits 0 (no default: unset SKIPs the
+#                              version check; CI arms it with
+#                              <script-dir>/postgres-version-probe.sh, which
+#                              needs an authenticated az session)
+#   PREFLIGHT_EXPECTED_PG_MAJOR  the declared Postgres major the live server is
+#                              held to, and PREFLIGHT_RESOURCE_GROUP the group to
+#                              probe. Passed in rather than read from
+#                              versions.json here, so this script parses no JSON
+#                              and stays seamable offline.
 #   PREFLIGHT_SLEEP_CMD        warm-up retry delay command (default: sleep)
 #   PREFLIGHT_WARMUP_MAX_ATTEMPTS   shared budget of connection-level (000) probe
 #                              retries before the gate fails (default: 36)
@@ -705,6 +716,52 @@ check_edge_advertised_resources_registered() {
   fi
   DETAIL_MSG="advertised but unregistered resource(s):$missing (token mint refused${refusal:+: $refusal}) -- a standards client steered there dead-ends at /authorize with invalid_target"
   return 1
+}
+
+check_postgres_major() {
+  # The live Flexible Server runs the declared major.
+  #
+  # Every other version check in this repository compares tracked files with
+  # each other: they establish that the repository is self-consistent, which is
+  # a weaker claim than it looks. The repository can agree with itself about a
+  # major the deployed server does not have -- that is the state this check
+  # exists to report, and a repo-only gate would have reported nothing while it
+  # was live. Out-of-band drift has reached this surface before.
+  #
+  # A control-plane read through the seamed probe, so no data-plane credential
+  # and no route into the delegated subnet are needed. An unset seam, or an
+  # unsupplied expectation or resource group, SKIPs: an operator shell without
+  # an az session cannot ask the question, and CI arms all three.
+  if [ -z "$PREFLIGHT_POSTGRES_VERSION_PROBE_CMD" ]; then
+    DETAIL_MSG="skipped: PREFLIGHT_POSTGRES_VERSION_PROBE_CMD unset -- the live server's major not verified"
+    return 2
+  fi
+  if [ -z "$PREFLIGHT_EXPECTED_PG_MAJOR" ] || [ -z "$PREFLIGHT_RESOURCE_GROUP" ]; then
+    DETAIL_MSG="skipped: PREFLIGHT_EXPECTED_PG_MAJOR or PREFLIGHT_RESOURCE_GROUP unset -- nothing to hold the live server to"
+    return 2
+  fi
+  local observed rc
+  observed="$($PREFLIGHT_POSTGRES_VERSION_PROBE_CMD "$PREFLIGHT_RESOURCE_GROUP" 2>/dev/null)"
+  rc=$?
+  if [ "$rc" != 0 ]; then
+    DETAIL_MSG="probe could not read a server major from resource group '$PREFLIGHT_RESOURCE_GROUP' (exit $rc); the deployed major is unknown, which is not the same as correct"
+    return 1
+  fi
+  # Anti-coincidental control: an empty or non-numeric reading must not compare
+  # equal to anything. Without this, a probe that printed nothing on a broken
+  # az session would make the comparison below a comparison of two blanks.
+  case "$observed" in
+    ""|*[!0-9]*)
+      DETAIL_MSG="control failed: probe returned '$observed', not a numeric major; the reading cannot be credited"
+      return 1
+      ;;
+  esac
+  if [ "$observed" != "$PREFLIGHT_EXPECTED_PG_MAJOR" ]; then
+    DETAIL_MSG="live server is PostgreSQL major $observed, declared major is $PREFLIGHT_EXPECTED_PG_MAJOR -- the deployment and the repository disagree about the version SQL is written against"
+    return 1
+  fi
+  DETAIL_MSG="live server major $observed matches the declared major (read from the control plane, not inferred from the template)"
+  return 0
 }
 
 check_maintenance_mount() {
@@ -1381,6 +1438,9 @@ register core_api_document_reads check_core_api_document_reads \
 register core_api_parse_filename check_core_api_parse_filename \
   "the pure-computation filename parser answers 200 with a parse result, touching no vault state" \
   "an unknown source_type must be rejected 4xx at the request boundary, proving bodies are validated rather than blanket-statused"
+register postgres_major check_postgres_major \
+  "live Flexible Server major equals the declared major" \
+  "a non-numeric or empty probe reading fails rather than comparing two blanks; unset seam SKIPs"
 register kv_wildcard_tls check_kv_wildcard_tls \
   "leaf cert SAN covers the wildcard base domain" \
   "a wrong/parked cert subject fails even though the handshake succeeds"
@@ -1573,6 +1633,9 @@ PREFLIGHT_TLS_CHAIN_PROBE_CMD="${PREFLIGHT_TLS_CHAIN_PROBE_CMD:-default_tls_chai
 PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
 PREFLIGHT_MCP_PROBE_CMD="${PREFLIGHT_MCP_PROBE_CMD:-python3 $SCRIPT_DIR/mcp_preflight_probe.py}"
 PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="${PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD:-}"
+PREFLIGHT_POSTGRES_VERSION_PROBE_CMD="${PREFLIGHT_POSTGRES_VERSION_PROBE_CMD:-}"
+PREFLIGHT_EXPECTED_PG_MAJOR="${PREFLIGHT_EXPECTED_PG_MAJOR:-}"
+PREFLIGHT_RESOURCE_GROUP="${PREFLIGHT_RESOURCE_GROUP:-}"
 PREFLIGHT_SLEEP_CMD="${PREFLIGHT_SLEEP_CMD:-sleep}"
 PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-36}"
 PREFLIGHT_WARMUP_INTERVAL_SECONDS="${PREFLIGHT_WARMUP_INTERVAL_SECONDS:-5}"

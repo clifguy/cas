@@ -66,7 +66,44 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'tests/fixtures/ci_cas_vault_config.yaml'
 
+  versions:
+    # Expose the shared-component version manifest (`versions.json`) as job
+    # outputs, so the jobs below consume the declared versions rather than
+    # restate them. A prelude job is what this takes rather than a step: a
+    # service container's `image` resolves before any step in its own job runs,
+    # so it cannot read a value a sibling step computed — but it can read
+    # `needs.<job>.outputs`. The `python-version` and `node-version` pins go
+    # through the same outputs, so there is one mechanism to reason about
+    # rather than two.
+    #
+    # Sparse-checkout of the single tracked file this reads: the job is on the
+    # critical path of every job that needs a version, so it stays minimal.
+    #
+    # See `docs/process/shared-version-parity.md`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      postgres_deploy_major: ${{ steps.declared.outputs.postgres_deploy_major }}
+      postgres_dev_major: ${{ steps.declared.outputs.postgres_dev_major }}
+      python: ${{ steps.declared.outputs.python }}
+      node: ${{ steps.declared.outputs.node }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: versions.json
+          sparse-checkout-cone-mode: false
+      - id: declared
+        run: |
+          set -euo pipefail
+          {
+            echo "postgres_deploy_major=$(jq -er .postgres.deploy_major versions.json)"
+            echo "postgres_dev_major=$(jq -er .postgres.dev_major versions.json)"
+            echo "python=$(jq -er .python.version versions.json)"
+            echo "node=$(jq -er .node.major versions.json)"
+          } >> "$GITHUB_OUTPUT"
+
   test:
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -80,7 +117,7 @@ jobs:
       # in this throwaway container DB; SAGE_TEST_PG_DSN (set on the pytest step)
       # points at it.
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg${{ needs.versions.outputs.postgres_dev_major }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -115,7 +152,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
-          python-version: "3.14"
+          python-version: ${{ needs.versions.outputs.python }}
 
       - name: Cache HuggingFace models
         uses: actions/cache@v6
@@ -185,14 +222,23 @@ jobs:
     # silently drops the branch ruleset's required `test` context — trading a
     # duplicated setup block for a disabled required check. If the ruleset is
     # ever updated to match, prefer the matrix.
+    #
+    # The job's `name:` carries the floor major as a literal on purpose. It is
+    # the branch ruleset's required check context, and a context templated from
+    # a job output would change whenever the declared major does — blocking
+    # every merge while GitHub waits on a context that never arrives. The
+    # literal is held to the manifest by the parity gate instead, which also
+    # covers the two copies in `docs/process/branch_protection.md`. Moving the
+    # floor therefore means editing the live ruleset in the same change.
     name: storage tests on the deploy floor (pg16)
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       PYTHONUNBUFFERED: "1"
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg${{ needs.versions.outputs.postgres_deploy_major }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -214,7 +260,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
-          python-version: "3.14"
+          python-version: ${{ needs.versions.outputs.python }}
 
       - name: Cache HuggingFace models
         uses: actions/cache@v6
@@ -358,6 +404,7 @@ jobs:
       - run: ruff format --check .
 
   lint-imports:
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -374,7 +421,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
-          python-version: "3.14"
+          python-version: ${{ needs.versions.outputs.python }}
 
       - name: Install dependencies (from lockfile)
         run: uv sync --locked --extra test
@@ -388,7 +435,7 @@ jobs:
     # (eslint . --max-warnings 0, zero errors and zero warnings). Pure Node;
     # gated on app/** via paths-filter like vitest/playwright-e2e so pushes
     # that don't touch app/ skip the Node setup.
-    needs: paths-filter
+    needs: [paths-filter, versions]
     if: needs.paths-filter.outputs.app == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -400,7 +447,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ needs.versions.outputs.node }}
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 
@@ -417,7 +464,7 @@ jobs:
     # `tsc -b && vite build`) catches type errors and bundling failures
     # that the dev server (Vite) tolerates silently; this gate exists
     # because previously such errors could sit on main undetected.
-    needs: paths-filter
+    needs: [paths-filter, versions]
     if: needs.paths-filter.outputs.app == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -429,7 +476,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ needs.versions.outputs.node }}
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 
@@ -450,7 +497,7 @@ jobs:
     # bootstrap step seeds ~/sage_vaults/cas/vault_config.yaml from the
     # checked-in CI fixture so SAGE's lifespan vault-discovery finds a
     # cas vault to ingest the e2e fixtures into.
-    needs: paths-filter
+    needs: [paths-filter, versions]
     if: needs.paths-filter.outputs.app == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -468,7 +515,7 @@ jobs:
       # Same pgvector image as the test job: the e2e SAGE backend externalizes
       # graph and content state to it (CAS-ADR-042).
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg${{ needs.versions.outputs.postgres_dev_major }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -492,14 +539,14 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
-          python-version: "3.14"
+          python-version: ${{ needs.versions.outputs.python }}
 
       - name: Install Python dependencies (from lockfile)
         run: uv sync --locked --extra test
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ needs.versions.outputs.node }}
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 

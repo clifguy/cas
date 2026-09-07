@@ -357,9 +357,11 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
 # and this rewrites the table. It runs once per vault, from the migration.
 #
 # Drop-and-re-add rather than ``ALTER COLUMN tsv SET EXPRESSION AS (...)``,
-# which is a PostgreSQL 17 feature. The workstation and every CI service
-# container run 17 while the deployed target is Flexible Server 16, so the
-# 17-only form would pass every test this repository runs and fail only at
+# which is a PostgreSQL 17 feature. The workstation and all but one of the CI
+# service containers run 17, while the deployed target is Flexible Server 16;
+# the exception is the deploy-floor CI job, which exists to run the storage
+# tests on that lower major. Both majors are declared in `versions.json`. The
+# 17-only form would therefore pass on every 17 surface and fail only at
 # deploy. Nothing here can catch that at runtime; the DDL is written to the
 # floor and a static test pins it.
 #

@@ -201,7 +201,7 @@ def _envelope_error_kind(result: Any) -> str | None:
                 continue
             try:
                 payload = _json.loads(text)
-            except (_json.JSONDecodeError, ValueError):
+            except _json.JSONDecodeError, ValueError:
                 continue
             if isinstance(payload, dict) and "error" in payload:
                 return str(payload["error"])

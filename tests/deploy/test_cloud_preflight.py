@@ -31,6 +31,7 @@ import inspect
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable, Iterator
@@ -105,7 +106,7 @@ def _bash_inventory(candidates: Iterable[str | None] | None = None) -> tuple[tup
                 text=True,
                 timeout=10,
             ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             continue
         if re.fullmatch(r"\d+\.\d+", version):
             found.append((version, str(path)))
@@ -148,6 +149,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "transfer_download_gate",
         "vault_load",
         "retrieval_pg",
+        "postgres_major",
         "core_api_vault_reads",
         "core_api_document_reads",
         "core_api_parse_filename",
@@ -195,7 +197,7 @@ def _git_owner() -> str | None:
             text=True,
             check=True,
         ).stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         return None
     match = re.search(r"[:/]([^/]+)/[^/]+?(?:\.git)?$", url)
     return match.group(1) if match else None
@@ -4149,3 +4151,111 @@ def test_core_api_parse_filename_fails_on_non_200() -> None:
     detail = _detail(proc.stdout, "core_api_parse_filename")
     assert _verdicts(proc.stdout).get("core_api_parse_filename") == "FAIL", proc.stdout
     assert "500" in detail, detail
+
+
+# --------------------------------------------------------------------------- #
+# I. Live Postgres major (control-plane read through a seamed probe)           #
+#                                                                             #
+# The check makes no HTTP call: it runs the seamed probe and compares its      #
+# reading with the declared major. Driven here through stub probes, so the     #
+# PASS, FAIL, SKIP and blank-reading arms are all exercised offline.           #
+# --------------------------------------------------------------------------- #
+def _pg_probe(tmp_path: Path, *, stdout: str = "", exit_code: int = 0) -> str:
+    """Write a stub probe printing ``stdout`` and exiting ``exit_code``."""
+    script = tmp_path / "pg-probe.sh"
+    script.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s' {shlex.quote(stdout)}\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return str(script)
+
+
+def _pg_env(url: str, **overrides: str) -> dict[str, str]:
+    env = _base_env(url, PREFLIGHT_CHECKS="postgres_major")
+    env["PREFLIGHT_EXPECTED_PG_MAJOR"] = "16"
+    env["PREFLIGHT_RESOURCE_GROUP"] = "rg-cas-test"
+    env.update(overrides)
+    return env
+
+
+@_NEEDS_RUNTIME
+def test_postgres_major_passes_when_live_matches_declared(tmp_path: Path) -> None:
+    """The probe reads the declared major off the live server -> PASS."""
+    with serve(_green) as url:
+        proc = _run(
+            _pg_env(url, PREFLIGHT_POSTGRES_VERSION_PROBE_CMD=_pg_probe(tmp_path, stdout="16"))
+        )
+    assert _verdicts(proc.stdout).get("postgres_major") == "PASS", proc.stdout
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_postgres_major_fails_when_live_differs(tmp_path: Path) -> None:
+    """THE regression this check exists for: the repository is self-consistent
+    about one major while the deployed server runs another. Every repo-internal
+    gate stays green; only a live reading reports it.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _pg_env(url, PREFLIGHT_POSTGRES_VERSION_PROBE_CMD=_pg_probe(tmp_path, stdout="17"))
+        )
+    detail = _detail(proc.stdout, "postgres_major")
+    assert _verdicts(proc.stdout).get("postgres_major") == "FAIL", proc.stdout
+    assert "17" in detail and "16" in detail, detail
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_postgres_major_fails_on_a_blank_reading(tmp_path: Path) -> None:
+    """Anti-coincidental control: a probe that prints nothing but exits 0 -- a
+    broken az session -- must not compare equal to the expectation. Without the
+    numeric guard this arm would PASS by comparing two blanks.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _pg_env(url, PREFLIGHT_POSTGRES_VERSION_PROBE_CMD=_pg_probe(tmp_path, stdout=""))
+        )
+    detail = _detail(proc.stdout, "postgres_major")
+    assert _verdicts(proc.stdout).get("postgres_major") == "FAIL", proc.stdout
+    assert "control" in detail.lower(), detail
+
+
+@_NEEDS_RUNTIME
+def test_postgres_major_fails_when_the_probe_errors(tmp_path: Path) -> None:
+    """A probe that cannot read a major (no server, or two) FAILs rather than
+    SKIPping: an unknown deployed major is not the same claim as a correct one.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _pg_env(
+                url,
+                PREFLIGHT_POSTGRES_VERSION_PROBE_CMD=_pg_probe(tmp_path, stdout="", exit_code=1),
+            )
+        )
+    assert _verdicts(proc.stdout).get("postgres_major") == "FAIL", proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_postgres_major_skips_without_the_seam() -> None:
+    """An operator shell with no az session cannot ask; unset seam -> SKIP."""
+    with serve(_green) as url:
+        proc = _run(_pg_env(url))
+    assert _verdicts(proc.stdout).get("postgres_major") == "SKIP", proc.stdout
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_postgres_major_skips_without_an_expectation(tmp_path: Path) -> None:
+    """The seam armed but no declared major supplied -> SKIP, not a vacuous PASS
+    against an empty expectation.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _pg_env(
+                url,
+                PREFLIGHT_POSTGRES_VERSION_PROBE_CMD=_pg_probe(tmp_path, stdout="16"),
+                PREFLIGHT_EXPECTED_PG_MAJOR="",
+            )
+        )
+    assert _verdicts(proc.stdout).get("postgres_major") == "SKIP", proc.stdout

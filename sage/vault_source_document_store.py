@@ -471,7 +471,7 @@ class SharePointGraphClient:
         # naming a dictionary key the caller has no way to interpret.
         try:
             upload_url = resp.json()["uploadUrl"]
-        except (ValueError, KeyError, TypeError):
+        except ValueError, KeyError, TypeError:
             self._refuse(
                 "accepted the upload session request and returned no uploadUrl.",
                 "write source",

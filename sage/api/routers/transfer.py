@@ -92,7 +92,7 @@ async def transfer_upload(
                     raise TransferContentTooLargeError(ceiling)
                 digest.update(chunk)
                 staged.write(chunk)
-    except (TransferContentTooLargeError, ClientDisconnect):
+    except TransferContentTooLargeError, ClientDisconnect:
         store.fail_upload(entry.transfer_id)
         raise
     except Exception:

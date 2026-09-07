@@ -90,7 +90,7 @@ def _shape_position(shape) -> tuple[int, int] | None:
     """
     try:
         top, left = shape.top, shape.left
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         return None
     if top is None:
         return None
@@ -169,7 +169,7 @@ def _title_shape(slide):
     """Return the slide's title placeholder, or None when it has none."""
     try:
         return slide.shapes.title
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         return None
 
 
