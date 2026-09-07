@@ -20,6 +20,7 @@ from pathlib import Path
 from tests.deploy._image_refs import (
     digest_without_readable_tag,
     external_image_refs,
+    image_names,
     unpinned,
 )
 
@@ -182,11 +183,12 @@ def test_base_images_are_digest_pinned() -> None:
     refs = external_image_refs(_dockerfile_text())
 
     # Non-vacuity. A scan that quietly matched nothing would satisfy every
-    # assertion below, so pin the sites this file is known to carry.
-    assert "ARG PYTHON_IMAGE" in refs and len(refs) == 2, (
-        "the image-reference scan lost a known site; this Dockerfile carries a\n"
-        "PYTHON_IMAGE arg and a uv COPY --from, so a scan finding anything else\n"
-        f"has stopped reaching them: {sorted(refs)}"
+    # assertion below, so pin the images this file is known to resolve. Named
+    # without their digests, which move on every routine base bump.
+    assert image_names(refs) == {"python", "ghcr.io/astral-sh/uv"} and len(refs) == 2, (
+        "the image-reference scan lost a known site; this Dockerfile resolves a\n"
+        "Python base and the uv binary, so a scan finding anything else has\n"
+        f"stopped reaching them: {sorted(refs)}"
     )
 
     floating = unpinned(refs)
@@ -219,6 +221,27 @@ def test_image_ref_scan_collects_bare_untagged_references() -> None:
     assert refs.get("FROM debian") == "debian"
     assert refs.get("COPY --from=alpine") == "alpine"
     assert set(unpinned(refs)) == {"FROM debian", "COPY --from=alpine"}
+
+
+def test_image_ref_scan_folds_instruction_keyword_case() -> None:
+    """A lowercase instruction keyword is still an instruction.
+
+    Dockerfile keywords are case-insensitive and Dependabot's parser reads them
+    that way, so a case-sensitive scan drops a lowercase pin from *both* gates at
+    once: the pinning check never sees it float, and the visibility check never
+    sees it at all. The per-file reference counts do not cover the gap either --
+    they notice a known site being converted, not an unknown-cased site being
+    added alongside them.
+    """
+    text = (
+        "from python:3.14-slim@sha256:aa AS builder\n"
+        "copy --from=ghcr.io/astral-sh/uv:0.12.10 /uv /usr/local/bin/uv\n"
+    )
+
+    refs = external_image_refs(text)
+
+    assert refs.get("FROM python:3.14-slim@sha256:aa") == "python:3.14-slim@sha256:aa"
+    assert refs.get("COPY --from=ghcr.io/astral-sh/uv:0.12.10") == "ghcr.io/astral-sh/uv:0.12.10"
 
 
 def test_image_ref_scan_excludes_stages_args_and_scratch() -> None:

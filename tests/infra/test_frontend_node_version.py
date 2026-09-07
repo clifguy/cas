@@ -95,11 +95,13 @@ def test_dockerfile_bff_node_image_is_canonical_major() -> None:
     major CI and the type definitions are pinned to.
     """
     text = DOCKERFILE_BFF.read_text(encoding="utf-8")
-    match = re.search(r"ARG NODE_IMAGE=node:(\d+)", text)
-    assert match is not None, f"no `ARG NODE_IMAGE=node:<major>` found in {DOCKERFILE_BFF}"
+    # The base is declared on the SPA-builder stage's own FROM line, which is
+    # also what makes it visible to Dependabot's docker ecosystem; the readable
+    # `node:<major>` tag ahead of the digest is what this gate reads.
+    match = re.search(r"^FROM node:(\d+)", text, re.MULTILINE)
+    assert match is not None, f"no `FROM node:<major>` stage found in {DOCKERFILE_BFF}"
     assert int(match.group(1)) == CANONICAL_NODE_MAJOR, (
-        f"Dockerfile.bff NODE_IMAGE base must be Node {CANONICAL_NODE_MAJOR}; "
-        f"got node:{match.group(1)}."
+        f"Dockerfile.bff Node base must be Node {CANONICAL_NODE_MAJOR}; got node:{match.group(1)}."
     )
 
 
