@@ -1380,16 +1380,22 @@ class RetrievalService:
         """Convert SearchResults to DiscoverHits, applying pipeline and scope filters.
 
         Deduplicates by document ID, keeping only the highest-scoring chunk
-        per document. This prevents a single document with many matching
-        chunks from crowding out other documents.
+        per document, so a document contributes one hit however many of its
+        chunks the arm returned. That does not keep one document from crowding
+        out another: this runs over the rows the search already chose, and a
+        budget spent per row inside one document leaves every other document
+        unfetched, where no dedup here can reach them. Whether the budget can
+        be spent that way is the arm's own property, and the keyword arm
+        settles it at ``search_bm25``.
 
         ``matched_chunk_count`` (a useful reranking signal) is the larger of
-        the rows tallied here and the count the row itself carries. A binding
-        that ranks chunk by chunk reports one row per chunk and leaves the
-        carried count at 1, so the tally is the answer. A binding whose match
-        unit is the document reports one row per document and cannot be
-        tallied, so it counts its own chunks and the carried value is the
-        answer. Taking the larger reads both without asking which is which.
+        the rows tallied here and the count the row itself carries. An arm that
+        ranks chunk by chunk reports one row per chunk and leaves the carried
+        count at 1, so the tally is the answer -- the semantic arm, now the
+        only one that reports this way. An arm whose match unit is the document
+        reports one row per document and cannot be tallied, so it counts its
+        own chunks and the carried value is the answer. Taking the larger reads
+        both without asking which is which.
 
         Only passages are tallied. A document-level row is not a passage
         (CAS-ADR-049 Decision 5), so it contributes nothing to the tally and a
