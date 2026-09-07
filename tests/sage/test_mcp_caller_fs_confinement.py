@@ -829,14 +829,20 @@ async def test_b7b_restore_source_file_exactly_one_delivery_shape(confined_vault
         )
         neither = _parse(await restore_vault_source_file(_VAULT_ID))
         relative = _parse(await restore_vault_source_file(_VAULT_ID, source="relative/x.md"))
-        # Absolute on some other platform is not absolute here: this arm's
-        # writer is this process, so its own semantics are the right ones.
-        foreign = _parse(await restore_vault_source_file(_VAULT_ID, source=r"sub\out.md"))
+        # A removal guard, and only that. A backslash-separated relative
+        # spelling is relative under *both* flavours, so it is refused by the
+        # shipped local-arm predicate and by the either-flavour one alike --
+        # this case cannot tell them apart and does not claim to. Which
+        # predicate the local arm uses is pinned where it is observable, at
+        # the gate: TestGateReportsItsOwnAnswer in test_transfer_service.py.
+        backslash_relative = _parse(
+            await restore_vault_source_file(_VAULT_ID, source=r"sub\out.md")
+        )
 
     assert both["error"] == "ambiguous_ingest_source", both
     assert neither["error"] == "missing_ingest_source", neither
     assert relative["error"] == "restore_source_not_absolute", relative
-    assert foreign["error"] == "restore_source_not_absolute", foreign
+    assert backslash_relative["error"] == "restore_source_not_absolute", backslash_relative
 
 
 # ---------------------------------------------------------------------------

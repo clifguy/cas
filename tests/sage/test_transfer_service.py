@@ -334,6 +334,12 @@ class TestModuleSurface:
         # A literal backslash in a POSIX filename survives intact.
         assert caller_basename(r"/home/x/we\ird.md", "fallback") == r"we\ird.md"
         assert caller_basename(r"we\ird.md", "fallback") == r"we\ird.md"
+        # The `and not posix.is_absolute()` clause earns its keep only here.
+        # A path absolute under *both* flavours with a backslash in its tail
+        # is the one shape the two readings disagree on: dropping the clause
+        # reduces this Windows-style to "b.md". Every case above passes with
+        # the clause removed, so without this one it is untested.
+        assert caller_basename(r"//host/share/a\b.md", "fallback") == r"a\b.md"
 
 
 class TestGateReportsItsOwnAnswer:
