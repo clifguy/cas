@@ -256,6 +256,87 @@ async def test_read_projection_no_projection(utilities_service, graph_store):
     assert exc_info.value.code == "no_projection"
 
 
+async def _insert_projectionless(graph_store, doc_id: str) -> None:
+    """Insert a document with no indexed chunks, so a projection read would fail."""
+    now = datetime.now(timezone.utc)
+    await graph_store.insert_document(
+        Document(
+            id=doc_id,
+            title="No Chunks",
+            source_type="markdown",
+            source_path="test/no_chunks.md",
+            lifecycle_status="active",
+            source_content_hash=_sha("fake"),
+            adapter_version="1.0",
+            created_by="test",
+            created_at=now,
+            last_modified_by="test",
+            updated_at=now,
+        )
+    )
+
+
+async def test_read_projection_rejects_relative_path_before_reading_projection(
+    utilities_service, graph_store
+):
+    """A relative write_to_path is refused even when no projection exists.
+
+    Pins the ordering rather than the message. The document deliberately has
+    no chunks, so a service that read the projection first would answer this
+    call ``no_projection`` -- which is what made the boundary error depend on
+    how far the ingestion pipeline had got. A malformed path is an argument
+    error, and is settled before any read.
+
+    The projection-less precondition is asserted rather than assumed. Without
+    that positive control the seeded document would be inert setup: the refusal
+    below is reached before any lookup, so deleting the seed leaves this test
+    passing and the ordering claim resting on nothing.
+    """
+    from sage.api.errors import NoProjectionError, WritePathInvalidError
+
+    doc_id = _id("doc_relative_before_read")
+    await _insert_projectionless(graph_store, doc_id)
+
+    # Positive control: this document exists and has no projection, so a read
+    # that reached the fetch would raise here.
+    with pytest.raises(NoProjectionError):
+        await utilities_service.read_projection(doc_id)
+
+    with pytest.raises(WritePathInvalidError) as exc_info:
+        await utilities_service.read_projection(doc_id, write_to_path="relative.md")
+
+    assert exc_info.value.code == "write_path_invalid"
+
+
+async def test_read_projection_rejects_unwritable_parent_before_reading_projection(
+    utilities_service, graph_store, tmp_path
+):
+    """The local arm's filesystem checks also precede the projection read.
+
+    The absoluteness check alone is not the whole hoist: where this process
+    can see the filesystem the path names, every check it can answer for runs
+    before the read, so the target-and-parent refusals stop depending on
+    pipeline state too.
+
+    Carries the same positive control as the relative-path case above, and for
+    the same reason: it is what makes the seeded document load-bearing.
+    """
+    from sage.api.errors import NoProjectionError, WritePathInvalidError
+
+    doc_id = _id("doc_missing_parent_before_read")
+    await _insert_projectionless(graph_store, doc_id)
+    missing_parent = tmp_path / "absent_dir" / "out.md"
+
+    with pytest.raises(NoProjectionError):
+        await utilities_service.read_projection(doc_id)
+
+    with pytest.raises(WritePathInvalidError) as exc_info:
+        await utilities_service.read_projection(doc_id, write_to_path=str(missing_parent))
+
+    assert exc_info.value.code == "write_path_invalid"
+    assert "parent directory does not exist" in exc_info.value.detail["reason"]
+
+
 # ---------------------------------------------------------------------------
 # read_projection: explicit inline-vs-spill delivery control
 # ---------------------------------------------------------------------------

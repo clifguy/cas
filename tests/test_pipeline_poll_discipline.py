@@ -54,6 +54,19 @@ does. The first two arms may then keep their indirection blind spot, because
 the indirection is checked rather than assumed -- and "which modules define
 their own poll" stops being an enumeration somebody has to remember to repeat.
 
+All three arms above share one premise: that a wait is written as a *loop*.
+Each asks what the loop reads and whether it reads enough. None of them asks
+whether a loop is there at all, so the crudest form of the defect -- ingest,
+sleep a fixed interval, act -- passes every one of them untouched. That blind
+spot was not theoretical. The sweep that built this module ran over a test
+module carrying dozens of bare sleeps, converted the polls it could see, and
+left the sleeps standing; the class then recurred in that same file. A fourth
+detector closes it from the remaining side: a function that ingests a document
+and then awaits a fixed sleep outside any loop is reported, because a sleep
+reads nothing and so cannot be waiting on anything. Its exemption is the
+mirror of the others' -- a wait expressed through the shared helper has no
+sleep of its own to anchor on.
+
 Allowlist convention follows ``ORPHANED_TEST_ALLOWLIST`` in
 ``tests/test_collection_integrity.py`` and the allowlists in
 ``tests/test_public_posture.py``: empty by default, every entry carrying a
@@ -170,6 +183,45 @@ STATUS_ONLY_POLL_ALLOWLIST: Final[dict[str, list[str]]] = {
     # nothing, and the settle-wait on the next line is delegated.
     "tests/sage/test_ingestion.py": ["test_recompute_pipeline_idempotent_on_terminal_document"],
 }
+
+
+# ---------------------------------------------------------------------------
+# Bare-sleep allowlist
+#
+# path (relative to repo root) -> names of the functions that ingest a document
+# and then await a fixed sleep outside any loop, where the sleep waits for
+# something other than that document becoming actionable. Empty by default; a
+# wait on the ingestion pipeline has to poll the thing it is waiting for, and
+# the sanctioned form is to delegate to tests/helpers/pipeline_wait.py. Every
+# entry requires a one-line rationale naming what the sleep actually waits for.
+#
+# Keyed by function name rather than line number, for the reason
+# STATUS_ONLY_POLL_ALLOWLIST gives: a line number is a coordinate any edit
+# above it invalidates, while the name is what a reader has to go and look at.
+# ---------------------------------------------------------------------------
+
+BARE_SLEEP_WAIT_ALLOWLIST: Final[dict[str, list[str]]] = {
+    # Settles the post-reload registry swap, not a document: the row this test
+    # reloads to see is written straight to the store already terminal, so it
+    # never enters the pipeline and there is nothing to poll for.
+    "tests/sage/test_mcp_server.py": ["test_reload_vault_sees_external_changes"],
+    # Fixture teardown drains: they let background work unwind before the
+    # registry slot is dropped, after the tests using the documents have run.
+    "tests/sage/test_search_misplaced_filters.py": ["vault_services"],
+    "tests/sage/test_storage_query_error_envelope.py": ["vault_services"],
+}
+
+
+# The ingestion entry points. A function that calls one of these has put a
+# document into the background pipeline, so a fixed sleep after that call is
+# standing in for a wait on it. Matched on the bare name by ``_called_name``,
+# so the tool and a directly-imported service method both count.
+INGEST_CALLS: Final[frozenset[str]] = frozenset(
+    {
+        "ingest_document",
+        "bulk_ingest_document",
+    }
+)
 
 
 # Evidence, in a polling function's own body, that the wait consults the claim
@@ -525,6 +577,97 @@ def _format_helper_violations(violations: list[tuple[str, int, str]]) -> str:
     )
 
 
+def _first_ingest_line(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int | None:
+    """The line of the function's earliest ingestion call, or None if it makes none.
+
+    Scoped to the whole body, nested definitions included: a document put into
+    the pipeline by a nested helper is in the pipeline just the same, and the
+    enclosing function is where the wait for it has to be written.
+    """
+    lines = [
+        node.lineno
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call) and _called_name(node.func) in INGEST_CALLS
+    ]
+    return min(lines) if lines else None
+
+
+def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(sleep lineno, function name)`` for every fixed sleep standing in
+    for a wait on a document the same function ingested.
+
+    The three arms above all require an inline *loop*, because each is about a
+    poll that reads the wrong thing. This arm is about the absence of a poll:
+    a bare ``await asyncio.sleep(0.5)`` reads nothing at all, so it races the
+    pipeline outright and is invisible to every loop-shaped walk. That blind
+    spot is not hypothetical -- the sweep that built this module left dozens of
+    bare sleeps standing in the very file it swept, and the class recurred.
+
+    Three conditions, each narrowing toward the shape that actually races:
+
+    * **Outside a loop.** A sleeping loop is a poll, and belongs to the arms
+      above; flagging it here would report the sanctioned shape twice.
+    * **After an ingestion call.** A sleep in a function that ingests nothing
+      waits for something else -- a worker unwinding, a thread joining, a
+      registry slot swapping -- and this walk has no opinion about it.
+    * **Attributed to the innermost enclosing function**, so a nested helper is
+      judged under its own name rather than its caller's.
+
+    Delegation is invisible by construction, as in the arm above: a function
+    that waits through the shared helper has no bare sleep for this walk to
+    anchor on. A function that does both keeps its sleep and needs an
+    allowlist entry saying what the sleep is really for.
+    """
+    findings: list[tuple[int, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+
+    def visit(
+        node: ast.AST,
+        func: ast.FunctionDef | ast.AsyncFunctionDef | None,
+        in_loop: bool,
+    ) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child, False)
+                continue
+            nested = in_loop or isinstance(child, (ast.For, ast.AsyncFor, ast.While))
+            if (
+                func is not None
+                and not nested
+                and isinstance(child, ast.Call)
+                and _called_name(child.func) == "sleep"
+            ):
+                findings.append((child.lineno, func))
+            visit(child, func, nested)
+
+    visit(tree, None, False)
+
+    kept: list[tuple[int, str]] = []
+    for lineno, func in sorted(findings, key=lambda entry: entry[0]):
+        ingest_line = _first_ingest_line(func)
+        if ingest_line is None or lineno <= ingest_line:
+            continue
+        kept.append((lineno, func.name))
+    return kept
+
+
+def _format_bare_sleep_violations(violations: list[tuple[str, int, str]]) -> str:
+    """Render a bare-sleep violation list as a pytest.fail message."""
+    head = violations[:_MAX_REPORTED]
+    body = "\n".join(f"  {path}:{line} → in {name}()" for path, line, name in head)
+    overflow = len(violations) - len(head)
+    tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
+    return (
+        f"Fixed sleeps standing in for a wait on an ingested document "
+        f"({len(violations)} found):\n{body}{tail}\n"
+        "A fixed sleep reads nothing, so it does not wait for the pipeline -- "
+        "it guesses how long the pipeline takes, and passes only while the "
+        "guess holds. Under load it does not, and the test fails on the state "
+        "its own next call rejects. Delegate to await_pipeline_idle / "
+        "await_tool_idle in tests/helpers/pipeline_wait.py, which poll the "
+        "terminal status and the in-flight claim together."
+    )
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -597,6 +740,27 @@ def test_no_status_only_pipeline_poll_helpers() -> None:
 
     if violations:
         pytest.fail(_format_helper_violations(violations))
+
+
+def test_no_bare_sleep_waits_on_ingested_documents() -> None:
+    """No tracked test module may wait on an ingested document with a fixed sleep."""
+    violations: list[tuple[str, int, str]] = []
+    for path in _tracked_test_modules():
+        rel = str(path.relative_to(REPO_ROOT))
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            # A syntactically broken test module fails its own collection
+            # loudly; not this gate's concern.
+            continue
+        allowed = set(BARE_SLEEP_WAIT_ALLOWLIST.get(rel, []))
+        for lineno, name in _bare_sleep_waits(tree):
+            if name in allowed:
+                continue
+            violations.append((rel, lineno, name))
+
+    if violations:
+        pytest.fail(_format_bare_sleep_violations(violations))
 
 
 # ---------------------------------------------------------------------------
@@ -1105,5 +1269,143 @@ def test_status_only_allowlist_has_no_stale_entries() -> None:
     assert not stale, (
         "STATUS_ONLY_POLL_ALLOWLIST entries that the walk no longer reports "
         f"({len(stale)}): {', '.join(stale)}. Drop each one — the poll it "
+        "exempted is gone, so the entry now waives nothing."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bare-sleep arm: anti-coincidental detector self-tests
+# ---------------------------------------------------------------------------
+
+# The defective shape this arm exists for: ingest, guess how long the pipeline
+# takes, then act on the document. Kept as a string so the gate's own walk over
+# this file does not see it as a real violation.
+_SYNTHETIC_BARE_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_reads_a_projection(vault_services):
+        doc = _parse(await ingest_document("v", "test/sample.md", "markdown"))
+        await asyncio.sleep(0.5)
+        return _parse(await read_projection("v", doc["id"]))
+    """
+)
+
+# The same wait written as a poll. It belongs to the three arms above, which
+# judge what the loop reads; reporting it here as well would flag the
+# sanctioned shape under a rule it already satisfies.
+_SYNTHETIC_LOOPED_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_polls_instead(vault_services):
+        doc = _parse(await ingest_document("v", "test/sample.md", "markdown"))
+        for _ in range(400):
+            fetched = _parse(await get_document("v", doc["id"]))
+            if fetched["pipeline_status"] in {"abstraction_complete", "failed"}:
+                break
+            await asyncio.sleep(0.01)
+    """
+)
+
+# A fixed sleep in a function that ingests nothing. It waits for something this
+# walk has no opinion about -- a worker unwinding, a thread joining, a registry
+# slot swapping at teardown -- and reporting it would bury the real findings.
+_SYNTHETIC_SLEEP_WITHOUT_INGEST_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def vault_services(tmp_vault_dir):
+        async with initialize_services_for_test(config) as services:
+            try:
+                yield services
+            finally:
+                await asyncio.sleep(0.5)
+                _mcp._vaults.pop("test_vault", None)
+    """
+)
+
+# The sanctioned form. A function that waits through the shared helper has no
+# bare sleep to anchor on, so it is invisible here by construction rather than
+# by an exemption somebody has to maintain.
+_SYNTHETIC_DELEGATED_WAIT_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_reads_a_projection(vault_services):
+        doc = _parse(await ingest_document("v", "test/sample.md", "markdown"))
+        await _await_document_idle(vault_services, "v", doc["id"])
+        return _parse(await read_projection("v", doc["id"]))
+    """
+)
+
+# A sleep that precedes the ingestion it is read against. Ordering is what
+# makes a sleep a *wait* for the pipeline: one that runs before anything was
+# ingested cannot be waiting on the document, whatever else it is doing.
+_SYNTHETIC_SLEEP_BEFORE_INGEST_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_settles_the_clock_first(vault_services):
+        await asyncio.sleep(0.5)
+        return _parse(await ingest_document("v", "test/sample.md", "markdown"))
+    """
+)
+
+
+def test_bare_sleep_detector_flags_ingest_then_sleep() -> None:
+    """The arm has teeth: the defective shape is reported under its own name."""
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_BARE_SLEEP_SOURCE)) == [
+        (4, "test_reads_a_projection")
+    ]
+
+
+def test_bare_sleep_detector_ignores_a_sleeping_poll() -> None:
+    """A sleep inside a loop is a poll, and is the other three arms' subject.
+
+    This is the boundary between the arms. Without it a correctly written
+    bounded poll would be reported by this walk as well, and the sanctioned
+    shape would have nowhere left to stand.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_LOOPED_SLEEP_SOURCE)) == []
+
+
+def test_bare_sleep_detector_ignores_a_sleep_without_an_ingest() -> None:
+    """A fixed sleep in a function that ingests nothing waits for something else.
+
+    Fixture teardown drains, thread-join grace periods and gate-release
+    unwinds all take this shape, and none of them races the ingestion
+    pipeline. The ingest call is what makes a sleep this walk's business.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_SLEEP_WITHOUT_INGEST_SOURCE)) == []
+
+
+def test_bare_sleep_detector_ignores_a_delegated_wait() -> None:
+    """The sanctioned form is invisible because it has no sleep of its own."""
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_DELEGATED_WAIT_SOURCE)) == []
+
+
+def test_bare_sleep_detector_ignores_a_sleep_before_the_ingest() -> None:
+    """A sleep the ingestion follows is not a wait for that ingestion.
+
+    Pins the ordering condition rather than leaving it to the coincidence that
+    most tests ingest on their first line. A walk keyed on mere co-occurrence
+    would report a setup delay as though it were a pipeline race.
+    """
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_SLEEP_BEFORE_INGEST_SOURCE)) == []
+
+
+def test_bare_sleep_allowlist_has_no_stale_entries() -> None:
+    """Every bare-sleep allowlist entry names a function the walk still reports.
+
+    Carried for the reason ``test_status_only_allowlist_has_no_stale_entries``
+    gives: an entry whose function was since swept, renamed or deleted lingers
+    silently, and the next reader inherits a waiver for something already
+    fixed. This arm's entries are the likeliest to go stale, because each one
+    names a sleep somebody may well convert later.
+    """
+    stale: list[str] = []
+    for rel, names in BARE_SLEEP_WAIT_ALLOWLIST.items():
+        path = REPO_ROOT / rel
+        reported = (
+            {name for _, name in _bare_sleep_waits(ast.parse(path.read_bytes()))}
+            if path.exists()
+            else set()
+        )
+        stale.extend(f"{rel}: {name}" for name in names if name not in reported)
+
+    assert not stale, (
+        "BARE_SLEEP_WAIT_ALLOWLIST entries that the walk no longer reports "
+        f"({len(stale)}): {', '.join(stale)}. Drop each one — the sleep it "
         "exempted is gone, so the entry now waives nothing."
     )

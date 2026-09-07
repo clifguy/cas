@@ -82,6 +82,19 @@ _EVAL_DIAGNOSTIC_FACTOR = 5
 Delivery = Literal["inline", "spill", "auto"]
 
 
+def _validate_write_to_path_shape(write_to_path: str) -> None:
+    """Verify write_to_path is absolute, without inspecting any filesystem.
+
+    Absoluteness is a property of the path itself, so it is answerable
+    wherever the path eventually resolves. The remaining checks in
+    ``_validate_write_to_path`` interrogate the filesystem the path names,
+    and are meaningful only where this process can see it -- which is not
+    the case when the path names a caller this process cannot reach.
+    """
+    if not Path(write_to_path).is_absolute():
+        raise WritePathInvalidError(write_to_path, "path must be absolute")
+
+
 def _validate_write_to_path(write_to_path: str) -> None:
     """Verify write_to_path is an absolute path with a writable parent directory.
 
@@ -92,9 +105,8 @@ def _validate_write_to_path(write_to_path: str) -> None:
     so MCP and REST callers see a consistent envelope across the two
     write-to-disk surfaces.
     """
+    _validate_write_to_path_shape(write_to_path)
     target = Path(write_to_path)
-    if not target.is_absolute():
-        raise WritePathInvalidError(write_to_path, "path must be absolute")
     if target.exists():
         raise WritePathExistsError(write_to_path)
     parent = target.parent
@@ -312,9 +324,17 @@ class UtilitiesService:
         if spill_to_disk:
             from sage.mcp_init import caller_local_filesystem_reachable
 
+            # A malformed write_to_path is an argument error, so it is settled
+            # before any read: validating after the fetch would answer the same
+            # call differently depending on whether the projection happened to
+            # exist yet, reporting no_projection where the argument was the
+            # problem. Each arm validates exactly what it can answer for -- the
+            # path's shape is intrinsic, while the target-and-parent checks
+            # interrogate a filesystem only the local arm can see.
             if not caller_local_filesystem_reachable():
                 from sage.services.transfer import mint_download_recipe_for_projection
 
+                _validate_write_to_path_shape(write_to_path)
                 doc, projection_text = await self._get_projection_text(document_id)
                 return mint_download_recipe_for_projection(
                     self._config.vault.id,
@@ -323,13 +343,14 @@ class UtilitiesService:
                     write_to_path=write_to_path,
                 )
 
+            _validate_write_to_path(write_to_path)
+
         doc, projection_text = await self._get_projection_text(document_id)
 
         if not spill_to_disk:
             return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
 
-        # write-to-disk delivery: validate path, write, return metadata-only response.
-        _validate_write_to_path(write_to_path)
+        # write-to-disk delivery: the path was validated above, before the read.
         data = projection_text.encode("utf-8")
         Path(write_to_path).write_bytes(data)
 

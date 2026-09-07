@@ -26,6 +26,7 @@ from sage.config import VaultConfig
 from sage.mcp_server import (
     bulk_ingest_document,
     delete_edge,
+    get_document,
     get_vault_stats,
     ingest_document,
     list_directory,
@@ -38,9 +39,25 @@ from sage.mcp_server import (
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+from tests.helpers.pipeline_wait import await_tool_idle
 from tests.sage.conftest import initialize_services_for_test
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+async def _await_document_idle(services, doc_id):
+    """Wait until a document is safe for a caller to act on, and return it.
+
+    Thin adapter over the shared wait, reading through the tool surface so the
+    poll observes what a caller of these tools would observe. The predicate --
+    terminal status *and* no in-flight claim -- lives in
+    ``tests/helpers/pipeline_wait.py`` for the whole suite.
+    """
+
+    async def fetch():
+        return _parse(await get_document("test_vault", doc_id))
+
+    return await await_tool_idle(fetch, doc_id, service=services.ingestion_service)
 
 
 def _id(name: str) -> str:
@@ -282,8 +299,8 @@ class TestSageVaultStats:
         """get_vault_stats returns statistics and health indicators."""
         services, config = single_vault
         # Ingest a document first
-        await ingest_document("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.3)
+        doc = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        await _await_document_idle(services, doc["id"])
 
         result = _parse(await get_vault_stats("test_vault"))
         assert result["total_documents"] >= 1
@@ -319,8 +336,8 @@ class TestSageVaultStats:
         check silently; asserting the key's absence catches it.
         """
         services, config = single_vault
-        await ingest_document("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.3)
+        doc = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        await _await_document_idle(services, doc["id"])
 
         result = _parse(await get_vault_stats("test_vault"))
         assert "sqlite_size_bytes" not in result
@@ -336,8 +353,8 @@ class TestSageVaultStats:
     async def test_content_store_size_bytes_nonzero_after_indexing(self, single_vault):
         """content_store_size_bytes reflects actual content-store directory size."""
         services, config = single_vault
-        await ingest_document("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.5)  # allow indexing to complete
+        doc = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        await _await_document_idle(services, doc["id"])
 
         result = _parse(await get_vault_stats("test_vault"))
         assert result["content_store_size_bytes"] > 0
@@ -361,8 +378,8 @@ class TestSageVaultStats:
     async def test_content_store_row_count_nonzero_after_indexing(self, single_vault):
         """content_store_row_count reflects the indexed row count across the surfaces."""
         services, config = single_vault
-        await ingest_document("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.5)  # allow indexing to complete
+        doc = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        await _await_document_idle(services, doc["id"])
 
         result = _parse(await get_vault_stats("test_vault"))
         assert result["content_store_row_count"] > 0
@@ -380,7 +397,7 @@ class TestSageHashCheck:
         # Ingest to get a known hash
         doc_result = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
         doc_hash = doc_result["source_content_hash"]
-        await asyncio.sleep(0.1)
+        await _await_document_idle(services, doc_result["id"])
 
         # Well-formed but absent. A malformed stand-in (e.g. "sha256:unknown")
         # no longer reports exists=false -- it rejects the request outright;
@@ -397,9 +414,10 @@ class TestSageHashCheck:
 
         The result is keyed by the canonical form, not by the spelling supplied.
         """
+        services, _config = single_vault
         doc_result = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
         doc_hash = doc_result["source_content_hash"]
-        await asyncio.sleep(0.1)
+        await _await_document_idle(services, doc_result["id"])
         bare = doc_hash.removeprefix("sha256:")
 
         result = _parse(await verify_hash("test_vault", [bare]))
@@ -441,7 +459,8 @@ class TestSageListStagingEdges:
         # Ingest two docs and create a staging edge
         r1 = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
         r2 = _parse(await ingest_document("test_vault", "second.md", "markdown"))
-        await asyncio.sleep(0.1)
+        await _await_document_idle(services, r1["id"])
+        await _await_document_idle(services, r2["id"])
 
         staging = StagingEdge(
             id=_STG_001,
@@ -479,7 +498,8 @@ class TestStagingEdgeActions:
         """Ingest docs and create a staging edge, return IDs."""
         r1 = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
         r2 = _parse(await ingest_document("test_vault", "second.md", "markdown"))
-        await asyncio.sleep(0.1)
+        await _await_document_idle(services, r1["id"])
+        await _await_document_idle(services, r2["id"])
         staging = StagingEdge(
             id=_STG_TEST,
             source_id=r1["id"],
@@ -625,7 +645,8 @@ class TestEdgeIdValidation:
         # Set up the staging edge with the canonical id
         r1 = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
         r2 = _parse(await ingest_document("test_vault", "second.md", "markdown"))
-        await asyncio.sleep(0.1)
+        await _await_document_idle(services, r1["id"])
+        await _await_document_idle(services, r2["id"])
         canonical = _eid("normalize-target")
         staging = StagingEdge(
             id=canonical,

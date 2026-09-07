@@ -53,7 +53,24 @@ from sage.mcp_server import (
 from sage.profiles import caller_local_filesystem_available
 from sage.services.transfer import get_transfer_store, reset_transfer_store
 from sage.services.vault_registry import VaultRegistryService
+from tests.helpers.pipeline_wait import await_tool_idle
 from tests.sage.conftest import initialize_services_for_test
+
+
+async def _await_document_idle(services, doc_id):
+    """Wait until a document is safe for a caller to act on, and return it.
+
+    Thin adapter over the shared wait, reading through the tool surface so the
+    poll observes what a caller of these tools would observe. The predicate --
+    terminal status *and* no in-flight claim -- lives in
+    ``tests/helpers/pipeline_wait.py`` for the whole suite.
+    """
+
+    async def fetch():
+        return _parse(await get_document(_VAULT_ID, doc_id))
+
+    return await await_tool_idle(fetch, doc_id, service=services.ingestion_service)
+
 
 _VAULT_ID = "test_vault"
 
@@ -394,6 +411,55 @@ async def test_b4_read_projection_write_to_path_returns_download_recipe(confined
 
     assert len(spooled) == result["content_size"]
     assert "Projection body." in spooled.decode("utf-8")
+
+
+async def test_recipe_arm_rejects_a_relative_write_to_path(confined_vault, tmp_path):
+    """The recipe arm refuses a relative write_to_path instead of minting for it.
+
+    Absoluteness is the one path check that holds wherever the path resolves,
+    so it applies on this arm too. Before the validation hoist this call was
+    answered with a recipe: the arm returned before reaching any check, and a
+    caller's transfer would then have written to whatever its own working
+    directory happened to be.
+
+    The error code alone does not settle it. A rival that mints first and
+    validates afterwards returns the same refusal while leaving a spooled
+    transfer behind to expire unredeemed, so the store is asserted empty as
+    well: refusing and minting nothing are two observables, and only the pair
+    distinguishes a check that runs before the mint from one that runs after.
+    """
+    _services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "rel_note.md", "# Rel\n\nBody.")
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path="relative.md"))
+
+    assert result["error"] == "write_path_invalid"
+    # The autouse _fresh_transfer_store fixture empties the store per test, so
+    # any entry here was minted by the refused call.
+    assert get_transfer_store()._entries == {}
+
+
+async def test_recipe_arm_accepts_a_parent_this_process_cannot_see(confined_vault, tmp_path):
+    """An absolute caller-local path still mints, even with no such parent here.
+
+    The guard against over-correcting the hoist. ``write_to_path`` names the
+    *caller's* filesystem, which this process cannot inspect on this arm, so
+    the parent-exists and writable checks would refuse paths that are perfectly
+    good on the machine that will actually write them. Only the shape check
+    belongs here; applying the whole local validator would red this test.
+    """
+    services, _config, _handle = confined_vault
+    _src, ingest = await _ingest_local_file(tmp_path, "unseen_note.md", "# Unseen\n\nBody.")
+    await _await_document_idle(services, ingest["id"])
+    unseen = "/caller/local/no/such/dir/out.md"
+
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await read_projection(_VAULT_ID, ingest["id"], write_to_path=unseen))
+
+    assert "error" not in result, result
+    assert result["status"] == "download_required"
+    assert result["write_to_path"] == unseen
 
 
 async def test_b5_inline_export_still_works_under_cloud(confined_vault, tmp_path):
