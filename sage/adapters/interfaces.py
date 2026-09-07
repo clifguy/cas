@@ -215,8 +215,11 @@ class ContentStoreOptimizeSnapshot(TypedDict):
     """Pre/post observations captured around ContentStore.optimize().
 
     Substrates with no on-disk presence (StubContentStore) return zeros.
-    Postgres returns the relation's measured byte size, the retained
-    dataset-version count, and the fragment counts from its bloat snapshot.
+    Postgres returns the store's measured byte size, the retained
+    dataset-version count, and the fragment counts from its bloat snapshot,
+    each summed over every surface the store holds -- the same scope the
+    reclamation ran against, so a caller comparing a pre field to its post
+    counterpart is comparing the same thing.
     """
 
     pre_bytes: int
@@ -491,10 +494,13 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
-    async def count_chunks(self) -> int:
-        """Return the total number of chunk rows across all documents.
+    async def count_rows(self) -> int:
+        """Return the total number of content-store rows across all documents.
 
-        Returns 0 when the underlying table has not been created yet.
+        Counts every surface the store holds, because this is the live-row
+        figure the retained-version count below is read against and a fraction
+        taken over two different scopes describes neither. Returns 0 for a
+        surface that has not been created yet.
         """
 
     @abstractmethod
@@ -503,9 +509,11 @@ class ContentStore(ABC):
 
         Read-only. Rises monotonically with un-optimized write churn and is
         independent of corpus size, so it is the self-calibrating signal
-        behind the dashboard bloat indicator. Returns 0 for substrates with
-        no on-disk versioning and when the underlying table has not been
-        created yet.
+        behind the dashboard bloat indicator. Counts every surface the store
+        holds: a document-level write is a replacement no less than a passage
+        re-index, so a store can carry churn on a surface no caller has
+        re-indexed. Returns 0 for substrates with no on-disk versioning and
+        for a surface that has not been created yet.
         """
 
     @abstractmethod
@@ -516,31 +524,36 @@ class ContentStore(ABC):
         and are merged away by ``optimize``; unlike a total fragment count,
         a healthy store keeps this near zero regardless of corpus size, so it
         is a self-calibrating bloat signal alongside the retained-version
-        count. Returns 0 for substrates with no on-disk fragments and when
-        the underlying table has not been created yet.
+        count. Counts every surface the store holds. Returns 0 for substrates
+        with no on-disk fragments and for a surface that has not been created
+        yet.
         """
 
     @abstractmethod
     async def measured_byte_size(self) -> int:
         """Return the content store's on-disk byte footprint.
 
-        Read-only. The substrate-native total size of the chunk store
-        (e.g. a directory byte sum for a file-backed store, or the total
+        Read-only. The substrate-native total size of the content store
+        (e.g. a directory byte sum for a file-backed store, or the summed
         relation size for a relational one), so the dashboard can report
-        content-store size without knowing which binding is active.
-        Returns 0 for substrates with no on-disk presence and when the
-        underlying store has not been created yet.
+        content-store size without knowing which binding is active. Covers
+        every surface the store holds; no other port reports them, so a
+        surface omitted here is absent from the dashboard entirely rather
+        than attributed elsewhere. Returns 0 for substrates with no on-disk
+        presence and for a surface that has not been created yet.
         """
 
     @abstractmethod
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """Reclaim disk by compacting fragments and pruning old versions.
 
-        Snapshots substrate state immediately before and after the
-        reclamation call; returns the pair so callers can observe
-        what changed. Substrates with no on-disk presence
-        (StubContentStore) return zeros; Postgres returns the relation's
-        measured byte size, version count, and fragment counts.
+        Reclaims every surface the store holds, and snapshots substrate state
+        immediately before and after the reclamation call; returns the pair so
+        callers can observe what changed. The snapshot's scope is the
+        reclamation's, so the two halves of each pre/post pair are commensurate.
+        Substrates with no on-disk presence (StubContentStore) return zeros;
+        Postgres returns the store's measured byte size, version count, and
+        fragment counts.
 
         cleanup_older_than: how old a retained dataset version must be
         to be eligible for pruning. Postgres has no age-threshold analog

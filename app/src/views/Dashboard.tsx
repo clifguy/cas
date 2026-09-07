@@ -65,7 +65,7 @@ export default function Dashboard() {
         {/* Storage */}
         <StatGroupLabel>Storage</StatGroupLabel>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <CountCard value={formatCount(stats.content_store_chunk_count)} label="Content Store Chunks" />
+          <CountCard value={formatCount(stats.content_store_row_count)} label="Content Store Rows" />
           <CountCard value={formatBytes(stats.content_store_size_bytes)} label="Content Store" />
           <CountCard value={formatBytes(stats.graph_store_size_bytes)} label="Graph Store" />
           <CountCard
@@ -97,7 +97,7 @@ export default function Dashboard() {
           <HealthCard label="Interrupted abstracts" count={stats.health.interrupted_abstract_count} linkTo="/search?pipeline_status=abstraction_interrupted" />
           <BloatIndicator
             deadTuples={stats.content_store_version_count}
-            liveChunks={stats.content_store_chunk_count}
+            liveRows={stats.content_store_row_count}
             freePages={stats.content_store_small_fragment_count}
           />
           <LastOptimizeCard summary={stats.last_optimize} />

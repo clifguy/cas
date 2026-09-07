@@ -55,10 +55,10 @@ describe('reclaimableBytes', () => {
   });
 });
 
-function renderCard(deadTuples: number, liveChunks: number, freePages: number) {
+function renderCard(deadTuples: number, liveRows: number, freePages: number) {
   return render(
     <MemoryRouter>
-      <BloatIndicator deadTuples={deadTuples} liveChunks={liveChunks} freePages={freePages} />
+      <BloatIndicator deadTuples={deadTuples} liveRows={liveRows} freePages={freePages} />
     </MemoryRouter>,
   );
 }
