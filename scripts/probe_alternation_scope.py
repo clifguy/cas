@@ -440,13 +440,13 @@ async def _sweep(
 
 def _table(before: dict[str, ArmResult], after: dict[str, ArmResult]) -> list[str]:
     lines = [
-        f"{'form':<20} {'rank-1 before':>14} {'rank-1 after':>13} "
+        f"{'form':<20} {'eligible':>8} {'rank-1 before':>14} {'rank-1 after':>13} "
         f"{'recall before':>14} {'recall after':>13}",
     ]
     for name in before:
         b, a = before[name], after[name]
         lines.append(
-            f"{name:<20} {b.rank_1_rate:>13.1%} {a.rank_1_rate:>12.1%} "
+            f"{name:<20} {b.total:>8} {b.rank_1_rate:>13.1%} {a.rank_1_rate:>12.1%} "
             f"{b.recall_rate:>13.1%} {a.recall_rate:>12.1%}"
         )
     newly = [
@@ -589,7 +589,7 @@ async def main() -> int:
 def _as_figures(before: dict[str, ArmResult], after: dict[str, ArmResult]) -> dict:
     return {
         arm_name: {
-            name: {"rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
+            name: {"total": arm.total, "rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
             for name, arm in results.items()
         }
         for arm_name, results in (("before", before), ("after", after))

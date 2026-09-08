@@ -21,15 +21,21 @@ here is everything that could go wrong without a server to notice.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from scripts.probe_alternation_scope import (
     _ABSENT_BRANCH,
     ArmResult,
     _as_embedding,
+    _as_figures,
     _cross_passage_pairs,
     _pair_queries,
     _renderings,
+    _sweep,
+    _table,
+    _title_queries,
 )
 
 
@@ -251,6 +257,50 @@ def test_the_pair_family_carries_the_alternation_and_its_control():
 # ---------------------------------------------------------------------------
 # The rates
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("output", ["text", "json"])
+async def test_reports_expose_each_renderings_eligible_population(output: str) -> None:
+    """Optional compounds must report their own denominator in both artifacts.
+
+    The ineligible title still contributes to ordinary forms. Dropping either
+    title, counting both for compounds, or omitting a reported total must fail.
+    """
+    queries = _title_queries({"eligible": "Document Surface", "ineligible": "Solitary"})
+
+    async def before(_store: object, _query: str) -> list[SimpleNamespace]:
+        return [SimpleNamespace(document_id="eligible")]
+
+    async def after(_store: object, _query: str) -> list[SimpleNamespace]:
+        return [SimpleNamespace(document_id="ineligible"), SimpleNamespace(document_id="eligible")]
+
+    arms = (await _sweep(None, queries, before), await _sweep(None, queries, after))
+    if output == "json":
+        figures = _as_figures(*arms)
+        for arm in ("before", "after"):
+            assert {name: row["total"] for name, row in figures[arm].items()} == {
+                "verbatim": 2,
+                "lowercase": 2,
+                "uppercase": 2,
+                "separators folded": 2,
+                "compound": 1,
+            }
+        assert figures["before"]["verbatim"]["recall"] == 0.5
+        assert figures["after"]["verbatim"]["recall"] == 1.0
+        assert figures["after"]["compound"]["rank_1"] == 0.0
+    else:
+        table = _table(*arms)
+        assert "eligible" in table[0]
+        rows = {line[:20].strip(): line[20:].split() for line in table[1:-1]}
+        assert {name: row[0] for name, row in rows.items()} == {
+            "verbatim": "2",
+            "lowercase": "2",
+            "uppercase": "2",
+            "separators folded": "2",
+            "compound": "1",
+        }
+        assert rows["verbatim"][1:] == ["50.0%", "50.0%", "50.0%", "100.0%"]
+        assert rows["compound"][1:] == ["100.0%", "0.0%", "100.0%", "100.0%"]
 
 
 def test_the_rates_are_over_the_titles_queried():
