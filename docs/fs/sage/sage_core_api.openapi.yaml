@@ -1563,7 +1563,23 @@ paths:
 
         Health indicators include pending metadata reviews, pending
         edge reviews, deferred abstracts (null when abstraction is
-        disabled in the vault config), and failed ingestions.
+        disabled in the vault config), failed ingestions, and
+        interrupted abstracts.
+
+
+        The doc-scoped health indicators are an operator worklist, so
+        they exclude documents in a terminal lifecycle state -- the
+        states the vault's own config marks `is_terminal`, so a vault
+        that declares one of its own has it honoured. Such a document
+        is excluded because remediating it is not work an operator
+        needs to take up, not because nothing will touch it again: the
+        automatic re-abstraction paths select on `pipeline_status`
+        alone and may still reach it. `pending_edge_count` is the one
+        exception and is reported unfiltered: a staging edge is not
+        doc-scoped and carries no lifecycle state to exclude it by.
+        The metadata-review queue read by `list_pending_metadata` is
+        likewise unfiltered and keeps surfacing every unconfirmed
+        document, so it can differ from `pending_metadata_count`.
       tags: [Vault Management]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -6162,28 +6178,36 @@ components:
       properties:
         pending_metadata_count:
           type: integer
-          description: Documents whose extracted metadata is unconfirmed.
+          description: >-
+            Documents whose extracted metadata is unconfirmed, excluding
+            those in a terminal lifecycle state.
         pending_edge_count:
           type: integer
-          description: Tier 2 staging edges awaiting review.
+          description: >-
+            Tier 2 staging edges awaiting review. Not lifecycle-filtered,
+            unlike the doc-scoped counters beside it: a staging edge is not
+            doc-scoped and carries no lifecycle state of its own.
         deferred_abstract_count:
           type: integer
           nullable: true
           description: >-
-            Documents with pipeline_status=abstraction_skipped. Null when
-            abstraction is disabled in the vault config.
+            Documents with pipeline_status=abstraction_skipped, excluding
+            those in a terminal lifecycle state. Null when abstraction is
+            disabled in the vault config.
         failed_ingestion_count:
           type: integer
-          description: Documents with pipeline_status=failed.
+          description: >-
+            Documents with pipeline_status=failed, excluding those in a
+            terminal lifecycle state.
         interrupted_abstract_count:
           type: integer
           description: >-
-            Documents with pipeline_status=abstraction_interrupted:
-            abstraction work a stopped worker dropped rather than
-            attempted. Counted apart from failed_ingestion_count because
-            no stage failed and nothing is wrong with the document; the
-            next server start re-runs it, and the bulk reabstract sweep
-            reaches it before then.
+            Documents with pipeline_status=abstraction_interrupted, excluding
+            those in a terminal lifecycle state: abstraction work a stopped
+            worker dropped rather than attempted. Counted apart from
+            failed_ingestion_count because no stage failed and nothing is
+            wrong with the document; the next server start re-runs it, and the
+            bulk reabstract sweep reaches it before then.
 
     LastOptimizeSummary:
       type: object

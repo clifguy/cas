@@ -714,6 +714,33 @@ class LifecycleConfig(BaseModel):
         retired = {t.to_state for t in self.transitions if t.action == "supersede"}
         return frozenset(state.value for state in self.states) - retired
 
+    def terminal_states(self) -> frozenset[str]:
+        """The declared states from which no further transition is expected.
+
+        A state joins the set by declaring `is_terminal: true`. Callers
+        reporting an operator worklist use this to exclude documents no
+        operator is expected to take up — a supersession's predecessor,
+        say. It does not assert that nothing will touch such a document
+        again: a terminal state need not be permanent, the base
+        lifecycle permitting `archived → reactivate`.
+
+        Derived from the declared states rather than restated as a
+        literal, so a vault that marks a domain-specific state terminal
+        — a filing that freezes a document, say — has it honoured
+        without the reading code knowing the state exists.
+
+        Not to be confused with `supersession_surviving_states`, which
+        is derived from the transitions and answers a different
+        question. The two are near-complements in the base lifecycle
+        rather than equal — `{archived}` against `{active, completed}` —
+        and they are independent, not opposed: a state may be declared
+        terminal without any supersession landing in it, and a
+        supersession may land in a state the vault declines to mark
+        terminal. Read this one for "is anyone expected to act on it",
+        the other for "was it retired by a newer version".
+        """
+        return frozenset(state.value for state in self.states if state.is_terminal)
+
     @model_validator(mode="after")
     def _validate_lifecycle_shape(self, info: ValidationInfo) -> "LifecycleConfig":
         """Reject configurations the lifecycle engine cannot honour.

@@ -29,6 +29,7 @@ reaches the literal directly (CAS-ADR-043).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -316,10 +317,14 @@ class _EmptyStatsGraphStore(StubGraphStore):
     async def get_last_ingestion_at(self) -> datetime | None:
         return None
 
-    async def count_documents_by_pipeline_status(self, status: str) -> int:
+    async def count_documents_by_pipeline_status(
+        self, status: str, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
         return 0
 
-    async def list_pending_metadata_documents(self) -> list[Document]:
+    async def list_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> list[Document]:
         return []
 
 

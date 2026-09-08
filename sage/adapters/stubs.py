@@ -887,7 +887,9 @@ class StubGraphStore(GraphStore):
     async def get_last_ingestion_at(self) -> datetime | None:
         raise self._unsupported("get_last_ingestion_at")
 
-    async def count_documents_by_pipeline_status(self, status: str) -> int:
+    async def count_documents_by_pipeline_status(
+        self, status: str, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
         raise self._unsupported("count_documents_by_pipeline_status")
 
     async def clear_pipeline_error_for_statuses(self, statuses: list[str]) -> int:
@@ -900,7 +902,9 @@ class StubGraphStore(GraphStore):
             cleared += 1
         return cleared
 
-    async def list_pending_metadata_documents(self) -> list[Document]:
+    async def list_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> list[Document]:
         raise self._unsupported("list_pending_metadata_documents")
 
     async def measured_byte_size(self) -> int:

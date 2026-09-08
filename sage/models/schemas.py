@@ -4818,21 +4818,36 @@ class VaultSummary(BaseModel):
 
 class HealthIndicators(BaseModel):
     pending_metadata_count: int = Field(
-        description="Documents whose extracted metadata is unconfirmed."
-    )
-    pending_edge_count: int = Field(description="Tier 2 staging edges awaiting review.")
-    deferred_abstract_count: int | None = Field(
         description=(
-            "Documents with pipeline_status=abstraction_skipped. Null when "
-            "abstraction is disabled in the vault config."
+            "Documents whose extracted metadata is unconfirmed, excluding "
+            "those in a terminal lifecycle state."
         )
     )
-    failed_ingestion_count: int = Field(description="Documents with pipeline_status=failed.")
+    pending_edge_count: int = Field(
+        description=(
+            "Tier 2 staging edges awaiting review. Not lifecycle-filtered, "
+            "unlike the doc-scoped counters beside it: a staging edge is not "
+            "doc-scoped and carries no lifecycle state of its own."
+        )
+    )
+    deferred_abstract_count: int | None = Field(
+        description=(
+            "Documents with pipeline_status=abstraction_skipped, excluding "
+            "those in a terminal lifecycle state. Null when abstraction is "
+            "disabled in the vault config."
+        )
+    )
+    failed_ingestion_count: int = Field(
+        description=(
+            "Documents with pipeline_status=failed, excluding those in a terminal lifecycle state."
+        )
+    )
     interrupted_abstract_count: int = Field(
         description=(
-            "Documents with pipeline_status=abstraction_interrupted: abstraction "
-            "work a stopped worker dropped rather than attempted. Counted apart "
-            "from failed_ingestion_count because no stage failed and nothing is "
+            "Documents with pipeline_status=abstraction_interrupted, excluding "
+            "those in a terminal lifecycle state: abstraction work a stopped "
+            "worker dropped rather than attempted. Counted apart from "
+            "failed_ingestion_count because no stage failed and nothing is "
             "wrong with the document; the next server start re-runs it, and the "
             "bulk reabstract sweep reaches it before then."
         )

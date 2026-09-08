@@ -74,12 +74,38 @@ class VaultConfigService:
         staging_count = await self._store.count_staging_edges()
         last_ingestion = await self._store.get_last_ingestion_at()
 
-        failed_count = await self._store.count_documents_by_pipeline_status("failed")
-        deferred_count = await self._store.count_documents_by_pipeline_status("abstraction_skipped")
-        interrupted_count = await self._store.count_documents_by_pipeline_status(
-            "abstraction_interrupted"
+        # The doc-scoped health indicators are an operator worklist, so
+        # they exclude documents in a terminal lifecycle state. The
+        # ground is that remediating such a document is not work an
+        # operator needs to take up -- not that nothing will touch it
+        # again, which would be false: recover_incomplete_documents and
+        # both reabstract sweeps select on pipeline_status alone and
+        # reach it regardless of lifecycle. That is deliberate, because
+        # a terminal state need not be permanent (the base lifecycle
+        # permits archived -> reactivate), and a document that comes
+        # back should not come back without an abstract.
+        #
+        # The surfacing case is a scanned PDF left at
+        # abstraction_skipped long after a text-bearing replacement
+        # superseded it and got a real abstract.
+        #
+        # pending_edge_count is deliberately not filtered below: a
+        # staging edge is not doc-scoped and carries no lifecycle, so
+        # there is no terminal state to exclude it by.
+        terminal_states = tuple(sorted(config.lifecycle.terminal_states()))
+
+        failed_count = await self._store.count_documents_by_pipeline_status(
+            "failed", exclude_lifecycle_statuses=terminal_states
         )
-        pending_metadata_docs = await self._store.list_pending_metadata_documents()
+        deferred_count = await self._store.count_documents_by_pipeline_status(
+            "abstraction_skipped", exclude_lifecycle_statuses=terminal_states
+        )
+        interrupted_count = await self._store.count_documents_by_pipeline_status(
+            "abstraction_interrupted", exclude_lifecycle_statuses=terminal_states
+        )
+        pending_metadata_docs = await self._store.list_pending_metadata_documents(
+            exclude_lifecycle_statuses=terminal_states
+        )
         pending_metadata_count = len(pending_metadata_docs)
 
         graph_store_size_bytes = await self._store.measured_byte_size()

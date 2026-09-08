@@ -93,7 +93,9 @@ including health indicator counts. Mirrors the HTTP stats endpoint response.
   - `last_ingestion_at` (string or null)
   - `health` object with: `pending_metadata_count`, `pending_edge_count`,
     `deferred_abstract_count`, `failed_ingestion_count`,
-    `interrupted_abstract_count`
+    `interrupted_abstract_count`. The four doc-scoped counters exclude
+    documents in a terminal lifecycle state; `pending_edge_count` does not,
+    a staging edge having no lifecycle state of its own.
 
 **Rationale:** MCP clients (e.g., Claude Desktop) need vault health at a glance
 to decide which operations to suggest.
