@@ -127,7 +127,7 @@ ENV SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION} \
 
 WORKDIR /opt/sage
 COPY --from=builder /opt/sage/.venv /opt/sage/.venv
-COPY --from=builder /opt/hf /opt/hf
+COPY --from=builder --chown=sage:sage /opt/hf /opt/hf
 COPY --from=builder /opt/sage/sage /opt/sage/sage
 COPY --from=builder /opt/sage/app /opt/sage/app
 COPY deploy/sage.config.container.yaml /opt/sage/deploy/sage.config.container.yaml
@@ -145,7 +145,7 @@ COPY docs/fs/sage/sage_core_config.schema.json /opt/sage/docs/fs/sage/sage_core_
 COPY docs/fs/sage/sage_core_api.openapi.yaml /opt/sage/docs/fs/sage/sage_core_api.openapi.yaml
 COPY docs/fs/cas_app_api.openapi.yaml /opt/sage/docs/fs/cas_app_api.openapi.yaml
 
-RUN mkdir -p /var/lib/sage/vaults && chown -R sage:sage /var/lib/sage /opt/hf
+RUN mkdir -p /var/lib/sage/vaults && chown -R sage:sage /var/lib/sage
 USER sage
 EXPOSE 8000
 
