@@ -24,10 +24,22 @@ documents stay in the index and compete for every query, so a harness that
 seeded only what it queries measures an uncrowded corpus and reports an inflated
 rank-1. The report names both counts so the two cannot be confused later.
 
+**Which side of the binding a run can see.** The document surface is copied out
+of the vault as stored, so a run measures the query side against whatever index
+text the corpus was ingested under. That is the right default -- it is the state
+a deployed vault is actually in -- but it leaves the instrument blind to a change
+in the *index-side* transform: the stored text predates the change, so the run
+reports a tie whatever the change did, and a tie reads as "no effect" rather
+than "not measured". ``--recompose-surfaces`` closes that by composing each
+document's surface from its own record through the production composition, which
+is the state a re-ingested corpus would be in. The report names which of the two
+it ran in, because figures from one are not comparable to figures from the other.
+
 Usage::
 
     .venv/bin/python -m scripts.measure_title_rank --vault cas
     .venv/bin/python -m scripts.measure_title_rank --vault cas --json out.json
+    .venv/bin/python -m scripts.measure_title_rank --vault cas --recompose-surfaces
 """
 
 from __future__ import annotations
@@ -41,12 +53,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import psycopg
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sage.adapters.content_store_postgres import PostgresContentStore  # noqa: E402
 from sage.adapters.interfaces import Chunk, DocumentSurface  # noqa: E402
+from sage.models.schemas import Document  # noqa: E402
+from sage.services.document_surface import compose_document_surface  # noqa: E402
 from sage.services.passage_structure import indexed_structure  # noqa: E402
 from sage.storage.postgres.schema import (  # noqa: E402
     assert_disposable_target,
@@ -58,6 +73,40 @@ from sage.utils.text_normalization import fold_for_query  # noqa: E402
 # decision's actual bound; recall is reported beside it because a document that
 # stopped being reachable at all is a different failure from one that slipped.
 _RECALL_DEPTH = 20
+
+# The `documents` columns a run reads. Wider than the three the sweep itself
+# needs, because recomposing a surface hands the composition a real record
+# rather than a stand-in with placeholders in the fields it does not happen to
+# read today. Every field the composition reads must be here, which
+# ``test_the_projection_covers_every_field_the_composition_reads`` asserts
+# against the composition rather than against a second list of names.
+_DOCUMENT_COLUMNS = (
+    "id",
+    "title",
+    "source_type",
+    "source_path",
+    "lifecycle_status",
+    "version_label",
+    "project",
+    "tags",
+    "authority_scope",
+    "doc_type",
+    "source_content_hash",
+    "adapter_version",
+    "created_by",
+    "created_at",
+    "last_modified_by",
+    "updated_at",
+    "semantic_abstract",
+)
+
+# How the report names the state its figures were measured in. Spelled out
+# rather than left to the flag's absence, because the two are not comparable
+# and a reader arriving at a saved report has no other way to tell them apart.
+_SURFACE_MODE = {
+    False: "as the vault stores them (index-side transform changes are invisible)",
+    True: "recomposed from each document record (as a re-ingested corpus would hold them)",
+}
 
 
 # Schemas this script provisions. The `finally` below drops the one it made, but
@@ -129,8 +178,12 @@ async def _read_corpus(dsn: str, vault: str) -> tuple[list, list, list]:
                 "lifecycle_status, project FROM document_surface"
             )
         ).fetchall()
+        # Interpolated, but every name comes from a fixed tuple in this module
+        # and nothing caller-supplied reaches the text.
+        columns = ", ".join(_DOCUMENT_COLUMNS)
+        cursor = conn.cursor(row_factory=dict_row)
         documents = await (
-            await conn.execute("SELECT id, title, lifecycle_status FROM documents")
+            await cursor.execute(f"SELECT {columns} FROM documents")  # noqa: S608
         ).fetchall()
     return chunks, surfaces, documents
 
@@ -148,8 +201,76 @@ def _as_embedding(value):
     return list(value)
 
 
-async def _load(store: PostgresContentStore, chunks, surfaces, titles, *, derived: bool) -> None:
-    """Seed one arm. ``derived`` selects which side of the change is measured."""
+def _surface_row(copied, document: Document | None, *, recompose: bool) -> DocumentSurface:
+    """The surface to seed: the vault's own text, or text recomposed now.
+
+    ``copied`` is one row as the vault stores it. With ``recompose`` off it is
+    seeded verbatim, which is what puts the run in the state a deployed vault is
+    actually in. With it on, the text halves are rebuilt from the document's own
+    record through the production composition -- the state the same vault would
+    be in once re-ingested -- and the index-side transform becomes something the
+    run can see.
+
+    The vector is carried across from the copied row either way. Recomposing it
+    would mean re-embedding the corpus, which is a different and far more
+    expensive claim than the one this instrument makes, and the keyword arm the
+    figures come from does not read it.
+    """
+    document_id, matchable, orienting, embedding, doc_type, lifecycle_status, project = copied
+    if recompose and document is not None:
+        composed = compose_document_surface(document_id, document)
+        matchable, orienting = composed.matchable, composed.orienting
+    return DocumentSurface(
+        document_id=document_id,
+        matchable=matchable,
+        orienting=orienting,
+        embedding=_as_embedding(embedding),
+        doc_type=doc_type,
+        lifecycle_status=lifecycle_status,
+        project=project,
+    )
+
+
+def _document_from_row(row: dict) -> Document:
+    """One vault record, rebuilt from the columns a run projects."""
+    return Document(**{name: row[name] for name in _DOCUMENT_COLUMNS})
+
+
+def _recomposition_control(surfaces, records: dict[str, Document] | None) -> tuple[int, int]:
+    """How much stored text the recomposition actually rewrote.
+
+    The control on the flag, in the shape ``_arm_control`` already establishes
+    for the arms. A recomposed run over a corpus the composition happens to
+    reproduce exactly reports a tie that is indistinguishable from a tie it
+    measured, and the flag exists precisely because a tie of the first kind
+    reads as a result. Reporting the count makes the two tellable apart: zero
+    of a thousand rows rewritten means the run had nothing to see.
+    """
+    if records is None:
+        return 0, len(surfaces)
+    changed = sum(
+        1
+        for copied in surfaces
+        if (record := records.get(copied[0])) is not None
+        and compose_document_surface(copied[0], record).matchable != copied[1]
+    )
+    return changed, len(surfaces)
+
+
+async def _load(
+    store: PostgresContentStore,
+    chunks,
+    surfaces,
+    titles,
+    *,
+    derived: bool,
+    records: dict[str, Document] | None = None,
+) -> None:
+    """Seed one arm. ``derived`` selects which side of the change is measured.
+
+    ``records`` present means the surfaces are recomposed from them rather than
+    seeded as the vault stores them; absent means seeded verbatim.
+    """
     by_document: dict[str, list[Chunk]] = {}
     for document_id, address, content, index, embedding, dt, ls, project in chunks:
         by_document.setdefault(document_id, []).append(
@@ -170,17 +291,10 @@ async def _load(store: PostgresContentStore, chunks, surfaces, titles, *, derive
     for document_id, document_chunks in by_document.items():
         await store.index_chunks(document_id, document_chunks)
 
-    for document_id, matchable, orienting, embedding, dt, ls, project in surfaces:
+    for copied in surfaces:
+        record = records.get(copied[0]) if records is not None else None
         await store.upsert_document_surface(
-            DocumentSurface(
-                document_id=document_id,
-                matchable=matchable,
-                orienting=orienting,
-                embedding=_as_embedding(embedding),
-                doc_type=dt,
-                lifecycle_status=ls,
-                project=project,
-            )
+            _surface_row(copied, record, recompose=records is not None)
         )
 
 
@@ -233,12 +347,23 @@ def _render(  # noqa: PLR0913 -- a report renderer takes what the report shows
     after,
     before_control,
     after_control,
+    recomposed=False,
+    recomposition_control=None,
 ) -> str:
     lines = [
         f"Title rank-1 against the {vault!r} corpus, on the retrieval binding alone.",
         "",
         f"  corpus seeded      {seeded} documents (all of them compete for every query)",
         f"  titles queried     {queried} active documents",
+        f"  surfaces           {_SURFACE_MODE[recomposed]}",
+        *(
+            [
+                f"  surface control    {recomposition_control[0]}/{recomposition_control[1]} "
+                f"rows carry text differing from what the vault stores"
+            ]
+            if recomposed and recomposition_control is not None
+            else []
+        ),
         f"  applicable         {applicable:.1%} of passages are rooted at their document's title",
         f"  control            {before_control[0]}/{before_control[1]} passages carry text "
         f"differing from their address before, {after_control[0]}/{after_control[1]} after",
@@ -274,6 +399,16 @@ async def main() -> int:
     parser.add_argument("--vault", required=True, help="Vault (schema) to read the corpus from.")
     parser.add_argument("--dsn", default=os.environ.get("SAGE_MEASURE_DSN"))
     parser.add_argument("--json", type=Path, help="Also write the figures here.")
+    parser.add_argument(
+        "--recompose-surfaces",
+        action="store_true",
+        help=(
+            "Rebuild each document surface from its own record through the "
+            "production composition, instead of seeding the text the vault "
+            "stores. Needed to see a change to the index-side transform, which "
+            "stored text predates; figures are not comparable to a run without it."
+        ),
+    )
     args = parser.parse_args()
 
     dsn = args.dsn or "postgresql://localhost:5432/sage"
@@ -282,8 +417,17 @@ async def main() -> int:
         print(f"vault {args.vault!r} holds no passages", file=sys.stderr)
         return 1
 
-    titles = {row[0]: row[1] for row in documents}
-    queried = {row[0]: row[1] for row in documents if row[2] == "active" and row[1]}
+    titles = {row["id"]: row["title"] for row in documents}
+    queried = {
+        row["id"]: row["title"]
+        for row in documents
+        if row["lifecycle_status"] == "active" and row["title"]
+    }
+    records = (
+        {row["id"]: _document_from_row(row) for row in documents}
+        if args.recompose_surfaces
+        else None
+    )
     rooted = sum(
         1
         for document_id, address, *_ in chunks
@@ -303,11 +447,11 @@ async def main() -> int:
     try:
         store = PostgresContentStore(pool)
 
-        await _load(store, chunks, surfaces, titles, derived=False)
+        await _load(store, chunks, surfaces, titles, derived=False, records=records)
         before_control = await _arm_control(pool)
         before = await _sweep(store, queried)
 
-        await _load(store, chunks, surfaces, titles, derived=True)
+        await _load(store, chunks, surfaces, titles, derived=True, records=records)
         after_control = await _arm_control(pool)
         after = await _sweep(store, queried)
     finally:
@@ -324,6 +468,8 @@ async def main() -> int:
         after,
         before_control,
         after_control,
+        recomposed=records is not None,
+        recomposition_control=_recomposition_control(surfaces, records),
     )
     print(report)
     if args.json:
@@ -334,6 +480,7 @@ async def main() -> int:
                     "seeded_documents": len(documents),
                     "queried_documents": len(queried),
                     "applicable_passage_share": applicable,
+                    "surfaces_recomposed": records is not None,
                     "before": {
                         name: {"rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
                         for name, arm in before.items()

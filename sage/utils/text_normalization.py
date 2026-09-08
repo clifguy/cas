@@ -29,6 +29,18 @@ Two transforms close the gap, and they are deliberately not the same one:
 
 The resulting invariant is that for any one source string, what a folded query
 requires is always a subset of what expanded index text supplies.
+
+Widening the split widens both transforms at once, since the expansion is
+defined over the fold, and that raises the question of whether stored index
+text has to be rebuilt to stay in step. It does not. The folded rendering
+reaches the keyword binding as an arm *added* to the arms the query's own
+rendering produces, never as a substitution for them, so a row indexed under a
+narrower split stays reachable by the spelling it stored -- the new arm can
+only admit documents, not withdraw them. What such a row does not yet have is
+the widened expansion, so the reverse direction (a separated query reaching the
+compound it was written as) waits for the row to be composed again, which
+ingest and any edit to an authored field both do. A widening not yet applied,
+rather than a match lost.
 """
 
 import re
@@ -49,12 +61,29 @@ _COMPOUND_PARTS = re.compile(r"[A-Z][a-z]+|[A-Z]+(?=[A-Z]|$)|[a-z]+|[0-9]+")
 def _split_compound(token: str) -> list[str]:
     """Return a token's constituent words, or ``[token]`` when it has none.
 
-    Only alphabetic tokens carrying two or more capitals are candidates, so
-    ``XLSX`` and ``langgraph`` pass through whole while ``PortfolioDashboard``
-    and ``documentLevelText`` come apart. A token that yields a single part is
-    returned unchanged rather than as its own rewrite.
+    A candidate is an alphabetic token carrying an *internal* capital, so
+    ``PortfolioDashboard``, ``documentLevelText`` and ``graphLevel`` come apart
+    while ``Document`` does not. Position rather than count is what separates
+    those: a single Title-cased word carries a capital too, and only where it
+    sits distinguishes it from a two-word ``lowerCamel`` compound, which counts
+    the same one. Counting them refuses that compound as collateral, and a
+    document titled *Graph Level* is then unreachable by ``graphLevel``.
+
+    Three guards, and it is worth naming which does what, because they are not
+    interchangeable and only the first is a statement of intent:
+
+    - The internal-capital test says what a compound *is*. On its own it admits
+      a Title-cased word, which the next guard then declines to split.
+    - ``len(parts) >= 2`` is what actually keeps ``Document``, ``XLSX`` and
+      ``ADR`` whole: the pattern consumes each of them in one match, and a
+      token yielding a single part is returned unchanged rather than as its own
+      rewrite.
+    - ``isalpha`` is load-bearing in a way the other two are not. The pattern
+      has no alternative spanning a letter run that ends in digits, so ``PV07``
+      would come back as ``P`` and ``07`` -- the ``V`` dropped, the token
+      destroyed rather than rewritten.
     """
-    if not (token.isalpha() and sum(1 for ch in token if ch.isupper()) >= 2):
+    if not (token.isalpha() and any(ch.isupper() for ch in token[1:])):
         return [token]
     parts = _COMPOUND_PARTS.findall(token)
     return parts if len(parts) >= 2 else [token]
