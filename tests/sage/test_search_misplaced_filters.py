@@ -51,6 +51,7 @@ from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import ingest_document, mcp, search
 from sage.models.schemas import RetrievalFilters
 from sage.sage_api_tools import _SEARCH_FILTER_KEYS
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
 
 # Representative wrong-level values, one per protected key. Shapes vary
@@ -102,18 +103,31 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
         (test_dir / "second.md").write_text("# Second Document\n\nOther content.")
 
-        await ingest_document(
-            "test_vault",
-            "test/sample.md",
-            "markdown",
-            metadata={"title": "A Note", "doc_type": "note"},
+        note = _parse(
+            await ingest_document(
+                "test_vault",
+                "test/sample.md",
+                "markdown",
+                metadata={"title": "A Note", "doc_type": "note"},
+            )
         )
-        await ingest_document(
-            "test_vault",
-            "test/second.md",
-            "markdown",
-            metadata={"title": "A Memo", "doc_type": "memo"},
+        memo = _parse(
+            await ingest_document(
+                "test_vault",
+                "test/second.md",
+                "markdown",
+                metadata={"title": "A Memo", "doc_type": "memo"},
+            )
         )
+
+        # Both documents settle before any test runs. Ingestion dispatches the
+        # pipeline in the background, so a fixture that yields straight from
+        # the ingest hands every test a document still moving -- and the
+        # searches below read the very fields the pipeline writes.
+        for doc_id in (note["id"], memo["id"]):
+            await await_pipeline_idle(
+                services.graph_store, doc_id, service=services.ingestion_service
+            )
 
         try:
             yield services

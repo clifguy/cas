@@ -33,6 +33,7 @@ from sage.mcp_server import (
     list_directory,
     read_projection,
 )
+from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
 
 _VAULT_ID = "test_vault"
@@ -200,9 +201,11 @@ async def test_mpi_004_get_document_write_to_path_round_trip(mpi_vault, tmp_path
 async def test_mpi_005_read_projection_spill_skips_vault_source_store(mpi_vault, tmp_path):
     """MPI-005: projection spill writes caller-locally from the content
     store; the vault-source store is never consulted."""
-    _services, _config, handle = mpi_vault
+    services, _config, handle = mpi_vault
     _src, ingest = await _ingest_local_file(tmp_path, "epsilon_note.md", "# Epsilon\n\nSpill body.")
-    await asyncio.sleep(0.5)
+    await await_pipeline_idle(
+        services.graph_store, ingest["id"], service=services.ingestion_service
+    )
     target = tmp_path / "caller_out" / "epsilon_projection.md"
     target.parent.mkdir()
 
