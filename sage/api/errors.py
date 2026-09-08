@@ -1404,7 +1404,13 @@ class WritePathExistsError(SAGEError):
 
 
 class WritePathInvalidError(SAGEError):
-    """400: write_to_path parent missing, not writable, or path not absolute (BH-127)."""
+    """400: invalid write_to_path or a failed exclusive open (BH-127).
+
+    Covers a non-absolute path, a missing or unwritable parent, and OSError
+    from opening the target after validation. FileExistsError instead maps
+    to WritePathExistsError (409); failures after opening are not translated
+    into this error.
+    """
 
     def __init__(self, write_to_path: str, reason: str) -> None:
         super().__init__(

@@ -633,8 +633,11 @@ def register_sage_tools(
           and ``write_to_path`` were set; choose one.
         - ``write_path_exists`` (409): ``write_to_path`` target
           already exists.
-        - ``write_path_invalid`` (400): ``write_to_path`` parent is
-          missing or not writable, or the path is not absolute.
+        - ``write_path_invalid`` (400): ``write_to_path`` is not absolute,
+          its parent is missing or not writable, or the target's exclusive
+          open raises ``OSError`` after validation. An existing target
+          instead returns ``write_path_exists`` (409); errors after opening
+          are not translated into ``write_path_invalid``.
         - ``vault_source_store_refused`` (502): the store declined the operation
           on its merits -- quota, a permission it withdrew, a reply that could
           not be used. Resolve it at the store before retrying;
@@ -1791,8 +1794,11 @@ def register_sage_tools(
           without one).
         - ``write_path_exists`` (409): ``write_to_path`` target already
           exists.
-        - ``write_path_invalid`` (400): ``write_to_path`` is not
-          absolute, or its parent directory is missing / not writable.
+        - ``write_path_invalid`` (400): ``write_to_path`` is not absolute,
+          its parent is missing or not writable, or the target's exclusive
+          open raises ``OSError`` after validation. An existing target
+          instead returns ``write_path_exists`` (409); errors after opening
+          are not translated into ``write_path_invalid``.
 
         Args:
             vault_id: Target vault identifier.
