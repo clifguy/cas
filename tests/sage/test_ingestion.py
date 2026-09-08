@@ -1537,10 +1537,8 @@ async def test_reabstract_parallel_calls_different_documents_both_succeed(
             break
         await asyncio.sleep(0.05)
     gate.set()
-    await asyncio.sleep(0.5)
-
-    doc_a_state = await graph_store.get_document(doc_a)
-    doc_b_state = await graph_store.get_document(doc_b)
+    doc_a_state = await _await_pipeline_terminal(graph_store, doc_a, service=ingestion_service)
+    doc_b_state = await _await_pipeline_terminal(graph_store, doc_b, service=ingestion_service)
     assert doc_a_state.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
     assert doc_b_state.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
