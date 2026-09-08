@@ -232,8 +232,17 @@ def _surface_row(copied, document: Document | None, *, recompose: bool) -> Docum
 
 
 def _document_from_row(row: dict) -> Document:
-    """One vault record, rebuilt from the columns a run projects."""
-    return Document(**{name: row[name] for name in _DOCUMENT_COLUMNS})
+    """One vault record, rebuilt from the columns a run projects.
+
+    ``tags`` is coalesced because the column is nullable and the field is not,
+    which is the same reduction the store's own row hydrator applies. Without
+    it a single null-tags row raises before any figure is produced -- and the
+    script is pointed at whatever vault the caller names, so the row it cannot
+    hydrate is somebody's corpus rather than a hypothetical.
+    """
+    values = {name: row[name] for name in _DOCUMENT_COLUMNS}
+    values["tags"] = values["tags"] or []
+    return Document(**values)
 
 
 def _recomposition_control(surfaces, records: dict[str, Document] | None) -> tuple[int, int]:
@@ -245,15 +254,24 @@ def _recomposition_control(surfaces, records: dict[str, Document] | None) -> tup
     measured, and the flag exists precisely because a tie of the first kind
     reads as a result. Reporting the count makes the two tellable apart: zero
     of a thousand rows rewritten means the run had nothing to see.
+
+    Both halves are compared. The recomposition rewrites the derived half too,
+    and that half carries the source-filename stem's expansion -- which is
+    where a compound identifier most often lives, and which ranks. A count
+    reading the authored half alone reports a row rewritten only in its
+    derived text as untouched, and so reports "nothing to see" about a run that
+    moved a ranking input.
     """
     if records is None:
         return 0, len(surfaces)
-    changed = sum(
-        1
-        for copied in surfaces
-        if (record := records.get(copied[0])) is not None
-        and compose_document_surface(copied[0], record).matchable != copied[1]
-    )
+    changed = 0
+    for copied in surfaces:
+        record = records.get(copied[0])
+        if record is None:
+            continue
+        composed = compose_document_surface(copied[0], record)
+        if (composed.matchable, composed.orienting) != (copied[1], copied[2]):
+            changed += 1
     return changed, len(surfaces)
 
 

@@ -15,13 +15,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sage.models.enums import SourceType
 from sage.models.schemas import Document
 from sage.services.document_surface import compose_document_surface
 from scripts.measure_title_rank import (
     _DOCUMENT_COLUMNS,
     ArmResult,
     _as_embedding,
+    _document_from_row,
     _recomposition_control,
     _render,
     _renderings,
@@ -124,26 +124,41 @@ def test_an_absent_vector_stays_absent():
 # ---------------------------------------------------------------------------
 
 
-def _record(title: str, tags: list[str] | None = None) -> Document:
-    """One vault record, with the fields the composition reads set for real."""
-    now = datetime.now(timezone.utc)
-    return Document(
-        id="0000000a_doc",
-        title=title,
-        source_type=SourceType.MARKDOWN,
-        source_path="imports/0000000a_doc.md",
-        lifecycle_status="active",
-        source_content_hash=f"sha256:{0:064x}",
-        adapter_version="1",
-        created_by="t",
-        created_at=now,
-        last_modified_by="t",
-        updated_at=now,
-        doc_type="adr",
-        project="CAS",
-        tags=tags or ["retrieval"],
-        semantic_abstract="Generated summary.",
-    )
+def _row(title: str, **overrides) -> dict:
+    """One `documents` row, in the shape a run projects it.
+
+    Built as a column mapping rather than as a record, so the tests below reach
+    the script through ``_document_from_row`` the way a run does. A record
+    constructed by hand would exercise the composition while leaving the
+    row-to-record step -- the one that meets whatever a real vault stores --
+    untested.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        "id": "0000000a_doc",
+        "title": title,
+        "source_type": "markdown",
+        "source_path": "imports/0000000a_doc.md",
+        "lifecycle_status": "active",
+        "version_label": None,
+        "project": "CAS",
+        "tags": ["retrieval"],
+        "authority_scope": None,
+        "doc_type": "adr",
+        "source_content_hash": f"sha256:{0:064x}",
+        "adapter_version": "1",
+        "created_by": "t",
+        "created_at": now,
+        "last_modified_by": "t",
+        "updated_at": now,
+        "semantic_abstract": "Generated summary.",
+    }
+    return row | overrides
+
+
+def _record(title: str, **overrides) -> Document:
+    """One vault record, hydrated the way a run hydrates one."""
+    return _document_from_row(_row(title, **overrides))
 
 
 class _AttributeRecorder:
@@ -261,10 +276,13 @@ def test_the_recomposition_control_counts_the_rows_it_rewrote():
     # The row the composition reproduces is built by asking it, not by writing
     # out what it is thought to emit: a hand-copied string that drifts turns a
     # reproduced row into a rewritten one and inflates the very count under test.
-    settled = compose_document_surface("b", records["b"]).matchable
+    # Both halves, because the control compares both -- a row reproducing only
+    # the authored half is a rewritten row, which is the point of the sibling
+    # test below it.
+    settled = compose_document_surface("b", records["b"])
 
     rewritten = ("a", "graphLevel", "o", None, "adr", "active", "CAS")
-    reproduced = ("b", settled, "o", None, "adr", "active", "CAS")
+    reproduced = ("b", settled.matchable, settled.orienting, None, "adr", "active", "CAS")
 
     assert _recomposition_control([rewritten, reproduced], records) == (1, 2)
 
@@ -274,3 +292,74 @@ def test_the_control_reports_nothing_rewritten_when_seeding_verbatim():
     copied = ("a", "graphLevel", "o", None, "adr", "active", "CAS")
 
     assert _recomposition_control([copied], None) == (0, 1)
+
+
+def test_a_row_whose_tags_column_is_null_still_hydrates():
+    """`documents.tags` is nullable; `Document.tags` is not.
+
+    The store's own hydrator coalesces the null away, and a run that reaches a
+    vault holding one must do the same or abort before producing any figure --
+    the script takes an arbitrary vault, so the row it cannot hydrate is not
+    hypothetical. Asserted as an empty list rather than merely "does not
+    raise", because a hydrator that dropped the field entirely would also not
+    raise and would then compose a surface missing its tags half.
+    """
+    record = _document_from_row(_row("Graph Level", tags=None))
+
+    assert record.tags == []
+
+
+def test_the_control_sees_a_rewrite_of_the_derived_half():
+    """A surface has two halves and the recomposition rewrites both.
+
+    `orienting` carries the source-filename stem and its expansion, which is
+    exactly where a two-word lowerCamel compound tends to live, and it ranks --
+    so a row rewritten only there has had a ranking input changed. A control
+    reading `matchable` alone reports that row as untouched, which is the
+    "nothing to see" reading the flag exists to distinguish from a measured
+    tie. The fixture differs in the derived half and nowhere else, so a control
+    that ignores it cannot pass.
+    """
+    record = _record("Graph Level", source_path="imports/graphLevel.md")
+    settled = compose_document_surface("0000000a_doc", record)
+    derived_only = (
+        "0000000a_doc",
+        settled.matchable,
+        "stale orienting",
+        None,
+        "adr",
+        "active",
+        "CAS",
+    )
+
+    assert settled.matchable == derived_only[1], "the authored half must be identical"
+    assert settled.orienting != derived_only[2], (
+        "the derived half must differ, or nothing is tested"
+    )
+    assert _recomposition_control([derived_only], {"0000000a_doc": record}) == (1, 1)
+
+
+def test_the_control_sees_a_rewrite_of_the_authored_half():
+    """And the mirror, so neither half can be the only one read.
+
+    The sibling above is satisfied by a control reading `orienting` alone, just
+    as the original was satisfied by one reading `matchable` alone -- swapping
+    which half is ignored is the obvious way to reintroduce the same defect.
+    This row differs in the authored half and nowhere else, so the two together
+    admit only a control that reads both.
+    """
+    record = _record("Graph Level")
+    settled = compose_document_surface("0000000a_doc", record)
+    authored_only = (
+        "0000000a_doc",
+        "stale matchable",
+        settled.orienting,
+        None,
+        "adr",
+        "active",
+        "CAS",
+    )
+
+    assert settled.orienting == authored_only[2], "the derived half must be identical"
+    assert settled.matchable != authored_only[1], "the authored half must differ"
+    assert _recomposition_control([authored_only], {"0000000a_doc": record}) == (1, 1)

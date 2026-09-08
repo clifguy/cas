@@ -149,6 +149,39 @@ def test_the_parts_pattern_is_the_second_guard_on_a_single_word(raw: str) -> Non
     assert len(_COMPOUND_PARTS.findall(raw)) < 2
 
 
+@pytest.mark.parametrize("raw", ["Straße", "naïve", "caféLevel", "CaféLevel", "Café", "αBeta"])
+def test_a_word_carrying_a_non_ascii_letter_survives_whole(raw: str) -> None:
+    """The fold rewrites a token; it never drops a character from one.
+
+    The parts pattern is ASCII-only while the candidate gate is not, so a word
+    carrying a letter outside that range is matched in pieces *around* it and
+    the pieces do not add back up: ``caféLevel`` yields ``caf`` and ``Level``,
+    with the ``é`` in neither. Splitting on that would put a lexeme in the index
+    that no caller could type and lose the letter that distinguished the word.
+
+    Which is why the parts have to reassemble before a split is taken. The
+    guard is stated over the token rather than over an alphabet because the
+    pattern's reach and the gate's disagree, and a rule keyed on the
+    disagreement rather than on either side of it stays true if either moves.
+    """
+    assert _lexemes(fold_for_query(raw)) == {raw.lower()}
+
+
+def test_the_expansion_of_a_non_ascii_compound_carries_no_shortened_form() -> None:
+    """Nor does the widened index text acquire the truncation.
+
+    ``expand_for_index`` keeps the original alongside the fold, so a split that
+    dropped a letter would leave the whole token reachable and merely add junk
+    beside it -- which is why this is a stray lexeme rather than a lost match,
+    and why the fold's own assertion above cannot be the only one. Stated
+    separately because the two halves fail independently.
+    """
+    expanded = _lexemes(expand_for_index("caféLevel"))
+
+    assert expanded == {"caféLevel".lower()}
+    assert "caf" not in expanded
+
+
 # ---------------------------------------------------------------------------
 # expand_for_index: superset property
 # ---------------------------------------------------------------------------

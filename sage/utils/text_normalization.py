@@ -69,24 +69,33 @@ def _split_compound(token: str) -> list[str]:
     the same one. Counting them refuses that compound as collateral, and a
     document titled *Graph Level* is then unreachable by ``graphLevel``.
 
-    Three guards, and it is worth naming which does what, because they are not
-    interchangeable and only the first is a statement of intent:
+    Four guards, and it is worth naming which does what, because they are not
+    interchangeable and only one of them is about safety:
 
-    - The internal-capital test says what a compound *is*. On its own it admits
-      a Title-cased word, which the next guard then declines to split.
-    - ``len(parts) >= 2`` is what actually keeps ``Document``, ``XLSX`` and
-      ``ADR`` whole: the pattern consumes each of them in one match, and a
-      token yielding a single part is returned unchanged rather than as its own
-      rewrite.
-    - ``isalpha`` is load-bearing in a way the other two are not. The pattern
-      has no alternative spanning a letter run that ends in digits, so ``PV07``
-      would come back as ``P`` and ``07`` -- the ``V`` dropped, the token
-      destroyed rather than rewritten.
+    - ``isalpha`` bounds what kind of token is a candidate at all. A mixed
+      letter-and-digit token is left alone as a matter of policy: ``PV07`` and
+      ``v3`` are identifiers a caller types whole.
+    - The internal-capital test says what a compound *is*, and is the rule this
+      function turns on.
+    - ``len(parts) >= 2`` keeps a single word whole. The pattern consumes
+      ``Document``, ``XLSX`` and ``ADR`` each in one match, so each is returned
+      unchanged rather than as its own rewrite.
+    - The parts must reassemble into the token, and this is the safety one. The
+      pattern's alternatives are ASCII while ``isalpha`` is not, so a word
+      carrying a letter outside that range is matched in pieces *around* it and
+      the pieces do not add back up -- ``caféLevel`` yields ``caf`` and
+      ``Level``, the ``é`` in neither. Splitting there would drop the letter
+      that distinguished the word and index a lexeme no caller could type.
+
+    The last guard is stated over the token rather than over an alphabet
+    deliberately. The defect is a disagreement between the pattern's reach and
+    the gate's, so a rule keyed on the disagreement itself stays true if either
+    side later moves; one keyed on today's alphabet would not.
     """
     if not (token.isalpha() and any(ch.isupper() for ch in token[1:])):
         return [token]
     parts = _COMPOUND_PARTS.findall(token)
-    return parts if len(parts) >= 2 else [token]
+    return parts if len(parts) >= 2 and "".join(parts) == token else [token]
 
 
 def fold_for_query(text: str) -> str:
