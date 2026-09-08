@@ -42,6 +42,7 @@ from sage.api.errors import (
     NoProjectionError,
     PathTraversalDeniedError,
     WritePathExistsError,
+    WritePathInvalidError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import RetrievalMode
@@ -267,7 +268,8 @@ class UtilitiesService:
             DeliveryParameterConflictError: delivery contradicts
                 write_to_path (inline+path, or spill without a path).
             WritePathInvalidError: write_to_path is not absolute or its
-                parent does not exist / is not writable.
+                parent does not exist / is not writable, or the exclusive
+                open fails after validation.
             WritePathExistsError: write_to_path target already exists.
         """
         # Resolve delivery + write_to_path into a single spill decision before
@@ -325,11 +327,20 @@ class UtilitiesService:
         # file that appeared in the window. The earlier check stays as the fast
         # refusal, so a caller naming an occupied path still pays no read.
         data = projection_text.encode("utf-8")
+        # Open outside cleanup: a file this delivery did not create is not ours to remove.
         try:
-            with open(write_to_path, "xb") as out:
-                out.write(data)
+            out = open(write_to_path, "xb")
         except FileExistsError:
             raise WritePathExistsError(write_to_path) from None
+        except OSError as exc:
+            raise WritePathInvalidError(write_to_path, str(exc)) from None
+        try:
+            with out:
+                out.write(data)
+        except BaseException:
+            # Remove this delivery's partial target so a retry can reuse the path.
+            Path(write_to_path).unlink(missing_ok=True)
+            raise
 
         response = ReadProjectionResponse.from_document(doc, projection_text=projection_text)
         response.projection_text = None

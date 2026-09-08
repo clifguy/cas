@@ -633,8 +633,11 @@ def register_sage_tools(
           and ``write_to_path`` were set; choose one.
         - ``write_path_exists`` (409): ``write_to_path`` target
           already exists.
-        - ``write_path_invalid`` (400): ``write_to_path`` parent is
-          missing or not writable, or the path is not absolute.
+        - ``write_path_invalid`` (400): ``write_to_path`` is not absolute,
+          its parent is missing or not writable, or the target cannot be
+          opened for exclusive creation after validation. An existing target
+          instead returns ``write_path_exists`` (409); errors after opening
+          are not translated into ``write_path_invalid``.
         - ``vault_source_store_refused`` (502): the store declined the operation
           on its merits -- quota, a permission it withdrew, a reply that could
           not be used. Resolve it at the store before retrying;
@@ -667,8 +670,9 @@ def register_sage_tools(
                 the machine that will write it. The path must be absolute
                 either way, and is checked before the document is read, so
                 a malformed path reports ``write_path_invalid`` whether or
-                not the document exists. Mutually exclusive with
-                `include_content`.
+                not the document exists. A later failure to open the target
+                for exclusive creation can also report ``write_path_invalid``.
+                Mutually exclusive with `include_content`.
         """
         try:
             # Validate each id-bearing parameter by its literal name (so the
@@ -1791,8 +1795,11 @@ def register_sage_tools(
           without one).
         - ``write_path_exists`` (409): ``write_to_path`` target already
           exists.
-        - ``write_path_invalid`` (400): ``write_to_path`` is not
-          absolute, or its parent directory is missing / not writable.
+        - ``write_path_invalid`` (400): ``write_to_path`` is not absolute,
+          its parent is missing or not writable, or the target cannot be
+          opened for exclusive creation after validation. An existing target
+          instead returns ``write_path_exists`` (409); errors after opening
+          are not translated into ``write_path_invalid``.
 
         Args:
             vault_id: Target vault identifier.
@@ -1812,7 +1819,8 @@ def register_sage_tools(
                 it. The path must be absolute either way, and is checked
                 before the projection is read, so a malformed path reports
                 ``write_path_invalid`` whatever the document's pipeline
-                state.
+                state. A later failure to open the target for exclusive
+                creation can also report ``write_path_invalid``.
             delivery: Inline-vs-spill selector (``inline | spill | auto``).
                 ``auto`` keeps the write_to_path-driven default.
         """

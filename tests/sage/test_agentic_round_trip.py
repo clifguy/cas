@@ -11,6 +11,7 @@ import hashlib
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -996,9 +997,137 @@ async def test_write_path_refuses_a_target_that_appears_during_the_delivery(
         mcp_init_module, "resolve_stack_vault_source_store", _resolver_that_plants_the_target
     )
 
-    with pytest.raises(WritePathExistsError):
+    with pytest.raises(WritePathExistsError) as caught:
         await service.get_document_with_content(
             doc.id, include_content=False, write_to_path=str(target)
         )
 
+    assert caught.value.code == "write_path_exists"
+    assert caught.value.status_code == 409
+    assert caught.value.message == f"Target path already exists: {target}"
     assert target.read_text() == interloper
+
+
+async def test_document_parent_removed_during_delivery_returns_typed_envelope(
+    client: Any, tmp_vault_dir: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    from sage import mcp_init
+
+    _seed_file(tmp_vault_dir, "vanishing.md", "# Source\n\nRetained bytes.")
+    doc = await _ingest_via_api(client, "vanishing.md")
+    parent = tmp_path / "output"
+    parent.mkdir()
+    target = parent / "out.md"
+    real_resolver = mcp_init.resolve_stack_vault_source_store
+    probes = []
+
+    def resolve(*args: Any, **kwargs: Any) -> Any:
+        store = real_resolver(*args, **kwargs)
+        real_exists = store.source_exists
+
+        def exists(*a: Any, **k: Any) -> Any:
+            result = real_exists(*a, **k)
+            assert result
+            parent.rmdir()
+            probes.append(True)
+            return result
+
+        store.source_exists = exists
+        return store
+
+    monkeypatch.setattr(mcp_init, "resolve_stack_vault_source_store", resolve)
+    response = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc['id']}",
+        params={"write_to_path": str(target)},
+    )
+    assert probes == [True]
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "write_path_invalid"
+    assert body["detail"]["write_to_path"] == str(target)
+    assert "No such file or directory" in body["detail"]["reason"]
+    assert not parent.exists()
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, IsADirectoryError, OSError])
+async def test_document_exclusive_open_oserror_is_typed(
+    tmp_vault_dir: Any,
+    graph_store: Any,
+    minimal_config: Any,
+    tmp_path: Any,
+    monkeypatch: Any,
+    error_type: Any,
+) -> None:
+    service = DocumentsService(graph_store, minimal_config)
+    _seed_file(tmp_vault_dir, "open_failure.md", "# Source\n\nRetained bytes.")
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("open_failure"),
+        source_type=SourceType.MARKDOWN,
+        source_path="open_failure.md",
+    )
+    target = tmp_path / "out.md"
+    real_open = Path.open
+    attempts = []
+
+    def failing_open(path: Any, mode: Any = "r", *args: Any, **kwargs: Any) -> Any:
+        if path == target:
+            attempts.append(mode)
+            raise error_type("exclusive open refused")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    with pytest.raises(WritePathInvalidError) as caught:
+        await service.get_document_with_content(
+            doc.id, include_content=False, write_to_path=str(target)
+        )
+    assert attempts == ["xb"]
+    assert caught.value.code == "write_path_invalid"
+    assert caught.value.status_code == 400
+    assert caught.value.detail == {"write_to_path": str(target), "reason": "exclusive open refused"}
+    assert not target.exists()
+
+
+async def test_document_write_oserror_is_not_an_open_error_and_cleans_partial(
+    tmp_vault_dir: Any, graph_store: Any, minimal_config: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    service = DocumentsService(graph_store, minimal_config)
+    _seed_file(tmp_vault_dir, "write_failure.md", "# Source\n\nRetained bytes.")
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("write_failure"),
+        source_type=SourceType.MARKDOWN,
+        source_path="write_failure.md",
+    )
+    target = tmp_path / "out.md"
+    real_open = Path.open
+    failure = OSError("disk write failed")
+    writes = []
+
+    class FailingWriter:
+        def __enter__(self) -> Any:
+            self.file = real_open(target, "xb")
+            return self
+
+        def __exit__(self, *args: Any) -> Any:
+            self.file.close()
+
+        def write(self, data: Any) -> Any:
+            self.file.write(data[:1])
+            self.file.flush()
+            writes.append(target.read_bytes())
+            raise failure
+
+    def open_target(path: Any, mode: Any = "r", *args: Any, **kwargs: Any) -> Any:
+        if path == target and mode == "xb":
+            return FailingWriter()
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_target)
+    with pytest.raises(OSError) as caught:
+        await service.get_document_with_content(
+            doc.id, include_content=False, write_to_path=str(target)
+        )
+    assert caught.value is failure
+    assert writes == [b"#"]
+    assert not target.exists()

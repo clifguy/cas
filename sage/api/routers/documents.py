@@ -219,10 +219,13 @@ async def get_document_content(
         400: {
             "model": ErrorResponse,
             "description": (
-                "Request shape invalid: both `include_content` and "
-                "`write_to_path` supplied (`content_delivery_conflict`), "
-                "`write_to_path` is not absolute, or the parent directory of "
-                "`write_to_path` is missing or not writable. Also returned with "
+                "Both `include_content` and `write_to_path` supplied "
+                "(`content_delivery_conflict`). Also returned with `write_path_invalid` "
+                "when `write_to_path` is not absolute, its parent is missing or not "
+                "writable, or the target cannot be opened for exclusive creation after "
+                "validation. An existing target instead returns `write_path_exists` (409); "
+                "errors after opening are not translated into `write_path_invalid`. "
+                "Also returned with "
                 "`binary_content_refused` when `include_content=true` targets a "
                 "binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read "
                 "path declines to inline raw container bytes and directs the "

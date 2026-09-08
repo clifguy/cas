@@ -1372,7 +1372,7 @@ class BulkLifecycleItemResult(BaseModel):
     status: Literal["success", "error"] = Field(
         description=(
             "`success` if the per-item transition committed; `error` if "
-            "the item raised a SAGEError and the batch continued with "
+            "the item raised an error and the batch continued with "
             "the next item."
         )
     )
@@ -1398,7 +1398,7 @@ class BulkLifecycleItemResult(BaseModel):
             "Error envelope when `status=error`. Shape matches the MCP "
             "`error_response` envelope: `{error: <code>, message: <text>, "
             "detail: <dict>}` where `detail` is present iff the "
-            "underlying SAGEError carries one."
+            "underlying error carries one."
         ),
     )
     changes: list[FieldChange] | None = Field(
@@ -1852,7 +1852,7 @@ class BulkMetadataItemResult(BaseModel):
     status: Literal["success", "error"] = Field(
         description=(
             "`success` if the per-item patch committed; `error` if the "
-            "item raised a SAGEError and the batch continued with the "
+            "item raised an error and the batch continued with the "
             "next item."
         )
     )
@@ -1877,7 +1877,7 @@ class BulkMetadataItemResult(BaseModel):
             "Error envelope when `status=error`. Shape matches the MCP "
             "`error_response` envelope: `{error: <code>, message: <text>, "
             "detail: <dict>}` where `detail` is present iff the underlying "
-            "SAGEError carries one."
+            "error carries one."
         ),
     )
     changes: list[FieldChange] | None = Field(
@@ -2313,8 +2313,8 @@ class BulkLinkItemResult(BaseModel):
     status: Literal["success", "error"] = Field(
         description=(
             "`success` if the per-item link committed (real-run) or would "
-            "have committed (dry-run); `error` if the item raised a "
-            "SAGEError and the batch continued with the next item."
+            "have committed (dry-run); `error` if the item raised an "
+            "error and the batch continued with the next item."
         )
     )
     edge: Edge | None = Field(
@@ -2355,7 +2355,7 @@ class BulkLinkItemResult(BaseModel):
             "Error envelope when `status=error`. Shape matches the MCP "
             "`error_response` envelope: `{error: <code>, message: <text>, "
             "detail: <dict>}` where `detail` is present iff the "
-            "underlying SAGEError carries one."
+            "underlying error carries one."
         ),
     )
 
