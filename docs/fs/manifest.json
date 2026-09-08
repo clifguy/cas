@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-06",
+  "manifest_date": "2026-09-08",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.36",
+      "version": "0.37",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.80",
+  "substrate_version": "1.81",
   "revision_history": [
+    {
+      "version": "1.81",
+      "date": "2026-09-08",
+      "summary": "Classify reabstract dispatch exceptions separately from background failures. Core API substrate revision 0.37 adds dispatch_failed to ReabstractOutcome and synchronizes report and SSE descriptions, including elapsed time for rejected dispatches. The service and bulk sweeps report the new outcome, the standalone script labels it explicitly, and the TypeScript failure list includes it. Existing post-dispatch fallback classifications remain, with their legacy scope documented. No input, route, SSE status, storage, or configuration changes; no conformance allowlist additions."
+    },
     {
       "version": "1.80",
       "date": "2026-09-06",

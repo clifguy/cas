@@ -1269,16 +1269,14 @@ class MaintenanceService:
         ``abstraction_skipped``, dispatches
         ``IngestionService.reabstract`` per document, and polls until
         each reaches a terminal pipeline_status
-        (``abstraction_complete`` or ``failed``). Per-document
-        exceptions are caught and recorded as ``llm_failure`` entries;
+        (including skipped or interrupted abstraction). Dispatch
+        exceptions are caught and recorded as ``dispatch_failed`` entries;
         the loop does not abort on a single failure.
 
         Reuses the in-process IngestionService that the running SAGE
         process initialized at startup -- and therefore its already-
         loaded ``AbstractionProvider``. Does NOT initialize a second
-        provider; the F-8 unified-memory cautionary tale (dual Qwen3
-        MLX load triggers Apple Silicon OOM or kernel panic) is the
-        binding constraint behind that rule. A ``MaintenanceService``
+        provider, avoiding duplicate model memory use. A ``MaintenanceService``
         constructed without an ``ingestion_service`` raises
         ``RuntimeError`` rather than fall back to a self-initialized
         provider; the standalone-script path lives in
@@ -1306,7 +1304,7 @@ class MaintenanceService:
 
         Raises:
             RuntimeError: ingestion_service was not wired in at
-                construction (defensive guard against the F-8 hazard).
+                construction (prevents duplicate provider initialization).
             ReabstractAlreadyInFlightError: another reabstract is
                 already running on this vault.
         """
@@ -1364,7 +1362,7 @@ class MaintenanceService:
 
         Raises:
             RuntimeError: ingestion_service was not wired in at
-                construction (defensive guard against the F-8 hazard).
+                construction (prevents duplicate provider initialization).
             ReabstractAlreadyInFlightError: another reabstract is
                 already running on this vault. Raised SYNCHRONOUSLY
                 from this method (before iteration), so HTTP callers
@@ -1458,7 +1456,7 @@ class MaintenanceService:
                         entries.append(
                             ReabstractReportEntry(
                                 document_id=doc.id,
-                                outcome=ReabstractOutcome.LLM_FAILURE,
+                                outcome=ReabstractOutcome.DISPATCH_FAILED,
                                 error_message=error_message,
                                 elapsed_seconds=elapsed,
                             )
@@ -1472,7 +1470,7 @@ class MaintenanceService:
                             current_document_id=doc.id,
                             current_title=doc.title,
                             status="failed",
-                            outcome=ReabstractOutcome.LLM_FAILURE,
+                            outcome=ReabstractOutcome.DISPATCH_FAILED,
                             error=error_message,
                             elapsed_seconds=elapsed,
                         )

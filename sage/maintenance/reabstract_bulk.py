@@ -226,7 +226,7 @@ async def run_sweep(
             entries.append(
                 ReabstractReportEntry(
                     document_id=doc.id,
-                    outcome=ReabstractOutcome.LLM_FAILURE,
+                    outcome=ReabstractOutcome.DISPATCH_FAILED,
                     error_message=message,
                     elapsed_seconds=elapsed,
                 )
