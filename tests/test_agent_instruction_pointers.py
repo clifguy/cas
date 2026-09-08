@@ -41,6 +41,20 @@ def _check_metadata(pointer: Path, canonical: Path) -> None:
 
 def _check_instruction(pointer: Path, canonical: Path) -> None:
     text = pointer.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if lines and lines[0] == "---":
+        assert "---" in lines[1:], f"Missing closing frontmatter delimiter: {pointer}"
+        lines = lines[lines.index("---", 1) + 1 :]
+    body = "\n".join(lines)
+    assert len(body.encode("utf-8")) <= 600, f"Pointer body exceeds 600 bytes: {pointer}"
+    assert not re.search(r"^\s*(?:`{3,}|~{3,})", body, re.MULTILINE), (
+        f"Fenced code is not allowed in pointer body: {pointer}"
+    )
+    headings = [line for line in lines if re.match(r"^\s*#{1,6}\s", line)]
+    nonempty = [line for line in lines if line.strip()]
+    assert not headings or (
+        len(headings) == 1 and headings[0].startswith("# ") and headings[0] == nonempty[0]
+    ), f"Section headings are not allowed in pointer body: {pointer}"
     # This fixed instruction form is a structural guard, not a semantic prose checker.
     targets = re.findall(
         r"^Read and follow (?:the complete )?\[[^\]\n]+\]\(([^)\n]+)\)", text, re.MULTILINE
@@ -80,22 +94,26 @@ def _write_skill_pair(root: Path, name: str) -> tuple[Path, Path]:
 
 
 @pytest.mark.parametrize(
-    "defect",
+    ("defect", "expected_error"),
     [
-        "negation",
-        "bare-reference",
-        "version",
-        "name",
-        "description",
-        "suffix-drift",
-        "missing-target",
-        "wrong-target",
-        "missing-link",
-        "inline-skill",
-        "empty-tree",
+        ("negation", "Expected one canonical read-and-follow instruction"),
+        ("bare-reference", "Expected one canonical read-and-follow instruction"),
+        ("version", "Unexpected pointer metadata"),
+        ("name", "Pointer name drifted"),
+        ("description", "Pointer description drifted"),
+        ("suffix-drift", "Pointer description drifted"),
+        ("missing-target", "Missing canonical skill"),
+        ("wrong-target", "Wrong instruction target"),
+        ("missing-link", "Expected one canonical read-and-follow instruction"),
+        ("inline-skill", "Section headings are not allowed"),
+        ("long-body", "Pointer body exceeds 600 bytes"),
+        ("fenced-instruction", "Fenced code is not allowed"),
+        ("empty-tree", "No agent skill pointers discovered"),
     ],
 )
-def test_skill_tree_rejects_defective_pointers(tmp_path: Path, defect: str) -> None:
+def test_skill_tree_rejects_defective_pointers(
+    tmp_path: Path, defect: str, expected_error: str
+) -> None:
     required, _ = _write_skill_pair(tmp_path, "cas-code-review")
     pointer, canonical = _write_skill_pair(tmp_path, "another-skill")
     text = pointer.read_text(encoding="utf-8")
@@ -124,12 +142,18 @@ def test_skill_tree_rejects_defective_pointers(tmp_path: Path, defect: str) -> N
         pointer.write_text(text.split("Read and follow")[0], encoding="utf-8")
     elif defect == "inline-skill":
         pointer.write_text(
-            text.split("Read and follow")[0] + "Execute an inlined procedure.\n", encoding="utf-8"
+            text + "\n## Copied procedure\nExecute an inlined procedure.\n", encoding="utf-8"
+        )
+    elif defect == "long-body":
+        pointer.write_text(text + "Copied procedure. " * 50, encoding="utf-8")
+    elif defect == "fenced-instruction":
+        pointer.write_text(
+            text.replace("Read and follow", "```\nRead and follow") + "```\n", encoding="utf-8"
         )
     else:
         pointer.unlink()
         required.unlink()
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match=re.escape(expected_error)):
         _check_skill_tree(tmp_path)
 
 
@@ -149,3 +173,19 @@ def test_repository_pointer_accepts_supplementary_link(tmp_path: Path) -> None:
         "Read and follow [guide](CLAUDE.md).\nAlso see [README](README.md).\n", encoding="utf-8"
     )
     _check_instruction(pointer, canonical)
+
+
+@pytest.mark.parametrize("body_bytes", [600, 601])
+def test_pointer_body_byte_limit(tmp_path: Path, body_bytes: int) -> None:
+    canonical = tmp_path / "CLAUDE.md"
+    canonical.write_text("Guide.\n", encoding="utf-8")
+    pointer = tmp_path / "AGENTS.md"
+    body = "Read and follow [guide](CLAUDE.md).\n"
+    remaining = body_bytes - len(body.encode("utf-8"))
+    body += "é" * (remaining // 2) + "x" * (remaining % 2)
+    pointer.write_text(body, encoding="utf-8")
+    if body_bytes == 600:
+        _check_instruction(pointer, canonical)
+    else:
+        with pytest.raises(AssertionError, match="Pointer body exceeds 600 bytes"):
+            _check_instruction(pointer, canonical)
