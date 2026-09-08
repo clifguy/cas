@@ -121,7 +121,13 @@ class _DropMcpAccessLogs(_logging.Filter):
         if not isinstance(args, tuple) or len(args) != 5:
             return True
         _client, method, path, _version, status = args
-        if not isinstance(path, str) or not isinstance(method, str) or type(status) is not int:
+        # ASGI transports may supply HTTPStatus or another int subclass; bool is not a status.
+        if (
+            not isinstance(path, str)
+            or not isinstance(method, str)
+            or not isinstance(status, int)
+            or isinstance(status, bool)
+        ):
             return True
         path = path.partition("?")[0]
         if method == "POST" and 200 <= status < 300 and path in _MCP_MOUNT_PATHS:
