@@ -175,11 +175,16 @@ for a default config, and no API route returns one, so the reference is
 the only affordance a caller has; and ``Sha256Str`` on ``verify_hashes``,
 because there the alias *is* the published shape.
 
-Instances remain on surfaces this module does not sweep -- schema
-property descriptions carry a few, and one was corrected here only
-because this work introduced it. Sweeping that surface is a separate
-pass; it is now the only such surface left, the error-code tier having
-been closed since.
+Component-schema descriptions have their own type-name check below,
+independent of the paired narrative pool. It reads schema-level,
+property, nested and event descriptions, accepting declared schema names
+and location-specific justified exceptions. Internal class names there
+are reworded in terms of caller-visible behavior. The criterion and the
+repeatable scan are documented in docs/process/openapi-changes.md.
+This check uses only the interior-capital extractor: lowercase internal
+names and the truth of a description's behavioral claims remain a human
+read. The operation-specific Sha256Str pin remains specific to that
+published digest shape; it is not a blanket alias exemption.
 
 Widening the sweep to the structural tail surfaced three more, on
 surfaces no gate had read: a service class and its dependency in an
@@ -1281,3 +1286,191 @@ def test_the_sweep_is_not_vacuous() -> None:
     assert len(spec_silent) <= MAX_SILENT_DESCRIPTIONS, (
         f"{len(spec_silent)} operation descriptions name no identifier: {spec_silent}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Component descriptions: type names, independently of operation disclosure
+# ---------------------------------------------------------------------------
+
+ComponentName = tuple[str, str, str]  # surface, JSON pointer, extracted name
+
+
+def component_descriptions(specs: dict[str, dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """Read description strings recursively under both specs' schema components.
+
+    This pool does not widen the paired operation narratives: grounding a
+    type reference and comparing two disclosures answer different questions.
+    Local references need no traversal here, since every component is read.
+    """
+    descriptions: dict[tuple[str, str], str] = {}
+
+    def walk(node: Any, surface: str, pointer: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                escaped = str(key).replace("~", "~0").replace("/", "~1")
+                child = f"{pointer}/{escaped}"
+                if key == "description" and isinstance(value, str):
+                    descriptions[surface, child] = value
+                else:
+                    walk(value, surface, child)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, surface, f"{pointer}/{index}")
+
+    for surface, spec in specs.items():
+        walk(spec.get("components", {}).get("schemas", {}), surface, "#/components/schemas")
+    return descriptions
+
+
+def unresolved_component_names(specs: dict[str, dict[str, Any]]) -> set[ComponentName]:
+    """Interior-capital references absent from the declared schema names.
+
+    Only declarations contribute vocabulary, never description text. This
+    deliberately does not claim to detect lowercase internal identifiers.
+    """
+    declared = {
+        name for spec in specs.values() for name in spec.get("components", {}).get("schemas", {})
+    }
+    return {
+        (surface, pointer, name)
+        for (surface, pointer), description in component_descriptions(specs).items()
+        for name in set(_CAMEL_CASE.findall(description)) - declared
+    }
+
+
+COMPONENT_NAME_PINS: Final[dict[ComponentName, str]] = {
+    (
+        "sage_core",
+        "#/components/schemas/User/properties/display_name/description",
+        "UIs",
+    ): "plural acronym for user interfaces, not a type reference",
+    (
+        "sage_core",
+        "#/components/schemas/IngestRequest/properties/needs_review/description",
+        "UIs",
+    ): "plural acronym for user interfaces, not a type reference",
+    (
+        "sage_core",
+        "#/components/schemas/SetEditorsRequest/properties/user_ids/description",
+        "IDs",
+    ): "plural acronym for identifiers, not a type reference",
+    (
+        "sage_core",
+        "#/components/schemas/ReabstractRequest/properties/include_pdf/description",
+        "PDFs",
+    ): "plural acronym for PDF documents, not a type reference",
+    (
+        "sage_core",
+        "#/components/schemas/ReabstractProgressEvent/properties/total/description",
+        "PDFs",
+    ): "plural acronym for PDF documents, not a type reference",
+}
+
+
+def component_name_issues(
+    specs: dict[str, dict[str, Any]], pins: dict[ComponentName, str]
+) -> tuple[list[ComponentName], list[ComponentName]]:
+    """Return unpinned names and stale pins, each with its reading location."""
+    unresolved = unresolved_component_names(specs)
+    return sorted(unresolved - pins.keys()), sorted(pins.keys() - unresolved)
+
+
+@pytest.fixture
+def component_specs() -> dict[str, dict[str, Any]]:
+    return {
+        surface: _load_spec(_SURFACES_BY_NAME[surface].spec_path)
+        for surface in ("sage_core", "cas_app")
+    }
+
+
+def test_component_type_names_resolve_to_declared_schemas(
+    component_specs: dict[str, dict[str, Any]],
+) -> None:
+    unknown, stale = component_name_issues(component_specs, COMPONENT_NAME_PINS)
+    assert not unknown, (
+        f"unresolved component type references (surface, JSON pointer, name): {unknown}"
+    )
+    assert not stale, f"stale component name pins: {stale}"
+    assert all(reason.strip() for reason in COMPONENT_NAME_PINS.values())
+
+
+@pytest.mark.parametrize("surface", ["sage_core", "cas_app"])
+@pytest.mark.parametrize(
+    ("schema_name", "node", "suffix"),
+    [
+        ("Result", {"description": "InventedType"}, "/description"),
+        (
+            "Result",
+            {"properties": {"value": {"description": "InventedType"}}},
+            "/properties/value/description",
+        ),
+        ("Result", {"items": {"description": "InventedType"}}, "/items/description"),
+        ("Result", {"allOf": [{"description": "InventedType"}]}, "/allOf/0/description"),
+        ("SummaryEvent", {"description": "InventedType"}, "/description"),
+        ("Result/~", {"description": "InventedType"}, "/description"),
+    ],
+)
+def test_component_traversal_reports_invented_types(
+    surface: str,
+    schema_name: str,
+    node: dict[str, Any],
+    suffix: str,
+) -> None:
+    specs = {surface: {"components": {"schemas": {schema_name: node}}}}
+    escaped = schema_name.replace("~", "~0").replace("/", "~1")
+    expected = (surface, f"#/components/schemas/{escaped}{suffix}", "InventedType")
+    assert component_name_issues(specs, {}) == ([expected], [])
+
+
+@pytest.mark.parametrize("declaring_surface", ["sage_core", "cas_app"])
+def test_component_vocabulary_uses_declarations_not_prose(declaring_surface: str) -> None:
+    reading_surface = "cas_app" if declaring_surface == "sage_core" else "sage_core"
+    specs = {
+        declaring_surface: {"components": {"schemas": {"PublishedType": {}}}},
+        reading_surface: {"components": {"schemas": {"Result": {"description": "PublishedType"}}}},
+    }
+    assert component_name_issues(specs, {}) == ([], [])
+    del specs[declaring_surface]["components"]["schemas"]["PublishedType"]
+    assert component_name_issues(specs, {}) == (
+        [(reading_surface, "#/components/schemas/Result/description", "PublishedType")],
+        [],
+    )
+
+
+@pytest.mark.parametrize("change", ["location_removed", "token_removed", "declared"])
+def test_component_pins_reject_staleness_and_do_not_leak(change: str) -> None:
+    pointer = "#/components/schemas/Result/description"
+    pinned = ("sage_core", pointer, "UIs")
+    specs = {
+        surface: {"components": {"schemas": {"Result": {"description": "UIs"}}}}
+        for surface in ("sage_core", "cas_app")
+    }
+    pins = {pinned: "plural acronym for user interfaces"}
+    assert component_name_issues(specs, pins) == ([("cas_app", pointer, "UIs")], [])
+    if change == "location_removed":
+        del specs["sage_core"]["components"]["schemas"]["Result"]
+    elif change == "token_removed":
+        specs["sage_core"]["components"]["schemas"]["Result"]["description"] = "User interfaces."
+    else:
+        specs["sage_core"]["components"]["schemas"]["UIs"] = {}
+    unknown, stale = component_name_issues(specs, pins)
+    assert stale == [pinned]
+    assert unknown == ([] if change == "declared" else [("cas_app", pointer, "UIs")])
+
+
+def test_component_description_coverage_is_not_vacuous(
+    component_specs: dict[str, dict[str, Any]],
+) -> None:
+    descriptions = component_descriptions(component_specs)
+    assert {surface for surface, _ in descriptions} == {"sage_core", "cas_app"}
+    assert sum(surface == "sage_core" for surface, _ in descriptions) >= 697
+    assert sum(surface == "cas_app" for surface, _ in descriptions) >= 80
+    assert {
+        ("sage_core", "#/components/schemas/ParseFilenameResponse/description"),
+        (
+            "sage_core",
+            "#/components/schemas/BatchIngestFileMetadata/properties/parsed_metadata/description",
+        ),
+        ("sage_core", "#/components/schemas/SummaryEvent/description"),
+        ("cas_app", "#/components/schemas/SummaryEvent/description"),
+    } <= descriptions.keys()

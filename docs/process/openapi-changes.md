@@ -52,3 +52,50 @@ A **symmetric** rename (Pydantic and YAML changed together, identically)
 satisfies the description-parity and coverage conformance tests directly — no
 allowlist edit is needed. An allowlist entry is a smell that the rename is
 one-sided.
+
+
+## Type names in component descriptions
+
+A schema, property, or event description may name a type a reader can find
+in either published API contract. An implementation class with no published
+contract definition gives that reader nothing to resolve; describe its
+behavior instead. A type alias that usefully names a published shape may
+have an explicit, location-specific justification: the existing `Sha256Str`
+reference on `verify_hashes` names the documented digest format. That
+exception does not exempt aliases everywhere.
+
+The component scan applies this criterion to the formerly unresolved sites:
+
+| Description | Disposition |
+| --- | --- |
+| Core `ParseFilenameResponse` | Replace `FilenameParser` with filename extraction behavior. |
+| Core `BatchIngestFileMetadata.parsed_metadata` | Replace `FilenameParser` with configured filename parser; retain metadata precedence. |
+| Core `SummaryEvent` | Describe the summary returned to non-streaming callers without the internal `IngestSummary` dataclass name. |
+| App `SummaryEvent` | Use the same summary description as Core. |
+
+Keep Python class docstrings and field descriptions synchronized with these
+YAML descriptions. The field-description parity gate enforces exact field
+text; class docstrings also need review because that gate does not compare
+them.
+
+Run the repeatable scan and its regression checks with:
+
+```sh
+.venv/bin/python -m pytest tests/sage/test_narrative_schema_grounding.py -k component -n 0
+```
+
+The component check recursively reads description strings under both specs'
+`components.schemas`, including nested schemas and events. It extracts
+interior-capital names and subtracts the schema names declared in either
+spec. It reports the spec surface, JSON pointer and name. Ordinary plural
+acronyms (`UIs`, `IDs`, `PDFs`) carry reasoned pins at their five individual
+locations; a pin that disappears or becomes resolvable fails the ratchet.
+No description contributes vocabulary to its own validation.
+
+This is a separate pool from the MCP/OpenAPI operation disclosure-parity
+check. Type-name grounding asks whether a reference exists, while disclosure
+parity compares what two operation narratives say. Widening their shared
+reader would change parity scores and exception semantics, so it stays
+unchanged. The component check does not detect lowercase internal names,
+validate behavioral claims, or prove a declared type is appropriate in the
+sentence where it appears; those remain review questions.

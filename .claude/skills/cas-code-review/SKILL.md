@@ -34,7 +34,7 @@ The skill adds value in two places: catching the residue that deterministic gate
 
 ## How to invoke
 
-The reviewer (Claude) reads the diff under review and walks every section. Diff sources, in order of preference:
+The reviewer reads the diff under review and walks every section. Diff sources, in order of preference:
 
 - A specific commit: `git show <sha>` (or `git show <sha> -- <pathspec>` to scope).
 - A branch's changes against main: `git diff main...HEAD`.
