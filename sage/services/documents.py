@@ -27,6 +27,7 @@ from sage.api.errors import (
     DownloadUrlNotAvailableError,
     LocalOpenNotAvailableError,
     WritePathExistsError,
+    WritePathInvalidError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES
@@ -117,7 +118,8 @@ def _deliver_to_path(
     document is fetched, so a malformed one is answered as the argument error
     it is rather than as a fact about the document.
 
-    Raises WritePathExistsError or ContentFileMissingError on failure.
+    Raises WritePathExistsError, WritePathInvalidError, or ContentFileMissingError
+    on failure.
     """
     target = Path(write_to_path)
 
@@ -138,6 +140,8 @@ def _deliver_to_path(
         # Opened outside the cleanup block below on purpose: a file this
         # delivery did not create is not this delivery's to remove.
         raise WritePathExistsError(write_to_path) from None
+    except OSError as exc:
+        raise WritePathInvalidError(write_to_path, str(exc)) from None
     try:
         with out:
             for chunk in store.iter_source(vault_id, storage_root, doc.source_path):

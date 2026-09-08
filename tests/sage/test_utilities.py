@@ -15,6 +15,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -394,6 +395,8 @@ async def test_read_projection_refuses_a_target_that_appears_during_the_read(
         await utilities_service.read_projection(ingested_doc.id, write_to_path=str(target))
 
     assert exc_info.value.code == "write_path_exists"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == f"Target path already exists: {target}"
     assert target.read_text() == "written by somebody else"
 
 
@@ -1140,3 +1143,64 @@ def test_discover_response_projection_status_none():
     response = DiscoverResponse(mode=RetrievalMode.CATALOG, results=[], total_available=0)
     assert response.read_meta.projection_status is None
     assert response.read_meta.projection_recovery is None
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, IsADirectoryError, OSError])
+async def test_projection_exclusive_open_oserror_is_typed(
+    utilities_service: Any, ingested_doc: Any, tmp_path: Any, monkeypatch: Any, error_type: Any
+) -> None:
+    import builtins
+
+    from sage.api.errors import WritePathInvalidError
+    from sage.services import utilities
+
+    target = tmp_path / "out.md"
+    attempts = []
+
+    def failing_open(path: Any, mode: Any = "r", *args: Any, **kwargs: Any) -> Any:
+        if path == str(target):
+            attempts.append(mode)
+            raise error_type("exclusive open refused")
+        return builtins.open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(utilities, "open", failing_open, raising=False)
+    with pytest.raises(WritePathInvalidError) as caught:
+        await utilities_service.read_projection(ingested_doc.id, write_to_path=str(target))
+    assert attempts == ["xb"]
+    assert caught.value.code == "write_path_invalid"
+    assert caught.value.status_code == 400
+    assert caught.value.detail == {"write_to_path": str(target), "reason": "exclusive open refused"}
+    assert not target.exists()
+
+
+async def test_projection_write_oserror_is_not_an_open_error(
+    utilities_service: Any, ingested_doc: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    from sage.services import utilities
+
+    target = tmp_path / "out.md"
+    expected = await utilities_service.read_projection(ingested_doc.id)
+    failure = OSError("disk write failed")
+    writes = []
+
+    class FailingWriter:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *args: Any) -> Any:
+            return None
+
+        def write(self, data: Any) -> Any:
+            writes.append(data)
+            raise failure
+
+    def open_target(path: Any, mode: Any) -> Any:
+        assert path == str(target)
+        assert mode == "xb"
+        return FailingWriter()
+
+    monkeypatch.setattr(utilities, "open", open_target, raising=False)
+    with pytest.raises(OSError) as caught:
+        await utilities_service.read_projection(ingested_doc.id, write_to_path=str(target))
+    assert caught.value is failure
+    assert writes == [expected.projection_text.encode("utf-8")]

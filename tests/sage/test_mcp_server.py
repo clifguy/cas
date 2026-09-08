@@ -12,7 +12,7 @@ tests services directly rather than through HTTP.
 import asyncio
 import json
 import logging
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -3544,3 +3544,30 @@ def test_no_get_stack_config_shadow_alias_in_mcp_server():
         "the qualified `sage.mcp_init.get_stack_config()` call resolves "
         "without a shadow."
     )
+
+
+async def test_projection_parent_removed_during_read_returns_typed_envelope(
+    vault_services: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
+    parent = tmp_path / "output"
+    parent.mkdir()
+    target = parent / "out.md"
+    service = vault_services.utilities_service
+    real_fetch = service._get_projection_text
+    reads = []
+
+    async def fetch(document_id: Any) -> Any:
+        result = await real_fetch(document_id)
+        parent.rmdir()
+        reads.append(document_id)
+        return result
+
+    monkeypatch.setattr(service, "_get_projection_text", fetch)
+    result = _parse(await read_projection("test_vault", doc["id"], write_to_path=str(target)))
+    assert reads == [doc["id"]]
+    assert result["error"] == "write_path_invalid"
+    assert result["detail"]["write_to_path"] == str(target)
+    assert "No such file or directory" in result["detail"]["reason"]
+    assert not parent.exists()
