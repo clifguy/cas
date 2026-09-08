@@ -423,3 +423,42 @@ in the repository and no workflow edit.
    preflight's authenticated read clears the SAGE backend.
 4. Confirm the [post-deploy preflight gate](#post-deploy-preflight-gate) reports
    every layer green before treating the tenant as live.
+
+
+## Retiring the MCP Admin alias from an existing deployment
+
+The supported mounts are `/mcp` and `/mcp_maint`. Deploy the retirement release
+before applying the following cleanup. The release removes the Admin discovery
+operation from Bicep and rejects the retired transport and discovery paths with
+404. An existing dedicated discovery operation bypasses the API policy, however,
+so it must also be removed from the running gateway.
+
+Subscription deployments are incremental: removing a declaration does not delete
+an existing APIM child resource. The targeted utility removes only operation
+`oauth-protected-resource-mcp-admin` and its child policy. Resolve the target
+resource group, APIM service and API from the intended tenant's current deployment;
+do not reuse coordinates from another tenant. Preview first:
+
+```bash
+python3 deploy/retire_mcp_admin.py apim --resource-group "$RESOURCE_GROUP_NAME" --service-name "$APIM_SERVICE_NAME" --api-id "$SAGE_API_ID"
+python3 deploy/retire_mcp_admin.py apim --resource-group "$RESOURCE_GROUP_NAME" --service-name "$APIM_SERVICE_NAME" --api-id "$SAGE_API_ID" --apply
+```
+
+The command verifies absence through a fresh operation-list read; repeated runs
+are safe. Azure read/write failures fail the command instead of being interpreted
+as already absent. Do not switch the deployment to complete mode to remove this
+one operation. Run the separately permissioned [Entra identity cleanup](entra-app-registrations.md)
+to trim the retired resource URI and retain its readback evidence.
+
+The normal post-deploy preflight includes `mcp_admin_retired`. On the first
+retirement deployment it intentionally reports failure while the retained APIM
+operation still serves metadata. Complete the reviewed targeted cleanup and rerun
+preflight; do not treat the initially failed preflight as a successful rollout.
+This check requires working root discovery and an authenticated `/mcp_maint`
+roundtrip, then verifies anonymous/authenticated GETs to the old mount, slash and
+SSE paths and old metadata URL return 404 without OAuth challenges, plus an
+authenticated legacy initialize POST returning 404. A dead edge cannot pass the
+retirement check. Supported mount discovery, JWT enforcement, and resource-token
+checks must also pass. Directory absence is proved by cleanup readback, not by
+these HTTP checks. Local tests validate fixtures, policy shape and Bicep compilation;
+retain live results before marking any deployed tenant remediated.

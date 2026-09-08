@@ -24,9 +24,9 @@ surface and the one table that decides where each tool registers:
   each serves; the single source of truth for the app's mounter, the
   access-log filter, and the dispatch-time refusal that names where a
   tool lives (``SURFACE_MOUNT_PATHS`` is its per-surface view).
-- ``TOOL_ALIASES`` — retired tool name → canonical name, covering every
-  spelling a maintenance tool has carried (the ``admin_*`` and ``maint_*``
-  generations). The alias middleware consults it on every ``call_tool``
+- ``TOOL_ALIASES`` — retired tool name → canonical name, covering the retained
+  ``maint_*`` generation; the older ``admin_*`` generation is retired.
+  The alias middleware consults it on every ``call_tool``
   invocation so callers holding an older name keep working.
 """
 
@@ -87,7 +87,8 @@ CANONICAL_VERBS: Final[frozenset[str]] = _GENERAL_VERBS | MAINT_ONLY_VERBS
 #: must begin with a canonical verb. ``bulk`` is retained for the
 #: ``bulk_ingest_document`` tool whose rename to ``ingest_documents``
 #: is deferred to a follow-on revision. The maintenance surface's retired
-#: prefixes (``admin``, then ``maint``; CAS-ADR-029) survive only as keys
+#: prefixes (``admin``, then ``maint``; CAS-ADR-029) are absent from registered
+#: names; ``maint`` survives only as keys
 #: of the dispatch-level alias table below, never in a registered name,
 #: so they compose with nothing: a name that reintroduced one would fail
 #: the verb gate, since neither token is a verb.
@@ -193,9 +194,6 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
 MCP_HTTP_MOUNTS: Final[tuple[tuple[str, str], ...]] = (
     ("/mcp", "sage"),
     ("/mcp_maint", "sage_maint"),
-    # Pre-rename alias path for the maintenance surface (CAS-ADR-034):
-    # identical roster, kept working with no scheduled removal.
-    ("/mcp_admin", "sage_maint"),
 )
 
 
@@ -226,10 +224,11 @@ SURFACE_MOUNT_PATHS: Final[dict[str, tuple[str, ...]]] = _paths_by_surface(MCP_H
 #: (retired because, once the surface-assignment table above became the
 #: registration authority, the prefix described nothing the table did
 #: not, and misdescribed the placement of the one tool the table had
-#: moved -- CAS-ADR-029). Every spelling from either generation resolves
-#: here. The alias middleware in ``sage.mcp_server._LoggingFastMCP.call_tool``
+#: moved -- CAS-ADR-029). Only the ``maint_`` generation resolves here; the ``admin_`` aliases
+#: were removed when the Admin transition ended. The alias middleware in
+#: ``sage.mcp_server._LoggingFastMCP.call_tool``
 #: consults this table on every invocation and rewrites a retired name
-#: onto its canonical target, so callers holding either older name keep
+#: onto its canonical target, so callers holding the retained older name keep
 #: working indefinitely -- no removal is scheduled. The retired names are
 #: deliberately **not** registered as tools: the advertised catalog carries
 #: only the canonical names.
@@ -246,8 +245,7 @@ SURFACE_MOUNT_PATHS: Final[dict[str, tuple[str, ...]]] = _paths_by_surface(MCP_H
 #: draws an SDK WARNING alongside the one logged here. The alias is a
 #: compatibility path, not a steady state.
 #:
-#: One flat table rather than one per generation: a caller need not know
-#: which generation it holds, and dispatch stays a single lookup
+#: One flat table holds the retained generation, and dispatch stays a single lookup
 #: (CAS-ADR-034 prices the alias at one dispatch-time lookup). The
 #: import-time invariants make the flatness safe by refusing an alias
 #: whose target is itself an alias, so a one-hop lookup is provably
@@ -256,26 +254,11 @@ SURFACE_MOUNT_PATHS: Final[dict[str, tuple[str, ...]]] = _paths_by_surface(MCP_H
 #: The table is written out rather than derived from ``SERVER_ASSIGNMENT``
 #: on purpose: it covers exactly the spellings that existed. A maintenance
 #: tool added after a rename gets no fabricated alias for the prefix it
-#: never carried (``restore_vault_source_file`` post-dates the ``admin_``
-#: era and has no ``admin_`` row), and a tool that has since moved to the
+#: never carried, and a tool that has since moved to the
 #: ordinary surface keeps the aliases it already had -- an alias follows
 #: the name, and resolves on whichever surface registers the target
 #: (CAS-ADR-034: an alias grants nothing the canonical name does not).
 TOOL_ALIASES: Final[dict[str, str]] = {
-    # admin_ generation
-    "admin_list_vaults": "list_vaults",
-    "admin_get_vault_config": "get_vault_config",
-    "admin_get_vault_stats": "get_vault_stats",
-    "admin_get_stack_config": "get_stack_config",
-    "admin_create_vault": "create_vault",
-    "admin_reload_vault": "reload_vault",
-    "admin_update_vault_config": "update_vault_config",
-    "admin_verify_vault_drift": "verify_vault_drift",
-    "admin_verify_vault_source_files": "verify_vault_source_files",
-    "admin_migrate_vault": "migrate_vault",
-    "admin_recompute_views": "recompute_views",
-    "admin_recompute_deferred_vault_abstracts": "recompute_deferred_vault_abstracts",
-    "admin_optimize_vault_content_store": "optimize_vault_content_store",
     # maint_ generation
     "maint_list_vaults": "list_vaults",
     "maint_get_vault_config": "get_vault_config",

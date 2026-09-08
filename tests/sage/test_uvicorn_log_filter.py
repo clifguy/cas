@@ -1,99 +1,177 @@
-"""Drop uvicorn.access records for every MCP mount's JSON-RPC endpoint.
-
-Over the Streamable HTTP transport every JSON-RPC message is a ``POST`` to
-the mount path itself, so each logical tool call produces access-log lines
-that carry no signal beyond what ``_LoggingFastMCP.call_tool`` already logs
-(the tool name lives in the request body, not the URL). Verifies that the
-``_DropMcpAccessLogs`` filter (a) drops records whose request path is exactly
-a mount path (with or without a query string), (b) keeps records for every
-other path — including paths that merely share the mount as a string prefix,
-so an unrelated ``/mcpfoo`` route or a stray ``/mcp/anything`` 404 stays
-visible, and (c) is defensive against unexpected ``record.args`` shapes
-(returns True so unrelated logs are never accidentally dropped). Also
-confirms the suppressed paths track the canonical mount list and that the
-filter is wired into ``UVICORN_LOG_CONFIG`` for the ``uvicorn.access``
-logger.
-"""
-
-from __future__ import annotations
+"""Access logging retains failures and bounds expected discovery diagnostics."""
 
 import logging
+import logging.config
 
-from sage.__main__ import (
-    _MCP_MOUNT_PATHS,
-    UVICORN_LOG_CONFIG,
-    _DropMcpAccessLogs,
-)
-from sage.app import MCP_HTTP_MOUNTS
+import pytest
+
+from sage.__main__ import UVICORN_LOG_CONFIG, _DropMcpAccessLogs
 
 
-def _access_record(args: tuple | None) -> logging.LogRecord:
+def _access_record(path="/mcp", method="POST", status=200):
     return logging.LogRecord(
-        name="uvicorn.access",
-        level=logging.INFO,
-        pathname="",
-        lineno=0,
-        msg='%s - "%s %s HTTP/%s" %d',
-        args=args,
-        exc_info=None,
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1234", method, path, "1.1", status),
+        None,
     )
 
 
-def test_filter_drops_exact_mount_path():
-    f = _DropMcpAccessLogs()
-    rec = _access_record(("127.0.0.1:49260", "POST", "/mcp", "1.1", 200))
-    assert f.filter(rec) is False
+@pytest.mark.parametrize("path", ["/mcp", "/mcp_maint", "/mcp?x=1"])
+def test_routine_success_is_quiet(path):
+    assert not _DropMcpAccessLogs().filter(_access_record(path))
 
 
-def test_filter_drops_mount_path_with_query():
-    f = _DropMcpAccessLogs()
-    rec = _access_record(("127.0.0.1:49260", "POST", "/mcp?session_id=abc", "1.1", 200))
-    assert f.filter(rec) is False
+@pytest.mark.parametrize("status", [301, 307, 400, 401, 403, 404, 405, 429, 500, 503])
+def test_mcp_non_success_remains_visible(status):
+    assert _DropMcpAccessLogs().filter(_access_record(status=status))
 
 
-def test_filter_drops_maintenance_mount_paths():
-    f = _DropMcpAccessLogs()
-    for path in ("/mcp_maint", "/mcp_admin"):
-        rec = _access_record(("127.0.0.1:54722", "POST", path, "1.1", 200))
-        assert f.filter(rec) is False, f"should drop {path}"
+@pytest.mark.parametrize("method", ["GET", "DELETE", "HEAD", "OPTIONS", "PUT"])
+def test_unexpected_method_remains_visible(method):
+    assert _DropMcpAccessLogs().filter(_access_record(method=method))
 
 
-def test_filter_keeps_other_paths():
-    f = _DropMcpAccessLogs()
-    for path in (
-        "/docs",
-        "/mcpfoo",
-        "/mcp/anything",
-        "/mcp_maint/x",
-        "/mcp_admin/x",
-        "/api/something",
-        "/",
-    ):
-        rec = _access_record(("127.0.0.1:49260", "GET", path, "1.1", 200))
-        assert f.filter(rec) is True, f"should keep path {path!r}"
+@pytest.mark.parametrize(
+    "path", ["/mcp_admin", "/mcp_admin?x=1", "/mcpfoo", "/mcp/anything", "/mcp_maint/x", "/docs"]
+)
+def test_other_paths_remain_visible(path):
+    assert _DropMcpAccessLogs().filter(_access_record(path))
 
 
-def test_filter_keeps_records_with_unexpected_args():
-    f = _DropMcpAccessLogs()
+@pytest.mark.parametrize(
+    "args",
+    [
+        None,
+        ("a", "b"),
+        ("a", "POST", "/mcp"),
+        ("a", "POST", 123, "1.1", 200),
+        ("a", "POST", "/mcp", "1.1", "200"),
+    ],
+)
+def test_malformed_record_is_not_suppressed(args):
+    rec = _access_record()
+    rec.args = args
+    assert _DropMcpAccessLogs().filter(rec)
 
-    assert f.filter(_access_record(None)) is True
-    assert f.filter(_access_record(("a", "b"))) is True
-    assert f.filter(_access_record(("a", "b", 123))) is True
+
+# Independent examples include both root and supported mount placement forms.
+_DISCOVERY = [
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+    "/mcp/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-authorization-server/mcp_maint",
+    "/.well-known/openid-configuration/mcp_maint",
+    "/mcp_maint/.well-known/openid-configuration",
+]
 
 
-def test_filter_paths_track_mount_list():
-    # The suppressed paths are derived from the canonical mount list, not
-    # hardcoded, so adding a mount auto-covers its JSON-RPC endpoint.
-    assert _MCP_MOUNT_PATHS == tuple(path for path, _ in MCP_HTTP_MOUNTS)
+@pytest.mark.parametrize("path", _DISCOVERY)
+def test_expected_discovery_requires_auth_disabled(path, caplog):
+    caplog.set_level(logging.DEBUG, logger="sage.discovery")
+    assert _DropMcpAccessLogs(auth_enabled=True).filter(_access_record(path, "GET", 404))
+    assert not _DropMcpAccessLogs(auth_enabled=False).filter(_access_record(path, "GET", 404))
+    assert any(r.levelno == logging.DEBUG and path in r.getMessage() for r in caplog.records)
 
-    f = _DropMcpAccessLogs()
-    for path, _surface in MCP_HTTP_MOUNTS:
-        for logged in (path, f"{path}?x=1"):
-            rec = _access_record(("127.0.0.1:49260", "POST", logged, "1.1", 200))
-            assert f.filter(rec) is False, f"should drop {logged}"
+
+@pytest.mark.parametrize(
+    "path,method,status",
+    [
+        ("/.well-known/oauth-protected-resource/mcp_admin", "GET", 404),
+        ("/mcp_admin/.well-known/openid-configuration", "GET", 404),
+        ("/.well-known/unknown", "GET", 404),
+        ("/.well-known/oauth-protected-resource/mcpx", "GET", 404),
+        ("/.well-known/oauth-protected-resource", "POST", 404),
+        ("/.well-known/oauth-protected-resource", "GET", 500),
+        ("/.well-known/oauth-protected-resource", "GET", 401),
+    ],
+)
+def test_discovery_negative_controls(path, method, status):
+    assert _DropMcpAccessLogs(auth_enabled=False).filter(_access_record(path, method, status))
+
+
+def test_discovery_counts_are_bounded_and_flushed(caplog):
+    now = [0.0]
+    caplog.set_level(logging.INFO, logger="sage.discovery")
+    f = _DropMcpAccessLogs(auth_enabled=False, clock=lambda: now[0])
+    for n in range(100):
+        assert not f.filter(
+            _access_record("/.well-known/oauth-protected-resource?nonce=" + str(n), "GET", 404)
+        )
+    assert f._counts == {"/.well-known/oauth-protected-resource": 99}
+    summaries = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert all("nonce" not in r.getMessage() for r in summaries)
+    assert len(summaries) == 1
+    assert "count=1" in summaries[0].getMessage()
+    now[0] = 60.0
+    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", 404))
+    summaries = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(summaries) == 2
+    assert "count=100" in summaries[1].getMessage()
+    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", 404))
+    f.flush_summary()
+    assert "count=1" in caplog.records[-1].getMessage()
+    f.flush_summary()
+    assert len([r for r in caplog.records if r.levelno == logging.INFO]) == 3
 
 
 def test_filter_wired_into_uvicorn_access_logger():
     assert "drop_mcp_access" in UVICORN_LOG_CONFIG["filters"]
-    access_cfg = UVICORN_LOG_CONFIG["loggers"]["uvicorn.access"]
-    assert "drop_mcp_access" in access_cfg["filters"]
+    assert "drop_mcp_access" in UVICORN_LOG_CONFIG["loggers"]["uvicorn.access"]["filters"]
+
+
+def test_real_logger_retains_failure_and_filters_success():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import logging
+import logging.config
+from sage.__main__ import UVICORN_LOG_CONFIG
+logging.config.dictConfig(UVICORN_LOG_CONFIG)
+logger = logging.getLogger('uvicorn.access')
+for status in (200, 503):
+    logger.info('%s - "%s %s HTTP/%s" %d', '127.0.0.1:1234', 'POST', '/mcp', '1.1', status)
+""",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "503" in result.stdout
+    assert "200" not in result.stdout
+
+
+@pytest.mark.parametrize("auth_enabled", [False, True])
+def test_main_uses_resolved_auth_posture_and_flushes_on_exit(monkeypatch, caplog, auth_enabled):
+    from types import SimpleNamespace
+
+    import sage.__main__ as entry
+
+    caplog.set_level(logging.INFO, logger="sage.discovery")
+    monkeypatch.setattr(
+        entry,
+        "create_app",
+        lambda **kw: SimpleNamespace(state=SimpleNamespace(auth_enabled=auth_enabled)),
+    )
+    monkeypatch.setattr("sys.argv", ["sage"])
+
+    def run(app, **kwargs):
+        f = kwargs["log_config"]["filters"]["drop_mcp_access"]["()"]()
+        record = _access_record("/.well-known/oauth-protected-resource", "GET", 404)
+        assert f.filter(record) is auth_enabled
+        assert f.filter(record) is auth_enabled
+        raise RuntimeError("server stopped")
+
+    monkeypatch.setattr(entry.uvicorn, "run", run)
+    with pytest.raises(RuntimeError, match="server stopped"):
+        entry.main()
+    summaries = [r for r in caplog.records if "Expected discovery 404s" in r.getMessage()]
+    assert len(summaries) == (0 if auth_enabled else 2)

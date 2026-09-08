@@ -140,7 +140,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_mount_discovery",
         "edge_advertised_resources_registered",
         "mcp_maint",
-        "mcp_admin",
+        "mcp_admin_retired",
         "mcp_roundtrip",
         "edge_authn_backend",
         "liveness",
@@ -290,9 +290,19 @@ def serve(responder: Responder) -> Iterator[str]:
                 # Accept-routed checks (the browser redirect) can be exercised offline,
                 # and a 5th `origin` parameter (the request's Origin header) so a check
                 # that must prove it asked cross-origin can be observed rather than
-                # assumed. Existing 3- and 4-arg responders are called unchanged.
+                # assumed. A sixth Authorization parameter observes both auth legs.
+                # Existing responders are called unchanged.
                 arity = len(inspect.signature(responder).parameters)
-                if arity >= 5:
+                if arity >= 6:
+                    status, text, headers = responder(
+                        method,
+                        self.path,
+                        body,
+                        self.headers.get("Accept", ""),
+                        self.headers.get("Origin", ""),
+                        self.headers.get("Authorization", ""),
+                    )
+                elif arity == 5:
                     status, text, headers = responder(
                         method,
                         self.path,
@@ -686,7 +696,7 @@ def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str
     p = path.split("?", 1)[0]
     if p == "/.well-known/oauth-protected-resource":
         return 200, _DISCOVERY_BODY, {}
-    if p in ("/mcp", "/mcp_maint", "/mcp_admin"):
+    if p in ("/mcp", "/mcp_maint"):
         return 401, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
     if p == "/health":
         return 200, _HEALTH_BODY, {}
@@ -1420,7 +1430,7 @@ def _openapi_spec_stub(
                 f'"paths":{{"/sage_vaults":{{"get":{{}}}}}},"components":{{{components}}}}}',
                 {"Access-Control-Allow-Origin": "*"} if cors_on_get else {},
             )
-        if p in ("/mcp", "/mcp_maint", "/mcp_admin"):
+        if p in ("/mcp", "/mcp_maint"):
             return gated_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
         return 404, '{"error":"not_found"}', {}
 
@@ -1597,7 +1607,7 @@ def _mount_discovery_stub(
         if p == "/.well-known/oauth-protected-resource":
             return discovery_status, (_DISCOVERY_BODY if discovery_status == 200 else "{}"), {}
         # Path-specific mounts first: /mcp is a string prefix of both.
-        for mount in ("/mcp_maint", "/mcp_admin", "/mcp"):
+        for mount in ("/mcp_maint", "/mcp"):
             if p == f"/.well-known/oauth-protected-resource{mount}":
                 resource = "{{BASE_URL}}" + (mount if pathful_resource else "")
                 body = (
@@ -1680,17 +1690,17 @@ _ARR_CHECK = "edge_advertised_resources_registered"
 def _advertised_resources_stub(
     discovery_status: int = 200,
     maint_doc_status: int = 200,
-    admin_advertises_maint: bool = False,
+    maint_advertises_ordinary: bool = False,
     root_resource_suffix: str = "",
 ) -> Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]:
     """A stub for the advertised-resources registration check: the root and the
-    three per-mount metadata documents each 200 and advertise a ``{{BASE_URL}}``
-    resource (bare for the root, path-carrying for the mounts) -- the four
+    two per-mount metadata documents each 200 and advertise a ``{{BASE_URL}}``
+    resource (bare for the root, path-carrying for the mounts) -- the three
     identities a real edge steers clients to. ``maint_doc_status`` breaks just
     the /mcp_maint document so the unreadable-advertisement leg can be
     exercised; ``discovery_status`` breaks the root (the blanket-edge control);
-    ``admin_advertises_maint`` makes the alias mount's document advertise the
-    canonical maintenance resource instead of its own path form, so a check
+    ``maint_advertises_ordinary`` makes the maintenance mount's document advertise the
+    ordinary resource instead of its own path form, so a check
     that constructs the probe set from the known mount paths -- rather than
     reading it out of the documents -- can be told apart.
     ``root_resource_suffix`` appends to the root document's advertised
@@ -1705,13 +1715,13 @@ def _advertised_resources_stub(
                 return discovery_status, "{}", {}
             root = "{{BASE_URL}}" + root_resource_suffix
             return 200, f'{{"resource": "{root}", "scopes_supported": ["offline_access"]}}', {}
-        for mount in ("/mcp_maint", "/mcp_admin", "/mcp"):
+        for mount in ("/mcp_maint", "/mcp"):
             if p == f"/.well-known/oauth-protected-resource{mount}":
                 if mount == "/mcp_maint" and maint_doc_status != 200:
                     return maint_doc_status, '{"error":"not_found"}', {}
                 advertised = mount
-                if mount == "/mcp_admin" and admin_advertises_maint:
-                    advertised = "/mcp_maint"
+                if mount == "/mcp_maint" and maint_advertises_ordinary:
+                    advertised = "/mcp"
                 body = "{" + f'"resource": "{{{{BASE_URL}}}}{advertised}"' + "}"
                 return 200, body, {}
         return 404, '{"error":"not_found"}', {}
@@ -1792,7 +1802,7 @@ def test_advertised_resources_registered_probes_each_advertised_resource(
         proc = _run(
             _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
         )
-        expected = [url, f"{url}/mcp", f"{url}/mcp_admin", f"{url}/mcp_maint"]
+        expected = [url, f"{url}/mcp", f"{url}/mcp_maint"]
     assert _verdicts(proc.stdout).get(_ARR_CHECK) == "PASS", (proc.stdout, proc.stderr)
     probed = record.read_text(encoding="utf-8").split()
     assert sorted(probed) == sorted(expected), f"probed set != advertised set: {probed}"
@@ -1803,19 +1813,19 @@ def test_advertised_resources_registered_probes_what_documents_advertise(
     tmp_path: Path,
 ) -> None:
     """The probed set must come from the DOCUMENTS, not from the known mount
-    paths: with the alias mount's document advertising the canonical
-    maintenance resource, the distinct advertised set is three URIs -- probed
-    once each, and the alias path form (which no document advertises) not at
+    paths: with the maintenance document advertising the ordinary
+    resource, the distinct advertised set is two URIs -- probed
+    once each, and the maintenance path form (which no document advertises) not at
     all. A check that constructs <base>+<mount> for each known mount produces
-    the same four-URI set as the healthy case and cannot pass here.
+    the same three-URI set as the healthy case and cannot pass here.
     """
     record = tmp_path / "probed.txt"
     probe = _write_stub_cmd(tmp_path, "resprobe", f"printf '%s\\n' \"$1\" >> {record}\nexit 0\n")
-    with serve(_advertised_resources_stub(admin_advertises_maint=True)) as url:
+    with serve(_advertised_resources_stub(maint_advertises_ordinary=True)) as url:
         proc = _run(
             _base_env(url, PREFLIGHT_CHECKS=_ARR_CHECK, PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=probe)
         )
-        expected = [url, f"{url}/mcp", f"{url}/mcp_maint"]
+        expected = [url, f"{url}/mcp"]
     assert _verdicts(proc.stdout).get(_ARR_CHECK) == "PASS", (proc.stdout, proc.stderr)
     probed = record.read_text(encoding="utf-8").split()
     assert sorted(probed) == sorted(expected), (
@@ -3129,8 +3139,7 @@ def test_warmup_engage_breadcrumb_to_stderr(tmp_path: Path) -> None:
 # The bash check owns the anti-coincidental CONTROL logic (discovery-200 edge- #
 # live + the unauth-401 gate); the round-trip PROTOCOL is stubbed here via the #
 # PREFLIGHT_MCP_PROBE_CMD seam and proven for real in test_mcp_preflight_probe. #
-# Both maintenance mount paths run the same check body: /mcp_maint (canonical) #
-# and /mcp_admin (the pre-rename alias path).                                  #
+# The maintenance mount is /mcp_maint; Admin retirement has a separate check. #
 # --------------------------------------------------------------------------- #
 def _discovery_broken(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
     """``_green`` but the OAuth discovery doc 404s -- the dead-edge control trap."""
@@ -3139,7 +3148,7 @@ def _discovery_broken(method: str, path: str, body: bytes) -> tuple[int, str, di
     return _green(method, path, body)
 
 
-_MAINTENANCE_CHECKS = [("mcp_maint", "/mcp_maint"), ("mcp_admin", "/mcp_admin")]
+_MAINTENANCE_CHECKS = [("mcp_maint", "/mcp_maint")]
 
 
 @_NEEDS_RUNTIME
@@ -3305,7 +3314,7 @@ _MUTATING_FRAGMENTS: Final[tuple[str, ...]] = (
     "/users",
     "/editors",
     "/refresh-views",
-    "/admin/",
+    "/maintenance/",
 )
 
 
@@ -4259,3 +4268,73 @@ def test_postgres_major_skips_without_an_expectation(tmp_path: Path) -> None:
             )
         )
     assert _verdicts(proc.stdout).get("postgres_major") == "SKIP", proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "none",
+        "metadata",
+        "mount",
+        "slash",
+        "sse",
+        "post",
+        "challenge",
+        "blanket404",
+        "canonical",
+        "authenticated",
+        "anonymous",
+    ],
+)
+def test_retired_admin_preflight_requires_live_supported_surface(
+    tmp_path: Path, broken: str
+) -> None:
+    """A dead edge, stale metadata, or an active old mount cannot credit retirement."""
+    probe = _write_probe_stub(
+        tmp_path, "mode=roundtrip mount=/mcp_maint initialize=ok", 1 if broken == "canonical" else 0
+    )
+
+    observed: dict[str, set[str]] = {}
+
+    def stub(
+        method: str, path: str, body: bytes, accept: str, origin: str, authorization: str
+    ) -> tuple[int, str, dict[str, str]]:
+        if method == "GET":
+            observed.setdefault(path, set()).add(authorization)
+        if path == "/mcp_admin" and method == "GET":
+            if broken == "authenticated" and authorization:
+                return 200, "{}", {}
+            if broken == "anonymous" and not authorization:
+                return 200, "{}", {}
+        if broken == "blanket404":
+            return 404, "{}", {}
+        if path == "/.well-known/oauth-protected-resource/mcp_admin" and broken == "metadata":
+            return 200, '{"resource":"legacy"}', {}
+        if path == "/mcp_admin" and broken == "mount":
+            return 200, '{"jsonrpc":"2.0","id":1,"result":{}}', {}
+        if (path == "/mcp_admin/" and broken == "slash") or (
+            path == "/mcp_admin/sse" and broken == "sse"
+        ):
+            return 200, "{}", {}
+        if path == "/mcp_admin" and method == "POST" and broken == "post":
+            return 200, '{"jsonrpc":"2.0","id":1,"result":{}}', {}
+        if path == "/mcp_admin" and broken == "challenge":
+            return 404, "{}", {"WWW-Authenticate": 'Bearer resource_metadata="legacy"'}
+        return _green(method, path, body)
+
+    with serve(stub) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS="mcp_admin_retired", PREFLIGHT_MCP_PROBE_CMD=probe)
+        )
+    expected = "PASS" if broken == "none" else "FAIL"
+    assert _verdicts(proc.stdout).get("mcp_admin_retired") == expected, proc.stdout
+    assert (proc.returncode == 0) == (broken == "none")
+    if broken == "none":
+        for path in (
+            "/mcp_admin",
+            "/mcp_admin/",
+            "/mcp_admin/sse",
+            "/.well-known/oauth-protected-resource/mcp_admin",
+        ):
+            assert observed[path] == {"", "Bearer test-token"}

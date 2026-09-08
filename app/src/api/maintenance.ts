@@ -1,7 +1,7 @@
 // Typed client wrappers for the SAGE Core API maintenance surface (T-0117).
 //
 // startReabstract — SSE-streamed POST against
-//   /sage_vaults/{vault_id}/admin/reabstract-deferred (T-0134). Shape mirrors
+//   /sage_vaults/{vault_id}/maintenance/reabstract-deferred. Shape mirrors
 //   startIngestion in app/src/api/ingest.ts: caller passes an onEvent
 //   callback that is invoked for each parsed progress / summary event.
 // getDeferredCount — catalog discover filtered by
@@ -32,7 +32,7 @@ export async function startReabstract(
   includePdf: boolean = false,
 ): Promise<void> {
   const stream = await apiStream(
-    `/sage_vaults/${vaultId}/admin/reabstract-deferred`,
+    `/sage_vaults/${vaultId}/maintenance/reabstract-deferred`,
     { include_pdf: includePdf },
     signal,
   );
@@ -74,7 +74,7 @@ export async function startOptimizeContentStore(
   vaultId: string,
 ): Promise<OptimizeContentStoreReport> {
   return apiPost<OptimizeContentStoreReport>(
-    `/sage_vaults/${vaultId}/admin/optimize-content-store`,
+    `/sage_vaults/${vaultId}/maintenance/optimize-content-store`,
     {},
   );
 }

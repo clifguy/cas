@@ -283,7 +283,7 @@ is a timing artifact and worth a ticket against the ingest-time capture rather
 than an investigation of the store.
 
 `source_audit` runs `verify_vault_source_files` (`POST
-.../admin/verify-source-files`, `check_hashes=true`) and confirms **both probes**
+.../maintenance/verify-source-files`, `check_hashes=true`) and confirms **both probes**
 are healthy — present, not a link, inside the source tree, and hashing to what the
 record expects. It is scoped to this run's probes: the validation vault
 accumulates the residue of every previous run, and a whole-vault verdict would
@@ -306,7 +306,7 @@ investigate before restarting.
 
 Where the investigation finds a retained copy that something other than SAGE
 overwrote, `restore_vault_source_file` (`POST
-.../admin/restore-source-file`) writes the original bytes back at the path the
+.../maintenance/restore-source-file`) writes the original bytes back at the path the
 document record already names. It needs those bytes from you — SAGE keeps no
 second copy — and it refuses rather than repairing if the file handed to it is
 not the one the document was ingested from. Re-ingesting is not a substitute: it

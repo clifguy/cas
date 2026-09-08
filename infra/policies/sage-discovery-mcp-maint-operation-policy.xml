@@ -12,9 +12,7 @@
             byte-identically and is registered as an identifier URI on the
             Entra resource app, so the client's RFC 8707 resource parameter
             clears Entra's byte-for-byte identifier match (AADSTS9010010
-            otherwise). The mount's pre-rename alias path keeps its own
-            document (sage-discovery-mcp-admin-operation-policy.xml) for as
-            long as the alias is served.
+            otherwise).
 
             There is deliberately no <base /> here: omitting it skips the
             API-level inbound policy (validate-jwt), so the document is

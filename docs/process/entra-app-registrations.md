@@ -74,9 +74,9 @@ You will also choose placeholders that downstream work fixes concretely:
 
 ## 1. SAGE resource-server registration
 
-Create (or reuse) the application, give it **five** identifier URIs — the
+Create (or reuse) the application, give it **four** identifier URIs — the
 `api://<SAGE_APP_ID>` audience URI, the `https://<SAGE_PUBLIC_HOSTNAME>`
-custom-domain identity, and the three MCP-mount forms of that identity — and
+custom-domain identity, and the two MCP-mount forms of that identity — and
 create its service principal. The lookup-then-create guard makes the step
 idempotent.
 
@@ -90,8 +90,7 @@ fi
 
 az ad app update --id "$SAGE_APP_ID" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint" \
-    "https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"
+    "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
 
@@ -123,15 +122,14 @@ request. Two hard-won facts shape this set:
 The client independently requires the advertised resource to match the server
 origin it connected to (RFC 9728), which is why the https identities derive
 from the custom domain rather than a made-up URI. `--identifier-uris` is a
-declarative full-set replace: declare all five together so a re-run cannot drop
+declarative full-set replace: declare all four together so a re-run cannot drop
 any — and re-running the updated invocation is also how a *removed* URI (the
 retired SSE-transport endpoint forms) is trimmed from a live tenant. The https
 forms require their host under a tenant-verified domain; `az` fails loudly if
 it is not. Tokens are unaffected either way — a v2 access token carries the
 bare app-id GUID as its `aud` no matter which identifier form the scope used.
 
-> The mount paths (`/mcp`, `/mcp_maint`, and the maintenance surface's
-> pre-rename alias path `/mcp_admin`) are protocol constants of the SAGE
+> The mount paths (`/mcp` and `/mcp_maint`) are protocol constants of the SAGE
 > MCP Streamable HTTP surface, mirrored from the uvicorn mounts. Adding a new
 > MCP mount means adding its identifier URI here and its path-inserted
 > metadata operation at the APIM edge in the same change.
@@ -145,13 +143,34 @@ advertised-resources registration check fails on exactly this gap. To close
 it, do **not** re-run the whole script — several of its Graph writes are
 declarative full-set replaces whose scope and role ids regenerate, orphaning
 live role assignments. Run only the `az ad app update --identifier-uris`
-invocation above, passing all five URIs: it replaces the one `identifierUris`
+invocation above, passing all four URIs: it replaces the one `identifierUris`
 collection (plain strings, no generated ids) and touches nothing else. Then
 verify by reading the collection back:
 
 ```bash
 az ad app show --id "$SAGE_APP_ID" --query identifierUris -o json
 ```
+
+**Retirement of existing Admin identities.** After the retirement
+release is deployed, use the targeted utility to remove only
+`https://<host>/mcp_admin`, preserving all other currently registered identities.
+Preview first, then apply the reviewed change:
+
+```bash
+python3 deploy/retire_mcp_admin.py entra --app-id "$SAGE_APP_ID" --hostname "$SAGE_PUBLIC_HOSTNAME"
+python3 deploy/retire_mcp_admin.py entra --app-id "$SAGE_APP_ID" --hostname "$SAGE_PUBLIC_HOSTNAME" --apply
+```
+
+This requires a directory identity allowed to update that app. The utility reads
+`identifierUris`, removes the exact retired value, replaces that collection,
+and verifies the complete resulting collection by readback. Do not edit the
+app's identifier URIs concurrently with this read/update operation. A repeat run
+confirms absence without another write; read or write failures fail the command.
+The normal infrastructure workflow does not perform directory bootstrap or this
+cleanup. The advertised-resource preflight proves supported identities resolve;
+it cannot prove an unadvertised identity is absent. Keep the cleanup readback as
+the evidence of directory retirement. Do not rerun the whole bootstrap to trim
+one identity.
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and

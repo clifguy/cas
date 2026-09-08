@@ -1,8 +1,12 @@
 """SAGE server entry point: python -m sage [--vault-root PATH]"""
 
 import argparse
+import copy
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 
 # Quiet huggingface library noise before any sage import pulls in
 # transformers/tokenizers. Env vars are read at library import
@@ -67,29 +71,73 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
     return Path.home() / "sage_vaults"
 
 
-class _DropMcpAccessLogs(_logging.Filter):
-    """Drop uvicorn.access records for any MCP mount's JSON-RPC endpoint.
+def _discovery_paths() -> frozenset[str]:
+    """Exact metadata locations probed for the supported MCP resources."""
+    root = "/.well-known/"
+    families = ("oauth-protected-resource", "oauth-authorization-server", "openid-configuration")
+    paths = {root + family for family in families}
+    for mount in _MCP_MOUNT_PATHS:
+        paths.update(root + family + mount for family in families)
+        paths.update(mount + root + family for family in (families[0], families[2]))
+    return frozenset(paths)
 
-    Over the Streamable HTTP transport every JSON-RPC message is a ``POST``
-    to the mount path itself (e.g. ``/mcp``, ``/mcp_maint``), so each
-    logical tool call produces access lines whose URL carries no signal —
-    the tool name lives in the request body, and
-    ``_LoggingFastMCP.call_tool`` already surfaces it. The suppressed paths
-    are derived from the canonical mount list (``_MCP_MOUNT_PATHS``) so a
-    newly mounted surface is covered automatically. Matching is
-    exact-path-or-query, never bare prefix: the mount path must not shadow
-    an unrelated route that merely starts with the same characters, and a
-    stray request to a subpath (a 404 worth seeing) stays visible.
+
+class _DropMcpAccessLogs(_logging.Filter):
+    """Keep transport failures; summarize expected unauthenticated discovery.
+
+    Only successful POSTs to canonical MCP paths are routine traffic. An
+    authentication posture not supplied by the application defaults to visible
+    discovery logs. Query strings never become diagnostic counter keys.
     """
+
+    def __init__(
+        self,
+        *,
+        auth_enabled: bool = True,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__()
+        self._auth_enabled = auth_enabled
+        self._clock = clock
+        self._paths = _discovery_paths()
+        self._counts: dict[str, int] = {}
+        self._last_summary: float | None = None
+        self._lock = Lock()
+
+    def flush_summary(self) -> None:
+        """Emit remaining counts once, including at orderly server shutdown."""
+        with self._lock:
+            counts, self._counts = self._counts, {}
+        if counts:
+            _logging.getLogger("sage.discovery").info(
+                "Expected discovery 404s (authentication disabled): count=%d paths=%s; "
+                "individual probes available at DEBUG",
+                sum(counts.values()),
+                counts,
+            )
 
     def filter(self, record: _logging.LogRecord) -> bool:
         args = record.args
-        if not isinstance(args, tuple) or len(args) < 3:
+        if not isinstance(args, tuple) or len(args) != 5:
             return True
-        path = args[2]
-        if not isinstance(path, str):
+        _client, method, path, _version, status = args
+        if not isinstance(path, str) or not isinstance(method, str) or type(status) is not int:
             return True
-        return not any(path == m or path.startswith(m + "?") for m in _MCP_MOUNT_PATHS)
+        path = path.partition("?")[0]
+        if method == "POST" and 200 <= status < 300 and path in _MCP_MOUNT_PATHS:
+            return False
+        if self._auth_enabled or method != "GET" or status != 404 or path not in self._paths:
+            return True
+        now = self._clock()
+        with self._lock:
+            self._counts[path] = self._counts.get(path, 0) + 1
+            due = self._last_summary is None or now - self._last_summary >= 60
+            if due:
+                self._last_summary = now
+        _logging.getLogger("sage.discovery").debug("Expected discovery GET %s: 404", path)
+        if due:
+            self.flush_summary()
+        return False
 
 
 # Uvicorn's default log_config with a timestamp prefix added, matching the
@@ -193,12 +241,13 @@ def main() -> None:
     vault_root = _resolve_vault_root(args)
 
     app = create_app(vault_root=vault_root)
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_config=UVICORN_LOG_CONFIG,
-    )
+    access_filter = _DropMcpAccessLogs(auth_enabled=app.state.auth_enabled)
+    log_config = copy.deepcopy(UVICORN_LOG_CONFIG)
+    log_config["filters"]["drop_mcp_access"] = {"()": lambda: access_filter}
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_config=log_config)
+    finally:
+        access_filter.flush_summary()
 
 
 if __name__ == "__main__":

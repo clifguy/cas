@@ -169,9 +169,8 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
 
     Realizes the CAS-ADR-034 ordinary/maintenance partition over the
     Streamable HTTP transport: ``/mcp`` carries the ``sage`` (ordinary)
-    roster and ``/mcp_maint`` the ``sage_maint`` (maintenance) roster,
-    with ``/mcp_admin`` serving the maintenance roster as the surface's
-    pre-rename alias path. Every mount is built by
+    roster and ``/mcp_maint`` the ``sage_maint`` (maintenance) roster.
+    Every mount is built by
     ``build_partitioned_server`` and runs in this one uvicorn process,
     sharing the app-populated ``_vaults`` registry and the single
     stack abstraction provider (CAS-ADR-030) — partitioning the transport
@@ -662,6 +661,7 @@ def create_app(
         description="Salience-Aware Graph Engine - Core API",
         lifespan=lifespan,
     )
+    app.state.auth_enabled = bool(stack_cfg.auth and stack_cfg.auth.enabled)
 
     # Read the authored prose now rather than on the first request for the
     # schema document. A deployment missing the specifications is broken in a

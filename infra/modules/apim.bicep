@@ -415,19 +415,6 @@ resource sageDiscoveryMcpMaintOperation 'Microsoft.ApiManagement/service/apis/op
   }
 }
 
-// The maintenance mount's pre-rename alias path keeps its own metadata
-// document for as long as the alias is served.
-resource sageDiscoveryMcpAdminOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
-  parent: sageApi
-  name: 'oauth-protected-resource-mcp-admin'
-  properties: {
-    displayName: 'OAuth protected-resource metadata (mcp_admin alias mount)'
-    method: 'GET'
-    urlTemplate: '/.well-known/oauth-protected-resource/mcp_admin'
-    templateParameters: []
-  }
-}
-
 resource sageHealthOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
   parent: sageApi
   name: 'health'
@@ -555,15 +542,6 @@ resource sageDiscoveryMcpMaintOperationPolicy 'Microsoft.ApiManagement/service/a
   properties: {
     format: 'rawxml'
     value: loadTextContent('../policies/sage-discovery-mcp-maint-operation-policy.xml')
-  }
-}
-
-resource sageDiscoveryMcpAdminOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
-  parent: sageDiscoveryMcpAdminOperation
-  name: 'policy'
-  properties: {
-    format: 'rawxml'
-    value: loadTextContent('../policies/sage-discovery-mcp-admin-operation-policy.xml')
   }
 }
 

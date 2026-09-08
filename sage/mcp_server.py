@@ -358,7 +358,7 @@ class _LoggingFastMCP(FastMCP):
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         logger = _logging.getLogger(__name__)
         # Pre-dispatch alias resolution for the maintenance tools' retired
-        # names (CAS-ADR-034): an ``admin_*`` or ``maint_*`` spelling
+        # names (CAS-ADR-034): a retained ``maint_*`` spelling
         # rewrites to its canonical target so existing callers keep
         # working. No removal is scheduled; the log line steers callers to
         # the canonical name without promising one.
@@ -477,8 +477,7 @@ bulk_ingest_document = _app_tools["bulk_ingest_document"]
 # The SAGE MCP surface is split into two: ``sage`` (the ordinary surface)
 # and ``sage_maint`` (the maintenance surface, opt-in additive). Per
 # CAS-ADR-034 the partition is realized as Streamable HTTP mounts on
-# the SAGE app (``/mcp`` = ordinary, ``/mcp_maint`` = maintenance, with
-# ``/mcp_admin`` as the maintenance surface's pre-rename alias path; see
+# the SAGE app (``/mcp`` = ordinary, ``/mcp_maint`` = maintenance; see
 # ``sage/app.py``). Mount selection *is* the role declaration. Surface
 # assignment is read from ``SERVER_ASSIGNMENT`` in ``sage._tool_naming``
 # and from nothing else: a tool's name describes the operation and says

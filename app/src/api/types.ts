@@ -661,7 +661,7 @@ export const REABSTRACT_FAILURE_OUTCOMES: readonly ReabstractOutcome[] = [
   'dispatch_failed',
 ];
 
-// Request body for POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
+// Request body for POST /sage_vaults/{vault_id}/maintenance/reabstract-deferred.
 export interface ReabstractRequest {
   // When false (default), source_type=pdf documents are skipped.
   include_pdf?: boolean;
@@ -737,7 +737,7 @@ export interface ReabstractStartedResponse {
 }
 
 // Postgres content-store VACUUM report. Returned by
-// POST /sage_vaults/{vault_id}/admin/optimize-content-store. The pre/post
+// POST /sage_vaults/{vault_id}/maintenance/optimize-content-store. The pre/post
 // version and fragment fields map to Postgres MVCC internals (dead tuples and
 // relation pages); the app renders only bytes reclaimed and dead rows removed.
 export interface OptimizeContentStoreReport {

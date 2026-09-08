@@ -1,7 +1,7 @@
 """HTTP integration tests for the maintenance router.
 
-POST /sage_vaults/{vault_id}/admin/migrate.
-POST /sage_vaults/{vault_id}/admin/optimize-content-store.
+POST /sage_vaults/{vault_id}/maintenance/migrate.
+POST /sage_vaults/{vault_id}/maintenance/optimize-content-store.
 
 The app fixture builds its vault through the production (uninjected
 graph-store) path, so the migrate endpoint exercises the Postgres-backed
@@ -59,7 +59,7 @@ async def maintenance_app(minimal_vault_config_dict, tmp_path):
             await current.close_storage()
 
 
-async def test_post_admin_migrate_returns_200_noop_report_and_is_idempotent(
+async def test_post_maintenance_migrate_returns_200_noop_report_and_is_idempotent(
     maintenance_app,
 ):
     """Two sequential POSTs: both 200, both round-trip as a MigrationReport
@@ -74,7 +74,7 @@ async def test_post_admin_migrate_returns_200_noop_report_and_is_idempotent(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         for _ in range(2):
-            resp = await client.post(f"/sage_vaults/{vault_id}/admin/migrate")
+            resp = await client.post(f"/sage_vaults/{vault_id}/maintenance/migrate")
 
             assert resp.status_code == 200, resp.text
             body = resp.json()
@@ -88,12 +88,12 @@ async def test_post_admin_migrate_returns_200_noop_report_and_is_idempotent(
             assert "tier3_uniqueness_collisions" in body
 
 
-async def test_post_admin_migrate_unknown_vault_returns_404(maintenance_app):
+async def test_post_maintenance_migrate_unknown_vault_returns_404(maintenance_app):
     """An unregistered vault id returns 404 via get_vault_id."""
     app, _vault_id, _content_store, _vault_dir = maintenance_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/sage_vaults/ghost/admin/migrate")
+        resp = await client.post("/sage_vaults/ghost/maintenance/migrate")
 
     assert resp.status_code == 404, resp.text
     body = resp.json()
@@ -105,7 +105,7 @@ async def test_post_admin_migrate_unknown_vault_returns_404(maintenance_app):
 # ============================================================================
 
 
-async def test_post_admin_optimize_content_store_returns_200_with_report(
+async def test_post_maintenance_optimize_content_store_returns_200_with_report(
     maintenance_app,
 ):
     """200 with a JSON body that round-trips as OptimizeContentStoreReport,
@@ -119,7 +119,7 @@ async def test_post_admin_optimize_content_store_returns_200_with_report(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            f"/sage_vaults/{vault_id}/admin/optimize-content-store",
+            f"/sage_vaults/{vault_id}/maintenance/optimize-content-store",
             json={"cleanup_older_than_days": 0},
         )
 
@@ -134,7 +134,7 @@ async def test_post_admin_optimize_content_store_returns_200_with_report(
     assert content_store.optimize_calls == [timedelta(days=0)]
 
 
-async def test_post_admin_optimize_content_store_unknown_vault_returns_404(
+async def test_post_maintenance_optimize_content_store_unknown_vault_returns_404(
     maintenance_app,
 ):
     """An unregistered vault id returns 404 via the shared
@@ -144,7 +144,7 @@ async def test_post_admin_optimize_content_store_unknown_vault_returns_404(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/sage_vaults/ghost/admin/optimize-content-store",
+            "/sage_vaults/ghost/maintenance/optimize-content-store",
             json={"cleanup_older_than_days": 0},
         )
 
@@ -153,7 +153,7 @@ async def test_post_admin_optimize_content_store_unknown_vault_returns_404(
     assert body["code"] == "vault_not_found"
 
 
-async def test_post_admin_optimize_content_store_default_days_is_7(maintenance_app):
+async def test_post_maintenance_optimize_content_store_default_days_is_7(maintenance_app):
     """An empty body falls through to the Pydantic default of
     cleanup_older_than_days=7. The audit log records the resolved
     threshold (not just any default), pinning the contract end-to-end.
@@ -163,7 +163,7 @@ async def test_post_admin_optimize_content_store_default_days_is_7(maintenance_a
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            f"/sage_vaults/{vault_id}/admin/optimize-content-store",
+            f"/sage_vaults/{vault_id}/maintenance/optimize-content-store",
             json={},
         )
 
