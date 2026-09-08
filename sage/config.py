@@ -718,19 +718,26 @@ class LifecycleConfig(BaseModel):
         """The declared states from which no further transition is expected.
 
         A state joins the set by declaring `is_terminal: true`. Callers
-        that report outstanding work use this to exclude documents
-        nothing further will be done to: whatever pipeline or metadata
-        state such a document was left in, it keeps, so counting it
-        reports work no one will pick up.
+        reporting an operator worklist use this to exclude documents no
+        operator is expected to take up — a supersession's predecessor,
+        say. It does not assert that nothing will touch such a document
+        again: a terminal state need not be permanent, the base
+        lifecycle permitting `archived → reactivate`.
 
         Derived from the declared states rather than restated as a
         literal, so a vault that marks a domain-specific state terminal
         — a filing that freezes a document, say — has it honoured
-        without the reading code knowing the state exists. Distinct from
-        `supersession_surviving_states`, whose complement is derived from
-        the transitions instead: the two coincide in the base lifecycle
-        and diverge as soon as a vault declares a terminal state that no
-        supersession lands in, or permits a transition out of one.
+        without the reading code knowing the state exists.
+
+        Not to be confused with `supersession_surviving_states`, which
+        is derived from the transitions and answers a different
+        question. The two are near-complements in the base lifecycle
+        rather than equal — `{archived}` against `{active, completed}` —
+        and they are independent, not opposed: a state may be declared
+        terminal without any supersession landing in it, and a
+        supersession may land in a state the vault declines to mark
+        terminal. Read this one for "is anyone expected to act on it",
+        the other for "was it retired by a newer version".
         """
         return frozenset(state.value for state in self.states if state.is_terminal)
 

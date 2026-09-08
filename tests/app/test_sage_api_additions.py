@@ -286,13 +286,22 @@ async def custom_terminal_state_app(tmp_path):
     because that fixture's vault listing is under assertion (exactly two
     entries), so a third vault there would fail a test that has nothing
     to do with lifecycle.
+
+    The state's name is a per-run nonce, and that is the point rather
+    than hygiene. A service that skipped the config entirely and carried
+    a literal tuple of the state names this suite happens to use would
+    satisfy a fixed name, so the reader could not tell a derivation from
+    a lucky list. No literal can match a name generated at run time, so
+    the only way to exclude a document in this state is to have read the
+    vault's declared states.
     """
+    terminal_state = f"frozen_{uuid.uuid4().hex[:8]}"
     config_dict = _make_vault_config_dict(tmp_path, "filing_vault", "Filing Vault")
     config_dict["lifecycle"]["states"].append(
-        {"value": "filed", "label": "Filed", "is_terminal": True}
+        {"value": terminal_state, "label": "Frozen", "is_terminal": True}
     )
     config_dict["lifecycle"]["transitions"].append(
-        {"from_state": "active", "action": "file", "to_state": "filed"}
+        {"from_state": "active", "action": "freeze", "to_state": terminal_state}
     )
     config = VaultConfig.model_validate(config_dict)
     app = create_app(configs=[config])
@@ -311,6 +320,9 @@ async def custom_terminal_state_app(tmp_path):
             )
         )
         app.state.vault_registry[config.vault.id] = services
+        # The test reads the nonce back rather than restating it, so the
+        # name exists in exactly one place.
+        app.state.terminal_state_under_test = terminal_state
         yield app
 
 
@@ -651,20 +663,27 @@ class TestVaultStatistics:
     ):
         """The excluded set comes from the vault's own declared states.
 
-        `filing_vault` declares `filed` terminal alongside `archived`,
-        so a document frozen by a filing is excluded on the same footing
-        as one retired by a supersession -- without SAGE having been
-        told that `filed` exists.
+        `filing_vault` declares a second terminal state alongside
+        `archived`, so a document frozen into it is excluded on the same
+        footing as one retired by a supersession -- without SAGE having
+        been told that state exists.
 
         Anti-coincidental-pass: this is the only test in this file whose
-        terminal document is not `archived`. An implementation carrying
-        a hardcoded `("archived",)` satisfies every sibling test here
-        and fails this one, which is the whole reason it exists.
+        terminal document is not `archived`, so an implementation
+        carrying a hardcoded `("archived",)` satisfies every sibling
+        test here and fails this one. The state's name is a per-run
+        nonce (see the fixture), which closes the rival that a fixed
+        second name would leave open: a service that never calls
+        `terminal_states()` and instead carries a literal tuple of the
+        names this suite uses would pass a fixed name and cannot pass a
+        generated one. Excluding this document requires having read the
+        vault's declared states.
         """
         services = custom_terminal_state_app.state.vault_registry["filing_vault"]
         gs = services.graph_store
+        terminal_state = custom_terminal_state_app.state.terminal_state_under_test
 
-        for doc_id, lifecycle in [("still-open", "active"), ("frozen", "filed")]:
+        for doc_id, lifecycle in [("still-open", "active"), ("frozen", terminal_state)]:
             await gs.insert_document(
                 _make_document(
                     doc_id,
@@ -679,7 +698,7 @@ class TestVaultStatistics:
         body = resp.json()
 
         assert body["health"]["deferred_abstract_count"] == 1
-        assert body["by_lifecycle_status"]["filed"] == 1
+        assert body["by_lifecycle_status"][terminal_state] == 1
 
 
 # ---------------------------------------------------------------------------

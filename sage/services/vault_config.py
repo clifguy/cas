@@ -74,13 +74,20 @@ class VaultConfigService:
         staging_count = await self._store.count_staging_edges()
         last_ingestion = await self._store.get_last_ingestion_at()
 
-        # The doc-scoped health indicators report actionable work, so
-        # they exclude documents in a terminal lifecycle state: nothing
-        # further is expected of one, so it holds whatever pipeline or
-        # metadata state it was left in forever, and counting it reports
-        # work no one will pick up. The surfacing case is a scanned PDF
-        # left at abstraction_skipped long after a text-bearing
-        # replacement superseded it and got a real abstract.
+        # The doc-scoped health indicators are an operator worklist, so
+        # they exclude documents in a terminal lifecycle state. The
+        # ground is that remediating such a document is not work an
+        # operator needs to take up -- not that nothing will touch it
+        # again, which would be false: recover_incomplete_documents and
+        # both reabstract sweeps select on pipeline_status alone and
+        # reach it regardless of lifecycle. That is deliberate, because
+        # a terminal state need not be permanent (the base lifecycle
+        # permits archived -> reactivate), and a document that comes
+        # back should not come back without an abstract.
+        #
+        # The surfacing case is a scanned PDF left at
+        # abstraction_skipped long after a text-bearing replacement
+        # superseded it and got a real abstract.
         #
         # pending_edge_count is deliberately not filtered below: a
         # staging edge is not doc-scoped and carries no lifecycle, so
