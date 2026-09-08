@@ -402,6 +402,7 @@ def _tracked_files() -> list[Path]:
 #   to ``.claude/`` files because it reads the diff regardless of path —
 #   this gate is the substrate backstop for product code, not workspace
 #   tooling.
+# The .agents/ tree holds pointer entry points only and remains in scope.
 _EXCLUDED_TOP_LEVEL_DIRS: Final[frozenset[str]] = frozenset({"domains", ".claude"})
 
 # The gate test file itself is self-referential — it MUST contain the
