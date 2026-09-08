@@ -1173,34 +1173,57 @@ async def test_projection_exclusive_open_oserror_is_typed(
     assert not target.exists()
 
 
-async def test_projection_write_oserror_is_not_an_open_error(
-    utilities_service: Any, ingested_doc: Any, tmp_path: Any, monkeypatch: Any
+@pytest.mark.parametrize("failure_stage", ["write", "flush"])
+async def test_projection_write_failure_cleans_partial_and_allows_retry(
+    utilities_service: Any,
+    ingested_doc: Any,
+    tmp_path: Any,
+    monkeypatch: Any,
+    failure_stage: str,
 ) -> None:
+    import builtins
+
     from sage.services import utilities
 
     target = tmp_path / "out.md"
     expected = await utilities_service.read_projection(ingested_doc.id)
+    expected_bytes = expected.projection_text.encode("utf-8")
     failure = OSError("disk write failed")
     writes = []
 
     class FailingWriter:
+        def __init__(self) -> None:
+            self.file = builtins.open(target, "xb")
+
         def __enter__(self) -> Any:
             return self
 
-        def __exit__(self, *args: Any) -> Any:
-            return None
+        def __exit__(self, *args: Any) -> None:
+            self.file.close()
+            if failure_stage == "flush":
+                raise failure
 
-        def write(self, data: Any) -> Any:
+        def write(self, data: bytes) -> None:
             writes.append(data)
-            raise failure
+            if failure_stage == "write":
+                self.file.write(data[:1])
+                raise failure
+            self.file.write(data)
 
-    def open_target(path: Any, mode: Any) -> Any:
+    def open_target(path: str, mode: str) -> Any:
         assert path == str(target)
         assert mode == "xb"
         return FailingWriter()
 
-    monkeypatch.setattr(utilities, "open", open_target, raising=False)
-    with pytest.raises(OSError) as caught:
-        await utilities_service.read_projection(ingested_doc.id, write_to_path=str(target))
+    with monkeypatch.context() as patch:
+        patch.setattr(utilities, "open", open_target, raising=False)
+        with pytest.raises(OSError) as caught:
+            await utilities_service.read_projection(ingested_doc.id, write_to_path=str(target))
     assert caught.value is failure
-    assert writes == [expected.projection_text.encode("utf-8")]
+    assert writes == [expected_bytes]
+    assert not target.exists()
+
+    response = await utilities_service.read_projection(ingested_doc.id, write_to_path=str(target))
+    assert response.written_to == str(target)
+    assert response.content_size == len(expected_bytes)
+    assert target.read_bytes() == expected_bytes

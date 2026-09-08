@@ -333,8 +333,12 @@ class UtilitiesService:
             raise WritePathExistsError(write_to_path) from None
         except OSError as exc:
             raise WritePathInvalidError(write_to_path, str(exc)) from None
-        with out:
-            out.write(data)
+        try:
+            with out:
+                out.write(data)
+        except BaseException:
+            Path(write_to_path).unlink(missing_ok=True)
+            raise
 
         response = ReadProjectionResponse.from_document(doc, projection_text=projection_text)
         response.projection_text = None

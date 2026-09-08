@@ -240,14 +240,14 @@ _BACKTICKED: Final[re.Pattern[str]] = re.compile(r"`{1,2}([^`]+)`{1,2}")
 # never sees it.
 _BARE_WORD: Final[re.Pattern[str]] = re.compile(r"[a-z][a-z0-9]*")
 
-# An interior-capital name: the shape a schema, model, or class takes.
-# Requires a lower-then-upper transition, so it matches ``ChainResponse``
-# and ``Sha256Str`` but not a sentence-initial ordinary word, an
-# acronym, or a heading. Without this tier the two lowercase patterns
-# above see nothing at all in "Returns a `ChainResult` object", which is
-# the invented-name defect in the one shape most likely to carry it.
+# A schema, model, or class name: either a lower-then-upper transition
+# (ChainResponse, Sha256Str) or an initial uppercase run followed by
+# lowercase text (OSError, URLResult). Sentence-initial ordinary words
+# and all-uppercase acronyms remain prose. Plural acronyms such as PDFs
+# also match; their meanings are recorded in the pins below.
 _CAMEL_CASE: Final[re.Pattern[str]] = re.compile(
-    r"\b[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b"
+    r"\b(?:[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)+"
+    r"|[A-Z]{2,}[a-z][A-Za-z0-9]*)\b"
 )
 
 
@@ -255,13 +255,13 @@ def named_identifiers(text: str) -> frozenset[str]:
     """Every identifier a narrative names.
 
     Three tiers: snake_case tokens anywhere in the text, single-word
-    lowercase tokens that are backtick-marked, and interior-capital
-    names anywhere. Marked-up single words are included because that is
-    how a narrative points at a field whose name happens to be one word;
+    lowercase tokens that are backtick-marked, and mixed-case names
+    anywhere, including names that start with an acronym. Marked-up single
+    words are included because that is how a narrative points at a field
+    whose name happens to be one word;
     unmarked ones are not, because at that shape they are ordinary
-    prose. Interior-capital names need no markup to be unambiguous --
-    ordinary prose does not produce them -- so unlike the bare-word tier
-    they are read from the running text as well.
+    prose. Mixed-case names are read from running text as well; matching
+    prose acronyms such as PDFs are accounted for by explicit pins.
     """
     found = set(_SNAKE_CASE.findall(text))
     found |= set(_CAMEL_CASE.findall(text))
@@ -572,7 +572,7 @@ def unresolved_for(surface_name: str, tool_name: str) -> list[str]:
 # ``test_unresolved_identifier_pins_are_not_stale`` fails on an entry
 # that has since become resolvable, so this table can only shrink.
 #
-# Ten mapped pairs resolve completely and are absent from this table.
+# Pairs that resolve completely are absent from this table.
 # Absence means the sweep found the pair sound, not that it skipped it --
 # ``test_narrative_identifiers_resolve_to_the_contract_vocabulary``
 # parametrizes over every mapped pair.
@@ -614,6 +614,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "staging_edges": "graph-store table holding tier-2 edges awaiting review",
     },
     ("sage_core", "create_edges"): {
+        "SAGEError": "base exception serialized into per-item code, message, and detail fields",
         "deliverable_id": "example tier-3 metadata key in a worked example",
         "template_id": "example tier-3 metadata key in a worked example",
     },
@@ -741,6 +742,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "start_time": "field of the reabstract_already_in_flight error detail",
     },
     ("sage_core", "recompute_deferred_vault_abstracts"): {
+        "PDFs": "prose: documents in Portable Document Format",
         "reabstract_deferred": "operator fallback script under scripts/",
         "start_time": "field of the reabstract_already_in_flight error detail",
         "RuntimeError": BUILTIN_EXCEPTION,
@@ -750,7 +752,11 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # in it is ``by_lifecycle_status``, which resolves.
         "by_lifecycle": "generated view directory under storage_root",
     },
+    ("sage_core", "traverse"): {
+        "CTEs": "prose: SQL common table expressions used by graph traversal",
+    },
     ("sage_core", "update_lifecycles"): {
+        "SAGEError": "base exception serialized into per-item code, message, and detail fields",
         "cas": "example vault id in a worked example",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
@@ -761,6 +767,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "valid_actions": ERROR_DETAIL_KEY,
     },
     ("sage_core", "update_metadata"): {
+        "SAGEError": "base exception serialized into per-item code, message, and detail fields",
         "other_key": "placeholder in a worked example, not a field name",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
@@ -890,6 +897,38 @@ def test_extractor_finds_bare_backticked_tokens() -> None:
     # acronym are not interior-capital names.
     assert "Returns" not in camel
     assert "SAGE" not in named_identifiers("SAGE returns the chain.")
+
+
+@pytest.mark.parametrize("name", ["OSError", "IOError", "EOFError", "URLResult"])
+@pytest.mark.parametrize("markup", ["", "`", "``"])
+def test_extractor_finds_acronym_initial_names(name: str, markup: str) -> None:
+    assert named_identifiers(f"Returns {markup}{name}{markup} from SAGE.") == {name}
+
+
+@pytest.mark.parametrize("prose_surface", ["body", "narrative", "tail", "response"])
+def test_acronym_initial_invented_name_is_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+    prose_surface: str,
+) -> None:
+    from copy import deepcopy
+
+    spec = deepcopy(_load_spec(_SURFACES_BY_NAME["sage_core"].spec_path))
+    operation = _find_operation(spec, "get_document")
+    assert operation is not None
+    docstring, narrative, whole = _surfaces_for("sage_core", "get_document")
+    baseline = set(unresolved_for("sage_core", "get_document"))
+    probe = "Returns an XMLImaginary beside `write_path_invalid`."
+    if prose_surface == "body":
+        docstring = probe + "\n\n" + docstring
+    elif prose_surface == "narrative":
+        narrative += "\n" + probe
+    elif prose_surface == "tail":
+        docstring += "\nError modes:\n" + probe
+    else:
+        operation["responses"]["400"]["description"] += "\n" + probe
+    monkeypatch.setitem(globals(), "_surfaces_for", lambda *_: (docstring, narrative, whole))
+    monkeypatch.setitem(globals(), "_load_spec", lambda *_: spec)
+    assert set(unresolved_for("sage_core", "get_document")) - baseline == {"XMLImaginary"}
 
 
 def test_the_historical_linearity_divergence_is_reported() -> None:

@@ -222,7 +222,7 @@ async def get_document_content(
                 "Both `include_content` and `write_to_path` supplied "
                 "(`content_delivery_conflict`). Also returned with `write_path_invalid` "
                 "when `write_to_path` is not absolute, its parent is missing or not "
-                "writable, or the target's exclusive open raises `OSError` after "
+                "writable, or the target cannot be opened for exclusive creation after "
                 "validation. An existing target instead returns `write_path_exists` (409); "
                 "errors after opening are not translated into `write_path_invalid`. "
                 "Also returned with "
