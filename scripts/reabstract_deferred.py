@@ -81,7 +81,7 @@ from pathlib import Path
 
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES, PipelineStatus
+from sage.models.enums import TERMINAL_PIPELINE_STATUS_VALUES, PipelineStatus, ReabstractOutcome
 from sage.models.schemas import Document
 from sage.vault_management import config_path_for_vault
 
@@ -303,7 +303,8 @@ async def run(
                 await services.ingestion_service.reabstract(doc.id)
             except Exception as exc:
                 print(
-                    f"[{i:4d}/{total}]  {doc.id}  dispatch failed: {exc!r}",
+                    f"[{i:4d}/{total}]  {doc.id}  "
+                    f"{ReabstractOutcome.DISPATCH_FAILED.value}: {exc!r}",
                     flush=True,
                 )
                 failed.append((doc.id, doc.title or "", doc.version_label))

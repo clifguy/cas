@@ -106,6 +106,26 @@ describe('startReabstract', () => {
     expect(onEvent.mock.calls[2][0].event_type).toBe('summary');
   });
 
+  it('forwards dispatch failure progress and summary without losing the cause', async () => {
+    const events: ReabstractEvent[] = [
+      { event_type: 'progress', processed: 1, total: 1,
+        current_document_id: 'dddddddd_dispatch', current_title: 'Dispatch',
+        status: 'failed', outcome: 'dispatch_failed', error: 'dispatch failed: NoProjectionError',
+        elapsed_seconds: 0.01 },
+      { event_type: 'summary', vault_id: 'v1', reabstracted_count: 0,
+        skipped_pdf_count: 0, failed_count: 1,
+        entries: [{ document_id: 'dddddddd_dispatch', outcome: 'dispatch_failed',
+          error_message: 'dispatch failed: NoProjectionError', elapsed_seconds: 0.01 }] },
+    ];
+    apiStreamMock.mockResolvedValue({} as ReadableStream<Uint8Array>);
+    readSSEStreamMock.mockImplementation(async (_stream, onEvent) => {
+      for (const event of events) onEvent(event as unknown as Record<string, unknown>);
+    });
+    const onEvent = vi.fn();
+    await startReabstract('v1', onEvent);
+    expect(onEvent.mock.calls).toEqual(events.map(event => [event]));
+  });
+
   it('A2b: drops events with unknown event_type with a console warning', async () => {
     apiStreamMock.mockResolvedValue({} as ReadableStream<Uint8Array>);
     readSSEStreamMock.mockImplementation(async (_stream, onEvent) => {

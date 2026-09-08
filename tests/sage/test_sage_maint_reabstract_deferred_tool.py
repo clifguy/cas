@@ -216,3 +216,15 @@ async def test_sage_maint_reabstract_deferred_vault_aggregates_streaming_events(
             assert outcomes_by_id[pdf_doc.id] == ReabstractOutcome.SKIPPED_PDF
         finally:
             await asyncio.sleep(0.1)
+
+
+async def test_dispatch_failure_survives_mcp_boundary(minimal_vault_config_dict):
+    async with _publish_vault(minimal_vault_config_dict) as (vault_id, services):
+        doc = _make_skipped_doc(_id("tool_no_projection"))
+        await services.graph_store.insert_document(doc)
+        result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
+        assert result["failed_count"] == 1
+        entry = result["entries"][0]
+        assert entry["document_id"] == doc.id
+        assert entry["outcome"] == "dispatch_failed"
+        assert "NoProjectionError" in entry["error_message"]

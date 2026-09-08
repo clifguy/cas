@@ -646,17 +646,19 @@ export type ReabstractOutcome =
   | 'llm_failure'
   | 'still_skipped'
   | 'timeout'
-  | 'interrupted';
+  | 'interrupted'
+  | 'dispatch_failed';
 
-// The four non-success outcomes that count toward failed_count. Anything
+// The five failure outcomes that count toward failed_count. Anything
 // rendered as a failure keys on this rather than on 'llm_failure' alone:
-// failed_count counts all four, so filtering to one of them shows a
+// failed_count counts all five, so filtering to one of them shows a
 // non-zero count above an empty list.
 export const REABSTRACT_FAILURE_OUTCOMES: readonly ReabstractOutcome[] = [
   'llm_failure',
   'still_skipped',
   'timeout',
   'interrupted',
+  'dispatch_failed',
 ];
 
 // Request body for POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
@@ -673,7 +675,8 @@ export interface ReabstractReportEntry {
   // Failure description when outcome is one of REABSTRACT_FAILURE_OUTCOMES;
   // null otherwise.
   error_message: string | null;
-  // Wall-clock seconds from dispatch to terminal status; null for skipped_pdf.
+  // Seconds from the dispatch attempt until rejection or the end of the wait;
+  // null for skipped_pdf.
   elapsed_seconds: number | null;
 }
 
@@ -688,12 +691,9 @@ export interface ReabstractReport {
   entries: ReabstractReportEntry[];
 }
 
-// SSE 'progress' event for reabstract-deferred (T-0134).
-// Each non-PDF document emits two events: a 'started' event (outcome omitted)
-// before dispatch, then a 'completed' or 'failed' event after the polling
-// loop reaches a terminal pipeline_status. Each PDF emits a single 'skipped'
-// event. `processed` increments only on terminal ('completed' / 'failed' /
-// 'skipped') events.
+// SSE progress for reabstract-deferred. Each attempted document emits 'started'
+// before dispatch, then its outcome after dispatch rejection or the wait ends.
+// An excluded PDF emits only 'skipped'. `processed` counts outcome events.
 export interface ReabstractProgressEvent {
   event_type: 'progress';
   processed: number;
@@ -707,7 +707,8 @@ export interface ReabstractProgressEvent {
   // 'still_skipped'; omitted on 'started', 'completed', and skipped_pdf.
   error?: string | null;
   // Set on 'completed', 'failed', and the 'still_skipped' form of 'skipped';
-  // omitted on 'started' and on skipped_pdf (never dispatched).
+  // measures only the dispatch attempt for dispatch_failed.
+  // Omitted on 'started' and on skipped_pdf (never dispatched).
   elapsed_seconds?: number | null;
 }
 

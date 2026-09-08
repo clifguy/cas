@@ -314,3 +314,22 @@ async def test_post_reabstract_deferred_409_when_already_in_flight(
         app.state.vault_registry[vault_id].close_timing()
         await app.state.vault_registry[vault_id].graph_store.close()
         mcp_server._vaults.clear()
+
+
+async def test_dispatch_failure_survives_sse_boundary(maintenance_app):
+    app, vault_id, _config = maintenance_app
+    services = app.state.vault_registry[vault_id]
+    doc = _make_skipped_doc(_id("router_no_projection"))
+    await services.graph_store.insert_document(doc)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(f"/sage_vaults/{vault_id}/admin/reabstract-deferred", json={})
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event_type"] for event in events] == ["progress", "progress", "summary"]
+    assert events[1]["status"] == "failed"
+    assert events[1]["outcome"] == "dispatch_failed"
+    assert "NoProjectionError" in events[1]["error"]
+    assert events[-1]["failed_count"] == 1
+    assert events[-1]["entries"][0]["document_id"] == doc.id
+    assert events[-1]["entries"][0]["outcome"] == "dispatch_failed"
+    assert events[-1]["entries"][0]["error_message"] == events[1]["error"]

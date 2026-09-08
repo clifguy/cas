@@ -257,7 +257,7 @@ async def test_a_per_document_dispatch_failure_does_not_abort_the_sweep(corpus):
     assert report.reabstracted_count == 2
     assert report.failed_count == 1
     entry = next(e for e in report.entries if e.document_id == failing)
-    assert entry.outcome == ReabstractOutcome.LLM_FAILURE
+    assert entry.outcome == "dispatch_failed"
     assert "simulated dispatch failure" in (entry.error_message or "")
 
 
@@ -331,7 +331,9 @@ async def test_aggregate_counts_match_the_per_document_entries(corpus):
         1 for e in report.entries if e.outcome == ReabstractOutcome.SUCCESS
     )
     assert report.failed_count == sum(
-        1 for e in report.entries if e.outcome == ReabstractOutcome.LLM_FAILURE
+        1
+        for e in report.entries
+        if e.outcome not in (ReabstractOutcome.SUCCESS, ReabstractOutcome.SKIPPED_PDF)
     )
 
 

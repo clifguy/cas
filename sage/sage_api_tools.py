@@ -3065,14 +3065,12 @@ def register_sage_tools(
         bulk sweep enumerates by default.
 
         Outcomes beyond ``success`` and ``skipped_pdf`` all count toward
-        ``failed_count``, which counts documents that did not reach
-        ``abstraction_complete``, and are reported apart because only
-        ``llm_failure`` indicates an error the provider actually raised:
-        ``still_skipped`` is a document that settled back at
-        ``abstraction_skipped``, having declined abstraction rather than
-        failed at it; ``timeout`` is one abandoned at the ceiling; and
-        ``interrupted`` is one whose work a stopped queue dropped before
-        any provider was reached.
+        ``failed_count``. ``dispatch_failed`` means the dispatch call raised;
+        its message preserves the exception without attributing it to the
+        provider. ``still_skipped``, ``timeout``, and ``interrupted`` identify
+        skipped abstraction, wait expiry, and queue interruption. ``llm_failure``
+        covers background failures and legacy post-dispatch fallbacks,
+        including a document disappearing while waiting; consult its message.
 
         Reuses the in-process abstraction provider this MCP server loaded at
         startup; does NOT spin up a second Qwen3 instance. The standalone

@@ -3937,22 +3937,22 @@ class ReabstractReportEntry(BaseModel):
     )
     outcome: ReabstractOutcome = Field(
         description=(
-            "Per-document classification (success / skipped_pdf / "
-            "llm_failure / still_skipped / timeout / interrupted)."
+            "Per-document classification (success / skipped_pdf / llm_failure / still_skipped / "
+            "timeout / interrupted / dispatch_failed)."
         )
     )
     error_message: str | None = Field(
         default=None,
         description=(
-            "Failure description when outcome is 'llm_failure', "
-            "'still_skipped', 'timeout', or 'interrupted'; null otherwise."
+            "Failure description when outcome is 'llm_failure', 'still_skipped', 'timeout', "
+            "'interrupted', or 'dispatch_failed'; null otherwise."
         ),
     )
     elapsed_seconds: float | None = Field(
         default=None,
         description=(
-            "Wall-clock seconds from dispatch to terminal status for this "
-            "document; null for skipped_pdf entries (no work was done)."
+            "Wall-clock seconds from the dispatch attempt until its rejection or the end of the "
+            "subsequent wait; null for skipped_pdf entries (no work was done)."
         ),
     )
 
@@ -4374,29 +4374,24 @@ class ReabstractProgressEvent(BaseModel):
     )
     status: Literal["started", "completed", "failed", "skipped"] = Field(
         description=(
-            "Per-document status. `started`: dispatch begun, no outcome "
-            "yet. `completed`: reabstract reached `abstraction_complete`. "
-            "`failed`: dispatch raised, terminal pipeline_status was "
-            "`failed` (outcome=`llm_failure`), or the wait ceiling "
-            "elapsed with the document still non-terminal "
-            "(outcome=`timeout`), or the document settled at "
-            "`abstraction_interrupted` (outcome=`interrupted`). `skipped`: PDF excluded "
-            "from the worklist by `include_pdf=False` "
-            "(outcome=`skipped_pdf`), or the document settled back at "
-            "`abstraction_skipped` (outcome=`still_skipped`). Outcomes "
-            "widened without widening this vocabulary, so a client "
-            "switching on `status` alone keeps working and one needing "
-            "the distinction reads `outcome`."
+            "Per-document status. `started`: dispatch begun, no outcome yet. `completed`: "
+            "reabstract reached `abstraction_complete`. `failed`: dispatch raised "
+            "(outcome=`dispatch_failed`), a post-dispatch failure was reported "
+            "(outcome=`llm_failure`), the wait ceiling elapsed (outcome=`timeout`), or the "
+            "document settled at `abstraction_interrupted` (outcome=`interrupted`). `skipped`: "
+            "PDF excluded by `include_pdf=False` (outcome=`skipped_pdf`), or the document "
+            "settled back at `abstraction_skipped` (outcome=`still_skipped`). Clients switching "
+            "on `status` retain the same vocabulary; clients needing the distinction read "
+            "`outcome`."
         )
     )
     outcome: ReabstractOutcome | None = Field(
         default=None,
         description=(
-            "Per-document terminal classification. Set on `completed`, "
-            "`failed`, and `skipped` events; omitted on the leading "
-            "`started` event. Discriminates within a status: `failed` "
-            "carries `llm_failure`, `timeout` or `interrupted`, and `skipped` "
-            "carries `skipped_pdf` or `still_skipped`."
+            "Per-document terminal classification. Set on `completed`, `failed`, and `skipped` "
+            "events; omitted on the leading `started` event. Discriminates within a status: "
+            "`failed` carries `dispatch_failed`, `llm_failure`, `timeout` or `interrupted`, and "
+            "`skipped` carries `skipped_pdf` or `still_skipped`."
         ),
     )
     error: str | None = Field(
@@ -4411,10 +4406,10 @@ class ReabstractProgressEvent(BaseModel):
     elapsed_seconds: float | None = Field(
         default=None,
         description=(
-            "Wall-clock seconds from dispatch to terminal status. Set on `completed`, "
-            "on `failed`, and on the `still_skipped` form of `skipped`, all of which "
-            "dispatched and waited. Omitted on `started` (no work yet) and on the "
-            "`skipped_pdf` form of `skipped` (never dispatched)."
+            "Wall-clock seconds from the dispatch attempt until its rejection or the end of the "
+            "subsequent wait. Set on `completed`, on `failed`, and on the `still_skipped` form "
+            "of `skipped`. A `dispatch_failed` event measures the dispatch attempt only. Omitted "
+            "on `started` and on the `skipped_pdf` form of `skipped`."
         ),
     )
 

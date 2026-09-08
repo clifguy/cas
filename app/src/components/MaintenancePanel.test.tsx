@@ -276,6 +276,27 @@ describe('MaintenancePanel — completion', () => {
     expect(screen.getByTestId('reabstract-failure-list')).toHaveTextContent('oom');
   });
 
+  it('shows a dispatch rejection in the failure count and list', async () => {
+    getDeferredCountMock.mockResolvedValue(1);
+    startReabstractMock.mockImplementation(async (_vaultId, onEvent) => {
+      onEvent({
+        event_type: 'summary', vault_id: 'v1', reabstracted_count: 0,
+        skipped_pdf_count: 0, failed_count: 1,
+        entries: [{ document_id: 'dddddddd_dispatch', outcome: 'dispatch_failed',
+          error_message: 'dispatch failed: NoProjectionError', elapsed_seconds: 0.01 }],
+      } satisfies ReabstractSummaryEvent);
+    });
+    render(<MaintenancePanel />);
+    await waitFor(() => expect(screen.getByTestId('reabstract-count')).toHaveTextContent('1'));
+    await userEvent.click(screen.getByTestId('reabstract-button'));
+    await userEvent.click(screen.getByTestId('reabstract-confirm-apply'));
+    const list = await screen.findByTestId('reabstract-failure-list');
+    expect(list).toHaveTextContent('dddddddd_dispatch');
+    expect(list).toHaveTextContent('dispatch failed: NoProjectionError');
+    expect(list.querySelectorAll('li')).toHaveLength(1);
+    expect(screen.getByTestId('reabstract-failed-count')).toHaveTextContent('1');
+  });
+
   it('B7c: still_skipped and timeout entries appear in the failure list', async () => {
     // failed_count counts every non-success, non-skipped_pdf outcome, and the
     // Failures heading is gated on that count. A list filtered to
