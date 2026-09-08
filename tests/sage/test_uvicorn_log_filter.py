@@ -2,6 +2,7 @@
 
 import logging
 import logging.config
+from http import HTTPStatus
 
 import pytest
 
@@ -20,32 +21,71 @@ def _access_record(path="/mcp", method="POST", status=200):
     )
 
 
-@pytest.mark.parametrize("path", ["/mcp", "/mcp_maint", "/mcp?x=1"])
-def test_routine_success_is_quiet(path):
-    assert not _DropMcpAccessLogs().filter(_access_record(path))
+class _StatusInt(int):
+    """An integer status supplied by a transport other than HTTPStatus."""
 
 
-@pytest.mark.parametrize("status", [301, 307, 400, 401, 403, 404, 405, 429, 500, 503])
+@pytest.mark.parametrize(
+    "status", [200, 202, 299, HTTPStatus.OK, HTTPStatus.ACCEPTED, _StatusInt(200)]
+)
+@pytest.mark.parametrize("path", ["/mcp", "/mcp_maint", "/mcp?x=1", "/mcp_maint?x=1"])
+def test_routine_success_is_quiet(path, status):
+    assert not _DropMcpAccessLogs().filter(_access_record(path, status=status))
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        199,
+        300,
+        301,
+        307,
+        400,
+        401,
+        403,
+        404,
+        405,
+        406,
+        429,
+        500,
+        503,
+        HTTPStatus.MOVED_PERMANENTLY,
+        HTTPStatus.TEMPORARY_REDIRECT,
+        HTTPStatus.BAD_REQUEST,
+        HTTPStatus.UNAUTHORIZED,
+        HTTPStatus.FORBIDDEN,
+        HTTPStatus.NOT_FOUND,
+        HTTPStatus.METHOD_NOT_ALLOWED,
+        HTTPStatus.NOT_ACCEPTABLE,
+        HTTPStatus.TOO_MANY_REQUESTS,
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+    ],
+)
 def test_mcp_non_success_remains_visible(status):
     assert _DropMcpAccessLogs().filter(_access_record(status=status))
 
 
 @pytest.mark.parametrize("method", ["GET", "DELETE", "HEAD", "OPTIONS", "PUT"])
-def test_unexpected_method_remains_visible(method):
-    assert _DropMcpAccessLogs().filter(_access_record(method=method))
+@pytest.mark.parametrize("status", [200, HTTPStatus.OK])
+def test_unexpected_method_remains_visible(method, status):
+    assert _DropMcpAccessLogs().filter(_access_record(method=method, status=status))
 
 
 @pytest.mark.parametrize(
     "path", ["/mcp_admin", "/mcp_admin?x=1", "/mcpfoo", "/mcp/anything", "/mcp_maint/x", "/docs"]
 )
-def test_other_paths_remain_visible(path):
-    assert _DropMcpAccessLogs().filter(_access_record(path))
+@pytest.mark.parametrize("status", [200, HTTPStatus.OK])
+def test_other_paths_remain_visible(path, status):
+    assert _DropMcpAccessLogs().filter(_access_record(path, status=status))
 
 
 @pytest.mark.parametrize(
     "args",
     [
         None,
+        {"status": 200},
+        ("a", 123, "/mcp", "1.1", 200),
         ("a", "b"),
         ("a", "POST", "/mcp"),
         ("a", "POST", 123, "1.1", 200),
@@ -56,6 +96,11 @@ def test_malformed_record_is_not_suppressed(args):
     rec = _access_record()
     rec.args = args
     assert _DropMcpAccessLogs().filter(rec)
+
+
+@pytest.mark.parametrize("status", [None, "200", 200.0, True, False])
+def test_malformed_status_remains_visible(status: object) -> None:
+    assert _DropMcpAccessLogs().filter(_access_record(status=status))
 
 
 # Independent examples include both root and supported mount placement forms.
@@ -70,10 +115,11 @@ _DISCOVERY = [
 
 
 @pytest.mark.parametrize("path", _DISCOVERY)
-def test_expected_discovery_requires_auth_disabled(path, caplog):
+@pytest.mark.parametrize("status", [404, HTTPStatus.NOT_FOUND])
+def test_expected_discovery_requires_auth_disabled(path, caplog, status):
     caplog.set_level(logging.DEBUG, logger="sage.discovery")
-    assert _DropMcpAccessLogs(auth_enabled=True).filter(_access_record(path, "GET", 404))
-    assert not _DropMcpAccessLogs(auth_enabled=False).filter(_access_record(path, "GET", 404))
+    assert _DropMcpAccessLogs(auth_enabled=True).filter(_access_record(path, "GET", status))
+    assert not _DropMcpAccessLogs(auth_enabled=False).filter(_access_record(path, "GET", status))
     assert any(r.levelno == logging.DEBUG and path in r.getMessage() for r in caplog.records)
 
 
@@ -89,17 +135,20 @@ def test_expected_discovery_requires_auth_disabled(path, caplog):
         ("/.well-known/oauth-protected-resource", "GET", 401),
     ],
 )
-def test_discovery_negative_controls(path, method, status):
+@pytest.mark.parametrize("status_type", [int, HTTPStatus])
+def test_discovery_negative_controls(path, method, status, status_type):
+    status = status_type(status)
     assert _DropMcpAccessLogs(auth_enabled=False).filter(_access_record(path, method, status))
 
 
-def test_discovery_counts_are_bounded_and_flushed(caplog):
+@pytest.mark.parametrize("status", [404, HTTPStatus.NOT_FOUND])
+def test_discovery_counts_are_bounded_and_flushed(caplog, status):
     now = [0.0]
     caplog.set_level(logging.INFO, logger="sage.discovery")
     f = _DropMcpAccessLogs(auth_enabled=False, clock=lambda: now[0])
     for n in range(100):
         assert not f.filter(
-            _access_record("/.well-known/oauth-protected-resource?nonce=" + str(n), "GET", 404)
+            _access_record("/.well-known/oauth-protected-resource?nonce=" + str(n), "GET", status)
         )
     assert f._counts == {"/.well-known/oauth-protected-resource": 99}
     summaries = [r for r in caplog.records if r.levelno == logging.INFO]
@@ -107,11 +156,11 @@ def test_discovery_counts_are_bounded_and_flushed(caplog):
     assert len(summaries) == 1
     assert "count=1" in summaries[0].getMessage()
     now[0] = 60.0
-    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", 404))
+    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", status))
     summaries = [r for r in caplog.records if r.levelno == logging.INFO]
     assert len(summaries) == 2
     assert "count=100" in summaries[1].getMessage()
-    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", 404))
+    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", status))
     f.flush_summary()
     assert "count=1" in caplog.records[-1].getMessage()
     f.flush_summary()

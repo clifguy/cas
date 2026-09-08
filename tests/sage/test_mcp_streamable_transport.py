@@ -18,10 +18,12 @@ the exact failure this file exists to catch.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.types import Message, Receive, Scope, Send
 
 from sage.app import MCP_HTTP_MOUNTS, create_app
 
@@ -94,3 +96,71 @@ def test_mcp_mounts_absent_from_openapi() -> None:
     for mount, _surface in MCP_HTTP_MOUNTS:
         offenders = {p for p in paths if p == mount or p.startswith(mount + "/")}
         assert not offenders, f"MCP mount leaked into OpenAPI: {sorted(offenders)}"
+
+
+@pytest.mark.parametrize(("path", "surface"), MCP_HTTP_MOUNTS)
+def test_transport_statuses_reach_access_filter(
+    path: str, surface: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Feed raw app response messages through Uvicorn's real logging producer."""
+    import asyncio
+    import logging
+    from http import HTTPStatus
+    from unittest.mock import Mock
+
+    import h11
+    from uvicorn.protocols.http.flow_control import FlowControl
+    from uvicorn.protocols.http.h11_impl import RequestResponseCycle
+
+    from sage.__main__ import _DropMcpAccessLogs
+
+    app = create_app(vault_root=tmp_path)
+    logger = logging.Logger("uvicorn.access", logging.INFO)
+    logger.addHandler(caplog.handler)
+    logger.addFilter(_DropMcpAccessLogs())
+    statuses: list[int] = []
+
+    async def observed_app(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            return await app(scope, receive, send)
+        transport = Mock()
+        cycle = RequestResponseCycle(
+            scope=scope,
+            conn=h11.Connection(h11.SERVER),
+            transport=transport,
+            flow=FlowControl(transport),
+            logger=logging.getLogger("uvicorn.error"),
+            access_logger=logger,
+            access_log=True,
+            default_headers=[],
+            message_event=asyncio.Event(),
+            on_response=lambda: None,
+        )
+
+        async def observed_send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                statuses.append(message["status"])
+            await cycle.send(message)
+            await send(message)
+
+        await app(scope, receive, observed_send)
+
+    with TestClient(observed_app) as client:
+        response = client.post(path, json=_INITIALIZE, headers=_HEADERS, follow_redirects=False)
+        assert response.status_code == 200
+        assert response.json()["result"]["serverInfo"]["name"] == surface
+        response = client.post(
+            path,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=_HEADERS,
+            follow_redirects=False,
+        )
+        assert response.status_code == 202
+        response = client.get(path, headers={"Accept": "application/json"}, follow_redirects=False)
+        assert response.status_code == 406
+
+    assert statuses == [HTTPStatus.OK, HTTPStatus.ACCEPTED, HTTPStatus.NOT_ACCEPTABLE]
+    assert statuses[0] is HTTPStatus.OK
+    assert statuses[1] is HTTPStatus.ACCEPTED
+    records = [r for r in caplog.records if r.name == "uvicorn.access"]
+    assert [(r.args[1], r.args[2], r.args[4]) for r in records] == [("GET", path, 406)]
