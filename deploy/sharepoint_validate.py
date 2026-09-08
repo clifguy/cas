@@ -622,7 +622,7 @@ def _check_source_audit(ctx: _Context) -> tuple[str, str]:
     status, raw = _http(
         ctx,
         "POST",
-        ctx.vault_url("/admin/verify-source-files"),
+        ctx.vault_url("/maintenance/verify-source-files"),
         data=json.dumps({"check_hashes": True}).encode("utf-8"),
         content_type="application/json",
     )

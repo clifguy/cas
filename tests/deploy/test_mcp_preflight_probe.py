@@ -122,7 +122,6 @@ def _serve_real() -> Iterator[str]:
     for path, surface in (
         ("/mcp", "sage"),
         ("/mcp_maint", "sage_maint"),
-        ("/mcp_admin", "sage_maint"),
     ):
         server = build_partitioned_server(surface)
         server.settings.streamable_http_path = path
@@ -155,11 +154,10 @@ def test_roundtrip_against_real_streamable_mount() -> None:
 
 
 @_NEEDS_REAL
-@pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
+@pytest.mark.parametrize("mount", ["/mcp_maint"])
 def test_handshake_against_real_maintenance_mounts(mount: str) -> None:
     """A handshake on the genuine maintenance mount completes -- the shape an
-    authenticated maintenance call takes through the edge -- on both the
-    canonical path and its pre-rename alias path.
+    authenticated maintenance call takes through the edge on the canonical path.
     """
     with _serve_real() as base:
         proc = _run_probe(base, mount, "handshake")
@@ -168,7 +166,7 @@ def test_handshake_against_real_maintenance_mounts(mount: str) -> None:
 
 
 @_NEEDS_REAL
-@pytest.mark.parametrize("mount", ["/mcp", "/mcp_maint", "/mcp_admin"])
+@pytest.mark.parametrize("mount", ["/mcp", "/mcp_maint"])
 def test_streamable_post_accepts_non_loopback_host(mount: str) -> None:
     """A non-loopback Host (as a proxying edge forwards to the backend) must
     not be rejected with 421 on the initialize POST.

@@ -38,7 +38,7 @@ describe('startReabstract', () => {
 
     expect(apiStreamMock).toHaveBeenCalledTimes(1);
     const [path, body] = apiStreamMock.mock.calls[0];
-    expect(path).toBe('/sage_vaults/v1/admin/reabstract-deferred');
+    expect(path).toBe('/sage_vaults/v1/maintenance/reabstract-deferred');
     expect(body).toEqual({ include_pdf: false });
   });
 
@@ -214,7 +214,7 @@ describe('startOptimizeContentStore', () => {
 
     expect(apiPostMock).toHaveBeenCalledTimes(1);
     const [path, body] = apiPostMock.mock.calls[0];
-    expect(path).toBe('/sage_vaults/v1/admin/optimize-content-store');
+    expect(path).toBe('/sage_vaults/v1/maintenance/optimize-content-store');
     // Empty body: VACUUM has no age threshold, so cleanup_older_than_days is gone.
     expect(body).toEqual({});
     expect(body).not.toHaveProperty('cleanup_older_than_days');

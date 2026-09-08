@@ -332,9 +332,9 @@ def test_entra_script_registers_mcp_loopback_redirect() -> None:
 
 
 def test_entra_script_declares_all_sage_identifier_uris() -> None:
-    """The SAGE resource server declares all FIVE identifier URIs in one update:
+    """The SAGE resource server declares all FOUR identifier URIs in one update:
     the ``api://<app-id>`` audience URI, the ``https://<SAGE_PUBLIC_HOSTNAME>``
-    custom-domain identity, and the three MCP-mount forms of that identity — with
+    custom-domain identity, and the two MCP-mount forms of that identity — with
     the hostname arriving as required environment.
 
     The https identities are what let a standards MCP client through Entra: the
@@ -379,12 +379,8 @@ def test_entra_script_declares_all_sage_identifier_uris() -> None:
         '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint"': (
             "the /mcp_maint mount identity (the maintenance surface's canonical server URI)"
         ),
-        '"https://${SAGE_PUBLIC_HOSTNAME}/mcp_admin"': (
-            "the /mcp_admin mount identity (the maintenance surface's pre-rename "
-            "alias path, registered for as long as the edge serves it)"
-        ),
     }
-    forbidden = ("/mcp/sse", "/mcp_maint/sse", "/mcp_admin/sse")
+    forbidden = ("/mcp/sse", "/mcp_maint/sse", "/mcp_admin")
     for flat in uri_invocations:
         for needle, why in required.items():
             assert needle in flat, (

@@ -2464,7 +2464,7 @@ paths:
   # Maintenance / Admin (CAS-ADR-029)
   # ---------------------------------------------------------------------------
 
-  /sage_vaults/{vault_id}/admin/detect-drift:
+  /sage_vaults/{vault_id}/maintenance/detect-drift:
     post:
       operationId: verify_vault_drift
       summary: Audit active sync_target / derived_from edges for drift.
@@ -2506,7 +2506,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/admin/verify-source-files:
+  /sage_vaults/{vault_id}/maintenance/verify-source-files:
     post:
       operationId: verify_vault_source_files
       summary: Audit that every document's backing source file is present.
@@ -2591,7 +2591,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/admin/restore-source-file:
+  /sage_vaults/{vault_id}/maintenance/restore-source-file:
     post:
       operationId: restore_vault_source_file
       summary: Repair a document's retained source file by writing delivered bytes back over it.
@@ -2692,7 +2692,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/admin/migrate:
+  /sage_vaults/{vault_id}/maintenance/migrate:
     post:
       operationId: migrate_vault
       summary: Apply pending schema migrations to a single vault in the running session.
@@ -2762,7 +2762,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/admin/reabstract-deferred:
+  /sage_vaults/{vault_id}/maintenance/reabstract-deferred:
     post:
       operationId: recompute_deferred_vault_abstracts
       summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
@@ -2870,7 +2870,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/admin/optimize-content-store:
+  /sage_vaults/{vault_id}/maintenance/optimize-content-store:
     post:
       operationId: optimize_vault_content_store
       summary: Reclaim bloat in the per-vault content store.

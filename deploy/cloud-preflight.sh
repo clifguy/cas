@@ -625,7 +625,7 @@ check_edge_mount_discovery() {
   esc_base="$(printf '%s' "$SAGE_BASE_URL" | sed 's/[.]/\\./g')"
   local detail="" ok=yes
   local mount
-  for mount in /mcp /mcp_maint /mcp_admin; do
+  for mount in /mcp /mcp_maint; do
     http_get "$SAGE_BASE_URL$mount"
     local challenge_ok=no
     # The closing quote anchors exactness: the /mcp challenge must point at
@@ -654,7 +654,7 @@ check_edge_advertised_resources_registered() {
   # app-scoped probe stays green, because nothing else here carries the
   # resource through an authorization round trip. This check makes that round
   # trip: it reads the resource out of each metadata document (the root and
-  # the three path-inserted mount documents), then asks the authorization
+  # the two path-inserted mount documents), then asks the authorization
   # server for a token scoped <resource>/.default via the seamed probe, which
   # is refused (AADSTS500011) exactly when the URI is unregistered. The
   # comparison is behavioral -- no Graph read, so the calling identity needs
@@ -672,7 +672,7 @@ check_edge_advertised_resources_registered() {
     return 1
   fi
   local resources="" doc_path res
-  for doc_path in "" /mcp /mcp_maint /mcp_admin; do
+  for doc_path in "" /mcp /mcp_maint; do
     http_get "$SAGE_BASE_URL/.well-known/oauth-protected-resource$doc_path"
     if [ "$HTTP_CODE" != 200 ]; then
       DETAIL_MSG="metadata document for '${doc_path:-root}' answered $HTTP_CODE, not 200; the advertised resource set cannot be fully read, so registration cannot be credited"
@@ -765,8 +765,7 @@ check_postgres_major() {
 }
 
 check_maintenance_mount() {
-  # Shared body for the two maintenance mount paths: /mcp_maint (canonical)
-  # and /mcp_admin (pre-rename alias, kept serving with no scheduled removal).
+  # The canonical maintenance mount uses the ordinary authorization policy.
   local mount="$1"
   http_get "$SAGE_BASE_URL$mount"
   local unauth="$HTTP_CODE"
@@ -796,8 +795,33 @@ check_mcp_maint() {
   check_maintenance_mount /mcp_maint
 }
 
-check_mcp_admin() {
-  check_maintenance_mount /mcp_admin
+check_mcp_admin_retired() {
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery is not 200; a dead edge cannot prove retirement"
+    return 1
+  fi
+  mcp_probe /mcp_maint roundtrip
+  if [ "$MCP_PROBE_RC" != 0 ]; then
+    DETAIL_MSG="control failed: canonical maintenance roundtrip failed"
+    return 1
+  fi
+  local path token
+  for path in /mcp_admin /mcp_admin/ /mcp_admin/sse /.well-known/oauth-protected-resource/mcp_admin; do
+    for token in "" "$AUTH_TOKEN"; do
+      http_get "$SAGE_BASE_URL$path" "$token"
+      if [ "$HTTP_CODE" != 404 ] || printf '%s' "$HTTP_HEADERS" | grep -qi 'resource_metadata='; then
+        DETAIL_MSG="retired path $path must return 404 without an OAuth resource challenge (got $HTTP_CODE)"
+        return 1
+      fi
+    done
+  done
+  http_post "$SAGE_BASE_URL/mcp_admin" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cas-preflight","version":"1"}}}' "$AUTH_TOKEN"
+  if [ "$HTTP_CODE" != 404 ]; then
+    DETAIL_MSG="retired MCP initialize returned $HTTP_CODE, expected 404"
+    return 1
+  fi
+  DETAIL_MSG="retired mount and discovery are 404; canonical maintenance roundtrip succeeds"
+  return 0
 }
 
 check_mcp_roundtrip() {
@@ -1402,9 +1426,9 @@ register edge_advertised_resources_registered check_edge_advertised_resources_re
 register mcp_maint check_mcp_maint \
   "/mcp_maint 401 unauthenticated and an authenticated maintenance handshake succeeds" \
   "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"
-register mcp_admin check_mcp_admin \
-  "/mcp_admin (the maintenance surface's pre-rename alias path) 401 unauthenticated and an authenticated maintenance handshake succeeds" \
-  "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"
+register mcp_admin_retired check_mcp_admin_retired \
+  "retired MCP Admin transport and metadata return 404 without an OAuth challenge" \
+  "live discovery and a successful canonical maintenance roundtrip reject blanket-failure coincidence"
 register mcp_roundtrip check_mcp_roundtrip \
   "/mcp completes a JSON-RPC initialize + tools/list returning a well-formed result" \
   "an unknown method must come back a JSON-RPC error (requests are processed, not blanket-statused); credited only with discovery-200 held"

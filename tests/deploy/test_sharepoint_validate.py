@@ -509,7 +509,7 @@ def rest_stub(mode: str) -> Iterator[str]:
                 filename, delivered = _extract_upload(raw, self.headers.get("Content-Type", ""))
                 self._sse_response(self._ingest_events(filename, delivered))
                 return
-            if path.endswith("/admin/verify-source-files"):
+            if path.endswith("/maintenance/verify-source-files"):
                 self._json(self._audit())
                 return
             self._json({"error": "unexpected"}, status=404)
@@ -620,7 +620,7 @@ def test_stub_audit_report_matches_the_real_response_model(
 def _audit_report_for(base_url: str) -> dict[str, Any]:
     """POST the audit endpoint on a running stub and return the parsed report."""
     request = urllib.request.Request(  # noqa: S310 -- a loopback stub this test started
-        f"{base_url}/sage_vaults/test/admin/verify-source-files",
+        f"{base_url}/sage_vaults/test/maintenance/verify-source-files",
         data=json.dumps({"check_hashes": True}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",

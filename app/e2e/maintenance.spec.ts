@@ -91,7 +91,7 @@ test('optimize-content-store row triggers the backend and renders the report', a
   // The API client uses relative paths that Vite proxies to the FastAPI
   // backend, so the browser-level request URL is the Vite host
   // (localhost:5173), not BACKEND. Use a glob to match either host.
-  await page.route(`**/sage_vaults/${VAULT_ID}/admin/optimize-content-store`, async (route) => {
+  await page.route(`**/sage_vaults/${VAULT_ID}/maintenance/optimize-content-store`, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

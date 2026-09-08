@@ -1,11 +1,11 @@
 """Maintenance router (CAS-ADR-029).
 
-Pilot operation: POST /sage_vaults/{vault_id}/admin/migrate. The first
+Pilot operation: POST /sage_vaults/{vault_id}/maintenance/migrate. The first
 operation on the SAGE Core API maintenance surface; subsequent
 operations on the maintenance surface are added here with the
 same three-layer shape (router -> service -> MCP tool registration).
-The ``/admin/`` URL segment predates the surface's ``maint`` naming and
-is kept for wire compatibility.
+The ``/maintenance/`` URL segment is canonical; the retired ``/admin/``
+paths are not served.
 """
 
 from collections.abc import AsyncGenerator
@@ -56,7 +56,7 @@ async def _format_reabstract_stream(
 
 
 @router.post(
-    "/admin/migrate",
+    "/maintenance/migrate",
     response_model=MigrationReport,
     responses={
         404: {
@@ -73,7 +73,7 @@ async def migrate_vault(
 
 
 @router.post(
-    "/admin/detect-drift",
+    "/maintenance/detect-drift",
     response_model=DriftReport,
     responses={
         404: {
@@ -90,7 +90,7 @@ async def detect_drift(
 
 
 @router.post(
-    "/admin/reabstract-deferred",
+    "/maintenance/reabstract-deferred",
     responses={
         200: {
             "content": {"text/event-stream": {}},
@@ -136,7 +136,7 @@ async def reabstract_deferred(
 
 
 @router.post(
-    "/admin/optimize-content-store",
+    "/maintenance/optimize-content-store",
     response_model=OptimizeContentStoreReport,
     responses={
         404: {
@@ -156,7 +156,7 @@ async def optimize_content_store(
 
 
 @router.post(
-    "/admin/verify-source-files",
+    "/maintenance/verify-source-files",
     response_model=SourceFileIntegrityReport,
     responses={
         404: {
@@ -191,7 +191,7 @@ async def verify_vault_source_files(
 
 
 @router.post(
-    "/admin/restore-source-file",
+    "/maintenance/restore-source-file",
     response_model=SourceFileRestoreReport,
     responses={
         400: {

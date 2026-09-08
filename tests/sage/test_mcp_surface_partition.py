@@ -2,8 +2,7 @@
 
 Gates the CAS-ADR-034 / CAS-ADR-029 split of the SAGE MCP tool surface
 across the Streamable HTTP mounts on the SAGE app — ``/mcp`` (ordinary)
-and ``/mcp_maint`` (maintenance, with ``/mcp_admin`` as its pre-rename
-alias path serving the identical roster), all built by the same
+and ``/mcp_maint`` (maintenance), both built by the same
 partition factory in the one uvicorn process:
 
 - ``sage`` — ordinary surface (read spine + everyday mutation spine +
@@ -171,7 +170,7 @@ def test_built_server_matches_pinned_partition(surface: str):
 
 @pytest.mark.parametrize(
     ("mount", "surface"),
-    [("/mcp", "sage"), ("/mcp_maint", "sage_maint"), ("/mcp_admin", "sage_maint")],
+    [("/mcp", "sage"), ("/mcp_maint", "sage_maint")],
 )
 def test_live_mount_matches_pinned_partition(minimal_config, mount: str, surface: str):
     """Each live HTTP mount advertises exactly the tools the pin places on it."""
@@ -366,13 +365,9 @@ def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
     assert names, "ordinary mount roster must be non-empty"
 
 
-@pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
+@pytest.mark.parametrize("mount", ["/mcp_maint"])
 def test_maintenance_mounts_advertise_maintenance_surface_only(minimal_config, mount):
-    """Both maintenance mount paths advertise exactly the maintenance roster.
-
-    ``/mcp_maint`` is canonical; ``/mcp_admin`` is its pre-rename alias
-    path and must stay roster-identical for as long as it is served.
-    """
+    """The canonical maintenance mount advertises exactly the maintenance roster."""
     app = create_app(config=minimal_config)
     names = _mounted_names(app, mount)
     assert names == EXPECTED_MAINT
@@ -391,7 +386,7 @@ def test_all_mcp_mounts_are_exact_path_routes(minimal_config):
     exact-path ``Route`` (raw ASGI, not an ``APIRoute``) instead.
     """
     app = create_app(config=minimal_config)
-    for mount in ("/mcp", "/mcp_maint", "/mcp_admin"):
+    for mount in ("/mcp", "/mcp_maint"):
         matches = [
             route
             for route in app.routes
@@ -404,12 +399,12 @@ def test_all_mcp_mounts_are_exact_path_routes(minimal_config):
             route for route in app.routes if isinstance(route, Mount) and route.path == mount
         ]
         assert not mounted, f"a Mount at {mount} reintroduces the trailing-slash redirect"
-    assert set(app.state.mcp_mounts) == {"/mcp", "/mcp_maint", "/mcp_admin"}
+    assert set(app.state.mcp_mounts) == {"/mcp", "/mcp_maint"}
 
 
 @pytest.mark.parametrize(
     ("mount", "surface"),
-    [("/mcp", "sage"), ("/mcp_maint", "sage_maint"), ("/mcp_admin", "sage_maint")],
+    [("/mcp", "sage"), ("/mcp_maint", "sage_maint")],
 )
 def test_mount_transport_settings_pinned(minimal_config, mount, surface):
     """The HTTP-mounted servers run the stateless, JSON-response transport.

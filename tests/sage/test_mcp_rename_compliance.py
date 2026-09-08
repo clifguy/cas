@@ -6,7 +6,7 @@ Gates over the live FastMCP catalog and the naming taxonomy:
   pre-rename ``sage_``, ``sage_admin_``, and ``app_`` inner prefixes
   that the two-server design in CAS-ADR-034 made vestigial, and the
   retired maintenance prefixes ``admin_`` and ``maint_`` (CAS-ADR-029),
-  which survive only as alias keys.
+  of which only ``maint_`` survives as alias keys.
 - ``test_verb_category_compliance`` — every registered tool name
   begins with a verb in ``CANONICAL_VERBS`` (after stripping any
   member of ``COMPOUND_PREFIXES``). Anchored to CAS-ADR-033.

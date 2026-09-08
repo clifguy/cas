@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Final
 
 #: Tool name → surface: ``sage`` (ordinary, the ``/mcp`` mount) or
-#: ``sage_maint`` (maintenance, the ``/mcp_maint`` and ``/mcp_admin`` mounts).
+#: ``sage_maint`` (maintenance, the ``/mcp_maint`` mount).
 EXPECTED_SURFACE: Final[dict[str, str]] = {
     # sage (ordinary surface)
     "list_vaults": "sage",

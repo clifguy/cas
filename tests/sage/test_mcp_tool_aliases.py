@@ -1,7 +1,7 @@
 """Alias continuity for the maintenance tools' retired names (CAS-ADR-034).
 
 The maintenance tools have carried two prefixes since their names were
-last stable -- ``admin_`` and then ``maint_`` -- and both spellings remain
+last stable -- ``admin_`` and then ``maint_``. Only the latter remains
 callable as dispatch-level aliases with no scheduled removal.
 ``_LoggingFastMCP.call_tool`` consults ``TOOL_ALIASES`` before dispatch,
 rewrites a retired name onto its canonical target in one lookup, and logs
@@ -11,12 +11,12 @@ the maintenance surface keeps its size and the cognitive-load purpose of
 the ordinary/maintenance split.
 
 These tests pin the rewrite (every retired name reaches dispatch under
-its canonical name, whichever generation the caller holds), its bounded
+its canonical name), its bounded
 domain (no name outside the table is rewritten -- including the
 pre-verb-rename names whose alias layer was removed and must stay
 removed), the per-call log line, the table's shape against
-``SERVER_ASSIGNMENT`` (every alias targets a registered tool, and the two
-generations are exactly the cohorts history produced), the catalog's
+``SERVER_ASSIGNMENT`` (every alias targets a registered tool, and the retained
+generation is exactly the cohort history produced), the catalog's
 alias-freedom, and the import-time invariants that keep one-hop
 resolution complete. An alias grants nothing the canonical name does
 not: it resolves on whichever mount registers its target and is refused
@@ -69,9 +69,6 @@ _MAINT_ERA_STEMS: frozenset[str] = frozenset(
     }
 )
 
-#: The one maintenance-era tool that post-dates the ``admin_`` era.
-_ADDED_AFTER_ADMIN_ERA: frozenset[str] = frozenset({"restore_vault_source_file"})
-
 
 def _capture_dispatch(monkeypatch) -> list[str]:
     """Stub the SDK dispatch layer, capturing the name each call reaches it with."""
@@ -87,7 +84,7 @@ def _capture_dispatch(monkeypatch) -> list[str]:
 
 @pytest.mark.parametrize(("old_name", "canonical"), sorted(TOOL_ALIASES.items()))
 async def test_retired_name_rewrites_to_canonical(old_name, canonical, monkeypatch) -> None:
-    """Every retired spelling, from either generation, reaches dispatch as its canonical name."""
+    """Every retained retired spelling reaches dispatch as its canonical name."""
     captured = _capture_dispatch(monkeypatch)
     server = _LoggingFastMCP("test")
 
@@ -125,11 +122,11 @@ async def test_non_mapped_names_unaffected(name, monkeypatch) -> None:
     assert captured == [name], f"{name!r} was rewritten; dispatch saw {captured!r}"
 
 
-@pytest.mark.parametrize("old_name", ["admin_migrate_vault", "maint_migrate_vault"])
+@pytest.mark.parametrize("old_name", ["maint_migrate_vault"])
 async def test_alias_call_logs_canonical_name(old_name, caplog, monkeypatch) -> None:
     """An aliased call logs one line naming old and canonical names, no removal date.
 
-    Both generations log identically: the alias has no scheduled removal,
+    The retained alias has no scheduled removal,
     so the line must steer the caller to the canonical name without
     promising or dating a removal.
     """
@@ -154,15 +151,14 @@ async def test_alias_call_logs_canonical_name(old_name, caplog, monkeypatch) -> 
     )
 
 
-def test_alias_table_is_the_two_retired_cohorts() -> None:
-    """The alias table is exactly the two cohorts history produced, one hop each.
+def test_alias_table_is_the_retained_maint_cohort() -> None:
+    """The alias table is exactly the retained maintenance cohort, one hop each.
 
     Cross-checks the hand-written alias table against ``SERVER_ASSIGNMENT``
     and against the maintenance-era cohort pinned above: every alias
     targets a registered tool; every key is its target under one retired
     prefix; the ``maint_`` generation covers exactly the maintenance-era
-    stems; the ``admin_`` generation covers those stems minus the tool
-    added after the ``admin_`` era, which must NOT gain a fabricated alias;
+    stems; the ``admin_`` generation is absent;
     and the cohort size is pinned so a dropped entry does not go unnoticed.
     """
     registered = set(SERVER_ASSIGNMENT)
@@ -171,12 +167,12 @@ def test_alias_table_is_the_two_retired_cohorts() -> None:
     )
     admin = {old: new for old, new in TOOL_ALIASES.items() if old.startswith("admin_")}
     maint = {old: new for old, new in TOOL_ALIASES.items() if old.startswith("maint_")}
-    assert set(admin) | set(maint) == set(TOOL_ALIASES), "alias key outside both generations"
+    assert set(maint) == set(TOOL_ALIASES), "alias key outside retained generation"
     for old, new in TOOL_ALIASES.items():
         assert old.partition("_")[2] == new, f"alias key {old!r} is not a prefixed {new!r}"
     assert set(maint.values()) == _MAINT_ERA_STEMS
-    assert set(admin.values()) == _MAINT_ERA_STEMS - _ADDED_AFTER_ADMIN_ERA
-    assert len(TOOL_ALIASES) == 27
+    assert not admin
+    assert len(TOOL_ALIASES) == 14
 
 
 async def test_aliases_absent_from_catalog() -> None:
@@ -194,24 +190,23 @@ async def test_aliases_absent_from_catalog() -> None:
         assert not aliased, f"alias name(s) registered on the {label} catalog: {sorted(aliased)}"
 
 
-@pytest.mark.parametrize("old_name", ["admin_get_vault_config", "maint_get_vault_config"])
-async def test_alias_resolution_is_generation_agnostic(
+@pytest.mark.parametrize("old_name", ["maint_get_vault_config"])
+async def test_retained_alias_resolves_on_maintenance_mount(
     app_with_one_vault: FastAPI,
     minimal_config: Any,
     tool_payload: Callable[[object], dict],
     old_name: str,
 ) -> None:
-    """Either retired generation answers identically to the canonical name
-    through the ``/mcp_admin`` mount.
+    """The retained generation answers identically to the canonical name
+    through the ``/mcp_maint`` mount.
 
-    Exercises the full path a legacy client takes: the aliased mount, the
-    rewrite, and the shared vault registry, without the caller knowing
-    which generation it holds. The two calls must return the same payload,
+    Exercises the full path a legacy client takes: the canonical mount, the
+    rewrite, and the shared vault registry. The two calls must return the same payload,
     and that payload must be the config itself -- a ``vault_not_found``
     envelope also names the vault id, and two identical envelopes would
     satisfy a payload-equality check alone.
     """
-    maint_server = app_with_one_vault.state.mcp_mounts["/mcp_admin"]
+    maint_server = app_with_one_vault.state.mcp_mounts["/mcp_maint"]
     args = {"vault_id": minimal_config.vault.id}
     via_alias = await maint_server.call_tool(old_name, args)
     via_canonical = await maint_server.call_tool("get_vault_config", args)
@@ -221,17 +216,17 @@ async def test_alias_resolution_is_generation_agnostic(
     assert payload["vault"]["id"] == minimal_config.vault.id
 
 
-@pytest.mark.parametrize("old_name", ["admin_list_vaults", "maint_list_vaults"])
+@pytest.mark.parametrize("old_name", ["maint_list_vaults"])
 async def test_enumeration_aliases_resolve_on_ordinary_mount(
     app_with_one_vault: FastAPI,
     minimal_config: Any,
     tool_payload: Callable[[object], dict],
     old_name: str,
 ) -> None:
-    """Both retired spellings of vault enumeration follow their target to ``/mcp``.
+    """The retained spelling of vault enumeration follows its target to ``/mcp``.
 
     The alias is a name rewrite, not a surface grant: with vault enumeration
-    registered on the ordinary surface, a legacy caller holding either old
+    registered on the ordinary surface, a legacy caller holding the retained old
     name reaches it through the ordinary mount and gets the canonical
     payload.
     """
@@ -244,8 +239,8 @@ async def test_enumeration_aliases_resolve_on_ordinary_mount(
     assert minimal_config.vault.id in {v["id"] for v in payload["vaults"]}
 
 
-@pytest.mark.parametrize("mount", ["/mcp_maint", "/mcp_admin"])
-@pytest.mark.parametrize("name", ["admin_list_vaults", "maint_list_vaults", "list_vaults"])
+@pytest.mark.parametrize("mount", ["/mcp_maint"])
+@pytest.mark.parametrize("name", ["maint_list_vaults", "list_vaults"])
 async def test_enumeration_refused_on_maintenance_mounts_naming_the_ordinary_mount(
     minimal_config: VaultConfig, mount: str, name: str, caplog
 ) -> None:
@@ -281,9 +276,7 @@ async def test_enumeration_refused_on_maintenance_mounts_naming_the_ordinary_mou
     assert len(refusals) == 1, f"expected one refusal WARNING, got: {refusals}"
 
 
-@pytest.mark.parametrize(
-    "name", ["admin_get_vault_config", "maint_get_vault_config", "get_vault_config"]
-)
+@pytest.mark.parametrize("name", ["maint_get_vault_config", "get_vault_config"])
 async def test_maintenance_tool_refused_on_ordinary_mount_naming_the_maintenance_mount(
     minimal_config: VaultConfig, name: str
 ) -> None:
@@ -296,14 +289,14 @@ async def test_maintenance_tool_refused_on_ordinary_mount_naming_the_maintenance
     ``/mcp`` unconditionally would pass there. This one must name
     ``/mcp_maint``.
 
-    The maintenance surface is served at two paths, so the refusal must
-    name both: a caller holding the alias path is sent somewhere that works.
+    The maintenance surface has one path; the refusal must never direct a
+    caller to the retired Admin mount.
     """
     server = create_app(config=minimal_config).state.mcp_mounts["/mcp"]
     pattern = (
         re.escape(repr(name))
         + r".*'get_vault_config' is registered on the 'sage_maint' surface, served at "
-        + r"/mcp_maint or /mcp_admin;"
+        + r"/mcp_maint;"
     )
     with pytest.raises(ToolError, match=pattern):
         await server.call_tool(name, {"vault_id": minimal_config.vault.id})
@@ -349,7 +342,7 @@ async def test_refused_alias_call_logs_each_line_once_and_no_dispatch(
     server = create_app(config=minimal_config).state.mcp_mounts["/mcp_maint"]
     with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
         with pytest.raises(ToolError):
-            await server.call_tool("admin_list_vaults", {})
+            await server.call_tool("maint_list_vaults", {})
         await server.call_tool("get_vault_config", {"vault_id": "no_such_vault"})
 
     records = [rec for rec in caplog.records if rec.name == "sage.mcp_server"]

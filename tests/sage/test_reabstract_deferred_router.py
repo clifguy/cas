@@ -1,6 +1,6 @@
 """HTTP integration tests for the reabstract-deferred router.
 
-POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
+POST /sage_vaults/{vault_id}/maintenance/reabstract-deferred.
 
 The endpoint replaces the synchronous JSON 200 response with an SSE stream of
 per-document progress events followed by a summary event. The error
@@ -108,7 +108,7 @@ async def test_post_reabstract_deferred_streams_sse_events(maintenance_app):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            f"/sage_vaults/{vault_id}/admin/reabstract-deferred",
+            f"/sage_vaults/{vault_id}/maintenance/reabstract-deferred",
             json={"include_pdf": False},
         )
 
@@ -176,7 +176,7 @@ async def test_post_reabstract_deferred_streams_failure_without_aborting(
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                f"/sage_vaults/{vault_id}/admin/reabstract-deferred",
+                f"/sage_vaults/{vault_id}/maintenance/reabstract-deferred",
                 json={"include_pdf": False},
             )
 
@@ -228,7 +228,7 @@ async def test_post_reabstract_deferred_404_for_unknown_vault(maintenance_app):
     app, _vault_id, _config = maintenance_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/sage_vaults/ghost/admin/reabstract-deferred")
+        resp = await client.post("/sage_vaults/ghost/maintenance/reabstract-deferred")
 
     assert resp.status_code == 404, resp.text
     assert resp.headers.get("content-type", "").startswith("application/json"), resp.headers
@@ -267,14 +267,14 @@ async def test_post_reabstract_deferred_409_when_already_in_flight(
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             before = datetime.now(timezone.utc)
             task_a = asyncio.create_task(
-                client.post(f"/sage_vaults/{vault_id}/admin/reabstract-deferred")
+                client.post(f"/sage_vaults/{vault_id}/maintenance/reabstract-deferred")
             )
             # Wait for the background reabstract to hit the gate, by
             # which time the lock is held inside MaintenanceService.
             await asyncio.wait_for(gated.entered.wait(), timeout=5.0)
             after = datetime.now(timezone.utc)
 
-            resp_b = await client.post(f"/sage_vaults/{vault_id}/admin/reabstract-deferred")
+            resp_b = await client.post(f"/sage_vaults/{vault_id}/maintenance/reabstract-deferred")
             assert resp_b.status_code == 409, resp_b.text
             # No-leak guard: the 409 path must resolve BEFORE the
             # StreamingResponse is constructed -- content-type is
@@ -322,7 +322,9 @@ async def test_dispatch_failure_survives_sse_boundary(maintenance_app):
     doc = _make_skipped_doc(_id("router_no_projection"))
     await services.graph_store.insert_document(doc)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post(f"/sage_vaults/{vault_id}/admin/reabstract-deferred", json={})
+        response = await client.post(
+            f"/sage_vaults/{vault_id}/maintenance/reabstract-deferred", json={}
+        )
     assert response.status_code == 200
     events = _parse_sse_events(response.text)
     assert [event["event_type"] for event in events] == ["progress", "progress", "summary"]

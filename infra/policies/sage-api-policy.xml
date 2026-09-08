@@ -43,7 +43,7 @@
             uniform across every surface — the REST API, the ordinary MCP mount,
             and the maintenance mount alike), then route to the SAGE backend.
             Authentication and authorization are the sole admin control; no
-            surface is denied at the edge.
+            supported surface is denied at the edge; retired protocol paths return 404.
 
             The audience is accepted in both canonical forms for the SAGE
             resource: its App ID URI ({{sage-audience}}, api://<app-id>) and its
@@ -55,13 +55,22 @@
             the OpenAPI schema document — are served by their own dedicated GET
             operations whose operation-scoped policies omit <base />, so they never
             reach this validate-jwt. Routing
-            by operation (a literal urlTemplate) keeps this policy free of any
-            inline path-string literal: there is no <when> condition here for the
-            loadTextContent -> ARM -> APIM round-trip to double-encode.
+            by operation (a literal urlTemplate) avoids discovery path-string routing.
+            The retirement condition below uses the same round-trip-safe
+            double-quoted attribute encoding as the on-error challenges.
 
             Environment coordinates arrive as APIM named values ({{...}}): the
             tenant id and the SAGE audience.
         -->
+        <!-- Retired protocol paths are not OAuth resources. Match whole
+             segments, so unrelated routes still follow the normal pipeline. -->
+        <choose>
+            <when condition="@(context.Request.OriginalUrl.Path == &quot;/mcp_admin&quot; || context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_admin/&quot;) || context.Request.OriginalUrl.Path == &quot;/.well-known/oauth-protected-resource/mcp_admin&quot; || context.Request.OriginalUrl.Path.StartsWith(&quot;/.well-known/oauth-protected-resource/mcp_admin/&quot;))">
+                <return-response>
+                    <set-status code="404" reason="Not Found" />
+                </return-response>
+            </when>
+        </choose>
         <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized">
             <openid-config url="https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
             <audiences>
@@ -117,27 +126,20 @@
                             Entra can neither match nor register as an identifier
                             URI, so a client steered to the root document dead-ends
                             at /authorize with AADSTS9010010 (invalid_target).
-                            Verified live on cor-prod. /mcp_maint and /mcp_admin
-                            (the maintenance mount's pre-rename alias path) are
-                            tested before /mcp because /mcp is their string
-                            prefix; the two are not prefixes of each other, so
-                            their relative order is free. The path-string
+                            Exact or path-segment matching prevents retired or
+                            lookalike mounts from advertising a supported mount's
+                            discovery document. The path-string
                             literals use the round-trip-safe &quot;-escaped
                             double-quoted attribute encoding (see the Accept test
                             above).
                         -->
                         <choose>
-                            <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_maint&quot;))">
+                            <when condition="@(context.Request.OriginalUrl.Path == &quot;/mcp_maint&quot; || context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_maint/&quot;))">
                                 <set-header name="WWW-Authenticate" exists-action="override">
                                     <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_maint"</value>
                                 </set-header>
                             </when>
-                            <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp_admin&quot;))">
-                                <set-header name="WWW-Authenticate" exists-action="override">
-                                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp_admin"</value>
-                                </set-header>
-                            </when>
-                            <when condition="@(context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp&quot;))">
+                            <when condition="@(context.Request.OriginalUrl.Path == &quot;/mcp&quot; || context.Request.OriginalUrl.Path.StartsWith(&quot;/mcp/&quot;))">
                                 <set-header name="WWW-Authenticate" exists-action="override">
                                     <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource/mcp"</value>
                                 </set-header>

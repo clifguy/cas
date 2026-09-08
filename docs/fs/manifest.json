@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.38",
+      "version": "0.39",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.82",
+  "substrate_version": "1.83",
   "revision_history": [
+    {
+      "version": "1.83",
+      "date": "2026-09-08",
+      "summary": "End the SAGE Admin transition. Core API substrate revision 0.39 moves the six maintenance POST paths from /sage_vaults/{vault_id}/admin/* to /sage_vaults/{vault_id}/maintenance/* without aliases or redirects. OperationIds, request/response schemas, service behavior and authorization remain unchanged. Server transport removes /mcp_admin and the thirteen admin_* tool aliases; /mcp, /mcp_maint, all thirty-six canonical tools and the fourteen maint_* aliases remain. Clients, SharePoint validation, documentation, infrastructure and regression tests move to the canonical surfaces. Historical alias guarantees below describe the superseded transition policy."
+    },
     {
       "version": "1.82",
       "date": "2026-09-08",
