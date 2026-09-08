@@ -104,14 +104,13 @@ COPY --from=py-builder /opt/bff/.venv /opt/bff/.venv
 COPY --from=py-builder /opt/bff/sage /opt/bff/sage
 COPY --from=py-builder /opt/bff/app /opt/bff/app
 # The built SPA bundle, served same-origin from <app>/dist (app.backend.asgi).
-COPY --from=spa-builder /app/dist /opt/bff/app/dist
+COPY --from=spa-builder --chown=bff:bff /app/dist /opt/bff/app/dist
 COPY deploy/sage.config.container.yaml /opt/bff/deploy/sage.config.container.yaml
 # The stack-config JSON Schema that sage/config.py validates the loaded config
 # against at startup -- the sole docs/fs file the runtime reads, expected at
 # <repo-root>/docs/fs/sage/ (parents[1] of sage/config.py, i.e. /opt/bff here).
 COPY docs/fs/sage/sage_core_config.schema.json /opt/bff/docs/fs/sage/sage_core_config.schema.json
 
-RUN chown -R bff:bff /opt/bff/app/dist
 USER bff
 EXPOSE 8001
 
