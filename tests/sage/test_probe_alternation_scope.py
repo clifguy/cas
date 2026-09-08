@@ -21,6 +21,8 @@ here is everything that could go wrong without a server to notice.
 
 from __future__ import annotations
 
+import pytest
+
 from scripts.probe_alternation_scope import (
     _ABSENT_BRANCH,
     ArmResult,
@@ -85,16 +87,20 @@ def test_the_absent_branch_cannot_be_carried_by_a_corpus():
     assert " " not in _ABSENT_BRANCH, "a multi-word branch would be a conjunction of its own"
 
 
-def test_the_sweep_covers_the_renderings_the_title_instrument_uses():
-    """Four forms, held equal to the title sweep's so the reports read together."""
-    renderings = _renderings("ADR-049: Document-Level Text")
+@pytest.mark.parametrize(
+    "title", ["ADR-049: Document Level Text", "Solitary", "Document-Level Text"]
+)
+def test_the_sweep_covers_the_renderings_the_title_instrument_uses(title: str) -> None:
+    """Every eligible form follows the title instrument, including compounds."""
+    renderings = _renderings(title)
 
-    assert set(renderings) == {"verbatim", "lowercase", "uppercase", "separators folded"}
-    assert renderings["separators folded"] != renderings["verbatim"], (
-        "the folded rendering must differ from the raw title, or the sweep "
-        "reports four columns of the same measurement"
-    )
-    assert len(set(renderings.values())) > 1
+    from scripts.measure_title_rank import _renderings as title_renderings
+
+    assert renderings == {
+        name: f"{_ABSENT_BRANCH} or {query}" for name, query in title_renderings(title).items()
+    }
+    if title == "ADR-049: Document Level Text":
+        assert renderings["compound"] == f"{_ABSENT_BRANCH} or ADR-049: documentLevelText"
 
 
 # ---------------------------------------------------------------------------

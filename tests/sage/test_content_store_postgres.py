@@ -3031,6 +3031,105 @@ async def _folded_surface_document(store, document_id="folded", title="Epsilon L
     await _surface(store, document_id, matchable=title, orienting="")
 
 
+@pytest.mark.parametrize("query", ["epsilonLevel", "absentword or epsilonLevel"])
+async def test_folded_surface_score_preserves_the_original_rendering(
+    store: PostgresContentStore, pg_pool: AsyncConnectionPool, query: str
+) -> None:
+    """Both spellings rank; replacing the original score loses older index text."""
+    for document_id, text in [
+        ("original", "epsilonLevel"),
+        ("folded", "Epsilon Level"),
+        ("both", "epsilonLevel Epsilon Level"),
+    ]:
+        await _surface(store, document_id, matchable=text)
+    hits = await store.search_bm25(query)
+    assert {hit.document_id for hit in hits} == {"original", "folded", "both"}
+    async with pg_pool.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT document_id, ts_rank(tsv_rank, 'epsilonlevel'::tsquery), "
+                "ts_rank(tsv_rank, 'epsilon | level'::tsquery) FROM document_surface"
+            )
+        ).fetchall()
+    # The absent disjunct adds a term to each rendering: two original, three folded.
+    divisor = 2 if "or" in query else 1
+    folded_divisor = 3 / 2 if "or" in query else 1
+    expected = {doc: max(raw / divisor, split / folded_divisor) for doc, raw, split in rows}
+    for hit in hits:
+        assert hit.score == pytest.approx(expected[hit.document_id])
+        assert hit.score > 0
+        assert hit.matched_chunk_count == 0
+        assert hit.content == ""
+
+
+async def test_folded_surface_ranking_keeps_passage_statistics_literal(
+    store: PostgresContentStore,
+) -> None:
+    """A split-word passage cannot displace the literal excerpt or count as a match."""
+    await _surface(store, "target", matchable="Epsilon Level appendix")
+    await store.index_chunks(
+        "target",
+        [
+            _chunk("target", content="epsilon level " * 20, chunk_index=0),
+            _chunk("target", content="appendix", chunk_index=1, heading_path="Literal"),
+        ],
+    )
+    literal = (await store.search_bm25("epsilon level"))[0]
+    assert literal.matched_chunk_count == 1
+    assert literal.content == "epsilon level " * 20
+    only = (await store.search_bm25("epsilonLevel"))[0]
+    assert only.score > 0
+    assert only.is_document_surface
+    assert only.matched_chunk_count == 0
+    assert only.content == ""
+    mixed = (await store.search_bm25("epsilonLevel appendix"))[0]
+    assert mixed.heading_path == "Literal"
+    assert mixed.content == "appendix"
+    assert mixed.matched_chunk_count == 1
+    assert not mixed.is_document_surface
+
+
+async def test_folded_ranking_does_not_admit_derived_text_or_bypass_filters(
+    store: PostgresContentStore,
+) -> None:
+    for doc, matchable, orienting, project in [
+        ("included", "Epsilon Level", "", "included"),
+        ("excluded", "Epsilon Level", "", "excluded"),
+        ("derived", "Zetaword", "Epsilon Level", "included"),
+    ]:
+        await _surface(store, doc, matchable=matchable, orienting=orienting, project=project)
+    hits = await store.search_bm25("epsilonLevel", filters={"project": "included"})
+    assert [hit.document_id for hit in await store.search_bm25("zetaword")] == ["derived"]
+    assert [hit.document_id for hit in hits] == ["included"]
+    assert hits[0].score > 0
+    assert {hit.document_id for hit in await store.search_bm25("epsilonLevel")} == {
+        "included",
+        "excluded",
+    }
+    assert await store.search_bm25("epsilonLevel -absentword") == []
+    assert {hit.document_id for hit in await store.search_bm25("epsilon level -absentword")} == {
+        "included",
+        "excluded",
+    }
+
+
+async def test_hybrid_fusion_consumes_the_ranked_folded_keyword_arm(
+    store: PostgresContentStore,
+) -> None:
+    """Real keyword positions matter even when the vector arm supplies a rival."""
+    from sage.adapters.interfaces import SearchResult
+
+    await _surface(store, "z_target", matchable="Epsilon Level Epsilon Level")
+    await _surface(store, "a_rival", matchable="Epsilon Level")
+    keyword = await store.search_bm25("epsilonLevel")
+    assert [hit.document_id for hit in keyword] == ["z_target", "a_rival"]
+    vector = [SearchResult(document_id="a_rival", content="", heading_path="", score=1)]
+    fused = rrf_fuse(vector, keyword, limit=10)
+    scores = {hit.document_id: hit.score for hit in fused}
+    assert scores["z_target"] == pytest.approx(1 / 61)
+    assert scores["a_rival"] == pytest.approx(1 / 61 + 1 / 62)
+
+
 async def test_the_folded_arm_is_reachable_only_from_the_document_scoped_path(store):
     """Folding widens the document-scoped path and nothing else.
 

@@ -980,13 +980,19 @@ class PostgresContentStore(ContentStore):
         and a passage count of zero -- the count names passages, so a
         document-level hit must not inflate it.
 
-        Ranking and counting run over ``or_form``, the whole query's lexemes
+        Passage ranking and counting run over ``or_form``, the whole query's lexemes
         alternated, and so do not distinguish the branch a document matched on:
         a document is excerpted by its best chunk under any of the query's
         terms, and counted by the chunks carrying one. That is the same
         treatment a conjunction already gets -- its arms intersect, while its
         ranking asks only that a chunk carry *some* term -- rather than a
         looseness the alternation introduces.
+
+        The document surface takes the greater score under the original and
+        folded required lexemes. Keeping two scores preserves the original
+        signal without diluting it with extra terms, while a folded-only hit
+        ranks on the words that admitted it. Folded terms never reach passage
+        scoring, excerpt ordering or counts: passage tokenization stays literal.
         """
         where, where_params = self._build_where(filters)
         # Interpolated into the fragments below. Column names come from a fixed
@@ -1028,10 +1034,18 @@ class PostgresContentStore(ContentStore):
             )
             params += [folded, *where_params]
 
+        surface_rank = "ts_rank(tsv_rank, %s::tsquery)"
+        surface_params: list[object] = [or_form]
+        if folded:
+            folded_parse = _parse_rendered("", folded, _split_branches(folded))
+            if folded_parse.terms:
+                surface_rank = f"GREATEST({surface_rank}, ts_rank(tsv_rank, %s::tsquery))"
+                surface_params.append(_or_form(folded_parse.terms))
+
         sql = (
             f"WITH matched AS (\n{matched}\n),"  # noqa: S608
             " surf AS ("
-            " SELECT document_id, ts_rank(tsv_rank, %s::tsquery) AS surf_score"
+            f" SELECT document_id, {surface_rank} AS surf_score"
             " FROM document_surface WHERE document_id IN (SELECT document_id FROM matched)"
             " ), ranked AS ("
             " SELECT c.document_id, c.heading_path, c.content,"
@@ -1053,7 +1067,7 @@ class PostgresContentStore(ContentStore):
             " LEFT JOIN surf s USING (document_id)"
             " ORDER BY doc_score DESC, m.document_id LIMIT %s"
         )
-        params += [or_form, or_form, or_form, or_form, *where_params, limit]
+        params += [*surface_params, or_form, or_form, or_form, *where_params, limit]
         rows = await self._fetchall(sql, params)
         return [self._row_to_document_result(r) for r in rows]
 

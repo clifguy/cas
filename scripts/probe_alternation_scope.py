@@ -75,7 +75,7 @@ from sage.storage.postgres.schema import (  # noqa: E402
     assert_disposable_target,
     bootstrap_schema,
 )
-from sage.utils.text_normalization import fold_for_query  # noqa: E402
+from scripts.measure_title_rank import _renderings as title_renderings  # noqa: E402
 
 # How deep a document may rank and still count toward recall. Held equal to the
 # title instrument's depth so the two reports read against each other.
@@ -131,15 +131,7 @@ def _renderings(title: str) -> dict[str, str]:
     figure there: what differs between the two reports is then the disjunct and
     nothing else.
     """
-    return {
-        name: f"{_ABSENT_BRANCH} or {form}"
-        for name, form in {
-            "verbatim": title,
-            "lowercase": title.lower(),
-            "uppercase": title.upper(),
-            "separators folded": fold_for_query(title),
-        }.items()
-    }
+    return {name: f"{_ABSENT_BRANCH} or {form}" for name, form in title_renderings(title).items()}
 
 
 # A word worth querying on: long enough that the text-search configuration keeps

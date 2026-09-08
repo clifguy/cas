@@ -268,44 +268,45 @@ async def test_prefix_number_identifier_ranks_first(store, corpus):
         )
 
 
-async def test_camel_case_variant_ranks_first(store, corpus):
+@pytest.mark.parametrize("derived", [False, True])
+async def test_camel_case_variant_ranks_first(store: PostgresContentStore, derived: bool) -> None:
     """A compound identifier is reachable by its constituent words, and back.
 
     Both directions: a camelCase title found by spaced words, and a spaced
     title found by a camelCase query.
     """
+    await _seed(store, derived=derived)
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="00000000_rival",
+            matchable="Document level text handling",
+            orienting="",
+            embedding=[0.0] * EMBEDDING_DIM,
+        )
+    )
+    hits = await store.search_bm25("documentLevelTextHandling", limit=len(_CORPUS))
+    assert {"00000000_rival", "0000000b_spaced"} <= {r.document_id for r in hits}
+    assert hits[0].document_id == "0000000b_spaced"
+    assert hits[0].score > 0
+    assert (await store.search_bm25("documentLevelTextHandling", limit=1))[
+        0
+    ].document_id == "0000000b_spaced"
     assert await _rank_of(store, "document level text normalization", "0000000a_camel") == 0
     assert await _rank_of(store, "documentLevelText normalization", "0000000a_camel") == 0
     assert await _rank_of(store, "documentLevelTextHandling", "0000000b_spaced") == 0
 
 
-async def test_two_word_compound_query_reaches_a_spaced_title(store, corpus):
-    """The compound spelling of a two-word title reaches it.
+@pytest.mark.parametrize("derived", [False, True])
+async def test_two_word_compound_query_ranks_a_spaced_title_first(
+    store: PostgresContentStore, derived: bool
+) -> None:
+    """A compound title query wins against an admitted earlier-id rival.
 
-    Stated apart from the sweep above because every compound there carries two
-    or more capitals while this one carries a single internal capital, which is
-    the distinction the splitting rule turns on. It runs the rule through the
-    real query renderer and generated vector rather than through the tokenizer
-    stand-in the unit tests assert over, and so is the only place the folded
-    rendering is exercised as what it is: an arm added to the query's own, not
-    a replacement for it.
-
-    **This asserts reachability, not rank, and the difference is not a
-    weakening.** The folded rendering decides membership only -- the ranking
-    alternation is built from the query's own rendering, which for a compound
-    matches no lexeme -- so every document admitted this way scores zero and
-    the result set orders by document id. A rank-1 assertion here would pass
-    whenever the corpus admits exactly one document, which is the absence of
-    competition rather than a result, and would go on passing against a binding
-    that never ranked at all.
-
-    So a rival is seeded that carries both of the query's words and sorts
-    *earlier* by id. It is what makes the assertion mean something: the target
-    is reached in a field it does not lead, and reaching it is the property
-    this rule was changed to provide. The rank claim returns here once the
-    binding can support one; its absence is recorded in the failure log rather
-    than left as a quieter assertion with nothing marking what it gave up.
+    The rival carries the same words but lacks the target's production surface
+    composition. Admission, positive score and rank at limit one are asserted
+    together so neither a sole candidate nor document-id ordering can pass.
     """
+    await _seed(store, derived=derived)
     await store.upsert_document_surface(
         DocumentSurface(
             document_id="00000000_rival",
@@ -325,6 +326,11 @@ async def test_two_word_compound_query_reaches_a_spaced_title(store, corpus):
         "the rival was not admitted, so the corpus is uncontested and this "
         "assertion would hold against a binding that returned one row by luck"
     )
+    assert hits[0].document_id == "00000010_norm"
+    assert hits[0].score > 0
+    assert (await store.search_bm25("normalizationDigest", limit=1))[
+        0
+    ].document_id == "00000010_norm"
 
 
 async def test_a_two_word_compound_title_is_reached_by_its_spaced_query(store):
