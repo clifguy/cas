@@ -280,21 +280,51 @@ async def test_camel_case_variant_ranks_first(store, corpus):
 
 
 async def test_two_word_compound_query_reaches_a_spaced_title(store, corpus):
-    """The compound spelling of a two-word title finds it.
+    """The compound spelling of a two-word title reaches it.
 
     Stated apart from the sweep above because every compound there carries two
     or more capitals while this one carries a single internal capital, which is
-    the distinction the splitting rule turns on. ``Normalization Digest`` is
-    the only document carrying both words -- ``Surface Boundaries Digest`` and
-    ``documentLevelText normalization`` each carry one -- so ranking first is a
-    result rather than the absence of competition.
+    the distinction the splitting rule turns on. It runs the rule through the
+    real query renderer and generated vector rather than through the tokenizer
+    stand-in the unit tests assert over, and so is the only place the folded
+    rendering is exercised as what it is: an arm added to the query's own, not
+    a replacement for it.
 
-    It runs the rule through the real query renderer and generated vector
-    rather than through the tokenizer stand-in the unit tests assert over, and
-    so is the only place the folded rendering is exercised as what it is: an
-    arm added to the query's own, not a replacement for it.
+    **This asserts reachability, not rank, and the difference is not a
+    weakening.** The folded rendering decides membership only -- the ranking
+    alternation is built from the query's own rendering, which for a compound
+    matches no lexeme -- so every document admitted this way scores zero and
+    the result set orders by document id. A rank-1 assertion here would pass
+    whenever the corpus admits exactly one document, which is the absence of
+    competition rather than a result, and would go on passing against a binding
+    that never ranked at all.
+
+    So a rival is seeded that carries both of the query's words and sorts
+    *earlier* by id. It is what makes the assertion mean something: the target
+    is reached in a field it does not lead, and reaching it is the property
+    this rule was changed to provide. The rank claim returns here once the
+    binding can support one; its absence is recorded in the failure log rather
+    than left as a quieter assertion with nothing marking what it gave up.
     """
-    assert await _rank_of(store, "normalizationDigest", "00000010_norm") == 0
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="00000000_rival",
+            matchable="Digest of normalization",
+            orienting="",
+            embedding=[0.0] * EMBEDDING_DIM,
+        )
+    )
+
+    hits = await store.search_bm25("normalizationDigest", limit=len(_CORPUS))
+    reached = [r.document_id for r in hits]
+
+    assert "00000010_norm" in reached, (
+        f"the compound spelling did not reach its spaced title; reached {reached}"
+    )
+    assert "00000000_rival" in reached, (
+        "the rival was not admitted, so the corpus is uncontested and this "
+        "assertion would hold against a binding that returned one row by luck"
+    )
 
 
 async def test_a_two_word_compound_title_is_reached_by_its_spaced_query(store):

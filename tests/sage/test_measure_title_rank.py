@@ -226,14 +226,25 @@ def test_recomposing_replaces_the_stored_text_with_what_the_record_composes():
     ingested under a narrower split holds; the recomposition carries its parts
     too. A run that ignored the flag would seed the first in both arms and
     report a tie whatever the transform did.
+
+    Both halves are asserted, and the derived one is not decoration. A seeding
+    that recomposed the authored half and kept the stale derived half is the
+    mirror of the control-side defect the failure log already carries: the
+    control would report a row rewritten while the row actually seeded still
+    held the old stem expansion -- the ranking input the flag exists to move --
+    and the run would report a difference it had not made.
     """
+    record = _record("graphLevel", source_path="imports/graphLevel.md")
+    composed = compose_document_surface("0000000a_doc", record)
     copied = ("0000000a_doc", "graphLevel", "stale orienting", None, "adr", "active", "CAS")
 
-    row = _surface_row(copied, _record("graphLevel"), recompose=True)
+    row = _surface_row(copied, record, recompose=True)
 
     assert {"graph", "level"} <= set(row.matchable.lower().split())
     assert "graphLevel" in row.matchable, "the unsplit form must survive the widening"
     assert row.matchable != copied[1], "the stored text was seeded despite the flag"
+    assert row.orienting == composed.orienting, "the derived half kept its stale text"
+    assert row.orienting != copied[2], "the derived half must have moved, or nothing is tested"
 
 
 def test_the_recomposed_vector_is_the_stored_one():

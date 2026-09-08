@@ -75,8 +75,13 @@ def _split_compound(token: str) -> list[str]:
     - ``isalpha`` bounds what kind of token is a candidate at all. A mixed
       letter-and-digit token is left alone as a matter of policy: ``PV07`` and
       ``v3`` are identifiers a caller types whole.
-    - The internal-capital test says what a compound *is*, and is the rule this
-      function turns on.
+    - The internal-capital test says what a compound *is*. It refuses nothing
+      today that the next two guards would not refuse anyway -- measured over
+      every token of length 1-5 drawn from a mixed ASCII and non-ASCII
+      alphabet, removing it changes no output. It is kept because it states the
+      rule, and because it becomes load-bearing the moment the parts pattern is
+      widened past ASCII, at which point the reassembly guard stops standing in
+      for it.
     - ``len(parts) >= 2`` keeps a single word whole. The pattern consumes
       ``Document``, ``XLSX`` and ``ADR`` each in one match, so each is returned
       unchanged rather than as its own rewrite.

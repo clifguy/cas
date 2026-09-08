@@ -234,15 +234,20 @@ def _surface_row(copied, document: Document | None, *, recompose: bool) -> Docum
 def _document_from_row(row: dict) -> Document:
     """One vault record, rebuilt from the columns a run projects.
 
-    ``tags`` is coalesced because the column is nullable and the field is not,
-    which is the same reduction the store's own row hydrator applies. Without
-    it a single null-tags row raises before any figure is produced -- and the
-    script is pointed at whatever vault the caller names, so the row it cannot
-    hydrate is somebody's corpus rather than a hypothetical.
+    Built the way the store's own row hydrator builds one: ``tags`` coalesced,
+    because the column is nullable and the field is not, and construction
+    bypassing validation, because the store deliberately tolerates stored
+    values its request-side validators would reject. Either omission aborts a
+    run before any figure is produced, on a row some vault legitimately holds
+    -- and the script is pointed at whatever vault the caller names, so the row
+    it cannot hydrate is somebody's corpus rather than a hypothetical.
+
+    Nothing here needs validation to have run: the composition reads the title,
+    the tags, the source path and the abstract, and transforms none of them.
     """
     values = {name: row[name] for name in _DOCUMENT_COLUMNS}
     values["tags"] = values["tags"] or []
-    return Document(**values)
+    return Document.model_construct(**values)
 
 
 def _recomposition_control(surfaces, records: dict[str, Document] | None) -> tuple[int, int]:
