@@ -29,6 +29,18 @@ Two transforms close the gap, and they are deliberately not the same one:
 
 The resulting invariant is that for any one source string, what a folded query
 requires is always a subset of what expanded index text supplies.
+
+Widening the split widens both transforms at once, since the expansion is
+defined over the fold, and that raises the question of whether stored index
+text has to be rebuilt to stay in step. It does not. The folded rendering
+reaches the keyword binding as an arm *added* to the arms the query's own
+rendering produces, never as a substitution for them, so a row indexed under a
+narrower split stays reachable by the spelling it stored -- the new arm can
+only admit documents, not withdraw them. What such a row does not yet have is
+the widened expansion, so the reverse direction (a separated query reaching the
+compound it was written as) waits for the row to be composed again, which
+ingest and any edit to an authored field both do. A widening not yet applied,
+rather than a match lost.
 """
 
 import re
@@ -49,15 +61,46 @@ _COMPOUND_PARTS = re.compile(r"[A-Z][a-z]+|[A-Z]+(?=[A-Z]|$)|[a-z]+|[0-9]+")
 def _split_compound(token: str) -> list[str]:
     """Return a token's constituent words, or ``[token]`` when it has none.
 
-    Only alphabetic tokens carrying two or more capitals are candidates, so
-    ``XLSX`` and ``langgraph`` pass through whole while ``PortfolioDashboard``
-    and ``documentLevelText`` come apart. A token that yields a single part is
-    returned unchanged rather than as its own rewrite.
+    A candidate is an alphabetic token carrying an *internal* capital, so
+    ``PortfolioDashboard``, ``documentLevelText`` and ``graphLevel`` come apart
+    while ``Document`` does not. Position rather than count is what separates
+    those: a single Title-cased word carries a capital too, and only where it
+    sits distinguishes it from a two-word ``lowerCamel`` compound, which counts
+    the same one. Counting them refuses that compound as collateral, and a
+    document titled *Graph Level* is then unreachable by ``graphLevel``.
+
+    Four guards, and it is worth naming which does what, because they are not
+    interchangeable and only one of them is about safety:
+
+    - ``isalpha`` bounds what kind of token is a candidate at all. A mixed
+      letter-and-digit token is left alone as a matter of policy: ``PV07`` and
+      ``v3`` are identifiers a caller types whole.
+    - The internal-capital test says what a compound *is*. It refuses nothing
+      today that the next two guards would not refuse anyway -- measured over
+      every token of length 1-5 drawn from a mixed ASCII and non-ASCII
+      alphabet, removing it changes no output. It is kept because it states the
+      rule, and because it becomes load-bearing the moment the parts pattern is
+      widened past ASCII, at which point the reassembly guard stops standing in
+      for it.
+    - ``len(parts) >= 2`` keeps a single word whole. The pattern consumes
+      ``Document``, ``XLSX`` and ``ADR`` each in one match, so each is returned
+      unchanged rather than as its own rewrite.
+    - The parts must reassemble into the token, and this is the safety one. The
+      pattern's alternatives are ASCII while ``isalpha`` is not, so a word
+      carrying a letter outside that range is matched in pieces *around* it and
+      the pieces do not add back up -- ``caféLevel`` yields ``caf`` and
+      ``Level``, the ``é`` in neither. Splitting there would drop the letter
+      that distinguished the word and index a lexeme no caller could type.
+
+    The last guard is stated over the token rather than over an alphabet
+    deliberately. The defect is a disagreement between the pattern's reach and
+    the gate's, so a rule keyed on the disagreement itself stays true if either
+    side later moves; one keyed on today's alphabet would not.
     """
-    if not (token.isalpha() and sum(1 for ch in token if ch.isupper()) >= 2):
+    if not (token.isalpha() and any(ch.isupper() for ch in token[1:])):
         return [token]
     parts = _COMPOUND_PARTS.findall(token)
-    return parts if len(parts) >= 2 else [token]
+    return parts if len(parts) >= 2 and "".join(parts) == token else [token]
 
 
 def fold_for_query(text: str) -> str:

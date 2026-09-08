@@ -22,7 +22,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from sage.utils.text_normalization import expand_for_index, fold_for_query
+from sage.utils.text_normalization import _COMPOUND_PARTS, expand_for_index, fold_for_query
 
 
 def _lexemes(text: str) -> set[str]:
@@ -86,10 +86,16 @@ def test_fold_for_query_drops_the_unsplit_compound() -> None:
         ("documentLevelText", {"document", "level", "text"}),
         ("PortfolioDashboard", {"portfolio", "dashboard"}),
         ("LangGraph", {"lang", "graph"}),
+        ("graphLevel", {"graph", "level"}),
     ],
 )
 def test_fold_for_query_splits_compound_identifiers(raw: str, expected_tokens: set[str]) -> None:
-    """camelCase and PascalCase compounds split into their constituent words."""
+    """camelCase and PascalCase compounds split into their constituent words.
+
+    ``graphLevel`` is the two-word case, and the one that says the rule is
+    keyed on where a capital sits rather than on how many there are: it
+    carries one, and the three above it carry two or more.
+    """
     assert _lexemes(fold_for_query(raw)) == expected_tokens
 
 
@@ -100,8 +106,80 @@ def test_fold_for_query_leaves_unsplittable_tokens_whole(raw: str) -> None:
     Without this, an all-lowercase query like ``langgraph`` would be mangled
     into something the index cannot satisfy. It is also the half of the
     asymmetry that makes ``expand_for_index``'s superset necessary.
+
+    ``PV07`` and ``v3`` are here for a second reason: they survive on the
+    ``isalpha`` guard rather than on having no boundary. Without it the parts
+    pattern reads ``PV07`` as ``P`` and ``07``, dropping the ``V`` outright --
+    a token the fold destroys rather than rewrites.
     """
     assert _lexemes(fold_for_query(raw)) == {raw.lower()}
+
+
+@pytest.mark.parametrize("raw", ["Document", "Template", "Graph", "Sage", "XLSX", "ADR"])
+def test_a_leading_capital_is_not_an_internal_one(raw: str) -> None:
+    """A Title-cased word and an acronym run are not compounds.
+
+    The tokens the splitting rule has to refuse, asserted rather than assumed:
+    ``Document`` carries a capital, and a rule that read the capital alone
+    would break it into nothing anyone would type.
+
+    What this pins is the contract, not the predicate. Two guards stand behind
+    it and only one is stated here -- the parts pattern returns a single part
+    for every token above, so ``_split_compound`` returns each whole on the
+    ``len(parts) >= 2`` fallback even under a predicate too wide to have
+    refused it. ``test_the_parts_pattern_is_the_second_guard_on_a_single_word``
+    states that half, so the division of labour is written down rather than
+    left for a later reader to rediscover by loosening the predicate and
+    finding this test still green.
+    """
+    assert _lexemes(fold_for_query(raw)) == {raw.lower()}
+
+
+@pytest.mark.parametrize("raw", ["Document", "Template", "Graph", "Sage", "XLSX", "ADR"])
+def test_the_parts_pattern_is_the_second_guard_on_a_single_word(raw: str) -> None:
+    """The pattern yields one part for a token that is one word.
+
+    The other half of the guard named above. A Title-cased word is consumed
+    whole by the title-cased alternative and an acronym run by the acronym
+    alternative, so neither reaches two parts and neither can be split however
+    it is admitted. Asserted on the pattern directly because it is invisible
+    through ``fold_for_query``, where a single part and a refused candidate
+    return the same string.
+    """
+    assert len(_COMPOUND_PARTS.findall(raw)) < 2
+
+
+@pytest.mark.parametrize("raw", ["Straße", "naïve", "caféLevel", "CaféLevel", "Café", "αBeta"])
+def test_a_word_carrying_a_non_ascii_letter_survives_whole(raw: str) -> None:
+    """The fold rewrites a token; it never drops a character from one.
+
+    The parts pattern is ASCII-only while the candidate gate is not, so a word
+    carrying a letter outside that range is matched in pieces *around* it and
+    the pieces do not add back up: ``caféLevel`` yields ``caf`` and ``Level``,
+    with the ``é`` in neither. Splitting on that would put a lexeme in the index
+    that no caller could type and lose the letter that distinguished the word.
+
+    Which is why the parts have to reassemble before a split is taken. The
+    guard is stated over the token rather than over an alphabet because the
+    pattern's reach and the gate's disagree, and a rule keyed on the
+    disagreement rather than on either side of it stays true if either moves.
+    """
+    assert _lexemes(fold_for_query(raw)) == {raw.lower()}
+
+
+def test_the_expansion_of_a_non_ascii_compound_carries_no_shortened_form() -> None:
+    """Nor does the widened index text acquire the truncation.
+
+    ``expand_for_index`` keeps the original alongside the fold, so a split that
+    dropped a letter would leave the whole token reachable and merely add junk
+    beside it -- which is why this is a stray lexeme rather than a lost match,
+    and why the fold's own assertion above cannot be the only one. Stated
+    separately because the two halves fail independently.
+    """
+    expanded = _lexemes(expand_for_index("caféLevel"))
+
+    assert expanded == {"caféLevel".lower()}
+    assert "caf" not in expanded
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +193,7 @@ def test_fold_for_query_leaves_unsplittable_tokens_whole(raw: str) -> None:
         ("LangGraph", {"langgraph", "lang", "graph"}),
         ("ADR-001", {"adr", "001"}),
         ("PortfolioDashboard", {"portfoliodashboard", "portfolio", "dashboard"}),
+        ("graphLevel", {"graphlevel", "graph", "level"}),
     ],
 )
 def test_expand_for_index_keeps_both_the_compound_and_its_parts(
@@ -165,6 +244,11 @@ def test_index_superset_and_query_fold_are_deliberately_asymmetric() -> None:
     [
         # spaced title reached by a camelCase query
         ("Document Level Text", "documentLevelText"),
+        # the two-word case of the same, where the query carries one capital
+        ("Graph Level", "graphLevel"),
+        # and its mirror: a two-word compound title reached by a spaced query,
+        # which the index side supplies by keeping both renderings
+        ("graphLevel", "Graph Level"),
         # camelCase title reached by a lowercase compound query
         ("LangGraph orchestration", "langgraph orchestration"),
         # hyphenated identifier reached by a spaced query, and the reverse
@@ -338,19 +422,23 @@ def test_a_separator_rendering_of_a_title_is_reachable(
     )
 
 
-@given(words=st.lists(_WORD, min_size=3, max_size=4), data=st.data())
+@given(words=st.lists(_WORD, min_size=2, max_size=4), data=st.data())
 @NORMALIZATION_SETTINGS
 def test_a_compound_rendering_of_a_title_is_reachable(
     words: list[str], data: st.DataObject
 ) -> None:
     """A compound and its separated form each reach the other.
 
-    Drawn at three or more words so both compound spellings carry the two
-    capitals ``_split_compound`` requires: ``PascalCase`` reaches that at two
-    words, ``lowerCamel`` only at three, and the narrower bound covers both.
-    Where that bound sits is pinned separately by
-    ``test_a_two_word_lower_camel_compound_is_not_split``, so a later edit to
-    the threshold reds there rather than silently emptying this domain.
+    Drawn at two or more words, which is where a compound becomes one at all:
+    both spellings carry an internal capital from two words on, and
+    ``_split_compound`` keys on position rather than on a count, so neither
+    spelling is out of reach at the bound. The floor sat at three while the
+    rule asked for two capitals -- a ``lowerCamel`` rendering does not reach
+    two until its third word -- and moving the rule is what lets it drop.
+    Where the bound sits is pinned separately by
+    ``test_a_two_word_lower_camel_compound_splits_on_its_internal_capital``,
+    so a later edit to the rule reds there rather than silently emptying this
+    domain.
     """
     pascal = "".join(w.capitalize() for w in words)
     lower_camel = words[0] + "".join(w.capitalize() for w in words[1:])
@@ -370,16 +458,17 @@ def test_a_compound_rendering_of_a_title_is_reachable(
         )
 
 
-def test_a_two_word_lower_camel_compound_is_not_split() -> None:
-    """One internal capital is below the splitting threshold.
+def test_a_two_word_lower_camel_compound_splits_on_its_internal_capital() -> None:
+    """One capital is enough when it is not the leading one.
 
-    ``_split_compound`` asks for two or more capitals, which a two-word
-    ``lowerCamel`` token does not reach. The bound is stated here because it is
-    what the compound property above is drawn around: without it, a later
-    reader widening that generator to two words gets a failure whose cause is
-    this threshold rather than the generator.
+    The bound the compound property above is drawn around, and the case that
+    distinguishes the rule from the count it replaced: ``graphLevel`` carries
+    a single capital, so a rule asking for two refuses it, and a document
+    titled *Graph Level* is then unreachable by the compound spelling of its
+    own name. What separates it from ``Document`` -- which also carries one,
+    and must survive whole -- is that this one is internal.
     """
-    assert _lexemes(fold_for_query("graphLevel")) == {"graphlevel"}
+    assert _lexemes(fold_for_query("graphLevel")) == {"graph", "level"}
 
 
 @given(st.text())

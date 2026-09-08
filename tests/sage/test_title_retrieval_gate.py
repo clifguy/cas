@@ -279,6 +279,124 @@ async def test_camel_case_variant_ranks_first(store, corpus):
     assert await _rank_of(store, "documentLevelTextHandling", "0000000b_spaced") == 0
 
 
+async def test_two_word_compound_query_reaches_a_spaced_title(store, corpus):
+    """The compound spelling of a two-word title reaches it.
+
+    Stated apart from the sweep above because every compound there carries two
+    or more capitals while this one carries a single internal capital, which is
+    the distinction the splitting rule turns on. It runs the rule through the
+    real query renderer and generated vector rather than through the tokenizer
+    stand-in the unit tests assert over, and so is the only place the folded
+    rendering is exercised as what it is: an arm added to the query's own, not
+    a replacement for it.
+
+    **This asserts reachability, not rank, and the difference is not a
+    weakening.** The folded rendering decides membership only -- the ranking
+    alternation is built from the query's own rendering, which for a compound
+    matches no lexeme -- so every document admitted this way scores zero and
+    the result set orders by document id. A rank-1 assertion here would pass
+    whenever the corpus admits exactly one document, which is the absence of
+    competition rather than a result, and would go on passing against a binding
+    that never ranked at all.
+
+    So a rival is seeded that carries both of the query's words and sorts
+    *earlier* by id. It is what makes the assertion mean something: the target
+    is reached in a field it does not lead, and reaching it is the property
+    this rule was changed to provide. The rank claim returns here once the
+    binding can support one; its absence is recorded in the failure log rather
+    than left as a quieter assertion with nothing marking what it gave up.
+    """
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="00000000_rival",
+            matchable="Digest of normalization",
+            orienting="",
+            embedding=[0.0] * EMBEDDING_DIM,
+        )
+    )
+
+    hits = await store.search_bm25("normalizationDigest", limit=len(_CORPUS))
+    reached = [r.document_id for r in hits]
+
+    assert "00000010_norm" in reached, (
+        f"the compound spelling did not reach its spaced title; reached {reached}"
+    )
+    assert "00000000_rival" in reached, (
+        "the rival was not admitted, so the corpus is uncontested and this "
+        "assertion would hold against a binding that returned one row by luck"
+    )
+
+
+async def test_a_two_word_compound_title_is_reached_by_its_spaced_query(store):
+    """And the reverse: the index side widens with the query side.
+
+    The mirror of the assertion above, and the half that lives in stored text
+    rather than in the query. It is seeded here rather than added to the shared
+    corpus because a thirteenth document would move the crowded baseline every
+    other assertion in this module is calibrated against, and what is under
+    test is one row's composition rather than its rank among rivals.
+
+    The composition is the production one, so what this shows is that a
+    document ingested after the rule widened is reachable both ways. A row
+    written before it keeps the narrower expansion until it is re-ingested or
+    its title is edited; that is a widening not yet applied, not a match lost,
+    because the query's own rendering still reaches the compound it stored.
+
+    Only the surface row is seeded. A passage was tried here and removed: with
+    prose the query cannot match it never enters the causal path, and with
+    prose it can it answers instead of the surface, so there is no content that
+    would make it a control. The store is truncated per test, which leaves this
+    one row as the only thing either query can be answering from.
+    """
+    document_id = "00000015_d2"
+    surface = compose_document_surface(document_id, _document(document_id, "graphLevel retrieval"))
+    surface.embedding = [0.0] * EMBEDDING_DIM
+    await store.upsert_document_surface(surface)
+
+    spaced = await store.search_bm25("graph level retrieval", limit=10)
+    assert [r.document_id for r in spaced] == [document_id], (
+        "a spaced query did not reach the compound title its expansion carries"
+    )
+    compound = await store.search_bm25("graphLevel retrieval", limit=10)
+    assert [r.document_id for r in compound] == [document_id], (
+        "positive control: the compound spelling still reaches its own title"
+    )
+
+
+async def test_a_row_indexed_before_the_split_widened_is_still_reachable(store):
+    """A stored row stays reachable by the spelling it was indexed under.
+
+    The property that decides whether widening the split obliges a rebuild of
+    stored index text, so it is asserted rather than reasoned about. The row
+    here is seeded as a vault ingested under a narrower split holds it -- the
+    compound whole, its parts absent -- and the query is the compound. The
+    folded rendering the query now also produces asks for the parts, which this
+    row does not carry.
+
+    It stays reachable because that rendering reaches the binding as an arm
+    *added* to the ones the query's own rendering produces. Were it ever a
+    substitution instead, this query would demand two lexemes the row never
+    stored and the document would go silently unreachable by its own title
+    until re-ingested -- across every row a widening had passed over, which is
+    the whole corpus at the moment the widening ships.
+    """
+    document_id = "00000016_d3"
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id=document_id,
+            matchable="graphLevel retrieval",
+            orienting="",
+            embedding=[0.0] * EMBEDDING_DIM,
+        )
+    )
+
+    hits = await store.search_bm25("graphLevel retrieval", limit=10)
+    assert [r.document_id for r in hits] == [document_id], (
+        "a row carrying only the unsplit compound stopped answering to it, so "
+        "the folded rendering replaced the query's own arm rather than joining it"
+    )
+
+
 async def test_document_surface_competes_on_the_semantic_arm(store, corpus):
     """Document-level text is indexed for vector retrieval, not only keyword.
 
