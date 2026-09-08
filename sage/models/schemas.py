@@ -994,7 +994,7 @@ class ParseFilenameRequest(BaseModel):
 
 
 class ParseFilenameResponse(BaseModel):
-    """Metadata fields the FilenameParser extracted from the supplied filename.
+    """Metadata fields extracted from the supplied filename.
 
     All fields are nullable; a field is null when the parser could not
     extract it (no pattern configured, pattern did not match, or the
@@ -4476,7 +4476,7 @@ class BatchIngestFileMetadata(BaseModel):
         description=(
             "Optional caller-supplied parsed metadata for this file (keys: "
             "title, date, project, codes, version, doc_type). When omitted, "
-            "the file stem seeds the title and the vault's FilenameParser "
+            "the file stem seeds the title and the vault's configured filename parser "
             "fills the remaining fields."
         ),
     )
@@ -4666,8 +4666,7 @@ class SummaryEvent(BaseModel):
     """SSE ``summary`` event payload.
 
     Emitted once at the end of the batch, after all per-file events.
-    Mirrors the ``IngestSummary`` dataclass returned to non-streaming
-    callers (MCP tool).
+    Carries the summary returned to non-streaming callers (MCP tool).
     """
 
     event_type: Literal["summary"] = Field(

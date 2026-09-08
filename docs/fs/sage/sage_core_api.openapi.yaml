@@ -4417,9 +4417,9 @@ components:
     ParseFilenameResponse:
       type: object
       description: >-
-        Metadata fields the FilenameParser extracted from the supplied
-        filename. All fields are nullable; a field is null when the
-        parser could not extract it (no pattern configured, pattern
+        Metadata fields extracted from the supplied filename. All fields
+        are nullable; a field is null when the parser could not extract
+        it (no pattern configured, pattern
         did not match, or the captured segment was empty). No document
         is created and vault state is unchanged.
       properties:
@@ -7627,8 +7627,8 @@ components:
           description: >-
             Optional caller-supplied parsed metadata for this file (keys:
             title, date, project, codes, version, doc_type). When omitted, the
-            file stem seeds the title and the vault's FilenameParser fills the
-            remaining fields.
+            file stem seeds the title and the vault's configured filename parser
+            fills the remaining fields.
 
     BatchIngestUploadMetadata:
       type: object
@@ -7811,8 +7811,8 @@ components:
       type: object
       description: >-
         SSE `summary` event payload. Emitted once at the end of the
-        batch, after all per-file events. Mirrors the IngestSummary
-        dataclass returned to non-streaming callers (MCP tool).
+        batch, after all per-file events. Carries the summary returned
+        to non-streaming callers (MCP tool).
       required:
         - event_type
         - documents_created
