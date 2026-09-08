@@ -75,7 +75,7 @@ from sage.storage.postgres.schema import (  # noqa: E402
     assert_disposable_target,
     bootstrap_schema,
 )
-from sage.utils.text_normalization import fold_for_query  # noqa: E402
+from scripts.measure_title_rank import _renderings as title_renderings  # noqa: E402
 
 # How deep a document may rank and still count toward recall. Held equal to the
 # title instrument's depth so the two reports read against each other.
@@ -131,15 +131,7 @@ def _renderings(title: str) -> dict[str, str]:
     figure there: what differs between the two reports is then the disjunct and
     nothing else.
     """
-    return {
-        name: f"{_ABSENT_BRANCH} or {form}"
-        for name, form in {
-            "verbatim": title,
-            "lowercase": title.lower(),
-            "uppercase": title.upper(),
-            "separators folded": fold_for_query(title),
-        }.items()
-    }
+    return {name: f"{_ABSENT_BRANCH} or {form}" for name, form in title_renderings(title).items()}
 
 
 # A word worth querying on: long enough that the text-search configuration keeps
@@ -448,13 +440,13 @@ async def _sweep(
 
 def _table(before: dict[str, ArmResult], after: dict[str, ArmResult]) -> list[str]:
     lines = [
-        f"{'form':<20} {'rank-1 before':>14} {'rank-1 after':>13} "
+        f"{'form':<20} {'eligible':>8} {'rank-1 before':>14} {'rank-1 after':>13} "
         f"{'recall before':>14} {'recall after':>13}",
     ]
     for name in before:
         b, a = before[name], after[name]
         lines.append(
-            f"{name:<20} {b.rank_1_rate:>13.1%} {a.rank_1_rate:>12.1%} "
+            f"{name:<20} {b.total:>8} {b.rank_1_rate:>13.1%} {a.rank_1_rate:>12.1%} "
             f"{b.recall_rate:>13.1%} {a.recall_rate:>12.1%}"
         )
     newly = [
@@ -597,7 +589,7 @@ async def main() -> int:
 def _as_figures(before: dict[str, ArmResult], after: dict[str, ArmResult]) -> dict:
     return {
         arm_name: {
-            name: {"rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
+            name: {"total": arm.total, "rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
             for name, arm in results.items()
         }
         for arm_name, results in (("before", before), ("after", after))

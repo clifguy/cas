@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from sage.models.schemas import Document
 from sage.services.document_surface import compose_document_surface
 from scripts.measure_title_rank import (
@@ -53,8 +55,72 @@ def test_the_sweep_covers_the_renderings_the_decision_names():
 
 def test_every_rendering_is_measured_separately():
     """One column per rendering, so a form that regressed cannot be averaged away."""
-    assert len(_renderings("Some Title")) == 4
+    assert len(_renderings("Some Title")) == 5
     assert len(set(_renderings("ADR-001: Alpha Beta").values())) > 1
+
+
+@pytest.mark.parametrize(
+    ("title", "compound"),
+    [
+        ("Normalization Digest", "normalizationDigest"),
+        ("SAGE Field Guide", "sageFieldGuide"),
+        ("CAS PR Review Conventions", "casPrReviewConventions"),
+        ("Document Level Text Handling", "documentLevelTextHandling"),
+        ("ADR-049: Document Level Text", "ADR-049: documentLevelText"),
+        ("Alpha Beta: Gamma Delta", "Alpha Beta: gammaDelta"),
+    ],
+)
+def test_compound_rendering_preserves_the_title_words(title: str, compound: str) -> None:
+    from sage.utils.text_normalization import fold_for_query
+
+    assert _renderings(title)["compound"] == compound
+    assert fold_for_query(compound).lower() == fold_for_query(title).lower()
+
+
+@pytest.mark.parametrize(
+    "title", ["", "Solitary", "ADR-049", "café Level", "Alpha 123 Beta", "Alpha Beta:"]
+)
+def test_compound_rendering_omits_ineligible_titles(title: str) -> None:
+    assert "compound" not in _renderings(title)
+
+
+async def test_compound_sweep_counts_only_eligible_titles() -> None:
+    from sage.adapters.interfaces import SearchResult
+    from scripts.measure_title_rank import _sweep
+
+    class Store:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        async def search_bm25(self, query: str, limit: int) -> list[SearchResult]:
+            self.calls.append((query, limit))
+            return [SearchResult(document_id="two", heading_path="", content="", score=1)]
+
+    store = Store()
+    result = await _sweep(store, {"two": "Alpha Beta", "one": "Solitary"})
+    assert result["verbatim"].total == 2
+    assert result["compound"].total == 1
+    assert result["compound"].ranks == {"two": 0}
+    assert result["compound"].rank_1_rate == 1
+    assert store.calls == [
+        ("Alpha Beta", 20),
+        ("alpha beta", 20),
+        ("ALPHA BETA", 20),
+        ("Alpha Beta", 20),
+        ("alphaBeta", 20),
+        ("Solitary", 20),
+        ("solitary", 20),
+        ("SOLITARY", 20),
+        ("Solitary", 20),
+    ]
+
+
+def test_compound_report_exposes_its_eligible_denominator() -> None:
+    forms = {"compound": ArmResult("compound", rank_1=1, recalled=2, total=3)}
+    report = _render("test", 5, 4, 0.5, forms, forms, (0, 1), (1, 1))
+    assert "eligible" in report
+    row = next(line for line in report.splitlines() if line.startswith("compound"))
+    assert row.split() == ["compound", "3", "33.3%", "33.3%", "66.7%", "66.7%"]
 
 
 # ---------------------------------------------------------------------------

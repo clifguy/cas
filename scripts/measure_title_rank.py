@@ -48,6 +48,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -154,12 +155,26 @@ def _renderings(title: str) -> dict[str, str]:
     "However a caller types the separators, the case, and the word boundaries
     of the title" -- so the sweep is over forms, not over one string.
     """
-    return {
+    forms = {
         "verbatim": title,
         "lowercase": title.lower(),
         "uppercase": title.upper(),
         "separators folded": fold_for_query(title),
     }
+    # Join runs of plain words only. Identifier punctuation, numeric tokens,
+    # existing compounds and non-ASCII words are not rewritten. Ineligible
+    # titles contribute no compound observation, rather than a duplicate.
+    compound = re.sub(
+        r"(?<!\S)(?:[A-Z]+|[A-Z]?[a-z]+)(?:[ \t]+(?:[A-Z]+|[A-Z]?[a-z]+))+(?!\S)",
+        lambda match: (
+            match.group().split()[0].lower()
+            + "".join(word.capitalize() for word in match.group().split()[1:])
+        ),
+        title,
+    )
+    if compound != title:
+        forms["compound"] = compound
+    return forms
 
 
 async def _read_corpus(dsn: str, vault: str) -> tuple[list, list, list]:
@@ -344,10 +359,10 @@ async def _arm_control(pool) -> tuple[int, int]:
 
 async def _sweep(store: PostgresContentStore, queried: dict[str, str]) -> dict[str, ArmResult]:
     """Rank every queried title, in every rendering, on the binding alone."""
-    results = {name: ArmResult(rendering=name) for name in _renderings("x")}
+    results: dict[str, ArmResult] = {}
     for document_id, title in queried.items():
         for name, query in _renderings(title).items():
-            arm = results[name]
+            arm = results.setdefault(name, ArmResult(rendering=name))
             arm.total += 1
             hits = await store.search_bm25(query, limit=_RECALL_DEPTH)
             position = next(
@@ -391,13 +406,13 @@ def _render(  # noqa: PLR0913 -- a report renderer takes what the report shows
         f"  control            {before_control[0]}/{before_control[1]} passages carry text "
         f"differing from their address before, {after_control[0]}/{after_control[1]} after",
         "",
-        f"{'rendering':<20} {'rank-1 before':>14} {'rank-1 after':>13} "
+        f"{'rendering':<20} {'eligible':>8} {'rank-1 before':>14} {'rank-1 after':>13} "
         f"{'recall before':>14} {'recall after':>13}",
     ]
     for name in before:
         b, a = before[name], after[name]
         lines.append(
-            f"{name:<20} {b.rank_1_rate:>13.1%} {a.rank_1_rate:>12.1%} "
+            f"{name:<20} {b.total:>8} {b.rank_1_rate:>13.1%} {a.rank_1_rate:>12.1%} "
             f"{b.recall_rate:>13.1%} {a.recall_rate:>12.1%}"
         )
 
@@ -505,11 +520,21 @@ async def main() -> int:
                     "applicable_passage_share": applicable,
                     "surfaces_recomposed": records is not None,
                     "before": {
-                        name: {"rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
+                        name: {
+                            "rank_1": arm.rank_1_rate,
+                            "recall": arm.recall_rate,
+                            "total": arm.total,
+                            "ranks": arm.ranks,
+                        }
                         for name, arm in before.items()
                     },
                     "after": {
-                        name: {"rank_1": arm.rank_1_rate, "recall": arm.recall_rate}
+                        name: {
+                            "rank_1": arm.rank_1_rate,
+                            "recall": arm.recall_rate,
+                            "total": arm.total,
+                            "ranks": arm.ranks,
+                        }
                         for name, arm in after.items()
                     },
                 },
