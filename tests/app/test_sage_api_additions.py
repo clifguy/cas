@@ -170,6 +170,7 @@ def _eid(name: str) -> str:
 
 _STG_1 = _eid("stg-1")
 _STG_H1 = _eid("stg-h1")
+_STG_H2 = _eid("stg-h2")
 _STG_010 = _eid("staging-010")
 _STG_001 = _eid("staging-001")
 _STG_002 = _eid("staging-002")
@@ -270,6 +271,52 @@ async def single_vault_app(tmp_path):
 @pytest.fixture
 async def multi_client(multi_vault_app):
     transport = ASGITransport(app=multi_vault_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture
+async def custom_terminal_state_app(tmp_path):
+    """App whose one vault declares a terminal state other than `archived`.
+
+    Mirrors the shape a domain vault reaches for when a document is
+    frozen by something that is not supersession -- a filing, say -- and
+    is the only fixture here whose terminal set is not the base
+    lifecycle's. It stands alone rather than joining ``multi_vault_app``
+    because that fixture's vault listing is under assertion (exactly two
+    entries), so a third vault there would fail a test that has nothing
+    to do with lifecycle.
+    """
+    config_dict = _make_vault_config_dict(tmp_path, "filing_vault", "Filing Vault")
+    config_dict["lifecycle"]["states"].append(
+        {"value": "filed", "label": "Filed", "is_terminal": True}
+    )
+    config_dict["lifecycle"]["transitions"].append(
+        {"from_state": "active", "action": "file", "to_state": "filed"}
+    )
+    config = VaultConfig.model_validate(config_dict)
+    app = create_app(configs=[config])
+
+    from sage.app import _ensure_registry_service
+
+    registry_service = _ensure_registry_service(app)
+    async with contextlib.AsyncExitStack() as stack:
+        services = await stack.enter_async_context(
+            initialize_services_for_test(
+                config,
+                content_store=StubContentStore(),
+                embedding_provider=StubEmbeddingProvider(),
+                abstraction_provider=StubAbstractionProvider(),
+                registry_service=registry_service,
+            )
+        )
+        app.state.vault_registry[config.vault.id] = services
+        yield app
+
+
+@pytest.fixture
+async def custom_terminal_state_client(custom_terminal_state_app):
+    transport = ASGITransport(app=custom_terminal_state_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
@@ -428,6 +475,211 @@ class TestVaultStatistics:
         """Stats for non-existent vault returns 404."""
         resp = await multi_client.get("/sage_vaults/nonexistent/stats")
         assert resp.status_code == 404
+
+    async def test_health_indicators_exclude_terminal_lifecycle_docs(
+        self, multi_vault_app, multi_client
+    ):
+        """The doc-scoped health indicators report actionable work only.
+
+        A document in a terminal lifecycle state is not work anyone will
+        do: it holds whatever pipeline or metadata state it was left in
+        forever. Counting it reports unresolved work that has in fact
+        been resolved -- the surfacing case being a scanned PDF stranded
+        at `abstraction_skipped` long after a text-bearing replacement
+        superseded it into `archived` and got a real abstract.
+
+        All four doc-scoped counters are covered, each with its own
+        active/terminal pair, so a filter applied to some and not others
+        fails rather than passing on the strength of its neighbours.
+
+        `metadata_confirmed=True` on the six documents that are not the
+        pending-metadata pair isolates each counter; unconfirmed is the
+        default, so without it every document would also land in
+        `pending_metadata_count` and the isolation would be lost.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        docs = [
+            _make_document(
+                "active-deferred",
+                pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                metadata_confirmed=True,
+            ),
+            _make_document(
+                "active-failed",
+                pipeline_status=PipelineStatus.FAILED,
+                pipeline_error="adapter crash",
+                metadata_confirmed=True,
+            ),
+            _make_document(
+                "active-interrupted",
+                pipeline_status=PipelineStatus.ABSTRACTION_INTERRUPTED,
+                metadata_confirmed=True,
+            ),
+            _make_document(
+                "active-pending-meta",
+                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                metadata_confirmed=False,
+            ),
+            _make_document(
+                "archived-deferred",
+                pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                lifecycle_status="archived",
+                metadata_confirmed=True,
+            ),
+            _make_document(
+                "archived-failed",
+                pipeline_status=PipelineStatus.FAILED,
+                pipeline_error="adapter crash",
+                lifecycle_status="archived",
+                metadata_confirmed=True,
+            ),
+            _make_document(
+                "archived-interrupted",
+                pipeline_status=PipelineStatus.ABSTRACTION_INTERRUPTED,
+                lifecycle_status="archived",
+                metadata_confirmed=True,
+            ),
+            _make_document(
+                "archived-pending-meta",
+                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                lifecycle_status="archived",
+                metadata_confirmed=False,
+            ),
+        ]
+        for d in docs:
+            await gs.insert_document(d)
+
+        resp = await multi_client.get("/sage_vaults/example_vault/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+        health = body["health"]
+
+        assert health["deferred_abstract_count"] == 1
+        assert health["failed_ingestion_count"] == 1
+        assert health["interrupted_abstract_count"] == 1
+        assert health["pending_metadata_count"] == 1
+
+        # The archived half is present in the vault and merely excluded
+        # from the actionable counts -- not absent, and not deleted.
+        assert body["by_lifecycle_status"]["archived"] == 4
+        assert body["by_lifecycle_status"]["active"] == 4
+
+    async def test_terminal_lifecycle_exclusion_is_not_an_active_only_filter(
+        self, multi_vault_app, multi_client
+    ):
+        """`completed` is not terminal in the base lifecycle, and counts.
+
+        Separating two implementations that agree on every document in
+        the sibling test above: excluding the terminal states, and
+        counting only `active`. Both drop an `archived` document, so
+        that test cannot tell them apart. A `completed` document can:
+        work on it is done in the sense that no successor replaced it,
+        but the lifecycle permits a transition out, and a deferred
+        abstract on it is still an abstract someone may want.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        for doc_id, lifecycle in [
+            ("active-skipped", "active"),
+            ("completed-skipped", "completed"),
+            ("archived-skipped", "archived"),
+        ]:
+            await gs.insert_document(
+                _make_document(
+                    doc_id,
+                    pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                    lifecycle_status=lifecycle,
+                    metadata_confirmed=True,
+                )
+            )
+
+        resp = await multi_client.get("/sage_vaults/example_vault/stats")
+        assert resp.status_code == 200
+        assert resp.json()["health"]["deferred_abstract_count"] == 2
+
+    async def test_pending_edge_count_is_not_lifecycle_filtered(
+        self, multi_vault_app, multi_client
+    ):
+        """`pending_edge_count` is deliberately left unfiltered.
+
+        The divergence is not an oversight: a staging edge is not
+        doc-scoped and carries no lifecycle of its own, so there is no
+        terminal state to exclude it by. An edge awaiting review is
+        awaiting review whatever its endpoints have since become, and
+        dismissing it is the only thing that clears it.
+
+        The archived endpoint is under assertion twice over -- excluded
+        from `deferred_abstract_count`, which proves the filter was
+        active in this very response, and still counted in
+        `pending_edge_count`, which is the divergence itself. Without
+        the first assertion this test would pass against an
+        implementation that filters nothing at all.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        await gs.insert_document(
+            _make_document(
+                "edge-source",
+                pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                lifecycle_status="archived",
+                metadata_confirmed=True,
+            )
+        )
+        await gs.insert_document(
+            _make_document(
+                "edge-target",
+                lifecycle_status="archived",
+                metadata_confirmed=True,
+            )
+        )
+        await gs.insert_staging_edge(_make_staging_edge(_STG_H2, "edge-source", "edge-target"))
+
+        resp = await multi_client.get("/sage_vaults/example_vault/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        assert body["health"]["deferred_abstract_count"] == 0
+        assert body["health"]["pending_edge_count"] == 1
+        assert body["health"]["pending_edge_count"] == body["staging_edge_count"]
+
+    async def test_terminal_exclusion_is_derived_from_vault_config(
+        self, custom_terminal_state_app, custom_terminal_state_client
+    ):
+        """The excluded set comes from the vault's own declared states.
+
+        `filing_vault` declares `filed` terminal alongside `archived`,
+        so a document frozen by a filing is excluded on the same footing
+        as one retired by a supersession -- without SAGE having been
+        told that `filed` exists.
+
+        Anti-coincidental-pass: this is the only test in this file whose
+        terminal document is not `archived`. An implementation carrying
+        a hardcoded `("archived",)` satisfies every sibling test here
+        and fails this one, which is the whole reason it exists.
+        """
+        services = custom_terminal_state_app.state.vault_registry["filing_vault"]
+        gs = services.graph_store
+
+        for doc_id, lifecycle in [("still-open", "active"), ("frozen", "filed")]:
+            await gs.insert_document(
+                _make_document(
+                    doc_id,
+                    pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                    lifecycle_status=lifecycle,
+                    metadata_confirmed=True,
+                )
+            )
+
+        resp = await custom_terminal_state_client.get("/sage_vaults/filing_vault/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        assert body["health"]["deferred_abstract_count"] == 1
+        assert body["by_lifecycle_status"]["filed"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +890,47 @@ class TestPendingMetadata:
         fields = item["extracted_fields"]
         assert "title" in fields
         assert fields["title"]["source"] in ("filename", "content", "default")
+
+    async def test_pending_metadata_queue_still_surfaces_terminal_docs(
+        self, multi_vault_app, multi_client
+    ):
+        """The review queue keeps every unconfirmed document, terminal or not.
+
+        The queue and the dashboard's `pending_metadata_count` read the
+        same store method, and only the dashboard passes an exclusion --
+        so the two are one edit away from moving together. They should
+        not. The count answers "how much work is outstanding", where a
+        frozen document is noise; the queue answers "which documents
+        have unconfirmed metadata", where an operator reviewing an
+        archived predecessor's metadata is doing something legitimate
+        and the queue is the only surface that reaches it.
+
+        Asserts presence of both ids rather than a length, so a fixture
+        that inserted nothing fails here instead of passing.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        await gs.insert_document(_make_document("queue-active", metadata_confirmed=False))
+        await gs.insert_document(
+            _make_document(
+                "queue-archived",
+                lifecycle_status="archived",
+                metadata_confirmed=False,
+            )
+        )
+
+        resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
+        assert resp.status_code == 200
+        doc_ids = [item["document"]["id"] for item in resp.json()]
+        assert _id("queue-active") in doc_ids
+        assert _id("queue-archived") in doc_ids
+
+        # The same archived document is excluded from the dashboard
+        # count, which is what makes the divergence load-bearing rather
+        # than an artefact of nothing being filtered anywhere.
+        stats = await multi_client.get("/sage_vaults/example_vault/stats")
+        assert stats.json()["health"]["pending_metadata_count"] == 1
 
     async def test_be_036_pending_metadata_includes_document_date(
         self, multi_vault_app, multi_client

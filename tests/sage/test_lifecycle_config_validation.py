@@ -538,3 +538,38 @@ def test_non_active_landing_state_that_permits_supersede_is_not_advised(
         {"active", "completed", "review"}
     )
     assert _landing_advisories(caplog.records) == []
+
+
+def test_terminal_states_derives_from_is_terminal(minimal_vault_config_dict):
+    """The terminal set is the declared states carrying `is_terminal`.
+
+    Derived rather than enumerated, so a vault that marks a
+    domain-specific state terminal -- or declines to mark a base one --
+    is read correctly. Callers that report only actionable work use this
+    to exclude documents nothing further is expected of.
+
+    Anti-coincidental-pass: the added state is deliberately one that no
+    transition retires a document into, so a rival derivation reading
+    the transition table -- the `supersede` landing states, which in the
+    base lifecycle is also just `archived` -- returns the wrong set
+    here. The removal arm closes the other side: an implementation that
+    unions a hardcoded base set with the config-derived one keeps
+    `archived` after its flag is cleared, and fails.
+    """
+    base = VaultConfig.model_validate(_lifecycle_variant(minimal_vault_config_dict))
+    assert base.lifecycle.terminal_states() == frozenset({"archived"})
+
+    added = _lifecycle_variant(minimal_vault_config_dict)
+    added["lifecycle"]["states"].append({"value": "filed", "label": "Filed", "is_terminal": True})
+    added["lifecycle"]["transitions"].append(
+        {"from_state": "active", "action": "file", "to_state": "filed"}
+    )
+    config = VaultConfig.model_validate(added)
+    assert config.lifecycle.terminal_states() == frozenset({"archived", "filed"})
+
+    removed = _lifecycle_variant(minimal_vault_config_dict)
+    for state in removed["lifecycle"]["states"]:
+        if state["value"] == "archived":
+            state["is_terminal"] = False
+    config = VaultConfig.model_validate(removed)
+    assert config.lifecycle.terminal_states() == frozenset()

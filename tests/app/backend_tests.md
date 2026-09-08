@@ -111,6 +111,12 @@ failed_ingestion_count, and interrupted_abstract_count.
   - `failed_ingestion_count` (integer)
   - `interrupted_abstract_count` (integer)
 
+The four doc-scoped counters exclude documents in a terminal lifecycle state
+(the states the vault config marks `is_terminal`), so they report actionable
+work rather than every document ever left at the status.
+`pending_edge_count` is not filtered: a staging edge is not doc-scoped and
+carries no lifecycle state.
+
 **Rationale:** Health indicators are a Dashboard concern. Including them in
 the stats response avoids a second API call for health status.
 

@@ -2235,6 +2235,19 @@ def register_sage_tools(
         ``retrieval_health`` is configured in vault_config). Inexpensive;
         safe to poll.
 
+        The doc-scoped health indicators report actionable work, so they
+        exclude documents in a terminal lifecycle state -- the states
+        the vault's own config marks ``is_terminal``, so a vault that
+        declares one of its own has it honoured. Nothing further is
+        expected of such a document, so it holds whatever pipeline or
+        metadata state it was left in, and counting it would report work
+        no one will pick up. ``pending_edge_count`` is the one exception
+        and is reported unfiltered: a staging edge is not doc-scoped and
+        carries no lifecycle state to exclude it by. The metadata-review
+        queue read by ``list_pending_metadata`` is likewise unfiltered
+        and keeps surfacing every unconfirmed document, so it can differ
+        from ``pending_metadata_count``.
+
         Args:
             vault_id: Target vault identifier.
         """

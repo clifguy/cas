@@ -1144,8 +1144,19 @@ class GraphStore(ABC):
         """Return the most recent ingestion timestamp, or None if empty."""
 
     @abstractmethod
-    async def count_documents_by_pipeline_status(self, status: str) -> int:
-        """Return the number of documents in a given pipeline status."""
+    async def count_documents_by_pipeline_status(
+        self, status: str, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
+        """Return the number of documents in a given pipeline status.
+
+        ``exclude_lifecycle_statuses`` drops documents whose
+        ``lifecycle_status`` appears in the sequence. The empty default
+        counts every document at the status, so a caller that wants the
+        whole population says nothing; a caller reporting outstanding
+        work passes the vault's terminal states, since a document in one
+        of those holds its pipeline status forever and is not work
+        anyone will do.
+        """
 
     @abstractmethod
     async def clear_pipeline_error_for_statuses(self, statuses: list[str]) -> int:
@@ -1158,8 +1169,20 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
-    async def list_pending_metadata_documents(self) -> list[Document]:
-        """Return documents awaiting metadata confirmation."""
+    async def list_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> list[Document]:
+        """Return documents awaiting metadata confirmation.
+
+        ``exclude_lifecycle_statuses`` drops documents whose
+        ``lifecycle_status`` appears in the sequence, on the same terms
+        as ``count_documents_by_pipeline_status``. The empty default
+        returns every unconfirmed document, which is what the
+        metadata-review queue wants: reviewing a retired document's
+        metadata is legitimate, and the queue is the only surface that
+        reaches it. A caller counting outstanding work passes the
+        vault's terminal states instead.
+        """
 
     @abstractmethod
     async def measured_byte_size(self) -> int:

@@ -1515,10 +1515,18 @@ class PostgresGraphStore(GraphStore):
             value = await self._fetch_scalar("SELECT MAX(created_at) FROM documents")
             return datetime.fromisoformat(value) if value is not None else None
 
-    async def count_documents_by_pipeline_status(self, status: str) -> int:
+    async def count_documents_by_pipeline_status(
+        self, status: str, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
         with self._query_timer.measure("count_documents_by_pipeline_status"):
+            if not exclude_lifecycle_statuses:
+                return await self._fetch_scalar(
+                    "SELECT COUNT(*) FROM documents WHERE pipeline_status = %s", (status,)
+                )
             return await self._fetch_scalar(
-                "SELECT COUNT(*) FROM documents WHERE pipeline_status = %s", (status,)
+                "SELECT COUNT(*) FROM documents "
+                "WHERE pipeline_status = %s AND lifecycle_status <> ALL(%s)",
+                (status, list(exclude_lifecycle_statuses)),
             )
 
     async def clear_pipeline_error_for_statuses(self, statuses: list[str]) -> int:
@@ -1531,11 +1539,20 @@ class PostgresGraphStore(GraphStore):
                 (list(statuses),),
             )
 
-    async def list_pending_metadata_documents(self) -> list[Document]:
+    async def list_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> list[Document]:
         with self._query_timer.measure("list_pending_metadata_documents"):
-            rows = await self._fetch_rows(
-                "SELECT * FROM documents WHERE metadata_confirmed = false"
-            )
+            if not exclude_lifecycle_statuses:
+                rows = await self._fetch_rows(
+                    "SELECT * FROM documents WHERE metadata_confirmed = false"
+                )
+            else:
+                rows = await self._fetch_rows(
+                    "SELECT * FROM documents "
+                    "WHERE metadata_confirmed = false AND lifecycle_status <> ALL(%s)",
+                    (list(exclude_lifecycle_statuses),),
+                )
             return [self._row_to_document(r) for r in rows]
 
     async def measured_byte_size(self) -> int:
