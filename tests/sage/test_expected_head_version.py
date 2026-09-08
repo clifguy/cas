@@ -321,6 +321,10 @@ async def _run_supersede_pair(
     async with asyncio.timeout(15):
         async with asyncio.TaskGroup() as group:
             for side, source in sources.items():
+                if side == "b" and first_at_insert is not None:
+                    assert first_at_insert.is_set(), (
+                        "second contender started before the first reached insertion"
+                    )
                 task = group.create_task(
                     ingest_document(
                         "test_vault",
