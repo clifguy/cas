@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -30,6 +31,7 @@ from sage.adapters.stubs import (
 from sage.api.errors import StaleChainHeadError
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
+from sage.mcp_init import SAGEServices
 from sage.mcp_server import (
     get_document,
     ingest_document,
@@ -38,6 +40,7 @@ from sage.mcp_server import (
 from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
+from sage.models.schemas import Document, Edge
 from tests.helpers.pipeline_wait import await_tool_idle
 from tests.sage.conftest import initialize_services_for_test
 
@@ -308,88 +311,173 @@ async def test_t2_stale_expected_head_version_returns_structured_409(vault_servi
 # ---------------------------------------------------------------------------
 
 
-async def test_t4_parallel_same_version_one_wins_one_stale(vault_services):
-    """Two parallel ingests both holding `expected_head_version=V0` and
-    `predecessor_id=current_head.id`: exactly one supersede lands and
-    the other rejects with `stale_chain_head` whose `current_head_id`
-    and `current_head_version` point to the winner's new head. The
-    supersedes chain remains linear (no fork) — the defining test of
-    the fix. Runs 25 iterations on fresh chains to surface interleaving
-    races.
+async def _run_supersede_pair(
+    head: dict,
+    sources: dict[str, str],
+    contenders: dict[asyncio.Task, str],
+    first_at_insert: asyncio.Event | None = None,
+) -> list[dict]:
+    """Run both tool calls with bounded, structured cancellation on failure."""
+    async with asyncio.timeout(15):
+        async with asyncio.TaskGroup() as group:
+            for side, source in sources.items():
+                if side == "b" and first_at_insert is not None:
+                    assert first_at_insert.is_set(), (
+                        "second contender started before the first reached insertion"
+                    )
+                task = group.create_task(
+                    ingest_document(
+                        "test_vault",
+                        source,
+                        "markdown",
+                        predecessor_id=head["id"],
+                        expected_head_version=head["updated_at"],
+                    )
+                )
+                contenders[task] = side
+                if side == "a" and first_at_insert is not None:
+                    await first_at_insert.wait()
+    return [_parse(task.result()) for task in contenders]
+
+
+async def _assert_single_successor(services: SAGEServices, head_id: str, winner_id: str) -> dict:
+    """Check rows as well as edges, so an unlinked losing insert cannot hide."""
+    await _wait_terminal(services, winner_id)
+    documents, total = await services.graph_store.query_documents(default_exclude_failed=False)
+    assert total == 2
+    assert {doc.id for doc in documents} == {head_id, winner_id}
+    by_id = {doc.id: doc for doc in documents}
+    assert by_id[head_id].lifecycle_status == "archived"
+    assert by_id[winner_id].lifecycle_status == "active"
+    edges = await services.graph_store.get_edges_by_target(head_id, "supersedes")
+    assert len(edges) == 1
+    assert edges[0].source_id == winner_id
+    assert edges[0].target_id == head_id
+    return _parse(await get_document("test_vault", head_id))
+
+
+async def test_t4_parallel_same_version_one_wins_one_stale(
+    vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both initial reads see the active predecessor before either writer commits.
+
+    The loser reaches the locked version check and reports the predecessor's
+    id and archive-time version, not the winning successor's id or version.
     """
     services, test_dir = vault_services
+    head = await _seed_chain_head(services, test_dir)
+    sources = {
+        "a": await _write_source(test_dir, "a", "# A\n\nFirst contender."),
+        "b": await _write_source(test_dir, "b", "# B\n\nSecond contender."),
+    }
+    contenders = {}
+    initial_reads = {}
+    both_read = asyncio.Barrier(2)
+    store = services.graph_store
+    original_read = store.get_document
+    original_insert = store.insert_with_supersede_atomic
+    commits = []
 
-    for i in range(25):
-        # Fresh chain per iteration: a brand-new head with a stable
-        # terminal updated_at. Each iteration's source files carry
-        # distinct content so the duplicate-content guard never trips.
-        head = await _seed_chain_head(services, test_dir, f"iter_{i}_head")
-        head_id = head["id"]
-        v_baseline = head["updated_at"]
+    async def read(doc_id: str) -> Document | None:
+        task = asyncio.current_task()
+        document = await original_read(doc_id)
+        if doc_id == head["id"] and task in contenders and task not in initial_reads:
+            initial_reads[task] = (document.lifecycle_status, document.updated_at)
+            await both_read.wait()
+            assert len(initial_reads) == 2, "initial read released before both contenders arrived"
+        return document
 
-        a_src = await _write_source(test_dir, f"iter_{i}_a", f"# A{i}\n\nA-side body iter={i}.")
-        b_src = await _write_source(test_dir, f"iter_{i}_b", f"# B{i}\n\nB-side body iter={i}.")
-        results = await asyncio.gather(
-            ingest_document(
-                "test_vault",
-                a_src,
-                "markdown",
-                predecessor_id=head_id,
-                expected_head_version=v_baseline,
-            ),
-            ingest_document(
-                "test_vault",
-                b_src,
-                "markdown",
-                predecessor_id=head_id,
-                expected_head_version=v_baseline,
-            ),
-        )
-        parsed = [_parse(r) for r in results]
-        successes = [p for p in parsed if "error" not in p]
-        stale = [p for p in parsed if p.get("error") == "stale_chain_head"]
-        assert len(successes) == 1, f"iteration {i}: expected exactly one success; got {parsed!r}"
-        assert len(stale) == 1, (
-            f"iteration {i}: expected exactly one stale_chain_head; got {parsed!r}"
-        )
+    async def insert(
+        new_doc: Document, predecessor_id: str, predecessor_updates: dict, edge: Edge
+    ) -> tuple[Document, Document]:
+        # This observation is before the real transaction, not after its result.
+        assert set(initial_reads) == set(contenders)
+        result = await original_insert(new_doc, predecessor_id, predecessor_updates, edge)
+        commits.append(result[0].id)
+        return result
 
-        # Loser observes winner's new head id and version.
-        winner = successes[0]
-        winner_id = winner["id"]
-        # Wait for the winner's updated_at to be stable (background
-        # pipeline). Then compare the stale envelope's
-        # current_head_version against the head's *post-supersede*
-        # version (the predecessor's archive-time updated_at, which is
-        # what the loser's fresh re-read inside the lock observed).
-        head_post = _parse(await get_document("test_vault", head_id))
-        assert head_post["lifecycle_status"] == "archived"
-        assert stale[0]["detail"]["predecessor_id"] == head_id
-        assert stale[0]["detail"]["expected_head_version"] == v_baseline
-        # The current_head_version is the predecessor's updated_at at
-        # the moment the loser's check ran — which equals the
-        # archive-time updated_at the winner's transition wrote.
-        assert stale[0]["detail"]["current_head_version"] == head_post["updated_at"], (
-            f"iteration {i}: stale envelope's current_head_version must equal "
-            f"the predecessor's post-supersede updated_at; got "
-            f"{stale[0]['detail']['current_head_version']!r} vs "
-            f"head_post {head_post['updated_at']!r}"
-        )
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "get_document", read)
+        patch.setattr(store, "insert_with_supersede_atomic", insert)
+        parsed = await _run_supersede_pair(head, sources, contenders)
 
-        # Chain linearity: exactly one inbound supersedes edge into head_id.
-        inbound = _parse(
-            await traverse(
-                "test_vault",
-                start_id=head_id,
-                edge_type="supersedes",
-                direction="inbound",
-                depth=1,
-            )
-        )
-        edges = [n for n in inbound["nodes"] if n.get("edge")]
-        assert len(edges) == 1, (
-            f"iteration {i}: chain forked — expected one inbound edge, got {len(edges)}: {edges!r}"
-        )
-        assert edges[0]["edge"]["source_id"] == winner_id
+    assert len(initial_reads) == 2
+    assert all(state == "active" for state, _ in initial_reads.values())
+    assert len({version for _, version in initial_reads.values()}) == 1
+    successes = [p for p in parsed if "error" not in p]
+    stale = [p for p in parsed if p.get("error") == "stale_chain_head"]
+    assert len(successes) == 1, parsed
+    assert len(stale) == 1, parsed
+    winner_id = successes[0]["id"]
+    assert commits == [winner_id]
+    head_post = await _assert_single_successor(services, head["id"], winner_id)
+    assert head_post["updated_at"] != head["updated_at"]
+    assert stale[0]["detail"] == {
+        "predecessor_id": head["id"],
+        "expected_head_version": head["updated_at"],
+        "current_head_id": head["id"],
+        "current_head_version": head_post["updated_at"],
+    }
+
+
+async def test_parallel_late_predecessor_read_rejects_not_active(
+    vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A contender whose initial read follows the commit fails lifecycle validation."""
+    services, test_dir = vault_services
+    head = await _seed_chain_head(services, test_dir)
+    source = await _write_source(test_dir, "a", "# A\n\nWinning revision.")
+    # The late request fails before source processing; a separate file is inert.
+    sources = {"a": source, "b": source}
+    contenders = {}
+    first_at_insert = asyncio.Event()
+    late_waiting = asyncio.Event()
+    committed = asyncio.Event()
+    late_reads = []
+    ordering = []
+    commits = []
+    store = services.graph_store
+    original_read = store.get_document
+    original_insert = store.insert_with_supersede_atomic
+
+    async def read(doc_id: str) -> Document | None:
+        is_late = doc_id == head["id"] and contenders.get(asyncio.current_task()) == "b"
+        if is_late and not late_reads:
+            ordering.append("late_waiting")
+            late_waiting.set()
+            await committed.wait()
+        document = await original_read(doc_id)
+        if is_late:
+            ordering.append("late_read")
+            late_reads.append(document.lifecycle_status)
+        return document
+
+    async def insert(
+        new_doc: Document, predecessor_id: str, predecessor_updates: dict, edge: Edge
+    ) -> tuple[Document, Document]:
+        first_at_insert.set()
+        await late_waiting.wait()
+        assert late_waiting.is_set(), "commit started before the late contender arrived"
+        result = await original_insert(new_doc, predecessor_id, predecessor_updates, edge)
+        commits.append(result[0].id)
+        ordering.append("committed")
+        committed.set()
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "get_document", read)
+        patch.setattr(store, "insert_with_supersede_atomic", insert)
+        winner, late = await _run_supersede_pair(head, sources, contenders, first_at_insert)
+
+    assert "error" not in winner, winner
+    assert late["error"] == "supersede_target_not_active", late
+    assert late["detail"]["predecessor_id"] == head["id"]
+    assert late["detail"]["current_state"] == "archived"
+    # A second read would mean the late caller reached the locked version check.
+    assert late_reads == ["archived"]
+    assert ordering == ["late_waiting", "committed", "late_read"]
+    assert commits == [winner["id"]]
+    await _assert_single_successor(services, head["id"], winner["id"])
 
 
 # ---------------------------------------------------------------------------
