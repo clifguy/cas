@@ -1152,10 +1152,13 @@ class GraphStore(ABC):
         ``exclude_lifecycle_statuses`` drops documents whose
         ``lifecycle_status`` appears in the sequence. The empty default
         counts every document at the status, so a caller that wants the
-        whole population says nothing; a caller reporting outstanding
-        work passes the vault's terminal states, since a document in one
-        of those holds its pipeline status forever and is not work
-        anyone will do.
+        whole population says nothing; a caller reporting an operator
+        worklist passes the vault's terminal states, since remediating a
+        document in one of those is not work an operator needs to take
+        up. That is a claim about operator attention and not about what
+        the system will touch: the automatic re-abstraction paths select
+        on pipeline status alone and reach such a document regardless of
+        its lifecycle.
         """
 
     @abstractmethod

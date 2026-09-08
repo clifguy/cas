@@ -287,21 +287,38 @@ async def custom_terminal_state_app(tmp_path):
     entries), so a third vault there would fail a test that has nothing
     to do with lifecycle.
 
-    The state's name is a per-run nonce, and that is the point rather
-    than hygiene. A service that skipped the config entirely and carried
-    a literal tuple of the state names this suite happens to use would
-    satisfy a fixed name, so the reader could not tell a derivation from
-    a lucky list. No literal can match a name generated at run time, so
-    the only way to exclude a document in this state is to have read the
-    vault's declared states.
+    The vault declares **two** custom states, and the pair is what makes
+    the fixture discriminating. Both names are per-run nonces and only
+    one is terminal.
+
+    The nonce closes the exclusion-side rival: a service that skipped
+    the config and carried a literal tuple of the state names this suite
+    happens to use would satisfy a fixed name, and no literal can match
+    a name generated at run time.
+
+    The non-terminal twin closes the other side, which a nonce alone
+    leaves open. Every state in the base lifecycle is either terminal or
+    one of `active`/`completed`, so a service excluding "every declared
+    state that is not active or completed" -- reading the state list but
+    never `is_terminal` -- agrees with the correct implementation on all
+    of them. A declared, non-terminal, non-base state is the only shape
+    the two disagree on.
     """
     terminal_state = f"frozen_{uuid.uuid4().hex[:8]}"
+    open_state = f"pending_{uuid.uuid4().hex[:8]}"
     config_dict = _make_vault_config_dict(tmp_path, "filing_vault", "Filing Vault")
-    config_dict["lifecycle"]["states"].append(
-        {"value": terminal_state, "label": "Frozen", "is_terminal": True}
+    config_dict["lifecycle"]["states"].extend(
+        [
+            {"value": terminal_state, "label": "Frozen", "is_terminal": True},
+            {"value": open_state, "label": "Pending", "is_terminal": False},
+        ]
     )
-    config_dict["lifecycle"]["transitions"].append(
-        {"from_state": "active", "action": "freeze", "to_state": terminal_state}
+    config_dict["lifecycle"]["transitions"].extend(
+        [
+            {"from_state": "active", "action": "freeze", "to_state": terminal_state},
+            {"from_state": "active", "action": "hold", "to_state": open_state},
+            {"from_state": open_state, "action": "activate", "to_state": "active"},
+        ]
     )
     config = VaultConfig.model_validate(config_dict)
     app = create_app(configs=[config])
@@ -320,9 +337,10 @@ async def custom_terminal_state_app(tmp_path):
             )
         )
         app.state.vault_registry[config.vault.id] = services
-        # The test reads the nonce back rather than restating it, so the
-        # name exists in exactly one place.
+        # The tests read the nonces back rather than restating them, so
+        # each name exists in exactly one place.
         app.state.terminal_state_under_test = terminal_state
+        app.state.open_state_under_test = open_state
         yield app
 
 
@@ -491,14 +509,16 @@ class TestVaultStatistics:
     async def test_health_indicators_exclude_terminal_lifecycle_docs(
         self, multi_vault_app, multi_client
     ):
-        """The doc-scoped health indicators report actionable work only.
+        """The doc-scoped health indicators are an operator worklist.
 
-        A document in a terminal lifecycle state is not work anyone will
-        do: it holds whatever pipeline or metadata state it was left in
-        forever. Counting it reports unresolved work that has in fact
-        been resolved -- the surfacing case being a scanned PDF stranded
-        at `abstraction_skipped` long after a text-bearing replacement
-        superseded it into `archived` and got a real abstract.
+        Remediating a document in a terminal lifecycle state is not work
+        an operator needs to take up, so counting it reports outstanding
+        work that has in fact been resolved -- the surfacing case being
+        a scanned PDF stranded at `abstraction_skipped` long after a
+        text-bearing replacement superseded it into `archived` and got a
+        real abstract. The exclusion says nothing about what the system
+        will touch: the automatic re-abstraction paths are lifecycle-
+        blind and reach such a document anyway.
 
         All four doc-scoped counters are covered, each with its own
         active/terminal pair, so a filter applied to some and not others
@@ -668,22 +688,34 @@ class TestVaultStatistics:
         footing as one retired by a supersession -- without SAGE having
         been told that state exists.
 
-        Anti-coincidental-pass: this is the only test in this file whose
-        terminal document is not `archived`, so an implementation
-        carrying a hardcoded `("archived",)` satisfies every sibling
-        test here and fails this one. The state's name is a per-run
-        nonce (see the fixture), which closes the rival that a fixed
-        second name would leave open: a service that never calls
-        `terminal_states()` and instead carries a literal tuple of the
-        names this suite uses would pass a fixed name and cannot pass a
-        generated one. Excluding this document requires having read the
-        vault's declared states.
+        Anti-coincidental-pass, in three parts, because the obvious two
+        leave a rival standing.
+
+        This is the only test in this file whose terminal document is
+        not `archived`, so an implementation carrying a hardcoded
+        `("archived",)` satisfies every sibling test and fails this one.
+        The state's name is a per-run nonce, so a literal naming both
+        states this suite uses fails too.
+
+        Neither of those reaches a service that reads the declared state
+        list but never consults `is_terminal` -- excluding, say, every
+        state that is not `active` or `completed`. In the base lifecycle
+        that rival is indistinguishable from the correct one, because
+        every base state is either terminal or one of those two. The
+        held document is what separates them: its state is declared,
+        non-terminal, and not a base state, so it must be *counted*, and
+        the rival drops it.
         """
         services = custom_terminal_state_app.state.vault_registry["filing_vault"]
         gs = services.graph_store
         terminal_state = custom_terminal_state_app.state.terminal_state_under_test
+        open_state = custom_terminal_state_app.state.open_state_under_test
 
-        for doc_id, lifecycle in [("still-open", "active"), ("frozen", terminal_state)]:
+        for doc_id, lifecycle in [
+            ("still-open", "active"),
+            ("held", open_state),
+            ("frozen", terminal_state),
+        ]:
             await gs.insert_document(
                 _make_document(
                     doc_id,
@@ -697,8 +729,10 @@ class TestVaultStatistics:
         assert resp.status_code == 200
         body = resp.json()
 
-        assert body["health"]["deferred_abstract_count"] == 1
+        # The active and held documents count; only the frozen one is excluded.
+        assert body["health"]["deferred_abstract_count"] == 2
         assert body["by_lifecycle_status"][terminal_state] == 1
+        assert body["by_lifecycle_status"][open_state] == 1
 
 
 # ---------------------------------------------------------------------------
