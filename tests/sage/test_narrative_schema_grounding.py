@@ -614,7 +614,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "staging_edges": "graph-store table holding tier-2 edges awaiting review",
     },
     ("sage_core", "create_edges"): {
-        "SAGEError": "base exception serialized into per-item code, message, and detail fields",
         "deliverable_id": "example tier-3 metadata key in a worked example",
         "template_id": "example tier-3 metadata key in a worked example",
     },
@@ -756,7 +755,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "CTEs": "prose: SQL common table expressions used by graph traversal",
     },
     ("sage_core", "update_lifecycles"): {
-        "SAGEError": "base exception serialized into per-item code, message, and detail fields",
         "cas": "example vault id in a worked example",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
@@ -767,7 +765,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "valid_actions": ERROR_DETAIL_KEY,
     },
     ("sage_core", "update_metadata"): {
-        "SAGEError": "base exception serialized into per-item code, message, and detail fields",
         "other_key": "placeholder in a worked example, not a field name",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "

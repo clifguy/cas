@@ -327,6 +327,7 @@ class UtilitiesService:
         # file that appeared in the window. The earlier check stays as the fast
         # refusal, so a caller naming an occupied path still pays no read.
         data = projection_text.encode("utf-8")
+        # Open outside cleanup: a file this delivery did not create is not ours to remove.
         try:
             out = open(write_to_path, "xb")
         except FileExistsError:
@@ -337,6 +338,7 @@ class UtilitiesService:
             with out:
                 out.write(data)
         except BaseException:
+            # Remove this delivery's partial target so a retry can reuse the path.
             Path(write_to_path).unlink(missing_ok=True)
             raise
 
