@@ -86,7 +86,10 @@ def run_migration(
         raise ValueError("stale migration checkpoint")
     before_target = target.snapshot()
     if checkpoint is None and (
-        before_target["tables"] or before_target["sequences"] or before_target.get("routines")
+        before_target["tables"]
+        or before_target["sequences"]
+        or before_target.get("routines")
+        or before_target.get("large_objects")
     ):
         raise ValueError("target contains existing workload objects")
     source.fence()
@@ -214,7 +217,7 @@ class PostgresStore:
             SELECT e.extname, e.extversion, n.nspname, p.proname,
                 pg_get_function_identity_arguments(p.oid),
                 format('%I(%s)', p.proname, pg_get_function_arguments(p.oid)),
-                pg_get_userbyid(p.proowner),
+                pg_get_userbyid(p.proowner), p.prokind,
                 coalesce((SELECT jsonb_agg(jsonb_build_array(
                     pg_get_userbyid(a.grantor),
                     CASE WHEN a.grantee=0 THEN NULL ELSE pg_get_userbyid(a.grantee) END,
@@ -226,12 +229,24 @@ class PostgresStore:
             JOIN pg_depend d ON d.classid='pg_proc'::regclass AND d.objid=p.oid
                 AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
             JOIN pg_extension e ON e.oid=d.refobjid
-            WHERE p.prokind='f' ORDER BY e.extname,n.nspname,p.proname,5
+            ORDER BY e.extname,n.nspname,p.proname,5
         """).fetchall()
-        keys = ("extension", "version", "schema", "name", "arguments", "toc_name", "owner", "acl")
+        keys = (
+            "extension",
+            "version",
+            "schema",
+            "name",
+            "arguments",
+            "toc_name",
+            "owner",
+            "kind",
+            "acl",
+        )
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
     def snapshot(self, *, permissions_only: bool = False) -> dict[str, Any]:
+        if self.conn.execute("SELECT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper)").fetchone()[0]:
+            raise ValueError("foreign-data wrappers and servers are unsupported workload objects")
         self.conn.execute("SET timezone = 'UTC'")
         self.conn.execute("SET search_path = pg_catalog, public")
         schemas = self.conn.execute(
@@ -261,10 +276,13 @@ class PostgresStore:
                 WHERE {predicate} AND c.relkind IN ('r','p','v','m','f')
                 AND column_attr.attnum>0 AND NOT column_attr.attisdropped
                 AND column_attr.attacl IS NOT NULL
-                AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
                 ORDER BY 1,2,3""").format(
-                predicate=sql.SQL(_SCHEMA_PREDICATE),
+                predicate=sql.SQL(
+                    "({} OR EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                    "AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass "
+                    "AND d.deptype='e'))"
+                ).format(sql.SQL(_SCHEMA_PREDICATE)),
                 acl=canonical_relation_acl("column_attr.attacl", "c.relowner", "FALSE", self.major),
             )
         ).fetchall()
@@ -272,9 +290,14 @@ class PostgresStore:
             sql.SQL("""SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity
                 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE {predicate} AND c.relkind IN ('r','p')
-                AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-                ORDER BY 1,2""").format(predicate=sql.SQL(_SCHEMA_PREDICATE))
+                ORDER BY 1,2""").format(
+                predicate=sql.SQL(
+                    "({} OR EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                    "AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass "
+                    "AND d.deptype='e'))"
+                ).format(sql.SQL(_SCHEMA_PREDICATE))
+            )
         ).fetchall()
         policies = self.conn.execute(
             sql.SQL("""SELECT n.nspname, c.relname, policy.polname,
@@ -287,24 +310,58 @@ class PostgresStore:
                 FROM pg_policy policy JOIN pg_class c ON c.oid=policy.polrelid
                 JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE {predicate} AND c.relkind IN ('r','p')
-                AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
-                ORDER BY 1,2,3""").format(predicate=sql.SQL(_SCHEMA_PREDICATE))
+                ORDER BY 1,2,3""").format(
+                predicate=sql.SQL(
+                    "({} OR EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                    "AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass "
+                    "AND d.deptype='e'))"
+                ).format(sql.SQL(_SCHEMA_PREDICATE))
+            )
         ).fetchall()
         type_grants = self.conn.execute(
             sql.SQL("""SELECT n.nspname, typ.typname, typ.typtype,
-                pg_get_userbyid(typ.typowner), {acl}
+                pg_get_userbyid(typ.typowner), coalesce(ext.extname, rel_ext.extname),
+                coalesce(ext.extversion, rel_ext.extversion), {acl}
                 FROM pg_type typ JOIN pg_namespace n ON n.oid=typ.typnamespace
-                WHERE {predicate}
-                AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid='pg_class'::regclass
-                    AND d.objid=typ.typrelid AND d.deptype='e')
+                LEFT JOIN pg_depend dep ON dep.classid='pg_type'::regclass
+                    AND dep.objid=typ.oid AND dep.objsubid=0
+                    AND dep.refclassid='pg_extension'::regclass AND dep.deptype='e'
+                LEFT JOIN pg_extension ext ON ext.oid=dep.refobjid
+                LEFT JOIN pg_depend rel_dep ON rel_dep.classid='pg_class'::regclass
+                    AND rel_dep.objid=typ.typrelid AND rel_dep.objsubid=0
+                    AND rel_dep.refclassid='pg_extension'::regclass AND rel_dep.deptype='e'
+                LEFT JOIN pg_extension rel_ext ON rel_ext.oid=rel_dep.refobjid
+                WHERE ({predicate} OR ext.oid IS NOT NULL OR rel_ext.oid IS NOT NULL)
                 AND NOT EXISTS (SELECT 1 FROM pg_type element WHERE element.typarray=typ.oid)
-                AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid='pg_type'::regclass AND d.objid=typ.oid AND d.deptype='e')
                 ORDER BY 1,2""").format(
                 predicate=sql.SQL(_SCHEMA_PREDICATE),
                 acl=canonical_relation_acl("typ.typacl", "typ.typowner", "FALSE", self.major),
+            )
+        ).fetchall()
+        extension_relations = self.conn.execute(
+            sql.SQL("""SELECT ext.extname, ext.extversion, n.nspname, c.relname,
+                c.relkind, pg_get_userbyid(c.relowner), {acl},
+                c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_depend dep ON dep.classid='pg_class'::regclass
+                    AND dep.objid=c.oid AND dep.objsubid=0
+                    AND dep.refclassid='pg_extension'::regclass AND dep.deptype='e'
+                JOIN pg_extension ext ON ext.oid=dep.refobjid
+                WHERE c.relkind IN ('r','p','v','m','f','S') ORDER BY 1,3,4""").format(
+                acl=canonical_relation_acl("c.relacl", "c.relowner", "c.relkind='r'", self.major)
+            )
+        ).fetchall()
+        language_grants = self.conn.execute(
+            sql.SQL("""SELECT lang.lanname, lang.lanispl, lang.lanpltrusted,
+                pg_get_userbyid(lang.lanowner), {acl} FROM pg_language lang ORDER BY 1""").format(
+                acl=canonical_relation_acl("lang.lanacl", "lang.lanowner", "FALSE", self.major)
+            )
+        ).fetchall()
+        large_object_grants = self.conn.execute(
+            sql.SQL("""SELECT obj.oid, pg_get_userbyid(obj.lomowner), {acl}
+                FROM pg_largeobject_metadata obj ORDER BY obj.oid""").format(
+                acl=canonical_relation_acl("obj.lomacl", "obj.lomowner", "FALSE", self.major)
             )
         ).fetchall()
         extensions = self.extensions()
@@ -345,11 +402,27 @@ class PostgresStore:
             "row_security": row_security,
             "policies": policies,
             "type_grants": type_grants,
+            "extension_relations": extension_relations,
+            "language_grants": language_grants,
+            "large_object_grants": large_object_grants,
+            "large_objects": {},
             "routines": routines,
             "extension_privileges": self.extension_privileges(),
         }
         if permissions_only:
             return {**result, "relations": relations}
+        for oid, _, _ in large_object_grants:
+            digest = hashlib.sha256()
+            size = 0
+            with self.conn.transaction():
+                descriptor = self.conn.execute("SELECT lo_open(%s, 262144)", (oid,)).fetchone()[0]
+                while chunk := self.conn.execute(
+                    "SELECT loread(%s, 1048576)", (descriptor,)
+                ).fetchone()[0]:
+                    digest.update(chunk)
+                    size += len(chunk)
+                self.conn.execute("SELECT lo_close(%s)", (descriptor,))
+            result["large_objects"][str(oid)] = {"bytes": size, "hash": digest.hexdigest()}
         for namespace, name, kind, owner, acl in relations:
             qualified = sql.Identifier(namespace, name)
             key = f"{namespace}.{name}"
@@ -607,7 +680,11 @@ class PostgresStore:
             ("azuresu", "azure_pg_admin", "EXECUTE", True),
         }
         for function in manifest.permissions["extension_privileges"]:
-            if function["extension"] != "pgstattuple" or function["owner"] != "azuresu":
+            if (
+                function["extension"] != "pgstattuple"
+                or function["owner"] != "azuresu"
+                or function["kind"] != "f"
+            ):
                 continue
             grants = {tuple(grant) for grant in function["acl"]}
             provider = {grant for grant in grants if grant[0] == "azuresu"}
@@ -805,6 +882,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_snapshot["tables"]
                 or target_snapshot["sequences"]
                 or target_snapshot.get("routines")
+                or target_snapshot.get("large_objects")
             ):
                 raise ValueError("target contains existing workload objects")
             runner.run(bootstrap_target({**os.environ, "PG_FQDN": os.environ["PG_TARGET_FQDN"]}))

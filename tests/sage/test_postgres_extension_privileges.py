@@ -848,3 +848,252 @@ def test_row_type_permission_drift_prevents_verification(
     assert target.conn.execute(
         "SELECT has_type_privilege(%s,'ordinary.data','USAGE')", (provider.apps[0],)
     ).fetchone() == (False,)
+
+
+@pytest.fixture
+def permission_object(
+    provider: ProviderFixture, surface: str
+) -> tuple[ProviderFixture, str, sql.Composable, str, sql.Composable]:
+    source, target = provider.stores
+    for app in provider.apps:
+        source.conn.execute(
+            sql.SQL("GRANT CREATE, USAGE ON SCHEMA ordinary TO {}").format(sql.Identifier(app))
+        )
+    if surface == "large_object":
+        oid = source.conn.execute("SELECT lo_from_bytea(0,'private-data'::bytea)").fetchone()[0]
+        source.conn.execute("ALTER TABLE ordinary.data ADD COLUMN blob_oid oid")
+        source.conn.execute("UPDATE ordinary.data SET blob_oid=%s", (oid,))
+        kind, identity, privilege = "LARGE OBJECT", sql.Literal(oid), "SELECT"
+        operation = sql.SQL("SELECT lo_get({})").format(sql.Literal(oid))
+    elif surface == "language":
+        for index in (0, 1):
+            with provider.connect_admin(index) as conn:
+                conn.execute(
+                    sql.SQL("ALTER LANGUAGE plpgsql OWNER TO {}").format(
+                        sql.Identifier(provider.administrator)
+                    )
+                )
+        kind, identity, privilege = "LANGUAGE", sql.Identifier("plpgsql"), "USAGE"
+        operation = sql.SQL(
+            "CREATE FUNCTION ordinary.app_function() RETURNS int "
+            "LANGUAGE plpgsql AS $$BEGIN RETURN 1; END$$"
+        )
+    elif surface == "vector_type":
+        for index in (0, 1):
+            with provider.connect_admin(index) as conn:
+                conn.execute(
+                    sql.SQL("ALTER TYPE public.vector OWNER TO {}").format(
+                        sql.Identifier(provider.administrator)
+                    )
+                )
+        kind, identity, privilege = "TYPE", sql.Identifier("public", "vector"), "USAGE"
+        operation = sql.SQL("CREATE TABLE ordinary.app_vector (embedding public.vector(3))")
+    elif surface == "extension_aggregate":
+        kind, identity, privilege = "FUNCTION", sql.SQL("public.avg(public.vector)"), "EXECUTE"
+        operation = sql.SQL("SELECT public.avg(v) FROM (VALUES ('[1,2,3]'::public.vector)) x(v)")
+    else:
+        for store in (source, target):
+            store.conn.execute("CREATE TABLE public.extension_data (value text)")
+            store.conn.execute("INSERT INTO public.extension_data VALUES ('installed')")
+            store.conn.execute("ALTER EXTENSION pgstattuple ADD TABLE public.extension_data")
+        kind, identity, privilege = "TABLE", sql.Identifier("public", "extension_data"), "SELECT"
+        operation = sql.SQL("SELECT value FROM public.extension_data")
+    source.conn.execute(sql.SQL("REVOKE ALL ON {} {} FROM PUBLIC").format(sql.SQL(kind), identity))
+    source.conn.execute(
+        sql.SQL("GRANT {} ON {} {} TO {} WITH GRANT OPTION").format(
+            sql.SQL(privilege), sql.SQL(kind), identity, sql.Identifier(provider.apps[0])
+        )
+    )
+    return provider, kind, identity, privilege, operation
+
+
+_PERMISSION_SURFACES = [
+    ("large_object", "full"),
+    ("language", "full"),
+    ("vector_type", "rehearsal"),
+    ("extension_aggregate", "rehearsal"),
+    ("extension_relation", "full"),
+]
+
+
+@pytest.mark.parametrize("surface,provider", _PERMISSION_SURFACES, indirect=["provider"])
+def test_additional_permissions_preserve_real_application_access(
+    permission_object: tuple[ProviderFixture, str, sql.Composable, str, sql.Composable],
+    tmp_path: Path,
+) -> None:
+    provider, _, _, _, operation = permission_object
+    source, target = provider.stores
+    run_migration(source, target, tmp_path / "copy.dump", "permissions", 16, 17)
+    for index in (0, 1):
+        with provider.connect_admin(index) as conn:
+            for app, allowed in zip(provider.apps, (True, False), strict=True):
+                if allowed:
+                    with conn.transaction(force_rollback=True):
+                        conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(app)))
+                        conn.execute(operation)
+                else:
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        with conn.transaction(force_rollback=True):
+                            conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(app)))
+                            conn.execute(operation)
+    assert source.snapshot() == target.snapshot()
+
+
+@pytest.mark.parametrize("surface,provider", _PERMISSION_SURFACES, indirect=["provider"])
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+@pytest.mark.parametrize("change", ["recipient", "grant_option"])
+def test_additional_permission_drift_prevents_verification(
+    permission_object: tuple[ProviderFixture, str, sql.Composable, str, sql.Composable],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    change: str,
+) -> None:
+    provider, kind, identity, privilege, _ = permission_object
+    source, target = provider.stores
+    command = (
+        sql.SQL("GRANT {} ON {} {} TO {}").format(
+            sql.SQL(privilege), sql.SQL(kind), identity, sql.Identifier(provider.apps[1])
+        )
+        if change == "recipient"
+        else sql.SQL("REVOKE GRANT OPTION FOR {} ON {} {} FROM {}").format(
+            sql.SQL(privilege), sql.SQL(kind), identity, sql.Identifier(provider.apps[0])
+        )
+    )
+    checkpoint = None
+    changed = []
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "permissions", 16, 17)
+        target.conn.execute(command)
+        changed.append(True)
+    else:
+        original = target._command
+
+        def restore_with_permission_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                target.conn.execute(command)
+                changed.append(True)
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_permission_change)
+    with pytest.raises(
+        ValueError, match="permission reconciliation failed|resume reconciliation failed"
+    ):
+        run_migration(source, target, tmp_path / "attempt.dump", "permissions", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint
+
+
+def test_foreign_wrapper_is_rejected_as_unsupported_before_restore(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    with provider.connect_admin(0) as conn:
+        conn.execute("CREATE FOREIGN DATA WRAPPER workload_fdw NO HANDLER NO VALIDATOR")
+    before = target.snapshot()
+    with pytest.raises(ValueError, match="foreign-data wrappers"):
+        run_migration(source, target, tmp_path / "copy.dump", "foreign", 16, 17)
+    assert target.snapshot() == before
+    assert target.read_checkpoint() is None
+
+
+@pytest.mark.parametrize("surface,provider", [("large_object", "full")], indirect=["provider"])
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+def test_large_object_content_drift_prevents_verification(
+    permission_object: tuple[ProviderFixture, str, sql.Composable, str, sql.Composable],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    provider, _, _, _, _ = permission_object
+    source, target = provider.stores
+    oid = source.conn.execute("SELECT blob_oid FROM ordinary.data").fetchone()[0]
+    checkpoint = None
+    changed = []
+
+    def change_content() -> None:
+        target.conn.execute("SELECT lo_put(%s,0,'changed-data'::bytea)", (oid,))
+        changed.append(True)
+
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "blob", 16, 17)
+        change_content()
+    else:
+        original = target._command
+
+        def restore_with_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                change_content()
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_change)
+    with pytest.raises(ValueError, match="reconciliation failed"):
+        run_migration(source, target, tmp_path / "attempt.dump", "blob", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint
+
+
+def test_existing_large_object_rejects_target_before_fencing(
+    provider: ProviderFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, target = provider.stores
+    target.conn.execute("SELECT lo_from_bytea(0,'existing'::bytea)")
+    before = target.snapshot()
+    fenced = []
+    monkeypatch.setattr(source, "fence", lambda: fenced.append(True))
+    with pytest.raises(ValueError, match="target contains existing workload objects"):
+        run_migration(source, target, tmp_path / "copy.dump", "blob", 16, 17)
+    assert fenced == []
+    assert target.snapshot() == before
+    assert target.read_checkpoint() is None
+
+
+@pytest.mark.parametrize("surface,provider", _PERMISSION_SURFACES[:3], indirect=["provider"])
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+def test_additional_object_owner_drift_prevents_verification(
+    permission_object: tuple[ProviderFixture, str, sql.Composable, str, sql.Composable],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    provider, kind, identity, _, _ = permission_object
+    source, target = provider.stores
+    checkpoint = None
+    changed = []
+
+    def change_owner() -> None:
+        with provider.connect_admin(1) as conn:
+            conn.execute(
+                sql.SQL("ALTER {} {} OWNER TO {}").format(
+                    sql.SQL(kind), identity, sql.Identifier(provider.apps[1])
+                )
+            )
+            if kind == "LARGE OBJECT":
+                conn.execute(
+                    sql.SQL("GRANT SELECT ON LARGE OBJECT {} TO {}").format(
+                        identity, sql.Identifier(provider.administrator)
+                    )
+                )
+        changed.append(True)
+
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "owner", 16, 17)
+        change_owner()
+    else:
+        original = target._command
+
+        def restore_with_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                change_owner()
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_change)
+    with pytest.raises(ValueError, match="reconciliation failed"):
+        run_migration(source, target, tmp_path / "attempt.dump", "owner", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint

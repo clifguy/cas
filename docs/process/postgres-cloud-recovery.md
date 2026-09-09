@@ -82,18 +82,40 @@ Never describe a preparation PR as a completed production migration.
 Both logical restore paths capture permission metadata in the same exported,
 repeatable-read snapshot consumed by `pg_dump`. An in-memory manifest binds that
 metadata to the archive SHA-256. Restore refuses a different archive and compares
-schema, relation, column, routine, default-grant and extension-function permissions before
-reporting success. Extension-function comparisons include the extension identity
-and version, exact signature, owner, grantor, recipient, privilege and grant option.
+schema, relation, column, routine, type, language, large-object and default-grant permissions before
+reporting success. Extension routine comparisons include the extension identity
+and version, routine kind, exact signature, owner, grantor, recipient, privilege and grant option.
 They also participate in migration reconciliation and resume fingerprints. Column
 grants retain the schema, relation and column identity, grantor, recipient, privilege
 and grant option in both permission snapshots and full reconciliation. Row-security
 comparison includes enabled/forced flags and policy names, roles, command,
-permissive/restrictive mode, USING and WITH CHECK expressions. Ordinary
+permissive/restrictive mode, USING and WITH CHECK expressions, including extension relations. Ordinary and extension-defined
 types (including domains, composite and table-row types) retain their identity, owner
 and ACLs. Automatically derived array types have no independent grant operation and
 are represented by their element type. Explicit table-row-type ACLs omitted by native
 dump/restore are detected as mismatches; they cannot produce a verified checkpoint.
+
+Language comparisons include name, owner, trusted/procedural flags and canonical ACLs.
+Large objects retain their OID, owner and canonical ACLs; full reconciliation also
+hashes their content in bounded chunks. A target containing a large object is not
+pristine. Extension relations retain their extension identity/version, owner, ACLs,
+column grants and row-security state. Table-row types derive extension identity
+through their table when the server does not store a direct type membership.
+
+The ACL catalog inventory has these explicit boundaries:
+
+| Catalog | Handling |
+| --- | --- |
+| `pg_attribute`, `pg_class`, `pg_proc`, `pg_type` | Compare workload and extension object grants and owners within the supported relation/routine kinds; unsupported ordinary kinds fail. Derived arrays use their element type. |
+| `pg_namespace`, `pg_default_acl` | Compare workload schemas and scoped/global default grants. |
+| `pg_language`, `pg_largeobject_metadata` | Compare language and large-object ownership and grants. |
+| `pg_foreign_data_wrapper`, `pg_foreign_server` | A foreign-data wrapper causes explicit rejection before restore; servers require a wrapper. This non-superuser restore does not support these objects. |
+| `pg_database` | Database ACLs are deployment state: preparation checks the administrator's rights, the source CONNECT fence is verified, and rehearsal provisioning sets scratch-database access. The archive does not copy source database ACLs. |
+| `pg_parameter_acl`, `pg_tablespace` | Shared cluster grants are outside a per-database archive and remain deployment preflight responsibilities, alongside roles and memberships. |
+| `pg_init_privs` | Initial privilege baselines are reference metadata, not an independent effective ACL; compare the actual object's privileges. |
+
+A verified database-copy result is scoped to these checks. It does not certify
+cluster permissions, transfer database ACLs, or establish deployment readiness.
 
 Azure installs `pgstattuple` functions owned by `azuresu`, with EXECUTE grants from
 that owner to itself and `pg_stat_scan_tables`, and EXECUTE WITH GRANT OPTION to
@@ -122,7 +144,7 @@ removed on exit. Archive inspection, permission replay and verification are insi
 the measured restore stage; their scratch usage and elapsed time count toward the
 same limits as the rest of the operation.
 
-Permission reports name `catalog-acl-v1-owner-maintain`. Its only cross-version
+Permission reports name `catalog-acl-v1-owner-maintain`. Its only cross-version ACL
 normalization treats PostgreSQL 17's added MAINTAIN bit as equivalent when it is
 the unchanged table owner's non-grantable self-grant alongside all seven prior
 table privileges. The same rule applies to the owner's table default privileges.
