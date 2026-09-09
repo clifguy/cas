@@ -118,6 +118,7 @@ def test_deployment_guard(
     az.write_text("""#!/bin/sh
 [ "$CODE" = 0 ] || exit "$CODE"
 case "$*" in
+  "containerapp job list "*) exit 0 ;;
   "group exists "*) printf '%s' "$EXISTS" ;;
   "group show "*) [ "$EXISTS" = true ] || exit 1; printf '%s' "$STATE" ;;
   "deployment sub show "*) printf '%s' "$SERVING" ;;

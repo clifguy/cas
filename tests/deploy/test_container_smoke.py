@@ -271,3 +271,23 @@ def test_smk_001_boots_health_green_version_baked(image: str) -> None:
         )
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+@pytest.mark.parametrize("binary", ["pg_dump", "pg_restore"])
+def test_rehearsal_seed_client_runs_in_image(image: str, binary: str) -> None:
+    out = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_platform_args(),
+            "--entrypoint",
+            f"/usr/lib/postgresql/16/bin/{binary}",
+            image,
+            "--version",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "(PostgreSQL) 16." in out

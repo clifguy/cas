@@ -86,6 +86,8 @@ RUN groupadd --system sage \
 # System binaries for the runtime image:
 #   * pg_dump for the maintenance job's snapshot-before-destroy step. The
 #     client covers the greater of deploy/dev so it can dump either server.
+#     Client 16 seeds the isolated PG16 rehearsal clone; client 17 runs the
+#     measured migration. Retire the seed client with the one-time migration.
 #     Debian stock
 #     ships an older client, so add the PostgreSQL Global Development Group
 #     (PGDG) apt repo for the pinned client.
@@ -107,7 +109,7 @@ RUN set -eux; \
       > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      postgresql-client-17 tesseract-ocr tesseract-ocr-eng ghostscript; \
+      postgresql-client-16 postgresql-client-17 tesseract-ocr tesseract-ocr-eng ghostscript; \
     apt-get purge -y --auto-remove curl gnupg; \
     rm -rf /var/lib/apt/lists/*
 

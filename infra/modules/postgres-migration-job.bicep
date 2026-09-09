@@ -59,6 +59,7 @@ resource migrationJob 'Microsoft.App/jobs@2024-03-01' = {
           { name: 'SAGE_DB_ROLE', value: sageRole }
           { name: 'BFF_DB_ROLE', value: bffRole }
           { name: 'PG_MIGRATION_RUN_ID', value: runId }
+          { name: 'PG_MIGRATION_IMAGE', value: image }
           { name: 'PG_SOURCE_MAJOR', value: versions.postgres.deploy_major }
           { name: 'PG_TARGET_MAJOR', value: versions.postgres.dev_major }
         ]

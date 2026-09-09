@@ -484,6 +484,11 @@ class PostgresStore:
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] in ("rehearse", "cleanup-rehearsal"):
+        from sage.maintenance.postgres_rehearsal import main as rehearsal_main
+
+        return rehearsal_main(arguments)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("preflight", "migrate"), nargs="?", default="preflight")
     mode = parser.parse_args(argv).mode

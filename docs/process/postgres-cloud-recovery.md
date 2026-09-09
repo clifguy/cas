@@ -77,6 +77,93 @@ privileges, private DNS, geo-backup availability, or application health. Those
 remain live gates during preparation, migration, and the serving preflight.
 Never describe a preparation PR as a completed production migration.
 
+## Full-size rehearsal before downtime
+
+After `prepare` succeeds, dispatch `postgres-migration` on the approved `main`
+revision with action `rehearse`, the same environment and generation (`cor-prod`,
+`pg17` for this transition). Leave `rehearsal_run_id` empty: the workflow selects
+`r<GitHub run id>`. Record that identity for inspection and cleanup. The serving
+preparation image must include the rehearsal runtime and both client majors;
+redeploy that image with `POSTGRES_GENERATION` still empty, then rerun preparation.
+
+The job reads a logical snapshot of the serving database using the PostgreSQL 16
+seed client, restores it into an isolated PostgreSQL 16 database, then runs the
+actual migration engine with the PostgreSQL 17 client against an isolated
+PostgreSQL 17 destination. The seed client is separate because a PG17-produced
+archive contains settings PG16 cannot restore. The measured migration still uses
+the same client, job image, private network, 1 CPU, 2 GiB memory and 7,200-second
+replica timeout as production migration. All dump/restore commands retain their
+3,000-second limit. These one-time client/version bindings must be retired with
+the eventual migration-baseline cleanup, not before cutover.
+
+Database names are `cas_rehearsal_<generation>_r<run id>_source` and
+`cas_rehearsal_<generation>_r<run id>_target` (generation hyphens become underscores),
+on the incumbent and replacement respectively. They are created with connections
+disabled, marked with the run's ownership/serving identities, and denied PUBLIC
+access before connections are enabled. No new global role memberships are granted.
+The administrator must already have database creation and restored-owner privileges;
+missing privileges remain a live prerequisite. The serving database and final
+migration destination receive no rehearsal tables or checkpoints, no CONNECT
+revocation, and no session termination. Scratch databases add storage and load to
+both servers: production stays online, but this is not a zero-impact read.
+
+The seed is representative of logical contents at seed time. It does not account
+for later production writes, physical bloat, or changing contention; source database
+and clone sizes are both reported. Exact reconciliation is between the frozen
+rehearsal source and its target, not between a past snapshot and changing production.
+Repeat the rehearsal if data scale, extensions, image or resources change materially
+before downtime. Preparation and these measurements do not establish application
+acceptance after cutover.
+
+The workflow uploads `postgres-rehearsal-<GitHub run id>` containing an execution
+receipt and, when available, `rehearsal-report.json`, retained for 90 days. Copy the
+report to the approved long-term operational evidence location before expiry. The
+runtime emits the sanitized `CAS_REHEARSAL_REPORT` JSON record into Log Analytics;
+the collector selects the exact job, execution replica prefix and rehearsal id,
+waiting up to five minutes for ingestion. Missing, conflicting or failed reports
+fail the workflow. A receipt alone is not a passing rehearsal. Handled failures retain collected
+measurements, identities and timings with a safe `stage` and `reason` code; fields
+for work not reached are `null`. Partial archive sizes describe bytes written,
+not verified archives. Failure reports remain failures in the collector. The console table
+uses `ContainerJobName_s` (not the system table's `JobName_s`) and
+`ContainerGroupName_s`; the execution receipt supplies both selection values.
+
+Review `status`, the image/commit and identities, seed and archive sizes, table/row
+counts, reconciliation fingerprint, per-stage timings, total measured migration
+time and whole-job elapsed time. Scratch observations include both seeding and
+migration, sampled every 50 ms and at phase boundaries; `observed_peak_scratch_bytes`
+is a measured high-water observation, not a guarantee against shorter unseen peaks.
+The admission policy requires at least 256 MiB remaining scratch, initial free
+space at least 125% of the observed use/archive requirement, and completion inside
+the job and command limits. Missing or failed measurements never satisfy that policy.
+If the job is killed before its report, it has not passed, even if a scratch
+checkpoint exists. Resize/reconfigure deliberately and repeat when bounds are unproven.
+
+The 1-vCPU rehearsal also enforces 25% headroom against Azure's 4-GiB
+ephemeral-storage limit, even if the underlying filesystem reports more free space.
+See [Azure ephemeral storage limits](https://learn.microsoft.com/en-us/azure/container-apps/storage-mounts).
+
+Scratch databases remain after success or failure for inspection; they are not
+retained disaster-recovery backups. Dispatch action `cleanup-rehearsal` with the
+original `rehearsal_run_id` and generation. Cleanup checks both ownership markers
+and database owners before deleting either, refuses active connections, and never
+uses forced deletion or session termination. Missing already-cleaned databases
+are accepted; foreign or unmarked databases are refused for administrator inspection.
+A cancellation between database creation and its ownership mark deliberately leaves
+an ambiguous database that automatic cleanup cannot adopt. Do not copy a marker or
+edit one to force cleanup. An administrator must inspect and explicitly authorize
+removal of that specific orphan.
+
+Do not rerun `rehearse` over existing scratch databases: inspect and clean the
+original run, then dispatch with a new identity. Cancellation of GitHub does not
+stop an Azure execution. All shared workflow guards now inspect active migration-job
+executions before admitting deployment, maintenance or migration. Wait for the
+execution to stop (or explicitly stop the named Azure execution) before cleanup or
+retry; keep the same execution receipt if report collection needs to be retried.
+Rehearsal/cleanup require an empty production migration fence and never advance it.
+Confirm the serving revisions, incumbent protection, unchanged consumer coordinates
+and idle database jobs after the rehearsal and cleanup before proposing downtime.
+
 ## Offline migration
 
 Agree on a downtime window before dispatch. All normal mutating workflows share
