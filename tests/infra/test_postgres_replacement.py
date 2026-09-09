@@ -89,9 +89,9 @@ def test_version_probe_targets_selected_server(
 
 def test_migration_client_covers_both_declared_majors() -> None:
     from tests.deploy.test_sage_container_image import _runtime_stage_text
-    from tests.helpers.versions import postgres_deploy_major, postgres_dev_major
+    from tests.helpers.versions import postgres_client_major
 
-    major = str(max(int(postgres_dev_major()), int(postgres_deploy_major())))
+    major = postgres_client_major()
     assert f"postgresql-client-{major}" in _runtime_stage_text()
 
 

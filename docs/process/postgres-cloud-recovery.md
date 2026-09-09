@@ -8,6 +8,12 @@ Both servers retain their declared deletion locks.
 
 ## Preparation and verification boundary
 
+This mechanism is deliberately for the one-time 16-to-17 migration. Execute that
+migration soon after the preparation change lands, keeping its manifest versions
+fixed through cutover. It is not a reusable sequence of generation upgrades:
+`serving:<generation>` remains a protective terminal state and blocks another
+migration. Never clear that tag to attempt a second migration.
+
 The repository supports an offline logical migration from the manifest's
 `postgres.deploy_major` to `postgres.dev_major`. During preparation these remain
 16 and 17 respectively. The runtime client covers the greater major; the
@@ -32,10 +38,33 @@ It verifies target readiness, the manifest major, 35-day backup retention,
 geo-redundancy, and the deletion lock. The job then runs in its default `preflight`
 mode: it bootstraps the replacement roles/extensions and checks database CREATE,
 SET ROLE, and inherited access for the source's restored object owners. Preparation
+also compares the source's installed `vector` and `pgstattuple` versions and schemas
+with the post-bootstrap target, retaining exact parity as the final reconciliation
+contract. Missing extensions or a mismatch fail preparation. Have an authorized
+administrator align installed extension versions/schemas before the window (for
+example, an explicitly reviewed source extension update or target version selection),
+then rerun preparation; the migration tool performs no source extension update.
+
+The source fence is rehearsed inside a rolled-back transaction: revoke the same
+CONNECT grants, check inherited/residual access and session-termination privileges,
+and reject prepared transactions. It does not terminate sessions during preflight.
+The actual fence and quiescence checks still run after the apps stop because
+permissions and connections can change after preparation. Preparation
 fails if any required role or privilege is missing; the source apps and CONNECT
 privileges are untouched. It does not grant migration-admin membership automatically.
 Have an authorized database administrator establish the required scoped memberships
 and rerun preparation; record any temporary grants and their later revocation.
+The preflight report includes `capacity_estimate.database_bytes` and
+`capacity_estimate.scratch_free_bytes` from the actual job. These are observations,
+not an archive-size or duration guarantee: database size includes indexes and free
+space, while archive compression and JSON sorting have different costs. Before
+approving downtime, record a representative full-size rehearsal's archive peak
+scratch usage and total dump/hash/restore duration against the same job resources.
+Require measured scratch headroom and completion within both the job's 7,200-second
+replica timeout and each dump/restore command's 3,000-second limit. If either bound
+is unproven or exceeded, resize/reconfigure and rehearse before scheduling the window.
+A disk-full or timeout after fencing still requires the recovery procedure below.
+
 This creates billable overlapping resources;
 geo backup storage may also add cost. It does not stop applications.
 
@@ -60,7 +89,7 @@ tag or start jobs from an independent operator session.
    remains active. A cancelled GitHub run does not prove its Azure job stopped.
 2. Dispatch `postgres-migration`, action `migrate`, using the prepared generation.
    Enter that same generation in `confirm` to authorize stopping the applications.
-   The driver first reruns the permission preflight and waits for success before
+   The driver first reruns the extension and source/target permission preflight and waits for success before
    recording recovery state, setting the source fence, or stopping an application.
    A failed preflight leaves the existing serving/fence state unchanged.
 3. The driver saves active source revision names, sets `copying:<generation>`,
@@ -120,7 +149,13 @@ Only after live acceptance, use a separate cleanup change to raise
 `postgres.deploy_major`, remove the temporary PostgreSQL 16 CI job, and update the
 actual branch ruleset's required check. Neither CI-floor removal nor source-server
 retirement is part of preparation. Removing the incumbent deletion lock and
-server requires a separate explicit retirement decision.
+server requires a separate explicit retirement decision. That cleanup must adopt
+the verified generation and its exact major as the new serving baseline before a
+future `postgres.dev_major` change; a nonempty generation currently selects that
+manifest major. Repeated migration requires a separate reviewed change covering
+explicit per-generation majors, admission from the current serving state, and
+rollback to that state. The operator step is to land and validate that baseline
+adoption, not to delete the serving fence or select an empty generation manually.
 
 ## Recovery boundaries
 
@@ -157,3 +192,8 @@ silently replace the configured serving generation.
 See Microsoft's [backup and restore model](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/concepts-backup-restore)
 and [geo-disaster recovery](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/concepts-geo-disaster-recovery),
 and PostgreSQL's [logical dump compatibility](https://www.postgresql.org/docs/17/app-pgdump.html).
+
+During the overlap, maintenance snapshots produced by the newer `pg_dump` require
+its matching `pg_restore` client. Use the migration runtime's client when inspecting
+or restoring those archives; do not assume the incumbent server's older client can
+read them.

@@ -24,7 +24,7 @@ from tests.deploy._image_refs import (
     image_names,
     unpinned,
 )
-from tests.helpers.versions import postgres_client_major, postgres_deploy_major
+from tests.helpers.versions import postgres_client_major
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKERFILE = _REPO_ROOT / "Dockerfile"
@@ -46,16 +46,6 @@ def _runtime_stage_text() -> str:
     idx = text.find(marker)
     assert idx != -1, "no `AS runtime` stage in the Dockerfile"
     return text[idx:]
-
-
-def _flexible_server_major() -> str:
-    """The Postgres Flexible Server major version.
-
-    Read from the shared-component manifest, which is what the infrastructure
-    template loads for its own default -- so this reads the declaration rather
-    than re-deriving it from the template's text.
-    """
-    return postgres_deploy_major()
 
 
 def test_dockerfile_sage_exists() -> None:

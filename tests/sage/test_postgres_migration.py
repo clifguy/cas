@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -67,7 +68,9 @@ def stores() -> tuple[Store, Store]:
     return Store("source", 16, SOURCE), Store("target", 17, EMPTY)
 
 
-def test_restore_and_resume_require_matching_evidence(stores, tmp_path: Path) -> None:
+def test_restore_and_resume_require_matching_evidence(
+    stores: tuple[Store, Store], tmp_path: Path
+) -> None:
     source, target = stores
     report = run_migration(source, target, tmp_path / "copy.dump", "run-one", 16, 17)
     assert report["status"] == "verified"
@@ -79,7 +82,9 @@ def test_restore_and_resume_require_matching_evidence(stores, tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("defect", ["same", "major", "nonempty", "stale"])
-def test_migration_refuses_unsafe_target(stores, tmp_path: Path, defect: str) -> None:
+def test_migration_refuses_unsafe_target(
+    stores: tuple[Store, Store], tmp_path: Path, defect: str
+) -> None:
     source, target = stores
     if defect == "same":
         target.identity = source.identity
@@ -103,7 +108,7 @@ def test_migration_refuses_unsafe_target(stores, tmp_path: Path, defect: str) ->
     assert "dump" not in source.events
 
 
-def test_migration_requires_quiescence(stores, tmp_path: Path) -> None:
+def test_migration_requires_quiescence(stores: tuple[Store, Store], tmp_path: Path) -> None:
     source, target = stores
     source.writers = True
     with pytest.raises(ValueError, match="writers"):
@@ -113,7 +118,9 @@ def test_migration_requires_quiescence(stores, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("phase", ["dump", "restore", "corrupt"])
-def test_failed_phase_cannot_advance(stores, tmp_path: Path, phase: str) -> None:
+def test_failed_phase_cannot_advance(
+    stores: tuple[Store, Store], tmp_path: Path, phase: str
+) -> None:
     source, target = stores
     (source if phase == "dump" else target).fail = phase
     with pytest.raises(
@@ -128,7 +135,9 @@ def test_failed_phase_cannot_advance(stores, tmp_path: Path, phase: str) -> None
         assert "restore" not in target.events
 
 
-def test_reconciliation_rejects_equal_count_corruption(stores, tmp_path: Path) -> None:
+def test_reconciliation_rejects_equal_count_corruption(
+    stores: tuple[Store, Store], tmp_path: Path
+) -> None:
     source, target = stores
     target.fail = "corrupt"
     with pytest.raises(ValueError, match="reconciliation"):
@@ -141,52 +150,77 @@ def test_reconciliation_rejects_equal_count_corruption(stores, tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
-    "mode,permission",
-    [("preflight", True), ("preflight", False), ("migrate", True), ("migrate", False)],
+    "mode",
+    ["preflight", "migrate"],
 )
-def test_main_checks_permissions_before_migration(monkeypatch, mode, permission):
+@pytest.mark.parametrize("failure", [None, "permissions", "extensions", "fence"])
+def test_main_checks_permissions_before_migration(
+    monkeypatch: pytest.MonkeyPatch, mode: str, failure: str | None
+) -> None:
+    import asyncio
     from types import SimpleNamespace
 
     from sage.maintenance import postgres_migration as migration
     from sage.storage.postgres import cloud_bootstrap, managed_identity
 
     events = []
+    loops = []
 
     class Store:
-        def __init__(self, conninfo, *args, **kwargs):
+        def __init__(self, conninfo: str, *args: Any, **kwargs: Any) -> None:
             self.identity = conninfo
             self.major = 16 if conninfo == "source" else 17
 
-        def snapshot(self):
+        def snapshot(self) -> Any:
             return {"tables": {}, "sequences": {}}
 
-        def read_checkpoint(self):
+        def read_checkpoint(self) -> Any:
             return None
 
-        def restore_owners(self):
+        def restore_owners(self) -> Any:
             events.append("owners")
             return ["workload"]
 
-        def assert_restore_privileges(self, owners):
+        def assert_restore_privileges(self, owners: list[str]) -> None:
             assert owners == ["workload"]
             events.append("permissions")
-            if not permission:
+            if failure == "permissions":
                 raise ValueError("restore ownership privileges missing")
 
-        def close(self):
+        def assert_extensions_match(self, target: Any) -> None:
+            assert self.identity == "source" and target.identity == "target"
+            events.append("extensions")
+            if failure == "extensions":
+                raise ValueError("extension parity failed")
+
+        def assert_fence_privileges(self) -> None:
+            assert self.identity == "source"
+            events.append("fence")
+            if failure == "fence":
+                raise ValueError("source fence privileges missing")
+
+        def capacity_report(self, directory: Path) -> Any:
+            assert self.identity == "source" and directory.is_dir()
+            events.append("capacity")
+            return {"database_bytes": 10, "scratch_free_bytes": 20}
+
+        def close(self) -> None:
             events.append("close-" + self.identity)
 
-    async def token(*args):
+    async def token(*args: Any) -> Any:
+        loops.append(asyncio.get_running_loop())
         return SimpleNamespace(token="disposable-token")
 
-    async def close():
+    async def close() -> None:
+        loops.append(asyncio.get_running_loop())
         events.append("credential-close")
 
-    async def bootstrap(env):
+    async def bootstrap(env: dict[str, str]) -> None:
+        loops.append(asyncio.get_running_loop())
         assert env["PG_FQDN"] == "target"
         events.append("bootstrap-target")
 
-    def copy(*args):
+    def copy(*args: Any) -> Any:
         events.append("migration")
         return {"status": "verified"}
 
@@ -210,11 +244,20 @@ def test_main_checks_permissions_before_migration(monkeypatch, mode, permission)
         managed_identity, "get_postgres_credential", lambda: SimpleNamespace(get_token=token)
     )
     monkeypatch.setattr(managed_identity, "close_postgres_credential", close)
-    if permission:
+    if failure is None:
         assert migration.main([mode]) == 0
     else:
-        with pytest.raises(ValueError, match="restore ownership privileges"):
+        message = {
+            "permissions": "restore ownership privileges",
+            "extensions": "extension parity",
+            "fence": "source fence privileges",
+        }[failure]
+        with pytest.raises(ValueError, match=message):
             migration.main([mode])
-    assert events == ["bootstrap-target", "owners", "permissions"] + (
-        ["migration"] if mode == "migrate" and permission else []
-    ) + ["close-source", "close-target", "credential-close"]
+    expected = ["bootstrap-target", "owners", "permissions", "extensions", "fence", "capacity"]
+    if failure is not None:
+        expected = expected[: expected.index(failure) + 1]
+    elif mode == "migrate":
+        expected.append("migration")
+    assert events == expected + ["close-source", "close-target", "credential-close"]
+    assert len(set(loops)) == 1, "credential and bootstrap must share one event loop"

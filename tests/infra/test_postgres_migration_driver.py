@@ -2,13 +2,15 @@
 
 import importlib.util
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def driver():
+def driver() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "migration_driver", ROOT / "deploy/postgres-migration.py"
     )
@@ -18,7 +20,7 @@ def driver():
 
 
 class Azure:
-    def __init__(self):
+    def __init__(self) -> None:
         self.calls = []
         self.job_drift = {}
         self.image_drift = None
@@ -55,7 +57,7 @@ class Azure:
             }.items()
         }
 
-    def __call__(self, *args):
+    def __call__(self, *args: Any) -> Any:
         self.calls.append(args)
         prefix = args[:3]
         if prefix == ("deployment", "sub", "show"):
@@ -147,7 +149,7 @@ class Azure:
         return {}
 
 
-def test_migrate_orders_fence_stop_copy_and_verification():
+def test_migrate_orders_fence_stop_copy_and_verification() -> None:
     az = Azure()
     driver().migrate(az, "prod", "group", "g17", "g17", sleep=lambda _: None)
     mutations = [
@@ -171,7 +173,7 @@ def test_migrate_orders_fence_stop_copy_and_verification():
 
 
 @pytest.mark.parametrize("failure", ["confirmation", "running_job", "copy_failed"])
-def test_migration_fails_closed(failure):
+def test_migration_fails_closed(failure: str | None) -> None:
     az = Azure()
     az.active_job = failure == "running_job"
     az.copy_status = "Failed" if failure == "copy_failed" else "Succeeded"
@@ -199,7 +201,7 @@ def test_migration_fails_closed(failure):
     assert not any(c[:3] == ("containerapp", "revision", "activate") for c in az.calls)
 
 
-def test_prepare_provisions_only_replacement_and_migration_job():
+def test_prepare_provisions_only_replacement_and_migration_job() -> None:
     az = Azure()
     driver().prepare(az, "prod", "group", "g17")
     writes = [c for c in az.calls if c[:3] == ("deployment", "group", "create")]
@@ -215,7 +217,7 @@ def test_prepare_provisions_only_replacement_and_migration_job():
     "state,allowed",
     [("copying:g17", True), ("verified:g17", True), ("cutover:g17", False), ("serving:g17", False)],
 )
-def test_rollback_only_before_cutover(state, allowed):
+def test_rollback_only_before_cutover(state: str, allowed: bool) -> None:
     az = Azure()
     az.fence = state
     az.revisions = '{"sage":["sage-rev"],"bff":["bff-rev"]}'
@@ -233,15 +235,16 @@ def test_rollback_only_before_cutover(state, allowed):
         assert not any(c[:3] == ("containerapp", "job", "start") for c in az.calls)
 
 
-def test_prepare_refuses_to_reconfigure_a_fenced_migration():
+@pytest.mark.parametrize("state", ["copying:g17", "serving:g17"])
+def test_prepare_refuses_to_reconfigure_a_fenced_migration(state: str) -> None:
     az = Azure()
-    az.fence = "copying:g17"
+    az.fence = state
     with pytest.raises(ValueError, match="fence"):
         driver().prepare(az, "prod", "group", "g17")
     assert not any(c[:3] == ("deployment", "group", "create") for c in az.calls)
 
 
-def test_initial_migration_records_source_revisions_before_stopping():
+def test_initial_migration_records_source_revisions_before_stopping() -> None:
     az = Azure()
     az.revisions = ""
     driver().migrate(az, "prod", "group", "g17", "g17", sleep=lambda _: None)
@@ -260,7 +263,7 @@ def test_initial_migration_records_source_revisions_before_stopping():
 
 
 @pytest.mark.parametrize("drift", ["database", "image"])
-def test_migration_rejects_stale_prepared_job(drift):
+def test_migration_rejects_stale_prepared_job(drift: str) -> None:
     az = Azure()
     if drift == "database":
         az.job_drift = {"PG_DATABASE": "different"}
@@ -271,7 +274,7 @@ def test_migration_rejects_stale_prepared_job(drift):
     assert not any(c[:2] == ("tag", "update") for c in az.calls)
 
 
-def test_failed_permission_preflight_keeps_serving_apps_and_fence_unchanged():
+def test_failed_permission_preflight_keeps_serving_apps_and_fence_unchanged() -> None:
     az = Azure()
     az.status = "Failed"
     with pytest.raises(ValueError, match="job failed"):
@@ -286,7 +289,7 @@ def test_failed_permission_preflight_keeps_serving_apps_and_fence_unchanged():
     assert updates[0][-2:] == ("--args", "preflight")
 
 
-def test_prepare_waits_for_successful_permission_preflight():
+def test_prepare_waits_for_successful_permission_preflight() -> None:
     az = Azure()
     az.status = "Failed"
     with pytest.raises(ValueError, match="job failed"):
@@ -295,7 +298,7 @@ def test_prepare_waits_for_successful_permission_preflight():
     assert not any(c[:3] == ("containerapp", "revision", "deactivate") for c in az.calls)
 
 
-def test_migration_modes_update_then_inherit_template():
+def test_migration_modes_update_then_inherit_template() -> None:
     az = Azure()
     driver().migrate(az, "prod", "group", "g17", "g17", sleep=lambda _: None)
     dispatch = [
@@ -332,10 +335,10 @@ def test_migration_modes_update_then_inherit_template():
         )
 
 
-def test_failed_mode_update_never_starts_or_stops_apps():
+def test_failed_mode_update_never_starts_or_stops_apps() -> None:
     az = Azure()
 
-    def fail_update(*args):
+    def fail_update(*args: Any) -> Any:
         if args[:3] == ("containerapp", "job", "update"):
             raise RuntimeError("mode update failed")
         return az(*args)

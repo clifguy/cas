@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -141,6 +142,32 @@ class PostgresStore:
     def close(self) -> None:
         self.conn.close()
 
+    def extensions(self) -> list[tuple[str, str, str]]:
+        return self.conn.execute(
+            "SELECT e.extname, e.extversion, n.nspname FROM pg_extension e "
+            "JOIN pg_namespace n ON e.extnamespace=n.oid "
+            "WHERE e.extname IN ('vector', 'pgstattuple') ORDER BY 1"
+        ).fetchall()
+
+    def assert_extensions_match(self, target: PostgresStore) -> None:
+        source_extensions, target_extensions = self.extensions(), target.extensions()
+        if {row[0] for row in source_extensions} != {
+            "vector",
+            "pgstattuple",
+        } or source_extensions != target_extensions:
+            raise ValueError(
+                "required extension parity differs; have an authorized administrator align "
+                "installed versions and schemas before downtime, then rerun preparation"
+            )
+
+    def capacity_report(self, directory: Path) -> dict[str, int]:
+        return {
+            "database_bytes": self.conn.execute(
+                "SELECT pg_database_size(current_database())"
+            ).fetchone()[0],
+            "scratch_free_bytes": shutil.disk_usage(directory).free,
+        }
+
     def snapshot(self) -> dict[str, Any]:
         self.conn.execute("SET timezone = 'UTC'")
         self.conn.execute("SET search_path = pg_catalog, public")
@@ -161,11 +188,7 @@ class PostgresStore:
               AND d.objid=c.oid AND d.deptype='e') ORDER BY 1,2"""
             ).format(sql.SQL(_SCHEMA_PREDICATE))
         ).fetchall()
-        extensions = self.conn.execute(
-            "SELECT e.extname, e.extversion, n.nspname FROM pg_extension e "
-            "JOIN pg_namespace n ON e.extnamespace=n.oid "
-            "WHERE e.extname IN ('vector', 'pgstattuple') ORDER BY 1"
-        ).fetchall()
+        extensions = self.extensions()
         default_grants = self.conn.execute(
             sql.SQL(
                 "SELECT pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype, "
@@ -302,7 +325,7 @@ class PostgresStore:
             if row is None or not all(row):
                 raise ValueError(f"restore ownership privileges missing for role {owner!r}")
 
-    def fence(self) -> None:
+    def _revoke_connect(self) -> None:
         if not self.app_roles:
             raise ValueError("no workload roles supplied for fencing")
         current_user = self.conn.execute("SELECT current_user").fetchone()[0]
@@ -330,6 +353,45 @@ class PostgresStore:
                 ).fetchone()[0]
                 if allowed:
                     raise ValueError("workload retains CONNECT through inherited privileges")
+
+    def assert_fence_privileges(self) -> None:
+        # Rehearse the real ACL changes, but never disconnect a serving session.
+        with self.conn.transaction(force_rollback=True):
+            self.conn.execute("SET LOCAL lock_timeout = '5s'")
+            self._revoke_connect()
+            self._assert_connect_fenced()
+            superuser, signal = self.conn.execute(
+                "SELECT rolsuper, pg_has_role(current_user,'pg_signal_backend','USAGE') "
+                "FROM pg_roles WHERE rolname=current_user"
+            ).fetchone()
+            session_roles = {
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT DISTINCT usename FROM pg_stat_activity "
+                    "WHERE datname=current_database() AND pid<>pg_backend_pid() "
+                    "AND backend_type='client backend'"
+                ).fetchall()
+            }
+            for role in set(self.app_roles) | session_roles:
+                row = self.conn.execute(
+                    "SELECT rolsuper, pg_has_role(current_user,oid,'USAGE') "
+                    "FROM pg_roles WHERE rolname=%s",
+                    (role,),
+                ).fetchone()
+                if row is None or (not superuser and (row[0] or not (signal or row[1]))):
+                    raise ValueError("source privileges cannot terminate workload sessions")
+            if not self.conn.execute(
+                "SELECT has_function_privilege("
+                "'pg_catalog.pg_terminate_backend(integer,bigint)','EXECUTE')"
+            ).fetchone()[0]:
+                raise ValueError("source privileges cannot terminate workload sessions")
+            if self.conn.execute(
+                "SELECT count(*) FROM pg_prepared_xacts WHERE database=current_database()"
+            ).fetchone()[0]:
+                raise ValueError("prepared transactions remain")
+
+    def fence(self) -> None:
+        self._revoke_connect()
         self.conn.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
             "WHERE datname=current_database() "
@@ -337,7 +399,7 @@ class PostgresStore:
         )
         self.assert_quiescent()
 
-    def assert_quiescent(self) -> None:
+    def _assert_connect_fenced(self) -> None:
         for role in self.app_roles:
             if self.conn.execute(
                 "SELECT has_database_privilege(%s,%s,'CONNECT')", (role, self.database)
@@ -350,6 +412,9 @@ class PostgresStore:
         ).fetchone()[0]
         if unaccounted:
             raise ValueError("unaccounted login roles retain source CONNECT")
+
+    def assert_quiescent(self) -> None:
+        self._assert_connect_fenced()
         writers = self.conn.execute(
             "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() "
             "AND pid<>pg_backend_pid() AND backend_type='client backend'"
@@ -482,13 +547,17 @@ def main(argv: list[str] | None = None) -> int:
                 or target_snapshot.get("routines")
             ):
                 raise ValueError("target contains existing workload objects")
-            asyncio.run(bootstrap_target({**os.environ, "PG_FQDN": os.environ["PG_TARGET_FQDN"]}))
+            runner.run(bootstrap_target({**os.environ, "PG_FQDN": os.environ["PG_TARGET_FQDN"]}))
             stores[1].assert_restore_privileges(stores[0].restore_owners())
+            stores[0].assert_extensions_match(stores[1])
+            stores[0].assert_fence_privileges()
+            capacity = stores[0].capacity_report(Path(tempfile.gettempdir()))
             if mode == "preflight":
                 print(
                     json.dumps(
                         {
                             "status": "preflight_verified",
+                            "capacity_estimate": capacity,
                             "source": stores[0].identity,
                             "target": stores[1].identity,
                         }
@@ -503,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
                     int(os.environ["PG_SOURCE_MAJOR"]),
                     int(os.environ["PG_TARGET_MAJOR"]),
                 )
-                print(json.dumps(report, sort_keys=True))
+                print(json.dumps({**report, "capacity_estimate": capacity}, sort_keys=True))
         finally:
             for store in stores:
                 store.close()

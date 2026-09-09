@@ -259,19 +259,16 @@ def migrate(
         raise ValueError(
             "prepared migration job does not match the selected servers and generation"
         )
-    for name in (
-        output(deployment, "bootstrapJobName"),
-        output(deployment, "maintenanceJobName"),
-        migration_job,
-    ):
-        executions = az(
-            "containerapp", "job", "execution", "list", "--resource-group", group, "--name", name
-        )
-        if any(
-            execution["properties"]["status"] not in ("Succeeded", "Failed", "Stopped")
-            for execution in executions
-        ):
-            raise ValueError("another database job is still active")
+    assert_jobs_idle(
+        az,
+        group,
+        (
+            output(deployment, "bootstrapJobName"),
+            output(deployment, "maintenanceJobName"),
+            migration_job,
+        ),
+        "another database job is still active",
+    )
     resource_group = az("group", "show", "--name", group)
     state = (resource_group.get("tags") or {}).get("casPostgresMigration", "")
     if state not in ("", f"copying:{generation}", f"verified:{generation}"):
@@ -346,6 +343,18 @@ def migrate(
     )
 
 
+def assert_jobs_idle(az: Azure, group: str, names: tuple[str, ...], message: str) -> None:
+    for name in names:
+        executions = az(
+            "containerapp", "job", "execution", "list", "--resource-group", group, "--name", name
+        )
+        if any(
+            item["properties"]["status"] not in ("Succeeded", "Failed", "Stopped")
+            for item in executions
+        ):
+            raise ValueError(message)
+
+
 def run_preflight(az: Azure, group: str, job: str, *, sleep: Callable[[float], None]) -> None:
     run_mode(az, group, job, "preflight", sleep=sleep)
 
@@ -418,19 +427,16 @@ def rollback(
         output(deployment, "bffContainerAppName"),
     }:
         raise ValueError("rollback revisions do not match the serving deployment")
-    for name in (
-        output(deployment, "bootstrapJobName"),
-        output(deployment, "maintenanceJobName"),
-        f"job-pg-migration-{environment}",
-    ):
-        executions = az(
-            "containerapp", "job", "execution", "list", "--resource-group", group, "--name", name
-        )
-        if any(
-            item["properties"]["status"] not in ("Succeeded", "Failed", "Stopped")
-            for item in executions
-        ):
-            raise ValueError("wait for all database jobs to terminate before rollback")
+    assert_jobs_idle(
+        az,
+        group,
+        (
+            output(deployment, "bootstrapJobName"),
+            output(deployment, "maintenanceJobName"),
+            f"job-pg-migration-{environment}",
+        ),
+        "wait for all database jobs to terminate before rollback",
+    )
     # The standing bootstrap still points at the incumbent before any cutover.
     # It converges the standard workload CONNECT/CREATE and extension grants.
     bootstrap = output(deployment, "bootstrapJobName")

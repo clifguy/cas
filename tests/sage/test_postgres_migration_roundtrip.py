@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import psycopg
@@ -34,7 +35,7 @@ async def initialize_graph(conninfo: str, schema: str) -> None:
 
 
 @pytest.fixture
-def databases():
+def databases() -> Iterator[tuple[PostgresStore, PostgresStore, str]]:
     dsns = [
         os.environ.get("SAGE_MIGRATION_TEST_SOURCE_DSN"),
         os.environ.get("SAGE_MIGRATION_TEST_TARGET_DSN"),
@@ -204,7 +205,9 @@ def databases():
                 admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
 
 
-def test_cross_major_restore_preserves_state(databases, tmp_path: Path) -> None:
+def test_cross_major_restore_preserves_state(
+    databases: tuple[PostgresStore, PostgresStore, str], tmp_path: Path
+) -> None:
     source, target, role = databases
     assert target.snapshot()["tables"] == {}
     other_role = "other-" + uuid.uuid4().hex[:12]
@@ -331,7 +334,9 @@ def test_cross_major_restore_preserves_state(databases, tmp_path: Path) -> None:
         "AS integer",
     ],
 )
-def test_resume_rejects_sequence_definition_drift(databases, tmp_path, definition):
+def test_resume_rejects_sequence_definition_drift(
+    databases: tuple[PostgresStore, PostgresStore, str], tmp_path: Path, definition: str
+) -> None:
     source, target, _ = databases
     report = run_migration(source, target, tmp_path / "copy.dump", "sequence", 16, 17)
     before = target.conn.execute("SELECT last_value, is_called FROM bff.sessions_id_seq").fetchone()
@@ -347,7 +352,7 @@ def test_resume_rejects_sequence_definition_drift(databases, tmp_path, definitio
 
 
 @pytest.fixture
-def non_superuser_databases():
+def non_superuser_databases() -> Iterator[tuple[PostgresStore, PostgresStore, str, str]]:
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
     dsns = [
@@ -411,7 +416,9 @@ def non_superuser_databases():
                     setup.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
 
 
-def test_non_superuser_restore_permission_preflight(non_superuser_databases, tmp_path):
+def test_non_superuser_restore_permission_preflight(
+    non_superuser_databases: tuple[PostgresStore, PostgresStore, str, str], tmp_path: Path
+) -> None:
     source, target, administrator, workload = non_superuser_databases
     owners = source.restore_owners()
     assert workload in owners
@@ -462,7 +469,9 @@ def test_non_superuser_restore_permission_preflight(non_superuser_databases, tmp
     "drift",
     ["trigger_enabled", "trigger_definition", "routine_body", "routine_acl", "routine_owner"],
 )
-def test_resume_rejects_graph_executable_drift(databases, tmp_path, drift):
+def test_resume_rejects_graph_executable_drift(
+    databases: tuple[PostgresStore, PostgresStore, str], tmp_path: Path, drift: str
+) -> None:
     source, target, role = databases
     report = run_migration(source, target, tmp_path / "copy.dump", "graph-executable", 16, 17)
     before = target.snapshot()
@@ -496,7 +505,9 @@ def test_resume_rejects_graph_executable_drift(databases, tmp_path, drift):
     assert not (tmp_path / "retry.dump").exists()
 
 
-def test_snapshot_refuses_unsupported_workload_aggregate(databases):
+def test_snapshot_refuses_unsupported_workload_aggregate(
+    databases: tuple[PostgresStore, PostgresStore, str],
+) -> None:
     source, _, _ = databases
     source.conn.execute(
         "CREATE AGGREGATE vault_alpha.custom_sum(bigint) (SFUNC=int8pl, STYPE=bigint, INITCOND='0')"
@@ -505,7 +516,9 @@ def test_snapshot_refuses_unsupported_workload_aggregate(databases):
         source.snapshot()
 
 
-def test_migration_refuses_destination_with_only_a_workload_function(databases, tmp_path):
+def test_migration_refuses_destination_with_only_a_workload_function(
+    databases: tuple[PostgresStore, PostgresStore, str], tmp_path: Path
+) -> None:
     source, target, role = databases
     target.conn.execute(
         "CREATE FUNCTION public.existing() RETURNS integer LANGUAGE sql AS 'SELECT 1'"
@@ -516,3 +529,122 @@ def test_migration_refuses_destination_with_only_a_workload_function(databases, 
         "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (role,)
     ).fetchone()[0]
     assert target.conn.execute("SELECT public.existing()").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("drift", ["version", "schema", "missing"])
+def test_extension_preflight_rejects_parity_drift_without_fencing(
+    databases: tuple[PostgresStore, PostgresStore, str], drift: str
+) -> None:
+    source, target, role = databases
+    target.conn.execute("CREATE EXTENSION vector")
+    target.conn.execute("CREATE EXTENSION pgstattuple")
+    source.assert_extensions_match(target)
+    if drift == "version":
+        target.conn.execute("UPDATE pg_extension SET extversion='0.0.0' WHERE extname='vector'")
+    elif drift == "schema":
+        target.conn.execute("CREATE SCHEMA extensions")
+        target.conn.execute("ALTER EXTENSION vector SET SCHEMA extensions")
+    else:
+        target.conn.execute("DROP EXTENSION vector")
+    with pytest.raises(ValueError, match="required extension parity"):
+        source.assert_extensions_match(target)
+    assert source.conn.execute(
+        "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (role,)
+    ).fetchone()[0]
+    assert target.snapshot()["tables"] == {}
+    assert target.read_checkpoint() is None
+
+
+def test_fence_preflight_preserves_grants_and_existing_session(
+    databases: tuple[PostgresStore, PostgresStore, str],
+) -> None:
+    source, _, role = databases
+    with psycopg.connect(source.conninfo, autocommit=True) as observer:
+        pid = observer.execute("SELECT pg_backend_pid()").fetchone()[0]
+        before = observer.execute(
+            "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+        ).fetchone()
+        source.assert_fence_privileges()
+        assert observer.execute("SELECT pg_backend_pid()").fetchone()[0] == pid
+        assert (
+            observer.execute(
+                "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+            ).fetchone()
+            == before
+        )
+        assert observer.execute(
+            "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (role,)
+        ).fetchone()[0]
+
+
+def test_fence_preflight_rejects_other_login_and_rolls_back(
+    databases: tuple[PostgresStore, PostgresStore, str],
+) -> None:
+    source, _, role = databases
+    extra = "extra_" + uuid.uuid4().hex[:12]
+    source.conn.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(extra)))
+    try:
+        source.conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(source.database), sql.Identifier(extra)
+            )
+        )
+        before = source.conn.execute(
+            "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+        ).fetchone()
+        with pytest.raises(ValueError, match="unaccounted login roles"):
+            source.assert_fence_privileges()
+        assert (
+            source.conn.execute(
+                "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+            ).fetchone()
+            == before
+        )
+    finally:
+        source.conn.execute(
+            sql.SQL("REVOKE ALL ON DATABASE {} FROM {}").format(
+                sql.Identifier(source.database), sql.Identifier(extra)
+            )
+        )
+        source.conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(extra)))
+
+
+def test_fence_preflight_checks_signal_permission_without_terminating(
+    non_superuser_databases: tuple[PostgresStore, PostgresStore, str, str],
+) -> None:
+    source, _, administrator, workload = non_superuser_databases
+    before = source.conn.execute(
+        "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+    ).fetchone()
+    with pytest.raises(ValueError, match="terminate workload sessions"):
+        source.assert_fence_privileges()
+    assert (
+        source.conn.execute(
+            "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+        ).fetchone()
+        == before
+    )
+    source.conn.execute(
+        sql.SQL("GRANT {} TO {} WITH INHERIT TRUE").format(
+            sql.Identifier(workload), sql.Identifier(administrator)
+        )
+    )
+    source.assert_fence_privileges()
+    assert (
+        source.conn.execute(
+            "SELECT datacl::text FROM pg_database WHERE datname=current_database()"
+        ).fetchone()
+        == before
+    )
+
+
+def test_capacity_report_observes_job_scratch(
+    databases: tuple[PostgresStore, PostgresStore, str], tmp_path: Path
+) -> None:
+    import shutil
+
+    source, _, _ = databases
+    expected = source.conn.execute("SELECT pg_database_size(current_database())").fetchone()[0]
+    report = source.capacity_report(tmp_path)
+    assert report["database_bytes"] == expected
+    assert 0 < report["scratch_free_bytes"] <= shutil.disk_usage(tmp_path).total
