@@ -11,8 +11,12 @@ on:
         required: true
       action:
         type: choice
-        options: [prepare, migrate, rollback]
+        options: [prepare, rehearse, cleanup-rehearsal, migrate, rollback]
         required: true
+      rehearsal_run_id:
+        description: 'Cleanup: original r<workflow-run-id>. Rehearsal: leave empty for a new identity.'
+        type: string
+        required: false
       confirm:
         description: For migrate or rollback, type the selected generation to authorize downtime.
         type: string
@@ -33,6 +37,7 @@ jobs:
       RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
       GENERATION: ${{ inputs.generation }}
       MIGRATION_ACTION: ${{ inputs.action }}
+      REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
       MIGRATION_CONFIRM: ${{ inputs.confirm }}
     steps:
       - name: Require main
@@ -47,3 +52,20 @@ jobs:
         run: bash deploy/postgres-migration-guard.sh migration "$RESOURCE_GROUP_NAME" "$GENERATION"
       - name: Prepare or run the offline migration
         run: bash deploy/postgres-migration.sh
+      - name: Retrieve durable rehearsal report
+        if: ${{ always() && (inputs.action == 'rehearse' || inputs.action == 'cleanup-rehearsal') && hashFiles('rehearsal-execution.json') != '' }}
+        env:
+          MIGRATION_ACTION: collect-report
+        run: |
+          az extension add --name log-analytics --yes --only-show-errors
+          bash deploy/postgres-migration.sh
+      - name: Retain rehearsal evidence
+        if: ${{ always() && (inputs.action == 'rehearse' || inputs.action == 'cleanup-rehearsal') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-rehearsal-${{ github.run_id }}
+          path: |
+            rehearsal-execution.json
+            rehearsal-report.json
+          if-no-files-found: error
+          retention-days: 90

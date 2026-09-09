@@ -12,6 +12,18 @@ case "$exists" in
   true) ;;
   *) echo 'could not establish resource group existence' >&2; exit 1 ;;
 esac
+# GitHub cancellation releases its concurrency slot, not the Azure execution.
+# Check the actual job before any workflow can reconfigure it or its consumers.
+migration_jobs="$(az containerapp job list --resource-group "$group" --query "[?starts_with(name, 'job-pg-migration-')].name" -o tsv)"
+for migration_job in $migration_jobs; do
+  statuses="$(az containerapp job execution list --resource-group "$group" --name "$migration_job" --query '[].properties.status' -o tsv)"
+  for status in $statuses; do
+    case "$status" in
+      Succeeded|Failed|Stopped) ;;
+      *) echo 'database job remains active; wait for or stop its Azure execution' >&2; exit 1 ;;
+    esac
+  done
+done
 state="$(az group show --name "$group" --query 'tags.casPostgresMigration' -o tsv)"
 case "$purpose" in
   maintenance)

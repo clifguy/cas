@@ -24,7 +24,7 @@ param aadAdminPrincipalName string
 param aadAdminPrincipalType string = 'ServicePrincipal'
 var versions = loadJsonContent('../versions.json')
 module replacement 'modules/postgres.bicep' = {
-  name: 'postgres-replacement-${serverGeneration}'
+  name: 'postgres-server-${serverGeneration}'
   params: {
     location: location
     environmentName: environmentName
