@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -27,6 +28,19 @@ from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 
 
+@dataclass(frozen=True)
+class RestoreManifest:
+    """Catalog state read in the dump snapshot, bound to the resulting archive."""
+
+    archive_sha256: str
+    permissions: dict[str, Any]
+
+
+def archive_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
 class MigrationStore(Protocol):
     identity: str
     major: int
@@ -34,8 +48,8 @@ class MigrationStore(Protocol):
     def snapshot(self) -> dict[str, Any]: ...
     def fence(self) -> None: ...
     def assert_quiescent(self) -> None: ...
-    def dump(self, path: Path) -> None: ...
-    def restore(self, path: Path) -> None: ...
+    def dump(self, path: Path) -> RestoreManifest: ...
+    def restore(self, path: Path, manifest: RestoreManifest) -> None: ...
     def read_checkpoint(self) -> dict[str, Any] | None: ...
     def save_checkpoint(self, value: dict[str, Any]) -> None: ...
 
@@ -72,7 +86,10 @@ def run_migration(
         raise ValueError("stale migration checkpoint")
     before_target = target.snapshot()
     if checkpoint is None and (
-        before_target["tables"] or before_target["sequences"] or before_target.get("routines")
+        before_target["tables"]
+        or before_target["sequences"]
+        or before_target.get("routines")
+        or before_target.get("large_objects")
     ):
         raise ValueError("target contains existing workload objects")
     source.fence()
@@ -86,13 +103,13 @@ def run_migration(
         return checkpoint
     if archive.exists():
         raise ValueError("archive path already exists")
-    source.dump(archive)
+    manifest = source.dump(archive)
     if not archive.is_file() or archive.stat().st_size == 0:
         raise ValueError("dump produced no archive")
     source.assert_quiescent()
     if source.snapshot() != before:
         raise ValueError("source changed during snapshot")
-    target.restore(archive)
+    target.restore(archive, manifest)
     after = target.snapshot()
     source.assert_quiescent()
     if source.snapshot() != before or after != before:
@@ -102,6 +119,7 @@ def run_migration(
     report = {
         **expected,
         "status": "verified",
+        "permission_policy": "catalog-acl-v1-owner-maintain",
         "fingerprint": fingerprint(before),
         "archive_sha256": archive_hash,
         "tables": {name: value["count"] for name, value in before["tables"].items()},
@@ -114,6 +132,32 @@ def run_migration(
 # including the BFF and stack registry, are included rather than a vault allowlist.
 _SCHEMA_PREDICATE = """n.nspname !~ '^pg_'
 AND n.nspname NOT IN ('information_schema', '_cas_migration')"""
+
+
+def canonical_relation_acl(acl: str, owner: str, table: str, major: int) -> sql.Composed:
+    """Compare grants semantically, with one explicit owner-only 16-to-17 rule.
+
+    PostgreSQL 17 adds MAINTAIN when restoring the owner's former ALL grant.
+    Only the unchanged owner's non-grantable self-grant beside all seven prior
+    table privileges is equivalent. Other recipients and grant options remain
+    observable. Column expressions are internal constants, never caller SQL.
+    """
+    return sql.SQL("""CASE WHEN {acl} IS NULL THEN NULL ELSE (
+        SELECT coalesce(jsonb_agg(jsonb_build_array(pg_get_userbyid(a.grantor),
+            CASE WHEN a.grantee=0 THEN NULL ELSE pg_get_userbyid(a.grantee) END,
+            a.privilege_type, a.is_grantable)
+            ORDER BY pg_get_userbyid(a.grantor), a.grantee=0,
+                pg_get_userbyid(a.grantee), a.privilege_type, a.is_grantable), '[]'::jsonb)
+        FROM aclexplode({acl}) a WHERE NOT (
+            {major}=17 AND {table} AND a.privilege_type='MAINTAIN'
+            AND a.grantor={owner} AND a.grantee={owner} AND NOT a.is_grantable
+            AND (SELECT count(*) FROM aclexplode({acl}) own
+                WHERE own.grantor={owner} AND own.grantee={owner} AND NOT own.is_grantable
+                AND own.privilege_type IN
+                  ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'))=7
+        )) END""").format(
+        acl=sql.SQL(acl), owner=sql.SQL(owner), table=sql.SQL(table), major=sql.Literal(major)
+    )
 
 
 class PostgresStore:
@@ -168,7 +212,41 @@ class PostgresStore:
             "scratch_free_bytes": shutil.disk_usage(directory).free,
         }
 
-    def snapshot(self) -> dict[str, Any]:
+    def extension_privileges(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("""
+            SELECT e.extname, e.extversion, n.nspname, p.proname,
+                pg_get_function_identity_arguments(p.oid),
+                format('%I(%s)', p.proname, pg_get_function_arguments(p.oid)),
+                pg_get_userbyid(p.proowner), p.prokind,
+                coalesce((SELECT jsonb_agg(jsonb_build_array(
+                    pg_get_userbyid(a.grantor),
+                    CASE WHEN a.grantee=0 THEN NULL ELSE pg_get_userbyid(a.grantee) END,
+                    a.privilege_type, a.is_grantable)
+                    ORDER BY pg_get_userbyid(a.grantor), a.grantee=0,
+                             pg_get_userbyid(a.grantee), a.privilege_type, a.is_grantable)
+                  FROM aclexplode(coalesce(p.proacl, acldefault('f',p.proowner))) a), '[]'::jsonb)
+            FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+            JOIN pg_depend d ON d.classid='pg_proc'::regclass AND d.objid=p.oid
+                AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
+            JOIN pg_extension e ON e.oid=d.refobjid
+            ORDER BY e.extname,n.nspname,p.proname,5
+        """).fetchall()
+        keys = (
+            "extension",
+            "version",
+            "schema",
+            "name",
+            "arguments",
+            "toc_name",
+            "owner",
+            "kind",
+            "acl",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    def snapshot(self, *, permissions_only: bool = False) -> dict[str, Any]:
+        if self.conn.execute("SELECT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper)").fetchone()[0]:
+            raise ValueError("foreign-data wrappers and servers are unsupported workload objects")
         self.conn.execute("SET timezone = 'UTC'")
         self.conn.execute("SET search_path = pg_catalog, public")
         schemas = self.conn.execute(
@@ -181,21 +259,128 @@ class PostgresStore:
         relations = self.conn.execute(
             sql.SQL(
                 """SELECT n.nspname, c.relname, c.relkind,
-                    pg_get_userbyid(c.relowner), c.relacl::text
+                    pg_get_userbyid(c.relowner), {acl}
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            WHERE {} AND c.relkind IN ('r','p','v','m','f','S')
+            WHERE {predicate} AND c.relkind IN ('r','p','v','m','f','S')
             AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass
               AND d.objid=c.oid AND d.deptype='e') ORDER BY 1,2"""
-            ).format(sql.SQL(_SCHEMA_PREDICATE))
+            ).format(
+                predicate=sql.SQL(_SCHEMA_PREDICATE),
+                acl=canonical_relation_acl("c.relacl", "c.relowner", "c.relkind='r'", self.major),
+            )
+        ).fetchall()
+        column_grants = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, c.relname, column_attr.attname, {acl}
+                FROM pg_attribute column_attr JOIN pg_class c ON c.oid=column_attr.attrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE {predicate} AND c.relkind IN ('r','p','v','m','f')
+                AND column_attr.attnum>0 AND NOT column_attr.attisdropped
+                AND column_attr.attacl IS NOT NULL
+                ORDER BY 1,2,3""").format(
+                predicate=sql.SQL(
+                    "({} OR EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                    "AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass "
+                    "AND d.deptype='e'))"
+                ).format(sql.SQL(_SCHEMA_PREDICATE)),
+                acl=canonical_relation_acl("column_attr.attacl", "c.relowner", "FALSE", self.major),
+            )
+        ).fetchall()
+        row_security = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE {predicate} AND c.relkind IN ('r','p')
+                ORDER BY 1,2""").format(
+                predicate=sql.SQL(
+                    "({} OR EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                    "AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass "
+                    "AND d.deptype='e'))"
+                ).format(sql.SQL(_SCHEMA_PREDICATE))
+            )
+        ).fetchall()
+        policies = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, c.relname, policy.polname,
+                policy.polcmd, policy.polpermissive,
+                ARRAY(SELECT CASE WHEN role_id=0 THEN NULL ELSE pg_get_userbyid(role_id) END
+                    FROM unnest(policy.polroles) AS roles(role_id)
+                    ORDER BY role_id=0, pg_get_userbyid(role_id)),
+                pg_get_expr(policy.polqual, policy.polrelid),
+                pg_get_expr(policy.polwithcheck, policy.polrelid)
+                FROM pg_policy policy JOIN pg_class c ON c.oid=policy.polrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE {predicate} AND c.relkind IN ('r','p')
+                ORDER BY 1,2,3""").format(
+                predicate=sql.SQL(
+                    "({} OR EXISTS (SELECT 1 FROM pg_depend d "
+                    "WHERE d.classid='pg_class'::regclass AND d.objid=c.oid "
+                    "AND d.objsubid=0 AND d.refclassid='pg_extension'::regclass "
+                    "AND d.deptype='e'))"
+                ).format(sql.SQL(_SCHEMA_PREDICATE))
+            )
+        ).fetchall()
+        type_grants = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, typ.typname, typ.typtype,
+                pg_get_userbyid(typ.typowner), coalesce(ext.extname, rel_ext.extname),
+                coalesce(ext.extversion, rel_ext.extversion), {acl}
+                FROM pg_type typ JOIN pg_namespace n ON n.oid=typ.typnamespace
+                LEFT JOIN pg_depend dep ON dep.classid='pg_type'::regclass
+                    AND dep.objid=typ.oid AND dep.objsubid=0
+                    AND dep.refclassid='pg_extension'::regclass AND dep.deptype='e'
+                LEFT JOIN pg_extension ext ON ext.oid=dep.refobjid
+                LEFT JOIN pg_depend rel_dep ON rel_dep.classid='pg_class'::regclass
+                    AND rel_dep.objid=typ.typrelid AND rel_dep.objsubid=0
+                    AND rel_dep.refclassid='pg_extension'::regclass AND rel_dep.deptype='e'
+                LEFT JOIN pg_extension rel_ext ON rel_ext.oid=rel_dep.refobjid
+                WHERE ({predicate} OR ext.oid IS NOT NULL OR rel_ext.oid IS NOT NULL)
+                AND NOT EXISTS (SELECT 1 FROM pg_type element WHERE element.typarray=typ.oid)
+                ORDER BY 1,2""").format(
+                predicate=sql.SQL(_SCHEMA_PREDICATE),
+                acl=canonical_relation_acl("typ.typacl", "typ.typowner", "FALSE", self.major),
+            )
+        ).fetchall()
+        extension_relations = self.conn.execute(
+            sql.SQL("""SELECT ext.extname, ext.extversion, n.nspname, c.relname,
+                c.relkind, pg_get_userbyid(c.relowner), {acl},
+                c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_depend dep ON dep.classid='pg_class'::regclass
+                    AND dep.objid=c.oid AND dep.objsubid=0
+                    AND dep.refclassid='pg_extension'::regclass AND dep.deptype='e'
+                JOIN pg_extension ext ON ext.oid=dep.refobjid
+                WHERE c.relkind IN ('r','p','v','m','f','S') ORDER BY 1,3,4""").format(
+                acl=canonical_relation_acl("c.relacl", "c.relowner", "c.relkind='r'", self.major)
+            )
+        ).fetchall()
+        language_grants = self.conn.execute(
+            sql.SQL("""SELECT lang.lanname, lang.lanispl, lang.lanpltrusted,
+                pg_get_userbyid(lang.lanowner), {acl} FROM pg_language lang ORDER BY 1""").format(
+                acl=canonical_relation_acl("lang.lanacl", "lang.lanowner", "FALSE", self.major)
+            )
+        ).fetchall()
+        large_object_grants = self.conn.execute(
+            sql.SQL("""SELECT obj.oid, pg_get_userbyid(obj.lomowner), {acl}
+                FROM pg_largeobject_metadata obj ORDER BY obj.oid""").format(
+                acl=canonical_relation_acl("obj.lomacl", "obj.lomowner", "FALSE", self.major)
+            )
+        ).fetchall()
+        extension_objects = self.conn.execute(
+            "SELECT e.extname, e.extversion, n.nspname, pg_get_userbyid(e.extowner) "
+            "FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace ORDER BY e.extname"
         ).fetchall()
         extensions = self.extensions()
         default_grants = self.conn.execute(
             sql.SQL(
                 "SELECT pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype, "
-                "d.defaclacl::text FROM pg_default_acl d "
+                "{acl} FROM pg_default_acl d "
                 "LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace "
-                "WHERE d.defaclnamespace=0 OR ({}) ORDER BY 1,2,3"
-            ).format(sql.SQL(_SCHEMA_PREDICATE))
+                "WHERE d.defaclnamespace=0 OR ({predicate}) ORDER BY 1,2,3"
+            ).format(
+                predicate=sql.SQL(_SCHEMA_PREDICATE),
+                acl=canonical_relation_acl(
+                    "d.defaclacl", "d.defaclrole", "d.defaclobjtype='r'", self.major
+                ),
+            )
         ).fetchall()
         routines = self.conn.execute(
             sql.SQL("""SELECT n.nspname, p.proname,
@@ -216,9 +401,33 @@ class PostgresStore:
             "tables": {},
             "sequences": {},
             "extensions": extensions,
+            "extension_objects": extension_objects,
             "default_grants": default_grants,
+            "column_grants": column_grants,
+            "row_security": row_security,
+            "policies": policies,
+            "type_grants": type_grants,
+            "extension_relations": extension_relations,
+            "language_grants": language_grants,
+            "large_object_grants": large_object_grants,
+            "large_objects": {},
             "routines": routines,
+            "extension_privileges": self.extension_privileges(),
         }
+        if permissions_only:
+            return {**result, "relations": relations}
+        for oid, _, _ in large_object_grants:
+            digest = hashlib.sha256()
+            size = 0
+            with self.conn.transaction():
+                descriptor = self.conn.execute("SELECT lo_open(%s, 262144)", (oid,)).fetchone()[0]
+                while chunk := self.conn.execute(
+                    "SELECT loread(%s, 1048576)", (descriptor,)
+                ).fetchone()[0]:
+                    digest.update(chunk)
+                    size += len(chunk)
+                self.conn.execute("SELECT lo_close(%s)", (descriptor,))
+            result["large_objects"][str(oid)] = {"bytes": size, "hash": digest.hexdigest()}
         for namespace, name, kind, owner, acl in relations:
             qualified = sql.Identifier(namespace, name)
             key = f"{namespace}.{name}"
@@ -301,6 +510,10 @@ class PostgresStore:
                 SELECT refobjid AS owner FROM pg_shdepend
                 WHERE dbid=(SELECT oid FROM pg_database WHERE datname=current_database())
                 AND refclassid='pg_authid'::regclass AND deptype='o'
+                AND classid<>'pg_extension'::regclass
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid=pg_shdepend.classid AND d.objid=pg_shdepend.objid
+                    AND d.deptype='e')
                 UNION SELECT n.nspowner FROM pg_namespace n WHERE {predicate}
                 UNION SELECT c.relowner FROM pg_class c JOIN pg_namespace n
                   ON n.oid=c.relnamespace WHERE {predicate}
@@ -425,7 +638,7 @@ class PostgresStore:
         if writers or prepared:
             raise ValueError("writers or prepared transactions remain")
 
-    def _command(self, argv: list[str]) -> None:
+    def _command(self, argv: list[str]) -> bytes:
         env = {
             **os.environ,
             "PGPASSWORD": self.token_provider() if self.token_provider else self.password,
@@ -436,33 +649,157 @@ class PostgresStore:
         if result.returncode:
             # pg_restore can echo row contents on failure. Keep logs free of database data.
             raise RuntimeError(f"{Path(argv[0]).name} failed with exit {result.returncode}")
+        return result.stdout
 
-    def dump(self, path: Path) -> None:
-        self._command(
-            [
-                "pg_dump",
-                "--format=custom",
-                "--exclude-schema=_cas_migration",
-                "--file",
-                str(path),
-                "--dbname",
-                self.conninfo,
-            ]
-        )
+    def dump(self, path: Path, *, client_dir: Path | None = None) -> RestoreManifest:
+        def client(name: str) -> str:
+            return str(client_dir / name) if client_dir else name
+
+        with self.conn.transaction():
+            self.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            permissions = self.snapshot(permissions_only=True)
+            snapshot = self.conn.execute("SELECT pg_export_snapshot()").fetchone()[0]
+            self._command(
+                [
+                    client("pg_dump"),
+                    "--format=custom",
+                    "--exclude-schema=_cas_migration",
+                    "--snapshot",
+                    snapshot,
+                    "--file",
+                    str(path),
+                    "--dbname",
+                    self.conninfo,
+                ]
+            )
         path.chmod(0o600)
-        self._command(["pg_restore", "--list", str(path)])
+        self._command([client("pg_restore"), "--list", str(path)])
+        return RestoreManifest(archive_digest(path), permissions)
 
-    def restore(self, path: Path) -> None:
-        self._command(
-            [
-                "pg_restore",
-                "--exit-on-error",
-                "--single-transaction",
-                "--dbname",
-                self.conninfo,
-                str(path),
-            ]
-        )
+    @staticmethod
+    def _managed_privileges(manifest: RestoreManifest) -> list[dict[str, Any]]:
+        managed = []
+        baseline = {
+            ("azuresu", "azuresu", "EXECUTE", False),
+            ("azuresu", "pg_stat_scan_tables", "EXECUTE", False),
+            ("azuresu", "azure_pg_admin", "EXECUTE", True),
+        }
+        for function in manifest.permissions["extension_privileges"]:
+            if (
+                function["extension"] != "pgstattuple"
+                or function["owner"] != "azuresu"
+                or function["kind"] != "f"
+            ):
+                continue
+            grants = {tuple(grant) for grant in function["acl"]}
+            provider = {grant for grant in grants if grant[0] == "azuresu"}
+            if provider != baseline or any(
+                grant[0] != "azure_pg_admin"
+                or grant[1] in {"azuresu", "azure_pg_admin"}
+                or grant[2] != "EXECUTE"
+                for grant in grants - baseline
+            ):
+                raise ValueError("unexpected provider extension permissions")
+            managed.append(function)
+        return managed
+
+    def _restore_list(self, listing: bytes, managed: list[dict[str, Any]]) -> str:
+        # Match the complete catalog-derived archive descriptor. A name-only match
+        # cannot establish extension ownership or distinguish overloaded functions.
+        descriptors = {
+            f"ACL {function['schema']} FUNCTION {function['toc_name']} {function['owner']}": 0
+            for function in managed
+        }
+        if len(descriptors) != len(managed) or any(
+            "\n" in item or "\r" in item for item in descriptors
+        ):
+            raise ValueError("ambiguous provider ACL archive identity")
+        result = []
+        for line in listing.decode("utf-8").splitlines():
+            entry = re.fullmatch(r"[0-9]+; [0-9]+ [0-9]+ (.*)", line)
+            if entry and entry[1] in descriptors:
+                descriptors[entry[1]] += 1
+                line = ";" + line
+            result.append(line)
+        if any(count != 1 for count in descriptors.values()):
+            raise ValueError("provider ACL archive mapping is incomplete or ambiguous")
+        return "\n".join(result) + "\n"
+
+    def _replay_managed_privileges(self, managed: list[dict[str, Any]]) -> None:
+        current = {
+            (f["extension"], f["schema"], f["name"], f["arguments"]): f
+            for f in self.extension_privileges()
+        }
+        with self.conn.transaction():
+            self.conn.execute("SET LOCAL statement_timeout = '3000s'")
+            for function in managed:
+                key = tuple(function[k] for k in ("extension", "schema", "name", "arguments"))
+                target = current.get(key)
+                if target is None or any(
+                    target[k] != function[k] for k in ("extension", "version", "owner", "toc_name")
+                ):
+                    raise ValueError("provider extension identity differs on target")
+                expected = {tuple(g) for g in function["acl"]}
+                actual = {tuple(g) for g in target["acl"]}
+                # Provider-owned grants are retained in place, never replayed by the
+                # migration role. Any unexpected grant is a mismatch, not cleanup authority.
+                if {g for g in actual if g[0] == "azuresu"} != {
+                    g for g in expected if g[0] == "azuresu"
+                } or not actual <= expected:
+                    raise ValueError("provider extension permissions differ on target")
+                for grantor, recipient, privilege, grantable in sorted(
+                    expected - actual,
+                    key=lambda grant: (
+                        grant[0],
+                        grant[1] is not None,
+                        grant[1] or "",
+                        grant[2],
+                        grant[3],
+                    ),
+                ):
+                    self.conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(grantor)))
+                    self.conn.execute(
+                        sql.SQL("GRANT EXECUTE ON FUNCTION {}.{}({}) TO {}{}").format(
+                            sql.Identifier(function["schema"]),
+                            sql.Identifier(function["name"]),
+                            sql.SQL(function["arguments"]),
+                            sql.SQL("PUBLIC") if recipient is None else sql.Identifier(recipient),
+                            sql.SQL(" WITH GRANT OPTION" if grantable else ""),
+                        )
+                    )
+                    self.conn.execute("RESET ROLE")
+
+    def restore(
+        self, path: Path, manifest: RestoreManifest, *, client_dir: Path | None = None
+    ) -> None:
+        if archive_digest(path) != manifest.archive_sha256:
+            raise ValueError("restore archive does not match permission snapshot")
+        managed = self._managed_privileges(manifest)
+        client = str(client_dir / "pg_restore") if client_dir else "pg_restore"
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".restore-list"
+        ) as selection:
+            extra = []
+            if managed:
+                selection.write(
+                    self._restore_list(self._command([client, "--list", str(path)]), managed)
+                )
+                selection.flush()
+                extra = ["--use-list", selection.name]
+            self._command(
+                [
+                    client,
+                    "--exit-on-error",
+                    "--single-transaction",
+                    *extra,
+                    "--dbname",
+                    self.conninfo,
+                    str(path),
+                ]
+            )
+        self._replay_managed_privileges(managed)
+        if self.snapshot(permissions_only=True) != manifest.permissions:
+            raise ValueError("restore permission reconciliation failed")
 
     def read_checkpoint(self) -> dict[str, Any] | None:
         if (
@@ -550,6 +887,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_snapshot["tables"]
                 or target_snapshot["sequences"]
                 or target_snapshot.get("routines")
+                or target_snapshot.get("large_objects")
             ):
                 raise ValueError("target contains existing workload objects")
             runner.run(bootstrap_target({**os.environ, "PG_FQDN": os.environ["PG_TARGET_FQDN"]}))

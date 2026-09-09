@@ -24,7 +24,7 @@ from typing import Any
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from sage.maintenance.postgres_migration import PostgresStore, run_migration
+from sage.maintenance.postgres_migration import PostgresStore, RestoreManifest, run_migration
 
 REPORT_PREFIX = "CAS_REHEARSAL_REPORT "
 
@@ -225,11 +225,11 @@ class MeasuredStore:
     def snapshot(self) -> dict[str, Any]:
         return self.meter.call(self.label + "_snapshot", self.store.snapshot)
 
-    def dump(self, path: Path) -> None:
-        self.meter.call("dump", self.store.dump, path)
+    def dump(self, path: Path) -> RestoreManifest:
+        return self.meter.call("dump", self.store.dump, path)
 
-    def restore(self, path: Path) -> None:
-        self.meter.call("restore", self.store.restore, path)
+    def restore(self, path: Path, manifest: RestoreManifest) -> None:
+        self.meter.call("restore", self.store.restore, path, manifest)
 
     def fence(self) -> None:
         self.meter.call("fence", self.store.fence)
@@ -308,36 +308,14 @@ def execute_rehearsal(
         # The seed is a consistent logical snapshot, not a claim about later live writes.
         seed_client = Path(os.environ.get("PG_SEED_CLIENT_DIR", "/usr/lib/postgresql/16/bin"))
         report["stage"] = "seed_dump"
-        meter.call(
-            "seed_dump",
-            source._command,
-            [
-                str(seed_client / "pg_dump"),
-                "--format=custom",
-                "--exclude-schema=_cas_migration",
-                "--file",
-                str(seed),
-                "--dbname",
-                source.conninfo,
-            ],
-        )
-        seed.chmod(0o600)
+        manifest = meter.call("seed_dump", lambda: source.dump(seed, client_dir=seed_client))
         report["seed_archive_bytes"] = seed.stat().st_size
         report["stage"] = "connect_clones"
         clones.append(admin.connect(0))
         clones.append(admin.connect(1))
         report["stage"] = "seed_restore"
         meter.call(
-            "seed_restore",
-            clones[0]._command,
-            [
-                str(seed_client / "pg_restore"),
-                "--exit-on-error",
-                "--single-transaction",
-                "--dbname",
-                clones[0].conninfo,
-                str(seed),
-            ],
+            "seed_restore", lambda: clones[0].restore(seed, manifest, client_dir=seed_client)
         )
         report["stage"] = "seed_preflight"
         source.assert_extensions_match(clones[0])
@@ -358,6 +336,7 @@ def execute_rehearsal(
         )
         report.update(
             fingerprint=result["fingerprint"],
+            permission_policy=result["permission_policy"],
             archive_sha256=result["archive_sha256"],
             table_count=len(result["tables"]),
             row_count=sum(result["tables"].values()),
