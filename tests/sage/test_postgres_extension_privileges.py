@@ -550,3 +550,68 @@ def test_owner_maintain_exception_does_not_hide_other_owner_grants(
         run_migration(source, target, tmp_path / "retry.dump", "provider", 16, 17)
     assert target.read_checkpoint() == report
     assert not (tmp_path / "retry.dump").exists()
+
+
+def test_column_grants_preserve_recipient_and_grant_option(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    source.conn.execute(
+        sql.SQL("GRANT UPDATE (value) ON ordinary.data TO {} WITH GRANT OPTION").format(
+            sql.Identifier(provider.apps[0])
+        )
+    )
+    run_migration(source, target, tmp_path / "copy.dump", "column", 16, 17)
+    for store in (source, target):
+        assert store.conn.execute(
+            "SELECT has_column_privilege(%s,'ordinary.data','value','UPDATE WITH GRANT OPTION'), "
+            "has_table_privilege(%s,'ordinary.data','UPDATE')",
+            (provider.apps[0], provider.apps[0]),
+        ).fetchone() == (True, False)
+    assert source.snapshot() == target.snapshot()
+
+
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+@pytest.mark.parametrize("change", ["added", "grant_option"])
+def test_column_permission_drift_prevents_verification(
+    provider: ProviderFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    change: str,
+) -> None:
+    source, target = provider.stores
+    role = sql.Identifier(provider.apps[0])
+    if change == "grant_option":
+        source.conn.execute(
+            sql.SQL("GRANT UPDATE (value) ON ordinary.data TO {} WITH GRANT OPTION").format(role)
+        )
+    command = (
+        "GRANT UPDATE (value) ON ordinary.data TO {}"
+        if change == "added"
+        else "REVOKE GRANT OPTION FOR UPDATE (value) ON ordinary.data FROM {}"
+    )
+    checkpoint = None
+    changed = []
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "column", 16, 17)
+        target.conn.execute(sql.SQL(command).format(role))
+        changed.append(True)
+    else:
+        original = target._command
+
+        def restore_with_column_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                target.conn.execute(sql.SQL(command).format(role))
+                changed.append(True)
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_column_change)
+    with pytest.raises(
+        ValueError, match="permission reconciliation failed|resume reconciliation failed"
+    ):
+        run_migration(source, target, tmp_path / "attempt.dump", "column", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint
+    assert source.snapshot() != target.snapshot()

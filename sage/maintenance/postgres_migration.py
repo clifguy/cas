@@ -254,6 +254,20 @@ class PostgresStore:
                 acl=canonical_relation_acl("c.relacl", "c.relowner", "c.relkind='r'", self.major),
             )
         ).fetchall()
+        column_grants = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, c.relname, column_attr.attname, {acl}
+                FROM pg_attribute column_attr JOIN pg_class c ON c.oid=column_attr.attrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE {predicate} AND c.relkind IN ('r','p','v','m','f')
+                AND column_attr.attnum>0 AND NOT column_attr.attisdropped
+                AND column_attr.attacl IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
+                ORDER BY 1,2,3""").format(
+                predicate=sql.SQL(_SCHEMA_PREDICATE),
+                acl=canonical_relation_acl("column_attr.attacl", "c.relowner", "FALSE", self.major),
+            )
+        ).fetchall()
         extensions = self.extensions()
         default_grants = self.conn.execute(
             sql.SQL(
@@ -288,6 +302,7 @@ class PostgresStore:
             "sequences": {},
             "extensions": extensions,
             "default_grants": default_grants,
+            "column_grants": column_grants,
             "routines": routines,
             "extension_privileges": self.extension_privileges(),
         }

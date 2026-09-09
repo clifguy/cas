@@ -82,10 +82,12 @@ Never describe a preparation PR as a completed production migration.
 Both logical restore paths capture permission metadata in the same exported,
 repeatable-read snapshot consumed by `pg_dump`. An in-memory manifest binds that
 metadata to the archive SHA-256. Restore refuses a different archive and compares
-schema, relation, routine, default-grant and extension-function permissions before
+schema, relation, column, routine, default-grant and extension-function permissions before
 reporting success. Extension-function comparisons include the extension identity
 and version, exact signature, owner, grantor, recipient, privilege and grant option.
-They also participate in migration reconciliation and resume fingerprints.
+They also participate in migration reconciliation and resume fingerprints. Column
+grants retain the schema, relation and column identity, grantor, recipient, privilege
+and grant option in both permission snapshots and full reconciliation.
 
 Azure installs `pgstattuple` functions owned by `azuresu`, with EXECUTE grants from
 that owner to itself and `pg_stat_scan_tables`, and EXECUTE WITH GRANT OPTION to
