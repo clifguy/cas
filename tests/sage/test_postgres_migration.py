@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from sage.maintenance.postgres_migration import run_migration
+from sage.maintenance.postgres_migration import RestoreManifest, archive_digest, run_migration
 
 
 class Store:
@@ -31,17 +31,19 @@ class Store:
         if self.writers:
             raise ValueError("writers remain")
 
-    def dump(self, path: Path) -> None:
+    def dump(self, path: Path) -> RestoreManifest:
         self.events.append("dump")
         if self.fail == "dump":
             raise RuntimeError("dump failed")
         path.write_bytes(b"archive")
+        return RestoreManifest(archive_digest(path), {})
 
-    def restore(self, path: Path) -> None:
+    def restore(self, path: Path, manifest: RestoreManifest) -> None:
         self.events.append("restore")
         if self.fail == "restore":
             raise RuntimeError("restore failed")
         assert path.read_bytes() == b"archive"
+        assert manifest.archive_sha256 == archive_digest(path)
         self.state = deepcopy(SOURCE)
         if self.fail == "corrupt":
             self.state["tables"]["vault.edges"]["hash"] = "different"

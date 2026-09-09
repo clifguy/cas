@@ -77,6 +77,52 @@ privileges, private DNS, geo-backup availability, or application health. Those
 remain live gates during preparation, migration, and the serving preflight.
 Never describe a preparation PR as a completed production migration.
 
+## Provider-owned extension privileges
+
+Both logical restore paths capture permission metadata in the same exported,
+repeatable-read snapshot consumed by `pg_dump`. An in-memory manifest binds that
+metadata to the archive SHA-256. Restore refuses a different archive and compares
+schema, relation, routine, default-grant and extension-function permissions before
+reporting success. Extension-function comparisons include the extension identity
+and version, exact signature, owner, grantor, recipient, privilege and grant option.
+They also participate in migration reconciliation and resume fingerprints.
+
+Azure installs `pgstattuple` functions owned by `azuresu`, with EXECUTE grants from
+that owner to itself and `pg_stat_scan_tables`, and EXECUTE WITH GRANT OPTION to
+`azure_pg_admin`. Replaying the last grant as an administrator inheriting
+`azure_pg_admin` can attempt to grant an option back to its grantor. Restore handles
+this exact catalog-verified relationship without replaying the provider-owned grants.
+It requires extension membership and the complete grant relationship; an object name
+or an Azure-looking role name is insufficient.
+
+For these functions only, restore replaces the complete ACL archive entry, matched
+by its catalog-derived schema, signature and owner. Every replacement must map to
+exactly one archive entry. The installed target must have the same extension identity,
+owner and provider baseline. Additional source EXECUTE grants made by `azure_pg_admin`
+are replayed as that grantor, retaining the stored recipient identities and grant options.
+Unexpected target grants and unsupported source grant relationships fail closed.
+No permission comparison is waived, and other archive ownership and ACL entries
+continue through ordinary restore. Provider ownership is verified directly rather
+than requiring the migration administrator to impersonate the provider role.
+
+The archive restore remains a single transaction. Application-grant replay follows
+in a separate transaction, before permission reconciliation and any verified
+checkpoint. Failure at that stage can leave restored data in the isolated target;
+it does not authorize retrying over it or declaring success. Use the existing
+inspection and cleanup procedure. The temporary restore selection is private and
+removed on exit. Archive inspection, permission replay and verification are inside
+the measured restore stage; their scratch usage and elapsed time count toward the
+same limits as the rest of the operation.
+
+Permission reports name `catalog-acl-v1-owner-maintain`. Its only cross-version
+normalization treats PostgreSQL 17's added MAINTAIN bit as equivalent when it is
+the unchanged table owner's non-grantable self-grant alongside all seven prior
+table privileges. The same rule applies to the owner's table default privileges.
+It never hides MAINTAIN for an application role, PUBLIC or another recipient, a
+grantable MAINTAIN privilege, or an owner change. PostgreSQL 16/17 introduce this
+difference when `GRANT ALL` is replayed; the rule changes comparison only and
+issues no extra grants. All other differences remain failures.
+
 ## Full-size rehearsal before downtime
 
 After `prepare` succeeds, dispatch `postgres-migration` on the approved `main`

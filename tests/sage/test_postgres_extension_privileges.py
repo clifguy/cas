@@ -1,0 +1,552 @@
+"""Real provider-owned extension ACLs through seed and migration restore."""
+
+from __future__ import annotations
+
+import os
+import time
+import uuid
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+
+import psycopg
+import pytest
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
+
+from sage.maintenance.postgres_migration import PostgresStore, run_migration
+from sage.maintenance.postgres_rehearsal import RehearsalDatabases, execute_rehearsal
+from tests.helpers.pg_isolation import derive_throwaway_dbname, rewrite_dsn_dbname
+
+
+@dataclass
+class ProviderFixture:
+    dsns: list[str]
+    stores: list[PostgresStore]
+    administrator: str
+    apps: tuple[str, ...]
+
+    include_vector: bool = False
+
+    def install(self, index: int, name: str) -> None:
+        # This is the provider's extension-install boundary, never the restoring identity.
+        with psycopg.connect(rewrite_dsn_dbname(self.dsns[index], name), autocommit=True) as conn:
+            extensions = ("vector", "pgstattuple") if self.include_vector else ("pgstattuple",)
+            for extension in extensions:
+                conn.execute(sql.SQL("CREATE EXTENSION {}").format(sql.Identifier(extension)))
+            conn.execute(
+                "UPDATE pg_extension SET extowner=(SELECT oid FROM pg_roles "
+                "WHERE rolname=%s) WHERE extname IN ('vector','pgstattuple')",
+                (self.administrator,),
+            )
+            for signature, extension in conn.execute(
+                "SELECT p.oid::regprocedure::text, e.extname FROM pg_proc p "
+                "JOIN pg_depend d ON d.classid='pg_proc'::regclass AND d.objid=p.oid "
+                "AND d.deptype='e' JOIN pg_extension e ON e.oid=d.refobjid "
+                "WHERE e.extname IN ('vector','pgstattuple')"
+            ).fetchall():
+                owner = "azuresu" if extension == "pgstattuple" else self.administrator
+                conn.execute(
+                    sql.SQL("ALTER FUNCTION {} OWNER TO {}").format(
+                        sql.SQL(signature), sql.Identifier(owner)
+                    )
+                )
+                if extension == "pgstattuple":
+                    conn.execute(
+                        sql.SQL(
+                            "GRANT EXECUTE ON FUNCTION {} TO azure_pg_admin WITH GRANT OPTION"
+                        ).format(sql.SQL(signature))
+                    )
+
+    def connect_admin(self, index: int) -> psycopg.Connection:
+        return psycopg.connect(
+            rewrite_dsn_dbname(self.dsns[index], self.stores[index].database), autocommit=True
+        )
+
+
+@pytest.fixture
+def provider(request: pytest.FixtureRequest) -> Iterator[ProviderFixture]:
+    dsns = [
+        os.environ.get(key)
+        for key in ("SAGE_MIGRATION_TEST_SOURCE_DSN", "SAGE_MIGRATION_TEST_TARGET_DSN")
+    ]
+    if not all(dsns):
+        pytest.skip("requires disposable PostgreSQL 16 and 17 maintenance endpoints")
+    mode = getattr(request, "param", None)
+    catalog = mode in {"catalog", "catalog_bare"}
+    if catalog:
+        dsns = dsns[:1]
+    nonce = uuid.uuid4().hex[:12]
+    administrator = "restore_" + nonce
+    apps = (
+        "PUBLIC" if getattr(request, "param", None) == "quoted_public" else "sage ; " + nonce,
+        'bff " ' + nonce,
+    )
+    if mode == "catalog_bare":
+        apps = ()
+    names = [derive_throwaway_dbname() for _ in dsns]
+    fixture = ProviderFixture(dsns, [], administrator, apps, include_vector=mode == "rehearsal")
+    created = []
+    try:
+        for index, (dsn, name) in enumerate(zip(dsns, names, strict=True)):
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                # Fixed provider names must be exclusively fixture-owned. Existing names
+                # fail creation; never adopt or change a shared cluster's provider roles.
+                conn.execute("CREATE ROLE azuresu")
+                conn.execute("CREATE ROLE azure_pg_admin")
+                conn.execute(
+                    sql.SQL("CREATE ROLE {} LOGIN CREATEDB").format(sql.Identifier(administrator))
+                )
+                conn.execute(
+                    sql.SQL("GRANT azure_pg_admin TO {}").format(sql.Identifier(administrator))
+                )
+                for app in apps:
+                    conn.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(app)))
+                conn.execute(
+                    sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                        sql.Identifier(name), sql.Identifier(administrator)
+                    )
+                )
+                created.append((dsn, name))
+            fixture.install(index, name)
+            store = PostgresStore(
+                make_conninfo(rewrite_dsn_dbname(dsn, name), user=administrator), apps
+            )
+            fixture.stores.append(store)
+            assert store.conn.execute(
+                "SELECT rolsuper FROM pg_roles WHERE rolname=current_user"
+            ).fetchone() == (False,)
+        source = fixture.stores[0]
+        assert tuple(store.major for store in fixture.stores) == ((16,) if catalog else (16, 17))
+        if not catalog:
+            source.conn.execute("CREATE SCHEMA ordinary")
+            source.conn.execute("CREATE TABLE ordinary.data (value text)")
+            source.conn.execute("INSERT INTO ordinary.data VALUES ('retained')")
+            source.conn.execute(
+                "CREATE FUNCTION ordinary.pg_relpages(regclass) RETURNS bigint "
+                "LANGUAGE SQL AS 'SELECT 42::bigint'"
+            )
+            for app in apps:
+                source.conn.execute(
+                    sql.SQL("GRANT SELECT ON ordinary.data TO {}").format(sql.Identifier(app))
+                )
+                source.conn.execute(
+                    sql.SQL(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA ordinary GRANT SELECT ON TABLES TO {}"
+                    ).format(sql.Identifier(app))
+                )
+                source.conn.execute(
+                    sql.SQL(
+                        "GRANT EXECUTE ON FUNCTION ordinary.pg_relpages(regclass) "
+                        "TO {} WITH GRANT OPTION"
+                    ).format(sql.Identifier(app))
+                )
+        if mode in {"full", "rehearsal", "quoted_public", "catalog"}:
+            source.conn.execute("SET ROLE azure_pg_admin")
+            for app in apps:
+                source.conn.execute(
+                    sql.SQL(
+                        "GRANT EXECUTE ON FUNCTION public.pgstattuple(regclass), "
+                        "public.pgstattuple(text) TO {}"
+                    ).format(sql.Identifier(app))
+                )
+            source.conn.execute("RESET ROLE")
+        yield fixture
+    finally:
+        for store in fixture.stores:
+            store.close()
+        for dsn, name in created:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
+                for role in (*apps, administrator, "azure_pg_admin", "azuresu"):
+                    conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def acl(conn: psycopg.Connection, signature: str) -> list[tuple]:
+    return conn.execute(
+        "SELECT pg_get_userbyid(a.grantor), CASE WHEN a.grantee=0 THEN 'PUBLIC' "
+        "ELSE pg_get_userbyid(a.grantee) END, a.privilege_type, a.is_grantable "
+        "FROM pg_proc p, aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a "
+        "WHERE p.oid=%s::regprocedure ORDER BY 1,2,3,4",
+        (signature,),
+    ).fetchall()
+
+
+@pytest.mark.parametrize("provider", ["catalog_bare"], indirect=True)
+def test_provider_grant_cycle_is_the_captured_non_superuser_failure(
+    provider: ProviderFixture,
+) -> None:
+    source = provider.stores[0]
+    assert ("azuresu", "azure_pg_admin", "EXECUTE", True) in acl(
+        source.conn, "public.pg_relpages(regclass)"
+    )
+    with pytest.raises(psycopg.Error, match="grant options cannot be granted back") as error:
+        source.conn.execute(
+            "GRANT ALL ON FUNCTION public.pg_relpages(regclass) TO azure_pg_admin WITH GRANT OPTION"
+        )
+    assert error.value.sqlstate == "0LP01"
+
+
+def assert_permissions(source: PostgresStore, target: PostgresStore, apps: tuple[str, ...]) -> None:
+    for signature in (
+        "public.pgstattuple(regclass)",
+        "public.pgstattuple(text)",
+        "public.pg_relpages(regclass)",
+        "ordinary.pg_relpages(regclass)",
+    ):
+        assert acl(target.conn, signature) == acl(source.conn, signature)
+    for app in apps:
+        assert target.conn.execute(
+            "SELECT has_function_privilege(%s, 'public.pgstattuple(regclass)','EXECUTE')", (app,)
+        ).fetchone() == (True,)
+        assert target.conn.execute(
+            "SELECT has_table_privilege(%s,'ordinary.data','SELECT')", (app,)
+        ).fetchone() == (True,)
+    routine_grants = acl(target.conn, "ordinary.pg_relpages(regclass)")
+    for app in apps:
+        assert any(grant[1:] == (app, "EXECUTE", True) for grant in routine_grants)
+    with target.conn.transaction(force_rollback=True):
+        target.conn.execute("CREATE TABLE ordinary.future_permissions (value text)")
+        for app in apps:
+            assert target.conn.execute(
+                "SELECT has_table_privilege(%s,'ordinary.future_permissions','SELECT')", (app,)
+            ).fetchone() == (True,)
+    assert target.conn.execute("SELECT value FROM ordinary.data").fetchall() == [("retained",)]
+    assert target.snapshot() == source.snapshot()
+
+
+@pytest.mark.parametrize("provider", ["full"], indirect=True)
+def test_migration_restores_provider_and_application_permissions(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    report = run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    assert report["status"] == "verified"
+    assert_permissions(source, target, provider.apps)
+    assert target.read_checkpoint() == report
+
+
+@pytest.mark.parametrize("provider", ["full"], indirect=True)
+def test_extension_application_grant_option_survives_restore(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    source.conn.execute("SET ROLE azure_pg_admin")
+    source.conn.execute(
+        sql.SQL(
+            "GRANT EXECUTE ON FUNCTION public.pgstattuple(regclass) TO {} WITH GRANT OPTION"
+        ).format(sql.Identifier(provider.apps[1]))
+    )
+    source.conn.execute("RESET ROLE")
+    run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    assert ("azure_pg_admin", provider.apps[1], "EXECUTE", True) in acl(
+        target.conn, "public.pgstattuple(regclass)"
+    )
+    assert_permissions(source, target, provider.apps)
+
+
+@pytest.mark.parametrize("provider", ["rehearsal"], indirect=True)
+def test_seed_and_migration_restore_preserve_serving_permissions(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+
+    class PreparedDatabases(RehearsalDatabases):
+        def create(self) -> None:
+            super().create()
+            for index, name in enumerate(self.names):
+                provider.install(index, name)
+
+    admin = PreparedDatabases(source, target, "g17", "r602")
+    before = source.snapshot()
+    original_acl = acl(source.conn, "public.pgstattuple(regclass)")
+    try:
+        report = execute_rehearsal(
+            admin, tmp_path, image="test:fixed", job_started=time.monotonic()
+        )
+        assert report["status"] == "rehearsal_verified"
+        clones = [admin.connect(index) for index in (0, 1)]
+        try:
+            assert_permissions(*clones, provider.apps)
+        finally:
+            for clone in clones:
+                clone.close()
+        assert source.snapshot() == before
+        assert acl(source.conn, "public.pgstattuple(regclass)") == original_acl
+        assert target.read_checkpoint() is None
+        assert target.snapshot()["tables"] == {}
+    finally:
+        admin.cleanup()
+    for store, name in zip(provider.stores, admin.names, strict=True):
+        assert (
+            store.conn.execute("SELECT 1 FROM pg_database WHERE datname=%s", (name,)).fetchone()
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    "drift,provider",
+    [("application", "catalog"), ("provider", "catalog_bare"), ("owner", "catalog_bare")],
+    indirect=["provider"],
+)
+def test_extension_permission_drift_changes_snapshot(provider: ProviderFixture, drift: str) -> None:
+    source = provider.stores[0]
+    before = source.snapshot()
+    with provider.connect_admin(0) as conn:
+        if drift == "application":
+            conn.execute("SET ROLE azure_pg_admin")
+            conn.execute(
+                sql.SQL("REVOKE EXECUTE ON FUNCTION public.pgstattuple(regclass) FROM {}").format(
+                    sql.Identifier(provider.apps[0])
+                )
+            )
+        elif drift == "provider":
+            conn.execute(
+                "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION public.pg_relpages(regclass) "
+                "FROM azure_pg_admin CASCADE"
+            )
+        else:
+            conn.execute(
+                sql.SQL("ALTER FUNCTION public.pg_relpages(regclass) OWNER TO {}").format(
+                    sql.Identifier(provider.administrator)
+                )
+            )
+    assert source.snapshot() != before, (
+        "extension permission drift must participate in reconciliation"
+    )
+
+
+@pytest.mark.parametrize("drift", ["provider", "unexpected_recipient", "owner"])
+def test_restore_rejects_unexpected_target_permissions(
+    provider: ProviderFixture, tmp_path: Path, drift: str
+) -> None:
+    source, target = provider.stores
+    with provider.connect_admin(1) as conn:
+        if drift == "provider":
+            conn.execute(
+                "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION public.pg_relpages(regclass) "
+                "FROM azure_pg_admin"
+            )
+        elif drift == "unexpected_recipient":
+            conn.execute("SET ROLE azure_pg_admin")
+            conn.execute("GRANT EXECUTE ON FUNCTION public.pg_relpages(regclass) TO PUBLIC")
+        else:
+            conn.execute(
+                sql.SQL("ALTER FUNCTION public.pg_relpages(regclass) OWNER TO {}").format(
+                    sql.Identifier(provider.administrator)
+                )
+            )
+    with pytest.raises(ValueError, match="provider extension"):
+        run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    assert target.read_checkpoint() is None
+    for app in provider.apps:
+        assert source.conn.execute(
+            "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (app,)
+        ).fetchone() == (False,)
+
+
+def test_dump_permissions_and_archive_share_snapshot(
+    provider: ProviderFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, target = provider.stores
+    original = source._command
+    changed = []
+
+    def concurrent_grant_change(argv: list[str]) -> bytes:
+        if Path(argv[0]).name == "pg_dump":
+            with provider.connect_admin(0) as conn:
+                conn.execute(
+                    sql.SQL("REVOKE SELECT ON ordinary.data FROM {}").format(
+                        sql.Identifier(provider.apps[0])
+                    )
+                )
+            changed.append(True)
+        return original(argv)
+
+    monkeypatch.setattr(source, "_command", concurrent_grant_change)
+    path = tmp_path / "copy.dump"
+    manifest = source.dump(path)
+    assert changed == [True]
+    target.restore(path, manifest)
+    assert source.conn.execute(
+        "SELECT has_table_privilege(%s,'ordinary.data','SELECT')", (provider.apps[0],)
+    ).fetchone() == (False,)
+    assert target.conn.execute(
+        "SELECT has_table_privilege(%s,'ordinary.data','SELECT')", (provider.apps[0],)
+    ).fetchone() == (True,)
+
+
+def test_archive_identity_mismatch_precedes_target_write(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    path = tmp_path / "copy.dump"
+    manifest = source.dump(path)
+    path.write_bytes(path.read_bytes() + b"different archive")
+    before = target.snapshot()
+    with pytest.raises(ValueError, match="archive does not match"):
+        target.restore(path, manifest)
+    assert target.snapshot() == before
+    assert target.read_checkpoint() is None
+
+
+def test_same_named_non_extension_function_is_never_exempted(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    source.conn.execute(
+        "GRANT EXECUTE ON FUNCTION ordinary.pg_relpages(regclass) "
+        "TO azure_pg_admin WITH GRANT OPTION"
+    )
+    expected = acl(source.conn, "ordinary.pg_relpages(regclass)")
+    assert (provider.administrator, "azure_pg_admin", "EXECUTE", True) in expected
+    report = run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    assert report["status"] == "verified"
+    assert acl(target.conn, "ordinary.pg_relpages(regclass)") == expected
+    assert target.conn.execute(
+        "SELECT pg_get_userbyid(proowner) FROM pg_proc "
+        "WHERE oid='ordinary.pg_relpages(regclass)'::regprocedure"
+    ).fetchone() == (provider.administrator,)
+
+
+@pytest.mark.parametrize("surface", ["table", "default"])
+@pytest.mark.parametrize("recipient", ["application", "public"])
+def test_resume_rejects_added_maintain_for_non_owner(
+    provider: ProviderFixture, tmp_path: Path, recipient: str, surface: str
+) -> None:
+    source, target = provider.stores
+    report = run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    role = sql.Identifier(provider.apps[0]) if recipient == "application" else sql.SQL("PUBLIC")
+    command = (
+        "GRANT MAINTAIN ON ordinary.data TO {}"
+        if surface == "table"
+        else "ALTER DEFAULT PRIVILEGES IN SCHEMA ordinary GRANT MAINTAIN ON TABLES TO {}"
+    )
+    target.conn.execute(sql.SQL(command).format(role))
+    with pytest.raises(ValueError, match="resume reconciliation failed"):
+        run_migration(source, target, tmp_path / "retry.dump", "provider", 16, 17)
+    assert target.read_checkpoint() == report
+    assert not (tmp_path / "retry.dump").exists()
+
+
+def test_cross_major_global_default_owner_permissions(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    source.conn.execute(
+        sql.SQL("ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO {}").format(
+            sql.Identifier(provider.apps[0])
+        )
+    )
+    report = run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    assert report["status"] == "verified"
+    assert source.snapshot()["default_grants"] == target.snapshot()["default_grants"]
+    target.conn.execute("CREATE TABLE public.future_data (value text)")
+    assert target.conn.execute(
+        "SELECT has_table_privilege(%s,'public.future_data','SELECT')", (provider.apps[0],)
+    ).fetchone() == (True,)
+    assert target.conn.execute(
+        "SELECT has_table_privilege(%s,'public.future_data','MAINTAIN')", (provider.apps[0],)
+    ).fetchone() == (False,)
+
+
+@pytest.mark.parametrize("provider", ["quoted_public"], indirect=True)
+def test_literal_public_role_is_not_public_access(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    for store in (source, target):
+        assert store.conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM pg_proc p, aclexplode(p.proacl) a "
+            "WHERE p.oid='public.pgstattuple(regclass)'::regprocedure AND a.grantee=0)"
+        ).fetchone() == (False,)
+        assert store.conn.execute(
+            "SELECT has_function_privilege(%s,'public.pgstattuple(regclass)','EXECUTE')",
+            ("PUBLIC",),
+        ).fetchone() == (True,)
+
+
+@pytest.mark.parametrize("corruption", ["missing", "duplicate"])
+def test_archive_acl_mapping_must_be_complete_and_unique(
+    provider: ProviderFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
+    source, target = provider.stores
+    path = tmp_path / "copy.dump"
+    manifest = source.dump(path)
+    original = target._command
+    altered = []
+
+    def ambiguous_listing(argv: list[str]) -> bytes:
+        output = original(argv)
+        if "--list" in argv:
+            lines = output.decode().splitlines()
+            matching = [
+                line
+                for line in lines
+                if "ACL public FUNCTION pg_relpages(relname regclass)" in line
+            ]
+            assert len(matching) == 1
+            line = matching[0]
+            lines.remove(line) if corruption == "missing" else lines.append(line)
+            altered.append(True)
+            return ("\n".join(lines) + "\n").encode()
+        return output
+
+    monkeypatch.setattr(target, "_command", ambiguous_listing)
+    before = target.snapshot()
+    with pytest.raises(ValueError, match="mapping is incomplete or ambiguous"):
+        target.restore(path, manifest)
+    assert altered == [True]
+    assert target.snapshot() == before
+    assert target.read_checkpoint() is None
+
+
+def test_unknown_source_provider_grant_is_rejected_before_restore(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    with provider.connect_admin(0) as conn:
+        conn.execute(
+            sql.SQL("GRANT EXECUTE ON FUNCTION public.pg_relpages(regclass) TO {}").format(
+                sql.Identifier(provider.apps[0])
+            )
+        )
+    path = tmp_path / "copy.dump"
+    manifest = source.dump(path)
+    before = target.snapshot()
+    with pytest.raises(ValueError, match="provider extension"):
+        target.restore(path, manifest)
+    assert target.snapshot() == before
+    assert target.read_checkpoint() is None
+
+
+@pytest.mark.parametrize("change", ["grant_option", "partial_owner"])
+def test_owner_maintain_exception_does_not_hide_other_owner_grants(
+    provider: ProviderFixture, tmp_path: Path, change: str
+) -> None:
+    source, target = provider.stores
+    if change == "partial_owner":
+        source.conn.execute(
+            sql.SQL("REVOKE INSERT ON ordinary.data FROM {}").format(
+                sql.Identifier(provider.administrator)
+            )
+        )
+    if change == "partial_owner":
+        # The newer dump client also adds MAINTAIN to this partial owner ACL.
+        # It is deliberately outside the ALL-grant equivalence and must be rejected.
+        with pytest.raises(ValueError, match="permission reconciliation failed"):
+            run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+        assert target.read_checkpoint() is None
+        return
+    report = run_migration(source, target, tmp_path / "copy.dump", "provider", 16, 17)
+    target.conn.execute(
+        sql.SQL("GRANT MAINTAIN ON ordinary.data TO {}{}").format(
+            sql.Identifier(provider.administrator),
+            sql.SQL(" WITH GRANT OPTION" if change == "grant_option" else ""),
+        )
+    )
+    with pytest.raises(ValueError, match="resume reconciliation failed"):
+        run_migration(source, target, tmp_path / "retry.dump", "provider", 16, 17)
+    assert target.read_checkpoint() == report
+    assert not (tmp_path / "retry.dump").exists()
