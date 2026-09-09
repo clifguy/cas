@@ -29,11 +29,20 @@ Do not change it when retrying the same migration.
 Dispatch `postgres-migration` on `main`, action `prepare`. It provisions the
 replacement on the existing private network and prepares an in-VNet manual job.
 It verifies target readiness, the manifest major, 35-day backup retention,
-geo-redundancy, and the deletion lock. This creates billable overlapping resources;
+geo-redundancy, and the deletion lock. The job then runs in its default `preflight`
+mode: it bootstraps the replacement roles/extensions and checks database CREATE,
+SET ROLE, and inherited access for the source's restored object owners. Preparation
+fails if any required role or privilege is missing; the source apps and CONNECT
+privileges are untouched. It does not grant migration-admin membership automatically.
+Have an authorized database administrator establish the required scoped memberships
+and rerun preparation; record any temporary grants and their later revocation.
+This creates billable overlapping resources;
 geo backup storage may also add cost. It does not stop applications.
 
 The local PostgreSQL roundtrip tests verify logical transfer, reconciliation,
-source fencing, and resume rejection against disposable databases. Bicep builds
+source fencing, and resume rejection against disposable databases. A separate
+non-superuser rehearsal tests missing ownership privileges and a successful restore
+with explicit SET ROLE and inherited owner access. Bicep builds
 and source gates verify wiring. They do not establish Azure managed-identity
 privileges, private DNS, geo-backup availability, or application health. Those
 remain live gates during preparation, migration, and the serving preflight.
@@ -51,9 +60,14 @@ tag or start jobs from an independent operator session.
    remains active. A cancelled GitHub run does not prove its Azure job stopped.
 2. Dispatch `postgres-migration`, action `migrate`, using the prepared generation.
    Enter that same generation in `confirm` to authorize stopping the applications.
+   The driver first reruns the permission preflight and waits for success before
+   recording recovery state, setting the source fence, or stopping an application.
+   A failed preflight leaves the existing serving/fence state unchanged.
 3. The driver saves active source revision names, sets `copying:<generation>`,
-   and deactivates SAGE and BFF revisions. The job bootstraps only the replacement
-   identities/extensions, revokes source workload CONNECT (including PUBLIC),
+   and deactivates SAGE and BFF revisions. It explicitly starts the job in `migrate`
+   mode by updating its arguments and starting the deployed template without
+   execution overrides, under the tenant lock. The job bootstraps only the replacement identities/extensions,
+   rechecks ownership privileges, revokes source workload CONNECT (including PUBLIC),
    terminates existing client sessions, and refuses remaining connections or
    prepared transactions. Inherited CONNECT privileges or another non-superuser login retaining CONNECT
    cause failure. Do not introduce administrator writes during this window.
@@ -66,7 +80,8 @@ tag or start jobs from an independent operator session.
    ACLs; it never reconstructs human-curated edges from content.
 5. Restore runs in one transaction with exit-on-error. Reconciliation compares
    every workload table's row count and ordered content hash, column definitions,
-   indexes, constraints, table/schema owners and ACLs, sequence state, default
+   indexes, constraints, table/schema owners and ACLs, sequence state and definitions
+   (data type, start, increment, bounds, cache, and cycle), default
    grants, and the required extension versions. Unsupported relation kinds fail
    closed. Review the job's report and target `_cas_migration.checkpoint` record.
 6. Only successful reconciliation sets `verified:<generation>`. Applications stay

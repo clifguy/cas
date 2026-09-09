@@ -24,6 +24,8 @@ class Azure:
         self.image_drift = None
         self.active_job = False
         self.status = "Succeeded"
+        self.copy_status = "Succeeded"
+        self.execution_mode = None
         self.fence = ""
         self.revisions = '{"sage":["sage-rev"],"bff":["bff-rev"]}'
         self.outputs = {
@@ -91,12 +93,22 @@ class Azure:
         if prefix == ("containerapp", "job", "execution"):
             if args[3] == "list":
                 return [{"properties": {"status": "Running"}}] if self.active_job else []
-            return {"properties": {"status": self.status}}
+            return {
+                "properties": {
+                    "status": self.copy_status if self.execution_mode == "migrate" else self.status
+                }
+            }
         if prefix == ("containerapp", "revision", "list"):
             return [
                 {"name": args[args.index("--name") + 1] + "-rev", "properties": {"active": True}}
             ]
+        if prefix == ("containerapp", "job", "update"):
+            self.execution_mode = args[args.index("--args") + 1]
         if prefix == ("containerapp", "job", "start"):
+            assert not any(
+                flag in args
+                for flag in ("--args", "--command", "--env-vars", "--image", "--container-name")
+            ), "execution overrides discard the deployed template"
             return {"name": "execution"}
         if prefix == ("postgres", "flexible-server", "show"):
             name = args[args.index("--name") + 1]
@@ -146,13 +158,14 @@ def test_migrate_orders_fence_stop_copy_and_verification():
         in [("containerapp", "revision", "deactivate"), ("containerapp", "job", "start")]
     ]
     assert [c[:3] for c in mutations] == [
+        ("containerapp", "job", "start"),
         ("tag", "update", "--resource-id"),
         ("containerapp", "revision", "deactivate"),
         ("containerapp", "revision", "deactivate"),
         ("containerapp", "job", "start"),
         ("tag", "update", "--resource-id"),
     ]
-    assert "casPostgresMigration=copying:g17" in mutations[0]
+    assert "casPostgresMigration=copying:g17" in mutations[1]
     assert "casPostgresMigration=verified:g17" in mutations[-1]
     assert "--env-vars" not in mutations[-2]
 
@@ -161,7 +174,7 @@ def test_migrate_orders_fence_stop_copy_and_verification():
 def test_migration_fails_closed(failure):
     az = Azure()
     az.active_job = failure == "running_job"
-    az.status = "Failed" if failure == "copy_failed" else "Succeeded"
+    az.copy_status = "Failed" if failure == "copy_failed" else "Succeeded"
     with pytest.raises(
         ValueError,
         match={
@@ -256,3 +269,81 @@ def test_migration_rejects_stale_prepared_job(drift):
     with pytest.raises(ValueError, match="prepared"):
         driver().migrate(az, "prod", "group", "g17", "g17", sleep=lambda _: None)
     assert not any(c[:2] == ("tag", "update") for c in az.calls)
+
+
+def test_failed_permission_preflight_keeps_serving_apps_and_fence_unchanged():
+    az = Azure()
+    az.status = "Failed"
+    with pytest.raises(ValueError, match="job failed"):
+        driver().migrate(az, "prod", "group", "g17", "g17", sleep=lambda _: None)
+    assert az.fence == ""
+    assert not any(c[:2] == ("tag", "update") for c in az.calls)
+    assert not any(c[:3] == ("containerapp", "revision", "deactivate") for c in az.calls)
+    starts = [c for c in az.calls if c[:3] == ("containerapp", "job", "start")]
+    assert len(starts) == 1
+    updates = [c for c in az.calls if c[:3] == ("containerapp", "job", "update")]
+    assert len(updates) == 1
+    assert updates[0][-2:] == ("--args", "preflight")
+
+
+def test_prepare_waits_for_successful_permission_preflight():
+    az = Azure()
+    az.status = "Failed"
+    with pytest.raises(ValueError, match="job failed"):
+        driver().prepare(az, "prod", "group", "g17")
+    assert az.fence == ""
+    assert not any(c[:3] == ("containerapp", "revision", "deactivate") for c in az.calls)
+
+
+def test_migration_modes_update_then_inherit_template():
+    az = Azure()
+    driver().migrate(az, "prod", "group", "g17", "g17", sleep=lambda _: None)
+    dispatch = [
+        c
+        for c in az.calls
+        if c[:3] in [("containerapp", "job", "update"), ("containerapp", "job", "start")]
+    ]
+    assert [c[2] for c in dispatch] == ["update", "start", "update", "start"]
+    for update, start, mode in (
+        (dispatch[0], dispatch[1], "preflight"),
+        (dispatch[2], dispatch[3], "migrate"),
+    ):
+        assert update == (
+            "containerapp",
+            "job",
+            "update",
+            "--resource-group",
+            "group",
+            "--name",
+            "job-pg-migration-prod",
+            "--container-name",
+            "migration",
+            "--args",
+            mode,
+        )
+        assert start == (
+            "containerapp",
+            "job",
+            "start",
+            "--resource-group",
+            "group",
+            "--name",
+            "job-pg-migration-prod",
+        )
+
+
+def test_failed_mode_update_never_starts_or_stops_apps():
+    az = Azure()
+
+    def fail_update(*args):
+        if args[:3] == ("containerapp", "job", "update"):
+            raise RuntimeError("mode update failed")
+        return az(*args)
+
+    with pytest.raises(RuntimeError, match="mode update failed"):
+        driver().migrate(fail_update, "prod", "group", "g17", "g17", sleep=lambda _: None)
+    assert not any(
+        c[:3] in [("containerapp", "job", "start"), ("containerapp", "revision", "deactivate")]
+        for c in az.calls
+    )
+    assert az.fence == ""

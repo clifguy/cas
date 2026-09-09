@@ -8,6 +8,7 @@ source and target content. Dumps and tokens never appear in the job report.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -185,7 +186,17 @@ class PostgresStore:
                 row = self.conn.execute(
                     sql.SQL("SELECT last_value, is_called FROM {}").format(qualified)
                 ).fetchone()
-                result["sequences"][key] = {"state": row, "owner": owner, "acl": acl}
+                definition = self.conn.execute(
+                    "SELECT seqtypid::regtype::text, seqstart, seqincrement, seqmax, "
+                    "seqmin, seqcache, seqcycle FROM pg_sequence WHERE seqrelid=%s::regclass",
+                    (qualified.as_string(self.conn),),
+                ).fetchone()
+                result["sequences"][key] = {
+                    "state": row,
+                    "definition": definition,
+                    "owner": owner,
+                    "acl": acl,
+                }
                 continue
             if kind != "r":
                 raise ValueError(f"unsupported workload relation kind {kind!r}: {key}")
@@ -233,6 +244,40 @@ class PostgresStore:
                 "constraints": constraints,
             }
         return result
+
+    def restore_owners(self) -> list[str]:
+        # Shared ownership dependencies include routines/types as well as tables.
+        # Namespace/relation owners also cover pinned roles absent from pg_shdepend.
+        return [
+            row[0]
+            for row in self.conn.execute(
+                sql.SQL("""SELECT DISTINCT pg_get_userbyid(owner) FROM (
+                SELECT refobjid AS owner FROM pg_shdepend
+                WHERE dbid=(SELECT oid FROM pg_database WHERE datname=current_database())
+                AND refclassid='pg_authid'::regclass AND deptype='o'
+                UNION SELECT n.nspowner FROM pg_namespace n WHERE {predicate}
+                UNION SELECT c.relowner FROM pg_class c JOIN pg_namespace n
+                  ON n.oid=c.relnamespace WHERE {predicate}
+                UNION SELECT defaclrole FROM pg_default_acl
+            ) owners ORDER BY 1""").format(predicate=sql.SQL(_SCHEMA_PREDICATE))
+            ).fetchall()
+        ]
+
+    def assert_restore_privileges(self, owners: list[str]) -> None:
+        if not self.conn.execute(
+            "SELECT has_database_privilege(current_database(),'CREATE')"
+        ).fetchone()[0]:
+            raise ValueError("restore ownership privileges require database CREATE")
+        for owner in owners:
+            row = self.conn.execute(
+                "SELECT pg_has_role(current_user,oid,'SET'), "
+                "pg_has_role(current_user,oid,'USAGE') FROM pg_roles WHERE rolname=%s",
+                (owner,),
+            ).fetchone()
+            # pg_restore changes owners before COPY. Both ownership transfer and
+            # inherited owner access are necessary; CREATEROLE alone is not enough.
+            if row is None or not all(row):
+                raise ValueError(f"restore ownership privileges missing for role {owner!r}")
 
     def fence(self) -> None:
         if not self.app_roles:
@@ -350,7 +395,10 @@ class PostgresStore:
             self.conn.execute("INSERT INTO _cas_migration.checkpoint VALUES (%s)", (Jsonb(value),))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("preflight", "migrate"), nargs="?", default="preflight")
+    mode = parser.parse_args(argv).mode
     from sage.storage.postgres.managed_identity import (
         POSTGRES_AAD_SCOPE,
         close_postgres_credential,
@@ -410,6 +458,18 @@ def main() -> int:
             ):
                 raise ValueError("target contains existing workload objects")
             asyncio.run(bootstrap_target({**os.environ, "PG_FQDN": os.environ["PG_TARGET_FQDN"]}))
+            stores[1].assert_restore_privileges(stores[0].restore_owners())
+            if mode == "preflight":
+                print(
+                    json.dumps(
+                        {
+                            "status": "preflight_verified",
+                            "source": stores[0].identity,
+                            "target": stores[1].identity,
+                        }
+                    )
+                )
+                return 0
             with tempfile.TemporaryDirectory(prefix="postgres-migration-") as directory:
                 report = run_migration(
                     *stores,

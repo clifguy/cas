@@ -138,3 +138,83 @@ def test_reconciliation_rejects_equal_count_corruption(stores, tmp_path: Path) -
         == source.state["tables"]["vault.edges"]["count"]
     )
     assert not target.checkpoint
+
+
+@pytest.mark.parametrize(
+    "mode,permission",
+    [("preflight", True), ("preflight", False), ("migrate", True), ("migrate", False)],
+)
+def test_main_checks_permissions_before_migration(monkeypatch, mode, permission):
+    from types import SimpleNamespace
+
+    from sage.maintenance import postgres_migration as migration
+    from sage.storage.postgres import cloud_bootstrap, managed_identity
+
+    events = []
+
+    class Store:
+        def __init__(self, conninfo, *args, **kwargs):
+            self.identity = conninfo
+            self.major = 16 if conninfo == "source" else 17
+
+        def snapshot(self):
+            return {"tables": {}, "sequences": {}}
+
+        def read_checkpoint(self):
+            return None
+
+        def restore_owners(self):
+            events.append("owners")
+            return ["workload"]
+
+        def assert_restore_privileges(self, owners):
+            assert owners == ["workload"]
+            events.append("permissions")
+            if not permission:
+                raise ValueError("restore ownership privileges missing")
+
+        def close(self):
+            events.append("close-" + self.identity)
+
+    async def token(*args):
+        return SimpleNamespace(token="disposable-token")
+
+    async def close():
+        events.append("credential-close")
+
+    async def bootstrap(env):
+        assert env["PG_FQDN"] == "target"
+        events.append("bootstrap-target")
+
+    def copy(*args):
+        events.append("migration")
+        return {"status": "verified"}
+
+    for key, value in {
+        "PG_SOURCE_FQDN": "source",
+        "PG_TARGET_FQDN": "target",
+        "PG_DATABASE": "test",
+        "PG_ADMIN_USER": "administrator",
+        "SAGE_DB_ROLE": "sage",
+        "BFF_DB_ROLE": "bff",
+        "PG_MIGRATION_RUN_ID": "run",
+        "PG_SOURCE_MAJOR": "16",
+        "PG_TARGET_MAJOR": "17",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(migration, "PostgresStore", Store)
+    monkeypatch.setattr(migration, "make_conninfo", lambda **kw: kw["host"])
+    monkeypatch.setattr(migration, "run_migration", copy)
+    monkeypatch.setattr(cloud_bootstrap, "_run", bootstrap)
+    monkeypatch.setattr(
+        managed_identity, "get_postgres_credential", lambda: SimpleNamespace(get_token=token)
+    )
+    monkeypatch.setattr(managed_identity, "close_postgres_credential", close)
+    if permission:
+        assert migration.main([mode]) == 0
+    else:
+        with pytest.raises(ValueError, match="restore ownership privileges"):
+            migration.main([mode])
+    assert events == ["bootstrap-target", "owners", "permissions"] + (
+        ["migration"] if mode == "migrate" and permission else []
+    ) + ["close-source", "close-target", "credential-close"]

@@ -199,7 +199,8 @@ def prepare(az: Azure, environment: str, group: str, generation: str) -> None:
         f"bffRole={env['BFF_DB_ROLE']}",
         f"runId={generation}",
     )
-    print("Replacement and migration job prepared. Serving consumers are unchanged.")
+    run_preflight(az, group, f"job-pg-migration-{environment}", sleep=time.sleep)
+    print("Replacement and migration permissions verified. Serving consumers are unchanged.")
 
 
 def migrate(
@@ -276,6 +277,9 @@ def migrate(
     if state not in ("", f"copying:{generation}", f"verified:{generation}"):
         raise ValueError("another migration or serving generation owns the fence")
 
+    # Recheck permissions immediately before any downtime, including on retries.
+    run_preflight(az, group, migration_job, sleep=sleep)
+
     def tag(state: str) -> None:
         az(
             "tag",
@@ -334,15 +338,37 @@ def migrate(
                 "--revision",
                 revision,
             )
-    execution = az(
-        "containerapp", "job", "start", "--resource-group", group, "--name", migration_job
-    )["name"]
-    wait_job(az, group, migration_job, execution, sleep=sleep)
+    run_mode(az, group, migration_job, "migrate", sleep=sleep)
     tag("verified")
     print(
         "Migration verified. Apps remain stopped and source CONNECT remains fenced. "
         "Use the separate serving deployment for cutover."
     )
+
+
+def run_preflight(az: Azure, group: str, job: str, *, sleep: Callable[[float], None]) -> None:
+    run_mode(az, group, job, "preflight", sleep=sleep)
+
+
+def run_mode(az: Azure, group: str, job: str, mode: str, *, sleep: Callable[[float], None]) -> None:
+    # Update the selected container, then inherit the complete deployed template.
+    # Start-time overrides reconstruct the container and drop unstated settings.
+    # The workflow's tenant concurrency lock covers this update/start pair.
+    az(
+        "containerapp",
+        "job",
+        "update",
+        "--resource-group",
+        group,
+        "--name",
+        job,
+        "--container-name",
+        "migration",
+        "--args",
+        mode,
+    )
+    execution = az("containerapp", "job", "start", "--resource-group", group, "--name", job)["name"]
+    wait_job(az, group, job, execution, sleep=sleep)
 
 
 def wait_job(
@@ -365,9 +391,9 @@ def wait_job(
         if status == "Succeeded":
             return
         if status in ("Failed", "Stopped"):
-            raise ValueError("migration job failed; the source fence remains held")
+            raise ValueError("database job failed; existing source fence state is unchanged")
         sleep(min(30, max(0, deadline - time.monotonic())))
-    raise ValueError("migration job polling timed out; the source fence remains held")
+    raise ValueError("database job polling timed out; existing source fence state is unchanged")
 
 
 def rollback(

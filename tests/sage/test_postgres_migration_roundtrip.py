@@ -283,3 +283,142 @@ def test_cross_major_restore_preserves_state(databases, tmp_path: Path) -> None:
     target.conn.execute("UPDATE vault_alpha.edges SET rationale='changed without changing count'")
     with pytest.raises(ValueError, match="reconciliation"):
         run_migration(source, target, tmp_path / "bad.dump", "roundtrip", 16, 17)
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "INCREMENT BY 2",
+        "START WITH 9",
+        "MINVALUE 0",
+        "MAXVALUE 999",
+        "CACHE 2",
+        "CYCLE",
+        "AS integer",
+    ],
+)
+def test_resume_rejects_sequence_definition_drift(databases, tmp_path, definition):
+    source, target, _ = databases
+    report = run_migration(source, target, tmp_path / "copy.dump", "sequence", 16, 17)
+    before = target.conn.execute("SELECT last_value, is_called FROM bff.sessions_id_seq").fetchone()
+    target.conn.execute(sql.SQL("ALTER SEQUENCE bff.sessions_id_seq " + definition))
+    assert (
+        target.conn.execute("SELECT last_value, is_called FROM bff.sessions_id_seq").fetchone()
+        == before
+    )
+    with pytest.raises(ValueError, match="resume reconciliation failed"):
+        run_migration(source, target, tmp_path / "retry.dump", "sequence", 16, 17)
+    assert target.read_checkpoint() == report
+    assert not (tmp_path / "retry.dump").exists()
+
+
+@pytest.fixture
+def non_superuser_databases():
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    dsns = [
+        os.environ.get(k)
+        for k in ("SAGE_MIGRATION_TEST_SOURCE_DSN", "SAGE_MIGRATION_TEST_TARGET_DSN")
+    ]
+    if not all(dsns):
+        pytest.skip("requires isolated 16 and 17 maintenance DSNs")
+    nonce = uuid.uuid4().hex[:12]
+    administrator, workload = "admin_" + nonce, "workload_" + nonce
+    password = "disposable-test-only"
+    stores, created = [], []
+    try:
+        for dsn in dsns:
+            name = derive_throwaway_dbname()
+            with psycopg.connect(dsn, autocommit=True) as setup:
+                setup.execute(
+                    sql.SQL("CREATE ROLE {} LOGIN CREATEROLE PASSWORD {}").format(
+                        sql.Identifier(administrator), sql.Literal(password)
+                    )
+                )
+                setup.execute(
+                    sql.SQL("GRANT pg_read_all_data TO {}").format(sql.Identifier(administrator))
+                )
+                setup.execute(
+                    sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                        sql.Identifier(name), sql.Identifier(administrator)
+                    )
+                )
+                created.append((dsn, name))
+            connection = conninfo_to_dict(rewrite_dsn_dbname(dsn, name))
+            connection.pop("password", None)
+            connection["user"] = administrator
+            store = PostgresStore(make_conninfo(**connection), (workload,), password=password)
+            stores.append(store)
+            store.conn.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(workload)))
+            store.conn.execute(
+                sql.SQL("GRANT CONNECT, CREATE ON DATABASE {} TO {}").format(
+                    sql.Identifier(name), sql.Identifier(workload)
+                )
+            )
+            assert (
+                store.conn.execute(
+                    "SELECT rolsuper FROM pg_roles WHERE rolname=current_user"
+                ).fetchone()[0]
+                is False
+            )
+        with psycopg.connect(rewrite_dsn_dbname(*created[0]), autocommit=True) as setup:
+            setup.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(workload)))
+            setup.execute("CREATE SCHEMA workload")
+            setup.execute("CREATE TABLE workload.canonical (id serial PRIMARY KEY, rationale text)")
+            setup.execute("INSERT INTO workload.canonical (rationale) VALUES ('human decision')")
+        yield *stores, administrator, workload
+    finally:
+        for store in stores:
+            store.close()
+        for dsn, name in created:
+            with psycopg.connect(dsn, autocommit=True) as setup:
+                setup.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
+                for role in (workload, administrator):
+                    setup.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_non_superuser_restore_permission_preflight(non_superuser_databases, tmp_path):
+    source, target, administrator, workload = non_superuser_databases
+    owners = source.restore_owners()
+    assert workload in owners
+    # No implicit SET ROLE privilege follows from CREATEROLE on PostgreSQL 16+.
+    with pytest.raises(ValueError, match="restore ownership privileges"):
+        target.assert_restore_privileges(owners)
+    assert source.conn.execute(
+        "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (workload,)
+    ).fetchone()[0]
+    assert target.snapshot()["tables"] == {}
+    for set_option, inherit_option in ((False, True), (True, False)):
+        target.conn.execute(
+            sql.SQL("GRANT {} TO {} WITH SET {}, INHERIT {}").format(
+                sql.Identifier(workload),
+                sql.Identifier(administrator),
+                sql.Literal(set_option),
+                sql.Literal(inherit_option),
+            )
+        )
+        with pytest.raises(ValueError, match="restore ownership privileges"):
+            target.assert_restore_privileges(owners)
+    target.conn.execute(
+        sql.SQL("GRANT {} TO {} WITH SET TRUE, INHERIT TRUE").format(
+            sql.Identifier(workload), sql.Identifier(administrator)
+        )
+    )
+    target.assert_restore_privileges(owners)
+    report = run_migration(source, target, tmp_path / "copy.dump", "non-superuser", 16, 17)
+    assert report["status"] == "verified"
+    assert source.snapshot() == target.snapshot()
+    assert (
+        target.conn.execute("SELECT rationale FROM workload.canonical").fetchone()[0]
+        == "human decision"
+    )
+    assert (
+        target.conn.execute(
+            "SELECT pg_get_userbyid(relowner) FROM pg_class "
+            "WHERE oid='workload.canonical'::regclass"
+        ).fetchone()[0]
+        == workload
+    )
+    assert not source.conn.execute(
+        "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (workload,)
+    ).fetchone()[0]

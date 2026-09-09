@@ -48,6 +48,7 @@ resource migrationJob 'Microsoft.App/jobs@2024-03-01' = {
         name: 'migration'
         image: image
         command: ['python', '-m', 'sage.maintenance.postgres_migration']
+        args: ['preflight']
         resources: { cpu: 1, memory: '2Gi' }
         env: [
           { name: 'AZURE_CLIENT_ID', value: identityClientId }
