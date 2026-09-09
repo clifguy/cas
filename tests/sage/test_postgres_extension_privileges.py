@@ -615,3 +615,236 @@ def test_column_permission_drift_prevents_verification(
     assert changed == [True]
     assert target.read_checkpoint() == checkpoint
     assert source.snapshot() != target.snapshot()
+
+
+@pytest.fixture
+def row_security(provider: ProviderFixture) -> ProviderFixture:
+    source = provider.stores[0]
+    role = sql.Identifier(provider.apps[0])
+    source.conn.execute(sql.SQL("GRANT USAGE ON SCHEMA ordinary TO {}").format(role))
+    source.conn.execute(sql.SQL("GRANT INSERT ON ordinary.data TO {}").format(role))
+    source.conn.execute("ALTER TABLE ordinary.data ENABLE ROW LEVEL SECURITY")
+    source.conn.execute(
+        sql.SQL(
+            "CREATE POLICY owner_access ON ordinary.data TO {} USING (true) WITH CHECK (true)"
+        ).format(sql.Identifier(provider.administrator))
+    )
+    source.conn.execute(
+        sql.SQL(
+            "CREATE POLICY app_access ON ordinary.data TO {} "
+            "USING (value = 'allowed') WITH CHECK (value = 'allowed')"
+        ).format(role)
+    )
+    return provider
+
+
+def test_row_security_preserves_application_read_and_write_restrictions(
+    row_security: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = row_security.stores
+    run_migration(source, target, tmp_path / "copy.dump", "security", 16, 17)
+    for index in (0, 1):
+        with row_security.connect_admin(index) as conn, conn.transaction(force_rollback=True):
+            conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(row_security.apps[0])))
+            assert conn.execute("SELECT value FROM ordinary.data").fetchall() == []
+            conn.execute("INSERT INTO ordinary.data VALUES ('allowed')")
+            assert conn.execute("SELECT value FROM ordinary.data").fetchall() == [("allowed",)]
+            with pytest.raises(psycopg.errors.InsufficientPrivilege, match="row-level security"):
+                conn.execute("INSERT INTO ordinary.data VALUES ('blocked')")
+    assert source.snapshot() == target.snapshot()
+
+
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+@pytest.mark.parametrize(
+    "change", ["enabled", "forced", "roles", "using", "check", "command", "mode"]
+)
+def test_row_security_drift_prevents_verification(
+    row_security: ProviderFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    change: str,
+) -> None:
+    source, target = row_security.stores
+    role = sql.Identifier(row_security.apps[0])
+    if change == "command":
+        source.conn.execute("DROP POLICY app_access ON ordinary.data")
+        source.conn.execute(
+            sql.SQL(
+                "CREATE POLICY app_access ON ordinary.data FOR SELECT TO {} "
+                "USING (value = 'allowed')"
+            ).format(role)
+        )
+    changes = {
+        "enabled": "ALTER TABLE ordinary.data DISABLE ROW LEVEL SECURITY",
+        "forced": "ALTER TABLE ordinary.data FORCE ROW LEVEL SECURITY",
+        "roles": "ALTER POLICY app_access ON ordinary.data TO PUBLIC",
+        "using": "ALTER POLICY app_access ON ordinary.data USING (true)",
+        "check": "ALTER POLICY app_access ON ordinary.data WITH CHECK (true)",
+        "command": "DROP POLICY app_access ON ordinary.data; CREATE POLICY app_access "
+        "ON ordinary.data FOR DELETE TO {} USING (value = 'allowed')",
+        "mode": "DROP POLICY app_access ON ordinary.data; CREATE POLICY app_access "
+        "ON ordinary.data AS RESTRICTIVE TO {} USING (value = 'allowed') "
+        "WITH CHECK (value = 'allowed')",
+    }
+    checkpoint = None
+    changed = []
+
+    def apply_change() -> None:
+        target.conn.execute(sql.SQL(changes[change]).format(role))
+        if change == "forced":
+            assert target.conn.execute("SELECT value FROM ordinary.data").fetchall() == [
+                ("retained",)
+            ]
+        changed.append(True)
+
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "security", 16, 17)
+        apply_change()
+    else:
+        original = target._command
+
+        def restore_with_security_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                apply_change()
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_security_change)
+    with pytest.raises(
+        ValueError, match="permission reconciliation failed|resume reconciliation failed"
+    ):
+        run_migration(source, target, tmp_path / "attempt.dump", "security", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint
+
+
+@pytest.fixture(params=["enum", "domain", "composite"])
+def type_permissions(provider: ProviderFixture, request: pytest.FixtureRequest) -> ProviderFixture:
+    source = provider.stores[0]
+    definitions = {
+        "enum": "CREATE TYPE ordinary.status AS ENUM ('retained')",
+        "domain": "CREATE DOMAIN ordinary.status AS text",
+        "composite": "CREATE TYPE ordinary.status AS (label text)",
+    }
+    source.conn.execute(definitions[request.param])
+    source.conn.execute("REVOKE ALL ON TYPE ordinary.status FROM PUBLIC")
+    source.conn.execute(
+        sql.SQL("GRANT USAGE ON TYPE ordinary.status TO {} WITH GRANT OPTION").format(
+            sql.Identifier(provider.apps[0])
+        )
+    )
+    source.conn.execute("ALTER TABLE ordinary.data ADD COLUMN state ordinary.status")
+    return provider
+
+
+def test_type_permissions_preserve_application_grants(
+    type_permissions: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = type_permissions.stores
+    run_migration(source, target, tmp_path / "copy.dump", "types", 16, 17)
+    for store in (source, target):
+        assert store.conn.execute(
+            "SELECT has_type_privilege(%s,'ordinary.status','USAGE WITH GRANT OPTION'), "
+            "has_type_privilege(%s,'ordinary.status','USAGE')",
+            type_permissions.apps,
+        ).fetchone() == (True, False)
+    assert source.snapshot() == target.snapshot()
+
+
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+@pytest.mark.parametrize("change", ["recipient", "grant_option", "owner"])
+def test_type_permission_drift_prevents_verification(
+    type_permissions: ProviderFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    change: str,
+) -> None:
+    source, target = type_permissions.stores
+    if change == "owner":
+        source.conn.execute("GRANT CREATE ON SCHEMA ordinary TO azure_pg_admin")
+    commands = {
+        "recipient": sql.SQL("GRANT USAGE ON TYPE ordinary.status TO {}").format(
+            sql.Identifier(type_permissions.apps[1])
+        ),
+        "grant_option": sql.SQL(
+            "REVOKE GRANT OPTION FOR USAGE ON TYPE ordinary.status FROM {}"
+        ).format(sql.Identifier(type_permissions.apps[0])),
+        "owner": sql.SQL("ALTER TYPE ordinary.status OWNER TO azure_pg_admin"),
+    }
+    checkpoint = None
+    changed = []
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "types", 16, 17)
+        target.conn.execute(commands[change])
+        changed.append(True)
+    else:
+        original = target._command
+
+        def restore_with_type_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                target.conn.execute(commands[change])
+                changed.append(True)
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_type_change)
+    with pytest.raises(
+        ValueError, match="permission reconciliation failed|resume reconciliation failed"
+    ):
+        run_migration(source, target, tmp_path / "attempt.dump", "types", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint
+
+
+def test_native_row_type_acl_loss_cannot_be_certified(
+    provider: ProviderFixture, tmp_path: Path
+) -> None:
+    source, target = provider.stores
+    source.conn.execute("REVOKE ALL ON TYPE ordinary.data FROM PUBLIC")
+    assert source.conn.execute(
+        "SELECT has_type_privilege(%s,'ordinary.data','USAGE')", (provider.apps[0],)
+    ).fetchone() == (False,)
+    with pytest.raises(ValueError, match="permission reconciliation failed"):
+        run_migration(source, target, tmp_path / "copy.dump", "row_type", 16, 17)
+    assert target.read_checkpoint() is None
+    assert target.conn.execute(
+        "SELECT has_type_privilege(%s,'ordinary.data','USAGE')", (provider.apps[0],)
+    ).fetchone() == (True,)
+
+
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+def test_row_type_permission_drift_prevents_verification(
+    provider: ProviderFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    source, target = provider.stores
+    checkpoint = None
+    changed = []
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "row_type", 16, 17)
+        target.conn.execute("REVOKE ALL ON TYPE ordinary.data FROM PUBLIC")
+        changed.append(True)
+    else:
+        original = target._command
+
+        def restore_with_row_type_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                target.conn.execute("REVOKE ALL ON TYPE ordinary.data FROM PUBLIC")
+                changed.append(True)
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_row_type_change)
+    with pytest.raises(
+        ValueError, match="permission reconciliation failed|resume reconciliation failed"
+    ):
+        run_migration(source, target, tmp_path / "attempt.dump", "row_type", 16, 17)
+    assert changed == [True]
+    assert target.read_checkpoint() == checkpoint
+    assert source.conn.execute(
+        "SELECT has_type_privilege(%s,'ordinary.data','USAGE')", (provider.apps[0],)
+    ).fetchone() == (True,)
+    assert target.conn.execute(
+        "SELECT has_type_privilege(%s,'ordinary.data','USAGE')", (provider.apps[0],)
+    ).fetchone() == (False,)

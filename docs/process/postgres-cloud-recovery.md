@@ -87,7 +87,13 @@ reporting success. Extension-function comparisons include the extension identity
 and version, exact signature, owner, grantor, recipient, privilege and grant option.
 They also participate in migration reconciliation and resume fingerprints. Column
 grants retain the schema, relation and column identity, grantor, recipient, privilege
-and grant option in both permission snapshots and full reconciliation.
+and grant option in both permission snapshots and full reconciliation. Row-security
+comparison includes enabled/forced flags and policy names, roles, command,
+permissive/restrictive mode, USING and WITH CHECK expressions. Ordinary
+types (including domains, composite and table-row types) retain their identity, owner
+and ACLs. Automatically derived array types have no independent grant operation and
+are represented by their element type. Explicit table-row-type ACLs omitted by native
+dump/restore are detected as mismatches; they cannot produce a verified checkpoint.
 
 Azure installs `pgstattuple` functions owned by `azuresu`, with EXECUTE grants from
 that owner to itself and `pg_stat_scan_tables`, and EXECUTE WITH GRANT OPTION to

@@ -268,6 +268,45 @@ class PostgresStore:
                 acl=canonical_relation_acl("column_attr.attacl", "c.relowner", "FALSE", self.major),
             )
         ).fetchall()
+        row_security = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE {predicate} AND c.relkind IN ('r','p')
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
+                ORDER BY 1,2""").format(predicate=sql.SQL(_SCHEMA_PREDICATE))
+        ).fetchall()
+        policies = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, c.relname, policy.polname,
+                policy.polcmd, policy.polpermissive,
+                ARRAY(SELECT CASE WHEN role_id=0 THEN NULL ELSE pg_get_userbyid(role_id) END
+                    FROM unnest(policy.polroles) AS roles(role_id)
+                    ORDER BY role_id=0, pg_get_userbyid(role_id)),
+                pg_get_expr(policy.polqual, policy.polrelid),
+                pg_get_expr(policy.polwithcheck, policy.polrelid)
+                FROM pg_policy policy JOIN pg_class c ON c.oid=policy.polrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE {predicate} AND c.relkind IN ('r','p')
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
+                ORDER BY 1,2,3""").format(predicate=sql.SQL(_SCHEMA_PREDICATE))
+        ).fetchall()
+        type_grants = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, typ.typname, typ.typtype,
+                pg_get_userbyid(typ.typowner), {acl}
+                FROM pg_type typ JOIN pg_namespace n ON n.oid=typ.typnamespace
+                WHERE {predicate}
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid='pg_class'::regclass
+                    AND d.objid=typ.typrelid AND d.deptype='e')
+                AND NOT EXISTS (SELECT 1 FROM pg_type element WHERE element.typarray=typ.oid)
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                    WHERE d.classid='pg_type'::regclass AND d.objid=typ.oid AND d.deptype='e')
+                ORDER BY 1,2""").format(
+                predicate=sql.SQL(_SCHEMA_PREDICATE),
+                acl=canonical_relation_acl("typ.typacl", "typ.typowner", "FALSE", self.major),
+            )
+        ).fetchall()
         extensions = self.extensions()
         default_grants = self.conn.execute(
             sql.SQL(
@@ -303,6 +342,9 @@ class PostgresStore:
             "extensions": extensions,
             "default_grants": default_grants,
             "column_grants": column_grants,
+            "row_security": row_security,
+            "policies": policies,
+            "type_grants": type_grants,
             "routines": routines,
             "extension_privileges": self.extension_privileges(),
         }
