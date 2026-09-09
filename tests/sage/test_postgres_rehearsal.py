@@ -210,3 +210,113 @@ def test_measurements_do_not_treat_host_free_space_as_replica_quota() -> None:
     )
     with pytest.raises(ValueError, match="resource bounds"):
         runtime().validate_measurements(report)
+
+
+@pytest.mark.parametrize("failure", ["measurement", "dump", "restore", "seed_dump"])
+def test_main_retains_sanitized_failed_rehearsal_evidence(
+    databases: tuple[PostgresStore, PostgresStore, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    import errno
+    import json
+    import subprocess
+    from types import SimpleNamespace
+
+    from psycopg.conninfo import conninfo_to_dict
+
+    from sage.storage.postgres import managed_identity
+
+    module = runtime()
+    source, target, role = databases
+    target.conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    target.conn.execute("CREATE EXTENSION IF NOT EXISTS pgstattuple")
+    source.assert_extensions_match(target)
+    admin = module.RehearsalDatabases(source, target, "g17", "r9001")
+    original_command = PostgresStore._command
+    original_validate = module.validate_measurements
+    secret = "PRIVATE_DATABASE_CONTENT_DO_NOT_LOG"
+
+    def connect(conninfo: str, roles: tuple[str, ...], **kwargs: Any) -> PostgresStore:
+        host = conninfo_to_dict(conninfo)["host"]
+        if host in ("source", "target"):
+            store = source if host == "source" else target
+            return PostgresStore(store.conninfo, store.app_roles, password=store.password)
+        return PostgresStore(conninfo, roles, **kwargs)
+
+    def command(store: PostgresStore, argv: list[str]) -> None:
+        fail_seed = (
+            failure == "seed_dump" and Path(argv[0]).name == "pg_dump" and argv[0] != "pg_dump"
+        )
+        fail_dump = failure == "dump" and argv[0] == "pg_dump"
+        if fail_seed or fail_dump:
+            Path(argv[argv.index("--file") + 1]).write_bytes(b"partial archive")
+            raise OSError(errno.ENOSPC, secret)
+        if failure == "restore" and argv[0] == "pg_restore" and "--dbname" in argv:
+            raise subprocess.TimeoutExpired(argv, 3000, stderr=secret)
+        original_command(store, argv)
+
+    def validate(measurements: dict[str, Any]) -> None:
+        if failure == "measurement":
+            measurements["job_elapsed_seconds"] = 7201
+        original_validate(measurements)
+
+    async def token(*args: Any) -> Any:
+        return SimpleNamespace(token=secret)
+
+    async def close() -> None:
+        pass
+
+    for key, value in {
+        "PG_SOURCE_FQDN": "source",
+        "PG_TARGET_FQDN": "target",
+        "PG_DATABASE": "test",
+        "PG_ADMIN_USER": "administrator",
+        "SAGE_DB_ROLE": role,
+        "BFF_DB_ROLE": role,
+        "PG_MIGRATION_RUN_ID": "g17",
+        "PG_MIGRATION_IMAGE": "test:fixed",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(module, "PostgresStore", connect)
+    monkeypatch.setattr(PostgresStore, "_command", command)
+    monkeypatch.setattr(module, "validate_measurements", validate)
+    monkeypatch.setattr(
+        managed_identity, "get_postgres_credential", lambda: SimpleNamespace(get_token=token)
+    )
+    monkeypatch.setattr(managed_identity, "close_postgres_credential", close)
+    try:
+        assert module.main(["rehearse", "r9001"]) == 1
+        output = capsys.readouterr().out
+        assert secret not in output
+        report = json.loads(output.removeprefix(module.REPORT_PREFIX))
+        assert report["status"] == "failed"
+        assert report["image"] == "test:fixed"
+        assert report["seed_source"] == source.identity
+        assert report["source"].endswith("/" + admin.names[0])
+        assert report["target"].endswith("/" + admin.names[1])
+        assert (report["source_major"], report["target_major"]) == (16, 17)
+        measurements = report["measurements"]
+        assert measurements["samples"] > 0 and measurements["scratch_min_free_bytes"] > 0
+        if failure == "measurement":
+            assert report["reason"] == "measurement_rejected"
+            assert measurements["job_elapsed_seconds"] == 7201
+            assert measurements["archive_bytes"] > 0
+            assert report["stage_seconds"]["restore"] > 0
+            assert report["fingerprint"]
+        else:
+            assert report["stage"] == failure
+            assert report["reason"] == ("command_timeout" if failure == "restore" else "disk_full")
+            assert report["stage_seconds"][failure] > 0
+            assert report["fingerprint"] is None
+            if failure == "seed_dump":
+                assert report["seed_archive_bytes"] == len(b"partial archive")
+                assert measurements["archive_bytes"] is None
+                assert measurements["elapsed_seconds"] is None
+            else:
+                assert measurements["archive_bytes"] > 0
+        assert source.snapshot()["tables"]
+        assert target.snapshot()["tables"] == {}
+    finally:
+        admin.cleanup()

@@ -121,7 +121,10 @@ report to the approved long-term operational evidence location before expiry. Th
 runtime emits the sanitized `CAS_REHEARSAL_REPORT` JSON record into Log Analytics;
 the collector selects the exact job, execution replica prefix and rehearsal id,
 waiting up to five minutes for ingestion. Missing, conflicting or failed reports
-fail the workflow. A receipt alone is not a passing rehearsal. The console table
+fail the workflow. A receipt alone is not a passing rehearsal. Handled failures retain collected
+measurements, identities and timings with a safe `stage` and `reason` code; fields
+for work not reached are `null`. Partial archive sizes describe bytes written,
+not verified archives. Failure reports remain failures in the collector. The console table
 uses `ContainerJobName_s` (not the system table's `JobName_s`) and
 `ContainerGroupName_s`; the execution receipt supplies both selection values.
 

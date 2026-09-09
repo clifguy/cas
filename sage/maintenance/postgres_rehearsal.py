@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import json
 import math
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -180,6 +182,7 @@ class Measurements:
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._monitor, daemon=True)
         self.stages: dict[str, float] = {}
+        self.stage = "migration"
 
     def sample(self) -> None:
         try:
@@ -198,11 +201,13 @@ class Measurements:
 
     def close(self) -> None:
         self.stop.set()
-        self.thread.join()
+        if self.thread.ident is not None:
+            self.thread.join()
         self.sample()
 
     def call(self, name: str, operation: Any, *args: Any) -> Any:
         start = time.monotonic()
+        self.stage = name
         try:
             return operation(*args)
         finally:
@@ -240,99 +245,38 @@ class MeasuredStore:
 
 
 def execute_rehearsal(
-    admin: RehearsalDatabases, directory: Path, *, image: str, job_started: float
+    admin: RehearsalDatabases,
+    directory: Path,
+    *,
+    image: str,
+    job_started: float,
+    report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    source, _ = admin.stores
-    admin.create()
-    clones = []
-    seed_started = time.monotonic()
-    meter = Measurements(directory)
-    meter.start()
-    try:
-        # pg_dump's consistent logical snapshot is representative at seed time,
-        # not a claim about later live production writes or physical storage size.
-        seed = directory / "seed.dump"
-        seed_client = Path(os.environ.get("PG_SEED_CLIENT_DIR", "/usr/lib/postgresql/16/bin"))
-        source._command(
-            [
-                str(seed_client / "pg_dump"),
-                "--format=custom",
-                "--exclude-schema=_cas_migration",
-                "--file",
-                str(seed),
-                "--dbname",
-                source.conninfo,
-            ]
-        )
-        seed.chmod(0o600)
-        seed_bytes = seed.stat().st_size
-        meter.sample()
-        clones.append(admin.connect(0))
-        clones.append(admin.connect(1))
-        clones[0]._command(
-            [
-                str(seed_client / "pg_restore"),
-                "--exit-on-error",
-                "--single-transaction",
-                "--dbname",
-                clones[0].conninfo,
-                str(seed),
-            ]
-        )
-        source.assert_extensions_match(clones[0])
-        # The normal preparation checked installed extension parity on both servers.
-        # pg_restore creates extensions from the archive; require parity again after restore.
-        clones[0].assert_restore_privileges(source.restore_owners())
-        clones[1].assert_restore_privileges(source.restore_owners())
-        seed.unlink()
-        seed_seconds = time.monotonic() - seed_started
-        archive = directory / "migration.dump"
-        started = time.monotonic()
-        result = run_migration(
-            MeasuredStore(clones[0], meter, "source"),
-            MeasuredStore(clones[1], meter, "target"),
-            archive,
-            admin.run_id,
-            source.major,
-            admin.stores[1].major,
-        )
-        clones[0].assert_extensions_match(clones[1])
-        elapsed = time.monotonic() - started
-        meter.close()
-        measurement = {
-            "archive_bytes": archive.stat().st_size,
-            "scratch_initial_free_bytes": meter.initial,
-            "scratch_min_free_bytes": meter.minimum,
-            "observed_peak_scratch_bytes": max(
-                seed_bytes, archive.stat().st_size, meter.initial - meter.minimum
-            ),
-            "elapsed_seconds": elapsed,
-            "job_elapsed_seconds": time.monotonic() - job_started,
-            "dump_seconds": meter.stages.get("dump", 0),
-            "restore_seconds": meter.stages.get("restore", 0),
-            "samples": meter.samples,
-            "monitor_error": meter.error,
-        }
-        validate_measurements(measurement)
-        return {
-            "status": "rehearsal_verified",
+    # The caller owns this record so handled failures retain observations.
+    if report is None:
+        report = {}
+    source, target = admin.stores
+    report.update(
+        {
+            "status": "failed",
             "run_id": admin.run_id,
             "image": image,
-            "source": clones[0].identity,
-            "target": clones[1].identity,
-            "source_major": clones[0].major,
-            "target_major": clones[1].major,
+            "source": source.identity.rsplit("/", 1)[0] + "/" + admin.names[0],
+            "target": target.identity.rsplit("/", 1)[0] + "/" + admin.names[1],
+            "source_major": source.major,
+            "target_major": target.major,
             "seed_source": source.identity,
-            "seed_seconds": seed_seconds,
-            "seed_archive_bytes": seed_bytes,
-            "source_database_bytes": source.capacity_report(directory)["database_bytes"],
-            "clone_database_bytes": clones[0].capacity_report(directory)["database_bytes"],
-            "fingerprint": result["fingerprint"],
-            "archive_sha256": result["archive_sha256"],
-            "table_count": len(result["tables"]),
-            "row_count": sum(result["tables"].values()),
-            "stage_seconds": meter.stages,
-            "measurements": measurement,
+            "seed_seconds": None,
+            "seed_archive_bytes": None,
+            "source_database_bytes": None,
+            "clone_database_bytes": None,
+            "fingerprint": None,
+            "archive_sha256": None,
+            "table_count": None,
+            "row_count": None,
+            "stage_seconds": {},
+            "measurements": {},
+            "stage": "create_databases",
             "resources": {
                 "cpu": 1,
                 "memory": "2Gi",
@@ -341,10 +285,121 @@ def execute_rehearsal(
                 "command_timeout_seconds": 3000,
             },
         }
+    )
+    clones: list[PostgresStore] = []
+    meter: Measurements | None = None
+    seed_started: float | None = None
+    started: float | None = None
+    seed, archive = directory / "seed.dump", directory / "migration.dump"
+
+    def archive_bytes(path: Path) -> int | None:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return None
+
+    try:
+        admin.create()
+        report["stage"] = "measure_capacity"
+        meter = Measurements(directory)
+        meter.start()
+        report["source_database_bytes"] = source.capacity_report(directory)["database_bytes"]
+        seed_started = time.monotonic()
+        # The seed is a consistent logical snapshot, not a claim about later live writes.
+        seed_client = Path(os.environ.get("PG_SEED_CLIENT_DIR", "/usr/lib/postgresql/16/bin"))
+        report["stage"] = "seed_dump"
+        meter.call(
+            "seed_dump",
+            source._command,
+            [
+                str(seed_client / "pg_dump"),
+                "--format=custom",
+                "--exclude-schema=_cas_migration",
+                "--file",
+                str(seed),
+                "--dbname",
+                source.conninfo,
+            ],
+        )
+        seed.chmod(0o600)
+        report["seed_archive_bytes"] = seed.stat().st_size
+        report["stage"] = "connect_clones"
+        clones.append(admin.connect(0))
+        clones.append(admin.connect(1))
+        report["stage"] = "seed_restore"
+        meter.call(
+            "seed_restore",
+            clones[0]._command,
+            [
+                str(seed_client / "pg_restore"),
+                "--exit-on-error",
+                "--single-transaction",
+                "--dbname",
+                clones[0].conninfo,
+                str(seed),
+            ],
+        )
+        report["stage"] = "seed_preflight"
+        source.assert_extensions_match(clones[0])
+        clones[0].assert_restore_privileges(source.restore_owners())
+        clones[1].assert_restore_privileges(source.restore_owners())
+        report["clone_database_bytes"] = clones[0].capacity_report(directory)["database_bytes"]
+        seed.unlink()
+        report["seed_seconds"] = time.monotonic() - seed_started
+        started = time.monotonic()
+        report["stage"] = "migration"
+        result = run_migration(
+            MeasuredStore(clones[0], meter, "source"),
+            MeasuredStore(clones[1], meter, "target"),
+            archive,
+            admin.run_id,
+            source.major,
+            target.major,
+        )
+        report.update(
+            fingerprint=result["fingerprint"],
+            archive_sha256=result["archive_sha256"],
+            table_count=len(result["tables"]),
+            row_count=sum(result["tables"].values()),
+        )
+        report["stage"] = "extension_parity"
+        clones[0].assert_extensions_match(clones[1])
     finally:
-        meter.close()
+        # No database queries here: a failed connection must not hide earlier evidence.
+        if meter is not None:
+            meter.close()
+            report["stage_seconds"] = dict(meter.stages)
+            if report["stage"] == "migration":
+                report["stage"] = meter.stage
+        if report["seed_archive_bytes"] is None:
+            report["seed_archive_bytes"] = archive_bytes(seed)
+        if report["seed_seconds"] is None and seed_started is not None:
+            report["seed_seconds"] = time.monotonic() - seed_started
+        size = archive_bytes(archive)
+        report["measurements"] = {
+            "archive_bytes": size,
+            "scratch_initial_free_bytes": meter.initial if meter else None,
+            "scratch_min_free_bytes": meter.minimum if meter else None,
+            "observed_peak_scratch_bytes": max(
+                report["seed_archive_bytes"] or 0,
+                size or 0,
+                meter.initial - meter.minimum,
+            )
+            if meter
+            else None,
+            "elapsed_seconds": time.monotonic() - started if started is not None else None,
+            "job_elapsed_seconds": time.monotonic() - job_started,
+            "dump_seconds": meter.stages.get("dump") if meter else None,
+            "restore_seconds": meter.stages.get("restore") if meter else None,
+            "samples": meter.samples if meter else None,
+            "monitor_error": meter.error if meter else None,
+        }
         for clone in clones:
             clone.close()
+    report["stage"] = "measurement"
+    validate_measurements(report["measurements"])
+    report.update(status="rehearsal_verified", stage="complete")
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -396,11 +451,22 @@ def main(argv: list[str] | None = None) -> int:
                         Path(directory),
                         image=os.environ["PG_MIGRATION_IMAGE"],
                         job_started=started,
+                        report=report,
                     )
             return 0
         except Exception as exc:
             # Database errors can echo data. Persist only safe classification, never str(exc).
+            report["status"] = "failed"
             report["error_type"] = type(exc).__name__
+            report["reason"] = (
+                "measurement_rejected"
+                if report.get("stage") == "measurement"
+                else "command_timeout"
+                if isinstance(exc, subprocess.TimeoutExpired)
+                else "disk_full"
+                if isinstance(exc, OSError) and exc.errno == errno.ENOSPC
+                else "operation_failed"
+            )
             return 1
         finally:
             print(REPORT_PREFIX + json.dumps(report, sort_keys=True), flush=True)
