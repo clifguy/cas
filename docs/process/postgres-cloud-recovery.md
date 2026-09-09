@@ -85,8 +85,23 @@ metadata to the archive SHA-256. Restore refuses a different archive and compare
 schema, relation, column, routine, type, language, large-object and default-grant permissions before
 reporting success. Extension routine comparisons include the extension identity
 and version, routine kind, exact signature, owner, grantor, recipient, privilege and grant option.
-They also participate in migration reconciliation and resume fingerprints. Column
-grants retain the schema, relation and column identity, grantor, recipient, privilege
+They also participate in migration reconciliation and resume fingerprints. Each installed
+extension object's own name, version, schema and owner are compared separately from
+its member objects, including extensions beyond the required vector/pgstattuple pair.
+Native restore can recreate a trusted extension under the migration administrator
+while its members still have matching owners and grants. That ownership loss now
+fails permission reconciliation: seed restore cannot report success, migration cannot
+write a verified checkpoint, and resume rejects a changed extension owner.
+
+Native restore does not transfer extension ownership. An application-owned extension
+can be copied when the destination already has the matching extension installed under
+that owner and the administrator has the required restore rights. Otherwise the copy
+fails closed; this engine does not rewrite provider catalogs or grant itself membership
+to repair ownership. A failed restore can leave data in the isolated target and requires
+the existing inspection and cleanup procedure. Required-extension parity preflight
+alone does not certify ownership of additional extensions; restore reconciliation does.
+
+Column grants retain the schema, relation and column identity, grantor, recipient, privilege
 and grant option in both permission snapshots and full reconciliation. Row-security
 comparison includes enabled/forced flags and policy names, roles, command,
 permissive/restrictive mode, USING and WITH CHECK expressions, including extension relations. Ordinary and extension-defined

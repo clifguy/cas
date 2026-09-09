@@ -364,6 +364,10 @@ class PostgresStore:
                 acl=canonical_relation_acl("obj.lomacl", "obj.lomowner", "FALSE", self.major)
             )
         ).fetchall()
+        extension_objects = self.conn.execute(
+            "SELECT e.extname, e.extversion, n.nspname, pg_get_userbyid(e.extowner) "
+            "FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace ORDER BY e.extname"
+        ).fetchall()
         extensions = self.extensions()
         default_grants = self.conn.execute(
             sql.SQL(
@@ -397,6 +401,7 @@ class PostgresStore:
             "tables": {},
             "sequences": {},
             "extensions": extensions,
+            "extension_objects": extension_objects,
             "default_grants": default_grants,
             "column_grants": column_grants,
             "row_security": row_security,

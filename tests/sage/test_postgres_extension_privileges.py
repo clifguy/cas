@@ -1097,3 +1097,187 @@ def test_additional_object_owner_drift_prevents_verification(
         run_migration(source, target, tmp_path / "attempt.dump", "owner", 16, 17)
     assert changed == [True]
     assert target.read_checkpoint() == checkpoint
+
+
+def install_trusted_extension(store: PostgresStore, owner: str) -> None:
+    store.conn.execute(
+        sql.SQL("GRANT CREATE ON DATABASE {} TO {}").format(
+            sql.Identifier(store.database), sql.Identifier(owner)
+        )
+    )
+    with store.conn.transaction():
+        store.conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(owner)))
+        store.conn.execute("CREATE EXTENSION hstore WITH SCHEMA public")
+
+
+def trusted_extension_owner(store: PostgresStore) -> str:
+    return store.conn.execute(
+        "SELECT pg_get_userbyid(extowner) FROM pg_extension WHERE extname='hstore'"
+    ).fetchone()[0]
+
+
+@pytest.fixture
+def owned_extension(provider: ProviderFixture, owner_kind: str) -> tuple[ProviderFixture, str]:
+    owner = provider.apps[0] if owner_kind == "application" else provider.administrator
+    for index in (0, 1):
+        with provider.connect_admin(index) as conn:
+            conn.execute(
+                sql.SQL("GRANT {} TO {}").format(
+                    sql.Identifier(provider.apps[0]), sql.Identifier(provider.administrator)
+                )
+            )
+    install_trusted_extension(provider.stores[0], owner)
+    assert trusted_extension_owner(provider.stores[0]) == owner
+    return provider, owner
+
+
+@pytest.mark.parametrize("provider", ["rehearsal"], indirect=True)
+@pytest.mark.parametrize("owner_kind", ["application", "administrator"])
+@pytest.mark.parametrize("flow", ["migration", "rehearsal"])
+def test_extension_object_owner_is_preserved_when_prepared(
+    owned_extension: tuple[ProviderFixture, str], tmp_path: Path, flow: str
+) -> None:
+    provider, owner = owned_extension
+    source, target = provider.stores
+    before = source.snapshot()
+
+    def prepare(store: PostgresStore) -> None:
+        if owner != provider.administrator:
+            install_trusted_extension(store, owner)
+
+    class PreparedDatabases(RehearsalDatabases):
+        def create(self) -> None:
+            super().create()
+            for index, name in enumerate(self.names):
+                provider.install(index, name)
+                store = self.connect(index)
+                try:
+                    prepare(store)
+                finally:
+                    store.close()
+
+    admin = PreparedDatabases(source, target, "g17", "r604")
+    clones = []
+    try:
+        if flow == "migration":
+            prepare(target)
+            result = run_migration(source, target, tmp_path / "copy.dump", "owner", 16, 17)
+            assert result["status"] == "verified"
+            stores = (source, target)
+        else:
+            result = execute_rehearsal(
+                admin, tmp_path, image="test:owner", job_started=time.monotonic()
+            )
+            assert result["status"] == "rehearsal_verified"
+            clones = [admin.connect(index) for index in (0, 1)]
+            stores = (source, *clones)
+        for store in stores:
+            assert trusted_extension_owner(store) == owner
+            with store.conn.transaction(force_rollback=True):
+                store.conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(owner)))
+                store.conn.execute("ALTER EXTENSION hstore UPDATE")
+        assert stores[-1].read_checkpoint()["status"] == "verified"
+        assert source.snapshot() == before
+    finally:
+        for clone in clones:
+            clone.close()
+        if flow == "rehearsal":
+            admin.cleanup()
+
+
+@pytest.mark.parametrize("provider", ["rehearsal"], indirect=True)
+@pytest.mark.parametrize("owner_kind", ["application"])
+@pytest.mark.parametrize("flow", ["migration", "rehearsal"])
+def test_native_extension_owner_loss_prevents_verification(
+    owned_extension: tuple[ProviderFixture, str], tmp_path: Path, flow: str
+) -> None:
+    provider, owner = owned_extension
+    source, target = provider.stores
+    before = source.snapshot()
+    source.assert_extensions_match(target)
+    target.assert_restore_privileges(source.restore_owners())
+
+    class PreparedDatabases(RehearsalDatabases):
+        def create(self) -> None:
+            super().create()
+            for index, name in enumerate(self.names):
+                provider.install(index, name)
+
+    admin = PreparedDatabases(source, target, "g17", "r605")
+    clones = []
+    report = {}
+    try:
+        with pytest.raises(ValueError, match="permission reconciliation failed"):
+            if flow == "migration":
+                run_migration(source, target, tmp_path / "copy.dump", "owner_loss", 16, 17)
+            else:
+                execute_rehearsal(
+                    admin, tmp_path, image="test:owner", job_started=time.monotonic(), report=report
+                )
+        if flow == "migration":
+            restored = target
+        else:
+            assert report["status"] == "failed"
+            assert report["stage"] == "seed_restore"
+            clones = [admin.connect(index) for index in (0, 1)]
+            restored = clones[0]
+            assert clones[1].read_checkpoint() is None
+        assert trusted_extension_owner(source) == owner
+        assert trusted_extension_owner(restored) == provider.administrator
+        assert restored.read_checkpoint() is None
+        with source.conn.transaction(force_rollback=True):
+            source.conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(owner)))
+            source.conn.execute("ALTER EXTENSION hstore UPDATE")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege, match="must be owner"):
+            with restored.conn.transaction(force_rollback=True):
+                restored.conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(owner)))
+                restored.conn.execute("ALTER EXTENSION hstore UPDATE")
+        assert source.snapshot() == before
+    finally:
+        for clone in clones:
+            clone.close()
+        if flow == "rehearsal":
+            admin.cleanup()
+
+
+@pytest.mark.parametrize("provider", ["rehearsal"], indirect=True)
+@pytest.mark.parametrize("owner_kind", ["administrator"])
+@pytest.mark.parametrize("stage", ["restore", "resume"])
+def test_extension_object_owner_drift_prevents_verification(
+    owned_extension: tuple[ProviderFixture, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    provider, owner = owned_extension
+    source, target = provider.stores
+    checkpoint = None
+    changed = []
+
+    def change_owner() -> None:
+        target.conn.execute("DROP EXTENSION hstore")
+        install_trusted_extension(target, provider.apps[0])
+        changed.append(True)
+
+    if stage == "resume":
+        checkpoint = run_migration(source, target, tmp_path / "copy.dump", "owner_drift", 16, 17)
+        change_owner()
+    else:
+        original = target._command
+
+        def restore_with_change(argv: list[str]) -> bytes:
+            result = original(argv)
+            if Path(argv[0]).name == "pg_restore" and "--dbname" in argv:
+                change_owner()
+            return result
+
+        monkeypatch.setattr(target, "_command", restore_with_change)
+    with pytest.raises(ValueError, match="reconciliation failed"):
+        run_migration(source, target, tmp_path / "attempt.dump", "owner_drift", 16, 17)
+    assert changed == [True]
+    assert trusted_extension_owner(source) == owner
+    assert trusted_extension_owner(target) == provider.apps[0]
+    assert target.read_checkpoint() == checkpoint
+    assert {k: v for k, v in source.snapshot().items() if k != "extension_objects"} == {
+        k: v for k, v in target.snapshot().items() if k != "extension_objects"
+    }
