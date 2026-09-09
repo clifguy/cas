@@ -6,6 +6,7 @@ throwaway database; identities and data are isolated from every other test.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -15,8 +16,21 @@ import pytest
 from psycopg import sql
 
 from sage.maintenance.postgres_migration import PostgresStore, run_migration
+from sage.storage.postgres.graph_store import PostgresGraphStore
+from sage.storage.postgres.pool import pool_from_conninfo
 from sage.storage.postgres.schema import schema_statements
 from tests.helpers.pg_isolation import derive_throwaway_dbname, rewrite_dsn_dbname
+
+
+async def initialize_graph(conninfo: str, schema: str) -> None:
+    pool = pool_from_conninfo(conninfo, search_path=f"{schema},public")
+    await pool.open()
+    try:
+        store = PostgresGraphStore(pool)
+        await store.initialize()
+        await store.close()
+    finally:
+        await pool.close()
 
 
 @pytest.fixture
@@ -51,6 +65,7 @@ def databases():
         for schema in ("vault_alpha", "vault_beta"):
             for statement in schema_statements(schema):
                 conn.execute(statement)
+            asyncio.run(initialize_graph(source.conninfo, schema))
             conn.execute(
                 sql.SQL(
                     """INSERT INTO {}.documents (id,
@@ -254,6 +269,25 @@ def test_cross_major_restore_preserves_state(databases, tmp_path: Path) -> None:
         ).fetchone()[0]
         == role
     )
+    for store in (source, target):
+        for schema in ("vault_alpha", "vault_beta"):
+            with store.conn.transaction(force_rollback=True):
+                store.conn.execute(
+                    sql.SQL("SET LOCAL search_path TO {},public").format(sql.Identifier(schema))
+                )
+                assert store.conn.execute(
+                    "SELECT is_chain_head FROM documents WHERE id='doc-new'"
+                ).fetchone()[0]
+                store.conn.execute(
+                    "INSERT INTO edges (id,source_id,target_id,edge_type,created_at) "
+                    "VALUES ('behavior','doc-old','doc-new','supersedes','2026-01-04')"
+                )
+                assert (
+                    store.conn.execute(
+                        "SELECT is_chain_head FROM documents WHERE id='doc-new'"
+                    ).fetchone()[0]
+                    is False
+                )
     # Default grants and extension versions are part of the same resume proof.
     source.conn.execute(
         sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA bff GRANT SELECT ON TABLES TO {}").format(
@@ -422,3 +456,63 @@ def test_non_superuser_restore_permission_preflight(non_superuser_databases, tmp
     assert not source.conn.execute(
         "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (workload,)
     ).fetchone()[0]
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["trigger_enabled", "trigger_definition", "routine_body", "routine_acl", "routine_owner"],
+)
+def test_resume_rejects_graph_executable_drift(databases, tmp_path, drift):
+    source, target, role = databases
+    report = run_migration(source, target, tmp_path / "copy.dump", "graph-executable", 16, 17)
+    before = target.snapshot()
+    statements = {
+        "trigger_enabled": "ALTER TABLE vault_alpha.edges DISABLE TRIGGER "
+        "trg_tier3_chain_head_on_supersedes",
+        "trigger_definition": "CREATE OR REPLACE TRIGGER trg_tier3_chain_head_on_supersedes "
+        "AFTER INSERT ON vault_alpha.edges FOR EACH ROW "
+        "WHEN (NEW.edge_type = 'references') "
+        "EXECUTE FUNCTION vault_alpha.trg_fn_chain_head_on_supersedes()",
+        "routine_body": "CREATE OR REPLACE FUNCTION vault_alpha.trg_fn_chain_head_on_supersedes() "
+        "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$",
+        "routine_acl": "REVOKE EXECUTE ON FUNCTION "
+        "vault_alpha.trg_fn_chain_head_on_supersedes() FROM PUBLIC",
+    }
+    if drift == "routine_owner":
+        target.conn.execute(
+            sql.SQL(
+                "ALTER FUNCTION vault_alpha.trg_fn_chain_head_on_supersedes() OWNER TO {}"
+            ).format(sql.Identifier(role))
+        )
+    else:
+        target.conn.execute(statements[drift])
+    after = target.snapshot()
+    assert {name: (table["count"], table["hash"]) for name, table in before["tables"].items()} == {
+        name: (table["count"], table["hash"]) for name, table in after["tables"].items()
+    }
+    with pytest.raises(ValueError, match="resume reconciliation failed"):
+        run_migration(source, target, tmp_path / "retry.dump", "graph-executable", 16, 17)
+    assert target.read_checkpoint() == report
+    assert not (tmp_path / "retry.dump").exists()
+
+
+def test_snapshot_refuses_unsupported_workload_aggregate(databases):
+    source, _, _ = databases
+    source.conn.execute(
+        "CREATE AGGREGATE vault_alpha.custom_sum(bigint) (SFUNC=int8pl, STYPE=bigint, INITCOND='0')"
+    )
+    with pytest.raises(ValueError, match="unsupported workload routine kind"):
+        source.snapshot()
+
+
+def test_migration_refuses_destination_with_only_a_workload_function(databases, tmp_path):
+    source, target, role = databases
+    target.conn.execute(
+        "CREATE FUNCTION public.existing() RETURNS integer LANGUAGE sql AS 'SELECT 1'"
+    )
+    with pytest.raises(ValueError, match="target contains existing workload objects"):
+        run_migration(source, target, tmp_path / "copy.dump", "existing-routine", 16, 17)
+    assert source.conn.execute(
+        "SELECT has_database_privilege(%s,current_database(),'CONNECT')", (role,)
+    ).fetchone()[0]
+    assert target.conn.execute("SELECT public.existing()").fetchone()[0] == 1

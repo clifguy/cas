@@ -82,8 +82,10 @@ tag or start jobs from an independent operator session.
    every workload table's row count and ordered content hash, column definitions,
    indexes, constraints, table/schema owners and ACLs, sequence state and definitions
    (data type, start, increment, bounds, cache, and cycle), default
-   grants, and the required extension versions. Unsupported relation kinds fail
-   closed. Review the job's report and target `_cas_migration.checkpoint` record.
+   grants, workload function/procedure definitions, owners and ACLs, trigger
+   definitions and enabled state, and the required extension versions. Unsupported
+   relation or routine kinds (including workload aggregates) fail closed. Review the
+   job's report and target `_cas_migration.checkpoint` record.
 6. Only successful reconciliation sets `verified:<generation>`. Applications stay
    stopped and source CONNECT stays revoked. The archive is temporary job-local
    data and is removed when the job ends; it is not a retained disaster-recovery

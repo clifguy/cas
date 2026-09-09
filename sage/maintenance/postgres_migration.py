@@ -70,7 +70,9 @@ def run_migration(
     if checkpoint is not None and any(checkpoint.get(k) != v for k, v in expected.items()):
         raise ValueError("stale migration checkpoint")
     before_target = target.snapshot()
-    if checkpoint is None and (before_target["tables"] or before_target["sequences"]):
+    if checkpoint is None and (
+        before_target["tables"] or before_target["sequences"] or before_target.get("routines")
+    ):
         raise ValueError("target contains existing workload objects")
     source.fence()
     source.assert_quiescent()
@@ -172,12 +174,27 @@ class PostgresStore:
                 "WHERE d.defaclnamespace=0 OR ({}) ORDER BY 1,2,3"
             ).format(sql.SQL(_SCHEMA_PREDICATE))
         ).fetchall()
+        routines = self.conn.execute(
+            sql.SQL("""SELECT n.nspname, p.proname,
+                pg_get_function_identity_arguments(p.oid), p.prokind,
+                CASE WHEN p.prokind IN ('f','p') THEN pg_get_functiondef(p.oid) END,
+                pg_get_userbyid(p.proowner), p.proacl::text
+                FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE {} AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass
+                    AND d.objid=p.oid AND d.deptype='e') ORDER BY 1,2,3""").format(
+                sql.SQL(_SCHEMA_PREDICATE)
+            )
+        ).fetchall()
+        if any(row[3] not in ("f", "p") for row in routines):
+            raise ValueError("unsupported workload routine kind")
         result: dict[str, Any] = {
             "schemas": schemas,
             "tables": {},
             "sequences": {},
             "extensions": extensions,
             "default_grants": default_grants,
+            "routines": routines,
         }
         for namespace, name, kind, owner, acl in relations:
             qualified = sql.Identifier(namespace, name)
@@ -234,6 +251,11 @@ class PostgresStore:
                 "WHERE conrelid=%s::regclass ORDER BY 1",
                 (regclass,),
             ).fetchall()
+            triggers = self.conn.execute(
+                "SELECT tgname, pg_get_triggerdef(oid), tgenabled FROM pg_trigger "
+                "WHERE tgrelid=%s::regclass AND NOT tgisinternal ORDER BY tgname",
+                (regclass,),
+            ).fetchall()
             result["tables"][key] = {
                 "count": count,
                 "hash": digest.hexdigest(),
@@ -242,6 +264,7 @@ class PostgresStore:
                 "columns": columns,
                 "indexes": indexes,
                 "constraints": constraints,
+                "triggers": triggers,
             }
         return result
 
@@ -454,7 +477,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("unexpected source or target major")
             target_snapshot = stores[1].snapshot()
             if stores[1].read_checkpoint() is None and (
-                target_snapshot["tables"] or target_snapshot["sequences"]
+                target_snapshot["tables"]
+                or target_snapshot["sequences"]
+                or target_snapshot.get("routines")
             ):
                 raise ValueError("target contains existing workload objects")
             asyncio.run(bootstrap_target({**os.environ, "PG_FQDN": os.environ["PG_TARGET_FQDN"]}))
