@@ -1,0 +1,49 @@
+name: postgres-migration
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: environment
+        required: true
+      generation:
+        description: Stable replacement generation (lowercase, 1-12 characters).
+        type: string
+        required: true
+      action:
+        type: choice
+        options: [prepare, migrate, rollback]
+        required: true
+      confirm:
+        description: For migrate or rollback, type the selected generation to authorize downtime.
+        type: string
+        required: false
+concurrency:
+  group: cas-tenant-${{ inputs.environment }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment: ${{ inputs.environment }}
+    env:
+      ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}
+      RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+      GENERATION: ${{ inputs.generation }}
+      MIGRATION_ACTION: ${{ inputs.action }}
+      MIGRATION_CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Require main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v7
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Check ownership of the migration fence
+        run: bash deploy/postgres-migration-guard.sh migration "$RESOURCE_GROUP_NAME" "$GENERATION"
+      - name: Prepare or run the offline migration
+        run: bash deploy/postgres-migration.sh

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.versions import postgres_client_major
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _IMAGE = "cas-sage:pytest-smoke"
 #: Pre-built image supplied by CI (SAGE_TEST_IMAGE); when absent the fixture
@@ -130,7 +132,7 @@ def test_smk_005_pg_dump_on_path(image: str) -> None:
         capture_output=True,
         text=True,
     ).stdout
-    assert "(PostgreSQL) 16" in out, f"pg_dump is not the expected major 16: {out!r}"
+    assert f"(PostgreSQL) {postgres_client_major()}" in out, f"unexpected pg_dump: {out!r}"
 
 
 def test_smk_006_ocr_toolchain_on_path(image: str) -> None:

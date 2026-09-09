@@ -24,7 +24,7 @@ from tests.deploy._image_refs import (
     image_names,
     unpinned,
 )
-from tests.helpers.versions import postgres_deploy_major
+from tests.helpers.versions import postgres_client_major, postgres_deploy_major
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKERFILE = _REPO_ROOT / "Dockerfile"
@@ -78,7 +78,7 @@ def test_pg_client_major_matches_flexible_server() -> None:
     # leaves a gap between them: a matching major installed in the builder and a
     # stale one in the runtime stage satisfies both, and the shipped image is the
     # runtime stage.
-    major = _flexible_server_major()
+    major = postgres_client_major()
     assert f"postgresql-client-{major}" in _runtime_stage_text(), (
         f"the runtime stage must install postgresql-client-{major} to match the Flexible "
         f"Server major {major} (versions.json postgres.deploy_major)"

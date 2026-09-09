@@ -31,7 +31,7 @@ this repository's classification of every site into one class or the other.
 
 | Reads the declaration | Mechanism |
 |---|---|
-| `infra/modules/postgres.bicep` | `loadJsonContent` at compile time |
+| `infra/modules/postgres.bicep`, replacement templates and migration driver | `loadJsonContent` at compile time |
 | `ci.yml`, `build-images.yml`, `dependabot-triage.yml`, `ruleset-drift.yml` | a `versions` prelude job's outputs |
 | the test suite | `tests/helpers/versions.py` |
 
@@ -87,3 +87,10 @@ repository — the job's `name:` in `ci.yml`, the required-check table in
 document, and **the live GitHub ruleset**, which no test can reach. Changing
 `postgres.deploy_major` is therefore not a repository-only change. See `branch_protection.md`,
 which also records why the `versions` prelude job should itself become a required context.
+
+During the offline cloud replacement, the container client reads the greater of
+`deploy_major` and `dev_major` through its gate. This lets it dump the older
+incumbent and the replacement. A nonempty, verified serving generation selects
+the development major in the main template; the empty generation still selects
+the deploy floor. Neither selection removes the floor job. See
+[cloud recovery](postgres-cloud-recovery.md) for the staged cutover boundary.

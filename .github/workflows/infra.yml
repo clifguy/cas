@@ -31,7 +31,7 @@ on:
 concurrency:
   # Serialize deploys to the same tenant; let different tenants run in parallel.
   # Never cancel an in-flight deploy.
-  group: ${{ github.workflow }}-${{ inputs.environment || github.ref }}
+  group: cas-tenant-${{ inputs.environment || github.ref }}
   cancel-in-progress: false
 
 # OIDC: the deploy identity is a Microsoft Entra workload identity federated to
@@ -100,6 +100,7 @@ jobs:
       BFF_OIDC_CLIENT_ID: ${{ vars.BFF_OIDC_CLIENT_ID }}
       MCP_CLIENT_ID: ${{ vars.MCP_CLIENT_ID }}
       BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+      POSTGRES_GENERATION: ${{ vars.POSTGRES_GENERATION }}
       POSTGRES_AAD_ADMIN_OBJECT_ID: ${{ vars.POSTGRES_AAD_ADMIN_OBJECT_ID }}
       POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: ${{ vars.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME }}
       SHAREPOINT_SITE_ID: ${{ vars.SHAREPOINT_SITE_ID }}
@@ -115,6 +116,9 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check database migration fence
+        run: bash deploy/postgres-migration-guard.sh deploy "$RESOURCE_GROUP_NAME" "$POSTGRES_GENERATION"
 
       - name: What-if gate (preview; blocks on a Bicep error)
         # A malformed template fails what-if non-zero, so this gates the apply.
@@ -132,6 +136,7 @@ jobs:
               bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
               mcpClientId="$MCP_CLIENT_ID" \
               baseDomain="$BASE_DOMAIN" \
+              postgresGeneration="$POSTGRES_GENERATION" \
               postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
               postgresAadAdminPrincipalName="$POSTGRES_AAD_ADMIN_PRINCIPAL_NAME" \
               sharepointSiteId="$SHAREPOINT_SITE_ID" \
@@ -153,6 +158,7 @@ jobs:
               bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
               mcpClientId="$MCP_CLIENT_ID" \
               baseDomain="$BASE_DOMAIN" \
+              postgresGeneration="$POSTGRES_GENERATION" \
               postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
               postgresAadAdminPrincipalName="$POSTGRES_AAD_ADMIN_PRINCIPAL_NAME" \
               sharepointSiteId="$SHAREPOINT_SITE_ID" \
@@ -250,6 +256,10 @@ jobs:
           # rather than comparing tracked files with each other: the repository
           # can be entirely self-consistent about a major the live server does
           # not have.
+          EXPECTED_PG_MAJOR="$(az deployment sub show --name "$ENVIRONMENT_NAME" --query properties.outputs.postgresServerMajor.value -o tsv)"
+          test -n "$EXPECTED_PG_MAJOR"
+          export PREFLIGHT_POSTGRES_SERVER_NAME="$(az deployment sub show --name "$ENVIRONMENT_NAME" --query properties.outputs.postgresServerName.value -o tsv)"
+          test -n "$PREFLIGHT_POSTGRES_SERVER_NAME"
           AUTH_TOKEN="$(az account get-access-token \
             --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
             BASE_DOMAIN="$BASE_DOMAIN" \
@@ -257,6 +267,15 @@ jobs:
             PREFLIGHT_VAULT_SOURCE="$PREFLIGHT_VAULT_SOURCE" \
             PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="deploy/resource-token-probe.sh" \
             PREFLIGHT_POSTGRES_VERSION_PROBE_CMD="deploy/postgres-version-probe.sh" \
-            PREFLIGHT_EXPECTED_PG_MAJOR="$(jq -er .postgres.deploy_major versions.json)" \
+            PREFLIGHT_EXPECTED_PG_MAJOR="$EXPECTED_PG_MAJOR" \
             PREFLIGHT_RESOURCE_GROUP="$RESOURCE_GROUP_NAME" \
             deploy/cloud-preflight.sh
+
+      - name: Release verified migration fence after preflight
+        run: |
+          set -euo pipefail
+          STATE="$(az group show --name "$RESOURCE_GROUP_NAME" --query tags.casPostgresMigration -o tsv)"
+          if [ -n "$POSTGRES_GENERATION" ] && [ "$STATE" = "cutover:$POSTGRES_GENERATION" ]; then
+            GROUP_ID="$(az group show --name "$RESOURCE_GROUP_NAME" --query id -o tsv)"
+            az tag update --resource-id "$GROUP_ID" --operation Merge --tags "casPostgresMigration=serving:$POSTGRES_GENERATION" --output none
+          fi

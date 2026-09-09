@@ -85,3 +85,8 @@ param sharepointSiteId = 'REPLACE-WITH-SHAREPOINT-SITE-ID'
 param sharepointDriveId = 'REPLACE-WITH-SHAREPOINT-DRIVE-ID'
 // vaultSourceRootPath defaults to 'vaults'; override only if the vault tree
 // is rooted at a different library folder.
+
+// Empty retains the incumbent. Set only after the migration workflow verifies
+// this generation; keep the same value in the environment POSTGRES_GENERATION.
+// See docs/process/postgres-cloud-recovery.md for cutover and recovery.
+// param postgresGeneration = ''

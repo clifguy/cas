@@ -61,9 +61,16 @@ param aadAdminPrincipalName string = ''
 @description('Type of the Entra administrator principal: User, Group, or ServicePrincipal.')
 param aadAdminPrincipalType string = 'Group'
 
-// Flexible Server names are globally unique DNS labels; derive a stable one from
-// the resource group id rather than taking it as a parameter.
-var serverName = 'psql-${environmentName}-${uniqueString(resourceGroup().id)}'
+@maxLength(12)
+@description('Stable generation suffix. Empty preserves the original server name; changing it creates a distinct server.')
+param serverGeneration string = ''
+
+@allowed(['Disabled', 'Enabled'])
+@description('Creation-time backup redundancy. Existing servers must retain their original setting.')
+param geoRedundantBackup string = 'Disabled'
+
+var legacyServerName = 'psql-${environmentName}-${uniqueString(resourceGroup().id)}'
+var serverName = empty(serverGeneration) ? legacyServerName : '${legacyServerName}-${serverGeneration}'
 
 // Private DNS zone the VNet-integrated server registers in, linked to the
 // hosting network so the server FQDN resolves privately from inside the VNet.
@@ -100,6 +107,10 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
   properties: {
     version: postgresVersion
+    backup: {
+      backupRetentionDays: 35
+      geoRedundantBackup: geoRedundantBackup
+    }
     storage: {
       storageSizeGB: storageSizeGB
     }
