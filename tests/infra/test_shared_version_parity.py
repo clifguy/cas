@@ -44,6 +44,7 @@ from tests.helpers.versions import (
     major_of,
     node_major,
     parse_ruff_target,
+    postgres_client_major,
     postgres_deploy_major,
     postgres_dev_major,
     python_version,
@@ -342,11 +343,27 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
         "no nested template declaring postgresVersion found in the compiled ARM; the "
         "Postgres module did not reach it"
     )
-    assert "postgresVersion" not in overrides, (
-        f"a caller passes postgresVersion to the Postgres module (supplies {sorted(overrides)}), "
-        "so the manifest-derived default is not the deployed value; remove the override or "
-        "make it read the manifest"
+    assert "postgresVersion" in overrides
+    parent = next(
+        resource
+        for resource in template["resources"]
+        if "postgresVersion" in resource.get("properties", {}).get("parameters", {})
     )
+    assert parent["properties"]["parameters"]["postgresVersion"] == {
+        "value": "[variables('postgresMajor')]"
+    }
+    expression = template["variables"]["postgresMajor"]
+    selection = re.fullmatch(
+        r"\[if\(empty\(parameters\('postgresGeneration'\)\), "
+        r"variables\('([^']+)'\)\.postgres\.deploy_major, "
+        r"variables\('([^']+)'\)\.postgres\.dev_major\)\]",
+        expression,
+    )
+    assert selection, "serving major must select manifest deploy/dev by generation"
+    assert (
+        template["variables"][selection[1]]["postgres"]["deploy_major"] == postgres_deploy_major()
+    )
+    assert template["variables"][selection[2]]["postgres"]["dev_major"] == postgres_dev_major()
 
     default, variables = _emitted_postgres_version_default(template)
     assert default is not None, (
@@ -373,13 +390,13 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
     )
 
 
-def test_container_pg_client_matches_the_deploy_major() -> None:
-    """The shipped image's Postgres client major matches the deployed server.
+def test_container_pg_client_covers_both_majors() -> None:
+    """The shipped client covers the source and replacement during migration.
 
-    A client older than the server cannot read its dumps; a client newer than
-    the server is the case ``pg_dump`` refuses outright.
+    A client older than either server cannot dump it; newer clients support
+    logical upgrade from the older source.
     """
-    major = postgres_deploy_major()
+    major = postgres_client_major()
     assert f"postgresql-client-{major}" in _runtime_stage_text(), (
         f"the runtime stage must install postgresql-client-{major} to match the "
         f"declared Flexible Server major (versions.json postgres.deploy_major)"

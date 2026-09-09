@@ -85,10 +85,10 @@ RUN groupadd --system sage \
 
 # System binaries for the runtime image:
 #   * pg_dump for the maintenance job's snapshot-before-destroy step. The
-#     Flexible Server is major 16 (infra/modules/postgres.bicep); pin the client
-#     major to it so pg_dump does not refuse a newer-server dump. Debian stock
+#     client covers the greater of deploy/dev so it can dump either server.
+#     Debian stock
 #     ships an older client, so add the PostgreSQL Global Development Group
-#     (PGDG) apt repo for the 16 client.
+#     (PGDG) apt repo for the pinned client.
 #   * tesseract (+ English data) and ghostscript for the scanned-PDF OCR
 #     pre-pass, which ocrmypdf drives as child processes. These come from Debian
 #     main, so they need no extra repo; installing them here (runtime stage,
@@ -107,7 +107,7 @@ RUN set -eux; \
       > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      postgresql-client-16 tesseract-ocr tesseract-ocr-eng ghostscript; \
+      postgresql-client-17 tesseract-ocr tesseract-ocr-eng ghostscript; \
     apt-get purge -y --auto-remove curl gnupg; \
     rm -rf /var/lib/apt/lists/*
 

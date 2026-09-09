@@ -109,3 +109,8 @@ def parse_ruff_target(token: str) -> tuple[int, int]:
         raise ValueError(f"expected a Ruff target token like 'py314'; got {token!r}")
     digits = token[2:]
     return int(digits[0]), int(digits[1:])
+
+
+def postgres_client_major() -> str:
+    """Client must dump either endpoint during a bounded major-version transition."""
+    return str(max(int(postgres_deploy_major()), int(postgres_dev_major())))

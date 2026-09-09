@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Report the major version of the PostgreSQL Flexible Server in a resource
-# group:
+# group (PREFLIGHT_POSTGRES_SERVER_NAME selects the serving server during
+# replacement; without it, exactly one server is required):
 #
 #   postgres-version-probe.sh <resource-group>
 #
 # Prints the major (e.g. `16`) on stdout and exits 0. Exits non-zero, printing
-# nothing to stdout, when the group holds no Flexible Server or more than one:
+# nothing to stdout, when the selected server is absent/unreadable or an
+# unqualified group lookup holds no Flexible Server or more than one:
 # both are states where "the deployed major" has no single answer, and a probe
 # that picked one anyway would report a version the deployment does not
 # uniformly have.
@@ -30,6 +32,16 @@ set -euo pipefail
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
   echo "usage: postgres-version-probe.sh <resource-group>" >&2
   exit 2
+fi
+
+if [ -n "${PREFLIGHT_POSTGRES_SERVER_NAME:-}" ]; then
+  version="$(az postgres flexible-server show --resource-group "$1" \
+    --name "$PREFLIGHT_POSTGRES_SERVER_NAME" --query version --output tsv)"
+  case "$version" in
+    ''|*[!0-9]*) echo "missing or invalid PostgreSQL major" >&2; exit 1 ;;
+  esac
+  printf '%s\n' "$version"
+  exit 0
 fi
 
 versions="$(az postgres flexible-server list \

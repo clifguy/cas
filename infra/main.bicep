@@ -55,6 +55,14 @@ param baseDomain string
 @description('Object id of the Entra principal granted Postgres administrator. Supplied at deploy time; empty leaves the binding unset.')
 param postgresAadAdminObjectId string = ''
 
+@maxLength(12)
+@description('Serving database generation. Empty preserves the incumbent. Select a prepared replacement only after verified migration.')
+param postgresGeneration string = ''
+
+var postgresMajor = empty(postgresGeneration)
+  ? loadJsonContent('../versions.json').postgres.deploy_major
+  : loadJsonContent('../versions.json').postgres.dev_major
+
 @description('Display name of the Postgres Entra administrator principal.')
 param postgresAadAdminPrincipalName string = ''
 
@@ -81,7 +89,9 @@ var tlsCertSecretUri = '${keyvault.outputs.keyVaultUri}secrets/${keyvault.output
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
-  tags: tags
+  tags: union(tags, empty(postgresGeneration) ? {} : {
+    casPostgresMigration: 'cutover:${postgresGeneration}'
+  })
 }
 
 // Hosting-environment modules deploy into the resource group above, scoped to
@@ -139,6 +149,9 @@ module postgres 'modules/postgres.bicep' = {
     location: location
     environmentName: environmentName
     tags: tags
+    serverGeneration: postgresGeneration
+    postgresVersion: postgresMajor
+    geoRedundantBackup: empty(postgresGeneration) ? 'Disabled' : 'Enabled'
     delegatedSubnetId: foundation.outputs.postgresSubnetId
     vnetId: foundation.outputs.vnetId
     aadAdminObjectId: empty(postgresAadAdminObjectId)
@@ -351,3 +364,9 @@ output sageContainerAppName string = containerApps.outputs.sageContainerAppName
 
 @description('Name of the CAS BFF container app — the deploy pipeline restarts it to converge the app tier after the bootstrap job runs.')
 output bffContainerAppName string = containerApps.outputs.bffContainerAppName
+
+@description('Explicit serving server identity for preflight; never inferred from resource-group cardinality.')
+output postgresServerName string = postgres.outputs.postgresServerName
+
+@description('Expected major of the selected serving server.')
+output postgresServerMajor string = postgresMajor

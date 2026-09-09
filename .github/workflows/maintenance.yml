@@ -82,7 +82,7 @@ on:
 
 concurrency:
   # Never run two maintenance operations against the same tenant concurrently.
-  group: ${{ github.workflow }}-${{ inputs.environment }}
+  group: cas-tenant-${{ inputs.environment }}
   cancel-in-progress: false
 
 # OIDC: the tenant's federated deploy identity requests a token; no stored secret.
@@ -117,11 +117,15 @@ jobs:
       SNAPSHOT: ${{ inputs.snapshot }}
       REASON: ${{ inputs.reason }}
     steps:
+      - uses: actions/checkout@v7
       - uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check database migration fence
+        run: bash deploy/postgres-migration-guard.sh maintenance "$RESOURCE_GROUP_NAME"
 
       - name: Start the in-VNet maintenance job and wait
         # Resolve the already-deployed job name from the last deployment's output,
