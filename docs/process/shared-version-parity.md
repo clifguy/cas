@@ -44,7 +44,6 @@ outputs, so there is one mechanism rather than two.
 |---|---|
 | `Dockerfile`, `Dockerfile.bff` `FROM` lines | A `FROM` line takes no file input, and the readable tag must stay on it ahead of the digest for Dependabot's `docker` ecosystem to parse it. |
 | `pyproject.toml` — `requires-python`, `[tool.ruff] target-version` | Static TOML; no interpolation. |
-| the deploy-floor job's `name:` | It is a required check context — see below. |
 | the Postgres runbooks, `README.md`, `CLAUDE.md`, the Dependabot `@types/node` note | Prose. |
 
 `tests/infra/test_shared_version_parity.py` and `tests/infra/test_frontend_node_version.py`
@@ -59,38 +58,26 @@ CI, where the service container's tag is derived from the declaration so a misma
 derivation did not take effect, and warns on a workstation, where the server is the
 developer's own and the steering document permits the workstation to lag.
 
-## The two Postgres majors are a transition, not a design
+## PostgreSQL serving baseline and retained migration
 
-The manifest declares `postgres.deploy_major` and `postgres.dev_major` separately, and today
-they differ. Read that as the steering document does: **parity is the resting state, and this
-skew is a bounded transition that has not yet completed** — not two values with standing
-jobs. The `storage-deploy-floor` CI job that tests the delta is the cost of the skew, not a
-feature of it; the discipline's own conclusion is that testing a version delta is strictly
-worse than not having one, because converging removes the class by construction.
+`postgres.deploy_major` and `postgres.dev_major` are both 17. The full PostgreSQL
+17 test job supplies the storage coverage; there is no separate deploy-floor job.
+Its former required context must be removed from the live ruleset in the same
+landing window as the workflow and captured ruleset change. Preserve every other
+required context, especially `versions`, and read back the live ruleset afterward.
 
-Two names exist so that every consumer of each value is bound to a declaration while the
-transition is open, rather than being bound to nothing. When the convergence lands, the two
-collapse to one: set both to the same major, delete the deploy-floor job with its required
-check context, and the second name goes away. `dev_major` may not fall below `deploy_major`,
-and that is asserted.
+The two baseline keys describe deployment and development intent; equality is gated.
+Changing either for another upgrade requires a separately reviewed migration design.
+Changing `dev_major` alone must never change the major of a serving generation.
 
-## The required check context constrains how the floor moves
+`postgres.migration.source_major` and `postgres.migration.target_major` retain the
+fixed 16-to-17 migration contract. The accepted nonempty serving generation uses
+that target major, while new empty-generation deployments use `deploy_major`.
+Persistent generation selection and the `serving:<generation>` fence prevent an
+ordinary deployment from returning to the retained incumbent. Neither baseline
+convergence nor a development-major bump permits clearing that fence.
 
-The deploy-floor job is named `storage tests on the deploy floor (pg16)`, and that name is a
-required status check in the branch ruleset. It is **not** templated from the prelude job's
-output: a context that changed whenever the declared major did would block every merge while
-GitHub waited on a context that never arrives.
-
-So the floor major appears in four places that must move together, and only three are in this
-repository — the job's `name:` in `ci.yml`, the required-check table in
-[`branch_protection.md`](branch_protection.md), the captured ruleset JSON in that same
-document, and **the live GitHub ruleset**, which no test can reach. Changing
-`postgres.deploy_major` is therefore not a repository-only change. See `branch_protection.md`,
-which also records why the `versions` prelude job should itself become a required context.
-
-During the offline cloud replacement, the container client reads the greater of
-`deploy_major` and `dev_major` through its gate. This lets it dump the older
-incumbent and the replacement. A nonempty, verified serving generation selects
-the development major in the main template; the empty generation still selects
-the deploy floor. Neither selection removes the floor job. See
-[cloud recovery](postgres-cloud-recovery.md) for the staged cutover boundary.
+The replacement template, migration job and driver read the fixed migration
+contract, rather than interpreting today's serving major as yesterday's source.
+The runtime client must cover the baseline and both retained migration endpoints.
+See [cloud recovery](postgres-cloud-recovery.md) for acceptance and recovery limits.

@@ -61,7 +61,7 @@ param postgresGeneration string = ''
 
 var postgresMajor = empty(postgresGeneration)
   ? loadJsonContent('../versions.json').postgres.deploy_major
-  : loadJsonContent('../versions.json').postgres.dev_major
+  : loadJsonContent('../versions.json').postgres.migration.target_major
 
 @description('Display name of the Postgres Entra administrator principal.')
 param postgresAadAdminPrincipalName string = ''

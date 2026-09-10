@@ -83,9 +83,9 @@ def replacement(az: Azure, group: str, generation: str) -> dict:
 def check_servers(az: Azure, group: str, source: str, target: str) -> dict:
     if source == target:
         raise ValueError("source and replacement are identical")
-    versions = json.loads((ROOT / "versions.json").read_text())["postgres"]
+    versions = json.loads((ROOT / "versions.json").read_text())["postgres"]["migration"]
     answer = {}
-    for fqdn, major in ((source, versions["deploy_major"]), (target, versions["dev_major"])):
+    for fqdn, major in ((source, versions["source_major"]), (target, versions["target_major"])):
         server = az(
             "postgres",
             "flexible-server",
@@ -226,7 +226,7 @@ def migrate(
         entry["name"]: entry.get("value")
         for entry in configured["properties"]["template"]["containers"][0]["env"]
     }
-    versions = json.loads((ROOT / "versions.json").read_text())["postgres"]
+    versions = json.loads((ROOT / "versions.json").read_text())["postgres"]["migration"]
     expected_env = {
         key: bootstrap_env[key]
         for key in (
@@ -238,7 +238,7 @@ def migrate(
         )
     }
     expected_env.update(
-        PG_SOURCE_MAJOR=versions["deploy_major"], PG_TARGET_MAJOR=versions["dev_major"]
+        PG_SOURCE_MAJOR=versions["source_major"], PG_TARGET_MAJOR=versions["target_major"]
     )
     if (
         any(env.get(key) != value for key, value in expected_env.items())
@@ -502,7 +502,7 @@ def rehearse(
     container = configured["properties"]["template"]["containers"][0]
     image = bootstrap["properties"]["template"]["containers"][0]["image"]
     env = {e["name"]: e.get("value") for e in container["env"]}
-    versions = json.loads((ROOT / "versions.json").read_text())["postgres"]
+    versions = json.loads((ROOT / "versions.json").read_text())["postgres"]["migration"]
     expected = {
         key: bootstrap_env[key]
         for key in (
@@ -517,8 +517,8 @@ def rehearse(
         PG_SOURCE_FQDN=source,
         PG_TARGET_FQDN=target,
         PG_MIGRATION_RUN_ID=generation,
-        PG_SOURCE_MAJOR=versions["deploy_major"],
-        PG_TARGET_MAJOR=versions["dev_major"],
+        PG_SOURCE_MAJOR=versions["source_major"],
+        PG_TARGET_MAJOR=versions["target_major"],
         PG_MIGRATION_IMAGE=image,
     )
     if (

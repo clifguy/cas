@@ -1,8 +1,12 @@
 {
   "documentation": "docs/process/shared-version-parity.md",
   "postgres": {
-    "deploy_major": "16",
-    "dev_major": "17"
+    "deploy_major": "17",
+    "dev_major": "17",
+    "migration": {
+      "source_major": "16",
+      "target_major": "17"
+    }
   },
   "python": {
     "version": "3.14"

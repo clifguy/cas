@@ -67,16 +67,8 @@ POSTGRES_RUNBOOKS: Final[tuple[Path, ...]] = (
 )
 PYTHON_PROSE: Final[tuple[Path, ...]] = (REPO_ROOT / "README.md", REPO_ROOT / "CLAUDE.md")
 
-# The CI job whose service container runs the deploy floor rather than the
-# development major, and whose display name is the branch ruleset's required
-# check context.
-DEPLOY_FLOOR_JOB: Final[str] = "storage-deploy-floor"
-
-# Every Postgres service container this repository declares: three on the
-# development major, one on the deploy floor. A hard count rather than a
-# lower bound, so a site that is added without being bound to the manifest --
-# or one that silently disappears from the walk -- fails here.
-EXPECTED_PG_SERVICE_COUNT: Final[int] = 4
+# Full suite, browser integration, and image verification each use Postgres.
+EXPECTED_PG_SERVICE_COUNT: Final[int] = 3
 
 # Files permitted to lint and format below the declared Python, and the target
 # each uses. The deploy probes run on the runner's system interpreter rather
@@ -100,7 +92,6 @@ _PGVECTOR_TAG = re.compile(r"pgvector/pgvector:pg(?P<tag>[^\s\"']+)")
 # equality rather than containment: containment constrains only that the
 # expression appears somewhere in the string, which an image like
 # ``pgvector/pgvector:pg16-${{ ... }}`` satisfies while pinning the wrong tag.
-_FLOOR_IMAGE: Final[str] = "pgvector/pgvector:pg${{ needs.versions.outputs.postgres_deploy_major }}"
 _DEV_IMAGE: Final[str] = "pgvector/pgvector:pg${{ needs.versions.outputs.postgres_dev_major }}"
 _BICEP_LINE_COMMENT = re.compile(r"//.*$", re.MULTILINE)
 
@@ -356,14 +347,14 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
     selection = re.fullmatch(
         r"\[if\(empty\(parameters\('postgresGeneration'\)\), "
         r"variables\('([^']+)'\)\.postgres\.deploy_major, "
-        r"variables\('([^']+)'\)\.postgres\.dev_major\)\]",
+        r"variables\('([^']+)'\)\.postgres\.migration\.target_major\)\]",
         expression,
     )
-    assert selection, "serving major must select manifest deploy/dev by generation"
+    assert selection, "serving major must select the fixed migration target by generation"
     assert (
         template["variables"][selection[1]]["postgres"]["deploy_major"] == postgres_deploy_major()
     )
-    assert template["variables"][selection[2]]["postgres"]["dev_major"] == postgres_dev_major()
+    assert template["variables"][selection[2]]["postgres"]["migration"]["target_major"] == "17"
 
     default, variables = _emitted_postgres_version_default(template)
     assert default is not None, (
@@ -403,62 +394,6 @@ def test_container_pg_client_covers_both_majors() -> None:
     )
 
 
-def test_deploy_floor_service_image_is_the_deploy_major() -> None:
-    """The deploy-floor CI job's service container runs the declared floor."""
-    images = _postgres_service_images()
-    floor = [img for (_, job), img in images.items() if job == DEPLOY_FLOOR_JOB]
-    assert len(floor) == 1, (
-        f"expected exactly one Postgres service on job {DEPLOY_FLOOR_JOB}; found {floor}"
-    )
-    assert floor[0] == _FLOOR_IMAGE, (
-        f"the deploy-floor service image must be exactly {_FLOOR_IMAGE!r}, reading the "
-        f"declared floor from the versions prelude job; got {floor[0]!r}"
-    )
-
-
-def test_deploy_floor_check_context_names_the_deploy_major() -> None:
-    """The required check's context name carries the floor major, in all three copies.
-
-    The name is a literal on purpose: it is the branch ruleset's required
-    status-check context, and a context templated from a job output would
-    change whenever the declared major did, blocking every merge while GitHub
-    waited on a context that never arrives. That makes the name a restating
-    site, held here -- together with its two copies in ``branch_protection.md``,
-    the human-readable table and the captured ruleset JSON.
-
-    A change to the declared floor therefore also needs the *live* ruleset
-    edited, which no test can reach; ``branch_protection.md`` says so.
-    """
-    major = postgres_deploy_major()
-    expected = f"storage tests on the deploy floor (pg{major})"
-
-    job = _workflow_jobs(CI_WORKFLOW).get(DEPLOY_FLOOR_JOB)
-    assert job is not None, f"no `{DEPLOY_FLOOR_JOB}` job in {CI_WORKFLOW}"
-    assert job.get("name") == expected, (
-        f"the {DEPLOY_FLOOR_JOB} job's name is the required check context and must be "
-        f"{expected!r}; got {job.get('name')!r}"
-    )
-
-    protection = BRANCH_PROTECTION.read_text(encoding="utf-8")
-    table_rows = [ln for ln in protection.splitlines() if ln.startswith("| `storage tests")]
-    assert len(table_rows) == 1, (
-        f"expected exactly one required-check table row for the deploy floor in "
-        f"{BRANCH_PROTECTION}; found {len(table_rows)}"
-    )
-    assert f"`{expected}`" in table_rows[0], (
-        f"the required-check table row must name {expected!r}; got {table_rows[0]!r}"
-    )
-
-    ruleset_lines = [ln for ln in protection.splitlines() if '"context": "storage tests' in ln]
-    assert len(ruleset_lines) == 1, (
-        f"expected exactly one captured-ruleset context entry for the deploy floor in "
-        f"{BRANCH_PROTECTION}; found {len(ruleset_lines)}"
-    )
-    assert f'"{expected}"' in ruleset_lines[0], (
-        f"the captured ruleset must name {expected!r}; got {ruleset_lines[0]!r}"
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Postgres -- the development major                                            #
 # --------------------------------------------------------------------------- #
@@ -485,17 +420,16 @@ def test_every_postgres_service_image_reads_the_manifest() -> None:
     )
 
 
-def test_non_floor_service_images_are_the_development_major() -> None:
-    """Every service container but the deploy floor runs the development major."""
+def test_service_images_are_the_development_major() -> None:
+    """Every service container runs the development major."""
     images = _postgres_service_images()
-    others = {site: img for site, img in images.items() if site[1] != DEPLOY_FLOOR_JOB}
-    assert len(others) == EXPECTED_PG_SERVICE_COUNT - 1, (
-        f"expected {EXPECTED_PG_SERVICE_COUNT - 1} non-floor Postgres services; "
-        f"found {sorted(others)}"
+    others = images
+    assert len(others) == EXPECTED_PG_SERVICE_COUNT, (
+        f"expected {EXPECTED_PG_SERVICE_COUNT} Postgres services; found {sorted(others)}"
     )
     wrong = {site: img for site, img in others.items() if img != _DEV_IMAGE}
     assert not wrong, (
-        f"every non-floor service image must be exactly {_DEV_IMAGE!r}; a job that "
+        f"every service image must be exactly {_DEV_IMAGE!r}; a job that "
         f"should run the development major is bound to something else: {wrong}"
     )
 
@@ -1088,31 +1022,3 @@ def test_control_major_parser_rejects_an_unresolvable_spec() -> None:
     assert major_of("^24.13.2") == 24
     with pytest.raises(ValueError):
         major_of("latest")
-
-
-def test_control_required_context_matchers_select_only_their_own_site() -> None:
-    """Each branch-protection matcher picks its own line and ignores the others.
-
-    The two structured sites and any prose mentioning the context all carry the
-    same string. A matcher keyed on that string alone would match all three,
-    report the wrong count, and then compare a declared major against a
-    sentence. Driven against a synthetic document so the control tests the
-    matchers rather than today's contents of the real one.
-    """
-    document = "\n".join(
-        (
-            "The deploy-floor job exists because storage tests on the deploy floor (pg16)",
-            "runs against the deployed major rather than the development one.",
-            "| `storage tests on the deploy floor (pg16)` | scoped storage tests. |",
-            '          { "context": "storage tests on the deploy floor (pg16)", "x": 1 }',
-        )
-    )
-    lines = document.splitlines()
-    rows = [ln for ln in lines if ln.startswith("| `storage tests")]
-    contexts = [ln for ln in lines if '"context": "storage tests' in ln]
-    assert len(rows) == 1, f"the table matcher must select one line; got {rows}"
-    assert len(contexts) == 1, f"the ruleset matcher must select one line; got {contexts}"
-    assert rows[0] != contexts[0], "the two matchers must select different lines"
-    assert "The deploy-floor job exists" not in rows[0] + contexts[0], (
-        "neither matcher may select the prose mention"
-    )

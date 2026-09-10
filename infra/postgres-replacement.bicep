@@ -31,7 +31,7 @@ module replacement 'modules/postgres.bicep' = {
     databaseName: databaseName
     tags: tags
     serverGeneration: serverGeneration
-    postgresVersion: versions.postgres.dev_major
+    postgresVersion: versions.postgres.migration.target_major
     geoRedundantBackup: 'Enabled'
     delegatedSubnetId: delegatedSubnetId
     vnetId: vnetId

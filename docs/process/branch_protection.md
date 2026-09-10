@@ -58,26 +58,23 @@ The following CI jobs from [`.github/workflows/ci.yml`](../../.github/workflows/
 | `lint-imports` | `import-linter` contract enforcement. |
 | `gitleaks` | Secret-scanning over the commits the event introduced. |
 | `eslint` | Frontend eslint (`npm run lint` = `eslint . --max-warnings 0`) over `app/`. |
-| `versions` | The prelude job that reads `versions.json` and exposes each declared version as a job output. Required because four of the checks above declare `needs: versions`, and a job skipped for a failed dependency counts as satisfied. |
-| `storage tests on the deploy floor (pg16)` | `tests/sage/` plus the BFF session store against PostgreSQL 16, the deployed Flexible Server major. |
+| `versions` | The prelude job that reads `versions.json` and exposes each declared version as a job output. Required because three of the checks above declare `needs: versions`, and a job skipped for a failed dependency counts as satisfied. |
 
-**A required context is a job's *display* name, which is its `jobs:` key only when the job sets no `name:`.** The first five are bare keys; the sixth is the `name:` value of the `storage-deploy-floor` job, and naming that job's key here instead would create a required check that never reports — which blocks every merge, since GitHub waits on a context that never arrives. If a job is renamed *or gains or loses a `name:` key*, this document and the ruleset definition must be updated together. Read the live contexts with `gh api repos/<owner>/<repo>/commits/<sha>/check-runs --jq '.check_runs[].name'` rather than inferring them from the workflow.
+**A required context is a job's *display* name, which is its `jobs:` key only when the job sets no `name:`.** All six required contexts currently use their job keys. If a job is renamed *or gains or loses a `name:` key*, this document and the ruleset definition must be updated together. Read the live contexts with `gh api repos/<owner>/<repo>/commits/<sha>/check-runs --jq '.check_runs[].name'` rather than inferring them from the workflow.
 
-The deploy-floor job exists because every other Postgres this repository runs against — the `test` job, the image build, and the workstation — is major 17, while the deployed target is Flexible Server 16. A statement valid only on 17 would otherwise pass every gate and fail at deploy.
+The PostgreSQL 17 full-suite job is the storage gate. The temporary PostgreSQL 16
+check is retired together with its live ruleset entry; keep the captured ruleset
+and the live configuration synchronized.
 
-**Both majors are declared in [`versions.json`](../../versions.json), and the floor major appears in this context name as a literal.** The job's `name:` is deliberately *not* templated from the version manifest: a required context that changed whenever the declared major did would block every merge, for exactly the reason the paragraph above gives. The literal is held to the declaration by `tests/infra/test_shared_version_parity.py`, which also covers the two copies in this document — the table row above and the captured ruleset JSON below.
-
-That gate cannot reach the **live ruleset**, so changing `postgres.deploy_major` is not a repository-only change. Move all four together in one change: the job's `name:` in `ci.yml`, the table row, the captured JSON, and the live ruleset (Settings → Rules → Rulesets, or `gh api`). Landing the first three without the fourth leaves the ruleset requiring a context no job reports, which blocks every merge until it is fixed. See [`shared-version-parity.md`](shared-version-parity.md).
-
-Unlike the five backend jobs, `eslint` is **path-gated** on `app/**` (via the `paths-filter` job, like `vitest`/`playwright-e2e`): a pull request that touches no `app/` files skips the job, and GitHub counts a skipped required check as satisfied. The gate therefore blocks a merge only when the change can affect frontend lint, while remaining mandatory whenever `app/` is touched.
+Unlike the backend jobs, `eslint` is **path-gated** on `app/**` (via the `paths-filter` job, like `vitest`/`playwright-e2e`): a pull request that touches no `app/` files skips the job, and GitHub counts a skipped required check as satisfied. The gate therefore blocks a merge only when the change can affect frontend lint, while remaining mandatory whenever `app/` is touched.
 
 ### Prelude jobs and the skipped-check rule
 
-That last property — a skipped required check counts as satisfied — cuts both ways, and the surface it applies to has grown. `test`, `storage-deploy-floor`, `lint-imports` and `eslint` all now declare `needs: versions`, the prelude job that reads `versions.json`. A job whose dependency fails is *skipped*, not failed, so a `versions` failure would leave four required contexts reported as skipped and therefore satisfied, and the merge would go through having proved nothing.
+That last property — a skipped required check counts as satisfied — cuts both ways, and the surface it applies to has grown. `test`, `lint-imports` and `eslint` all now declare `needs: versions`, the prelude job that reads `versions.json`. A job whose dependency fails is *skipped*, not failed, so a `versions` failure would leave three required contexts reported as skipped and therefore satisfied, and the merge would go through having proved nothing.
 
 The prelude is built to make that unlikely: it sparse-checks out one tracked file and runs `jq` over it, and `tests/infra/test_shared_version_parity.py` fails if that file is malformed or missing a key a workflow consumes. But unlikely is not the same as guarded.
 
-**The guard is that `versions` is itself a required context**, so its failure blocks the merge directly rather than being laundered into four skips. That entry is live, and it is what makes the preludes' fail-fast form safe: they read each value into a shell variable so `set -e` fails the job on a manifest path that does not resolve. Before the entry existed the preludes deliberately used a form that could not fail — writing `k=null` and letting the consuming job go red — because a loud failure was better than a silent skip. Removing `versions` from the required checks without reverting that form would reopen the gap in its worst shape.
+**The guard is that `versions` is itself a required context**, so its failure blocks the merge directly rather than being laundered into three skips. That entry is live, and it is what makes the preludes' fail-fast form safe: they read each value into a shell variable so `set -e` fails the job on a manifest path that does not resolve. Before the entry existed the preludes deliberately used a form that could not fail — writing `k=null` and letting the consuming job go red — because a loud failure was better than a silent skip. Removing `versions` from the required checks without reverting that form would reopen the gap in its worst shape.
 
 The `paths-filter` job needs no special checkout depth for this. The filter resolves each event's base itself — the merge group's `base_sha`, the push event's `before` — and fetches that commit when the checkout does not already carry it.
 
@@ -123,7 +120,6 @@ The following is the live ruleset definition (captured via `gh api repos/<owner>
           { "context": "lint-imports", "integration_id": 15368 },
           { "context": "gitleaks",     "integration_id": 15368 },
           { "context": "eslint",       "integration_id": 15368 },
-          { "context": "storage tests on the deploy floor (pg16)", "integration_id": 15368 },
           { "context": "versions",     "integration_id": 15368 }
         ]
       }
