@@ -37,6 +37,7 @@ import json
 
 import pytest
 from mcp.types import TextContent
+from pydantic import TypeAdapter
 
 from sage.adapters.stubs import (
     StubAbstractionProvider,
@@ -164,11 +165,14 @@ def test_misplaced_metadata_keys_are_published_in_the_tool_schema():
     assert schema.get("additionalProperties") is False
 
 
-#: The JSON-schema keys a bare ``str | list | dict | None`` union renders on
-#: its arms, carrying no constraint of their own: ``type`` on every arm, plus
-#: the empty element and value schemas on the array and object arms. Any key
-#: beyond these narrows the arm it sits on.
-_STRUCTURAL_ARM_KEYS = frozenset({"type", "items", "additionalProperties"})
+#: What a bare, wholly unconstrained ``str | list | dict | None`` renders as.
+#: Written here as the literal union rather than read back from the tripwire
+#: annotation, so the comparison is against an independent statement of the
+#: permissive shape rather than against whatever the annotation happens to
+#: publish. Rendered rather than hand-listed: a hand-listed key set can only
+#: reject a constraint at the arm's own level, and the element and value
+#: schemas nest one level below it.
+_PERMISSIVE_ARMS = TypeAdapter(str | list | dict | None).json_schema()["anyOf"]
 
 
 def test_published_tripwires_are_marked_as_tripwires():
@@ -179,13 +183,18 @@ def test_published_tripwires_are_marked_as_tripwires():
     reading the schema, with nothing to distinguish them from functional
     arguments. The per-property description is that distinction.
 
-    Anti-coincidental-pass, two ways. Asserting only that a description
+    Anti-coincidental-pass, three ways. Asserting only that a description
     exists would pass under a schema builder that derived property prose
     from the docstring's ``Args:`` block, with no annotation present at
     all; the nested-home substring is text only the annotation supplies.
-    And ``metadata`` itself -- the functional parameter the tripwires
-    point at -- is asserted to carry no description, so a builder that
-    described every property could not carry this test either.
+    ``metadata`` itself -- the functional parameter the tripwires point at
+    -- is asserted to carry no description, so a builder that described
+    every property could not carry this test either. And the arms are
+    compared whole against an independently rendered permissive union, so
+    a narrowing passes at no depth: reading arm ``type`` values alone
+    admits a ``pattern`` on the string arm, and rejecting unexpected arm
+    *keys* still admits ``list[str]`` and ``dict[str, str]``, which narrow
+    through the two keys a bare union already carries.
     """
     tool = mcp._tool_manager.get_tool("ingest_document")  # noqa: SLF001
     props = tool.parameters.get("properties", {})
@@ -225,27 +234,19 @@ def test_published_tripwires_are_marked_as_tripwires():
     # message rather than a framework type error. Both halves are needed.
     # The arm set alone would pass against an annotation that keeps four
     # arms of the right types and narrows one from within -- a ``pattern``
-    # on the string arm, an ``enum``, a ``minLength`` -- which is exactly
-    # the breach this control exists to catch, so the second half rejects
-    # any key beyond the structural ones a bare union renders.
+    # on the string arm, an ``enum``, a ``minLength`` -- and equally against
+    # one nested a level below it, since ``list[str]`` and ``dict[str, str]``
+    # narrow through the ``items`` and ``additionalProperties`` schemas the
+    # bare union already carries. Comparing the whole arm list against the
+    # rendered permissive shape catches a constraint at any depth, and stays
+    # calibrated to the installed Pydantic rather than to a hand-listed set.
     for key in MISPLACED_KEYS:
-        published_arms = props[key].get("anyOf", [])
-        assert {arm.get("type") for arm in published_arms} == {
-            "string",
-            "array",
-            "object",
-            "null",
-        }, (
-            f"ingest_document.{key} must stay permissively annotated; its "
-            f"published arm types are "
-            f"{sorted(t for arm in published_arms if (t := arm.get('type')))}"
-        )
-        constrained = [arm for arm in published_arms if set(arm) - _STRUCTURAL_ARM_KEYS]
-        assert not constrained, (
-            f"ingest_document.{key} must stay permissively annotated, but an "
-            f"arm carries a narrowing constraint: {constrained}. A tripwire is "
-            f"never consumed, so shape validation would replace the actionable "
-            f"misplaced-field message with a format complaint."
+        assert props[key].get("anyOf") == _PERMISSIVE_ARMS, (
+            f"ingest_document.{key} must stay permissively annotated. Its "
+            f"published arms are {props[key].get('anyOf')!r}, which differ "
+            f"from an unconstrained union's {_PERMISSIVE_ARMS!r}. A tripwire "
+            f"is never consumed, so shape validation would replace the "
+            f"actionable misplaced-field message with a format complaint."
         )
 
 

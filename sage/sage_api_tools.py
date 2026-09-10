@@ -145,13 +145,18 @@ _MISPLACED_FILTERS_EXAMPLE = 'filters={"doc_type": "adr", "lifecycle_status": "a
 # publication that makes a wrong-level spelling rejectable also invites the
 # spelling in the first place. It changes no coercion or rejection behaviour:
 # the published union arms are identical with and without it.
+#
+# It points at the structured error code rather than at CAS-ADR-037, which
+# governs the rejection this marking describes. The description ships in the
+# tool catalog, where a reader cannot resolve an ADR id; the rationale anchor
+# belongs on this surface instead, which is durable and not published.
 _INGEST_TRIPWIRE = Annotated[
     str | list | dict | None,
     Field(
         description=(
             "Tripwire, not a functional argument. Supply this key inside "
             "metadata={...}; a non-null value here is refused with "
-            "misplaced_metadata (CAS-ADR-037)."
+            "misplaced_metadata."
         )
     ),
 ]
@@ -162,7 +167,7 @@ _SEARCH_TRIPWIRE = Annotated[
         description=(
             "Tripwire, not a functional argument. Supply this key inside "
             "filters={...}; a non-null value here is refused with "
-            "misplaced_filters (CAS-ADR-037)."
+            "misplaced_filters."
         )
     ),
 ]
