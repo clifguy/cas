@@ -164,6 +164,91 @@ def test_misplaced_metadata_keys_are_published_in_the_tool_schema():
     assert schema.get("additionalProperties") is False
 
 
+#: The JSON-schema keys a bare ``str | list | dict | None`` union renders on
+#: its arms, carrying no constraint of their own: ``type`` on every arm, plus
+#: the empty element and value schemas on the array and object arms. Any key
+#: beyond these narrows the arm it sits on.
+_STRUCTURAL_ARM_KEYS = frozenset({"type", "items", "additionalProperties"})
+
+
+def test_published_tripwires_are_marked_as_tripwires():
+    """Each published tripwire property tells a schema reader what it is.
+
+    Publication makes a wrong-level spelling rejectable, but it also puts
+    seven ordinary-looking optional parameters in front of a caller
+    reading the schema, with nothing to distinguish them from functional
+    arguments. The per-property description is that distinction.
+
+    Anti-coincidental-pass, two ways. Asserting only that a description
+    exists would pass under a schema builder that derived property prose
+    from the docstring's ``Args:`` block, with no annotation present at
+    all; the nested-home substring is text only the annotation supplies.
+    And ``metadata`` itself -- the functional parameter the tripwires
+    point at -- is asserted to carry no description, so a builder that
+    described every property could not carry this test either.
+    """
+    tool = mcp._tool_manager.get_tool("ingest_document")  # noqa: SLF001
+    props = tool.parameters.get("properties", {})
+
+    for key in MISPLACED_KEYS:
+        description = props[key].get("description", "")
+        assert description, (
+            f"ingest_document.{key} is a tripwire and must carry a schema "
+            f"description; a caller reading the schema cannot otherwise tell "
+            f"it from a functional argument."
+        )
+        assert "not a functional argument" in description, (
+            f"ingest_document.{key}'s description must say outright that it is "
+            f"not a functional argument; got: {description!r}"
+        )
+        assert "metadata={" in description, (
+            f"ingest_document.{key}'s description must name its nested home in "
+            f"the spelling a caller retypes; got: {description!r}"
+        )
+        assert "misplaced_metadata" in description, (
+            f"ingest_document.{key}'s description must name what a non-null "
+            f"value earns; got: {description!r}"
+        )
+
+    # The negative control: the functional parameter the tripwires point
+    # at carries no description, so the assertions above are reading the
+    # annotation rather than blanket schema-builder behavior.
+    assert "description" not in props["metadata"], (
+        "ingest_document.metadata is a functional argument and is expected to "
+        "carry no description here. If that changed deliberately, this test's "
+        "negative control needs a different subject -- without one, the "
+        "per-key assertions above would pass with the tripwire markings gone."
+    )
+
+    # The permissive annotation the guard depends on is unchanged: any
+    # well-formed shape must still arrive and earn the misplaced-field
+    # message rather than a framework type error. Both halves are needed.
+    # The arm set alone would pass against an annotation that keeps four
+    # arms of the right types and narrows one from within -- a ``pattern``
+    # on the string arm, an ``enum``, a ``minLength`` -- which is exactly
+    # the breach this control exists to catch, so the second half rejects
+    # any key beyond the structural ones a bare union renders.
+    for key in MISPLACED_KEYS:
+        published_arms = props[key].get("anyOf", [])
+        assert {arm.get("type") for arm in published_arms} == {
+            "string",
+            "array",
+            "object",
+            "null",
+        }, (
+            f"ingest_document.{key} must stay permissively annotated; its "
+            f"published arm types are "
+            f"{sorted(t for arm in published_arms if (t := arm.get('type')))}"
+        )
+        constrained = [arm for arm in published_arms if set(arm) - _STRUCTURAL_ARM_KEYS]
+        assert not constrained, (
+            f"ingest_document.{key} must stay permissively annotated, but an "
+            f"arm carries a narrowing constraint: {constrained}. A tripwire is "
+            f"never consumed, so shape validation would replace the actionable "
+            f"misplaced-field message with a format complaint."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Rejection over transport
 # ---------------------------------------------------------------------------

@@ -8,10 +8,10 @@ staging edges, pending metadata).
 
 import logging
 from collections.abc import Callable
-from typing import Literal
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
 # Qualified module import so the ``get_stack_config`` MCP tool below can call
 # ``sage.mcp_init.get_stack_config()`` from inside an inner function that
@@ -132,6 +132,41 @@ _SEARCH_FILTER_KEYS: tuple[str, ...] = tuple(RetrievalFilters.model_fields)
 
 _MISPLACED_FILTERS_EXAMPLE = 'filters={"doc_type": "adr", "lifecycle_status": "active"}'
 
+# The annotation every tripwire parameter carries. Two things are load-bearing
+# and neither may be narrowed independently of the other.
+#
+# The union is deliberately permissive. A tripwire is never consumed -- any
+# non-null value is refused outright -- so validating its shape would replace
+# the actionable misplaced-field message with a format complaint about a value
+# that was well-formed and merely in the wrong place.
+#
+# The description is what a caller reading the published schema sees. Without
+# it the tripwires are indistinguishable from functional arguments, and the
+# publication that makes a wrong-level spelling rejectable also invites the
+# spelling in the first place. It changes no coercion or rejection behaviour:
+# the published union arms are identical with and without it.
+_INGEST_TRIPWIRE = Annotated[
+    str | list | dict | None,
+    Field(
+        description=(
+            "Tripwire, not a functional argument. Supply this key inside "
+            "metadata={...}; a non-null value here is refused with "
+            "misplaced_metadata (CAS-ADR-037)."
+        )
+    ),
+]
+
+_SEARCH_TRIPWIRE = Annotated[
+    str | list | dict | None,
+    Field(
+        description=(
+            "Tripwire, not a functional argument. Supply this key inside "
+            "filters={...}; a non-null value here is refused with "
+            "misplaced_filters (CAS-ADR-037)."
+        )
+    ),
+]
+
 
 def _collect_misplaced(keys: tuple[str, ...], supplied: dict[str, object]) -> list[str]:
     """Return the recognized keys that arrived as top-level arguments.
@@ -212,17 +247,16 @@ def register_sage_tools(
         transfer_token: str | None = None,
         # Tripwires, not functional arguments. These are the ``metadata``
         # keys; they are published here only so a wrong-level spelling
-        # reaches the guard instead of being stripped client-side. The
-        # annotations are deliberately permissive so any shape arrives and
-        # earns the actionable ``misplaced_metadata`` message rather than a
-        # generic framework type error.
-        title: str | list | dict | None = None,
-        version_label: str | list | dict | None = None,
-        project: str | list | dict | None = None,
-        doc_type: str | list | dict | None = None,
-        authority_scope: str | list | dict | None = None,
-        document_date: str | list | dict | None = None,
-        tags: str | list | dict | None = None,
+        # reaches the guard instead of being stripped client-side. See
+        # ``_INGEST_TRIPWIRE`` for what the shared annotation carries and
+        # why each half of it is load-bearing.
+        title: _INGEST_TRIPWIRE = None,
+        version_label: _INGEST_TRIPWIRE = None,
+        project: _INGEST_TRIPWIRE = None,
+        doc_type: _INGEST_TRIPWIRE = None,
+        authority_scope: _INGEST_TRIPWIRE = None,
+        document_date: _INGEST_TRIPWIRE = None,
+        tags: _INGEST_TRIPWIRE = None,
     ) -> dict:
         """Ingest a source file into SAGE, running the projection ->
         indexing -> abstraction pipeline.
@@ -1395,21 +1429,20 @@ def register_sage_tools(
         facet_value_limit: int | None = None,
         # Tripwires, not functional arguments. These are the ``filters``
         # keys; they are published here only so a wrong-level spelling
-        # reaches the guard instead of being stripped client-side. The
-        # annotations are deliberately permissive so any shape arrives and
-        # earns the actionable ``misplaced_filters`` message rather than a
-        # generic framework type error.
-        doc_type: str | list | dict | None = None,
-        project: str | list | dict | None = None,
-        lifecycle_status: str | list | dict | None = None,
-        tags: str | list | dict | None = None,
-        document_ids: str | list | dict | None = None,
-        pipeline_status: str | list | dict | None = None,
-        source_type: str | list | dict | None = None,
-        tier3_metadata: str | list | dict | None = None,
-        source_id: str | list | dict | None = None,
-        target_id: str | list | dict | None = None,
-        edge_type: str | list | dict | None = None,
+        # reaches the guard instead of being stripped client-side. See
+        # ``_SEARCH_TRIPWIRE`` for what the shared annotation carries and
+        # why each half of it is load-bearing.
+        doc_type: _SEARCH_TRIPWIRE = None,
+        project: _SEARCH_TRIPWIRE = None,
+        lifecycle_status: _SEARCH_TRIPWIRE = None,
+        tags: _SEARCH_TRIPWIRE = None,
+        document_ids: _SEARCH_TRIPWIRE = None,
+        pipeline_status: _SEARCH_TRIPWIRE = None,
+        source_type: _SEARCH_TRIPWIRE = None,
+        tier3_metadata: _SEARCH_TRIPWIRE = None,
+        source_id: _SEARCH_TRIPWIRE = None,
+        target_id: _SEARCH_TRIPWIRE = None,
+        edge_type: _SEARCH_TRIPWIRE = None,
     ) -> dict:
         """Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.
 
