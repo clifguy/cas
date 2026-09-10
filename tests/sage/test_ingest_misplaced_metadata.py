@@ -64,14 +64,20 @@ MISPLACED_KEYS = (
     "tags",
 )
 
-# Representative wrong-level values, one per key. ``tags`` carries a list
-# to exercise the permissive annotation; the rest are scalars.
+# Representative wrong-level values, one per key. Shapes vary deliberately
+# across all three arms of the permissive tripwire annotation -- scalar,
+# list, and dict -- because the property under test is that *any*
+# well-formed value in the wrong place earns the misplaced-field message
+# rather than a shape complaint. A table of scalars plus one list leaves
+# the dict arm unobserved, and a narrowing that rejects only dicts would
+# then pass this whole file; the sibling filter table carries a dict for
+# the same reason.
 MISPLACED_VALUES: dict[str, object] = {
     "title": "Renamed",
     "version_label": "v11",
     "project": "CAS",
     "doc_type": "steering_document",
-    "authority_scope": "cas",
+    "authority_scope": {"vault": "cas"},
     "document_date": "2026-08-28",
     "tags": ["alpha", "beta"],
 }
@@ -191,10 +197,19 @@ def test_published_tripwires_are_marked_as_tripwires():
     -- is asserted to carry no description, so a builder that described
     every property could not carry this test either. And the arms are
     compared whole against an independently rendered permissive union, so
-    a narrowing passes at no depth: reading arm ``type`` values alone
-    admits a ``pattern`` on the string arm, and rejecting unexpected arm
-    *keys* still admits ``list[str]`` and ``dict[str, str]``, which narrow
-    through the two keys a bare union already carries.
+    a narrowing *the schema renders* passes at no depth: reading arm
+    ``type`` values alone admits a ``pattern`` on the string arm, and
+    rejecting unexpected arm *keys* still admits ``list[str]`` and
+    ``dict[str, str]``, which narrow through the two keys a bare union
+    already carries.
+
+    That scope is the whole of what this test can claim. A narrowing
+    applied as a *wrap* validator -- an ``AfterValidator`` on the alias,
+    or a constraint on the outer ``Field`` -- publishes ``anyOf``
+    byte-identical to the bare union and still rejects at call time, so
+    no schema-level assertion can see it. The transport tests below are
+    that half: they send a value of every arm's shape at every key and
+    require the misplaced-field message, which a wrap validator breaks.
     """
     tool = mcp._tool_manager.get_tool("ingest_document")  # noqa: SLF001
     props = tool.parameters.get("properties", {})

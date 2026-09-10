@@ -224,10 +224,19 @@ def test_published_tripwires_are_marked_as_tripwires():
     -- is asserted to carry no description, so a builder that described
     every property could not carry this test either. And the arms are
     compared whole against an independently rendered permissive union, so
-    a narrowing passes at no depth: reading arm ``type`` values alone
-    admits a ``pattern`` on the string arm, and rejecting unexpected arm
-    *keys* still admits ``list[str]`` and ``dict[str, str]``, which narrow
-    through the two keys a bare union already carries.
+    a narrowing *the schema renders* passes at no depth: reading arm
+    ``type`` values alone admits a ``pattern`` on the string arm, and
+    rejecting unexpected arm *keys* still admits ``list[str]`` and
+    ``dict[str, str]``, which narrow through the two keys a bare union
+    already carries.
+
+    That scope is the whole of what this test can claim. A narrowing
+    applied as a *wrap* validator -- an ``AfterValidator`` on the alias,
+    or a constraint on the outer ``Field`` -- publishes ``anyOf``
+    byte-identical to the bare union and still rejects at call time, so
+    no schema-level assertion can see it. The transport tests below are
+    that half: they send a value of every arm's shape at every key and
+    require the misplaced-field message, which a wrap validator breaks.
     """
     props = _published_properties()
 
