@@ -370,3 +370,15 @@ output postgresServerName string = postgres.outputs.postgresServerName
 
 @description('Expected major of the selected serving server.')
 output postgresServerMajor string = postgresMajor
+
+@description('Deployment approval evidence for sage app convergence.')
+output sageContainerAppRevision string = containerApps.outputs.sageContainerAppRevision
+
+@description('Deployment approval evidence for sage app convergence.')
+output sageCloudConfigHash string = containerApps.outputs.sageCloudConfigHash
+
+@description('Deployment approval evidence for bff app convergence.')
+output bffContainerAppRevision string = containerApps.outputs.bffContainerAppRevision
+
+@description('Deployment approval evidence for bff app convergence.')
+output bffCloudConfigHash string = containerApps.outputs.bffCloudConfigHash

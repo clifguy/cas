@@ -109,7 +109,7 @@ def test_deploy_orchestrates_staged_bringup_in_order() -> None:
         "az deployment sub what-if",
         "az deployment sub create",
         "az containerapp job start",
-        "az containerapp revision restart",
+        "python3 deploy/converge-apps.py",
         "deploy/cloud-preflight.sh",
     ]
     positions: list[int] = []

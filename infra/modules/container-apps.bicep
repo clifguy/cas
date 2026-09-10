@@ -446,3 +446,15 @@ output bffContainerAppId string = bffApp.id
 
 @description('Name of the CAS BFF container app — the deploy pipeline restarts it by name to converge the app tier after the bootstrap job runs.')
 output bffContainerAppName string = bffApp.name
+
+@description('Revision selected by this deployment for sage convergence.')
+output sageContainerAppRevision string = sageApp.properties.latestRevisionName
+
+@description('ARM guid fingerprint of the exact non-secret cloud configuration; never a credential.')
+output sageCloudConfigHash string = guid(sageConfigYaml)
+
+@description('Revision selected by this deployment for bff convergence.')
+output bffContainerAppRevision string = bffApp.properties.latestRevisionName
+
+@description('ARM guid fingerprint of the exact non-secret cloud configuration; never a credential.')
+output bffCloudConfigHash string = guid(bffConfigYaml)
