@@ -2,10 +2,12 @@
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.check_ruleset_drift import extract_captured_ruleset
@@ -29,8 +31,19 @@ def test_converged_ci_preserves_required_coverage() -> None:
     commands = [step.get("run", "") for step in jobs["test"]["steps"]]
     suite = [command for command in commands if ".venv/bin/pytest" in command]
     assert len(suite) == 1
-    assert suite[0].strip().endswith("tests/")
-    assert "--cov=sage --cov=app" in suite[0]
+    # Pin the full-suite invocation: path-only checks miss exclusions/selectors.
+    assert shlex.split(suite[0].replace("\\\n", "")) == [
+        ".venv/bin/pytest",
+        "-v",
+        "--tb=short",
+        "-n",
+        "auto",
+        "--cov=sage",
+        "--cov=app",
+        "--cov-report=term",
+        "--cov-report=xml",
+        "tests/",
+    ]
     ruleset = extract_captured_ruleset((ROOT / "docs/process/branch_protection.md").read_text())
     checks = next(rule for rule in ruleset["rules"] if rule["type"] == "required_status_checks")
     assert {check["context"] for check in checks["parameters"]["required_status_checks"]} == {
@@ -41,6 +54,34 @@ def test_converged_ci_preserves_required_coverage() -> None:
         "eslint",
         "versions",
     }
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "--ignore=tests/app/test_bff_session_store.py tests/",
+        "-k test_serving_baseline_and_retained_migration tests/",
+        "-m smoke tests/",
+        "--deselect=tests/app/test_bff_session_store.py tests/",
+        "tests/infra/",
+    ],
+)
+def test_ci_coverage_guard_rejects_narrowed_workflows(
+    monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    workflow = ROOT / ".github/workflows/ci.yml"
+    original_read = Path.read_text
+    mutated = workflow.read_text().replace("  tests/\n", f"  {replacement}\n")
+    assert mutated != workflow.read_text()
+
+    def read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == workflow:
+            return mutated
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(AssertionError):
+        test_converged_ci_preserves_required_coverage()
 
 
 def test_compiled_serving_major_ignores_development_bump(tmp_path: Path) -> None:
