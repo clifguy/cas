@@ -107,6 +107,8 @@ def fake_azure() -> None:
             result = [{"name": s["name"]} for s in result]
     elif args[:3] == ["containerapp", "revision", "list"]:
         result = state["apps"][arg("--name")]["revisions"]
+        if "--all" not in args:
+            result = [r for r in result if r["properties"]["active"]]
         if "--query" in args:
             result = next((r["name"] for r in result if r["properties"]["active"]), "")
     elif args[:3] in (

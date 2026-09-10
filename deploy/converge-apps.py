@@ -56,7 +56,9 @@ def validate_app(
         properties["latestRevisionName"] == approved,
         f"{kind}: latest revision differs from deployment approval",
     )
-    revisions = az("containerapp", "revision", "list", "--name", app, "--resource-group", group)
+    revisions = az(
+        "containerapp", "revision", "list", "--all", "--name", app, "--resource-group", group
+    )
     matches = [r for r in revisions if r["name"] == approved]
     require(len(matches) == 1, f"{kind}: approved revision missing or ambiguous")
     active = [r["name"] for r in revisions if r["properties"]["active"] is True]
@@ -154,7 +156,9 @@ def converge(az: Azure, environment: str, group: str, generation: str, image_tag
             "--revision",
             revision,
         )
-        revisions = az("containerapp", "revision", "list", "--name", app, "--resource-group", group)
+        revisions = az(
+            "containerapp", "revision", "list", "--all", "--name", app, "--resource-group", group
+        )
         require(
             [r["name"] for r in revisions if r["properties"]["active"] is True] == [revision],
             "approved revision did not become the sole active revision",
