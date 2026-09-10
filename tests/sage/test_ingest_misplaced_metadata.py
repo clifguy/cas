@@ -37,6 +37,7 @@ import json
 
 import pytest
 from mcp.types import TextContent
+from pydantic import TypeAdapter
 
 from sage.adapters.stubs import (
     StubAbstractionProvider,
@@ -63,14 +64,20 @@ MISPLACED_KEYS = (
     "tags",
 )
 
-# Representative wrong-level values, one per key. ``tags`` carries a list
-# to exercise the permissive annotation; the rest are scalars.
+# Representative wrong-level values, one per key. Shapes vary deliberately
+# across all three arms of the permissive tripwire annotation -- scalar,
+# list, and dict -- because the property under test is that *any*
+# well-formed value in the wrong place earns the misplaced-field message
+# rather than a shape complaint. A table of scalars plus one list leaves
+# the dict arm unobserved, and a narrowing that rejects only dicts would
+# then pass this whole file; the sibling filter table carries a dict for
+# the same reason.
 MISPLACED_VALUES: dict[str, object] = {
     "title": "Renamed",
     "version_label": "v11",
     "project": "CAS",
     "doc_type": "steering_document",
-    "authority_scope": "cas",
+    "authority_scope": {"vault": "cas"},
     "document_date": "2026-08-28",
     "tags": ["alpha", "beta"],
 }
@@ -162,6 +169,100 @@ def test_misplaced_metadata_keys_are_published_in_the_tool_schema():
     )
     # The strict-args substrate invariant the stripping behavior depends on.
     assert schema.get("additionalProperties") is False
+
+
+#: What a bare, wholly unconstrained ``str | list | dict | None`` renders as.
+#: Written here as the literal union rather than read back from the tripwire
+#: annotation, so the comparison is against an independent statement of the
+#: permissive shape rather than against whatever the annotation happens to
+#: publish. Rendered rather than hand-listed: a hand-listed key set can only
+#: reject a constraint at the arm's own level, and the element and value
+#: schemas nest one level below it.
+_PERMISSIVE_ARMS = TypeAdapter(str | list | dict | None).json_schema()["anyOf"]
+
+
+def test_published_tripwires_are_marked_as_tripwires():
+    """Each published tripwire property tells a schema reader what it is.
+
+    Publication makes a wrong-level spelling rejectable, but it also puts
+    seven ordinary-looking optional parameters in front of a caller
+    reading the schema, with nothing to distinguish them from functional
+    arguments. The per-property description is that distinction.
+
+    Anti-coincidental-pass, three ways. Asserting only that a description
+    exists would pass under a schema builder that derived property prose
+    from the docstring's ``Args:`` block, with no annotation present at
+    all; the nested-home substring is text only the annotation supplies.
+    ``metadata`` itself -- the functional parameter the tripwires point at
+    -- is asserted to carry no description, so a builder that described
+    every property could not carry this test either. And the arms are
+    compared whole against an independently rendered permissive union, so
+    a narrowing *the schema renders* passes at no depth: reading arm
+    ``type`` values alone admits a ``pattern`` on the string arm, and
+    rejecting unexpected arm *keys* still admits ``list[str]`` and
+    ``dict[str, str]``, which narrow through the two keys a bare union
+    already carries.
+
+    That scope is the whole of what this test can claim. A narrowing
+    applied as a *wrap* validator -- an ``AfterValidator`` on the alias,
+    or a constraint on the outer ``Field`` -- publishes ``anyOf``
+    byte-identical to the bare union and still rejects at call time, so
+    no schema-level assertion can see it. The transport tests below are
+    that half: they send a value of every arm's shape at every key and
+    require the misplaced-field message, which a wrap validator breaks.
+    """
+    tool = mcp._tool_manager.get_tool("ingest_document")  # noqa: SLF001
+    props = tool.parameters.get("properties", {})
+
+    for key in MISPLACED_KEYS:
+        description = props[key].get("description", "")
+        assert description, (
+            f"ingest_document.{key} is a tripwire and must carry a schema "
+            f"description; a caller reading the schema cannot otherwise tell "
+            f"it from a functional argument."
+        )
+        assert "not a functional argument" in description, (
+            f"ingest_document.{key}'s description must say outright that it is "
+            f"not a functional argument; got: {description!r}"
+        )
+        assert "metadata={" in description, (
+            f"ingest_document.{key}'s description must name its nested home in "
+            f"the spelling a caller retypes; got: {description!r}"
+        )
+        assert "misplaced_metadata" in description, (
+            f"ingest_document.{key}'s description must name what a non-null "
+            f"value earns; got: {description!r}"
+        )
+
+    # The negative control: the functional parameter the tripwires point
+    # at carries no description, so the assertions above are reading the
+    # annotation rather than blanket schema-builder behavior.
+    assert "description" not in props["metadata"], (
+        "ingest_document.metadata is a functional argument and is expected to "
+        "carry no description here. If that changed deliberately, this test's "
+        "negative control needs a different subject -- without one, the "
+        "per-key assertions above would pass with the tripwire markings gone."
+    )
+
+    # The permissive annotation the guard depends on is unchanged: any
+    # well-formed shape must still arrive and earn the misplaced-field
+    # message rather than a framework type error. Both halves are needed.
+    # The arm set alone would pass against an annotation that keeps four
+    # arms of the right types and narrows one from within -- a ``pattern``
+    # on the string arm, an ``enum``, a ``minLength`` -- and equally against
+    # one nested a level below it, since ``list[str]`` and ``dict[str, str]``
+    # narrow through the ``items`` and ``additionalProperties`` schemas the
+    # bare union already carries. Comparing the whole arm list against the
+    # rendered permissive shape catches a constraint at any depth, and stays
+    # calibrated to the installed Pydantic rather than to a hand-listed set.
+    for key in MISPLACED_KEYS:
+        assert props[key].get("anyOf") == _PERMISSIVE_ARMS, (
+            f"ingest_document.{key} must stay permissively annotated. Its "
+            f"published arms are {props[key].get('anyOf')!r}, which differ "
+            f"from an unconstrained union's {_PERMISSIVE_ARMS!r}. A tripwire "
+            f"is never consumed, so shape validation would replace the "
+            f"actionable misplaced-field message with a format complaint."
+        )
 
 
 # ---------------------------------------------------------------------------
