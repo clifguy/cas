@@ -223,21 +223,9 @@ jobs:
           fi
 
       - name: Converge the app tier
-        # Restart each app's active revision so it re-runs schema self-bootstrap now
-        # that its database role exists and pulls the just-deployed image + secrets.
-        run: |
-          set -euo pipefail
-          SAGE_APP="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
-            --query properties.outputs.sageContainerAppName.value -o tsv)"
-          BFF_APP="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
-            --query properties.outputs.bffContainerAppName.value -o tsv)"
-          for app in "$SAGE_APP" "$BFF_APP"; do
-            ACTIVE="$(az containerapp revision list \
-              --name "$app" --resource-group "$RESOURCE_GROUP_NAME" \
-              --query "[?properties.active].name | [0]" -o tsv)"
-            az containerapp revision restart \
-              --name "$app" --resource-group "$RESOURCE_GROUP_NAME" --revision "$ACTIVE"
-          done
+        # Validate both apps against this successful deployment before activating
+        # or restarting its approved revisions. Preflight owns serving readiness.
+        run: python3 deploy/converge-apps.py
 
       - name: Post-deploy preflight gate
         # A single probe checks every layer independently and fails the deploy if

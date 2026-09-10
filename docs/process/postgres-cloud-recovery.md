@@ -314,6 +314,28 @@ a retry may target only that generation. Successful serving preflight advances
 it to `serving:<generation>`, permitting normal maintenance while preventing an
 accidental empty-generation switch back.
 
+App-tier convergence validates both apps before restarting or activating either.
+The successful serving deployment supplies each app's approved revision name,
+image tag, and an ARM `guid()` fingerprint of its exact generated cloud configuration.
+The driver checks the deployment's generation and resource group against the workflow
+inputs and the migration fence, verifies each revision's image and configuration
+mount, and compares the stored configuration value with that fingerprint. The
+fingerprint is a drift check, not a credential or an authorization token; approval
+comes from the controlled serving deployment. Configuration values are never logged.
+
+When the approved revision is already the sole active revision, convergence restarts
+it to reload the app-level configuration. When no revision is active, convergence
+activates the deployment-approved revision and checks that it becomes the sole active
+revision. This handles the stopped state left by migration, including a configuration-only
+cutover that creates no new revision. Saved source rollback revisions are not target
+activation authority. Missing approval evidence, conflicting active revisions, a
+configuration/image mismatch, or an Azure read or activation failure stops deployment.
+Inspect the reported condition and retry the same approved serving deployment after
+resolving it; do not select an arbitrary historical revision or clear the source fence.
+A retry after one app activated safely restarts that app and activates the remaining
+approved revision. Readback establishes activation only: the subsequent authenticated
+preflight must still pass before the fence advances to serving.
+
 Before declaring cutover complete, inspect the stored job/app configurations to
 confirm all four consumers name the replacement FQDN. Verify the actual server
 major, backup configuration and deletion lock. Run the authenticated SAGE read
