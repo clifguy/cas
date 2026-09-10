@@ -152,6 +152,21 @@ light shape drops sees it disappear rather than error. Callers that need the
 full shape at any size say so with `response_mode="full"`, which suppresses
 the degrade; the CAS Application's catalog table does exactly this.
 
+**The switch is a Core API property, on every transport, and that is a choice
+rather than an oversight.** The budget is a measurement of one MCP client, but
+`RetrievalService` carries no transport signal and the degrade is applied where
+the advisory hint always was — so a REST `POST /sage_vaults/{id}/discover` with
+`mode=catalog` and `response_mode` unset degrades on the same terms an MCP
+`search` does, even though nothing spills on REST. The alternative was to make
+the MCP tool opt in and leave REST advisory-only; it was weighed and declined,
+because one rule the contract can state beats two that differ by caller. The
+cost lands on REST callers paging wide: `source_path`, `document_date`, `tags`,
+`version_label`, `project`, `source_type`, `source_modified_at` and
+`semantic_abstract` leave the rows. **Any caller that reads those fields sends
+`response_mode="full"`**, which suppresses the degrade at any size; the CAS
+Application's catalog table does exactly that, and it is the reason it has to.
+The outcome is in the OpenAPI, so a caller can discover it without reading this.
+
 The measurement below is unaffected: it bounds delivery, and the degrade is a
 decision taken against that bound rather than a change to it.
 

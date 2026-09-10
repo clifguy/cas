@@ -240,7 +240,9 @@ def _response_at_row_count(response: DiscoverResponse, count: int) -> DiscoverRe
     return response.model_copy(update={"results": response.results[:count]})
 
 
-def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
+def _apply_catalog_budget_hint(
+    response: DiscoverResponse, *, size: int | None = None, budget: int | None = None
+) -> None:
     """Annotate the response with a budget hint when it exceeds the inline ceiling.
 
     Measures the serialized response in bytes via
@@ -256,11 +258,21 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
     the same answer the previous proportional model gave in that case.
 
     Advisory only — the response is not truncated.
+
+    ``size`` and ``budget`` accept measurements the caller already holds of
+    this same response, and default to taking them here. The budget policy's
+    fallback branch has both, and the responses it hands over are by
+    definition the largest ones -- over budget even in the light shape -- so
+    re-serializing to re-derive a number already in hand spends the most
+    exactly where it costs the most. This is the same measurement, not a
+    cheaper one.
     """
     if not response.results:
         return
-    size = _serialized_response_bytes(response)
-    budget = _resolve_mcp_inline_budget_bytes()
+    if size is None:
+        size = _serialized_response_bytes(response)
+    if budget is None:
+        budget = _resolve_mcp_inline_budget_bytes()
     if size <= budget:
         return
     fitting = _largest_fitting_prefix(
@@ -358,7 +370,7 @@ def _apply_catalog_budget_policy(response: DiscoverResponse, request: DiscoverRe
             response.results = candidate.results
             response.hints = candidate.hints
             return
-    _apply_catalog_budget_hint(response)
+    _apply_catalog_budget_hint(response, size=size, budget=budget)
 
 
 def _facets_response_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:

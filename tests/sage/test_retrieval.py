@@ -5626,8 +5626,9 @@ def test_from_summary_populates_every_discover_hit_field():
 # DocumentSummaryLight.from_summary is the second projection into the light
 # shape, alongside from_document. It exists because the budget policy decides
 # on the assembled response, where the originating Document rows are already
-# out of scope. Same structural F4 closure as the sibling above: this fails
-# closed when a field is added to DocumentSummaryLight and not wired through.
+# out of scope. The same exhaustive-fields closure as the sibling above: this
+# fails closed when a field is added to DocumentSummaryLight and is not wired
+# through the factory.
 # ---------------------------------------------------------------------------
 
 
@@ -9137,15 +9138,33 @@ async def test_explicit_response_mode_light_carries_no_degrade_claim(
     retrieval_service,
     monkeypatch,
 ):
-    """Light because the caller asked is not a degrade, and must not say so."""
-    full_size, _ = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
-    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(full_size - 1))
+    """An explicitly-light request reaches the limit-hint outcome, not the degrade.
+
+    Read the two halves separately, because only one of them can go red.
+
+    The falsifiable half is the outcome: at a budget nothing fits, an
+    explicitly-light request must arrive carrying the limit hint. A policy
+    that returned early for light requests, or suppressed the hint on them,
+    reddens here.
+
+    The unfalsifiable half is the degrade claim, and it is worth stating why
+    rather than leaving a guard that looks like a gate. No policy can
+    announce a degrade on an already-light response, whatever it does with
+    ``response_mode``: the candidate is that same response plus a hint, so it
+    is strictly larger, and a response that overran the budget cannot be made
+    to fit by growing. The claim below is therefore true by construction and
+    pins nothing. It is asserted because it is the contract a caller reads,
+    not because a rival implementation could break it -- which is the same
+    reason the sibling edges test states that routing is not what it pins.
+    """
+    await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
 
     response = await _catalog_over_budget(retrieval_service, response_mode=ResponseMode.LIGHT)
 
     assert all(isinstance(hit.document, DocumentSummaryLight) for hit in response.results)
-    if response.hints is not None:
-        assert response.hints.get("reason") != "catalog_response_degraded_to_light"
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
 
 
 @pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
@@ -9168,7 +9187,7 @@ async def test_semantic_and_keyword_responses_are_not_degraded(
     unaffected" forbids.
     """
     for i in range(6):
-        doc_id = _id(f"t0607_scored_{i:02d}")
+        doc_id = _id(f"scored_mode_doc_{i:02d}")
         await graph_store.insert_document(_make_doc(doc_id, doc_type="ticket"))
         await _index_doc_chunks(
             stub_content_store,

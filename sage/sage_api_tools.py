@@ -1600,7 +1600,7 @@ def register_sage_tools(
                 rule; documents preserve full-equivalent behavior unless
                 the response would overrun the inline budget, in which
                 case catalog degrades it to light and says so (see the
-                *Catalog budget hint* section above).
+                *Catalog budget hint* section below).
             sort_by: Sort key for catalog mode results. One of:
                 "title", "doc_type", "document_date",
                 "lifecycle_status". Ignored by semantic, keyword, and

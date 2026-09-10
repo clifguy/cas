@@ -641,8 +641,15 @@ class DocumentSummary(BaseModel):
 
 
 class DocumentSummaryLight(BaseModel):
-    """Stripped DocumentSummary returned by ``search`` with
-    ``target="documents", mode="catalog", response_mode="light"``.
+    """Stripped DocumentSummary returned by ``search`` on a
+    ``target="documents", mode="catalog"`` request.
+
+    Two routes reach it. The caller asks, with ``response_mode="light"``;
+    or the caller leaves ``response_mode`` unset and the full shape would
+    have overrun the MCP inline budget, in which case the response is
+    degraded to this shape and its ``hints`` says so. Either way the rows
+    are these rows, and a caller that must not receive them says
+    ``response_mode="full"``.
 
     Carries only the identity columns plus the two fields most callers
     need for triage (``doc_type`` and ``tier3_metadata``). Other
