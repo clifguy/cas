@@ -113,4 +113,12 @@ def parse_ruff_target(token: str) -> tuple[int, int]:
 
 def postgres_client_major() -> str:
     """Client must dump either endpoint during a bounded major-version transition."""
-    return str(max(int(postgres_deploy_major()), int(postgres_dev_major())))
+    migration = declared_versions()["postgres"]["migration"]
+    return str(
+        max(
+            int(postgres_deploy_major()),
+            int(postgres_dev_major()),
+            int(migration["source_major"]),
+            int(migration["target_major"]),
+        )
+    )

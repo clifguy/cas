@@ -22,7 +22,7 @@ def test_replacement_configuration_preserves_incumbent() -> None:
     assert "param geoRedundantBackup string = 'Disabled'" in module
     replacement = _strip_line_comments((ROOT / "infra/postgres-replacement.bicep").read_text())
     assert "'modules/postgres.bicep'" in replacement
-    assert "postgresVersion: versions.postgres.dev_major" in replacement
+    assert "postgresVersion: versions.postgres.migration.target_major" in replacement
     assert "geoRedundantBackup: 'Enabled'" in replacement
     assert "serverGeneration: serverGeneration" in replacement
     assert "@minLength(1)" in replacement

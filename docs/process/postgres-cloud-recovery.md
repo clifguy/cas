@@ -8,21 +8,24 @@ Both servers retain their declared deletion locks.
 
 ## Preparation and verification boundary
 
-This mechanism is deliberately for the one-time 16-to-17 migration. Execute that
-migration soon after the preparation change lands, keeping its manifest versions
-fixed through cutover. It is not a reusable sequence of generation upgrades:
-`serving:<generation>` remains a protective terminal state and blocks another
-migration. Never clear that tag to attempt a second migration.
+The accepted serving baseline is PostgreSQL 17. Keep the persistent
+`POSTGRES_GENERATION` set to the verified generation (`pg17` for the completed
+16-to-17 cutover), and retain `serving:pg17`. Normal deployment must use the
+populated server for SAGE, BFF, bootstrap and maintenance. An empty-generation
+request against this fenced environment is rejected; it is not a rollback.
 
-The repository supports an offline logical migration from the manifest's
-`postgres.deploy_major` to `postgres.dev_major`. During preparation these remain
-16 and 17 respectively. The runtime client covers the greater major; the
-PostgreSQL 16 storage CI job and its required branch check remain in place.
+The retained tooling describes only the original offline 16-to-17 migration.
+`postgres.migration.source_major` and `postgres.migration.target_major` fix those
+endpoint versions independently of the current deployment/development baseline.
+They are historical recovery constraints, not new upgrade targets. A future
+`dev_major` change cannot alter the accepted generation's major. Another migration
+requires a separately reviewed design covering generation-specific majors,
+admission from the serving state and rollback to that state. Never clear the
+serving fence to reuse the original migration procedure.
 
-Merge preparation separately from authorizing production changes. First deploy
-the preparation image through the normal `infra` workflow with
-`POSTGRES_GENERATION` empty. Verify its usual preflight. This installs the
-migration module and client while keeping all consumers on the incumbent.
+For the original preparation, the image was deployed while the baseline remained
+16 and generation selection was empty. Those pre-cutover instructions are not a
+procedure to run against the current serving baseline.
 The migration workflow reuses that deployed bootstrap image and identity. It
 does not build or substitute a different image during downtime.
 
@@ -345,17 +348,21 @@ Inspect the migration report for every vault and BFF, not merely aggregate count
 Retain the source until this evidence has been reviewed and retirement is
 explicitly authorized.
 
-Only after live acceptance, use a separate cleanup change to raise
-`postgres.deploy_major`, remove the temporary PostgreSQL 16 CI job, and update the
-actual branch ruleset's required check. Neither CI-floor removal nor source-server
-retirement is part of preparation. Removing the incumbent deletion lock and
-server requires a separate explicit retirement decision. That cleanup must adopt
-the verified generation and its exact major as the new serving baseline before a
-future `postgres.dev_major` change; a nonempty generation currently selects that
-manifest major. Repeated migration requires a separate reviewed change covering
-explicit per-generation majors, admission from the current serving state, and
-rollback to that state. The operator step is to land and validate that baseline
-adoption, not to delete the serving fence or select an empty generation manually.
+Baseline cleanup converges deployment and development to 17, removes the redundant
+PostgreSQL 16 CI job and coordinates removal of its live required check. It does
+not retire the incumbent or authorize another cutover. Preserve the fixed migration
+contract and both deletion locks. The source's recovery horizon remains an explicit
+owner decision attached to its separate retirement work.
+
+Keep the complete migration report and acceptance results in the approved durable
+operational evidence location before temporary files or workflow artifacts expire.
+Include exact workflow/execution links, image and commit identities, every table's
+reconciliation, read/write and source-hash results, graph checks and any unavailable
+case. Distinguish an existing BFF session from a fresh interactive sign-in. Record
+the next scheduled maintenance execution and its result against the selected server.
+A configured backup is not a demonstrated restore: either perform an explicitly
+approved isolated restore exercise or link an owned follow-up. Do not mark missing
+acceptance as passed because deployment succeeded.
 
 ## Recovery boundaries
 
