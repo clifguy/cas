@@ -641,8 +641,15 @@ class DocumentSummary(BaseModel):
 
 
 class DocumentSummaryLight(BaseModel):
-    """Stripped DocumentSummary returned by ``search`` with
-    ``target="documents", mode="catalog", response_mode="light"``.
+    """Stripped DocumentSummary returned by ``search`` on a
+    ``target="documents", mode="catalog"`` request.
+
+    Two routes reach it. The caller asks, with ``response_mode="light"``;
+    or the caller leaves ``response_mode`` unset and the full shape would
+    have overrun the MCP inline budget, in which case the response is
+    degraded to this shape and its ``hints`` says so. Either way the rows
+    are these rows, and a caller that must not receive them says
+    ``response_mode="full"``.
 
     Carries only the identity columns plus the two fields most callers
     need for triage (``doc_type`` and ``tier3_metadata``). Other
@@ -682,6 +689,27 @@ class DocumentSummaryLight(BaseModel):
             lifecycle_status=doc.lifecycle_status,
             doc_type=doc.doc_type,
             tier3_metadata=doc.tier3_metadata,
+        )
+
+    @classmethod
+    def from_summary(cls, summary: "DocumentSummary") -> "DocumentSummaryLight":
+        """Build a DocumentSummaryLight from an already-projected DocumentSummary.
+
+        The sibling of ``from_document``, for the one caller that no longer
+        holds the ``Document``: the inline-budget policy decides on the
+        assembled response, after projection, and reaches the light shape from
+        a ``DocumentSummary`` rather than from the row it came from. Every
+        field here is a field of ``DocumentSummary``, so the two factories
+        agree by construction on any document; ``tests/sage/test_retrieval.py``
+        pins that agreement, and its exhaustive-fields sibling fails closed
+        when a field is added to this model and not wired through here.
+        """
+        return cls(
+            id=summary.id,
+            title=summary.title,
+            lifecycle_status=summary.lifecycle_status,
+            doc_type=summary.doc_type,
+            tier3_metadata=summary.tier3_metadata,
         )
 
 
@@ -3284,7 +3312,10 @@ class DiscoverHit(BaseModel):
         description=(
             "Compact summary of the matching document. Returns "
             "DocumentSummaryLight (stripped) when the request set "
-            '`target="documents", mode="catalog", response_mode="light"`; '
+            '`target="documents", mode="catalog", response_mode="light"`, '
+            "and on the same target and mode when `response_mode` was "
+            "left unset and the full shape would have exceeded the MCP "
+            "inline ceiling; the response's `hints` names that degrade. "
             "DocumentSummary (full) otherwise."
         )
     )
@@ -3515,9 +3546,20 @@ class DiscoverResponse(BaseModel):
             "modes): `total_before_filtering`, plus `active_filters` and "
             "`scope` when applicable. Catalog budget hint (fires when "
             "the serialized response exceeds the MCP inline "
-            'ceiling): `reason="response_exceeds_inline_budget"`, '
+            "ceiling and the light shape would not fit either): "
+            '`reason="response_exceeds_inline_budget"`, '
             "`response_size_bytes`, `budget_bytes`, `recommended_limit` "
-            "(re-page at this limit to fit inline). Facets budget hint "
+            "(re-page at this limit to fit inline). Catalog degrade hint "
+            "(fires instead of the above when the full shape exceeds the "
+            "ceiling but the light shape fits, on a documents-target "
+            "catalog request that left `response_mode` unset): "
+            '`reason="catalog_response_degraded_to_light"`, '
+            "`full_response_size_bytes`, `budget_bytes`, "
+            '`response_mode="light"` and `carried_shape` naming the row '
+            "model delivered, so light rows are never mistaken for the "
+            "full projection. No `recommended_limit` accompanies it: the "
+            "degraded response fits, so there is no re-page to name. "
+            "Facets budget hint "
             "(same trigger, on the facets target, which rejects "
             'limit): `reason="facets_response_exceeds_inline_budget"`, '
             "`response_size_bytes`, `budget_bytes`, and "

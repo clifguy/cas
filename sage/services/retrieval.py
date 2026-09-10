@@ -240,7 +240,9 @@ def _response_at_row_count(response: DiscoverResponse, count: int) -> DiscoverRe
     return response.model_copy(update={"results": response.results[:count]})
 
 
-def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
+def _apply_catalog_budget_hint(
+    response: DiscoverResponse, *, size: int | None = None, budget: int | None = None
+) -> None:
     """Annotate the response with a budget hint when it exceeds the inline ceiling.
 
     Measures the serialized response in bytes via
@@ -256,11 +258,21 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
     the same answer the previous proportional model gave in that case.
 
     Advisory only — the response is not truncated.
+
+    ``size`` and ``budget`` accept measurements the caller already holds of
+    this same response, and default to taking them here. The budget policy's
+    fallback branch has both, and the responses it hands over are by
+    definition the largest ones -- over budget even in the light shape -- so
+    re-serializing to re-derive a number already in hand spends the most
+    exactly where it costs the most. This is the same measurement, not a
+    cheaper one.
     """
     if not response.results:
         return
-    size = _serialized_response_bytes(response)
-    budget = _resolve_mcp_inline_budget_bytes()
+    if size is None:
+        size = _serialized_response_bytes(response)
+    if budget is None:
+        budget = _resolve_mcp_inline_budget_bytes()
     if size <= budget:
         return
     fitting = _largest_fitting_prefix(
@@ -277,6 +289,88 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
         response.hints = budget_hint
     else:
         response.hints = {**response.hints, **budget_hint}
+
+
+def _degraded_catalog_candidate(
+    response: DiscoverResponse, *, full_size: int, budget: int
+) -> DiscoverResponse:
+    """The response a degrade to the light shape would deliver.
+
+    Built in full, hint included, so the caller can measure the delivered
+    bytes rather than estimate them. The sibling budget hint is merged after
+    its own measurement is taken and leans on the budget's margin to absorb
+    its bytes; that is sound where the hint annotates a response already over
+    budget, and unsound here, where the measurement decides whether this
+    response is under it.
+
+    Rows are re-projected from ``DocumentSummary`` rather than from the
+    ``Document`` they came from: the decision is made on the assembled
+    response, after the abstract null-out and the vocabulary warnings have
+    both moved the byte count. Anything that is not a full document summary
+    passes through untouched.
+    """
+    rows = [
+        hit.model_copy(update={"document": DocumentSummaryLight.from_summary(hit.document)})
+        if isinstance(hit, DiscoverHit) and isinstance(hit.document, DocumentSummary)
+        else hit
+        for hit in response.results
+    ]
+    degrade_hint: dict[str, object] = {
+        "reason": "catalog_response_degraded_to_light",
+        "full_response_size_bytes": full_size,
+        "budget_bytes": budget,
+        "response_mode": ResponseMode.LIGHT.value,
+        "carried_shape": DocumentSummaryLight.__name__,
+    }
+    merged = degrade_hint if response.hints is None else {**response.hints, **degrade_hint}
+    return response.model_copy(update={"results": rows, "hints": merged})
+
+
+def _apply_catalog_budget_policy(response: DiscoverResponse, request: DiscoverRequest) -> None:
+    """Fit an over-budget catalog response inline, or hint at how to.
+
+    Three outcomes, and a response reaches exactly one of them:
+
+    - Under budget: delivered as it was built, with no hint.
+    - Over budget, and the light shape fits: delivered in the light shape,
+      saying so. Identity columns plus ``doc_type`` and ``tier3_metadata``
+      survive; the rest is dropped. The alternative is not a full response --
+      it is a response the client stops delivering inline and writes to disk,
+      which costs the caller every field rather than the eight this drops.
+    - Over budget and the light shape does not fit either: delivered
+      unchanged with the ``recommended_limit`` hint, exactly as before.
+      Degrading a response that will not be delivered inline anyway would
+      spend fields for nothing.
+
+    ``recommended_limit`` is absent from the degrade outcome by construction:
+    the response fits, so there is no re-page to recommend. A caller
+    switching on ``hints["reason"]`` therefore sees one outcome, never two
+    merged into an unreadable state.
+
+    Eligibility for the second outcome is one condition here, and the other
+    two are the dispatcher's. An explicit ``response_mode`` is a caller's
+    instruction about payload depth, so ``full`` is honored even when
+    honoring it costs the inline delivery, and ``light`` has nothing left to
+    degrade and must not be reported as though it had. Retrieval mode and
+    result target are not re-checked: the dispatcher reaches this only in
+    catalog mode, and only after the edges and facets targets have taken
+    their own routes, so a check for either would be a branch no test could
+    reach -- and an unreachable branch reads as the guarantee while
+    something else is providing it.
+    """
+    if not response.results:
+        return
+    size = _serialized_response_bytes(response)
+    budget = _resolve_mcp_inline_budget_bytes()
+    if size <= budget:
+        return
+    if request.response_mode is None:
+        candidate = _degraded_catalog_candidate(response, full_size=size, budget=budget)
+        if _serialized_response_bytes(candidate) <= budget:
+            response.results = candidate.results
+            response.hints = candidate.hints
+            return
+    _apply_catalog_budget_hint(response, size=size, budget=budget)
 
 
 def _facets_response_at_cap(response: DiscoverResponse, cap: int) -> DiscoverResponse:
@@ -898,13 +992,14 @@ class RetrievalService:
             # recognize is worth reporting in every mode.
             self._apply_warnings(response, request)
 
-            # Surface a recommended_limit hint when a catalog
-            # response would bust the Claude Code MCP inline ceiling.
-            # Applied here (post-projection) so the byte measurement
-            # reflects what the wire actually carries -- which is why it
-            # runs last, after every other hint is attached.
+            # Fit a catalog response that would bust the Claude Code MCP
+            # inline ceiling, or hint at how the caller can. Applied here
+            # (post-projection) so the byte measurement reflects what the
+            # wire actually carries -- which is why it runs last, after
+            # every other hint is attached, and why the degrade cannot be
+            # decided back in the mode handler.
             if request.mode == RetrievalMode.CATALOG:
-                _apply_catalog_budget_hint(response)
+                _apply_catalog_budget_policy(response, request)
 
             return response
 

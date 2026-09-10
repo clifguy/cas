@@ -1330,6 +1330,75 @@ class TestSageDiscoverCatalog:
         assert isinstance(recommended, int)
         assert 1 <= recommended < 100
 
+    async def test_degraded_catalog_response_fits_the_delivered_ceiling(self, single_vault):
+        """The degrade delivers inline, measured on the bytes the client bounds.
+
+        Every service-level test of this change measures the response the
+        service built. The runtime encodes that dict a second time, with
+        indentation, and the whole claim -- that a caller gets a structured
+        answer instead of a file path -- is about the encoding the client
+        counts. So the bytes are read off the TextContent the runtime
+        produced, at the production budget, on a portfolio shaped like a real
+        one.
+
+        Anti-coincidental-pass: the full-shape arm is asserted strictly over
+        the ceiling in the same delivered units. Without it the degrade arm
+        is satisfied by a payload that was never over budget, and the pair
+        would report a crossing that never happened. The row-key assertion
+        is the second half: a policy that announced the degrade in its hint
+        and left the rows alone satisfies the reason check and fails here.
+
+        The row count is derived from the budget for the same reason its
+        service-level siblings derive theirs -- fixed at a literal, it would
+        stop crossing the line the first time the budget was recalibrated
+        upward, and take the guarantee with it.
+        """
+        from mcp.types import TextContent
+
+        from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+        row_count = DEFAULT_MCP_INLINE_BUDGET_BYTES // 500
+        services, _ = single_vault
+        await self._seed_portfolio(services, row_count)
+
+        async def delivered(**kwargs) -> tuple[int, dict]:
+            out = await _mcp.mcp.call_tool(
+                "search",
+                {
+                    "vault_id": "test_vault",
+                    "mode": "catalog",
+                    "filters": {"doc_type": "ticket"},
+                    "limit": row_count,
+                    **kwargs,
+                },
+            )
+            text = next(c.text for c in out if isinstance(c, TextContent))
+            return len(text.encode("utf-8")), json.loads(text)
+
+        full_bytes, full = await delivered(response_mode="full")
+        assert full_bytes > DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+            f"{row_count} rows delivered {full_bytes}B in the full shape, which "
+            f"does not overrun the {DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte budget; "
+            "the fixture no longer crosses the line it exists to cross"
+        )
+        assert full["hints"]["reason"] == "response_exceeds_inline_budget"
+
+        degraded_bytes, degraded = await delivered()
+        assert degraded_bytes <= DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+            f"degraded response delivered {degraded_bytes}B against the "
+            f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte budget"
+        )
+        assert degraded["hints"]["reason"] == "catalog_response_degraded_to_light"
+        assert degraded["hints"]["carried_shape"] == "DocumentSummaryLight"
+        assert len(degraded["results"]) == len(full["results"]) == row_count
+
+        light_keys = {"id", "title", "lifecycle_status", "doc_type", "tier3_metadata"}
+        for row in degraded["results"]:
+            assert set(row["document"]) <= light_keys, (
+                f"degraded row carries fields outside the light shape: "
+                f"{set(row['document']) - light_keys}"
+            )
+
     async def test_facets_budget_hint_surfaces_through_mcp_wrapper(self, single_vault):
         """The facets budget hint survives serialization across the MCP boundary.
 

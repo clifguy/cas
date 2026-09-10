@@ -166,6 +166,11 @@ describe('Search view: dashboard drill-down (catalog mode)', () => {
     expect(request.mode).toBe('catalog');
     expect(request).not.toHaveProperty('query');
     expect(request.filters).toEqual({ pipeline_status: 'failed' });
+    // The catalog table renders source_path and document_date, neither of
+    // which survives the server's stripped shape. Left unset, a page large
+    // enough to overrun the inline budget comes back stripped and those two
+    // columns go blank with no error anywhere.
+    expect(request.response_mode).toBe('full');
   });
 
   it('displays total count from total_available', async () => {
@@ -289,6 +294,9 @@ describe('Search view: Browse (catalog) mode in main search', () => {
     const [, request] = mockDiscover.mock.calls[0];
     expect(request.mode).toBe('catalog');
     expect(request).not.toHaveProperty('query');
+    // Same reason as the drill-down arm: browse pages are the widest the
+    // view issues, so this is the request most likely to cross the budget.
+    expect(request.response_mode).toBe('full');
   });
 
   it('shows pagination in Browse mode results', async () => {

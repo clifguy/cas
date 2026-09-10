@@ -50,6 +50,7 @@ from sage.models.schemas import (
     DiscoverResponse,
     Document,
     DocumentSummary,
+    DocumentSummaryLight,
     Edge,
     EdgeHit,
     FacetHit,
@@ -62,6 +63,7 @@ from sage.services.retrieval import (
     DEFAULT_MCP_INLINE_BUDGET_BYTES,
     RetrievalService,
     _apply_facets_budget_hint,
+    _serialized_response_bytes,
 )
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -3833,6 +3835,13 @@ async def test_recommended_limit_re_pages_within_the_production_budget(
     budget; without this the catalog half of that guarantee rests on a
     number no caller ever sees.
 
+    Every request pins ``response_mode=full``, which is what this fixture
+    has always measured and now has to say. At the production budget a
+    ninety-row portfolio fits the light shape, so an unset ``response_mode``
+    reaches the degrade outcome instead and the recommendation this test is
+    about is never computed. Pinning the depth keeps the question the same
+    one; the degrade outcome has fixtures of its own.
+
     Anti-coincidental-pass: the crossing is asserted on the measured
     response rather than assumed from the row count, so a seeding change
     that stopped overrunning the budget reddens here instead of passing
@@ -3849,6 +3858,7 @@ async def test_recommended_limit_re_pages_within_the_production_budget(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(doc_type="ticket"),
+            response_mode=ResponseMode.FULL,
             limit=_OVER_BUDGET_ROW_COUNT,
         )
     )
@@ -3873,6 +3883,7 @@ async def test_recommended_limit_re_pages_within_the_production_budget(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(doc_type="ticket"),
+            response_mode=ResponseMode.FULL,
             limit=recommended,
         )
     )
@@ -3890,6 +3901,7 @@ async def test_recommended_limit_re_pages_within_the_production_budget(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(doc_type="ticket"),
+            response_mode=ResponseMode.FULL,
             limit=recommended + 1,
         )
     )
@@ -4145,15 +4157,22 @@ async def test_response_size_bytes_matches_serialization(
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
     await _seed_portfolio(graph_store, 60)
 
+    # Pinned to the full shape because ``response_size_bytes`` is a field of
+    # the full-shape hint, and the exclusion list below names that hint's
+    # keys. Sixty rows do not fit 4,096 bytes in either shape, so this
+    # fixture reaches the same outcome unpinned -- the pin makes that
+    # structural rather than a property of the row count.
     response = await retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(doc_type="ticket"),
             limit=100,
+            response_mode=ResponseMode.FULL,
         )
     )
 
     assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
     reported = response.hints["response_size_bytes"]
 
     def delivered(resp) -> int:
@@ -5601,6 +5620,52 @@ def test_from_summary_populates_every_discover_hit_field():
             )
         else:
             assert value is not None, f"DiscoverHit.{field_name} not populated by from_summary"
+
+
+# ---------------------------------------------------------------------------
+# DocumentSummaryLight.from_summary is the second projection into the light
+# shape, alongside from_document. It exists because the budget policy decides
+# on the assembled response, where the originating Document rows are already
+# out of scope. The same exhaustive-fields closure as the sibling above: this
+# fails closed when a field is added to DocumentSummaryLight and is not wired
+# through the factory.
+# ---------------------------------------------------------------------------
+
+
+def test_from_summary_populates_every_document_summary_light_field():
+    summary = DocumentSummary.from_document(_doc_with_every_summary_field())
+    light = DocumentSummaryLight.from_summary(summary)
+    for field_name, field_info in DocumentSummaryLight.model_fields.items():
+        value = getattr(light, field_name)
+        annotation = field_info.annotation
+        default = field_info.default
+        if annotation == (dict | None):
+            assert value, (
+                f"DocumentSummaryLight.{field_name} not populated by from_summary "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"DocumentSummaryLight.{field_name} matches its default ({default!r}) - "
+                "from_summary may have dropped this field (coincidental pass)"
+            )
+        else:
+            assert value is not None, (
+                f"DocumentSummaryLight.{field_name} not populated by from_summary"
+            )
+
+
+def test_from_summary_agrees_with_from_document():
+    """The two light projections cannot disagree about the same document.
+
+    from_document reads the Document; from_summary reads the DocumentSummary
+    built from that same Document. A field wired into one and not the other
+    would make the shape a caller receives depend on which path produced it.
+    """
+    doc = _doc_with_every_summary_field()
+    assert DocumentSummaryLight.from_summary(
+        DocumentSummary.from_document(doc)
+    ) == DocumentSummaryLight.from_document(doc)
 
 
 # ---------------------------------------------------------------------------
@@ -7182,11 +7247,15 @@ async def test_catalog_documents_neither_param_set_returns_full_shape_above_thre
     return full DocumentSummary shape even when the result count
     exceeds the edge-side >5 default-light threshold.
 
+    The rule this pins is count-based, and only that. Six small documents
+    sit far under the inline budget, so the size-based degrade never enters;
+    what would redden here is an implementation that copied the >5
+    default-light rule from _catalog_edges into _catalog.
+
     Anti-coincidental: seeds 6 docs (above the threshold) and asserts
     the returned hits carry full DocumentSummary instances populated
-    with the non-trivial fields. An implementation that copied the
-    >5-default-light rule from _catalog_edges into _catalog would
-    return DocumentSummaryLight and the isinstance check would fail.
+    with the non-trivial fields. Such an implementation would return
+    DocumentSummaryLight and the isinstance check would fail.
     """
     for i in range(6):
         d = _make_doc(
@@ -8873,3 +8942,356 @@ async def test_an_authoritative_scope_still_receives_a_metadata_boost(
         "the boost's cut was ranked over every document rather than the "
         "authoritative ones the caller scoped to"
     )
+
+
+# ---------------------------------------------------------------------------
+# Degrading an oversize catalog response to the light shape.
+#
+# The budget policy has three outcomes, and every test below pins one of
+# them by BOTH the hint reason and the row model actually returned. The
+# reason alone is not enough: a policy that announced a degrade without
+# re-projecting would satisfy every hint assertion and deliver a response
+# exactly as oversized as before.
+# ---------------------------------------------------------------------------
+
+
+def _light_size_of(response: DiscoverResponse, full_size: int) -> int:
+    """The budget at which the degraded response exactly fills the budget.
+
+    The degrade hint carries the budget it was decided against, so the
+    delivered size depends on the budget by the width of that number, and a
+    budget derived from a single measurement can miss the boundary by a
+    digit. Iterating to the fixed point removes the dependency: the value
+    returned is both the size of the candidate and the budget it was built
+    for, which is exactly the case ``test_degrade_boundary_is_exact`` names.
+
+    Converges in one or two rounds because each round can only change the
+    width of one integer. The bound is a guard against a pathology, not a
+    tolerance -- the assertion below fails rather than returning an
+    approximation.
+    """
+    from sage.services.retrieval import _degraded_catalog_candidate
+
+    budget = full_size
+    for _ in range(8):
+        size = _serialized_response_bytes(
+            _degraded_catalog_candidate(response, full_size=full_size, budget=budget)
+        )
+        if size == budget:
+            return budget
+        budget = size
+    raise AssertionError("degraded-candidate size did not settle against its own budget")
+
+
+async def _catalog_over_budget(retrieval_service, **kwargs) -> DiscoverResponse:
+    """A catalog response over any plausible budget, undegraded.
+
+    Runs with the budget pinned high so the policy returns the response the
+    mode handler produced. Callers measure it, then re-run under a budget
+    placed relative to that measurement.
+    """
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+        limit=_OVER_BUDGET_ROW_COUNT,
+        **kwargs,
+    )
+    return await retrieval_service.discover(request)
+
+
+async def _seed_and_bracket(graph_store, retrieval_service, monkeypatch):
+    """Seed a portfolio and return (full_size, light_size) for it.
+
+    The two numbers bracket the degrade decision: a budget in [light, full)
+    degrades, a budget below light does not, and a budget at or above full
+    leaves the response alone. Every fixture below is placed by these rather
+    than by a literal, so recalibrating the budget or reshaping the light
+    model cannot quietly stop a test from straddling the boundary it names.
+    """
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(10**9))
+    await _seed_portfolio(graph_store, _OVER_BUDGET_ROW_COUNT)
+    undegraded = await _catalog_over_budget(retrieval_service)
+    full_size = _serialized_response_bytes(undegraded)
+    light_size = _light_size_of(undegraded, full_size)
+    assert light_size < full_size, (
+        "fixture does not straddle the boundary: the light shape is not "
+        f"smaller than the full one ({light_size}B vs {full_size}B)"
+    )
+    return full_size, light_size
+
+
+async def test_catalog_degrades_to_light_when_full_exceeds_budget(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """Over budget in full, under it in light: the caller gets light rows."""
+    full_size, light_size = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(full_size - 1))
+
+    response = await _catalog_over_budget(retrieval_service)
+
+    assert response.results
+    assert all(isinstance(hit.document, DocumentSummaryLight) for hit in response.results)
+    assert response.hints is not None
+    assert response.hints["reason"] == "catalog_response_degraded_to_light"
+    assert response.hints["response_mode"] == "light"
+    assert response.hints["carried_shape"] == "DocumentSummaryLight"
+    assert response.hints["full_response_size_bytes"] == full_size
+    assert response.hints["budget_bytes"] == full_size - 1
+    # The response fits, so there is nothing to re-page.
+    assert "recommended_limit" not in response.hints
+    assert light_size <= full_size - 1
+
+
+async def test_degraded_catalog_response_fits_the_budget(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """The degraded response is actually under budget as delivered.
+
+    The load-bearing assertion of the whole change, and the one that
+    separates a real degrade from an announcement of one: it measures the
+    response as returned, hint included, in the unit the client bounds.
+    Measuring the candidate without its hint -- the shortcut the sibling
+    budget hint can afford because it annotates a response already over the
+    line -- ships a response above the budget, and reddens here.
+
+    One rival this does not exclude on its own: a policy that re-projected
+    only some rows would shrink the response enough to fit and satisfy every
+    assertion here. The row-type assertion in
+    ``test_catalog_degrades_to_light_when_full_exceeds_budget`` is what
+    excludes it, so read the two together rather than this one alone.
+    """
+    full_size, light_size = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    budget = full_size - 1
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(budget))
+
+    response = await _catalog_over_budget(retrieval_service)
+
+    delivered = _serialized_response_bytes(response)
+    assert delivered <= budget, (
+        f"degraded response delivered {delivered}B against a {budget}B budget"
+    )
+    assert delivered < full_size
+
+
+async def test_catalog_full_shape_preserved_when_it_fits(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """A response already inside the budget is not degraded."""
+    full_size, _ = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(full_size))
+
+    response = await _catalog_over_budget(retrieval_service)
+
+    assert response.results
+    assert all(isinstance(hit.document, DocumentSummary) for hit in response.results)
+    assert response.hints is None or "reason" not in response.hints
+
+
+async def test_catalog_falls_back_to_the_limit_hint_when_light_also_busts(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """Below the light size, the response is what it has always been.
+
+    Full rows plus the recommended_limit hint. Degrading here would strip
+    fields off a response the client is going to spill anyway.
+    """
+    _, light_size = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(light_size - 1))
+
+    response = await _catalog_over_budget(retrieval_service)
+
+    assert all(isinstance(hit.document, DocumentSummary) for hit in response.results)
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+    recommended = response.hints["recommended_limit"]
+    assert isinstance(recommended, int)
+    assert 1 <= recommended < len(response.results)
+
+
+async def test_explicit_response_mode_full_is_never_degraded(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """An explicit full is a caller's instruction, not a default to override."""
+    full_size, light_size = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    # A budget that WOULD degrade an unset request.
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(full_size - 1))
+
+    response = await _catalog_over_budget(retrieval_service, response_mode=ResponseMode.FULL)
+
+    assert all(isinstance(hit.document, DocumentSummary) for hit in response.results)
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+
+
+async def test_explicit_response_mode_light_carries_no_degrade_claim(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """An explicitly-light request reaches the limit-hint outcome, not the degrade.
+
+    Read the two halves separately, because only one of them can go red.
+
+    The falsifiable half is the outcome: at a budget nothing fits, an
+    explicitly-light request must arrive carrying the limit hint. A policy
+    that returned early for light requests, or suppressed the hint on them,
+    reddens here.
+
+    The unfalsifiable half is the degrade claim, and it is worth stating why
+    rather than leaving a guard that looks like a gate. No policy can
+    announce a degrade on an already-light response, whatever it does with
+    ``response_mode``: the candidate is that same response plus a hint, so it
+    is strictly larger, and a response that overran the budget cannot be made
+    to fit by growing. The claim below is therefore true by construction and
+    pins nothing. It is asserted because it is the contract a caller reads,
+    not because a rival implementation could break it -- which is the same
+    reason the sibling edges test states that routing is not what it pins.
+    """
+    await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
+
+    response = await _catalog_over_budget(retrieval_service, response_mode=ResponseMode.LIGHT)
+
+    assert all(isinstance(hit.document, DocumentSummaryLight) for hit in response.results)
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_semantic_and_keyword_responses_are_not_degraded(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+    monkeypatch,
+    mode,
+):
+    """Scored modes reach neither budget outcome.
+
+    The budget is pinned at one byte, so any policy that runs here fires.
+    The assertion is that no budget element reached the response at all --
+    not merely that the degrade did not. Testing only for the absence of the
+    degrade reason is satisfied by a policy that runs in every mode and falls
+    through to the recommended_limit hint, which is a change to what a
+    semantic caller receives and exactly what "non-catalog modes are
+    unaffected" forbids.
+    """
+    for i in range(6):
+        doc_id = _id(f"scored_mode_doc_{i:02d}")
+        await graph_store.insert_document(_make_doc(doc_id, doc_type="ticket"))
+        await _index_doc_chunks(
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
+            [("Section 1", "Report filing process documentation.")],
+        )
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=mode, query="report filing", limit=10)
+    )
+
+    assert response.results
+    assert response.hints is None or "budget_bytes" not in response.hints, (
+        f"a budget element reached a {mode.value} response: {response.hints}"
+    )
+    assert all(isinstance(hit.document, DocumentSummary) for hit in response.results)
+
+
+async def test_facets_target_keeps_its_own_budget_hint(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """Facets rows are not documents; the degrade must not reach them."""
+    await _seed_portfolio(graph_store, 12)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            facet_fields=[FacetField.DOC_TYPE, FacetField.TAGS],
+        )
+    )
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "facets_response_exceeds_inline_budget"
+
+
+async def test_edges_target_is_not_degraded(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """Edges resolve their own light default; the catalog degrade skips them.
+
+    ``response_mode`` is left unset, which is the input the degrade acts on,
+    so this is the edges request most exposed to one.
+
+    What this pins is the outcome, not the routing, and the distinction is
+    load-bearing enough to state: routing an edges response through the
+    budget policy is measurably a no-op, verified by mutation. Edge rows are
+    not document summaries, so the re-projection leaves them alone and the
+    candidate is the same response plus a hint -- strictly larger, so it can
+    never fit a budget the original overran, and the policy falls through to
+    the same hint this asserts. A reader should not take a green result here
+    as evidence that the dispatcher's routing is what keeps the degrade off
+    this target; it is the shape of the rows that does.
+
+    The rivals it does exclude are the ones that would change what an edges
+    caller receives: a policy that replaced the reason unconditionally, or
+    one that stopped resolving the edges light default and returned a
+    different row envelope.
+    """
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=8)
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.EDGES,
+            filters=RetrievalFilters(source_id=src),
+            limit=50,
+        )
+    )
+
+    assert response.results
+    assert all(isinstance(hit, EdgeHit) for hit in response.results)
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+
+
+async def test_degrade_boundary_is_exact(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """The comparison is inclusive: a response exactly at budget is delivered.
+
+    Two arms one byte apart. The first fails on a `<` where the policy needs
+    `<=`; the second fails on a policy that degrades without checking whether
+    the light shape actually helps.
+    """
+    _, light_size = await _seed_and_bracket(graph_store, retrieval_service, monkeypatch)
+
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(light_size))
+    at_boundary = await _catalog_over_budget(retrieval_service)
+    assert all(isinstance(h.document, DocumentSummaryLight) for h in at_boundary.results)
+    assert at_boundary.hints["reason"] == "catalog_response_degraded_to_light"
+    assert _serialized_response_bytes(at_boundary) == light_size
+
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(light_size - 1))
+    below = await _catalog_over_budget(retrieval_service)
+    assert all(isinstance(h.document, DocumentSummary) for h in below.results)
+    assert below.hints["reason"] == "response_exceeds_inline_budget"
