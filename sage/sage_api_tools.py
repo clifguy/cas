@@ -1597,7 +1597,10 @@ def register_sage_tools(
                 columns for edges, chunk_content-suppressed for
                 semantic/keyword); "full" returns the complete envelope.
                 When unset, edges apply the >5-results default-threshold
-                rule; documents preserve full-equivalent behavior.
+                rule; documents preserve full-equivalent behavior unless
+                the response would overrun the inline budget, in which
+                case catalog degrades it to light and says so (see the
+                *Catalog budget hint* section above).
             sort_by: Sort key for catalog mode results. One of:
                 "title", "doc_type", "document_date",
                 "lifecycle_status". Ignored by semantic, keyword, and
@@ -1625,9 +1628,21 @@ def register_sage_tools(
                 detectable. Rejected for other targets.
 
         Catalog budget hint:
-            Catalog responses include a ``hints`` field carrying
-            ``recommended_limit`` when the serialized result would
-            exceed the Claude Code MCP inline ceiling, and facets
+            A documents-target catalog response whose serialized full
+            shape would exceed the Claude Code MCP inline ceiling is
+            returned in the light shape instead, provided that fits,
+            and says so: ``hints`` carries
+            ``reason="catalog_response_degraded_to_light"`` alongside
+            ``carried_shape`` and ``response_mode="light"``, so light
+            rows are never read as the full projection. Identity
+            columns, ``doc_type`` and ``tier3_metadata`` survive; call
+            ``get_document`` per id for the rest, or re-page smaller
+            with ``response_mode="full"``. Passing ``response_mode``
+            explicitly suppresses the degrade, since the parameter is
+            the caller's own answer to the same question.
+
+            Where even the light shape would not fit, the response is
+            returned unchanged with ``recommended_limit``, and facets
             responses carry ``recommended_facet_value_limit`` instead,
             since the facets target rejects ``limit``. When present,
             re-page with ``limit=recommended_limit`` (or re-call with

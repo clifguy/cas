@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.39",
+      "version": "0.40",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.83",
+  "substrate_version": "1.84",
   "revision_history": [
+    {
+      "version": "1.84",
+      "date": "2026-09-10",
+      "summary": "Degrade an oversize catalog response to the light shape rather than leaving the client to spill it (sage_core_api.openapi.yaml 0.39 -> 0.40). A documents-target catalog request that leaves response_mode unset and whose serialized full shape exceeds the MCP inline budget is now returned as DocumentSummaryLight rows when that shape fits, instead of being returned full for the client to write to disk. Two substrate-visible description changes, no structural ones: DiscoverResponse.hints documents a third budget outcome -- reason=\"catalog_response_degraded_to_light\" with full_response_size_bytes, budget_bytes, response_mode=\"light\" and carried_shape naming the row model delivered, and no recommended_limit, since a degraded response fits and has no re-page to name -- and the existing reason=\"response_exceeds_inline_budget\" gains the clause that it now fires only where the light shape would not fit either. DiscoverHit.document records the second route to the light shape. hints is already additionalProperties: true, so the key vocabulary moves without a schema change. Pydantic mirrors both descriptions verbatim in sage/models/schemas.py, which also gains DocumentSummaryLight.from_summary -- a second projection into the light shape, needed because the decision is taken on the assembled response, after the abstract null-out and vocabulary warnings have moved the byte count, where the originating Document rows are out of scope. sage/services/retrieval.py adds _apply_catalog_budget_policy, which measures the full response, builds the degrade candidate with its hint already attached so the fit is exact rather than absorbed by the budget's margin, and falls through to the unchanged _apply_catalog_budget_hint where the candidate does not fit; _catalog_degrade_eligible declines an explicit response_mode of either value and any target but documents. The MCP search docstring documents the degrade and its suppression; test_narrative_schema_grounding.py grounds the two new hint identifiers. The CAS Application opts out explicitly: app/src/api/types.ts declares response_mode on DiscoverRequest and app/src/views/Search.tsx sends 'full' on both catalog paths, because CatalogTable renders source_path and document_date and its fifty-row pages sit on the boundary. Tests: eleven service-level cases in tests/sage/test_retrieval.py covering all three budget outcomes, the exact inclusive boundary, explicit-mode suppression, and the non-catalog and non-documents targets, plus the from_summary exhaustive-fields closure and its agreement with from_document; a delivered-wire-bytes case in tests/app/test_mcp_app_tools.py; and a response_mode assertion in app/src/views/__tests__/Search.test.tsx. Two existing fixtures are pinned to response_mode=full because they measure the full-shape hint and a ninety-row portfolio now degrades at the production budget. docs/process/mcp-inline-budget-calibration.md records the new outcome."
+    },
     {
       "version": "1.83",
       "date": "2026-09-08",

@@ -689,6 +689,11 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "null": "prose: the JSON literal, in a worked filter example",
         "failure_record": "example doc_type value in a worked example",
         "fix_commit": "example tier-3 metadata key in a worked example",
+        "catalog_response_degraded_to_light": (
+            "value of the reason key in the catalog degrade hint, which the "
+            "contract types as an untyped hints mapping"
+        ),
+        "carried_shape": ("key of the catalog degrade hint, naming the row model delivered"),
         "facets_response_exceeds_inline_budget": (
             "value of the reason key in the facets budget hint, which the "
             "contract types as an untyped hints mapping"

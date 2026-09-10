@@ -209,6 +209,11 @@ export interface DiscoverRequest {
   use_hybrid?: boolean;
   sort_by?: 'title' | 'doc_type' | 'document_date' | 'lifecycle_status';
   sort_order?: 'asc' | 'desc';
+  // Payload depth. Left unset, a catalog page large enough to overrun the
+  // server's inline-response budget comes back in the stripped shape, which
+  // drops source_path and document_date -- two columns the catalog table
+  // renders. Requests that read those fields say 'full' and mean it.
+  response_mode?: 'light' | 'full';
 }
 
 export interface DiscoverResponse {

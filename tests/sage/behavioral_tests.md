@@ -3304,3 +3304,56 @@ left an orphan record (no edge, predecessor still active). The
 transactional fix collapses the doc-insert / metadata / supersede sequence
 into a single all-or-nothing commit, eliminating the orphan class.
 
+
+### TEST-SAGE-BH-138: an oversize catalog response degrades to the light shape
+
+**Artifact:** `sage/services/retrieval.py` (`_apply_catalog_budget_policy`),
+`sage/models/schemas.py` (`DocumentSummaryLight.from_summary`)
+**Category:** retrieval, catalog, response_mode, inline budget
+
+**Decision:** The inline budget is a switch, not only an advisory line. A
+documents-target catalog request that leaves `response_mode` unset and whose
+serialized full shape exceeds the budget is returned in the light shape when
+that shape fits, and says so. The alternative is not a fuller answer: it is a
+response the client stops delivering inline and writes to disk, which costs
+the caller every field rather than the eight the light shape drops.
+
+Three outcomes, and a response reaches exactly one:
+
+1. Under budget: delivered as built, no hint.
+2. Over budget, light fits: delivered light, carrying
+   `reason="catalog_response_degraded_to_light"`,
+   `full_response_size_bytes`, `budget_bytes`, `response_mode="light"` and
+   `carried_shape`. No `recommended_limit` — the response fits.
+3. Over budget, light does not fit: delivered full with
+   `reason="response_exceeds_inline_budget"` and `recommended_limit`,
+   unchanged from before this behavior existed.
+
+An explicit `response_mode` suppresses the degrade in both directions:
+`full` is a caller's instruction honored even at the cost of inline
+delivery, and `light` has nothing left to degrade and must not be reported
+as degraded. The edges and facets targets are untouched; edges resolves its
+own light default by result count.
+
+**Precondition:** A catalog-enumerable portfolio whose full-shape response
+exceeds the budget in force and whose light-shape response does not.
+
+**Input:** `discover(mode: catalog, target: documents, filters: …, limit: N)`
+with `response_mode` unset.
+
+**Expected:**
+- Every `DiscoverHit.document` is a `DocumentSummaryLight`.
+- `hints["reason"] == "catalog_response_degraded_to_light"`, with
+  `carried_shape == "DocumentSummaryLight"` and `response_mode == "light"`.
+- `recommended_limit` is absent.
+- The response as delivered, hint included, measures at or under the budget.
+
+**Rationale:** The decision is taken on the assembled response rather than in
+the mode handler, because the abstract null-out and the vocabulary warnings
+both move the byte count and the measurement has to reflect what the wire
+carries. The degrade candidate is therefore built with its hint already
+attached and measured whole: the sibling budget hint can lean on the budget's
+margin to absorb its own bytes because it annotates a response already over
+the line, and that is unsound here, where the measurement is what decides
+whether the response is under it. The comparison is inclusive, so a candidate
+exactly at budget is delivered.

@@ -142,6 +142,7 @@ export default function Search() {
         filters,
         limit: PAGE_SIZE,
         offset: urlOffset,
+        response_mode: 'full',
       };
       if (urlSortBy && urlSortOrder) {
         req.sort_by = urlSortBy;
@@ -154,6 +155,7 @@ export default function Search() {
         filters: Object.keys(filters).length > 0 ? filters : undefined,
         limit: PAGE_SIZE,
         offset: urlOffset,
+        response_mode: 'full',
       };
       if (urlSortBy && urlSortOrder) {
         req.sort_by = urlSortBy;

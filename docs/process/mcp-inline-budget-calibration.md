@@ -133,7 +133,29 @@ them. Nothing else would notice a budget raised to or past its ceiling: every
 hint would keep firing and every fixture would keep passing, and the only
 symptom would be responses the hints called safe arriving by disk round-trip.
 
-## 6. What a recalibration breaks
+## 6. What the budget now decides
+
+The budget started as an advisory line: a catalog response above it was
+returned in full with a `recommended_limit` hint, and the client wrote it to
+disk. It is now also a switch. A documents-target catalog request that leaves
+`response_mode` unset and whose full shape lands above the line is returned in
+the light shape instead, when that fits, carrying
+`reason="catalog_response_degraded_to_light"` and naming the row model it
+delivered. Only where the light shape would not fit either does the response
+come back full with the limit hint, exactly as before.
+
+So a recalibration now moves two things, not one. Raising the budget stops
+some responses degrading that used to; lowering it starts degrading some that
+did not, and pushes others past the light shape into the fallback. Both are
+visible in `hints`, and neither is silent, but a caller reading a field the
+light shape drops sees it disappear rather than error. Callers that need the
+full shape at any size say so with `response_mode="full"`, which suppresses
+the degrade; the CAS Application's catalog table does exactly this.
+
+The measurement below is unaffected: it bounds delivery, and the degrade is a
+decision taken against that bound rather than a change to it.
+
+## 7. What a recalibration breaks
 
 Fixtures that must cross the budget are sized *from* it, so they scale — but
 they should be re-run and re-reasoned, not assumed:
@@ -153,8 +175,17 @@ they should be re-run and re-reasoned, not assumed:
   survives.
 - The three tool docstrings in `sage/sage_api_tools.py` state the figure, and
   `tests/sage/test_mcp_self_documentation.py` pins it against the constant.
+- The degrade fixtures (`tests/sage/test_retrieval.py`,
+  `tests/app/test_mcp_app_tools.py`) derive their row counts from the budget
+  and assert the crossing on the measured response rather than on the count,
+  so a rescale that stopped them straddling the boundary reddens rather than
+  passing vacuously. Two of them run at the production budget specifically:
+  `test_recommended_limit_re_pages_within_the_production_budget` pins
+  `response_mode=full` because a ninety-row portfolio fits the light shape
+  there, and `test_degraded_catalog_response_fits_the_delivered_ceiling`
+  asserts both arms in delivered bytes.
 
-## 7. The measurement on record
+## 8. The measurement on record
 
 | | |
 |---|---|
