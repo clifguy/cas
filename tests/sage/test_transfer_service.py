@@ -536,8 +536,9 @@ class TestMultiLegRecipeWindow:
 
     Each leg is minted on its own clock reading, so a batch carries a spread
     of windows while the recipe carries one instant. The recipe's promise is
-    that the whole exchange finishes before that instant, which only the
-    earliest leg's expiry can keep.
+    that every leg is still live at that instant, which only the earliest
+    leg's expiry can keep -- a later one lapses the earlier legs before the
+    caller has been told to stop.
     """
 
     @pytest.fixture(autouse=True)
@@ -554,7 +555,7 @@ class TestMultiLegRecipeWindow:
         return store
 
     def test_multi_leg_recipe_reports_the_earliest_leg_expiry(self, monkeypatch, tmp_path):
-        """No leg outlives the instant the recipe names.
+        """No leg lapses before the instant the recipe names.
 
         Anti-coincidental-pass: the distinctness assertion is what makes the
         rest discriminating. On a clock that does not move between legs every
