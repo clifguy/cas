@@ -98,7 +98,7 @@ class LifecycleService:
 
             # Validate action is known (400 vs 409 distinction)
             if not self._table.is_known_action(request.action):
-                raise InvalidActionError(request.action)
+                raise InvalidActionError(request.action, self._table.known_actions())
 
             # Validate transition from current state
             result = self._table.validate_transition(doc.lifecycle_status, request.action)

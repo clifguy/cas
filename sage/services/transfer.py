@@ -648,9 +648,19 @@ class DeliveryPlan:
 
 @contextmanager
 def caller_local_delivery(
-    vault_id: str, declarations: Sequence[DeliveryDeclaration]
+    vault_id: str,
+    declarations: Sequence[DeliveryDeclaration],
+    consume: bool = True,
 ) -> Iterator[DeliveryPlan]:
     """Apply the caller-local delivery gate to one call's declarations.
+
+    ``consume=False`` reads the staged bytes without spending the token: every
+    redeemed entry goes back on the way out of a *successful* block, exactly
+    as it already does on a failing one, so the same token redeems again. It
+    is for a caller that reads the bytes in order to report on them rather
+    than to do the work they were delivered for -- a preview, which by
+    definition leaves the real call still to make. Spending a token there
+    would charge the caller a second byte leg for asking a question.
 
     Validates each declaration's delivery shape, decides whether this process
     can reach the caller's filesystem, and either mints an upload recipe or
@@ -754,4 +764,11 @@ def caller_local_delivery(
         raise
     else:
         for entry in consumed:
-            entry.cleanup()
+            if consume:
+                entry.cleanup()
+            else:
+                # Read, not spent. The same return path a failure takes, on
+                # the success arm: the block did what it set out to do, and
+                # what it set out to do was not the work the token was
+                # delivered for.
+                store.return_upload(entry)

@@ -652,6 +652,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "ingest_document"): {
         "cas": "example vault id in a worked example",
         "false": "prose: a literal boolean value",
+        # Key of the untyped ``invalid_doc_type`` detail, named in the
+        # doc_type-vocabulary error mode.
+        "valid_types": ERROR_DETAIL_KEY,
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
@@ -773,14 +776,17 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # Key of the untyped ``invalid_lifecycle_transition`` detail,
         # named in the per-item error-code paragraph.
         "valid_actions": ERROR_DETAIL_KEY,
+        # Key of the untyped ``invalid_action`` detail. Its sibling above
+        # narrows to one state; this one is the whole caller-invocable
+        # roster, and is what the vocabulary paragraph sends a caller to.
+        "known_actions": ERROR_DETAIL_KEY,
     },
     ("sage_core", "update_metadata"): {
         "other_key": "placeholder in a worked example, not a field name",
-        "sage_vaults": (
-            "the vault-scoped route prefix, in the endpoint paths this "
-            "narrative names; a URL segment, not a contract node"
-        ),
         "current_version": ERROR_DETAIL_KEY,
+        # Key of the untyped ``invalid_doc_type`` detail, named in the
+        # doc_type-vocabulary paragraph.
+        "valid_types": ERROR_DETAIL_KEY,
         # Codes built as f"{field}_add_conflict" at the raise site, so
         # the literal never appears in source for the AST scan to find.
         "tags_add_conflict": "error code from a parameterized family",

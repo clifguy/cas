@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING
 
 from sage.api.errors import SAGEError
 from sage.models.enums import SourceType
-from sage.models.schemas import BatchIngestFileError, EdgeWarning, IngestRequest
+from sage.models.schemas import (
+    BatchIngestFileError,
+    EdgeWarning,
+    IngestPreview,
+    IngestRequest,
+)
 from sage.services.batch_inference import (
     EdgePlan,
     InferenceItem,
@@ -95,6 +100,8 @@ class IngestSummary:
     edge_warnings: list[EdgeWarning] = field(default_factory=list)
     error_count: int = 0
     errors: list[BatchIngestFileError] = field(default_factory=list)
+    dry_run: bool = False
+    previews: list[IngestPreview] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Produce the summary dict both callers need."""
@@ -112,7 +119,13 @@ class IngestSummary:
             "abstracts_deferred": self.abstracts_deferred,
             "error_count": self.error_count,
             "errors": [e.model_dump(exclude_none=True) for e in self.errors],
+            "dry_run": self.dry_run,
         }
+        if self.previews:
+            # Emitted only on a dry run, where every count above stays at
+            # zero because nothing was created: the previews are the whole
+            # of what that run has to report.
+            result["previews"] = [p.model_dump() for p in self.previews]
         if self.edge_warnings:
             # Plain ``model_dump``: every EdgeWarning field is required, so
             # there is no optional field for ``exclude_none`` to omit, unlike
@@ -144,8 +157,22 @@ class BatchIngestService:
         on_file_start: OnFileStart | None = None,
         on_file_done: OnFileDone | None = None,
         on_file_error: OnFileError | None = None,
+        dry_run: bool = False,
     ) -> IngestSummary:
         """Execute the three-phase batch ingestion pipeline.
+
+        ``dry_run``:
+        Evaluates every file and reports one preview or one error entry
+        per file without persisting anything. Only Phase 2 runs: the
+        pre-ingest edge plan and the post-ingest edge execution are both
+        skipped whatever ``infer_edges`` says, because an edge plan
+        resolves against document ids a preview never mints. Every
+        creation count stays at zero and ``previews`` carries the
+        result. The batch limitation the sibling bulk tools document
+        applies here too: each file is evaluated against committed state
+        as it stood at batch start, so two entries carrying identical
+        bytes each report no duplicate where a real run would refuse the
+        second.
 
         ``needs_review`` (defaults to ``True``, CAS-ADR-021):
         Each per-file ``IngestRequest`` issued by this service sets
@@ -254,12 +281,15 @@ class BatchIngestService:
         if not files:
             raise ValueError("No files selected for ingestion")
 
-        summary = IngestSummary()
+        summary = IngestSummary(dry_run=dry_run)
         total = len(files)
 
-        # Phase 1: Pre-ingest edge plan
+        # Phase 1: Pre-ingest edge plan. Skipped outright on a dry run:
+        # the plan is resolved in Phase 3 against the ids Phase 2 minted,
+        # and a preview mints none, so building one would cost reads to
+        # produce a plan that could only be discarded.
         edge_plan = None
-        if infer_edges:
+        if infer_edges and not dry_run:
             edge_plan = await self._build_edge_plan(files, vault_services)
 
         # Phase 2: Per-file ingestion. Identifier_mention inference
@@ -290,6 +320,7 @@ class BatchIngestService:
                     # confirmation, so it opts the document into the
                     # metadata-review queue (needs_review defaults True).
                     needs_review=needs_review,
+                    dry_run=dry_run,
                 )
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,
@@ -297,6 +328,15 @@ class BatchIngestService:
                     # own path is what a refusal names back at it.
                     caller_source=fd.declared_source,
                 )
+                if isinstance(ingest_result, IngestPreview):
+                    summary.previews.append(ingest_result)
+                    if on_file_done is not None:
+                        # No id to report -- nothing was created. The
+                        # progress callback's contract is a per-file
+                        # completion signal, and the file did complete.
+                        await on_file_done(i, total, filename, "")
+                    continue
+
                 path_to_id[fd.file_path] = ingest_result.document.id
 
                 if ingest_result.is_new:

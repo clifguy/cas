@@ -34,6 +34,7 @@ from sage.models.schemas import (
     UpdateMetadataResponse,
 )
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
+from sage.services._dry_run import doc_type_requirements
 from sage.services.document_surface import compose_document_surface
 from sage.services.passage_structure import indexed_structure
 from sage.storage.locks import DocumentLockManager
@@ -587,9 +588,15 @@ class MetadataService:
         trivially satisfies a no-schema doc_type and is accepted, so a
         caller reclassifying to a no-schema target can unset every
         legacy key without then tripping the no-schema raise.
+
+        Both refusals carry the doc_type's whole declared requirement
+        set, in the shape the ingest path reports it: one error code
+        means one thing, and a detail that varied by which service
+        raised it would not.
         """
         dt_key = doc_type or ""
         validator = self._config.tier3_validator(dt_key)
+        requirements = doc_type_requirements(self._config, dt_key).model_dump()
         if validator is None:
             if not tier3:
                 return
@@ -598,6 +605,7 @@ class MetadataService:
                 path="",
                 message=(f"doc_type '{dt_key}' has no metadata_schema declared in vault config"),
                 instance=tier3,
+                requirements=requirements,
             )
         try:
             validator.validate(tier3)
@@ -607,6 +615,7 @@ class MetadataService:
                 path=exc.json_path,
                 message=exc.message,
                 instance=tier3,
+                requirements=requirements,
             ) from exc
 
     async def list_pending_metadata(self) -> list[PendingMetadataItem]:

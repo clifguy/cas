@@ -987,6 +987,23 @@ class IngestRequest(BaseModel):
             "exists; ignored otherwise."
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "When true, run the validators that do not require reading the "
+            "source into the vault, compute the would-be verdict, and do "
+            "NOT persist. Nothing is retained into the vault's import area, "
+            "no projection, indexing or abstraction runs, and no record is "
+            "written. The response is an `IngestPreview` rather than a "
+            "document: it carries `dry_run=true`, the resolved doc_type, "
+            "the delivered content hash and the duplicate verdict, whether "
+            "the ingest would supersede, and the target doc_type's full "
+            "declared requirement set. Because a preview does not project, "
+            "an adapter-extracted `tier3_metadata` payload cannot be "
+            "evaluated; `tier3_validated` reports false when the caller "
+            "supplied none, and a real run may still refuse."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_metadata_dates(self) -> "IngestRequest":
@@ -2026,6 +2043,149 @@ class IngestResponse(BaseModel):
     document: Document = Field(description="The ingested document record.")
     pipeline_status: PipelineStatus = Field(
         description="Terminal pipeline status reached during the synchronous ingest."
+    )
+
+
+class DocTypeRequirements(BaseModel):
+    """What a vault declares a document type requires of its typed metadata.
+
+    Reported on an ingest preview and carried in the detail of a
+    `tier3_schema_violation`, so a caller learns what would satisfy the
+    refusal from the refusal itself rather than from a second call.
+
+    The four field sets answer different questions and none substitutes
+    for another. `required_tier3_fields` is frequently empty, because a
+    schema more often refuses through `additionalProperties: false`, a
+    pattern, or an enum than through a missing required key; the declared
+    property names are what make such a refusal actionable.
+    """
+
+    doc_type: str = Field(description="The document type these requirements describe.")
+    is_declared: bool = Field(
+        description=(
+            "Whether this doc_type appears in the vault's "
+            "`document_types.doc_types` vocabulary at all. False means the "
+            "value was resolved from caller metadata, a filename parse, or "
+            "predecessor inheritance without ever being declared."
+        )
+    )
+    has_metadata_schema: bool = Field(
+        description=(
+            "Whether the doc_type declares a `metadata_schema`. A doc_type "
+            "with none refuses any non-empty tier3_metadata outright, which "
+            "is a different condition from a schema declaring no properties "
+            "-- and the two are indistinguishable from the field lists alone."
+        )
+    )
+    declared_tier3_fields: list[str] = Field(
+        description=(
+            "Sorted names of every property the doc_type's `metadata_schema` "
+            "declares. Empty when no schema is declared, and also when a "
+            "declared schema has no properties."
+        )
+    )
+    required_tier3_fields: list[str] = Field(
+        description=(
+            "Sorted names the doc_type's `metadata_schema` lists as required. "
+            "Empty when the schema declares no `required` list, which is the "
+            "common case."
+        )
+    )
+    unique_tier3_fields: list[str] = Field(
+        description=(
+            "Sorted names the doc_type declares under `unique_keys`, whose "
+            "values must be unique within the vault across all lifecycle "
+            "statuses. A collision raises `tier3_unique_constraint_violation`."
+        )
+    )
+    permitted_source_types: list[str] | None = Field(
+        description=(
+            "Source types the doc_type declares itself compatible with, or "
+            "null when it declares none. Null means unconstrained, which is "
+            "not the same as an empty list. These steer filename-based "
+            "doc_type inference; they are not an ingest-time gate, so an "
+            "ingest naming a source type outside this list is not refused "
+            "for that reason."
+        )
+    )
+
+
+class IngestPreview(BaseModel):
+    """Returned in place of a document when `IngestRequest.dry_run` is true.
+
+    A preview stops short of reading the source into the vault, so it can
+    report neither the projected content hash nor anything the adapter
+    would have extracted. What it can report is every verdict reachable
+    from the delivered bytes and the vault's own configuration: the
+    resolved document type, the duplicate verdict, the supersession
+    verdict, and the requirement set the document type declares.
+    """
+
+    dry_run: Literal[True] = Field(
+        description="Discriminator confirming nothing was persisted; always true."
+    )
+    would_create: bool = Field(
+        description=(
+            "Whether a real run with these arguments would create a new "
+            "document. False when the delivered bytes are already held and "
+            "`force` is not set, in which case a real run raises "
+            "`duplicate_content`."
+        )
+    )
+    resolved_doc_type: str = Field(
+        description=(
+            "The doc_type a real run would apply, resolved through the same "
+            "precedence chain: caller metadata > filename parse (only when "
+            "`needs_review` is true) > predecessor inheritance > `misc`."
+        )
+    )
+    resolved_source_type: SourceType = Field(
+        description=(
+            "The source type whose adapter a real run would project with, "
+            "after extension-based inference fills an omitted value."
+        )
+    )
+    source_content_hash: Sha256Str | None = Field(
+        description=(
+            "Canonical digest of the bytes the caller delivered. Null only "
+            "for a source already resident in the vault store that carries "
+            "no prior document record, whose digest a real run recovers "
+            "from projection -- which a preview does not run."
+        )
+    )
+    duplicate_of: DocumentIdStr | None = Field(
+        description=(
+            "Identifier of the document already holding these bytes, or "
+            "null when none does. Null is also reported, unevaluated, when "
+            "`source_content_hash` is null."
+        )
+    )
+    predecessor_id: DocumentIdStr | None = Field(
+        description="The supersession target the caller named, echoed back, or null."
+    )
+    would_supersede: bool = Field(
+        description=(
+            "Whether a real run would apply the `supersede` transition to "
+            "`predecessor_id`. False when no predecessor was named; a "
+            "predecessor the transition table refuses raises "
+            "`supersede_target_not_active` under dry run rather than "
+            "reporting false here."
+        )
+    )
+    tier3_validated: bool = Field(
+        description=(
+            "Whether the reported verdict reflects a tier3_metadata "
+            "validation. False when the caller supplied no payload: a real "
+            "run would fall back to the adapter's extraction, which a "
+            "preview cannot reach, so a real run may still refuse."
+        )
+    )
+    requirements: DocTypeRequirements = Field(
+        description=(
+            "What `resolved_doc_type` declares its typed metadata must "
+            "satisfy. Reported on every preview, not only a refusal, so a "
+            "caller need not provoke an error to learn the shape."
+        )
     )
 
 
@@ -4868,6 +5028,23 @@ class SummaryEvent(BaseModel):
             "affected edge; each names the source, target, edge type, a "
             "machine-readable reason, and a human-readable detail. Present "
             "only when warnings were produced."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Echo of the request flag. When true nothing was persisted, "
+            "every creation and edge count above is zero by construction, "
+            "and `previews` carries what the batch would have done."
+        ),
+    )
+    previews: list[IngestPreview] | None = Field(
+        default=None,
+        description=(
+            "One preview per file the batch evaluated successfully under "
+            "`dry_run`, in batch order. Files that would have been refused "
+            "appear in `errors` instead, so the two lists together account "
+            "for the batch. Present only on a dry run."
         ),
     )
 

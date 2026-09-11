@@ -149,13 +149,29 @@ class InvalidLifecycleTransitionError(SAGEError):
 
 
 class InvalidActionError(SAGEError):
-    """400: action value is not in any transition table."""
+    """400: action value is not in any transition table.
 
-    def __init__(self, action: str) -> None:
+    ``known_actions`` is the vault's whole caller-invocable action
+    vocabulary, which is vault-config-defined rather than a fixed set.
+    The pipeline's own landing transition is not in it, because a caller
+    invoking that one would be refused whatever state the document is
+    in. This is the first refusal a caller who does not know the
+    vocabulary meets -- the
+    sibling ``invalid_lifecycle_transition``, which names the actions
+    valid from the current state, is reached only by an action the table
+    already knows. Naming the vocabulary here is what lets a caller
+    recover from a guess without reading the vault configuration.
+    """
+
+    def __init__(self, action: str, known_actions: list[str] | None = None) -> None:
+        detail: dict = {"attempted_action": action}
+        if known_actions is not None:
+            detail["known_actions"] = sorted(known_actions)
         super().__init__(
             "invalid_action",
             f"Unknown action: {action}",
             400,
+            detail,
         )
 
 
@@ -246,6 +262,13 @@ class Tier3SchemaViolationError(SAGEError):
           and failed. ``path`` is the JSON Pointer to the offending field
           (from ``jsonschema.ValidationError.json_path``); ``message`` is
           the validator's own error message.
+
+    ``requirements`` carries the doc_type's complete declared requirement
+    set, so a caller learns what would satisfy the refusal from the
+    refusal itself rather than from a second call. ``path`` and
+    ``message`` name one failure; they do not describe the target, and on
+    mode (1) there is no schema for them to point into at all. Supplied
+    wherever the vault configuration is in hand at the raise site.
     """
 
     def __init__(
@@ -254,6 +277,7 @@ class Tier3SchemaViolationError(SAGEError):
         path: str,
         message: str,
         instance: object | None = None,
+        requirements: dict | None = None,
     ) -> None:
         detail: dict = {
             "doc_type": doc_type,
@@ -262,6 +286,8 @@ class Tier3SchemaViolationError(SAGEError):
         }
         if instance is not None:
             detail["instance"] = instance
+        if requirements is not None:
+            detail["requirements"] = requirements
         super().__init__(
             "tier3_schema_violation",
             f"tier3_metadata violates schema for doc_type '{doc_type}': {message}",

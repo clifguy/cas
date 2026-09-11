@@ -14,6 +14,7 @@ from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
     BatchIngestUploadMetadata,
     ErrorResponse,
+    IngestPreview,
     IngestRequest,
     IngestResponse,
     VaultIdStr,
@@ -38,7 +39,19 @@ router = APIRouter(tags=["Ingestion"])
                 "`expected_head_version_requires_predecessor`: "
                 "`expected_head_version` was supplied without "
                 "`predecessor_id`. The token is bound to the chain head "
-                "identified by the predecessor (CAS-ADR-038 Primitive C)."
+                "identified by the predecessor (CAS-ADR-038 Primitive C).\n\n"
+                "`invalid_doc_type`: `metadata.doc_type` names a value the "
+                "vault does not declare. Detail carries `doc_type` and "
+                "`valid_types`, the whole vocabulary. Scoped to the "
+                "caller-named value: omitting the field, inheriting a "
+                "predecessor's value, and a filename-inferred value are all "
+                "admitted.\n\n"
+                "`tier3_schema_violation`: `tier3_metadata` is set but the "
+                "resolved doc_type declares no `metadata_schema`, or the "
+                "payload failed validation. Detail carries `doc_type`, "
+                "`path`, `message`, `instance`, and `requirements` -- the "
+                "doc_type's declared and required field names, unique keys "
+                "and permitted source types."
             ),
         },
         404: {
@@ -126,6 +139,10 @@ async def ingest(
     ingestion_service: IngestionService = Depends(get_ingestion_service),
 ) -> JSONResponse:
     result = await ingestion_service.ingest(request)
+    if isinstance(result, IngestPreview):
+        # 200 rather than 201: a preview reports on a creation it did not
+        # make, so the status that means "created" would be a lie.
+        return JSONResponse(status_code=200, content=result.model_dump(mode="json"))
     response = IngestResponse(
         document=result.document,
         pipeline_status=result.document.pipeline_status,
