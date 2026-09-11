@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import sage.mcp_init as _mcp_init
+import sage.services.transfer as _transfer
 from sage.api.errors import (
     TransferAlreadyStagedError,
     TransferNotStagedError,
@@ -32,6 +33,7 @@ from sage.services.transfer import (
     TransferStore,
     caller_local_delivery,
     get_transfer_store,
+    mint_upload_recipe,
     reset_transfer_store,
     staging_name,
 )
@@ -50,6 +52,39 @@ class _Clock:
 
     def advance(self, seconds: float) -> None:
         self.now = self.now + timedelta(seconds=seconds)
+
+
+class _SteppingClock(_Clock):
+    """A clock that advances on every read.
+
+    Where a caller mints several tokens inside one call, the test cannot
+    interject between them to move an ordinary clock, so the legs all land on
+    the same instant and any difference between them is unobservable. Stepping
+    on read gives each leg a distinct window without the test having to know
+    how many times a mint reads the clock.
+    """
+
+    def __init__(self, step_seconds: float = 1.0) -> None:
+        super().__init__()
+        self._step = step_seconds
+
+    def __call__(self) -> datetime:
+        reading = self.now
+        self.advance(self._step)
+        return reading
+
+
+@contextlib.contextmanager
+def _profile(name: str):
+    """Pin the stack config to a profile that can mint, and restore it after."""
+    saved = _mcp_init._stack_config
+    _mcp_init.set_stack_config(
+        SageCoreConfig(profile=name, transfer={"public_base_url": "https://sage.test.example"})
+    )
+    try:
+        yield
+    finally:
+        _mcp_init.set_stack_config(saved)
 
 
 @pytest.fixture
@@ -444,17 +479,6 @@ class TestGateReportsItsOwnAnswer:
         yield
         reset_transfer_store()
 
-    @contextlib.contextmanager
-    def _profile(self, name: str):
-        saved = _mcp_init._stack_config
-        _mcp_init.set_stack_config(
-            SageCoreConfig(profile=name, transfer={"public_base_url": "https://sage.test.example"})
-        )
-        try:
-            yield
-        finally:
-            _mcp_init.set_stack_config(saved)
-
     def test_caller_absolute_reads_either_flavour_when_unreachable(self):
         """Where the caller's environment writes, a foreign spelling is absolute.
 
@@ -472,7 +496,7 @@ class TestGateReportsItsOwnAnswer:
         a posix-absolute source, reds against it. Verified by mutation rather
         than reasoned.
         """
-        with self._profile("cloud"):
+        with _profile("cloud"):
             with caller_local_delivery(_VAULT, [DeliveryDeclaration(source="docs/a.md")]) as plan:
                 assert plan.recipe is None
                 (resolved,) = plan.resolved
@@ -490,7 +514,7 @@ class TestGateReportsItsOwnAnswer:
         and must report as one. Reading either flavour on this arm would let a
         foreign spelling through to a consumer that resolves it locally.
         """
-        with self._profile("local"):
+        with _profile("local"):
             with caller_local_delivery(
                 _VAULT,
                 [
@@ -505,3 +529,66 @@ class TestGateReportsItsOwnAnswer:
         assert posix.caller_absolute is True
         assert windows.caller_absolute is False
         assert relative.caller_absolute is False
+
+
+class TestMultiLegRecipeWindow:
+    """The window a multi-leg upload recipe reports covers every leg.
+
+    Each leg is minted on its own clock reading, so a batch carries a spread
+    of windows while the recipe carries one instant. The recipe's promise is
+    that the whole exchange finishes before that instant, which only the
+    earliest leg's expiry can keep.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_store(self):
+        reset_transfer_store()
+        yield
+        reset_transfer_store()
+
+    @staticmethod
+    def _install(monkeypatch, tmp_path) -> TransferStore:
+        """Put a stepping-clock store where the minting path will find it."""
+        store = TransferStore(now=_SteppingClock(), staging_root=tmp_path / "staging")
+        monkeypatch.setattr(_transfer, "_transfer_store", store)
+        return store
+
+    def test_multi_leg_recipe_reports_the_earliest_leg_expiry(self, monkeypatch, tmp_path):
+        """No leg outlives the instant the recipe names.
+
+        Anti-coincidental-pass: the distinctness assertion is what makes the
+        rest discriminating. On a clock that does not move between legs every
+        leg shares one expiry, so the earliest, the latest and the last-minted
+        are the same value and a recipe reporting the last leg's window passes
+        whole -- which is exactly the defect. Asserting the three windows
+        differ turns a stalled clock into a red rather than a silent
+        disarming.
+        """
+        store = self._install(monkeypatch, tmp_path)
+
+        with _profile("cloud"):
+            recipe = mint_upload_recipe(_VAULT, ["a.md", "b.md", "c.md"])
+
+        leg_expiries = [store._entries[item.transfer_id].expires_at for item in recipe.uploads]
+        assert len(set(leg_expiries)) == 3, (
+            f"the clock did not advance between legs ({leg_expiries!r}); without "
+            "distinct windows this case cannot tell the earliest from the latest"
+        )
+        assert recipe.expires_at == min(leg_expiries)
+        assert all(recipe.expires_at <= expiry for expiry in leg_expiries)
+
+    def test_single_leg_recipe_reports_its_own_leg_expiry(self, monkeypatch, tmp_path):
+        """A one-leg batch still reports that leg's window.
+
+        Not discriminating on its own -- over a single leg the earliest, the
+        latest and the last-minted coincide -- and it is not claimed to be.
+        It is the control for the overwhelmingly common shape, so a fix that
+        reaches for the wrong leg on a batch of one reds here.
+        """
+        store = self._install(monkeypatch, tmp_path)
+
+        with _profile("cloud"):
+            recipe = mint_upload_recipe(_VAULT, ["solo.md"])
+
+        (item,) = recipe.uploads
+        assert recipe.expires_at == store._entries[item.transfer_id].expires_at

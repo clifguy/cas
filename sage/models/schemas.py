@@ -5305,9 +5305,11 @@ class UploadRecipe(BaseModel):
     )
     expires_at: datetime = Field(
         description=(
-            "When the minted tokens lapse. The whole exchange (byte delivery "
-            "plus the completion call) must finish before this instant; after "
-            "it, re-issue the originating call to mint fresh tokens."
+            "When the minted tokens lapse. On a multi-leg recipe this is the "
+            "earliest leg's expiry, so no leg outlives it. The whole exchange "
+            "(every leg's byte delivery plus the completion call) must finish "
+            "before this instant; after it, re-issue the originating call to "
+            "mint fresh tokens."
         )
     )
     max_bytes: int = Field(
