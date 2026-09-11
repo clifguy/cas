@@ -50,6 +50,7 @@ from sage.api.errors import (
     ExpectedHeadVersionRequiresPredecessorError,
     ForceReingestPathMismatchError,
     IdenticalContentSupersedeError,
+    InvalidDocTypeError,
     InvalidLifecycleTransitionError,
     NoProjectionError,
     ReabstractDocumentAlreadyInFlightError,
@@ -70,11 +71,13 @@ from sage.models.enums import (
 )
 from sage.models.schemas import (
     Document,
+    IngestPreview,
     IngestRequest,
     ParseFilenameResponse,
     SetLifecycleRequest,
     canonicalize_sha256,
 )
+from sage.services._dry_run import doc_type_requirements
 from sage.services.document_surface import compose_document_surface, embedding_text
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
@@ -775,8 +778,13 @@ class IngestionService:
         request: IngestRequest,
         wait_for_pipeline: bool = True,
         caller_source: str | None = None,
-    ) -> IngestResult:
+    ) -> IngestResult | IngestPreview:
         """Execute Stage 1 synchronously and run Stages 2-3 sync or async.
+
+        Returns an ``IngestPreview`` instead of an ``IngestResult`` when
+        ``request.dry_run`` is set. The two are disjoint by construction:
+        a preview describes what a real run would do and never carries a
+        document, because no document was made.
 
         ``caller_source`` is the path the *caller* named, for a caller that put
         something else in ``request.source``. Only one does: a delivery that
@@ -817,6 +825,45 @@ class IngestionService:
         regardless of this flag (BH-129): the version chain must be
         complete when the call returns.
 
+        Dry run (``request.dry_run``):
+        Returns an ``IngestPreview`` and persists nothing. The source is
+        located and hashed where it stands but never retained, so no
+        projection, indexing or abstraction runs and the vault's import
+        area is untouched. The preview reports the resolved doc_type,
+        the delivered content hash, the duplicate verdict naming the
+        document already holding those bytes, whether the ingest would
+        supersede, and the resolved doc_type's declared requirement set
+        -- the last on every preview, not only a refusal, so a caller
+        need not provoke an error to learn the shape. Two limits follow
+        from not projecting and are reported rather than hidden: the
+        adapter's own ``tier3_metadata`` extraction cannot be consulted,
+        so ``tier3_validated`` is false when the caller supplied no
+        payload and a real run may still raise
+        ``Tier3SchemaViolationError``; and a source resident in the
+        store with no prior document record has no digest to inherit,
+        so its hash and duplicate verdict come back null. Every
+        validator that runs does so in real-run order and raises the
+        real-run error: ``AdapterNotFoundError``,
+        ``ExpectedHeadVersionRequiresPredecessorError``,
+        ``DocumentNotFoundError``, ``SupersedeTargetNotActiveError``,
+        ``SourceFileNotFoundError``, ``Tier3SchemaViolationError`` and
+        ``IdenticalContentSupersedeError`` all reach a dry-run caller.
+        ``DuplicateContentError`` is the exception, by design: a
+        duplicate is a verdict a preview exists to report, so it comes
+        back as ``would_create=false`` rather than as a raise.
+
+        A preview does not exhaust the refusals a real run can raise.
+        Three sit below the branch point and are neither checked nor
+        reported, because each turns on state the preview does not
+        reach: a ``Tier3UniqueConstraintViolation``, which the insert
+        transaction raises and which cannot be settled outside it -- a
+        preview reporting no collision could still collide before the
+        real call arrives; a ``ForceReingestPathMismatchError``, which
+        turns on the colliding record's own source path; and a
+        ``StaleChainHeadError`` on an ``expected_head_version`` that no
+        longer matches the head. A clean preview is not a promise that
+        the real run commits.
+
         Trio-field inheritance on supersede (CAS-ADR-021):
         When ``request.predecessor_id`` is set and the caller omits any
         of ``doc_type``, ``project``, or ``authority_scope`` from
@@ -841,11 +888,18 @@ class IngestionService:
         independent of content-hash deduplication: ``request.force=True``
         does NOT override a tier3 uniqueness violation.
 
-        Adapter-specific config validation:
-        Each ``SourceType`` adapter declares its own required-config
-        schema; ``request.config`` is adapter-specific and validated
-        against that schema during projection. Per-adapter required
-        keys live in vault config under ``adapter_defaults``.
+        Adapter config is merged, not validated:
+        ``request.config`` is deep-merged over the vault's
+        ``adapter_defaults`` entry for the resolved source type -- request
+        keys win on collision, nested dicts merge key-by-key -- and the
+        result is handed to the adapter's projection. Nothing validates
+        the merged dict. No adapter declares a config schema and no
+        validator runs against one, so a key an adapter does not
+        recognize, including a misspelling of one it does, is ignored
+        rather than refused: the projection runs with that parameter at
+        its default and reports nothing. What an adapter accepts is a
+        property of the adapter; the vault's ``adapter_defaults`` entry
+        is the nearest thing to a written record of it.
 
         ``pipeline_status`` terminal-state outcomes (CAS-ADR-021):
         The terminal status a caller ultimately observes on the document
@@ -893,6 +947,11 @@ class IngestionService:
                 value already in use on a doc_type with a ``unique``
                 constraint (CAS-ADR-031). ``force=True`` does
                 not override.
+            InvalidDocTypeError: ``request.metadata["doc_type"]`` names a
+                value the vault's ``document_types`` vocabulary does not
+                declare. Scoped to the caller-named value; the fallback,
+                a predecessor's inherited value, and a filename-inferred
+                value are each admitted.
             Tier3SchemaViolationError: ``request.tier3_metadata`` failed
                 validation against the resolved doc_type's
                 ``metadata_schema``, or the doc_type has no
@@ -938,6 +997,22 @@ class IngestionService:
                     predecessor.lifecycle_status,
                     self._transition_table.states_allowing("supersede"),
                 )
+
+        # The doc_type vocabulary gate reads only the caller's metadata and
+        # the vault configuration, so it belongs above the first
+        # irreversible act rather than below it. Left where it first
+        # landed -- after retention -- a misspelled doc_type copied the
+        # bytes into the import area and then refused, leaving a retained
+        # file with no row, which no audit walks.
+        self._validate_caller_doc_type(request)
+
+        # A preview stops here, before the source is read into the vault.
+        # Everything above is a validator that reads nothing and writes
+        # nothing; everything below retains the caller's bytes, which is
+        # the first irreversible act of an ingest and the one a preview is
+        # asked not to perform.
+        if request.dry_run:
+            return await self._preview_ingest(request, predecessor, caller_source)
 
         # Resolve the source through the vault-source store, not a raw local
         # Path.exists() gate (CAS-ADR-043). Under a non-filesystem binding the
@@ -1099,6 +1174,10 @@ class IngestionService:
         # calls: caller > filename parse > predecessor inheritance > "misc".
         # A None validator (doc_type has no metadata_schema declared) is a
         # hard 400 per the strict no-loose-mode decision.
+        #
+        # The vocabulary gate runs whether or not a tier3 payload came
+        # with the call: a misspelled doc_type carrying no typed metadata
+        # is exactly the case that used to commit.
         if final_tier3 is not None:
             resolved_dt = self._resolve_doc_type_for_tier3(
                 request=request, parsed=parsed, predecessor=predecessor
@@ -1430,6 +1509,119 @@ class IngestionService:
             )
 
         return IngestResult(document=doc, is_new=is_new)
+
+    async def _preview_ingest(
+        self,
+        request: IngestRequest,
+        predecessor: Document | None,
+        caller_source: str | None,
+    ) -> IngestPreview:
+        """Report what a real ingest would do, without reading the source in.
+
+        Reached only from ``ingest`` under ``dry_run``, after the adapter,
+        the ``expected_head_version`` guard and the predecessor's
+        transition-table check have already run and raised. What is left
+        to settle is everything that depends on the caller's bytes or on
+        the vault's document-type declarations, and none of that needs
+        the bytes to be retained first.
+
+        The source is located and hashed where it stands. It is not
+        retained, which is why no projection runs: projection reads
+        through the vault-source port, off the retained copy, so a
+        preview that wanted a projection would have to write one in
+        first. Two consequences follow and are reported rather than
+        hidden. The adapter's own ``tier3_metadata`` extraction cannot be
+        consulted, so a caller that supplied no payload gets
+        ``tier3_validated=False``. And a source already resident in the
+        store that carries no prior document record has no delivered
+        digest to inherit and none to compute, so its hash and duplicate
+        verdict come back null rather than guessed.
+        """
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+        from sage.vault_source_binding import hash_file
+
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        source_input = Path(request.source)
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        reported_source = caller_source or request.source
+
+        # Locate and hash in the same three-branch order the real path
+        # resolves in, minus every retain. Divergence here would make the
+        # preview answer for a source the real run would not have found.
+        source_path: Path | None = None
+        delivered_hash: str | None = None
+        if source_input.is_absolute():
+            if not source_input.exists():
+                raise SourceFileNotFoundError(reported_source)
+            source_path = source_input.resolve()
+            delivered_hash = hash_file(source_path)
+        else:
+            local_candidate = storage_root / request.source
+            if local_candidate.exists():
+                source_path = local_candidate.resolve()
+                delivered_hash = hash_file(source_path)
+            elif vault_source_store.source_exists(
+                self._config.vault.id, storage_root, request.source
+            ):
+                from sage.vault_source_binding import normalize_vault_relative
+
+                vault_relative = normalize_vault_relative(request.source)
+                # Provenance is inherited from the record that put the bytes
+                # there, exactly as the real path inherits it, and is absent
+                # for bytes that were never ingested. The real path falls back
+                # to the projected digest there; a preview has none, and says
+                # so rather than substituting a different identity.
+                by_path = await self._store.find_documents_by_source_paths(
+                    [vault_relative, request.source]
+                )
+                delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
+                # Named for the parse below even though no local file sits
+                # there. The parser reads the stem and never opens the
+                # path, and the real run parses on this branch too, so
+                # leaving it unset would resolve the doc_type differently
+                # in a preview than in the ingest it previews -- under a
+                # non-filesystem binding, which is exactly where a caller
+                # most wants to look before spending a byte leg.
+                source_path = storage_root / vault_relative
+            else:
+                raise SourceFileNotFoundError(reported_source)
+
+        parsed = (
+            self._parse_source_filename(source_path, request.source_type)
+            if request.needs_review and source_path is not None
+            else None
+        )
+
+        resolved_doc_type = self._resolve_doc_type_for_tier3(
+            request=request, parsed=parsed, predecessor=predecessor
+        )
+        if request.tier3_metadata is not None:
+            self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
+
+        provenance_hash = canonicalize_sha256(delivered_hash) if delivered_hash else None
+
+        duplicate_of: str | None = None
+        if provenance_hash is not None:
+            if predecessor is not None and predecessor.source_content_hash == provenance_hash:
+                raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
+            hash_matches = await self._store.find_documents_by_hashes([provenance_hash])
+            if hash_matches:
+                duplicate_of = next(iter(hash_matches.values()))
+
+        return IngestPreview(
+            dry_run=True,
+            # ``force`` is what makes a hash collision a re-ingest rather than
+            # a refusal, so the verdict follows it as the real path does.
+            would_create=duplicate_of is None or request.force,
+            resolved_doc_type=resolved_doc_type,
+            resolved_source_type=request.source_type,
+            source_content_hash=provenance_hash,
+            duplicate_of=duplicate_of,
+            predecessor_id=request.predecessor_id,
+            would_supersede=predecessor is not None,
+            tier3_validated=request.tier3_metadata is not None,
+            requirements=doc_type_requirements(self._config, resolved_doc_type),
+        )
 
     async def _run_background_pipeline(
         self,
@@ -2259,6 +2451,35 @@ class IngestionService:
             return predecessor.doc_type
         return "misc"
 
+    def _validate_caller_doc_type(self, request: IngestRequest) -> None:
+        """Refuse a caller-named doc_type the vault does not declare.
+
+        The same rule ``MetadataService`` applies to ``request.doc_type``
+        on the update path, and the same error. Until this ran at ingest
+        the two doors disagreed: a misspelled doc_type was refused on an
+        update and committed on an ingest, so the vocabulary held
+        everywhere except where values first enter.
+
+        Scoped to what the *caller* named, not to the resolved value, and
+        the other three rungs of the precedence chain are each excluded
+        for their own reason. The fallback is a literal SAGE substitutes
+        when nothing resolved, not a claim anyone made about the document,
+        and a vault need not declare it -- gating it would refuse every
+        ingest that names no doc_type at all on such a vault. A
+        predecessor's value is already in the vault, so refusing to
+        inherit it would strand a supersession behind a rule its own
+        chain predates. A filename-inferred value comes from the vault's
+        own ``code_to_doc_type`` map, so an undeclared one there is a
+        defect in the configuration rather than in the call, and belongs
+        to config load rather than to this path.
+        """
+        caller_doc_type = (request.metadata or {}).get("doc_type")
+        if not isinstance(caller_doc_type, str) or not caller_doc_type:
+            return
+        valid = self._config.valid_doc_type_values()
+        if caller_doc_type not in valid:
+            raise InvalidDocTypeError(caller_doc_type, valid)
+
     def _validate_tier3_payload(
         self,
         resolved_doc_type: str,
@@ -2272,8 +2493,15 @@ class IngestionService:
         carve-out in ``MetadataService._validate_tier3`` so the
         ingest-vs-update behavior stays symmetric for the
         empty-merged-against-no-schema configuration.
+
+        Both refusals carry the doc_type's whole declared requirement
+        set, so a caller can satisfy the refusal from the refusal. This
+        is not conditioned on ``dry_run``: a real-run failure leaves the
+        caller with the same question, and the answer costs a read of
+        configuration already in hand.
         """
         validator = self._config.tier3_validator(resolved_doc_type)
+        requirements = doc_type_requirements(self._config, resolved_doc_type).model_dump()
         if validator is None:
             if not tier3:
                 return
@@ -2285,6 +2513,7 @@ class IngestionService:
                     "declared in vault config"
                 ),
                 instance=tier3,
+                requirements=requirements,
             )
         try:
             validator.validate(tier3)
@@ -2294,6 +2523,7 @@ class IngestionService:
                 path=exc.json_path,
                 message=exc.message,
                 instance=tier3,
+                requirements=requirements,
             ) from exc
 
     @staticmethod

@@ -10,7 +10,8 @@ Coverage today: the scan chain (``ScanRequest``, ``ScanResponse``,
 ``ScanResultResponse``, ``ParsedMetadata``) and the ingest request body
 (``IngestRequest``, ``IngestFileItem``) are defined here. The SSE event
 payloads (``ProgressEvent``, ``SummaryEvent``, ``DocumentsCreated``,
-``EdgeWarning``, ``BatchIngestFileError``) and
+``EdgeWarning``, ``BatchIngestFileError``, and the ``IngestPreview`` /
+``DocTypeRequirements`` pair a dry-run summary carries) and
 the shared ``ErrorResponse`` envelope are re-exported from
 ``sage.models.schemas``: the bulk-ingest SSE shape is substrate-resident
 so the co-located and hosted profiles emit identical events, and /scan
@@ -25,10 +26,12 @@ from pydantic import BaseModel, Field
 
 from sage.models.schemas import (
     BatchIngestFileError,
+    DocTypeRequirements,
     DocumentDateStr,
     DocumentsCreated,
     EdgeWarning,
     ErrorResponse,
+    IngestPreview,
     ProgressEvent,
     Sha256Str,
     SummaryEvent,
@@ -37,9 +40,11 @@ from sage.models.schemas import (
 
 __all__ = [
     "BatchIngestFileError",
+    "DocTypeRequirements",
     "DocumentsCreated",
     "EdgeWarning",
     "ErrorResponse",
+    "IngestPreview",
     "IngestFileItem",
     "IngestRequest",
     "LoginChallengeResponse",
@@ -173,6 +178,19 @@ class IngestRequest(BaseModel):
             "supersedes) and filename_code_match (Tier 2 covers) edge "
             "inference. When false, edges are not inferred; ingestion is "
             "otherwise unchanged."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "When true, evaluate every file and report one preview or one "
+            "refusal per entry without persisting anything. No source is "
+            "retained, no projection, indexing or abstraction runs, no "
+            "record is written, and edge inference does not run whatever "
+            "`infer_edges` says. Items are evaluated against committed "
+            "state as it stood at batch start, so a sequential dependency "
+            "within one batch is not reflected: two entries carrying "
+            "identical bytes each report no duplicate."
         ),
     )
 

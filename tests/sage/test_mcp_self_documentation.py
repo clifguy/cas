@@ -1122,3 +1122,190 @@ def test_recipe_minting_roster_is_exhaustive_over_the_live_surface():
         "recipe. Drop them from the roster, or restore the disclosure they "
         "lost."
     )
+
+
+# ---------------------------------------------------------------------------
+# Ordinary-surface self-sufficiency — no ordinary tool may require the
+# maintenance surface to complete an ordinary-path call
+# ---------------------------------------------------------------------------
+#
+# Per CAS-ADR-034 the surface split is cognitive-load partitioning: a caller
+# doing ordinary work should not have to carry the maintenance surface's
+# vocabulary in context. A docstring that sends such a caller to
+# ``get_vault_config`` for something it needs in order to finish the call it
+# is already making breaches that, whatever the pointer's wording.
+#
+# The relation is *block-local*, and that is the whole load-bearing part. A
+# whole-docstring check is vacuous here: every mutation tool names
+# ``dry_run`` in its ``Args:`` block already, so "mentions the config
+# somewhere and ``dry_run`` somewhere" is satisfied by every tool this rule
+# is about, including one whose pointer was never repointed. Verified by
+# mutation rather than reasoned -- reverting the ``update_metadata``
+# repointing passed the whole-docstring form. So a pointer and its route
+# must sit in the same block, which is the relation a reader actually needs.
+
+
+def _doc_blocks(doc: str) -> list[str]:
+    """Split a tool docstring into the units a reader takes in at once.
+
+    Three boundaries, because a docstring mixes three shapes and lumping
+    them would restore exactly the over-breadth this module is guarding
+    against. Blank lines separate narrative paragraphs. A line opening
+    with ``- `` starts an error-mode entry, so one entry's remedy cannot
+    stand in for another's. A line opening an ``Args:`` entry
+    (``name: ...`` at the argument indent) starts that argument's own
+    block, for the same reason.
+    """
+    blocks: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        if current:
+            blocks.append("\n".join(current))
+            current.clear()
+
+    for line in doc.splitlines():
+        stripped = line.strip()
+        starts_entry = stripped.startswith("- ") or (
+            re.match(r"^ {4,}[a-z_][a-z0-9_]*:", line) is not None
+        )
+        if not stripped or starts_entry:
+            flush()
+        if stripped:
+            current.append(line)
+    flush()
+    return blocks
+
+
+#: Blocks that name the maintenance surface and are exempt from carrying an
+#: ordinary-path route, keyed by ``(tool_name, distinctive substring of the
+#: block)``. An exemption is for a question no ordinary-path call can
+#: answer, never for one that merely has not been repointed yet.
+MAINTENANCE_POINTER_EXEMPTIONS: dict[tuple[str, str], str] = {
+    ("ingest_document", "metadata_extraction.filename_extraction"): (
+        "Which fields filename inference fills is the vault's extraction "
+        "pattern, which no ingest verdict reports. A caller asking it is "
+        "asking about the configuration itself, not about the call it is "
+        "composing."
+    ),
+    ("ingest_document", "adapter_defaults"): (
+        "The ``config`` argument's per-adapter shape lives under "
+        "``adapter_defaults``. A preview does not project, so no verdict "
+        "it returns could disclose what an adapter accepts."
+    ),
+    ("get_filename_metadata", "filename_extraction.segment_fields"): (
+        "The tool's whole job is to run the vault's extraction pattern, so "
+        "there is no verdict a preview could report instead."
+    ),
+    ("bulk_ingest_document", "metadata_extraction.filename_extraction"): (
+        "The same extraction-pattern pointer its single-item sibling "
+        "carries, for the same reason and with the same absence of an "
+        "ordinary-path answer."
+    ),
+}
+
+
+def _ordinary_surface_tools() -> dict[str, Any]:
+    """Every registered tool the surface-assignment table places on ``sage``."""
+    from sage._tool_naming import SERVER_ASSIGNMENT
+    from sage.mcp_server import _app_tools, _sage_tools
+
+    registry = {**_sage_tools, **_app_tools}
+    return {name: fn for name, fn in registry.items() if SERVER_ASSIGNMENT.get(name) == "sage"}
+
+
+def _pointer_blocks() -> list[tuple[str, str]]:
+    """Every ``(tool_name, block)`` on the ordinary surface naming the config tool."""
+    found: list[tuple[str, str]] = []
+    for name, fn in _ordinary_surface_tools().items():
+        for block in _doc_blocks(_docstring(fn)):
+            if "get_vault_config" in block:
+                found.append((name, block))
+    return found
+
+
+def _exemption_for(tool_name: str, block: str) -> tuple[str, str] | None:
+    for key in MAINTENANCE_POINTER_EXEMPTIONS:
+        if key[0] == tool_name and key[1] in block:
+            return key
+    return None
+
+
+def test_no_ordinary_tool_requires_the_maintenance_surface():
+    """A pointer at the maintenance surface must carry a route beside it.
+
+    A tool may still name the config as the exhaustive table -- that is
+    the *repointed, not deleted* rule -- so long as the same block offers
+    the ordinary-path answer. Each genuine exception is named in
+    ``MAINTENANCE_POINTER_EXEMPTIONS`` with its reason.
+    """
+    offenders: list[str] = []
+    for name, block in _pointer_blocks():
+        if _exemption_for(name, block) is not None:
+            continue
+        if "dry_run" not in block:
+            offenders.append(f"{name}: {' '.join(block.split())[:90]}...")
+
+    assert not offenders, (
+        "These blocks point a caller at the maintenance surface with no "
+        "ordinary-path route in the same breath:\n  " + "\n  ".join(offenders) + "\n"
+        "Repoint the pointer at ``dry_run``, or add an entry to "
+        "MAINTENANCE_POINTER_EXEMPTIONS stating why no verdict answers it."
+    )
+
+
+def test_the_self_sufficiency_rule_has_something_to_bite_on():
+    """Presence partner to the test above.
+
+    Deleting every ``get_vault_config`` mention from the ordinary surface
+    would satisfy the rule vacuously while leaving callers worse off: the
+    requirement is *repointed, not deleted*. This asserts the repointing
+    happened -- at least one non-exempt block still names the config AND
+    offers the dry-run route beside it.
+    """
+    repointed = [
+        name
+        for name, block in _pointer_blocks()
+        if _exemption_for(name, block) is None and "dry_run" in block
+    ]
+    assert repointed, (
+        "No ordinary-surface block carries both a vault-config pointer and "
+        "a dry-run route. Either the pointers were deleted rather than "
+        "repointed, or every one of them was exempted."
+    )
+
+
+def test_exemptions_name_only_blocks_that_still_exist():
+    """An exemption for a block that no longer points at the maintenance
+    surface is dead weight that would mask a later regression on that
+    tool. Sweeping it out is the point."""
+    live = {_exemption_for(name, block) for name, block in _pointer_blocks()}
+    stale = sorted(set(MAINTENANCE_POINTER_EXEMPTIONS) - live)
+    assert not stale, f"These exemptions no longer match any block; remove them: {stale}"
+
+
+@pytest.mark.parametrize("tool_name", ["ingest_document", "bulk_ingest_document"])
+def test_ingest_tools_expose_dry_run(tool_name):
+    """Both ingest wrappers must expose ``dry_run: bool = False``.
+
+    Structural, in the shape the sibling mutation wrappers are pinned in:
+    parameter present, annotation identity-equal to ``bool``, default
+    ``False``. Replacing the annotation with ``str`` or moving the default
+    to ``True`` fails.
+    """
+    fn = _ordinary_surface_tools()[tool_name]
+    sig = inspect.signature(fn)
+    assert "dry_run" in sig.parameters, (
+        f"{tool_name} is missing the dry_run parameter; ingest is the one "
+        "ordinary write whose required inputs are vault-specific, so it is "
+        "the tool that most needs a preview."
+    )
+    param = sig.parameters["dry_run"]
+    assert param.annotation is bool, (
+        f"{tool_name}.dry_run annotation is {param.annotation!r}; expected "
+        "``bool``. Every other mutation MCP wrapper uses ``bool = False``."
+    )
+    assert param.default is False, (
+        f"{tool_name}.dry_run default is {param.default!r}; expected "
+        "``False`` to preserve real-run as the default behavior."
+    )

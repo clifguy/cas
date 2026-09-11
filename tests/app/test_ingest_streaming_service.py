@@ -35,6 +35,8 @@ from app.backend.models import (
     ProgressEvent,
     SummaryEvent,
 )
+from sage.models.enums import SourceType
+from sage.models.schemas import DocTypeRequirements, IngestPreview
 from sage.services.batch_ingest import IngestSummary
 
 
@@ -329,3 +331,116 @@ class TestProgressEventShape:
         assert ProgressEvent(file_index=0, **fields).file_index == 0
         with pytest.raises(ValidationError):
             ProgressEvent(file_index=-1, **fields)
+
+
+class TestDryRunReachesThePipeline:
+    """The flag the request body declares must reach the batch service.
+
+    `IngestRequest.dry_run` promises that nothing is persisted. A path
+    that accepts the field and drops it does the opposite of what it
+    declares, which is the worst shape a no-op can take -- the caller
+    reads a summary and believes a preview happened. These tests hold
+    the two links in that chain: the streaming service forwarding the
+    flag, and the summary mapping carrying the result back.
+    """
+
+    def test_stream_forwards_dry_run_to_the_sse_generator(self, monkeypatch) -> None:
+        """Anti-coincidental-pass: the paired real-run case below asserts
+        the same argument is False when the body does not set it, so an
+        implementation hard-coding either value fails one of the pair.
+        Asserting only that the parameter is *present* would pass against
+        a hard-coded True, which persists nothing but also previews a
+        batch the caller asked to land.
+        """
+        seen: dict[str, object] = {}
+
+        def _capture(descriptors, vault_services, **kwargs):
+            seen.update(kwargs)
+            return iter(())
+
+        monkeypatch.setattr(
+            "app.backend.ingest_streaming_service.batch_ingest_sse_stream", _capture
+        )
+        service = IngestStreamingService(vault_services=_stub_services())
+        service.stream(
+            IngestRequest(
+                vault_id="example_vault",
+                files=[IngestFileItem(file_path="/tmp/probe.md", source_type="markdown")],
+                dry_run=True,
+            )
+        )
+        assert seen.get("dry_run") is True
+
+    def test_stream_forwards_a_real_run_as_such(self, monkeypatch) -> None:
+        """Negative control for the test above."""
+        seen: dict[str, object] = {}
+
+        def _capture(descriptors, vault_services, **kwargs):
+            seen.update(kwargs)
+            return iter(())
+
+        monkeypatch.setattr(
+            "app.backend.ingest_streaming_service.batch_ingest_sse_stream", _capture
+        )
+        service = IngestStreamingService(vault_services=_stub_services())
+        service.stream(
+            IngestRequest(
+                vault_id="example_vault",
+                files=[IngestFileItem(file_path="/tmp/probe.md", source_type="markdown")],
+            )
+        )
+        assert seen.get("dry_run") is False
+
+    def test_summary_event_carries_the_dry_run_echo_and_previews(self) -> None:
+        """The wire event must report what the batch actually did.
+
+        Both fields are declared on `SummaryEvent` and in both specs as
+        present on a dry run. A mapping that omits them leaves a producer
+        declared with no producer: the caller sees `dry_run: false` on a
+        run that persisted nothing.
+        """
+        preview = IngestPreview(
+            dry_run=True,
+            would_create=True,
+            resolved_doc_type="misc",
+            resolved_source_type=SourceType.MARKDOWN,
+            source_content_hash=None,
+            duplicate_of=None,
+            predecessor_id=None,
+            would_supersede=False,
+            tier3_validated=False,
+            requirements=DocTypeRequirements(
+                doc_type="misc",
+                is_declared=True,
+                has_metadata_schema=False,
+                declared_tier3_fields=[],
+                required_tier3_fields=[],
+                unique_tier3_fields=[],
+                permitted_source_types=None,
+            ),
+        )
+        event = _summary_event_from(IngestSummary(dry_run=True, previews=[preview]))
+        assert event.dry_run is True
+        assert event.previews is not None
+        assert [p.resolved_doc_type for p in event.previews] == ["misc"]
+
+    def test_summary_event_reports_a_real_run_with_no_previews(self) -> None:
+        """Negative control. A mapping that hard-coded either field passes
+        one of this pair and fails the other."""
+        event = _summary_event_from(IngestSummary())
+        assert event.dry_run is False
+        assert event.previews is None
+
+    def test_summary_event_carries_an_empty_previews_list_on_a_dry_run(self) -> None:
+        """A dry run in which every file was refused maps to an empty list,
+        not to absent.
+
+        The pair above uses a populated list, so a mapping written as
+        ``summary.previews or None`` passes both halves of it while
+        dropping the field on exactly the run this asserts. The wire
+        contract says the field is present on a dry run, and the errors
+        list is what accounts for such a batch.
+        """
+        event = _summary_event_from(IngestSummary(dry_run=True, previews=[]))
+        assert event.dry_run is True
+        assert event.previews == []

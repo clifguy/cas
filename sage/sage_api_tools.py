@@ -49,6 +49,7 @@ from sage.models.schemas import (
     EdgeIdStr,
     FunctionIdStr,
     HashCheckRequest,
+    IngestPreview,
     IngestRequest,
     RetrievalFilters,
     Sha256Str,
@@ -267,6 +268,7 @@ def register_sage_tools(
         tier3_metadata: dict | None = None,
         document_id: str | None = None,
         transfer_token: str | None = None,
+        dry_run: bool = False,
         # Tripwires, not functional arguments. These are the ``metadata``
         # keys; they are published here only so a wrong-level spelling
         # reaches the guard instead of being stripped client-side. See
@@ -330,13 +332,39 @@ def register_sage_tools(
         the predecessor's non-None value silently. Pass the field
         explicitly to override.
 
-        Tier3 uniqueness: a doc_type declaring a ``unique`` constraint in
-        its ``metadata_schema`` (see
-        ``document_types.doc_types[].metadata_schema`` in
-        ``get_vault_config``) enforces per-vault uniqueness on the
-        named tier3 field at ingest time, checked in the same transaction
-        as the row insert so the existing document is never disturbed. In
-        the ``cas`` vault, ``ticket.ticket_id`` is the live example.
+        Tier3 uniqueness: a doc_type declaring a ``unique`` constraint on
+        a tier3 field enforces per-vault uniqueness on it at ingest time,
+        checked in the same transaction as the row insert so the existing
+        document is never disturbed. Call with ``dry_run=true`` to read
+        which fields a doc_type declares unique, under
+        ``requirements.unique_tier3_fields``. In the ``cas`` vault,
+        ``ticket.ticket_id`` is the live example.
+
+        Dry run: ``dry_run=true`` reports what this call would do and
+        persists nothing, returning an ``IngestPreview`` rather than a
+        document. The source is located and hashed where it stands but
+        never read into the vault, so no projection, indexing or
+        abstraction runs and the import area is untouched. The preview
+        names the resolved doc_type, the content hash, the duplicate
+        verdict naming the document already holding those bytes, whether
+        the ingest would supersede, and the doc_type's declared
+        requirement set. Every validator that runs raises the error a
+        real run would, with one deliberate exception: a duplicate comes
+        back as ``would_create: false`` rather than as
+        ``duplicate_content``, because reporting it is what a preview is
+        for. Because nothing is projected, an adapter-extracted
+        ``tier3_metadata`` cannot be evaluated -- ``tier3_validated`` is
+        false when the caller supplied none, and a real run may still
+        refuse. Three further refusals sit below the branch point and
+        are neither checked nor reported, each turning on state the
+        preview does not reach: ``tier3_unique_constraint_violation``,
+        which the insert transaction raises and which cannot be settled
+        outside it -- a preview reporting no collision could still
+        collide before the real call arrives;
+        ``force_reingest_path_mismatch``, which turns on the colliding
+        record's own source path; and ``stale_chain_head`` on an
+        ``expected_head_version`` that no longer matches. A clean
+        preview is not a promise that the real run commits.
 
         Error modes:
         - ``misplaced_metadata`` (400): a recognized ``metadata`` key was
@@ -398,9 +426,12 @@ def register_sage_tools(
           does permit; a table permitting ``supersede`` from no state
           reports an empty ``allowed_states`` and a ``required_state`` of
           ``(none)``. There is no one remedy, because there is no one
-          table: read ``allowed_states``, or the vault's
-          ``lifecycle.transitions`` via ``get_vault_config``, for the
-          states this vault admits. A vault may permit ``supersede`` from
+          table: read ``allowed_states``, which the refusal already
+          carries and which a ``dry_run=true`` call raises without
+          writing anything, for the states this vault admits. The vault's
+          whole ``lifecycle.transitions`` table, if you want it rather
+          than this one answer, is on ``get_vault_config``. A vault may
+          permit ``supersede`` from
           ``completed`` or another non-``active`` state, in which case
           the predecessor needs no walk-back at all. Where one is needed,
           move the predecessor to a permitted state directly from where
@@ -419,6 +450,12 @@ def register_sage_tools(
         - ``expected_head_version_requires_predecessor`` (400):
           ``expected_head_version`` supplied without ``predecessor_id`` (the
           token is bound to the predecessor's chain head).
+        - ``invalid_doc_type`` (400): ``metadata.doc_type`` names a value
+          the vault does not declare. Detail carries ``doc_type`` and
+          ``valid_types``, the whole vocabulary. Scoped to what you named:
+          omitting the field, inheriting a predecessor's value, and a
+          filename-inferred value are all admitted, so this fires only on
+          a value you supplied.
         - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set but
           the resolved doc_type has no ``metadata_schema``, or the payload
           failed validation. Detail carries ``doc_type``, ``path`` (JSON
@@ -508,9 +545,13 @@ def register_sage_tools(
                 list or a comma-separated string (whitespace trimmed, empty
                 fragments dropped).
             tier3_metadata: Per-doc_type typed payload, validated against the
-                doc_type's ``metadata_schema`` (see ``get_vault_config``).
-                When the doc_type declares no schema and this is non-null,
-                ingest fails with ``tier3_schema_violation``. Stored verbatim
+                doc_type's declared ``metadata_schema``. To learn what a
+                doc_type requires before composing one, call with
+                ``dry_run=true``: the preview reports the declared and
+                required field names, the unique keys and the permitted
+                source types, and a refusal carries the same set. When the
+                doc_type declares no schema and this is non-null, ingest
+                fails with ``tier3_schema_violation``. Stored verbatim
                 once validated; queryable via ``search`` filters as
                 ``{"tier3_metadata": {"<field>": <value>}}`` (exact equality;
                 null matches absent-or-null fields).
@@ -528,6 +569,11 @@ def register_sage_tools(
                 of ``transfer_token`` or ``source``; all other arguments are
                 passed again on this completion call exactly as on the
                 originating call.
+            dry_run: Report what this call would do and persist nothing.
+                See the *Dry run* paragraph above for what the preview
+                carries and what it cannot evaluate. A ``transfer_token``
+                is read but not spent on a dry run, so the same token
+                completes the real ingest afterwards.
         """
         try:
             # First, before any validation or vault work: a misplaced
@@ -579,6 +625,7 @@ def register_sage_tools(
                     metadata=metadata,
                     tier3_metadata=tier3_metadata,
                     document_id=document_id,
+                    dry_run=dry_run,
                 )
 
             # A document arrives by exactly one of two delivery shapes: a
@@ -591,9 +638,15 @@ def register_sage_tools(
             # than the upload. The tool signature is identical across profiles;
             # only where the bytes physically move differs, below the tool
             # surface.
+            #
+            # A preview reads the staged bytes without spending the token, so
+            # the real ingest it is a preview *of* still has them. Spending it
+            # here would charge the caller a second byte leg for asking what
+            # would happen.
             with caller_local_delivery(
                 vault_id,
                 [DeliveryDeclaration(source=source, transfer_token=transfer_token)],
+                consume=not dry_run,
             ) as plan:
                 if plan.recipe is not None:
                     return serialize(plan.recipe)
@@ -610,6 +663,8 @@ def register_sage_tools(
                     wait_for_pipeline=False,
                     caller_source=delivery.declared_source,
                 )
+                if isinstance(result, IngestPreview):
+                    return serialize(result)
                 return serialize(result.document)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -787,10 +842,16 @@ def register_sage_tools(
         per-document lock and a per-item database transaction.
 
         The ``action`` vocabulary is vault-config-defined, not a fixed
-        SAGE-wide set. Read ``lifecycle.transitions`` in the vault config
-        (via ``get_vault_config``) for the authoritative
-        (from_state, action, to_state, creates_edge) tuples. The ``cas``
-        vault uses ``ingest``, ``supersede``, ``complete``, ``archive``,
+        SAGE-wide set. Call with ``dry_run=true`` to learn it without
+        writing: an action this vault has never heard of comes back as
+        ``invalid_action`` carrying ``known_actions``, every action a
+        caller may invoke, and a known action illegal from the document's
+        current state comes back as ``invalid_lifecycle_transition``
+        carrying ``valid_actions``, the ones legal from where it is. For
+        the full (from_state, action, to_state, creates_edge) table
+        rather than either answer, read ``lifecycle.transitions`` in the
+        vault config via ``get_vault_config``. The ``cas`` vault uses
+        ``ingest``, ``supersede``, ``complete``, ``archive``,
         ``reactivate``.
 
         **``supersede`` is the canonical atomic form for replacing one
@@ -1062,9 +1123,14 @@ def register_sage_tools(
 
         Each successful per-item patch sets ``metadata_confirmed=true`` on
         the target (it leaves the metadata-review queue if it was there).
-        The ``doc_type`` value must be one declared under
-        ``document_types.doc_types`` in the vault config; query
-        ``get_vault_config`` for the authoritative list.
+        The ``doc_type`` value must be one this vault declares. Call with
+        ``dry_run=true`` to learn which without writing: an undeclared
+        value comes back as ``invalid_doc_type`` carrying ``valid_types``,
+        the whole vocabulary, and a payload that fails a declared
+        doc_type's typed-metadata schema comes back as
+        ``tier3_schema_violation`` carrying ``requirements``, that
+        doc_type's declared and required field names, unique keys and
+        permitted source types.
 
         Empty-patch confirmation-flip: an item carrying only
         ``document_id`` (no field-patch keys) is a **pure-confirmation

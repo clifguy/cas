@@ -1730,6 +1730,19 @@ class TransitionTable:
         """
         return action in self._all_actions
 
+    def known_actions(self) -> list[str]:
+        """Every caller-invocable action the table declares, sorted.
+
+        The whole roster, as distinct from `get_valid_actions`, which
+        narrows it to one state. A refusal of an action the table has
+        never heard of reports this, because no state's subset would
+        contain the answer. The ingestion transition is excluded on the
+        same grounds it is excluded from the table itself: it is not
+        user-invocable, so offering it would name an action that refuses
+        from every state.
+        """
+        return sorted(self._all_actions)
+
     def ingest_landing_state(self) -> str:
         """The state a newly ingested document lands in.
 

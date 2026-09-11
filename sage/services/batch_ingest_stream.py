@@ -103,6 +103,12 @@ def _summary_event_from(summary: IngestSummary) -> SummaryEvent:
         error_count=summary.error_count,
         errors=summary.errors,
         edge_warnings=summary.edge_warnings if summary.edge_warnings else None,
+        dry_run=summary.dry_run,
+        # Carried rather than flattened the way edge_warnings is: an
+        # empty list on a dry run means every file was refused, which the
+        # errors list accounts for, and is not the same as the field being
+        # absent because no dry run happened.
+        previews=summary.previews if summary.dry_run else None,
     )
 
 
@@ -111,6 +117,7 @@ async def batch_ingest_sse_stream(
     vault_services: object,
     infer_edges: bool = True,
     needs_review: bool = True,
+    dry_run: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Run a batch ingest and yield its progress/summary events as SSE lines.
 
@@ -153,7 +160,7 @@ async def batch_ingest_sse_stream(
         index: int,
         total_files: int,
         filename: str,
-        document_id: str,
+        document_id: str | None,
     ) -> None:
         await queue.put(
             ProgressEvent(
@@ -194,6 +201,7 @@ async def batch_ingest_sse_stream(
                 vault_services=vault_services,
                 infer_edges=infer_edges,
                 needs_review=needs_review,
+                dry_run=dry_run,
                 on_file_start=on_file_start,
                 on_file_done=on_file_done,
                 on_file_error=on_file_error,

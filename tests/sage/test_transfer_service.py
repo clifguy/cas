@@ -16,6 +16,7 @@ exercise the store through the composite form exactly as the endpoints do.
 import contextlib
 import hashlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -593,3 +594,67 @@ class TestMultiLegRecipeWindow:
 
         (item,) = recipe.uploads
         assert recipe.expires_at == store._entries[item.transfer_id].expires_at
+
+
+class TestPreviewDoesNotSpendTheToken:
+    """``consume=False`` reads a redeemed entry's bytes and hands it back.
+
+    The gate already returns every redeemed token on a *failing* block, so a
+    caller repeats the byte leg only when the bytes themselves were the
+    problem. A preview is the other case that reads without doing the work:
+    it succeeds, and the real call it previews is still to come. Spending
+    the token there would charge a second byte leg for asking a question.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_store(self):
+        reset_transfer_store()
+        yield
+        reset_transfer_store()
+
+    def test_preview_leaves_the_token_redeemable(self, tmp_path, monkeypatch):
+        """The same token redeems again, against the same staged bytes."""
+        store = TransferStore(now=_Clock(), staging_root=tmp_path / "staging")
+        monkeypatch.setattr(_transfer, "_transfer_store", store)
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered once")
+
+        with _profile("local"):
+            with caller_local_delivery(
+                _VAULT,
+                [DeliveryDeclaration(transfer_token=minted.token)],
+                consume=False,
+            ) as plan:
+                (resolved,) = plan.resolved
+                assert Path(resolved.path).read_bytes() == b"delivered once"
+
+            # The bytes are still there and the token still answers for them.
+            with caller_local_delivery(
+                _VAULT,
+                [DeliveryDeclaration(transfer_token=minted.token)],
+            ) as plan:
+                (again,) = plan.resolved
+                assert Path(again.path).read_bytes() == b"delivered once"
+
+    def test_a_real_run_still_spends_the_token(self, tmp_path, monkeypatch):
+        """Negative control. A fix that simply never consumed would pass the
+        test above and fail here, so the pair pins ``consume`` as a switch
+        rather than a removal."""
+        store = TransferStore(now=_Clock(), staging_root=tmp_path / "staging")
+        monkeypatch.setattr(_transfer, "_transfer_store", store)
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered once")
+
+        with _profile("local"):
+            with caller_local_delivery(
+                _VAULT,
+                [DeliveryDeclaration(transfer_token=minted.token)],
+            ) as plan:
+                assert plan.resolved
+
+            with pytest.raises(TransferTokenInvalidError):
+                with caller_local_delivery(
+                    _VAULT,
+                    [DeliveryDeclaration(transfer_token=minted.token)],
+                ):
+                    pass

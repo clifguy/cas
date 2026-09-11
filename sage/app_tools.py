@@ -136,6 +136,7 @@ def register_app_tools(
         vault_id: str,
         files: list[dict],
         infer_edges: bool = True,
+        dry_run: bool = False,
     ) -> dict:
         """Ingest multiple files with optional edge inference. Returns a
         summary when complete.
@@ -304,6 +305,22 @@ def register_app_tools(
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle
                 transitions.
+            dry_run: Report what each file would do and persist nothing.
+                No source is read into the vault, no projection, indexing
+                or abstraction runs, no record is written, and edge
+                inference does not run whatever ``infer_edges`` says. The
+                summary comes back with every count at zero, a
+                ``previews`` list carrying one entry per file that would
+                succeed, and ``errors`` carrying one entry per file that
+                would be refused -- together accounting for the batch.
+                Each preview names the resolved doc_type, the content
+                hash, the duplicate verdict, and the doc_type's declared
+                requirement set, so a batch can be checked against a
+                vault's typed-metadata rules before any of it lands.
+                Files are evaluated against committed state as it stood
+                at batch start, so two entries carrying identical bytes
+                each report no duplicate where a real run would refuse
+                the second. A ``transfer_token`` is read but not spent.
         """
         try:
             from sage.services.batch_ingest import (
@@ -343,6 +360,9 @@ def register_app_tools(
                     )
                     for f in files
                 ],
+                # A preview reads the staged bytes without spending the
+                # tokens, so the real batch it previews still has them.
+                consume=not dry_run,
             ) as plan:
                 if plan.recipe is not None:
                     return serialize(plan.recipe)
@@ -374,6 +394,7 @@ def register_app_tools(
                     files=descriptors,
                     vault_services=v,
                     infer_edges=infer_edges,
+                    dry_run=dry_run,
                 )
                 return result.to_dict()
         except (SAGEError, ValueError) as e:
