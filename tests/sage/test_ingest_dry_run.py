@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from sage.api.errors import (
+    DuplicateContentError,
     IdenticalContentSupersedeError,
     InvalidActionError,
     InvalidDocTypeError,
@@ -201,6 +202,51 @@ def dry_ingestion_service(
         config=dry_config,
         source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
         lifecycle_service=dry_lifecycle_service,
+    )
+
+
+@pytest.fixture
+def sealed_config(tmp_vault_dir):
+    """`dry_config` plus a terminal state no supersession lands in.
+
+    Scoped to the one test that needs it rather than added to `dry_config`,
+    whose action vocabulary another test pins as an exact list -- widening the
+    shared vault to serve this one would put a state that test has no interest
+    in inside its assertion.
+
+    Why the state has to be both terminal and supersession-surviving: on the
+    base table `archived` is at once the only terminal state and the only
+    supersede landing, so `supersession_surviving_states()` and the complement
+    of `terminal_states()` compute to the same set. A caller reading the second
+    when the contract names the first is invisible to any assertion made
+    against a base vault. `sealed` is in the first and not in the second.
+    """
+    raw = _config_dict(tmp_vault_dir)
+    raw["lifecycle"]["states"].append({"value": "sealed", "label": "Sealed", "is_terminal": True})
+    raw["lifecycle"]["transitions"].append(
+        {"from_state": "active", "action": "seal", "to_state": "sealed"}
+    )
+    return VaultConfig.model_validate(raw)
+
+
+@pytest.fixture
+def sealed_ingestion_service(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    sealed_config,
+):
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=sealed_config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=LifecycleService(graph_store, lock_manager, sealed_config),
     )
 
 
@@ -391,6 +437,101 @@ async def test_dry_run_reports_a_duplicate_for_the_same_bytes_at_a_different_pat
 
     assert preview.duplicate_of == held.document.id
     assert preview.would_create is False
+
+
+async def test_dry_run_duplicate_verdict_names_the_same_document_as_the_refusal(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """Preview and real run name the same document, and it is the survivor.
+
+    Two claims, and neither alone is enough. That ``duplicate_of`` is
+    non-null holds under every rule, including the arbitrary one this
+    replaces; that preview and refusal agree holds trivially if both are
+    arbitrary in the same direction on the same call. Pinning the id to the
+    surviving document is what makes the pair mean something.
+
+    The retired sibling is seeded at the store level -- the service refuses a
+    byte-identical supersession outright -- and its id is pinned to
+    ``00000000_`` so it sorts below any service-generated id. Given a higher
+    one, the survivor would win on the tie-break alone.
+    """
+    source = _write(tmp_vault_dir, "verdict_survivor.md", "# Verdict\n\nShared bytes.")
+    request = IngestRequest(
+        source=str(source), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+    )
+    surviving = (await dry_ingestion_service.ingest(request)).document
+
+    retired = surviving.model_copy(
+        update={
+            "id": "00000000_retired_verdict_sibling",
+            "source_path": "verdict_retired_sibling.md",
+            "lifecycle_status": "archived",
+        }
+    )
+    await graph_store.insert_document(retired)
+
+    preview = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            dry_run=True,
+        )
+    )
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await dry_ingestion_service.ingest(request)
+
+    assert preview.duplicate_of == surviving.id
+    assert preview.duplicate_of == exc_info.value.detail["existing_document_id"]
+
+
+async def test_dry_run_states_the_vaults_surviving_states_to_the_hash_lookup(
+    tmp_vault_dir, graph_store, sealed_config, sealed_ingestion_service, monkeypatch
+):
+    """The preview asks under the vault's rule, not a preference of its own.
+
+    An argument assertion, because the preview's verdict is identical under
+    every rule on a vault holding one document per hash -- the shape of every
+    other fixture in this section. What it guards is the preview drifting
+    from the refusal: two call sites, one contract, and only the argument
+    shows they still agree before a colliding vault makes them disagree
+    visibly.
+
+    The vault declares a `sealed` state for this test's benefit, and the two
+    guards below say why. Without a state outside `{active, completed}` a
+    preview hard-coding that literal passes; without a state that is terminal
+    yet survives supersession, a preview complementing `terminal_states()`
+    passes. Both are rules the port's contract forbids and neither is visible
+    against a base lifecycle.
+    """
+    lifecycle = sealed_config.lifecycle
+    expected = lifecycle.supersession_surviving_states()
+    declared = frozenset(state.value for state in lifecycle.states)
+    assert "sealed" in expected, "vault no longer widens the surviving set"
+    assert expected != declared - lifecycle.terminal_states(), (
+        "vault no longer separates the surviving set from the non-terminal set"
+    )
+    seen: list[frozenset[str]] = []
+    real = graph_store.find_documents_by_hashes
+
+    async def recording(hashes, *, prefer_lifecycle_statuses):
+        seen.append(prefer_lifecycle_statuses)
+        return await real(hashes, prefer_lifecycle_statuses=prefer_lifecycle_statuses)
+
+    source = _write(tmp_vault_dir, "preview_preference.md", "# Preview\n\nPreference.")
+    monkeypatch.setattr(graph_store, "find_documents_by_hashes", recording)
+
+    await sealed_ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            dry_run=True,
+        )
+    )
+
+    assert seen, "the preview consulted no hash lookup at all"
+    assert all(pref == expected for pref in seen), seen
 
 
 async def test_dry_run_reports_the_delivered_content_hash(tmp_vault_dir, dry_ingestion_service):

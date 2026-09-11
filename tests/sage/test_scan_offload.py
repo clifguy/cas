@@ -44,10 +44,12 @@ class _StubGraphStore:
         self._hash_matches: set[str] = set(hash_matches or ())
         self._path_matches: dict[str, str] = dict(path_matches or {})
         self.hash_calls: list[list[str]] = []
+        self.hash_preferences: list[frozenset[str]] = []
         self.path_calls: list[list[str]] = []
 
-    async def find_documents_by_hashes(self, hashes):
+    async def find_documents_by_hashes(self, hashes, *, prefer_lifecycle_statuses):
         self.hash_calls.append(list(hashes))
+        self.hash_preferences.append(prefer_lifecycle_statuses)
         return {h: f"doc_for_{h}" for h in hashes if h in self._hash_matches}
 
     async def find_documents_by_source_paths(self, source_paths):
@@ -383,6 +385,53 @@ async def test_scan_classifies_new_modified_unchanged_and_no_adapter(minimal_con
         "new.md": "new",
         "thing.xyz": "no_adapter",
     }
+
+
+async def test_scan_states_the_vaults_surviving_states_to_the_hash_lookup(extended_config):
+    """The scan asks under the vault's rule even though it reads for presence.
+
+    An argument assertion, and here it is the only instrument there is: the
+    scan discards the id and keys its verdict on membership alone, so every
+    verdict is identical under every rule, and no verdict assertion could
+    separate them. Passing an empty preference would be the scan claiming to
+    have decided there is no preference -- a decision that is the vault's, and
+    one that would put the scan's answer at odds with ingest's the moment it
+    reported which document matched.
+
+    The *extended* config, not the minimal one, and that is what makes this
+    discriminating against two further rivals. The base lifecycle's surviving
+    set is exactly ``{active, completed}``, so a scan that hard-coded that
+    literal -- the one thing the port's contract forbids, because the set is
+    the vault's to declare -- would satisfy this assertion against a base
+    vault and no other test would notice. And on the base lifecycle
+    ``archived`` is at once the only terminal state and the only supersede
+    landing, so a scan complementing ``terminal_states()`` would compute the
+    same set by a different rule. The extended vault separates both.
+    """
+    lifecycle = extended_config.lifecycle
+    surviving = lifecycle.supersession_surviving_states()
+    declared = frozenset(state.value for state in lifecycle.states)
+    assert "filed" in surviving and "sealed" in surviving, (
+        "fixture no longer extends the surviving set; the assertion below "
+        "would pass against a hard-coded base-lifecycle literal"
+    )
+    assert surviving != declared - lifecycle.terminal_states(), (
+        "fixture no longer separates the surviving set from the non-terminal "
+        "set; the assertion below would pass against a caller reading "
+        "terminal_states() instead"
+    )
+    scan_dir = _vault_imports(extended_config)
+    (scan_dir / "stated.md").write_text("# Stated")
+
+    store = _StubGraphStore()
+    await scan_directory(
+        directory=scan_dir,
+        vault_config=extended_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert store.hash_preferences == [extended_config.lifecycle.supersession_surviving_states()]
 
 
 async def test_scan_hash_match_wins_over_path_match(minimal_config):

@@ -915,6 +915,199 @@ async def test_find_documents_by_source_paths_ignores_lifecycle_status(graph_sto
 
 
 # ---------------------------------------------------------------------------
+# Bulk content-hash lookup
+# ---------------------------------------------------------------------------
+
+# Deliberately a literal rather than a call to
+# ``LifecycleConfig.supersession_surviving_states()``: the tests assert the
+# lookup's ranking contract independently of the vault vocabulary that feeds
+# it, so a drifted lifecycle table cannot re-shape the expectations it is
+# tested by.
+_SURVIVING_STATES = frozenset({"active", "completed"})
+
+
+def _make_doc_with_hash(doc_id: str, content_hash: str, **overrides) -> Document:
+    """A document pinned to an explicit content hash.
+
+    ``_make_doc`` derives the hash from the id, so it cannot express the
+    several-documents-one-hash case the bulk lookup has to collapse.
+    """
+    doc = _make_doc(doc_id)
+    return doc.model_copy(update={"source_content_hash": content_hash, **overrides})
+
+
+async def test_find_documents_by_hashes_maps_each_present_hash_to_a_document(graph_store):
+    """Each present hash maps to the id of a document carrying it; an absent
+    hash is simply not a key.
+
+    Trap: an implementation that echoes its input (``{h: h for h in hashes}``)
+    or that reports every asked hash as present satisfies a keys-only
+    assertion. Comparing values against the seeded ids, and asking for a hash
+    no document carries, closes both.
+    """
+    docs = [_make_doc(_id(f"bulk_hash_{n}")) for n in ("a", "b", "c")]
+    for doc in docs:
+        await graph_store.insert_document(doc)
+
+    result = await graph_store.find_documents_by_hashes(
+        [d.source_content_hash for d in docs] + [_sha("bulk_hash_absent")],
+        prefer_lifecycle_statuses=_SURVIVING_STATES,
+    )
+
+    assert result == {d.source_content_hash: d.id for d in docs}
+
+
+async def test_find_documents_by_hashes_empty_list_returns_empty_dict(graph_store):
+    """An empty hash list returns an empty mapping, not the whole table.
+
+    Trap: a query built as ``source_content_hash = ANY('{}')`` is harmless,
+    but a predicate that collapses to a no-op WHERE clause returns every row.
+    Asserting against a store that is *not* empty distinguishes them.
+    """
+    await graph_store.insert_document(_make_doc(_id("bulk_hash_empty_probe")))
+
+    assert (
+        await graph_store.find_documents_by_hashes([], prefer_lifecycle_statuses=_SURVIVING_STATES)
+        == {}
+    )
+
+
+async def test_find_documents_by_hashes_returns_one_deterministic_row_per_hash(graph_store):
+    """Several documents on one hash collapse to a single, stable entry.
+
+    The query carried no row collapse and no ordering, so the caller-side
+    mapping kept whichever row arrived last and the winner was whatever scan
+    order produced. Trap: drop the collapse and both rows come back, leaving
+    the mapping to keep the *higher* id under the ordering this query now
+    states -- the opposite document, which a membership-only assertion would
+    not notice. Pinning the value to the lower-ordering id catches that.
+
+    The higher-id document is inserted first on purpose: with the two orders
+    coincident, "lowest id wins" and "first inserted wins" are different rules
+    that no assertion here could separate -- and both are implemented, the
+    former by the durable store and the latter by the in-memory stub.
+
+    Both documents are active, so this pins the tie-break alone and says
+    nothing about the lifecycle rank; that is the next test's job.
+    """
+    shared = _sha("bulk_hash_shared")
+    lowest_id = _make_doc_with_hash("00000001_hash_dup_first", shared)
+    higher_id = _make_doc_with_hash("00000002_hash_dup_second", shared)
+    await graph_store.insert_document(higher_id)
+    await graph_store.insert_document(lowest_id)
+
+    one = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+    two = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert one == {shared: lowest_id.id}
+    assert two == one
+
+
+async def test_find_documents_by_hashes_prefers_a_surviving_document_over_a_retired_one(
+    graph_store,
+):
+    """A document a supersession has not retired outranks one it has.
+
+    The surviving document carries the *higher* id on purpose. Given the
+    lower one it would win under "lowest id alone" and this test would prove
+    nothing; carrying the higher id, it can only win because the lifecycle
+    rank outranks the id tie-break.
+
+    Trap: drop the rank term and the archived document wins on id. Invert its
+    polarity and the archived document wins again -- the shape that reads to
+    a caller as a defect in the engine rather than as a duplicate.
+    """
+    shared = _sha("bulk_hash_survivor")
+    retired = _make_doc_with_hash("00000001_hash_retired", shared, lifecycle_status="archived")
+    surviving = _make_doc_with_hash("00000002_hash_surviving", shared)
+    await graph_store.insert_document(retired)
+    await graph_store.insert_document(surviving)
+
+    result = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert result == {shared: surviving.id}
+
+
+async def test_find_documents_by_hashes_falls_back_to_lowest_id_when_none_survives(graph_store):
+    """A hash carried only by retired documents still answers.
+
+    The preference is a rank, not a filter. Trap: implement it as
+    ``AND lifecycle_status = ANY(%s)`` and this returns ``{}`` -- while every
+    other test in this group stays green, because each either seeds only
+    active documents or has a surviving winner. This assertion and the
+    single-retired-document one below are the only two that separate rank
+    from filter.
+    """
+    shared = _sha("bulk_hash_all_retired")
+    lowest_id = _make_doc_with_hash(
+        "00000001_hash_retired_low", shared, lifecycle_status="archived"
+    )
+    higher_id = _make_doc_with_hash(
+        "00000002_hash_retired_high", shared, lifecycle_status="archived"
+    )
+    await graph_store.insert_document(higher_id)
+    await graph_store.insert_document(lowest_id)
+
+    result = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert result == {shared: lowest_id.id}
+
+
+async def test_find_documents_by_hashes_with_no_preference_falls_back_to_lowest_id(graph_store):
+    """An empty preference is a real choice: no rank, lowest id wins.
+
+    Same corpus as the preference test, so the two differ only in the
+    argument. Trap: a lifecycle literal creeping into the store -- a
+    hard-coded ``'active'`` in the ordering, say -- would keep preferring the
+    surviving document here, leaving a caller unable to ask for no preference
+    at all.
+    """
+    shared = _sha("bulk_hash_no_preference")
+    retired = _make_doc_with_hash(
+        "00000001_hash_nopref_retired", shared, lifecycle_status="archived"
+    )
+    surviving = _make_doc_with_hash("00000002_hash_nopref_surviving", shared)
+    await graph_store.insert_document(retired)
+    await graph_store.insert_document(surviving)
+
+    result = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=frozenset()
+    )
+
+    assert result == {shared: retired.id}
+
+
+async def test_find_documents_by_hashes_finds_a_retired_document_when_it_is_the_only_one(
+    graph_store,
+):
+    """A lone retired document is found under a preference that excludes it.
+
+    The rank-versus-filter distinction at the arity the services actually
+    meet: one document carries the bytes and it happens to be archived. A
+    filter implementation drops it, and the caller is told the bytes are
+    novel when the vault already holds them.
+    """
+    archived = _make_doc(_id("bulk_hash_lone_archived")).model_copy(
+        update={"lifecycle_status": "archived"}
+    )
+    await graph_store.insert_document(archived)
+
+    result = await graph_store.find_documents_by_hashes(
+        [archived.source_content_hash], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert result == {archived.source_content_hash: archived.id}
+
+
+# ---------------------------------------------------------------------------
 # Document facet aggregation via query_document_facets
 # ---------------------------------------------------------------------------
 

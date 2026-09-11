@@ -295,8 +295,15 @@ async def scan_directory(
 
     hashes_to_check = [h for _p, h, a, _m, _r in file_infos if a is not None]
 
-    # Bulk hash check against vault
-    hash_matches = await graph_store.find_documents_by_hashes(hashes_to_check)
+    # Bulk hash check against vault. The verdict below reads this for
+    # membership and discards the id, so no rule changes what it reports --
+    # but which document represents a hash is the vault's to decide, not this
+    # caller's, and an empty preference here would be the scan claiming
+    # otherwise and answering a different question than ingest does.
+    hash_matches = await graph_store.find_documents_by_hashes(
+        hashes_to_check,
+        prefer_lifecycle_statuses=vault_config.lifecycle.supersession_surviving_states(),
+    )
 
     # Also check by source path for "modified" detection.
     # A file is "modified" if its path matches an existing doc but hash differs.
