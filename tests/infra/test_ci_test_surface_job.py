@@ -269,14 +269,63 @@ def test_the_surface_job_resolves_a_base_for_every_ci_event() -> None:
     )
 
 
-def _run_base_step(env: dict[str, str], tmp_path: Path) -> tuple[int, str]:
+def _git(repo: Path, *args: str) -> str:
+    """Run git in ``repo`` with an identity, and return its trimmed stdout."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _merged_tree_repo(root: Path) -> dict[str, str]:
+    """Build the repository shape a pull-request run actually checks out.
+
+    A base commit; the base branch then advancing by one commit, standing in
+    for somebody else's change landing while this one is open; a branch commit
+    off the ORIGINAL base; and the synthetic merge of that branch into the
+    advanced base, which is what ``actions/checkout`` resolves the event to.
+
+    Returns the four revisions by role. ``stale_base`` is what the event
+    payload would carry, and it is deliberately not the merge's parent — that
+    gap is the whole subject of the regression control below.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    _git(root, "init", "-q", "-b", "main")
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "base")
+    stale_base = _git(root, "rev-parse", "HEAD")
+
+    _git(root, "switch", "-qc", "feature")
+    (root / "feature.txt").write_text("f\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "branch work")
+    branch = _git(root, "rev-parse", "HEAD")
+
+    _git(root, "switch", "-q", "main")
+    (root / "other.txt").write_text("o\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "somebody else lands")
+    advanced_base = _git(root, "rev-parse", "HEAD")
+
+    _git(root, "merge", "-q", "--no-ff", "-m", "merge", branch)
+    return {
+        "stale_base": stale_base,
+        "branch": branch,
+        "advanced_base": advanced_base,
+        "merge": _git(root, "rev-parse", "HEAD"),
+    }
+
+
+def _run_base_step(env: dict[str, str], tmp_path: Path, cwd: Path | None = None) -> tuple[int, str]:
     """Execute the base-resolution step's own shell body, and return its result.
 
     The script is extracted from the workflow rather than restated, so this
-    exercises the shell that will actually run. ``git`` is reachable because
-    the step's reachability probe runs against whatever repository the working
-    directory sits in; every case below resolves before that probe or supplies
-    a value it can refuse.
+    exercises the shell that will actually run, against a repository shaped
+    like the one the runner checks out.
     """
     script = step_script(_job(_load(CI_WORKFLOW), SURFACE_JOB), BASE_STEP_ID)
     assert script, "the base-resolution step has no shell body; this control runs nothing"
@@ -285,7 +334,7 @@ def _run_base_step(env: dict[str, str], tmp_path: Path) -> tuple[int, str]:
     output.touch()
     result = subprocess.run(
         ["bash", "-c", script],
-        cwd=REPO_ROOT,
+        cwd=str(cwd or REPO_ROOT),
         env={"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), **env},
         capture_output=True,
         text=True,
@@ -293,34 +342,61 @@ def _run_base_step(env: dict[str, str], tmp_path: Path) -> tuple[int, str]:
     return result.returncode, output.read_text(encoding="utf-8") + result.stdout + result.stderr
 
 
-def test_an_unresolved_base_fails_on_events_that_always_carry_one(tmp_path: Path) -> None:
-    """An empty base on a pull request or a queue entry is a broken step, not an absence.
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+def test_the_base_is_the_merged_tree_s_own_parent_not_the_stale_payload(
+    event: str, tmp_path: Path
+) -> None:
+    """The base must be what the head was merged against, not the event's snapshot.
 
-    Both events always carry a base, so an empty one means the resolution
-    itself broke — a payload expression that stopped resolving, a renamed
-    variable reference. Treated as an ordinary absence it writes an empty
-    output, both dependent steps skip on their own conditions, and the job goes
-    green having measured nothing: the outcome this job exists to prevent,
-    reached through the job rather than through the suite.
+    Regression control, and it is the defect this job hit on its first real
+    run. The checked-out head on both these events is a synthetic merge of the
+    branch into the base branch *as it stands now*, while the payload's base
+    sha is a snapshot taken when the event fired. Anything that lands on the
+    base branch in between is present in the head and absent from that
+    snapshot, so comparing the two charges this branch with every test
+    somebody else's change removed. Twenty-two, the first time.
 
-    The structural gate above cannot see this. It asks whether each event has
-    an arm, never what the arm yields.
+    The fixture reproduces exactly that: the payload sha is the original base,
+    and the base branch has advanced by one commit since.
     """
-    for event, blanked in (
-        ("pull_request", "PR_BASE_SHA"),
-        ("merge_group", "MERGE_GROUP_BASE_SHA"),
-    ):
-        code, log = _run_base_step({"EVENT_NAME": event, blanked: ""}, tmp_path / event)
-        assert code != 0, f"an empty base on {event} must fail the step, not skip it:\n{log}"
-        assert "sha=" not in log, f"a failing resolution must publish no base:\n{log}"
+    revisions = _merged_tree_repo(tmp_path / "repo")
+    code, log = _run_base_step({"EVENT_NAME": event}, tmp_path / event, cwd=tmp_path / "repo")
+
+    assert code == 0, f"a merged tree must resolve cleanly on {event}:\n{log}"
+    assert f"sha={revisions['advanced_base']}" in log, (
+        f"the base must be the merge's first parent on {event}:\n{log}"
+    )
+    assert revisions["stale_base"] not in log, (
+        "the base must not be the payload's snapshot, which predates what the head carries"
+    )
+
+
+@pytest.mark.parametrize("event", ["pull_request", "merge_group"])
+def test_a_non_merged_head_fails_rather_than_taking_the_wrong_parent(
+    event: str, tmp_path: Path
+) -> None:
+    """If the checkout stops resolving to the merged tree, the step must fail.
+
+    A head with one parent means ``ref:`` was pinned to the branch tip, and the
+    first parent is then this branch's previous commit. The comparison would
+    quietly shrink to one commit's worth of diff and report almost nothing —
+    green, having measured the wrong pair.
+    """
+    repo = tmp_path / "repo"
+    _merged_tree_repo(repo)
+    _git(repo, "switch", "-q", "feature")
+
+    code, log = _run_base_step({"EVENT_NAME": event}, tmp_path / event, cwd=repo)
+    assert code != 0, f"a non-merge head must fail on {event}, not guess a base:\n{log}"
+    assert "sha=" not in log, f"a failing resolution must publish no base:\n{log}"
 
 
 def test_a_first_push_still_resolves_to_no_base(tmp_path: Path) -> None:
     """The one event that legitimately has no base still skips rather than fails.
 
-    Control on the test above: a guard that failed on every empty base would
-    red the first push to a branch, which has nothing to compare against and
-    nothing wrong with it.
+    Control on the guards above: a step that failed whenever it could not
+    produce a base would red the first push to a branch, which has nothing to
+    compare against and nothing wrong with it.
     """
     code, log = _run_base_step(
         {"EVENT_NAME": "push", "PUSH_BEFORE_SHA": "0" * 40}, tmp_path / "push"
@@ -331,23 +407,22 @@ def test_a_first_push_still_resolves_to_no_base(tmp_path: Path) -> None:
     )
 
 
-def test_a_resolvable_base_is_published(tmp_path: Path) -> None:
-    """Control on both tests above: a real revision resolves and is published.
+def test_a_push_publishes_the_revision_it_advanced_from(tmp_path: Path) -> None:
+    """Control on the push arm: a real prior revision resolves and is published.
 
-    Without this, a step that failed or emptied unconditionally would satisfy
-    them both.
+    The push arm is the one place the event payload is still the right source,
+    because a push to the default branch checks out a real commit rather than a
+    merged tree. Without this, a step that emptied or failed unconditionally on
+    that arm would satisfy the zero-sha test above.
     """
-    head = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    repo = tmp_path / "repo"
+    before = _merged_tree_repo(repo)["advanced_base"]
+
     code, log = _run_base_step(
-        {"EVENT_NAME": "pull_request", "PR_BASE_SHA": head}, tmp_path / "real"
+        {"EVENT_NAME": "push", "PUSH_BEFORE_SHA": before}, tmp_path / "push", cwd=repo
     )
     assert code == 0, f"a resolvable base must not fail the step:\n{log}"
-    assert f"sha={head}" in log, f"the resolved base must be published:\n{log}"
+    assert f"sha={before}" in log, f"the resolved base must be published:\n{log}"
 
 
 def test_the_surface_job_compares_only_when_a_base_resolved() -> None:

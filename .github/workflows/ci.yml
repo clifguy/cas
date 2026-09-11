@@ -259,18 +259,42 @@ jobs:
         id: base
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
-          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
           # One arm per event this workflow answers. An event with no base to
           # compare against resolves to empty and the comparison steps below
           # are skipped, rather than the job inventing a base and reporting a
           # comparison it did not make.
+          #
+          # On both merged-tree events the base is the checked-out commit's
+          # FIRST PARENT, and emphatically not the event payload's base sha.
+          # `actions/checkout` resolves these events to a synthetic merge of
+          # this branch into the base branch, so the head being measured
+          # already carries everything on the base branch; the payload's sha,
+          # by contrast, is a snapshot of the base branch taken when the event
+          # fired and does not move afterwards. Comparing the two charges this
+          # branch with every test any OTHER change removed from the base
+          # branch in between. That is not hypothetical: this job's own first
+          # run reported 22 tests lost that a concurrently-landing change had
+          # renamed. The first parent is the exact tip the head was merged
+          # against, so the difference is this branch's contribution and
+          # nothing else.
           case "$EVENT_NAME" in
-            pull_request) sha="$PR_BASE_SHA" ;;
-            merge_group)  sha="$MERGE_GROUP_BASE_SHA" ;;
+            pull_request|merge_group)
+              # A non-merge HEAD means the checkout no longer resolves to the
+              # merged tree -- `ref:` pinned to the head sha, say. The first
+              # parent would then be this branch's previous commit, and the
+              # comparison would quietly shrink to one commit's worth of diff.
+              # Fail rather than measure the wrong pair.
+              parents="$(( $(git rev-list --parents -n 1 HEAD | wc -w) - 1 ))"
+              if [ "$parents" -ne 2 ]; then
+                echo "expected a merged tree on a ${EVENT_NAME} event, but HEAD has ${parents} parent(s);" >&2
+                echo "the checkout no longer resolves to the merge ref, so the base cannot be derived" >&2
+                exit 1
+              fi
+              sha="$(git rev-parse 'HEAD^1')"
+              ;;
             push)
               if [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
                 sha=""
