@@ -139,18 +139,47 @@ def test_link_rationale_kind_per_item_field_is_enum():
 
 
 def test_discover_mode_signature_is_enum():
-    """T1.4 — search.mode must be typed as the RetrievalMode StrEnum.
+    """T1.4 — search.mode must be typed against the RetrievalMode StrEnum.
 
-    DiscoverRequest.mode uses RetrievalMode but the tool function signature
-    declares ``mode: str = "semantic"``. The default must remain a valid
-    enum value (RetrievalMode.SEMANTIC) so existing callers keep working.
+    The concern is that a caller picking the mode value out of the tool
+    schema sees the closed vocabulary rather than a free-form string, so
+    a plain ``str`` annotation fails here.
+
+    The optional form carries the same vocabulary and is the accepted
+    shape: mode is resolvable from a catalog-only target, which means the
+    tool has to be able to tell an unsupplied mode from a supplied one,
+    and a Python default cannot express that.
     """
     ann = _annotation_of(search, "mode")
-    assert ann is RetrievalMode, (
-        f"search.mode annotation is {ann!r}; expected RetrievalMode. "
-        "Callers picking the mode value from the tool schema currently "
-        "see a free-form string."
+    assert ann in (RetrievalMode, RetrievalMode | None), (
+        f"search.mode annotation is {ann!r}; expected RetrievalMode or "
+        "RetrievalMode | None. Callers picking the mode value from the "
+        "tool schema would otherwise see a free-form string."
     )
+
+
+def test_discover_docstring_states_mode_resolution_for_catalog_only_targets():
+    """Both halves of the mode-resolution rule must be documented.
+
+    The convenience half alone would leave a caller who names a mode
+    explicitly surprised by a refusal the docstring never mentioned, and
+    the refusal half alone would leave the working short call
+    undiscoverable. Each catalog-only target block is checked
+    separately, since documenting one and not the other is the drift
+    this guards.
+    """
+    doc = _docstring(search)
+    for section in ("Edge enumeration:", "Facet enumeration:"):
+        start = doc.index(section)
+        block = doc[start : start + 400]
+        assert "omitting ``mode``" in block, (
+            f"the {section!r} block must say that a call omitting mode "
+            "resolves to catalog on its own."
+        )
+        assert "still refused" in block, (
+            f"the {section!r} block must say that naming a non-catalog "
+            "mode explicitly is still refused."
+        )
 
 
 def test_set_lifecycle_action_docstring_points_at_vault_config():

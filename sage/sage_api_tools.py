@@ -1425,7 +1425,7 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def search(
         vault_id: str,
-        mode: RetrievalMode = RetrievalMode.SEMANTIC,
+        mode: RetrievalMode | None = None,
         query: str | None = None,
         scope: str = "all",
         filters: dict | None = None,
@@ -1493,8 +1493,10 @@ def register_sage_tools(
             deterministic: Exact heading path extraction. Requires document_id + heading_path.
 
         Edge enumeration:
-            When ``target="edges"`` (only valid with ``mode="catalog"``),
-            results are edge rows rather than document rows. Filter by any
+            When ``target="edges"`` (only valid with ``mode="catalog"``,
+            which a call omitting ``mode`` resolves to on its own, while a
+            call naming a non-catalog one is still refused), results are
+            edge rows rather than document rows. Filter by any
             subset of ``{"source_id": ..., "target_id": ..., "edge_type": ...}``;
             an empty filter returns all edges in the vault, paginated. Each
             row carries the edge id (required for ``delete_edge`` and the
@@ -1516,8 +1518,10 @@ def register_sage_tools(
                     response_mode="full")
 
         Facet enumeration:
-            When ``target="facets"`` (only valid with ``mode="catalog"``),
-            results are one row per facet field -- doc_type,
+            When ``target="facets"`` (only valid with ``mode="catalog"``,
+            which a call omitting ``mode`` resolves to on its own, while a
+            call naming a non-catalog one is still refused), results are
+            one row per facet field -- doc_type,
             lifecycle_status, source_type, pipeline_status, tags -- each
             carrying that field's top distinct values with
             matching-document counts plus ``total_distinct``, the true
@@ -1550,7 +1554,6 @@ def register_sage_tools(
 
                 search(
                     vault_id="cas",
-                    mode="catalog",
                     target="facets",
                     filters={"doc_type": "ticket"})
 
@@ -1578,7 +1581,13 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            mode: Retrieval mode (semantic, keyword, catalog, deterministic). Default: semantic.
+            mode: Retrieval mode (semantic, keyword, catalog,
+                deterministic). Default: semantic, except that a request
+                naming a catalog-only target (``edges``, ``facets``) and
+                no mode resolves to catalog, the one mode those targets
+                accept. A mode given explicitly is never changed: naming a
+                non-catalog one alongside those targets is still rejected
+                via ``mode_parameter_mismatch`` rather than corrected.
             query: Search query text (required for semantic and keyword
                 modes; refused by catalog and deterministic, which do not
                 consume it).
@@ -1637,7 +1646,8 @@ def register_sage_tools(
                 via filter on ``source_id`` / ``target_id`` /
                 ``edge_type``; "facets" aggregates distinct values with
                 counts per document metadata field. "edges" and "facets"
-                are valid only with ``mode="catalog"``. See the *Edge
+                are valid only with ``mode="catalog"``, and supply it
+                themselves when no mode is given. See the *Edge
                 enumeration* and *Facet enumeration* sections above.
             response_mode: Canonical payload-depth selector. See the
                 *Response-mode semantics across targets* section above for

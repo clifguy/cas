@@ -2898,6 +2898,13 @@ _FACET_FORBIDDEN_PARAMS: tuple[tuple[str, object, list[str]], ...] = (
     ("offset", 0, _DOCUMENTS_AND_EDGES),
 )
 
+# Targets defined under exactly one mode. Catalog is the only mode either of
+# them accepts, so on these paths the mode argument selects nothing and a
+# caller who named the target has already determined it.
+_CATALOG_ONLY_TARGETS: frozenset[str] = frozenset(
+    {RetrievalTarget.EDGES.value, RetrievalTarget.FACETS.value}
+)
+
 
 class DiscoverRequest(BaseModel):
     """Retrieval request. Required fields vary by mode.
@@ -2913,7 +2920,14 @@ class DiscoverRequest(BaseModel):
 
     mode: RetrievalMode = Field(
         default=RetrievalMode.SEMANTIC,
-        description="Retrieval mode selecting the underlying query strategy.",
+        description=(
+            "Retrieval mode selecting the underlying query strategy. "
+            "Defaults to semantic, except that a request naming a "
+            "catalog-only target (edges, facets) and no mode resolves to "
+            "catalog, the one mode those targets accept. A mode supplied "
+            "explicitly is never changed: a non-catalog one is still "
+            "rejected via mode_parameter_mismatch rather than corrected."
+        ),
     )
     query: str | None = Field(
         default=None,
@@ -3030,7 +3044,8 @@ class DiscoverRequest(BaseModel):
             'edge_type). "facets" is valid only with mode=catalog and '
             "document-only filter keys, and rejects non-default "
             "pagination and payload-shape parameters (limit, offset, "
-            "sort_by, sort_order, response_mode). Other mode/parameter "
+            "sort_by, sort_order, response_mode). Both supply that mode "
+            "themselves when no mode is given. Other mode/parameter "
             "combinations are rejected via mode_parameter_mismatch."
         ),
     )
@@ -3079,6 +3094,50 @@ class DiscoverRequest(BaseModel):
             "other targets."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_mode_from_target(cls, data: object) -> object:
+        """Fill in the mode a catalog-only target already determined.
+
+        ``edges`` and ``facets`` are defined under catalog mode and no
+        other, so a request naming one of them has nothing left to choose
+        on the mode axis. Requiring the caller to restate a value the
+        target has already fixed makes the natural first call fail on a
+        redundancy, so the value is resolved here instead. Only the
+        redundancy is removed; no judgment is exercised, because the
+        accepted set on that axis has one member.
+
+        A mode the caller supplied is never touched, whatever it says. A
+        non-catalog one falls through to
+        ``_reject_mode_parameter_mismatch`` and is refused there, so a
+        wrong call is still reported rather than quietly repaired.
+
+        Absent and ``None`` are treated alike. The two request surfaces
+        express "not supplied" differently -- HTTP omits the key from the
+        body, while the MCP tool forwards every parameter it declares and
+        so passes an explicit ``None`` -- and keying on key presence alone
+        would resolve on one surface and refuse on the other. Where no
+        resolution applies, a ``None`` is therefore dropped rather than
+        passed along: the field default answers an absent key, and a
+        ``None`` left in place would instead fail enum validation and
+        report a malformed mode the caller never wrote.
+
+        Runs before field validation, which is what makes the distinction
+        available at all: the semantic default has not yet been applied,
+        so an unsupplied mode is still distinguishable from a supplied
+        one. The target arrives in whichever form the caller sent, a bare
+        string over JSON or an enum member from Python, so it is
+        normalized to its value before the lookup.
+        """
+        if not isinstance(data, dict) or data.get("mode") is not None:
+            return data
+        target = data.get("target")
+        if getattr(target, "value", target) in _CATALOG_ONLY_TARGETS:
+            return {**data, "mode": RetrievalMode.CATALOG}
+        if "mode" in data:
+            return {k: v for k, v in data.items() if k != "mode"}
+        return data
 
     @model_validator(mode="after")
     def _reject_mode_parameter_mismatch(self) -> "DiscoverRequest":

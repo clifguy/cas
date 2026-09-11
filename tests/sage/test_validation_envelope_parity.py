@@ -387,6 +387,30 @@ async def test_mode_parameter_mismatch_parity_between_surfaces(
     assert set(mcp_envelope) - set(http_body) == {"error"}
 
 
+@pytest.mark.parametrize("target", ["facets", "edges"])
+async def test_mode_resolution_parity_between_surfaces(vault_services, http_client, target):
+    """A catalog-only target with no mode is accepted on both surfaces.
+
+    The two seams spell "not supplied" differently -- HTTP omits the key
+    while the MCP tool forwards an explicit None -- so a resolution that
+    keyed on key presence would accept here and refuse there. Each
+    surface is asserted on its own rather than compared to the other,
+    because a comparison passes when both refuse.
+    """
+    arguments = {"target": target}
+
+    mcp_envelope = await _call_search(**arguments)
+    assert "error" not in mcp_envelope, mcp_envelope
+    assert mcp_envelope["mode"] == "catalog"
+    assert mcp_envelope["target"] == target
+
+    resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/discover", json=arguments)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["mode"] == "catalog"
+    assert body["target"] == target
+
+
 async def test_mode_parameter_mismatch_content_is_pinned_independently(vault_services, http_client):
     """A target-constrained rejection reaches the caller as one.
 

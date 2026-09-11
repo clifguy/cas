@@ -3028,6 +3028,71 @@ async def test_sage_discover_facet_params_roundtrip(vault_services):
     assert rows[0]["total_distinct"] == 2
 
 
+async def test_sage_discover_facets_without_mode_succeeds(vault_services):
+    """A facets call that omits mode succeeds through the MCP tool.
+
+    This is the call the surface previously refused. The assertion looks
+    at the delivered facet rows rather than merely at the absence of an
+    error key, so a response that resolved the mode but returned nothing
+    to face on still fails.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
+
+    result = _parse(await search("test_vault", target="facets"))
+
+    assert "error" not in result, result
+    assert result["mode"] == "catalog"
+    assert result["target"] == "facets"
+    by_field = {r["field"]: r for r in result["results"]}
+    assert by_field["source_type"]["values"] == {"markdown": 1}
+    assert by_field["source_type"]["total_distinct"] == 1
+
+
+async def test_sage_discover_edges_without_mode_succeeds(vault_services):
+    """An edges call that omits mode resolves the same way facets does."""
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
+    # supersedes carries resolution_policy=none, so the fixture needs no
+    # anchor versions to produce a production edge.
+    await create_edge(
+        "test_vault",
+        doc_a["id"],
+        doc_b["id"],
+        "supersedes",
+        rationale="mode-resolution fixture",
+    )
+
+    result = _parse(await search("test_vault", target="edges"))
+
+    assert "error" not in result, result
+    assert result["mode"] == "catalog"
+    assert result["target"] == "edges"
+    assert [r["edge_type"] for r in result["results"]] == ["supersedes"]
+
+
+async def test_sage_discover_documents_without_mode_is_semantic(vault_services):
+    """Omitting mode on the default target still selects semantic.
+
+    Anti-coincidental guard at the tool boundary: a wrapper that
+    hardcoded catalog rather than forwarding the caller's mode would
+    satisfy the two tests above while breaking every ordinary search.
+    Catalog returns no relevance scores, so their presence is what
+    discriminates.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
+
+    result = _parse(await search("test_vault", query="sample"))
+
+    assert "error" not in result, result
+    assert result["mode"] == "semantic"
+    assert result["results"], "semantic search returned no hits to score"
+    assert all("relevance_score" in r for r in result["results"])
+
+
 async def test_sage_discover_facets_with_semantic_returns_error(vault_services):
     """target=facets combined with a non-catalog mode is rejected via
     the typed mode_parameter_mismatch error envelope.

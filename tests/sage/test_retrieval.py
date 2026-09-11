@@ -6659,6 +6659,75 @@ async def test_facets_budget_hint_absent_under_budget_at_default(graph_store, re
 # ---------------------------------------------------------------------------
 
 
+def test_target_facets_without_mode_resolves_to_catalog():
+    """target=facets and no mode constructs, resolving mode to catalog.
+
+    Facets is defined under catalog and no other mode, so the mode
+    argument selects nothing on this path and the request carries enough
+    to determine it.
+    """
+    req = DiscoverRequest(target="facets")
+    assert req.mode is RetrievalMode.CATALOG
+
+
+def test_target_edges_without_mode_resolves_to_catalog():
+    """target=edges and no mode resolves the same way facets does.
+
+    Both targets are catalog-only under the same constraint; resolving
+    one and not the other would leave the surface inconsistent.
+    """
+    req = DiscoverRequest(target=RetrievalTarget.EDGES)
+    assert req.mode is RetrievalMode.CATALOG
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"query": "x"}, id="query-no-target"),
+        pytest.param({}, id="neither-query-nor-target"),
+        pytest.param({"target": "documents", "query": "x"}, id="documents-target-named"),
+    ],
+)
+def test_document_requests_without_mode_stay_semantic(kwargs):
+    """The document target keeps the semantic default, however it is reached.
+
+    Anti-coincidental guard, and the three shapes are each load-bearing
+    against a different wrong resolver:
+
+    - ``query-no-target`` reds a resolver that fires for every request.
+    - ``neither-query-nor-target`` reds one keyed on the absence of a
+      query rather than on the target. That rival satisfies every other
+      test in this change, because a catalog-only target never carries a
+      query and an ordinary search always does, so this is the only
+      input that separates them.
+    - ``documents-target-named`` reds one keyed on the target key being
+      present rather than on its value.
+    """
+    assert DiscoverRequest(**kwargs).mode is RetrievalMode.SEMANTIC
+
+
+def test_explicit_none_mode_resolves_like_an_omitted_one():
+    """An explicit None resolves exactly as an absent mode does.
+
+    The MCP tool forwards every parameter it declares, so an unsupplied
+    mode reaches the model as None rather than as a missing key. Keying
+    resolution on key presence alone would leave that surface refusing
+    what HTTP accepts.
+    """
+    req = DiscoverRequest(mode=None, target="facets")
+    assert req.mode is RetrievalMode.CATALOG
+
+
+@pytest.mark.parametrize("target", ["facets", RetrievalTarget.FACETS])
+def test_mode_resolution_accepts_both_target_input_forms(target):
+    """Resolution runs before field validation, so it sees the raw target.
+
+    A JSON caller sends the bare string and a Python caller passes the
+    enum member; both must resolve.
+    """
+    assert DiscoverRequest(target=target).mode is RetrievalMode.CATALOG
+
+
 def test_target_facets_with_semantic_mode_is_mode_parameter_mismatch():
     """target=facets + mode=semantic raises mode_parameter_mismatch."""
     with pytest.raises(ValidationError) as info:
