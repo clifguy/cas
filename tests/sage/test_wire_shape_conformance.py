@@ -33,6 +33,7 @@ W6  An optional-and-nullable key is still omitted when null.
 W7  The rule reaches through nested models and lists of models, on the tool
     path and the event-stream path alike.
 W7b The rule reaches a model held as a value in a mapping.
+W8  The dump and the rule are keyed alike, so an aliased field is reached.
 
 W5 and W6 are the two halves of the per-field rule, and they fail under
 opposite mistakes. An implementation that keeps every key passes W5 and fails
@@ -86,6 +87,7 @@ from pydantic import BaseModel
 
 from sage.mcp_server import _serialize
 from sage.models.schemas import BatchIngestFileError
+from sage.models.wire import to_wire
 from sage.services.batch_ingest import IngestSummary
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -481,6 +483,21 @@ def _surfaces(sage_core_spec: dict | None, cas_app_spec: dict | None):
     return out
 
 
+def _renderings(instance: BaseModel) -> tuple[tuple[str, dict], ...]:
+    """Both ways the surface renders one model, labelled by arm.
+
+    One helper rather than two inline expressions, because every test that
+    asks "does this conform?" has to mean the same thing by it. W1 reports a
+    violation on either arm; W2 calls an exemption stale only when both are
+    clean. Rendered separately, the two would disagree about what a violation
+    is, and the allowlist would reject the entries it exists to hold.
+    """
+    return (
+        ("mcp", _serialize(instance)),
+        ("rest", instance.model_dump(mode="json", by_alias=True)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # W1 / W2: serialized bodies validate against their declared components
 # ---------------------------------------------------------------------------
@@ -527,10 +544,7 @@ def test_serialized_response_validates_against_declared_schema(
                 continue
             validated += 1
             validator = _validator_for(spec, name)
-            for arm, body in (
-                ("mcp", _serialize(instance)),
-                ("rest", instance.model_dump(mode="json", by_alias=True)),
-            ):
+            for arm, body in _renderings(instance):
                 errors = sorted(
                     validator.iter_errors(body),
                     key=lambda e: list(e.absolute_path),
@@ -559,6 +573,13 @@ def test_wire_shape_divergence_allowlist_has_no_stale_entries(
     An entry for a component that no longer exists, or one that now conforms,
     is an exemption protecting nothing. Left in place it would hide the next
     real divergence on that component.
+
+    "Conforms" has to mean what W1 means by it, which is **both** renderings,
+    and the two must read the same helper rather than each render their own.
+    An entry exempting a REST-arm-only violation is exactly what the allowlist
+    exists for, and a staleness check that rendered only the MCP arm would see
+    a valid body and reject that entry as stale -- the escape hatch and the
+    gate disagreeing about what a violation is.
     """
     stale: list[str] = []
     for label, spec, models in _surfaces(sage_core_spec, cas_app_spec):
@@ -570,10 +591,11 @@ def test_wire_shape_divergence_allowlist_has_no_stale_entries(
                 stale.append(f"  {label}: {name} -> no such component/model pair")
                 continue
             try:
-                body = _serialize(_build_sentinel(model, _properties_for(spec, name), spec=spec))
+                instance = _build_sentinel(model, _properties_for(spec, name), spec=spec)
             except UnbuildableModel:
                 continue
-            if _validator_for(spec, name).is_valid(body):
+            validator = _validator_for(spec, name)
+            if all(validator.is_valid(body) for _arm, body in _renderings(instance)):
                 stale.append(f"  {label}: {name} -> now conforms; remove the entry")
 
     assert not stale, "stale KNOWN_WIRE_SHAPE_DIVERGENCE entries:\n" + "\n".join(stale)
@@ -856,6 +878,45 @@ def test_rule_reaches_through_nested_models_and_lists_on_the_event_stream():
     )
     assert "edge_warnings" not in payload, (
         "edge_warnings is optional and null, so the event still omits it"
+    )
+
+
+def test_the_dump_is_keyed_the_way_the_rule_reads_it():
+    """W8 -- an aliased field is dumped and looked up under the same key.
+
+    The rule reads each field's declaration under the key the dump wrote, so
+    the two have to agree on what that key is. They do not agree by accident:
+    the dump keys by field name unless told otherwise, while the lookup asks
+    for the serialization alias. Mismatched, an aliased field's declaration is
+    never found, and the key falls through to the pass-through for keys no
+    field claims -- carrying its optional null onto the wire, the exact
+    opposite of the rule.
+
+    No response model declares an alias today, so nothing in the enrolled
+    sweep can reach this and a local model is the only way to state it. That
+    is the reason to state it rather than a reason to skip it: an invariant
+    holding only because nothing exercises it is one a later simplification
+    drops with the whole suite green.
+    """
+    from pydantic import Field
+
+    class Aliased(BaseModel):
+        absent: str | None = Field(default=None, serialization_alias="absent_alias")
+        present: str | None = Field(default=None, serialization_alias="present_alias")
+        required_null: str | None = Field(serialization_alias="required_alias")
+
+    body = to_wire(Aliased(present="here", required_null=None))
+
+    assert "absent_alias" not in body and "absent" not in body, (
+        "an aliased optional null survived, so the dump and the lookup are "
+        f"keyed differently: {sorted(body)}"
+    )
+    assert body["present_alias"] == "here", (
+        "an aliased value must reach the wire under its alias, which is the "
+        "property name the spec declares"
+    )
+    assert body["required_alias"] is None, (
+        "an aliased required field keeps its key under the alias, null and all"
     )
 
 
