@@ -513,6 +513,7 @@ class RetrievalService:
         has_any_filter = bool(
             f.doc_type
             or f.lifecycle_status
+            or f.exclude_terminal_lifecycle
             or f.project
             or f.tags
             or f.pipeline_status
@@ -523,7 +524,12 @@ class RetrievalService:
         if not has_any_filter:
             return request.limit * _FETCH_MULTIPLIER_NONE
         is_mixed = bool(
-            f.tags or f.pipeline_status or f.document_ids or f.source_type or f.tier3_metadata
+            f.tags
+            or f.pipeline_status
+            or f.document_ids
+            or f.source_type
+            or f.tier3_metadata
+            or f.exclude_terminal_lifecycle
         )
         return request.limit * (_FETCH_MULTIPLIER_MIXED if is_mixed else _FETCH_MULTIPLIER_PUSHDOWN)
 
@@ -576,8 +582,19 @@ class RetrievalService:
 
         # Non-pushdownable filters still need a graph-store SQL
         # resolution into a document_id IN clause.
+        # ``exclude_terminal_lifecycle`` joins this set rather than the
+        # pushdown one above: it is a negation, and the chunk-row
+        # pre-filter renders equality and set membership only. Pushing
+        # the complement instead would agree with the SQL predicate on
+        # every declared state and disagree on an undeclared one, which
+        # is the case a negation exists to survive.
         has_non_pushdown = bool(
-            f.tags or f.pipeline_status or f.document_ids or f.source_type or f.tier3_metadata
+            f.tags
+            or f.pipeline_status
+            or f.document_ids
+            or f.source_type
+            or f.tier3_metadata
+            or f.exclude_terminal_lifecycle
         )
         if has_non_pushdown:
             # Filter resolution wants the full match set, not a page;
@@ -592,8 +609,7 @@ class RetrievalService:
 
         return (result or None, has_non_pushdown)
 
-    @staticmethod
-    def _graph_filters(filters: RetrievalFilters | None) -> dict[str, object] | None:
+    def _graph_filters(self, filters: RetrievalFilters | None) -> dict[str, object] | None:
         """A request's filters in the shape the graph store's SQL expects.
 
         Six calls in this service hand a caller's own filters to the graph
@@ -607,6 +623,14 @@ class RetrievalService:
         paths, not of every filtered read: a query assembled from a stored
         pattern rather than from a request is a different translation with
         different defaults, and does not belong here.
+
+        Reads the vault config, which is why this is no longer a static
+        method: ``exclude_terminal_lifecycle`` names a rule, and the set
+        of states it excludes is the vault's to declare. Resolving it
+        here rather than at the caller is what keeps a listing and the
+        count that opens it reading one derivation -- the alternative,
+        a client enumerating the states it believes are terminal, is a
+        second copy of a vocabulary it does not own.
         """
         if not filters:
             return None
@@ -615,6 +639,10 @@ class RetrievalService:
             out["doc_type"] = filters.doc_type
         if filters.lifecycle_status:
             out["lifecycle_status"] = filters.lifecycle_status
+        if filters.exclude_terminal_lifecycle:
+            terminal = tuple(sorted(self._config.lifecycle.terminal_states()))
+            if terminal:
+                out["exclude_lifecycle_statuses"] = terminal
         if filters.project:
             out["project"] = filters.project
         if filters.pipeline_status:
@@ -629,8 +657,7 @@ class RetrievalService:
             out["tier3_metadata"] = filters.tier3_metadata
         return out or None
 
-    @classmethod
-    def _boost_filters(cls, request: DiscoverRequest) -> dict[str, object] | None:
+    def _boost_filters(self, request: DiscoverRequest) -> dict[str, object] | None:
         """Everything constraining a boost's cut, filters and scope together.
 
         Scope reaches a request outside ``RetrievalFilters`` and so is not part
@@ -642,7 +669,7 @@ class RetrievalService:
         named document ids, which are already a filter -- so it has nothing to
         push down and loses nothing by staying at the gate.
         """
-        out = cls._graph_filters(request.filters) or {}
+        out = self._graph_filters(request.filters) or {}
         if request.scope == RetrievalScope.AUTHORITATIVE:
             out["has_authority_scope"] = True
         return out or None
@@ -667,6 +694,12 @@ class RetrievalService:
             active["project"] = f.project
         if f.lifecycle_status:
             active["lifecycle_status"] = f.lifecycle_status
+        if f.exclude_terminal_lifecycle:
+            # Reported as the caller set it rather than as the states it
+            # resolved to: this dict answers "what did you ask for",
+            # and a vault's terminal set is not something the caller
+            # named or can be held to.
+            active["exclude_terminal_lifecycle"] = True
         if f.tags:
             active["tags"] = f.tags
         if f.document_ids:
@@ -1878,6 +1911,11 @@ class RetrievalService:
             if filters.project and doc.project != filters.project:
                 return False
             if filters.lifecycle_status and doc.lifecycle_status != filters.lifecycle_status:
+                return False
+            if (
+                filters.exclude_terminal_lifecycle
+                and doc.lifecycle_status in self._config.lifecycle.terminal_states()
+            ):
                 return False
             if filters.tags:
                 if not set(filters.tags).issubset(set(doc.tags)):

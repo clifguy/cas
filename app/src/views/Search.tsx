@@ -30,6 +30,12 @@ export default function Search() {
   const urlLifecycle = searchParams.get('lifecycle_status') ?? '';
   const urlProject = searchParams.get('project') ?? '';
   const urlPipelineStatus = searchParams.get('pipeline_status') ?? '';
+  // A boolean carried in a URL, so only the affirmative spellings set it.
+  // '0' and an absent param both mean "do not narrow", which keeps a
+  // hand-edited link from silently hiding rows.
+  const urlExcludeTerminal = ['1', 'true'].includes(
+    (searchParams.get('exclude_terminal_lifecycle') ?? '').toLowerCase(),
+  );
   const urlTags = (searchParams.get('tags') ?? '')
     .split(',')
     .map((s) => s.trim())
@@ -39,7 +45,8 @@ export default function Search() {
   const urlSortOrder = searchParams.get('sort_order') as SortDir | null;
 
   // Drill-down: filter params present but no mode param (dashboard deep-link).
-  const isDrillDown = !urlMode && Boolean(urlPipelineStatus || urlLifecycle || urlDocType);
+  const isDrillDown =
+    !urlMode && Boolean(urlPipelineStatus || urlLifecycle || urlDocType || urlExcludeTerminal);
 
   // --- Form buffer state (syncs from URL so back/forward restores inputs) ---
   const [queryInput, setQueryInput] = useState(urlQuery);
@@ -82,6 +89,7 @@ export default function Search() {
     if (urlLifecycle) f.lifecycle_status = urlLifecycle;
     if (urlProject) f.project = urlProject;
     if (urlTags.length) f.tags = urlTags;
+    if (urlExcludeTerminal) f.exclude_terminal_lifecycle = true;
     return f;
   }
 
@@ -133,10 +141,11 @@ export default function Search() {
 
     let req: DiscoverRequest | null = null;
     if (isDrillDown) {
-      const filters: Record<string, string> = {};
+      const filters: NonNullable<DiscoverRequest['filters']> = {};
       if (urlPipelineStatus) filters.pipeline_status = urlPipelineStatus;
       if (urlLifecycle) filters.lifecycle_status = urlLifecycle;
       if (urlDocType) filters.doc_type = urlDocType;
+      if (urlExcludeTerminal) filters.exclude_terminal_lifecycle = true;
       req = {
         mode: 'catalog',
         filters,
@@ -190,6 +199,17 @@ export default function Search() {
     if (docTypeFilter) next.set('doc_type', docTypeFilter);
     if (lifecycleFilter) next.set('lifecycle_status', lifecycleFilter);
     if (projectFilter) next.set('project', projectFilter);
+    // Tags and the terminal-lifecycle exclusion reach this view only
+    // through the URL -- no form control sets either -- so a query string
+    // rebuilt from the form buffers alone discards them with no way for
+    // the user to put them back. Carried
+    // forward by name rather than by cloning the whole query string: the
+    // other keys a drill-down URL holds either have a form control above
+    // or should reset on a new search, and an unconditional clone would
+    // pin a stale offset and sort onto every submit.
+    const currentTags = searchParams.get('tags');
+    if (currentTags) next.set('tags', currentTags);
+    if (urlExcludeTerminal) next.set('exclude_terminal_lifecycle', '1');
     setSearchParams(next);
   }
 
@@ -256,7 +276,12 @@ export default function Search() {
 
   // --- Dashboard drill-down view ---
   if (isDrillDown) {
-    const heading = drillDownHeading(urlPipelineStatus, urlLifecycle, urlDocType);
+    const heading = drillDownHeading(
+      urlPipelineStatus,
+      urlLifecycle,
+      urlDocType,
+      urlExcludeTerminal,
+    );
     const hasNext = urlOffset + PAGE_SIZE < totalAvailable;
     const hasPrev = urlOffset > 0;
     return (
@@ -650,7 +675,12 @@ function toggleSort(current: SortState | null, column: SortColumn): SortState {
   return { column, direction: defaultDir };
 }
 
-function drillDownHeading(pipelineStatus: string, lifecycle: string, docType: string): string {
+function drillDownHeading(
+  pipelineStatus: string,
+  lifecycle: string,
+  docType: string,
+  excludeTerminal: boolean,
+): string {
   if (pipelineStatus) {
     return ({
       abstraction_skipped: 'Deferred Abstracts',
@@ -660,6 +690,11 @@ function drillDownHeading(pipelineStatus: string, lifecycle: string, docType: st
   }
   if (lifecycle) return `Lifecycle: ${lifecycle}`;
   if (docType) return `Doc Type: ${docType.replace(/_/g, ' ')}`;
+  // The exclusion can stand alone as a drill-down, and every other
+  // branch above names a value. This one names a population, so the
+  // heading has to as well -- the alternative is an empty h1 over a
+  // populated table.
+  if (excludeTerminal) return 'Open Documents';
   return '';
 }
 

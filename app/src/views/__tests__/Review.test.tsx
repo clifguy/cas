@@ -352,3 +352,39 @@ describe('Review view: EdgeReview resyncs its staging list on a fresh edges prop
     expect(screen.queryByText('StaleSource')).not.toBeInTheDocument();
   });
 });
+
+describe('Review view: metadata-queue lifecycle disclosure', () => {
+  // The dashboard's pending-metadata count excludes documents in a
+  // terminal lifecycle state; this queue deliberately does not, because
+  // reviewing a retired document's metadata is legitimate and this is
+  // the only surface that reaches it. The divergence is by design, so
+  // the fix is disclosure rather than alignment -- but nothing said so
+  // on screen, which left the number and the list looking like a bug.
+  it('discloses on the metadata tab why the queue can exceed the dashboard count', async () => {
+    vi.mocked(listPendingMetadata).mockResolvedValue([makePending('D1', 'Doc 1')]);
+    vi.mocked(listStagingEdges).mockResolvedValue([]);
+
+    render(<TestWrapper />);
+
+    const note = await screen.findByTestId('pending-metadata-lifecycle-note');
+    // Both halves under assertion: that the queue is wider, and why. A
+    // note saying only "this list may differ" restates the symptom the
+    // user already sees and explains nothing.
+    expect(note).toHaveTextContent(/retired|terminal|archived/i);
+    expect(note).toHaveTextContent(/dashboard/i);
+  });
+
+  it('does not show the metadata-queue disclosure on the edges tab', async () => {
+    // The edge queue diverges from its counter for an unrelated reason
+    // -- a staging edge carries no lifecycle at all -- so this note
+    // would be wrong there. A disclosure hoisted to the page header
+    // rather than the tab body is how it ends up on both.
+    vi.mocked(listPendingMetadata).mockResolvedValue([makePending('D1', 'Doc 1')]);
+    vi.mocked(listStagingEdges).mockResolvedValue([makeStagingEdge('E1')]);
+
+    render(<TestWrapper initialEntries={['/review?tab=edges']} />);
+
+    await waitFor(() => expect(vi.mocked(listStagingEdges)).toHaveBeenCalled());
+    expect(screen.queryByTestId('pending-metadata-lifecycle-note')).toBeNull();
+  });
+});

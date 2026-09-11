@@ -76,12 +76,19 @@ export default function Dashboard() {
       </Section>
 
       {/* Health Indicators */}
+      {/* The three pipeline-status cards count an operator worklist, which
+          excludes documents in a terminal lifecycle state. Their links carry
+          exclude_terminal_lifecycle so the list a card opens holds exactly
+          the documents it counted; without it a card reading 0 opened a list
+          of 1, and nothing on screen explained the gap. The two review cards
+          are not the same shape: each links to a queue rather than to a
+          search, and the metadata queue is unfiltered by design. */}
       <Section title="Health Indicators">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           <HealthCard label="Pending metadata review" count={stats.health.pending_metadata_count} linkTo="/review?tab=metadata" />
           <HealthCard label="Pending edge review" count={stats.health.pending_edge_count} linkTo="/review?tab=edges" />
           {stats.health.deferred_abstract_count != null ? (
-            <HealthCard label="Deferred abstracts" count={stats.health.deferred_abstract_count} linkTo="/search?pipeline_status=abstraction_skipped" />
+            <HealthCard label="Deferred abstracts" count={stats.health.deferred_abstract_count} linkTo="/search?pipeline_status=abstraction_skipped&exclude_terminal_lifecycle=1" />
           ) : (
             <div style={{
               border: '1px solid #ddd',
@@ -93,8 +100,8 @@ export default function Dashboard() {
               <div style={{ fontSize: 12, color: '#666' }}>Abstracts disabled</div>
             </div>
           )}
-          <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
-          <HealthCard label="Interrupted abstracts" count={stats.health.interrupted_abstract_count} linkTo="/search?pipeline_status=abstraction_interrupted" />
+          <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed&exclude_terminal_lifecycle=1" />
+          <HealthCard label="Interrupted abstracts" count={stats.health.interrupted_abstract_count} linkTo="/search?pipeline_status=abstraction_interrupted&exclude_terminal_lifecycle=1" />
           <BloatIndicator
             deadTuples={stats.content_store_version_count}
             liveRows={stats.content_store_row_count}

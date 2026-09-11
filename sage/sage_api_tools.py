@@ -162,7 +162,7 @@ _INGEST_TRIPWIRE = Annotated[
 ]
 
 _SEARCH_TRIPWIRE = Annotated[
-    str | list | dict | None,
+    str | list | dict | bool | None,
     Field(
         description=(
             "Tripwire, not a functional argument. Supply this key inside "
@@ -1468,6 +1468,7 @@ def register_sage_tools(
         doc_type: _SEARCH_TRIPWIRE = None,
         project: _SEARCH_TRIPWIRE = None,
         lifecycle_status: _SEARCH_TRIPWIRE = None,
+        exclude_terminal_lifecycle: _SEARCH_TRIPWIRE = None,
         tags: _SEARCH_TRIPWIRE = None,
         document_ids: _SEARCH_TRIPWIRE = None,
         pipeline_status: _SEARCH_TRIPWIRE = None,
@@ -1613,13 +1614,15 @@ def register_sage_tools(
                 reason).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
-                lifecycle_status, tags, document_ids, pipeline_status,
-                source_type, tier3_metadata (these also narrow the
+                lifecycle_status, exclude_terminal_lifecycle, tags,
+                document_ids, pipeline_status, source_type,
+                tier3_metadata (these also narrow the
                 faceted slice when ``target="facets"``). Edge-target keys
                 (only when ``target="edges"``): source_id, target_id,
                 edge_type.
                 Every key belongs nested here -- ``doc_type``,
-                ``project``, ``lifecycle_status``, ``tags``,
+                ``project``, ``lifecycle_status``,
+                ``exclude_terminal_lifecycle``, ``tags``,
                 ``document_ids``, ``pipeline_status``, ``source_type``,
                 ``tier3_metadata``, ``source_id``, ``target_id``, and
                 ``edge_type`` -- for example
@@ -1636,6 +1639,13 @@ def register_sage_tools(
                 ``invalid_filter_value`` rather than returning an empty
                 result, so a one-call existence question gets a definite
                 answer. ``edge_type`` is closed the same way.
+                ``exclude_terminal_lifecycle`` is a rule rather than a
+                value: it drops documents whose lifecycle state the vault
+                declares terminal, resolving that set from the vault's
+                own configuration so the caller need not name the states.
+                It narrows alongside ``lifecycle_status`` rather than
+                replacing it, and constrains nothing in a vault that
+                declares no terminal state.
                 The ``tier3_metadata`` key takes a dict of field-name to
                 expected-value pairs that match against each document's
                 ``tier3_metadata``. Equality is exact; ``null``
@@ -1791,6 +1801,7 @@ def register_sage_tools(
                     "doc_type": doc_type,
                     "project": project,
                     "lifecycle_status": lifecycle_status,
+                    "exclude_terminal_lifecycle": exclude_terminal_lifecycle,
                     "tags": tags,
                     "document_ids": document_ids,
                     "pipeline_status": pipeline_status,
@@ -2545,6 +2556,12 @@ def register_sage_tools(
         For the default ``ingest_document`` path (``needs_review=false``),
         documents land with ``metadata_confirmed=true`` and never appear
         here.
+
+        This queue is deliberately not filtered by lifecycle state.
+        Reviewing a retired document's metadata is legitimate, and this
+        is the only surface that reaches it. ``pending_metadata_count``
+        on ``get_vault_stats`` excludes documents in a terminal
+        lifecycle state, so this list can be longer than that count.
 
         Args:
             vault_id: Target vault identifier.

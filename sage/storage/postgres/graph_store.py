@@ -564,6 +564,18 @@ class PostgresGraphStore(GraphStore):
             if filters.get("has_authority_scope"):
                 where_clauses.append("authority_scope IS NOT NULL AND authority_scope <> %s")
                 params.append("")
+            # Also a rule rather than a value, and a negated one: the
+            # caller names a population to drop, not one to match. The
+            # same predicate the pipeline-status counts use, so a count
+            # and the listing that opens it resolve identically. An
+            # empty sequence is falsy here and emits nothing, which is
+            # the difference between excluding nobody and matching
+            # nobody -- `<> ALL` over an empty array is true for every
+            # row, but a vault that declares no terminal state should
+            # not be paying for a clause at all.
+            if filters.get("exclude_lifecycle_statuses"):
+                where_clauses.append("lifecycle_status <> ALL(%s)")
+                params.append(list(filters["exclude_lifecycle_statuses"]))
             if "document_ids" in filters and filters["document_ids"]:
                 placeholders = ",".join("%s" for _ in filters["document_ids"])
                 where_clauses.append(f"id IN ({placeholders})")

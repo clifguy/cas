@@ -1954,9 +1954,12 @@ _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
     "doc_type": "str",
     "project": "str",
     "lifecycle_status": "str",
+    "exclude_terminal_lifecycle": "bool",
     "tags": "list[str]",
     "document_ids": "list[DocumentIdStr]",
     "pipeline_status": "str",
+    "source_id": "DocumentIdStr",
+    "target_id": "DocumentIdStr",
     "tier3_metadata": "dict",
 }
 

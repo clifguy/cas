@@ -13,7 +13,12 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, Outlet } from 'react-router';
 import Dashboard from '../Dashboard';
 import type { VaultContext } from '../../App';
-import type { LastOptimizeSummary, VaultStats, VaultSummary } from '../../api/types';
+import type {
+  HealthIndicators,
+  LastOptimizeSummary,
+  VaultStats,
+  VaultSummary,
+} from '../../api/types';
 
 vi.mock('../../api/vaults', () => ({
   getVaultStats: vi.fn(),
@@ -38,6 +43,7 @@ function makeStats(
   liveRows: number,
   freePages = 0,
   lastOptimize: LastOptimizeSummary | null = null,
+  health: Partial<HealthIndicators> = {},
 ): VaultStats {
   return {
     total_documents: 1,
@@ -60,6 +66,7 @@ function makeStats(
       deferred_abstract_count: 0,
       failed_ingestion_count: 0,
       interrupted_abstract_count: 0,
+      ...health,
     },
   };
 }
@@ -148,5 +155,49 @@ describe('Dashboard storage stats', () => {
     expect(screen.getByText('Content Store')).toBeInTheDocument();
     // sqlite_size_bytes is retired; its card must not render.
     expect(screen.queryByText('SQLite')).not.toBeInTheDocument();
+  });
+});
+
+describe('Dashboard health-card drill-down links', () => {
+  // The counters exclude documents in a terminal lifecycle state; the
+  // links they sit on did not, so a card reading 0 could open a list of
+  // 1. Asserting the href alone would pass against a card wired to the
+  // wrong counter, so each case reads the rendered count in the same
+  // breath as the link it opens.
+  const cards = [
+    ['Deferred abstracts', 'abstraction_skipped', 'deferred_abstract_count'],
+    ['Failed ingestions', 'failed', 'failed_ingestion_count'],
+    ['Interrupted abstracts', 'abstraction_interrupted', 'interrupted_abstract_count'],
+  ] as const;
+
+  it.each(cards)(
+    'the %s card opens a list constrained to the population it counted',
+    async (label, pipelineStatus, counter) => {
+      mockGetVaultStats.mockResolvedValue(makeStats(3, 100, 0, null, { [counter]: 7 }));
+      renderDashboard();
+
+      const link = await screen.findByRole('link', { name: new RegExp(label, 'i') });
+      const href = link.getAttribute('href') ?? '';
+      const params = new URLSearchParams(href.slice(href.indexOf('?')));
+
+      expect(href.startsWith('/search?')).toBe(true);
+      expect(params.get('pipeline_status')).toBe(pipelineStatus);
+      expect(params.get('exclude_terminal_lifecycle')).toBe('1');
+      expect(link).toHaveTextContent('7');
+    },
+  );
+
+  it('leaves the deferred card unlinked when abstracts are disabled', async () => {
+    // The null-count branch renders a plain div rather than a Link. It
+    // is the one health card that must not gain a drill-down, and a
+    // refactor that routes every card through one link builder is
+    // exactly what would quietly give it one.
+    mockGetVaultStats.mockResolvedValue(
+      makeStats(3, 100, 0, null, { deferred_abstract_count: null as unknown as number }),
+    );
+    renderDashboard();
+
+    await screen.findByText('Abstracts disabled');
+    expect(screen.queryByRole('link', { name: /Deferred abstracts/i })).toBeNull();
   });
 });

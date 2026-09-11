@@ -109,6 +109,21 @@ export default function Review() {
 
       {activeTab === 'metadata' ? (
         <>
+          {/* The dashboard's pending-metadata count excludes documents in a
+              terminal lifecycle state; this queue does not, because reviewing
+              a retired document's metadata is legitimate and this is the only
+              surface that reaches it. The divergence is by design, so the
+              number and the list are both right -- but only if the difference
+              is stated where the list is read. Scoped to this tab: the edge
+              queue diverges from its own counter for an unrelated reason. */}
+          <p
+            data-testid="pending-metadata-lifecycle-note"
+            style={{ margin: '0 0 12px', fontSize: 12, color: '#666' }}
+          >
+            This queue includes retired documents. The dashboard&rsquo;s pending-metadata
+            count leaves out documents in a terminal lifecycle state, so this list can be
+            longer than that number.
+          </p>
           {selectedIds.size > 0 && (
             <BulkActionBar
               count={selectedIds.size}
