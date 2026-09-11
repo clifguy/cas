@@ -34,7 +34,9 @@ against an empty set on every real workflow.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import textwrap
 from pathlib import Path
 from typing import Any, Final
@@ -124,6 +126,24 @@ def skip_gating_env(job: dict[str, Any], step: dict[str, Any]) -> dict[str, str]
     }
 
 
+def divergence(
+    running: dict[str, str], measured: dict[str, str]
+) -> dict[str, dict[str, str | None]]:
+    """Names on which the two environments disagree, in either direction.
+
+    A name set on one side alone is a disagreement, so the union of the two key
+    sets is the domain. Iterating one side's keys would leave the other
+    direction unchecked: a variable added to the measuring job and not to the
+    running one moves tests into or out of the measured set just as surely, and
+    that is the direction an opt-in tier switched on for the measurement takes.
+    """
+    return {
+        name: {"test job": running.get(name), "measured": measured.get(name)}
+        for name in sorted(set(running) | set(measured))
+        if running.get(name) != measured.get(name)
+    }
+
+
 def steps_running(job: dict[str, Any], fragment: str) -> list[dict[str, Any]]:
     """Every step whose ``run:`` body contains ``fragment``."""
     return [
@@ -203,11 +223,7 @@ def test_the_surface_job_measures_the_test_job_environment() -> None:
     running = _running_environment()
 
     for label, measured in _measuring_environments():
-        divergent = {
-            name: {"test job": running.get(name), label: measured.get(name)}
-            for name in sorted(set(running) | set(measured))
-            if running.get(name) != measured.get(name)
-        }
+        divergent = divergence(running, measured)
         assert not divergent, (
             f"the {SURFACE_JOB!r} step {label!r} measures a different environment "
             f"than the {TEST_JOB!r} job runs, on {sorted(divergent)}: {divergent}. A "
@@ -251,6 +267,87 @@ def test_the_surface_job_resolves_a_base_for_every_ci_event() -> None:
         f"the base-resolution step has no arm for {missing}; a {missing} run would "
         "skip the comparison and report success having measured nothing"
     )
+
+
+def _run_base_step(env: dict[str, str], tmp_path: Path) -> tuple[int, str]:
+    """Execute the base-resolution step's own shell body, and return its result.
+
+    The script is extracted from the workflow rather than restated, so this
+    exercises the shell that will actually run. ``git`` is reachable because
+    the step's reachability probe runs against whatever repository the working
+    directory sits in; every case below resolves before that probe or supplies
+    a value it can refuse.
+    """
+    script = step_script(_job(_load(CI_WORKFLOW), SURFACE_JOB), BASE_STEP_ID)
+    assert script, "the base-resolution step has no shell body; this control runs nothing"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    output = tmp_path / "github_output"
+    output.touch()
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO_ROOT,
+        env={"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), **env},
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, output.read_text(encoding="utf-8") + result.stdout + result.stderr
+
+
+def test_an_unresolved_base_fails_on_events_that_always_carry_one(tmp_path: Path) -> None:
+    """An empty base on a pull request or a queue entry is a broken step, not an absence.
+
+    Both events always carry a base, so an empty one means the resolution
+    itself broke — a payload expression that stopped resolving, a renamed
+    variable reference. Treated as an ordinary absence it writes an empty
+    output, both dependent steps skip on their own conditions, and the job goes
+    green having measured nothing: the outcome this job exists to prevent,
+    reached through the job rather than through the suite.
+
+    The structural gate above cannot see this. It asks whether each event has
+    an arm, never what the arm yields.
+    """
+    for event, blanked in (
+        ("pull_request", "PR_BASE_SHA"),
+        ("merge_group", "MERGE_GROUP_BASE_SHA"),
+    ):
+        code, log = _run_base_step({"EVENT_NAME": event, blanked: ""}, tmp_path / event)
+        assert code != 0, f"an empty base on {event} must fail the step, not skip it:\n{log}"
+        assert "sha=" not in log, f"a failing resolution must publish no base:\n{log}"
+
+
+def test_a_first_push_still_resolves_to_no_base(tmp_path: Path) -> None:
+    """The one event that legitimately has no base still skips rather than fails.
+
+    Control on the test above: a guard that failed on every empty base would
+    red the first push to a branch, which has nothing to compare against and
+    nothing wrong with it.
+    """
+    code, log = _run_base_step(
+        {"EVENT_NAME": "push", "PUSH_BEFORE_SHA": "0" * 40}, tmp_path / "push"
+    )
+    assert code == 0, f"a first push must not fail the step:\n{log}"
+    assert "sha=\n" in log or log.rstrip().endswith("sha="), (
+        f"a first push must publish an empty base:\n{log}"
+    )
+
+
+def test_a_resolvable_base_is_published(tmp_path: Path) -> None:
+    """Control on both tests above: a real revision resolves and is published.
+
+    Without this, a step that failed or emptied unconditionally would satisfy
+    them both.
+    """
+    head = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    code, log = _run_base_step(
+        {"EVENT_NAME": "pull_request", "PR_BASE_SHA": head}, tmp_path / "real"
+    )
+    assert code == 0, f"a resolvable base must not fail the step:\n{log}"
+    assert f"sha={head}" in log, f"the resolved base must be published:\n{log}"
 
 
 def test_the_surface_job_compares_only_when_a_base_resolved() -> None:
@@ -344,9 +441,18 @@ def test_the_environment_extractor_reports_a_real_divergence() -> None:
     assert "SAGE_TEST_PG_DSN" in running
     assert "SAGE_TEST_PG_DSN" not in measured, "a variable on one side alone must be visible"
     assert "SAGE_TEST_DOCKER" in measured
-    assert "SAGE_TEST_DOCKER" not in running, "divergence must be visible in both directions"
+    assert "SAGE_TEST_DOCKER" not in running, "the fixture must carry a measured-only name"
     assert running["SAGE_TEST_STUB_PROVIDERS"] == measured["SAGE_TEST_STUB_PROVIDERS"] == "1"
     assert "HF_HUB_OFFLINE" not in running, "the prefix scopes the comparison"
+
+    # The comparison itself, not just the extractor. A loop over one side's
+    # names passes the whole file otherwise: the direction the gate misses is
+    # an opt-in tier switched on for the measurement alone, which is the very
+    # shape the surface job exists to catch, one level up on the gate.
+    assert sorted(divergence(running, measured)) == ["SAGE_TEST_DOCKER", "SAGE_TEST_PG_DSN"], (
+        "the comparison must report a divergence from either side"
+    )
+    assert divergence(running, running) == {}, "an environment cannot diverge from itself"
 
 
 def test_the_trigger_reader_handles_both_spellings_of_the_on_key() -> None:

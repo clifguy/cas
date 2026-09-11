@@ -413,26 +413,42 @@ def test_a_moved_test_is_not_reported_as_lost(tmp_path: Path) -> None:
 
 
 def test_a_deletion_beside_a_namesake_is_reported_as_lost(tmp_path: Path) -> None:
-    """A module can not hide its deletion behind a namesake in another module.
+    """One test goes, its module stays, and a namesake lives in another module.
 
-    Two modules carry the same ``Class::method``; one is deleted. The leaf key
-    still exists in the head active set, so an escape asking only whether the
-    name survives reports a move and exits clean -- which, measured against the
-    live tree, would let a whole module's worth of tests disappear unseen. The
-    population comparison sees the count drop from two to one.
+    Two modules carry the same ``Class::method``; one of the two is deleted
+    while the module holding it keeps its other tests. The leaf key still
+    exists in the head active set, so an escape asking only whether the name
+    survives reports a move and exits clean. The population comparison sees the
+    count drop from two to one.
+
+    The source module is kept alive deliberately. Deleting it along with the
+    test would leave a second signal on the table -- whether the module still
+    has any active tests -- and a rival reading *that* as the loss condition
+    passes every other test in this file while masking, on the live tree, every
+    single-test deletion among the 174 ids whose leaf key recurs elsewhere. The
+    whole-module shape stays covered by the declared-removal test below.
     """
     before = _measure(
         _tree(
             tmp_path,
             "before",
-            {"test_home.py": _MOVE_AFTER_DESTINATION, "test_twin.py": _NAMESAKE_TWIN},
+            {"test_home.py": _MOVE_BEFORE_HOME, "test_twin.py": _NAMESAKE_TWIN},
         )
     )
-    after = _measure(_tree(tmp_path, "after", {"test_twin.py": _NAMESAKE_TWIN}))
+    after = _measure(
+        _tree(
+            tmp_path,
+            "after",
+            {"test_home.py": _MOVE_AFTER_HOME, "test_twin.py": _NAMESAKE_TWIN},
+        )
+    )
 
     assert leaf_key("test_home.py::TestThing::test_travels") in {
         leaf_key(node_id) for node_id in after["active"]
     }, "the surviving namesake must keep the leaf key present, or this control proves nothing"
+    assert any(node_id.startswith("test_home.py::") for node_id in after["active"]), (
+        "the source module must keep a test, or a module-survival rival passes this control"
+    )
 
     verdict = classify(before, after, removals={})
 

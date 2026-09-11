@@ -265,9 +265,9 @@ jobs:
         run: |
           set -euo pipefail
           # One arm per event this workflow answers. An event with no base to
-          # compare against (the first push to a branch) resolves to empty and
-          # the comparison steps below are skipped, rather than the job
-          # inventing a base and reporting a comparison it did not make.
+          # compare against resolves to empty and the comparison steps below
+          # are skipped, rather than the job inventing a base and reporting a
+          # comparison it did not make.
           case "$EVENT_NAME" in
             pull_request) sha="$PR_BASE_SHA" ;;
             merge_group)  sha="$MERGE_GROUP_BASE_SHA" ;;
@@ -280,8 +280,21 @@ jobs:
               ;;
             *) sha="" ;;
           esac
-          # A base the checkout does not carry (a force-pushed or pruned
-          # revision) is reported and skipped, not silently treated as absent.
+          # Only a first push legitimately has no base. On every other event a
+          # base always exists, so an empty one is a broken step -- a payload
+          # expression that stopped resolving, an `env:` key renamed without its
+          # reference (`set -u` catches an unset name, not a declared-but-empty
+          # one) -- and skipping it would leave the job green having measured
+          # nothing, which is the outcome this whole job exists to prevent.
+          if [ -z "$sha" ] && [ "$EVENT_NAME" != push ]; then
+            echo "no base revision resolved for a ${EVENT_NAME} event, which always carries one;" >&2
+            echo "the resolution is broken rather than inapplicable, so this is a failure" >&2
+            exit 1
+          fi
+          # A base the checkout does not carry is a different case, and also
+          # anomalous under `fetch-depth: 0`: reported and skipped rather than
+          # silently treated as absent, because a force-push can legitimately
+          # strand one and failing there would block a branch nobody can fix.
           if [ -n "$sha" ] && ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
             echo "base revision ${sha} is not present in this checkout; skipping the comparison"
             sha=""
@@ -318,11 +331,20 @@ jobs:
           # dependencies stay the base's own, which is what makes the
           # measurement of that revision honest. This also covers the landing
           # where the base predates the check entirely.
-          mkdir -p "${RUNNER_TEMP}/base/scripts"
-          cp scripts/check_test_surface.py "${RUNNER_TEMP}/base/scripts/"
+          #
+          # The copy lives OUTSIDE the base tree, and that placement is
+          # load-bearing. Dropped into the tree's own `scripts/`, it becomes
+          # what the base's test modules import — so a change here that renames
+          # an exported name would break the base tree's collection and report
+          # the whole comparison as unusable, reddening the job for a change
+          # that lost no tests, on exactly the pull requests that touch this
+          # script. Run by path from elsewhere, nothing imports it: the script
+          # is self-contained and the base's own `scripts/` stays untouched.
+          cp scripts/check_test_surface.py "${RUNNER_TEMP}/check_test_surface.py"
           cd "${RUNNER_TEMP}/base"
           uv sync --locked --extra test
-          .venv/bin/python scripts/check_test_surface.py --emit --out "${RUNNER_TEMP}/base.json"
+          .venv/bin/python "${RUNNER_TEMP}/check_test_surface.py" \
+            --emit --out "${RUNNER_TEMP}/base.json"
 
       - name: Compare
         if: steps.base.outputs.sha != ''
