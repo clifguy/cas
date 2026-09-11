@@ -784,7 +784,10 @@ class StubGraphStore(GraphStore):
         # identically to the durable store rather than following its own
         # insertion order. One sort covers both arms the SQL spells
         # separately: an empty preference gives every document the same
-        # leading key, leaving the id to decide alone.
+        # leading key, leaving the id to decide alone. Python compares
+        # strings by code point, which is the byte ordering the durable
+        # store pins with COLLATE "C"; the two agree by construction rather
+        # than by coincidence.
         for d in sorted(
             self._docs.values(),
             key=lambda doc: (doc.lifecycle_status not in prefer_lifecycle_statuses, doc.id),

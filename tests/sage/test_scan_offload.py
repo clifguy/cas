@@ -398,18 +398,27 @@ async def test_scan_states_the_vaults_surviving_states_to_the_hash_lookup(extend
     one that would put the scan's answer at odds with ingest's the moment it
     reported which document matched.
 
-    The *extended* config, not the minimal one, and that is the whole of what
-    makes this discriminating. The base lifecycle's surviving set is exactly
-    ``{active, completed}``, so a scan that hard-coded that literal -- the one
-    thing the port's contract forbids, because the set is the vault's to
-    declare -- would satisfy this assertion against a base vault and no other
-    test would notice. The extended vault adds a non-terminal ``filed`` state
-    that no supersession lands in, so its surviving set is a third value the
-    literal does not contain.
+    The *extended* config, not the minimal one, and that is what makes this
+    discriminating against two further rivals. The base lifecycle's surviving
+    set is exactly ``{active, completed}``, so a scan that hard-coded that
+    literal -- the one thing the port's contract forbids, because the set is
+    the vault's to declare -- would satisfy this assertion against a base
+    vault and no other test would notice. And on the base lifecycle
+    ``archived`` is at once the only terminal state and the only supersede
+    landing, so a scan complementing ``terminal_states()`` would compute the
+    same set by a different rule. The extended vault separates both.
     """
-    assert "filed" in extended_config.lifecycle.supersession_surviving_states(), (
+    lifecycle = extended_config.lifecycle
+    surviving = lifecycle.supersession_surviving_states()
+    declared = frozenset(state.value for state in lifecycle.states)
+    assert "filed" in surviving and "sealed" in surviving, (
         "fixture no longer extends the surviving set; the assertion below "
         "would pass against a hard-coded base-lifecycle literal"
+    )
+    assert surviving != declared - lifecycle.terminal_states(), (
+        "fixture no longer separates the surviving set from the non-terminal "
+        "set; the assertion below would pass against a caller reading "
+        "terminal_states() instead"
     )
     scan_dir = _vault_imports(extended_config)
     (scan_dir / "stated.md").write_text("# Stated")

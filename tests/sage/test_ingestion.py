@@ -146,7 +146,7 @@ async def test_duplicate_content_names_the_surviving_document_when_several_hold_
 
 
 async def test_ingest_states_the_vaults_surviving_states_to_every_hash_lookup(
-    tmp_vault_dir, graph_store, ingestion_service, minimal_config, monkeypatch
+    tmp_vault_dir, graph_store, extended_ingestion_service, extended_config, monkeypatch
 ):
     """Every hash lookup the ingest path makes carries the vault's own rule.
 
@@ -156,8 +156,22 @@ async def test_ingest_states_the_vaults_surviving_states_to_every_hash_lookup(
     -- would still answer correctly on a vault holding one document per hash,
     which is every other fixture in this file. Recording the argument is what
     separates "asked under the vault's rule" from "asked at all".
+
+    The *extended* vault, because two further rivals are invisible against a
+    base one. Its surviving set is exactly ``{active, completed}``, so a call
+    site hard-coding that literal satisfies the assertion; and ``archived`` is
+    at once its only terminal state and its only supersede landing, so a call
+    site complementing ``terminal_states()`` computes the same set by a
+    different rule. The two guards below fail first if the fixture ever stops
+    separating either.
     """
-    expected = minimal_config.lifecycle.supersession_surviving_states()
+    lifecycle = extended_config.lifecycle
+    expected = lifecycle.supersession_surviving_states()
+    declared = frozenset(state.value for state in lifecycle.states)
+    assert "sealed" in expected, "fixture no longer widens the surviving set"
+    assert expected != declared - lifecycle.terminal_states(), (
+        "fixture no longer separates the surviving set from the non-terminal set"
+    )
     seen: list[frozenset[str]] = []
     real = graph_store.find_documents_by_hashes
 
@@ -168,7 +182,7 @@ async def test_ingest_states_the_vaults_surviving_states_to_every_hash_lookup(
     monkeypatch.setattr(graph_store, "find_documents_by_hashes", recording)
 
     _create_test_file(tmp_vault_dir, "reports/preference.md")
-    await ingestion_service.ingest(
+    await extended_ingestion_service.ingest(
         IngestRequest(
             source="reports/preference.md",
             source_type=SourceType.MARKDOWN,

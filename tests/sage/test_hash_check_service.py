@@ -115,11 +115,20 @@ _CONFIG = VaultConfig.model_validate(
 )
 
 
-# The same vault with one more state a supersession does not retire into.
-# The base lifecycle's surviving set is exactly `{active, completed}`, so an
-# assertion made against a base vault cannot separate "read the vault's rule"
-# from "hard-coded that literal" -- which is the one thing the port's contract
-# forbids, the set being the vault's to declare. `filed` is that separation.
+# The same vault with one more state a supersession does not retire into, and
+# that state is terminal. Both properties are load-bearing and they close
+# different rivals.
+#
+# Not-retired-into: the base lifecycle's surviving set is exactly
+# `{active, completed}`, so an assertion made against a base vault cannot
+# separate "read the vault's rule" from "hard-coded that literal" -- the one
+# thing the port's contract forbids, the set being the vault's to declare.
+#
+# Terminal: on the base lifecycle `archived` is at once the only terminal
+# state and the only supersede landing, so `supersession_surviving_states()`
+# and the complement of `terminal_states()` are the same set, and a call site
+# reading the second when it means the first is invisible. `sealed` is in the
+# first and not in the second.
 _EXTENDED_CONFIG = VaultConfig.model_validate(
     {
         **_CONFIG.model_dump(mode="json"),
@@ -127,11 +136,11 @@ _EXTENDED_CONFIG = VaultConfig.model_validate(
             **_CONFIG.lifecycle.model_dump(mode="json"),
             "states": [
                 *_CONFIG.lifecycle.model_dump(mode="json")["states"],
-                {"value": "filed", "label": "Filed"},
+                {"value": "sealed", "label": "Sealed", "is_terminal": True},
             ],
             "transitions": [
                 *_CONFIG.lifecycle.model_dump(mode="json")["transitions"],
-                {"from_state": "active", "action": "file", "to_state": "filed"},
+                {"from_state": "active", "action": "seal", "to_state": "sealed"},
             ],
         },
     }
@@ -262,17 +271,26 @@ async def test_hash_check_states_the_vaults_surviving_states_to_the_store():
     the same answer -- so only the recorded argument distinguishes a service
     that asked under the vault's rule from one that did not ask for any.
 
-    Run against the *extended* vault, which is what separates the third rival
-    the two above do not reach: a service that hard-coded the base lifecycle's
-    ``{active, completed}``. Against a base vault that literal and the derived
-    set are the same value, so the assertion would hold while the contract --
-    the set is the vault's to declare -- was being broken.
+    Run against the *extended* vault, which separates two further rivals the
+    two named above do not reach. One is a service that hard-coded the base
+    lifecycle's ``{active, completed}``: against a base vault that literal and
+    the derived set are the same value, so the assertion would hold while the
+    contract -- the set is the vault's to declare -- was being broken. The
+    other is a service reading ``terminal_states()`` and complementing it,
+    which is a different rule that happens to agree on the base lifecycle.
     """
     service, store = await _service(_CANONICAL, config=_EXTENDED_CONFIG)
-    surviving = _EXTENDED_CONFIG.lifecycle.supersession_surviving_states()
-    assert "filed" in surviving, (
+    lifecycle = _EXTENDED_CONFIG.lifecycle
+    surviving = lifecycle.supersession_surviving_states()
+    declared = frozenset(state.value for state in lifecycle.states)
+    assert "sealed" in surviving, (
         "extended config no longer widens the surviving set; the assertion "
         "below would pass against a hard-coded base-lifecycle literal"
+    )
+    assert surviving != declared - lifecycle.terminal_states(), (
+        "extended config no longer separates the surviving set from the "
+        "non-terminal set; the assertion below would pass against a service "
+        "reading terminal_states() instead"
     )
 
     await service.hash_check(HashCheckRequest(hashes=[_CANONICAL]))

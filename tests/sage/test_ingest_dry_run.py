@@ -206,6 +206,51 @@ def dry_ingestion_service(
 
 
 @pytest.fixture
+def sealed_config(tmp_vault_dir):
+    """`dry_config` plus a terminal state no supersession lands in.
+
+    Scoped to the one test that needs it rather than added to `dry_config`,
+    whose action vocabulary another test pins as an exact list -- widening the
+    shared vault to serve this one would put a state that test has no interest
+    in inside its assertion.
+
+    Why the state has to be both terminal and supersession-surviving: on the
+    base table `archived` is at once the only terminal state and the only
+    supersede landing, so `supersession_surviving_states()` and the complement
+    of `terminal_states()` compute to the same set. A caller reading the second
+    when the contract names the first is invisible to any assertion made
+    against a base vault. `sealed` is in the first and not in the second.
+    """
+    raw = _config_dict(tmp_vault_dir)
+    raw["lifecycle"]["states"].append({"value": "sealed", "label": "Sealed", "is_terminal": True})
+    raw["lifecycle"]["transitions"].append(
+        {"from_state": "active", "action": "seal", "to_state": "sealed"}
+    )
+    return VaultConfig.model_validate(raw)
+
+
+@pytest.fixture
+def sealed_ingestion_service(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    sealed_config,
+):
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=sealed_config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=LifecycleService(graph_store, lock_manager, sealed_config),
+    )
+
+
+@pytest.fixture
 def dry_metadata_service(graph_store, lock_manager, dry_config, stub_content_store):
     return MetadataService(graph_store, lock_manager, dry_config, stub_content_store)
 
@@ -441,7 +486,7 @@ async def test_dry_run_duplicate_verdict_names_the_same_document_as_the_refusal(
 
 
 async def test_dry_run_states_the_vaults_surviving_states_to_the_hash_lookup(
-    tmp_vault_dir, graph_store, dry_config, dry_ingestion_service, monkeypatch
+    tmp_vault_dir, graph_store, sealed_config, sealed_ingestion_service, monkeypatch
 ):
     """The preview asks under the vault's rule, not a preference of its own.
 
@@ -451,8 +496,21 @@ async def test_dry_run_states_the_vaults_surviving_states_to_the_hash_lookup(
     from the refusal: two call sites, one contract, and only the argument
     shows they still agree before a colliding vault makes them disagree
     visibly.
+
+    The vault declares a `sealed` state for this test's benefit, and the two
+    guards below say why. Without a state outside `{active, completed}` a
+    preview hard-coding that literal passes; without a state that is terminal
+    yet survives supersession, a preview complementing `terminal_states()`
+    passes. Both are rules the port's contract forbids and neither is visible
+    against a base lifecycle.
     """
-    expected = dry_config.lifecycle.supersession_surviving_states()
+    lifecycle = sealed_config.lifecycle
+    expected = lifecycle.supersession_surviving_states()
+    declared = frozenset(state.value for state in lifecycle.states)
+    assert "sealed" in expected, "vault no longer widens the surviving set"
+    assert expected != declared - lifecycle.terminal_states(), (
+        "vault no longer separates the surviving set from the non-terminal set"
+    )
     seen: list[frozenset[str]] = []
     real = graph_store.find_documents_by_hashes
 
@@ -463,7 +521,7 @@ async def test_dry_run_states_the_vaults_surviving_states_to_the_hash_lookup(
     source = _write(tmp_vault_dir, "preview_preference.md", "# Preview\n\nPreference.")
     monkeypatch.setattr(graph_store, "find_documents_by_hashes", recording)
 
-    await dry_ingestion_service.ingest(
+    await sealed_ingestion_service.ingest(
         IngestRequest(
             source=str(source),
             source_type=SourceType.MARKDOWN,

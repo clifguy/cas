@@ -1026,7 +1026,10 @@ class GraphStore(ABC):
         hash, so the answer does not depend on storage order. Which one is
         stated here: a document whose lifecycle status is in
         ``prefer_lifecycle_statuses`` outranks one whose status is not, and
-        among equals the lowest-ordering document id wins.
+        among equals the lowest document id by byte value wins. Byte value,
+        not a locale's ordering: a collation that sorts punctuation by its own
+        rules would make the answer depend on where the store runs, and would
+        put two bindings of this port at odds on the same vault.
 
         The preference is a *rank*, not a filter. A hash carried only by
         documents outside the preferred set still answers, with the lowest id
@@ -1049,8 +1052,9 @@ class GraphStore(ABC):
 
         Paths no document carries are absent from the mapping. Several
         documents may share a source path (re-ingest, supersession); the
-        lowest-ordering document id represents the path, so the answer does
-        not depend on storage order. No lifecycle filtering is applied.
+        lowest document id by byte value represents the path, so the answer
+        does not depend on storage order or on the store's locale. No
+        lifecycle filtering is applied.
         """
 
     @abstractmethod
@@ -1063,9 +1067,10 @@ class GraphStore(ABC):
         a different question: that one collapses the several-documents-one-path
         case to a single representative, because provenance needs one answer.
         A caller asking who else holds a path needs all of them, so nothing is
-        collapsed here. Ids are ordered within a path so the answer does not
-        depend on storage order; paths no document carries are absent from the
-        mapping. No lifecycle filtering is applied.
+        collapsed here. Ids are ordered by byte value within a path so the
+        answer depends on neither storage order nor the store's locale; paths
+        no document carries are absent from the mapping. No lifecycle
+        filtering is applied.
         """
 
     @abstractmethod

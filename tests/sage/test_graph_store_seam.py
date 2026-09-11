@@ -345,6 +345,47 @@ async def test_hash_lookup_agrees_between_stub_and_concrete(graph_store):
     }
 
 
+async def test_hash_lookup_tie_break_agrees_on_ids_the_two_comparators_order_differently(
+    graph_store,
+):
+    """T8c: the id tie-break is byte order in both bindings, not the locale's.
+
+    Every other fixture in this file and in the store's own group pins ids
+    whose eight-hex prefixes differ, so the tie-break arm never runs and no
+    assertion anywhere reaches the comparator. These two ids tie on the prefix
+    and differ only at a character the two comparators order oppositely: the
+    server's default collation ranks ``_`` before ``2`` here, while byte order
+    and Python both rank it after. Reproduced against the test server before
+    this test was written.
+
+    Trap, and it is the one that matters: remove ``COLLATE "C"`` from the
+    store's ORDER BY and this goes red while the entire rest of the suite
+    stays green -- the divergence needs a prefix tie to become visible at all.
+    A store left on the locale also answers differently on a macOS server and
+    on a Linux one, so a green suite on one would say nothing about the other.
+    """
+    shared = "seam_collation"
+    under = _seam_doc("0a1b2c3d_v_2", shared)
+    digit = _seam_doc("0a1b2c3d_v2a", shared)
+
+    stub = StubGraphStore()
+    for doc in (under, digit):
+        await stub.insert_document(doc)
+        await graph_store.insert_document(doc)
+
+    hashes = [under.source_content_hash]
+    from_stub = await stub.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=_SEAM_SURVIVING_STATES
+    )
+    from_concrete = await graph_store.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=_SEAM_SURVIVING_STATES
+    )
+
+    assert from_stub == from_concrete
+    # "2" (0x32) sorts below "_" (0x5f), so the digit-bearing id is lowest.
+    assert from_concrete == {under.source_content_hash: digit.id}
+
+
 def test_stub_hash_lookup_signature_matches_port():
     """T8b: the stub's hash lookup carries the port's signature exactly.
 
