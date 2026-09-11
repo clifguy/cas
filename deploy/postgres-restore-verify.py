@@ -318,11 +318,20 @@ def verify(
         f"sentinelAfterId={sentinel_after}",
     )
     name = verify_job_name(environment)
-    az("containerapp", "job", "start", "--resource-group", group, "--name", name)
+    # Poll the execution this start created, by name. Reading the job's execution
+    # list and taking the newest entry looks equivalent and is not: a just-started
+    # execution is briefly absent from that list, so the newest entry is the
+    # *previous* run — already terminal on a second drill against the same job,
+    # which would report its status and its logs as if they were this run's.
+    started = az("containerapp", "job", "start", "--resource-group", group, "--name", name)
+    execution = (started or {}).get("name")
+    if not execution:
+        raise RuntimeError(f"job start returned no execution name for {name!r}")
     return wait_job(
         az,
         group,
         name,
+        execution,
         poll_seconds=poll_seconds,
         budget_seconds=budget_seconds,
         sleep=sleep,
@@ -333,6 +342,7 @@ def wait_job(
     az: Azure,
     group: str,
     name: str,
+    execution: str,
     *,
     poll_seconds: float,
     budget_seconds: float,
@@ -340,23 +350,21 @@ def wait_job(
 ) -> dict:
     deadline = time.monotonic() + budget_seconds
     while True:
-        executions = (
-            az(
-                "containerapp",
-                "job",
-                "execution",
-                "list",
-                "--resource-group",
-                group,
-                "--name",
-                name,
-            )
-            or []
+        current = az(
+            "containerapp",
+            "job",
+            "execution",
+            "show",
+            "--resource-group",
+            group,
+            "--name",
+            name,
+            "--job-execution-name",
+            execution,
         )
-        latest = executions[0] if executions else None
-        status = (latest or {}).get("properties", {}).get("status")
+        status = (current or {}).get("properties", {}).get("status")
         if status in ("Succeeded", "Failed", "Stopped"):
-            return {"execution": (latest or {}).get("name"), "status": status}
+            return {"execution": execution, "status": status}
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"verification job {name!r} did not reach a terminal status inside "
@@ -406,7 +414,10 @@ def cleanup(az: Azure, *, environment: str, group: str, run_id: str) -> dict:
             "drill resources survived their delete: "
             + ", ".join(sorted(surviving_servers + surviving_jobs))
         )
-    return {"removed": removed, "run_id": run_id}
+    # Drill-shaped servers this run does not own are reported, never deleted. The
+    # operator surface is this result, so a teardown that merely skipped them
+    # would leave them invisible to everyone but a reader of the source.
+    return {"removed": removed, "run_id": run_id, "inspect": adoptable(az, group, run_id)}
 
 
 def adoptable(az: Azure, group: str, run_id: str) -> list[str]:
@@ -439,8 +450,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def assert_run_id(run_id: str) -> str:
+    """Every action's run id, checked once at the boundary rather than per action.
+
+    Only ``provision`` routed it through a pattern check, because only it builds a
+    server name from it. The other two interpolate it into an ARM deployment name
+    and a tag comparison, where a malformed value fails at the control plane
+    instead of at the parser.
+    """
+    if not RUN_ID_PATTERN.match(run_id):
+        raise ValueError("drill run id must be 1-16 lowercase alphanumerics")
+    return run_id
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
+    assert_run_id(arguments.run_id)
     common = {
         "environment": arguments.environment,
         "group": arguments.resource_group,

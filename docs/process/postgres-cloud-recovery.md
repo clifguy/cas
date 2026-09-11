@@ -479,8 +479,8 @@ identity, in a session made read-only by connection option so nothing it runs ca
 relax it, and refuses by address to connect to the serving server at all. It
 reports, and fails closed on: the server major; every workload table's row count
 and ordered content hash; both workload roles, their database CONNECT and CREATE
-grants and their EXECUTE on `pgstattuple`; the required extensions with version,
-schema and owner; and the two sentinels. A missing before-sentinel is reported as
+grants and their EXECUTE on `pgstattuple`; the required extensions with their
+version and schema; and the two sentinels. A missing before-sentinel is reported as
 `recovery_point_undershoot` and a present after-sentinel as
 `recovery_point_overshoot`, each distinct from an ordinary failure.
 
@@ -520,10 +520,16 @@ point-in-time drill as regional disaster-recovery evidence.
 
 ### Teardown
 
+Run one drill at a time per environment. The verification job is named for the
+environment rather than the run, so a `cleanup` for one drill deletes the job a
+concurrent drill is using, and a second `verify` redeploys that job under the
+other drill's parameters.
+
 `cleanup` deletes only a server carrying this drill's ownership tag, and proves
 removal by re-reading rather than by trusting the delete's exit code. A
-drill-named server without that tag is surfaced for an operator to inspect and is
-never adopted automatically, the same discipline the rehearsal cleanup applies.
+drill-named server without that tag is reported in cleanup's `inspect` list for an
+operator to look at, and is never adopted automatically — the same discipline the
+rehearsal cleanup applies.
 Confirm afterwards that both production servers, their majors, their backup
 configuration and both deletion locks are unchanged, and that the private DNS zone
 is back to its pre-drill record set. Delete the throwaway image tag and the

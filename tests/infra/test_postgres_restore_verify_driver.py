@@ -80,6 +80,7 @@ class Azure:
         self.image = IMAGE
         self.delete_is_a_lie = False
         self.job_delete_is_a_lie = False
+        self.started = 0
 
     def __call__(self, *args: str) -> Any:
         self.calls.append(args)
@@ -154,9 +155,18 @@ class Azure:
                 self.jobs = [entry for entry in self.jobs if entry["name"] != name]
             return None
         if prefix == ("containerapp", "job", "start"):
-            return None
+            self.started += 1
+            return {"name": f"exec-{self.started}"}
+        if args[:4] == ("containerapp", "job", "execution", "show"):
+            # Keyed by the execution name the caller asked for. A driver that
+            # polled the job's execution list instead would be served the stale
+            # entry below, which is the defect this shape exists to expose.
+            requested = args[args.index("--job-execution-name") + 1]
+            return {"name": requested, "properties": {"status": self.status}}
         if args[:4] == ("containerapp", "job", "execution", "list"):
-            return [{"name": "exec-1", "properties": {"status": self.status}}]
+            # Newest-first, and deliberately missing the just-started execution:
+            # this is the window in which element 0 is the *previous* run.
+            return [{"name": "exec-stale", "properties": {"status": "Succeeded"}}]
         if prefix == ("deployment", "group", "create"):
             self.jobs.append({"name": "job-pg-restore-verify-prod"})
             return None
@@ -325,6 +335,30 @@ def test_the_drill_name_never_equals_the_serving_name(module: ModuleType) -> Non
 def test_a_malformed_run_id_is_refused(module: ModuleType, run_id: str) -> None:
     with pytest.raises(ValueError):
         module.drill_server_name(SERVING_NAME, run_id)
+
+
+@pytest.mark.parametrize("action", ["provision", "verify", "cleanup"])
+def test_every_action_validates_the_run_id(
+    module: ModuleType, az: Azure, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    # Only `provision` built a server name from the run id, so only it checked the
+    # pattern. The other two interpolate it into an ARM deployment name and a tag
+    # comparison, where a malformed value fails at the control plane rather than
+    # at the parser.
+    monkeypatch.setattr(module, "azure", az)
+    with pytest.raises(ValueError, match="lowercase alphanumerics"):
+        module.main(
+            [
+                action,
+                "--environment",
+                ENVIRONMENT,
+                "--resource-group",
+                GROUP,
+                "--run-id",
+                "Not Valid",
+            ]
+        )
+    assert az.calls == []
 
 
 def test_an_overlong_drill_name_is_refused(module: ModuleType) -> None:
@@ -507,6 +541,33 @@ def test_a_succeeded_job_exits_zero(
     assert code == 0
 
 
+def test_the_polled_execution_is_the_one_start_created(module: ModuleType, az: Azure) -> None:
+    # A just-started execution is briefly absent from the job's execution list,
+    # so the newest listed entry is the previous run — already terminal on a
+    # second drill against the same job. The fake serves a stale `Succeeded`
+    # entry from `execution list`, so a driver reading that list reports the
+    # wrong run's status and points the operator at the wrong logs.
+    az.status = "Failed"
+    result = verify(module, az)
+    assert result["execution"] == "exec-1"
+    assert result["status"] == "Failed"
+    show = az.call("containerapp", "job", "execution", "show")
+    assert az.argument(show, "--job-execution-name") == "exec-1"
+
+
+def test_a_start_returning_no_execution_name_raises(module: ModuleType, az: Azure) -> None:
+    monkey = az.__call__
+
+    def without_name(*args: str) -> Any:
+        if args[:3] == ("containerapp", "job", "start"):
+            az.calls.append(args)
+            return None
+        return monkey(*args)
+
+    with pytest.raises(RuntimeError, match="no execution name"):
+        verify(module, without_name)
+
+
 def test_a_job_that_never_finishes_raises_rather_than_looping(
     module: ModuleType, az: Azure
 ) -> None:
@@ -547,10 +608,22 @@ def test_cleanup_ignores_a_drill_server_from_another_run(module: ModuleType, az:
 def test_an_untagged_drill_shaped_server_is_surfaced_for_inspection(
     module: ModuleType, az: Azure
 ) -> None:
+    # Assert on cleanup's own result, not on the helper. The operator surface is
+    # the result; a teardown that merely skipped the orphan would leave it
+    # invisible to everyone but a reader of the source, and a test calling the
+    # helper directly would pass over that gap.
     az.servers.append(server(f"{SERVING_NAME}-rvorphan"))
-    assert module.adoptable(az, GROUP, RUN_ID) == [f"{SERVING_NAME}-rvorphan"]
-    module.cleanup(az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID)
+    result = module.cleanup(az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID)
+    assert result["inspect"] == [f"{SERVING_NAME}-rvorphan"]
     assert any(entry["name"].endswith("-rvorphan") for entry in az.servers)
+
+
+def test_cleanup_reports_nothing_to_inspect_when_no_orphan_exists(
+    module: ModuleType, az: Azure
+) -> None:
+    provision(module, az)
+    result = module.cleanup(az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID)
+    assert result["inspect"] == []
 
 
 def test_cleanup_fails_when_a_delete_is_accepted_but_nothing_is_removed(
@@ -586,11 +659,22 @@ def test_no_call_ever_mutates_a_serving_resource(module: ModuleType, az: Azure) 
     module.cleanup(az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID)
     mutating = {"update", "delete", "restart", "start", "create", "tag", "revision"}
     serving = {SERVING_NAME, RETAINED_NAME, "job-pg-bootstrap-prod", SERVING_FQDN}
+    # Resource ids as well as names: the one tag write addresses its target by
+    # `--ids`, so a resolver reading only `--name` yields "" for exactly the call
+    # that could reach a serving server, and passes whatever it was pointed at.
+    serving_ids = {
+        entry["id"] for entry in az.servers if entry["name"] in {SERVING_NAME, RETAINED_NAME}
+    }
+    assert serving_ids, "the fixture must carry serving ids for this test to constrain anything"
     for call in az.calls:
         if not set(call) & mutating:
             continue
-        named = call[call.index("--name") + 1] if "--name" in call else ""
-        assert named not in serving, f"a mutating call named a serving resource: {call}"
+        addressed = set()
+        for flag in ("--name", "--ids"):
+            if flag in call:
+                addressed.add(call[call.index(flag) + 1])
+        assert not addressed & serving, f"a mutating call named a serving resource: {call}"
+        assert not addressed & serving_ids, f"a mutating call addressed a serving id: {call}"
         # The one precedent for re-pointing a deployed job is the maintenance
         # dispatch's env merge. A drill must never reach for it: flipping the
         # bootstrap job's address is how production gets bootstrapped elsewhere.
