@@ -1,7 +1,7 @@
 """Graph operations (CAS-ADR-029 v4 plural-noun convention):
 - POST /sage_vaults/{vault_id}/edges -- create_edges (N>=1 items).
 - DELETE /sage_vaults/{vault_id}/edges/{edge_id} -- delete one edge.
-- GET /sage_vaults/{vault_id}/preconditions/{function_id} -- check_preconditions.
+- GET /sage_vaults/{vault_id}/preconditions/{document_id} -- check_preconditions.
 - POST /sage_vaults/{vault_id}/traverse -- traverse.
 - POST /sage_vaults/{vault_id}/chain -- chain.
 """
@@ -14,9 +14,9 @@ from sage.models.schemas import (
     BulkLinkResponse,
     ChainRequest,
     ChainResponse,
+    DocumentIdStr,
     EdgeIdStr,
     ErrorResponse,
-    FunctionIdStr,
     PreconditionResult,
     TraverseRequest,
     TraverseResponse,
@@ -95,9 +95,15 @@ async def unlink(
 
 
 @router.get(
-    "/preconditions/{function_id}",
+    "/preconditions/{document_id}",
     response_model=PreconditionResult,
     responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`invalid_document_id`: `document_id` is not a well-formed document id."
+            ),
+        },
         404: {
             "model": ErrorResponse,
             "description": ("`document_not_found`: no document with that id; or vault not found."),
@@ -105,11 +111,11 @@ async def unlink(
     },
 )
 async def check_preconditions(
-    function_id: FunctionIdStr,
+    document_id: DocumentIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> PreconditionResult:
-    return await service.check_preconditions(function_id)
+    return await service.check_preconditions(document_id)
 
 
 @router.post(

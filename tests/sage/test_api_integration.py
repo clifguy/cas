@@ -203,14 +203,14 @@ async def test_malformed_edge_id_returns_invalid_edge_id_400(client):
     assert body["detail"]["edge_id"] == "not-a-uuid", body
 
 
-async def test_malformed_function_id_returns_invalid_function_id_400(client):
-    """A malformed function_id path segment on GET /preconditions/{function_id}
-    returns the structured invalid_function_id (400)."""
+async def test_malformed_document_id_returns_invalid_document_id_400(client):
+    """A malformed document_id path segment on GET /preconditions/{document_id}
+    returns the structured invalid_document_id (400)."""
     resp = await client.get("/sage_vaults/test_vault/preconditions/not-a-fn")
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["code"] == "invalid_function_id", body
-    assert body["detail"]["function_id"] == "not-a-fn", body
+    assert body["code"] == "invalid_document_id", body
+    assert body["detail"]["document_id"] == "not-a-fn", body
 
 
 async def test_malformed_document_date_returns_invalid_document_date_400(client):
@@ -429,7 +429,8 @@ async def test_check_preconditions_200(client):
     resp2 = await client.get(f"/sage_vaults/test_vault/preconditions/{doc_id}")
     assert resp2.status_code == 200
     body = resp2.json()
-    assert body["function_id"] == doc_id
+    assert body["document_id"] == doc_id
+    assert "function_id" not in body, f"retired key still on the wire: {body!r}"
     assert body["satisfied"] is True  # No dependencies = vacuously satisfied
     assert body["checks"] == []
 

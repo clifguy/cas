@@ -230,35 +230,6 @@ def _validate_vault_id(v: str) -> str:
 
 VaultIdStr = Annotated[str, AfterValidator(_validate_vault_id)]
 
-
-def _validate_function_id(v: str) -> str:
-    """Reject function ids that do not match the document-id shape.
-
-    A ``function_id`` references a function-document in the precondition
-    system; ``GraphOps.check_preconditions`` looks it up via
-    ``get_document(function_id)``. The shape is therefore identical to
-    DocumentIdStr (8 hex chars + ``_`` + slug). Distinct alias to
-    communicate that the field carries function-document semantics, not
-    arbitrary document semantics — a future divergence would land here
-    without disturbing DocumentIdStr's call sites.
-    Flavor: reject.
-    """
-    if not _DOCUMENT_ID_RE.fullmatch(v):
-        raise PydanticCustomError(
-            "invalid_function_id",
-            "function_id {value} is not a well-formed function id (expected {expected})",
-            {
-                "argument": "function_id",
-                "value": v,
-                "expected": "8 hex characters, an underscore, then a lowercase "
-                "alphanumeric/underscore slug",
-            },
-        )
-    return v
-
-
-FunctionIdStr = Annotated[str, AfterValidator(_validate_function_id)]
-
 # A file's zero-based position in a batch ingest. One shape declared once:
 # the progress events and the summary's per-file error entries both carry
 # it, and they must agree on its bound.
@@ -2873,15 +2844,22 @@ class PreconditionCheck(BaseModel):
             "lifecycle)."
         )
     )
-    actual: str = Field(description='Actual state found (e.g., "active", "not found").')
+    actual: str = Field(
+        description=(
+            'Actual state found: the target\'s lifecycle status (e.g., "active"), '
+            '"not found" when the vault does not hold the target, or '
+            '"failed (pipeline_incomplete)" when its pipeline failed, which is '
+            "reported ahead of the lifecycle status rather than alongside it."
+        )
+    )
     satisfied: bool = Field(
         description="True when the actual state meets the required condition for this target."
     )
 
 
 class PreconditionResult(BaseModel):
-    function_id: FunctionIdStr = Field(
-        description="Identifier of the workflow function whose preconditions were checked."
+    document_id: DocumentIdStr = Field(
+        description="Identifier of the document whose preconditions were checked."
     )
     satisfied: bool = Field(description="True if all dependencies are satisfied.")
     checks: list[PreconditionCheck] = Field(

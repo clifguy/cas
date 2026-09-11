@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 from sage.config import EMPTY_STATE_SET_RENDERING, VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
-from sage.models.schemas import Document, Edge
+from sage.models.schemas import Document, Edge, PreconditionCheck
 from sage.services.graph_ops import GraphOpsService
 
 
@@ -142,9 +142,9 @@ async def test_check_preconditions_honors_opt_in_end_to_end(
     """
     config = _config_with_satisfies(extended_vault_config_dict, filed=True)
     service = GraphOpsService(graph_store, config)
-    function_id = await _seed_dependency(graph_store, "filed")
+    document_id = await _seed_dependency(graph_store, "filed")
 
-    result = await service.check_preconditions(function_id)
+    result = await service.check_preconditions(document_id)
     assert result.satisfied is True
     assert result.checks[0].satisfied is True
     assert result.checks[0].required == "active or completed or filed"
@@ -160,9 +160,9 @@ async def test_check_preconditions_honors_opt_out_end_to_end(
     """
     config = _config_with_satisfies(minimal_vault_config_dict, completed=False)
     service = GraphOpsService(graph_store, config)
-    function_id = await _seed_dependency(graph_store, "completed")
+    document_id = await _seed_dependency(graph_store, "completed")
 
-    result = await service.check_preconditions(function_id)
+    result = await service.check_preconditions(document_id)
     assert result.satisfied is False
     assert result.checks[0].actual == "completed"
     assert result.checks[0].required == "active"
@@ -179,12 +179,12 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
     """
     config = _config_with_satisfies(extended_vault_config_dict, filed=True)
 
-    function_id = _id("doc_function")
+    document_id = _id("doc_function")
     failed_dep = _make_doc(_id("dep_failed"))
     failed_dep.pipeline_status = PipelineStatus.FAILED
     archived_dep = _make_doc(_id("dep_archived"), lifecycle_status="archived")
     docs = {
-        function_id: _make_doc(function_id),
+        document_id: _make_doc(document_id),
         failed_dep.id: failed_dep,
         archived_dep.id: archived_dep,
     }
@@ -203,7 +203,7 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
     store = SimpleNamespace(get_document=get_document, get_edges_by_source=get_edges_by_source)
     service = GraphOpsService(store, config)
 
-    result = await service.check_preconditions(function_id)
+    result = await service.check_preconditions(document_id)
     assert result.satisfied is False
     assert [c.required for c in result.checks] == ["active or completed or filed"] * 3
     assert [c.actual for c in result.checks] == [
@@ -211,6 +211,17 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
         "failed (pipeline_incomplete)",
         "archived",
     ]
+
+    # The two synthesized values are disclosed where a caller branching on
+    # `actual` would look. The third is a lifecycle status, which the
+    # description covers by naming the field's ordinary source rather than by
+    # enumerating a vault-configurable set.
+    described = PreconditionCheck.model_fields["actual"].description
+    for synthesized in ("not found", "failed (pipeline_incomplete)"):
+        assert synthesized in described, (
+            f"check_preconditions can report actual={synthesized!r}, which the "
+            f"published description does not name: {described!r}"
+        )
 
 
 async def test_required_string_empty_set_guard(graph_store, minimal_vault_config_dict):
@@ -226,8 +237,8 @@ async def test_required_string_empty_set_guard(graph_store, minimal_vault_config
             state["satisfies_dependency"] = False
     config = VaultConfig.model_validate(mutated, context={"lifecycle_validation": "warn"})
     service = GraphOpsService(graph_store, config)
-    function_id = await _seed_dependency(graph_store, "active")
+    document_id = await _seed_dependency(graph_store, "active")
 
-    result = await service.check_preconditions(function_id)
+    result = await service.check_preconditions(document_id)
     assert result.satisfied is False
     assert result.checks[0].required == EMPTY_STATE_SET_RENDERING

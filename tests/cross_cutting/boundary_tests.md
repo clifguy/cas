@@ -175,12 +175,12 @@ list, the ROOT Harness must produce a clear error. Error structure TBD.
 
 ### TEST-XCUT-BH-011: Precondition failure during pipeline advancement
 
-**Artifact:** ROOT Harness pipeline + SAGE check_preconditions
+**Artifact:** ROOT Harness pipeline + SAGE verify_preconditions
 **Category:** error_semantics
 **Status:** Stub -- requires ROOT Harness tier 2 behavioral decisions.
 
 **Description:** When a pipeline stage transition has preconditions (checked via
-SAGE `check_preconditions`) and they fail, the ROOT Harness must produce a clear
+SAGE `verify_preconditions`) and they fail, the ROOT Harness must produce a clear
 error indicating which preconditions were unsatisfied.
 
 ### TEST-XCUT-BH-012: Concurrent workflow access to same document

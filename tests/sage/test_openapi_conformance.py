@@ -2096,3 +2096,46 @@ def test_store_refusal_operations_each_declare_both_not_one(live_openapi: dict):
     assert not lopsided, (
         f"operations declaring one store-refusal status but not the pair: {lopsided}"
     )
+
+
+def test_precondition_operation_names_document_id_throughout(sage_core_spec):
+    """The precondition operation spells its identifier argument document_id.
+
+    Asserted against the parsed document rather than the file text: a search
+    for the new spelling finds it in the operation's own response schema
+    reference and passes straight over an unrenamed path key. The path
+    template, the parameter, and the response property are checked
+    separately because the published-prose overlay is keyed on the path, so a
+    parameter renamed without its path key loses the operation's authored
+    prose silently.
+
+    Holds one half only. This reads the committed specification and never the
+    running application, so a specification renamed while the FastAPI route
+    still mounts the old template passes here; the live-versus-committed
+    comparison elsewhere in this module is what excludes that rival.
+    """
+    paths = sage_core_spec["paths"]
+    matches = [
+        (path, operation)
+        for path, item in paths.items()
+        for method, operation in item.items()
+        if method in _HTTP_METHODS and operation.get("operationId") == "verify_preconditions"
+    ]
+    assert len(matches) == 1, f"expected exactly one verify_preconditions operation, got {matches}"
+    path, operation = matches[0]
+
+    assert path.endswith("/preconditions/{document_id}"), (
+        f"path template still carries the retired spelling: {path}"
+    )
+
+    # The vault id arrives as a $ref and carries no inline "in", so the
+    # operation's own path parameters are exactly those declared inline.
+    named = [p["name"] for p in operation["parameters"] if p.get("in") == "path"]
+    assert named == ["document_id"], f"path parameters are {named}"
+
+    result_schema = sage_core_spec["components"]["schemas"]["PreconditionResult"]
+    assert "document_id" in result_schema["properties"], result_schema["properties"].keys()
+    assert "function_id" not in result_schema["properties"], (
+        "retired property still declared on PreconditionResult"
+    )
+    assert "document_id" in result_schema["required"], result_schema["required"]

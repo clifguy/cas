@@ -471,14 +471,14 @@ pipeline means the projection may be corrupt or incomplete.
 
 ### TEST-SAGE-BH-023: Failed document does not satisfy preconditions
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_preconditions)
 **Category:** ingestion, graph_interaction
 **Decision:** Failed documents do not satisfy depends_on checks.
 
 **Precondition:** doc_function depends_on doc_dependency. doc_dependency has
 `pipeline_status: failed`.
 
-**Input:** `check_preconditions(function_id: doc_function.id)`
+**Input:** `check_preconditions(document_id: doc_function.id)`
 
 **Expected:**
 - `satisfied: false`
@@ -680,13 +680,13 @@ future edge-level operations (update, annotate).
 
 ### TEST-SAGE-BH-033: check_preconditions -- active satisfies dependency
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_preconditions)
 **Category:** graph, lifecycle_interaction
 **Decision:** Active and completed satisfy depends_on checks by default; a state's `satisfies_dependency` setting may extend or restrict the set.
 
 **Precondition:** doc_function depends_on doc_dep. doc_dep is `active`.
 
-**Input:** `check_preconditions(function_id: doc_function.id)`
+**Input:** `check_preconditions(document_id: doc_function.id)`
 
 **Expected:** `satisfied: true`, individual check: `satisfied: true`
 
@@ -694,13 +694,13 @@ future edge-level operations (update, annotate).
 
 ### TEST-SAGE-BH-034: check_preconditions -- completed satisfies dependency
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_preconditions)
 **Category:** graph, lifecycle_interaction
 **Decision:** Completed is a valid dependency state.
 
 **Precondition:** doc_function depends_on doc_dep. doc_dep is `completed`.
 
-**Input:** `check_preconditions(function_id: doc_function.id)`
+**Input:** `check_preconditions(document_id: doc_function.id)`
 
 **Expected:** `satisfied: true`
 
@@ -708,13 +708,13 @@ future edge-level operations (update, annotate).
 
 ### TEST-SAGE-BH-035: check_preconditions -- archived does not satisfy
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_preconditions)
 **Category:** graph, lifecycle_interaction
 **Decision:** Archived documents are not in active use; they don't satisfy dependencies.
 
 **Precondition:** doc_function depends_on doc_dep. doc_dep is `archived`.
 
-**Input:** `check_preconditions(function_id: doc_function.id)`
+**Input:** `check_preconditions(document_id: doc_function.id)`
 
 **Expected:**
 - `satisfied: false`
@@ -725,7 +725,7 @@ superseded or simply retired). Callers should depend on the active replacement.
 
 ### TEST-SAGE-BH-036: check_preconditions -- filed does not satisfy (domain-specific)
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_preconditions)
 **Category:** graph, lifecycle_interaction
 **Decision:** By default only base states (active, completed) satisfy dependencies.
 A domain-specific state satisfies only when the vault declares it with
@@ -735,7 +735,7 @@ does not know it.
 **Precondition:** Example Portfolio vault. doc_function depends_on doc_patent. doc_patent
 is `filed`.
 
-**Input:** `check_preconditions(function_id: doc_function.id)`
+**Input:** `check_preconditions(document_id: doc_function.id)`
 
 **Expected:**
 - `satisfied: false`

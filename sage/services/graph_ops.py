@@ -832,14 +832,14 @@ class GraphOpsService:
     # Check preconditions (BH-023, BH-033 through BH-036)
     # ------------------------------------------------------------------
 
-    async def check_preconditions(self, function_id: str) -> PreconditionResult:
-        """Validate all depends_on targets for a function document."""
-        function_doc = await self._store.get_document(function_id)
-        if function_doc is None:
-            raise DocumentNotFoundError(function_id)
+    async def check_preconditions(self, document_id: str) -> PreconditionResult:
+        """Validate all depends_on targets for a document."""
+        document = await self._store.get_document(document_id)
+        if document is None:
+            raise DocumentNotFoundError(document_id)
 
         depends_on_edges = await self._store.get_edges_by_source(
-            function_id, EdgeType.DEPENDS_ON.value
+            document_id, EdgeType.DEPENDS_ON.value
         )
 
         # Derived from the vault's declared states (BH-033 through BH-036),
@@ -884,7 +884,7 @@ class GraphOpsService:
             )
 
         return PreconditionResult(
-            function_id=function_id,
+            document_id=document_id,
             satisfied=all(c.satisfied for c in checks),
             checks=checks,
         )

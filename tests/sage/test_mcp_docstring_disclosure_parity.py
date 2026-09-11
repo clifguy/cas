@@ -584,15 +584,7 @@ SURFACE_ONLY_CLAIMS: Final[dict[tuple[str, str], dict[str, str]]] = {
 # Identifiers an enrolled pair may name on one surface only. Keyed by
 # pair; the value is the justification, so an entry cannot be added
 # without one.
-SURFACE_ONLY_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
-    ("sage_core", "verify_preconditions"): {
-        "function_id": (
-            "the HTTP path parameter's name, which the contract's narrative "
-            "must explain because the name is misleading; the tool names the "
-            "same argument in its Args block instead"
-        ),
-    },
-}
+SURFACE_ONLY_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {}
 
 
 def _exempt_for(surface_name: str, tool_name: str) -> frozenset[str]:

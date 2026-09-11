@@ -47,7 +47,6 @@ from sage.models.schemas import (
     DocumentDateStr,
     DocumentIdStr,
     EdgeIdStr,
-    FunctionIdStr,
     HashCheckRequest,
     IngestPreview,
     IngestRequest,
@@ -71,7 +70,6 @@ logger = logging.getLogger(__name__)
 _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
-_FUNCTION_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(FunctionIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
 # Collection parameters carry the alias on the element type, so the adapter
 # wraps the sequence rather than the alias. Validation is whole-argument: one
@@ -1285,8 +1283,8 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def verify_preconditions(vault_id: str, function_id: str) -> dict:
-        """Check whether all depends_on targets for a function document are
+    async def verify_preconditions(vault_id: str, document_id: str) -> dict:
+        """Check whether all depends_on targets for a document are
         satisfied (dependency-satisfying lifecycle, pipeline not failed).
 
         Iterates the document's outbound ``depends_on`` edges; for each
@@ -1301,25 +1299,33 @@ def register_sage_tools(
         in projection, target archived) so the caller can act on the
         gap rather than re-querying each dependency.
 
+        This is not a mutation preview. A ``dry_run`` on a mutation
+        answers what that one call would do to committed state; this
+        answers whether a document's dependencies are in a state that
+        permits work to proceed, aggregated across every outbound
+        ``depends_on`` edge. The ingest preview's declared requirement
+        set is the nearest a ``dry_run`` comes to reporting on the
+        vault rather than on the request, and it is still scoped to
+        the single document the call names.
+
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
-        - ``invalid_function_id`` (400): ``function_id`` is not a well-formed
+        - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
           document id.
-        - ``document_not_found`` (404): no document with ``function_id``.
+        - ``document_not_found`` (404): no document with ``document_id``.
 
         Args:
             vault_id: Target vault identifier.
-            function_id: The function document's identifier. Despite
-                the name, this works on any document with outbound
-                ``depends_on`` edges, not only documents typed as
-                "function".
+            document_id: Identifier of the document whose preconditions
+                to check. Any document with outbound ``depends_on``
+                edges is valid.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            function_id = _FUNCTION_ID_ADAPTER.validate_python(function_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
-            result = await v.graph_ops_service.check_preconditions(function_id)
+            result = await v.graph_ops_service.check_preconditions(document_id)
             return serialize(result)
         except (SAGEError, ValueError) as e:
             return error_response(e)
