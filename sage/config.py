@@ -1263,13 +1263,18 @@ class StackTransferConfig(BaseModel):
         ),
     )
     token_ttl_seconds: int = Field(
-        default=300,
+        default=900,
         ge=1,
         description=(
             "Lifetime of a minted transfer token, covering the whole exchange "
-            "(mint, byte delivery, completion). Short by design: a token "
-            "secures exactly one transfer and is re-minted cheaply if it "
-            "lapses."
+            "(mint, byte delivery, completion). Bounded rather than short: a "
+            "token is single-use, direction- and vault-scoped and size-capped, "
+            "so the window governs retention rather than guessability, and the "
+            "default is wide enough that a caller stalled between recipe and "
+            "byte delivery does not lose the transfer. A lapsed token is not "
+            "resumable -- the sweep reclaims its staged bytes along with the "
+            "entry -- so the remedy is to re-issue the originating call for a "
+            "fresh recipe."
         ),
     )
 

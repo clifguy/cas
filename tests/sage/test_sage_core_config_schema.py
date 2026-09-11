@@ -497,7 +497,7 @@ def test_sch_s_022_transfer_block_shape():
     """The schema declares a top-level `transfer` object with
     `additionalProperties: false` and the two properties the transfer-recipe
     minting path reads: `public_base_url` (nullable string, default null) and
-    `token_ttl_seconds` (integer, default 300).
+    `token_ttl_seconds` (integer, default 900).
 
     Catches drift in the block shape -- a missing `additionalProperties: false`
     would make SCH-S-023 incapable of detecting a stray/typo'd key, and a
@@ -509,7 +509,7 @@ def test_sch_s_022_transfer_block_shape():
     assert block["additionalProperties"] is False
     assert set(block["properties"]) == {"public_base_url", "token_ttl_seconds"}
     assert block["properties"]["public_base_url"]["default"] is None
-    assert block["properties"]["token_ttl_seconds"]["default"] == 300
+    assert block["properties"]["token_ttl_seconds"]["default"] == 900
 
 
 def test_sch_s_023_transfer_unknown_property_rejected():
@@ -549,7 +549,7 @@ def test_sch_s_023_transfer_unknown_property_rejected():
 def test_sch_s_024_transfer_absent_passes_defaults_applied():
     """An instance with `transfer` absent validates against the schema, and
     `SageCoreConfig.model_validate` applies the Pydantic defaults (no public
-    base URL, 300-second token TTL).
+    base URL, 900-second token TTL).
 
     Confirms the JSON Schema and the Pydantic model agree on the block's
     defaults per CAS principle 1: a deployment that never mints recipes (every
@@ -564,7 +564,7 @@ def test_sch_s_024_transfer_absent_passes_defaults_applied():
 
     cfg = SageCoreConfig.model_validate(instance)
     assert cfg.transfer.public_base_url is None
-    assert cfg.transfer.token_ttl_seconds == 300
+    assert cfg.transfer.token_ttl_seconds == 900
 
 
 def test_sch_s_025_stack_context_window_field_shape():

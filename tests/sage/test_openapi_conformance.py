@@ -1457,6 +1457,11 @@ SAGE_CONFIG_CLASS_TO_SCHEMA: list[tuple[str, str, str]] = [
         "#/properties/auth",
     ),
     (
+        "StackTransferConfig",
+        "sage/sage_core_config.schema.json",
+        "#/properties/transfer",
+    ),
+    (
         "SageCoreConfig",
         "sage/sage_core_config.schema.json",
         "#",

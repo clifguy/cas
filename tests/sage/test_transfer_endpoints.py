@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 
 import sage.mcp_init as _mcp_init
 import sage.mcp_server as _mcp
+import sage.services.transfer as _transfer
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -27,14 +29,34 @@ from sage.adapters.stubs import (
 )
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
+from sage.config import StackTransferConfig as _StackTransferConfig
 from sage.mcp_server import bulk_ingest_document, get_document, ingest_document, read_projection
-from sage.services.transfer import get_transfer_store, reset_transfer_store
+from sage.services.transfer import TransferStore, get_transfer_store, reset_transfer_store
 from sage.vault_source_binding import FilesystemVaultSourceStore
 from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.helpers.store_refusal import STORE_BODY, store_refusal
 
 _VAULT_ID = "test_vault"
 _BASE = "https://sage.test.example"
+
+#: The window a recipe minted under the default stack config carries.
+#: Derived rather than written down, so retuning the lifetime moves the
+#: clock advance with it instead of leaving the test overshooting by an
+#: accident that would still pass.
+_TTL = _StackTransferConfig.model_fields["token_ttl_seconds"].default
+
+
+class _Clock:
+    """Controllable clock, mirroring the store suite's own."""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now = self.now + timedelta(seconds=seconds)
 
 
 def _parse(result: str | dict) -> dict:
@@ -425,6 +447,41 @@ async def test_upload_token_failures(client, tmp_path):
         )
         assert second.status_code == 409
         assert second.json()["code"] == "transfer_token_already_used"
+
+
+async def test_expired_upload_token_is_refused_at_the_endpoint(client, tmp_path, monkeypatch):
+    """A lapsed token reaches the byte leg as the documented 410.
+
+    The store's own suite proves the sweep's boundary; this proves the
+    refusal survives the transport a caller actually meets, where the token
+    is the sole credential and no bearer is in play.
+
+    Anti-coincidental-pass: the token is delivered against successfully
+    *before* the clock moves, so a 410 afterwards cannot be a malformed
+    header or an unroutable id -- the same token worked a moment earlier.
+    The error code is asserted alongside the status because a 410 alone is
+    reachable from a missing header, which the sibling above already covers.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(
+        _transfer, "_transfer_store", TransferStore(now=clock, staging_root=tmp_path / "staging")
+    )
+
+    with _profile("cloud"):
+        item = await _mint_upload(tmp_path, "lapses.md", b"# lapses\n")
+
+        live = await client.put(
+            "/upload", content=b"# lapses\n", headers={"X-Upload-Token": item["token"]}
+        )
+        assert live.status_code == 201, live.text
+
+        lapsed = await _mint_upload(tmp_path, "lapses2.md", b"# two\n")
+        clock.advance(_TTL + 1)
+        after = await client.put(
+            "/upload", content=b"# two\n", headers={"X-Upload-Token": lapsed["token"]}
+        )
+        assert after.status_code == 410, after.text
+        assert after.json()["code"] == "transfer_token_invalid"
 
 
 async def test_download_token_failures(client, tmp_path):

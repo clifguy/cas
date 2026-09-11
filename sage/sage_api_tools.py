@@ -435,7 +435,13 @@ def register_sage_tools(
                 upload recipe (``status: upload_required``) instead of
                 ingesting: deliver the file to the recipe's URL with its
                 one-time token, then repeat this call with
-                ``transfer_token`` to complete the ingest.
+                ``transfer_token`` to complete the ingest. The recipe's
+                tokens lapse 900 seconds after issue by default, and the
+                whole exchange -- byte delivery plus the completion call --
+                must finish inside that window; the recipe's own
+                ``expires_at`` is authoritative where a deployment has tuned
+                the lifetime. A lapsed recipe cannot be resumed, and its
+                staged bytes are gone: re-issue this call for a fresh one.
             source_type: Source artifact format (markdown, docx, xlsx, pptx,
                 pdf). Selects the source adapter. Optional: when omitted,
                 it is inferred from the source's file extension against the
@@ -711,6 +717,11 @@ def register_sage_tools(
                 a malformed path reports ``write_path_invalid`` whether or
                 not the document exists. A later failure to open the target
                 for exclusive creation can also report ``write_path_invalid``.
+                A minted recipe's token lapses 900 seconds after issue by
+                default and the fetch must finish inside that window; the
+                recipe's own ``expires_at`` is authoritative where a
+                deployment has tuned the lifetime, and a lapsed recipe is
+                re-issued rather than resumed.
                 Mutually exclusive with `include_content`.
         """
         try:
@@ -1873,7 +1884,12 @@ def register_sage_tools(
                 before the projection is read, so a malformed path reports
                 ``write_path_invalid`` whatever the document's pipeline
                 state. A later failure to open the target for exclusive
-                creation can also report ``write_path_invalid``.
+                creation can also report ``write_path_invalid``. A minted
+                recipe's token lapses 900 seconds after issue by default and
+                the fetch must finish inside that window; the recipe's own
+                ``expires_at`` is authoritative where a deployment has tuned
+                the lifetime, and a lapsed recipe is re-issued rather than
+                resumed.
             delivery: Inline-vs-spill selector (``inline | spill | auto``).
                 ``auto`` keeps the write_to_path-driven default.
         """
@@ -3030,7 +3046,14 @@ def register_sage_tools(
                 or UNC spelling earns an upload recipe rather than a refusal.
                 Where the two are co-located the server is the reader and its
                 own conventions apply. Unlike an ingest, a relative path has
-                no vault-relative reading here and is refused either way.
+                no vault-relative reading here and is refused either way. A
+                minted recipe's token lapses 900 seconds after issue by
+                default, and the whole exchange -- byte delivery plus the
+                completion call -- must finish inside that window; the
+                recipe's own ``expires_at`` is authoritative where a
+                deployment has tuned the lifetime. A lapsed recipe cannot be
+                resumed, and its staged bytes are gone: re-issue this call
+                for a fresh one.
             document_id: Optional pin naming the document to restore.
             transfer_token: Completion handle from a prior ``upload_required``
                 recipe; supply instead of ``source``.
