@@ -35,9 +35,15 @@ down:
   assembles a response body by hand renders its nested models through
   `sage.models.wire` for that reason rather than dumping them itself.
 - **The REST transport sends every key**, which satisfies a required and an
-  optional declaration alike, so it conforms without doing anything special.
-  The transports differ only within what the contract permits, and a client
-  generated from either spec parses both.
+  optional declaration alike. That is only half of conformance, and the half
+  that is easy to mistake for all of it: sending the key says nothing about
+  whether the declaration admits the *value*. An optional property declared
+  non-nullable is a violation the moment REST sends its null, while the MCP
+  rendering of the same property is clean because it omits the key instead.
+  So a nullable field must be declared nullable even where no required-ness
+  question arises, and the gate renders every model both ways for that reason.
+  The transports then differ only within what the contract permits, and a
+  client generated from either spec parses both.
 
 Two things the rule does not reach, by decision rather than by oversight. The
 MCP error envelope is assembled by hand and omits an empty `detail` on

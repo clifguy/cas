@@ -184,7 +184,7 @@ async def test_light_strips_document_and_semantic_abstract(
         assert entry["status"] == "success"
         # Anti-coincidental: assert on raw dict shape, not via
         # BulkLifecycleResponse.model_validate(...).results[i].document is None.
-        # MCP's _serialize uses exclude_none=True, so a None `document`
+        # `document` is optional, so the wire omits it when null
         # is stripped from the wire payload entirely.
         assert "document" not in entry, (
             f"light mode must strip the per-item `document` field; got {entry!r}"

@@ -532,10 +532,10 @@ components:
           enum: [started, completed, failed]
           description: Per-file processing status the event reports.
         document_id:
-          type: string
+          type: [string, "null"]
           description: Set when status="completed". Document ID assigned by SAGE.
         error:
-          type: string
+          type: [string, "null"]
           description: Set when status="failed". Caller-facing error message.
 
     BatchIngestFileError:
@@ -571,14 +571,14 @@ components:
             Human-readable error text. For a typed SAGE error this is the
             error's own message; otherwise the rendered exception.
         code:
-          type: string
+          type: [string, "null"]
           description: >-
             Machine-readable error code, present only when the failure was a
             typed SAGE error. The same code the single-document ingest
             surface returns for that error (e.g. `vault_source_path_refused`,
             `source_file_not_found`, `adapter_not_found`).
         detail:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Structured error payload, present only when the failure was a
@@ -672,7 +672,7 @@ components:
             and the error message, and a typed SAGE error additionally
             carries its code and detail.
         edge_warnings:
-          type: array
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/EdgeWarning"
           description: >-

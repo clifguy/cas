@@ -4849,7 +4849,7 @@ components:
             - $ref: "#/components/schemas/DocumentSummary"
             - $ref: "#/components/schemas/DocumentSummaryLight"
         chunk_content:
-          type: string
+          type: [string, "null"]
           description: >-
             Retrieved text content. For semantic mode, the matching
             chunk. For deterministic mode, the extracted content at
@@ -5175,13 +5175,15 @@ components:
             the item raised an error and the batch continued with
             the next item.
         document:
-          $ref: "#/components/schemas/Document"
+          anyOf:
+            - $ref: "#/components/schemas/Document"
+            - type: "null"
           description: >-
             The updated document record when `status=success`. Absent
             on error entries. Also absent on success entries when the
             request's `response_mode=light`.
         warnings:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -5189,7 +5191,7 @@ components:
             present on success entries when the underlying transition
             emits warnings.
         error:
-          type: object
+          type: [object, "null"]
           description: >-
             Error envelope when `status=error`. Shape matches the MCP
             `error_response` envelope: `{error: <code>, message: <text>,
@@ -5390,7 +5392,9 @@ components:
             would have committed (dry-run); `error` if the item raised
             an error and the batch continued with the next item.
         edge:
-          $ref: "#/components/schemas/Edge"
+          anyOf:
+            - $ref: "#/components/schemas/Edge"
+            - type: "null"
           description: >-
             The edge record when `status=success`. Absent on error
             entries. Also absent on success entries when the request's
@@ -5417,7 +5421,7 @@ components:
             no-op outcome from a fresh insert without the full `edge`
             body.
         error:
-          type: object
+          type: [object, "null"]
           description: >-
             Error envelope when `status=error`. Shape matches the MCP
             `error_response` envelope: `{error: <code>, message: <text>,
@@ -5584,13 +5588,15 @@ components:
             item raised an error and the batch continued with the
             next item.
         document:
-          $ref: "#/components/schemas/Document"
+          anyOf:
+            - $ref: "#/components/schemas/Document"
+            - type: "null"
           description: >-
             The updated document record when `status=success`. Absent
             on error entries. Also absent on success entries when the
             request's `response_mode=light`.
         warnings:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -5598,7 +5604,7 @@ components:
             `BulkLifecycleItemResult`. Not currently emitted by
             `update_metadata`.
         error:
-          type: object
+          type: [object, "null"]
           description: >-
             Error envelope when `status=error`. Shape matches the MCP
             `error_response` envelope: `{error: <code>, message: <text>,
@@ -6394,6 +6400,7 @@ components:
         - pending_edge_count
         - failed_ingestion_count
         - interrupted_abstract_count
+        - deferred_abstract_count
       description: Aggregate health signals for a vault, surfaced inside vault-stats responses.
       properties:
         pending_metadata_count:
@@ -6467,6 +6474,7 @@ components:
         - content_store_version_count
         - content_store_small_fragment_count
         - health
+        - last_ingestion_at
       description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
       properties:
         total_documents:
@@ -6520,7 +6528,10 @@ components:
         health:
           $ref: "#/components/schemas/HealthIndicators"
         last_optimize:
-          $ref: "#/components/schemas/LastOptimizeSummary"
+          anyOf:
+            - $ref: "#/components/schemas/LastOptimizeSummary"
+            - type: "null"
+          description: Summary of the most recent content-store optimize, or null if the vault has never been optimized.
 
     # -------------------------------------------------------------------------
     # Vault Configuration
@@ -7874,10 +7885,10 @@ components:
           enum: [started, completed, failed]
           description: Per-file processing status the event reports.
         document_id:
-          type: string
+          type: [string, "null"]
           description: Set when status="completed". Document ID assigned by SAGE.
         error:
-          type: string
+          type: [string, "null"]
           description: Set when status="failed". Caller-facing error message.
 
     EdgeWarning:
@@ -7965,14 +7976,14 @@ components:
             Human-readable error text. For a typed SAGE error this is the
             error's own message; otherwise the rendered exception.
         code:
-          type: string
+          type: [string, "null"]
           description: >-
             Machine-readable error code, present only when the failure was a
             typed SAGE error. The same code the single-document ingest
             surface returns for that error (e.g. `vault_source_path_refused`,
             `source_file_not_found`, `adapter_not_found`).
         detail:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Structured error payload, present only when the failure was a
@@ -8057,7 +8068,7 @@ components:
             and the error message, and a typed SAGE error additionally
             carries its code and detail.
         edge_warnings:
-          type: array
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/EdgeWarning"
           description: >-

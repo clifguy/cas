@@ -84,7 +84,7 @@ def _sse_event(event: BaseModel) -> str:
     required one keeps its key whatever its value. The rule reaches the
     events nested in a summary as well as the summary itself.
     """
-    return f"data: {json.dumps(to_wire(event))}\n\n"
+    return f"data: {json.dumps(to_wire(event), ensure_ascii=False)}\n\n"
 
 
 def _summary_event_from(summary: IngestSummary) -> SummaryEvent:

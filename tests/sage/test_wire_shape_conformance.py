@@ -32,24 +32,32 @@ W5  A required-and-nullable key survives serialization, carrying null.
 W6  An optional-and-nullable key is still omitted when null.
 W7  The rule reaches through nested models and lists of models, on the tool
     path and the event-stream path alike.
+W7b The rule reaches a model held as a value in a mapping.
 
 W5 and W6 are the two halves of the per-field rule, and they fail under
 opposite mistakes. An implementation that keeps every key passes W5 and fails
 W6; one that keeps none passes W6 and fails W5. Neither half is redundant with
 W1, which reports a schema violation several layers below the cause.
 
-**A third rival passes both of them, and W7 is the only thing that excludes
-it**: a rule that reads each field's declaration correctly but stops at the top
-level. W5 and W6 both read a top-level model, so a prune that never descends --
-or one that descends into a nested model but not into a list of them -- satisfies
-each of them while leaving every nested optional null on the wire. This was
-measured, not reasoned: both rivals were written and both passed the whole
-module until W7 gained an assertion that a nested optional key is *gone*.
-Checking only that required keys survive at depth is not enough, because a rule
-that does nothing at depth leaves them there too.
+**Further rivals pass both of them, and only the depth tests exclude them**: a
+rule that reads each field's declaration correctly but stops short of some way a
+model can be nested. W5 and W6 both read a top-level model, so a prune that never
+descends, one that descends into a nested model but not into a list of them, and
+one blind to a model held as a dict *value* all satisfy each of them while
+leaving nested optional nulls on the wire. Measured, not reasoned: each rival was
+written, and each passed the whole module until W7 gained an assertion that a
+nested optional key is *gone* and W7b covered the mapping. Checking only that
+required keys survive at depth is not enough, because a rule that does nothing at
+depth leaves them there too.
 
-Read the pairing as the gate and this paragraph as a claim to re-audit. The
-inventory above was accurate and incomplete once already.
+W1 has its own rival, excluded by its second arm rather than by a depth test: a
+rule correct on the rendering that omits optional nulls, paired with a schema
+that declares those properties non-nullable. The MCP arm alone cannot see it --
+it never puts a null against an optional property's declared type -- so W1
+renders every model both ways the surface renders.
+
+Read the pairings as the gate and this paragraph as a claim to re-audit. The
+inventory above has been accurate and incomplete twice.
 
 One test here is inert by construction: the divergence allowlist is empty, so
 its staleness check loops zero times and passes against any implementation. It
@@ -484,13 +492,24 @@ def test_serialized_response_validates_against_declared_schema(
     """W1 -- what the surface sends satisfies what the surface published.
 
     For each component with a same-named model, an instance whose nullable
-    fields are all null is pushed through the real MCP serializer and
-    validated against the component. A required key the serializer dropped
-    surfaces here as a missing-property violation.
+    fields are all null is rendered **both ways the surface renders** and each
+    rendering is validated against the component. A required key a serializer
+    dropped surfaces here as a missing property; a null a declaration does not
+    admit surfaces as a type violation.
 
-    This is the check the ticket that motivated this module asks for, and the
-    one no other gate performs: every sibling compares a declaration to a
-    declaration and cannot see the wire at all.
+    Both arms are needed and neither subsumes the other, which is not obvious:
+
+    - The **MCP** arm omits every optional null, so for an optional property
+      the declared type is never evaluated against a null at all. That arm
+      alone guards the handful of required-and-nullable fields and nothing
+      else -- it would pass with every optional property declared
+      non-nullable.
+    - The **REST** arm keeps every key, so it is the arm on which an
+      optional property's nullability is actually asserted. It is the reason a
+      3.1 client generated from these specs can parse what the surface sends.
+
+    This is the check no sibling gate performs: every one of them compares a
+    declaration to a declaration and cannot see the wire at all.
     """
     violations: list[str] = []
     validated = 0
@@ -507,14 +526,18 @@ def test_serialized_response_validates_against_declared_schema(
                 # let coverage erode without any test going red.
                 continue
             validated += 1
-            body = _serialize(instance)
-            errors = sorted(
-                _validator_for(spec, name).iter_errors(body),
-                key=lambda e: list(e.absolute_path),
-            )
-            for error in errors:
-                where = "/".join(str(p) for p in error.absolute_path) or "(root)"
-                violations.append(f"  {label}: {name} at {where} -> {error.message}")
+            validator = _validator_for(spec, name)
+            for arm, body in (
+                ("mcp", _serialize(instance)),
+                ("rest", instance.model_dump(mode="json", by_alias=True)),
+            ):
+                errors = sorted(
+                    validator.iter_errors(body),
+                    key=lambda e: list(e.absolute_path),
+                )
+                for error in errors:
+                    where = "/".join(str(p) for p in error.absolute_path) or "(root)"
+                    violations.append(f"  {label}/{arm}: {name} at {where} -> {error.message}")
 
     assert validated >= MIN_MODELS_VALIDATED, (
         f"only {validated} models were serialized and validated; the "
@@ -833,4 +856,41 @@ def test_rule_reaches_through_nested_models_and_lists_on_the_event_stream():
     )
     assert "edge_warnings" not in payload, (
         "edge_warnings is optional and null, so the event still omits it"
+    )
+
+
+def test_rule_reaches_models_held_in_a_mapping():
+    """W7b -- a model reached as a dict *value* is not exempt either.
+
+    The third way a response nests a model, after the nested field and the
+    list: a mapping keyed by something the caller chose. One tool's response
+    is shaped that way -- the pending-metadata listing, whose per-field
+    entries carry optional alternates -- so the mapping branch is live
+    production code rather than defensive breadth.
+
+    Split from W7 because it excludes a different rival. W7's fixtures leave a
+    mapping-blind prune entirely green: deleting that branch passes every
+    other assertion in this module, since no other fixture routes a model
+    through a dict. The branch was reachable, unexercised, and its removal
+    was silent.
+    """
+    from sage.models.schemas import ExtractedField, PendingMetadataItem
+
+    entry = PendingMetadataItem.model_construct(
+        document=None,
+        extracted_fields={
+            "title": ExtractedField(
+                value="A title", source="filename", alt_value=None, alt_source=None
+            )
+        },
+    )
+    body = _serialize(entry)
+    field = body["extracted_fields"]["title"]
+
+    assert "alt_value" not in field and "alt_source" not in field, (
+        "optional nulls survived inside a mapping value, so the rule does not "
+        f"reach a model held as a dict value: {sorted(field)}"
+    )
+    assert field["value"] == "A title", (
+        "the mapping branch must prune the entry, not replace or empty it"
     )

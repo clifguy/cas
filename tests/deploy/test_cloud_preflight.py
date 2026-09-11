@@ -603,7 +603,10 @@ _STATS_BODY = (
     '"by_source_type":{"markdown":42},"total_edges":7,"by_edge_type":{"references":7},'
     '"staging_edge_count":0,"graph_store_size_bytes":1024,"content_store_size_bytes":2048,'
     '"content_store_row_count":10,"content_store_version_count":1,'
-    '"content_store_small_fragment_count":0,"health":"ok"}'
+    '"content_store_small_fragment_count":0,"health":"ok",'
+    # Required-and-nullable: the schema lists it, so a conforming body carries
+    # the key whatever its value. A vault that has never ingested sends null.
+    '"last_ingestion_at":null}'
 )
 #: GET /config returns VaultConfig.model_dump(), so the schema's required
 #: top-level sections are always present; edge_inference is the one asserted.

@@ -45,7 +45,7 @@ def _sse_event(event: BaseModel) -> str:
     ``elapsed_seconds`` on ``started`` and on ``skipped`` events) while a
     required one keeps its key whatever its value.
     """
-    return f"data: {json.dumps(to_wire(event))}\n\n"
+    return f"data: {json.dumps(to_wire(event), ensure_ascii=False)}\n\n"
 
 
 async def _format_reabstract_stream(

@@ -82,5 +82,13 @@ def to_wire(model: BaseModel) -> dict:
     JSON mode, so enumerations, timestamps and paths arrive as the JSON types
     the contract declares rather than as Python objects a later encoder has to
     guess at, and optional nulls removed per the rule above.
+
+    ``by_alias`` so the dump is keyed the way the prune reads it. Without it the
+    two disagree on any aliased field: the dump keys by field name, the lookup
+    asks for the alias, misses, and the field falls through to the pass-through
+    for keys no field claims -- carrying its optional null onto the wire, which
+    is the opposite of the rule. No response model declares an alias today, so
+    this is inert rather than a fix to observable behavior; it is the pairing
+    that has to hold, and it held only by there being nothing to test it.
     """
-    return prune_optional_nulls(model, model.model_dump(mode="json"))
+    return prune_optional_nulls(model, model.model_dump(mode="json", by_alias=True))

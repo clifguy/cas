@@ -756,7 +756,13 @@ def test_summary_event_errors_items_reference_batch_ingest_file_error(
     assert {"file_index", "filename", "source_path", "message", "code", "detail"} <= set(properties)
     assert properties["file_index"].get("type") == "integer"
     assert properties["file_index"].get("minimum") == 0
-    assert properties["detail"].get("type") == "object"
+    # `detail` is optional and nullable, so 3.1 spells its type as an array
+    # carrying "null" beside the base type. The base type is what this guard
+    # asks about; nullability is the serialized-shape gate's question, not
+    # this one's.
+    detail_type = properties["detail"].get("type")
+    detail_types = {detail_type} if isinstance(detail_type, str) else set(detail_type or [])
+    assert "object" in detail_types
 
 
 @pytest.mark.parametrize("spec_fixture", ["sage_core_spec", "cas_app_spec"])
