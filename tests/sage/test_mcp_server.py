@@ -608,7 +608,6 @@ _TYPED_ALIAS_FAMILY = [
     ("invalid_vault_id", "VaultIdStr", "not a vault id!", "vault_id"),
     ("invalid_edge_id", "EdgeIdStr", "not-a-uuid", "edge_id"),
     ("invalid_sha256", "Sha256Str", "deadbeef", "sha256"),
-    ("invalid_function_id", "FunctionIdStr", "not-a-fn", "function_id"),
     ("invalid_document_date", "DocumentDateStr", "2026-13-99", "document_date"),
     ("invalid_user_id", "UserIdStr", "not-a-uuid", "user_id"),
 ]
@@ -710,12 +709,17 @@ async def test_mcp_tool_malformed_edge_id_yields_invalid_edge_id(vault_services)
     assert result["detail"]["edge_id"] == "not-a-uuid"
 
 
-async def test_mcp_tool_malformed_function_id_yields_invalid_function_id(vault_services):
-    """verify_preconditions validates function_id at the boundary before any
-    lookup; a malformed value surfaces the structured invalid_function_id (400)."""
-    result = _parse(await verify_preconditions("test_vault", function_id="not-a-fn"))
-    assert result["error"] == "invalid_function_id", f"got: {result!r}"
-    assert result["detail"]["function_id"] == "not-a-fn"
+async def test_mcp_tool_malformed_document_id_yields_invalid_document_id(vault_services):
+    """verify_preconditions validates document_id at the boundary before any
+    lookup; a malformed value surfaces the structured invalid_document_id (400).
+
+    Paired with test_check_preconditions_no_deps below, which drives a
+    well-formed id through to a result: without that positive control this
+    assertion would also hold for a boundary that rejected every input.
+    """
+    result = _parse(await verify_preconditions("test_vault", document_id="not-a-fn"))
+    assert result["error"] == "invalid_document_id", f"got: {result!r}"
+    assert result["detail"]["document_id"] == "not-a-fn"
 
 
 @pytest.mark.parametrize(
@@ -1341,9 +1345,12 @@ async def test_check_preconditions_no_deps(vault_services):
     await _await_document_idle(vault_services, "test_vault", doc["id"])
 
     result = _parse(await verify_preconditions("test_vault", doc["id"]))
-    assert result["function_id"] == doc["id"]
+    assert result["document_id"] == doc["id"]
     assert result["satisfied"] is True
     assert result["checks"] == []
+    # The retired spelling is gone from the payload, not merely joined by the
+    # new one: a model that emitted both keys would satisfy the assertion above.
+    assert "function_id" not in result, f"retired key still on the wire: {result!r}"
 
 
 # ---------------------------------------------------------------------------

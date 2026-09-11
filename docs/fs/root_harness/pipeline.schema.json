@@ -74,7 +74,7 @@
           },
           "preconditions": {
             "type": "array",
-            "description": "Conditions that must be satisfied before the transition is permitted. Evaluated by the governing steward using SAGE Core API calls (check_preconditions, traverse, get_editors).",
+            "description": "Conditions that must be satisfied before the transition is permitted. Evaluated by the governing steward using SAGE Core API calls (verify_preconditions, traverse, get_editors).",
             "items": {
               "type": "object",
               "required": ["check", "description"],

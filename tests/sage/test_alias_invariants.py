@@ -19,6 +19,7 @@ the EdgeIdStr normalize-on-validation behavior (Quirk 3).
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -32,7 +33,6 @@ from sage.models.schemas import (
     DocumentDateStr,
     DocumentIdStr,
     EdgeIdStr,
-    FunctionIdStr,
     Sha256Str,
     UserIdStr,
     VaultIdStr,
@@ -336,14 +336,6 @@ VAULT_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
 
 
 # ---------------------------------------------------------------------------
-# FunctionIdStr -- regex identical to DocumentIdStr (8 hex + "_" + slug).
-# Distinct alias for type-safety semantics; strategies are reused from
-# DOC_ID_VALID / DOC_ID_INVALID below in the registry to honestly signal
-# the shared shape contract — divergence would land as a new alias.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Alias registry
 # ---------------------------------------------------------------------------
 
@@ -368,10 +360,6 @@ TYPED_ALIASES: tuple[AliasSpec, ...] = (
     ),
     AliasSpec("UserIdStr", TypeAdapter(UserIdStr), USER_ID_VALID, USER_ID_INVALID),
     AliasSpec("VaultIdStr", TypeAdapter(VaultIdStr), VAULT_ID_VALID, VAULT_ID_INVALID),
-    # FunctionIdStr's regex is identical to DocumentIdStr; the two aliases
-    # share strategies so any future divergence shows up as a new strategy
-    # block here.
-    AliasSpec("FunctionIdStr", TypeAdapter(FunctionIdStr), DOC_ID_VALID, DOC_ID_INVALID),
 )
 
 
@@ -503,4 +491,41 @@ def test_alias_inventory_covers_schemas_module() -> None:
     assert discovered == expected, (
         f"Typed-alias inventory drift. Schemas module exposes {discovered}, "
         f"test registry covers {expected}. Update TYPED_ALIASES in this file."
+    )
+
+
+def _alias_error_code(alias_name: str) -> str:
+    """Map a typed-alias class name to the error code its validator raises.
+
+    ``DocumentIdStr`` -> ``invalid_document_id``, ``Sha256Str`` ->
+    ``invalid_sha256``. The correspondence is mechanical by construction, which
+    is what lets the next test compare the two rosters as sets.
+    """
+    stem = alias_name.removesuffix("Str")
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", stem).lower()
+    return f"invalid_{snake}"
+
+
+def test_alias_roster_and_error_code_family_correspond() -> None:
+    """The typed-alias roster and the boundary-error family are one set.
+
+    ``_TYPED_ALIAS_CODES`` is the dispatch table both the HTTP translator and
+    the MCP error choke point read; an alias missing from it degrades to a
+    generic error, and a code left behind after an alias retires is a dead
+    branch nothing can reach. Comparing the two as sets catches both, and in
+    particular refuses a retirement that removes the alias but leaves the code.
+
+    Limit worth stating, since the comparison looks stronger than it is: the
+    expected code is derived from the alias's *name*, not from the code its
+    validator actually raises. An alias named ``FooStr`` whose validator raises
+    ``invalid_bar`` passes here as long as ``invalid_foo`` is in the table. The
+    per-alias contract test is what pins a name against its raised code.
+    """
+    from sage.api.errors import _TYPED_ALIAS_CODES
+
+    from_roster = {_alias_error_code(spec.name) for spec in TYPED_ALIASES}
+    assert from_roster == set(_TYPED_ALIAS_CODES), (
+        "Typed-alias roster and error-code family disagree. "
+        f"Roster implies {sorted(from_roster)}; the table declares "
+        f"{sorted(_TYPED_ALIAS_CODES)}."
     )

@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.45",
+      "version": "0.46",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -107,7 +107,7 @@
       "path": "root_harness/pipeline.schema.json",
       "title": "ROOT Harness Pipeline Configuration",
       "status": "draft",
-      "version": "0.1",
+      "version": "0.2",
       "role": "Defines pipeline stages, transitions, gatekeeper bindings, and precondition expressions.",
       "instantiation_checklist_items": [
         7,
@@ -128,7 +128,7 @@
       "path": "root_harness/policy.schema.json",
       "title": "ROOT Harness Policy Configuration",
       "status": "draft",
-      "version": "0.1",
+      "version": "0.2",
       "role": "Defines behavioral constraints: permitted operations, scope restrictions, and tool-level approval policy.",
       "instantiation_checklist_items": [
         9
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.89",
+  "substrate_version": "1.90",
   "revision_history": [
+    {
+      "version": "1.90",
+      "date": "2026-09-11",
+      "summary": "The precondition operation stops calling its subject a function, and the ROOT Harness substrate stops calling the operation by a name it no longer answers to (sage_core_api.openapi.yaml 0.45 -> 0.46, root_harness/policy.schema.json and root_harness/pipeline.schema.json 0.1 -> 0.2). verify_preconditions was the last surface taking function_id where every sibling takes document_id, and both its caller-facing narratives had to spend a sentence apologizing for the name -- the specification saying the parameter is named function_id for historical reasons, the tool conceding that despite the name it works on any document with outbound depends_on edges. The path template, the path parameter, and PreconditionResult's first property are now document_id, and both apologies are deleted rather than reworded. The FunctionIdStr typed alias retires outright instead of being renamed: its own validator docstring recorded that the pattern is identical to DocumentIdStr and that the separation existed to communicate a distinction that never arrived, so the alias, its invalid_function_id code, and its row in the typed-alias error family all go, and the operation refuses a malformed id with invalid_document_id like every sibling. That refusal is now documented: the responses block declared only 200 and 404 while the route ran the same boundary validator every sibling runs, so a 400 the operation could always return was absent from the published contract, and the router's responses entry declares it in the same words. Both prose surfaces also gain the distinction the tool had never stated -- that this is not a mutation preview. A dry_run answers what one call would do to committed state; this aggregates dependency satisfaction across every outbound depends_on edge, and the ingest preview's declared requirement set, the nearest a dry_run comes to reporting on the vault rather than the request, is still scoped to the single document the call names. The paragraph is written once on the tool it describes rather than as back-references from the seven dry-run-aware tools, which would assert a relationship between capabilities that answer different questions. The two ROOT Harness schemas named the operation check_preconditions -- its service method and route handler, never its operationId since the verb-convention rename -- in a steward's permitted-operations enum and in the prose naming the calls a steward evaluates transition preconditions with; both now name verify_preconditions. Tests: the typed-alias roster and the boundary-error family are compared as sets for the first time, so a retirement that drops the alias but leaves its code is refused, and the precondition operation's path template, parameter, and response property are asserted against the parsed specification rather than its text, since a search for the new spelling matches the operation's own schema reference and passes over an unrenamed path key. The MCP and REST boundary-rejection tests assert the retired key is absent from the payload rather than merely that the new one is present. The docstring-disclosure-parity gate's SURFACE_ONLY_IDENTIFIERS map empties: its only entry exempted function_id as a misleading name the contract had to explain, and the rename removes the reason. PreconditionCheck.actual also stops under-describing itself: the service synthesizes two values that are not lifecycle statuses, and the property named only one of them, so a caller branching on actual could learn \"failed (pipeline_incomplete)\" only by provoking it. Both are now named, and the three-branch test that already pinned the emitted literals asserts each synthesized one appears in the published description, tying emission to disclosure rather than pinning them independently. No allowlist gains an entry."
+    },
     {
       "version": "1.89",
       "date": "2026-09-11",

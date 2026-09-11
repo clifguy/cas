@@ -1188,10 +1188,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/preconditions/{function_id}:
+  /sage_vaults/{vault_id}/preconditions/{document_id}:
     get:
       operationId: verify_preconditions
-      summary: Check whether all depends_on targets for a function document are
+      summary: Check whether all depends_on targets for a document are
         satisfied (dependency-satisfying lifecycle, pipeline not failed).
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
@@ -1208,19 +1208,23 @@ paths:
         than raising.
 
 
-        Despite the path parameter name `function_id`, this operation
-        works on any document with outbound `depends_on` edges, not
-        only documents typed as "function".
+        This is not a mutation preview. A `dry_run` on a mutation
+        answers what that one call would do to committed state; this
+        answers whether a document's dependencies are in a state that
+        permits work to proceed, aggregated across every outbound
+        `depends_on` edge. The ingest preview's declared requirement
+        set is the nearest a `dry_run` comes to reporting on the vault
+        rather than on the request, and it is still scoped to the
+        single document the call names.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
-        - name: function_id
+        - name: document_id
           in: path
           required: true
           description: >-
-            Document ID of the document whose preconditions to check.
-            Parameter is named `function_id` for historical reasons;
-            any document with outbound `depends_on` edges is valid.
+            Identifier of the document whose preconditions to check.
+            Any document with outbound `depends_on` edges is valid.
           schema:
             type: string
       responses:
@@ -1230,6 +1234,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PreconditionResult"
+        "400":
+          description: >-
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `document_not_found`: no document with that id; or vault
@@ -6218,12 +6230,12 @@ components:
 
     PreconditionResult:
       type: object
-      required: [function_id, satisfied, checks]
+      required: [document_id, satisfied, checks]
       description: Response body for the precondition-check endpoint; carries an aggregate satisfaction flag and per-target check details.
       properties:
-        function_id:
+        document_id:
           type: string
-          description: Identifier of the workflow function whose preconditions were checked.
+          description: Identifier of the document whose preconditions were checked.
         satisfied:
           type: boolean
           description: True if all dependencies are satisfied.
@@ -6250,7 +6262,11 @@ components:
             lifecycle).
         actual:
           type: string
-          description: Actual state found (e.g., "active", "not found").
+          description: >-
+            Actual state found: the target's lifecycle status (e.g., "active"),
+            "not found" when the vault does not hold the target, or
+            "failed (pipeline_incomplete)" when its pipeline failed, which is
+            reported ahead of the lifecycle status rather than alongside it.
         satisfied:
           type: boolean
           description: True when the actual state meets the required condition for this target.

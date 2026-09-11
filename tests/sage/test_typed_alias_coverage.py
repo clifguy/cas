@@ -125,7 +125,6 @@ from sage.models.schemas import (
     DocumentDateStr,
     DocumentIdStr,
     EdgeIdStr,
-    FunctionIdStr,
     Sha256Str,
     UserIdStr,
     VaultIdStr,
@@ -153,7 +152,6 @@ SHAPE_REGISTRY: Final[dict[str, type]] = {
     "id": DocumentIdStr,  # exact match — Model.id default
     "edge_id": EdgeIdStr,  # exact match — wins over *_id
     "vault_id": VaultIdStr,  # exact match — wins over *_id
-    "function_id": FunctionIdStr,  # exact match — wins over *_id
     "hashes": Sha256Str,  # exact match — the bare-stem plural
     "user_ids": UserIdStr,  # exact match — wins over *_ids
     "*_id": DocumentIdStr,
@@ -191,7 +189,6 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
     {
         schemas_mod._validate_document_id,
         schemas_mod._validate_edge_id,
-        schemas_mod._validate_function_id,
         schemas_mod._validate_sha256,
         schemas_mod._validate_document_date,
         schemas_mod._validate_user_id,
@@ -337,8 +334,6 @@ def _alias_display_name(alias) -> str:
         return "UserIdStr"
     if alias is VaultIdStr:
         return "VaultIdStr"
-    if alias is FunctionIdStr:
-        return "FunctionIdStr"
     return str(alias)
 
 
@@ -1122,7 +1117,6 @@ _TYPED_ALIAS_FAMILY_CONTRACT = [
     ("invalid_vault_id", VaultIdStr, "not a vault id!", "vault_id"),
     ("invalid_edge_id", EdgeIdStr, "not-a-uuid", "edge_id"),
     ("invalid_sha256", Sha256Str, "deadbeef", "sha256"),
-    ("invalid_function_id", FunctionIdStr, "not-a-fn", "function_id"),
     ("invalid_document_date", DocumentDateStr, "2026-13-99", "document_date"),
     ("invalid_user_id", UserIdStr, "not-a-uuid", "user_id"),
 ]

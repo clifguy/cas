@@ -38,7 +38,7 @@
                 "ingest",
                 "link",
                 "traverse",
-                "check_preconditions",
+                "verify_preconditions",
                 "register_user",
                 "set_editors",
                 "get_editors",
@@ -49,7 +49,7 @@
                 "set_lifecycle"
               ]
             },
-            "description": "SAGE Core API operations this agent is permitted to call. A mechanical formatting agent might have [discover, update_metadata, ingest] but not set_lifecycle. A steward governing transitions might have [discover, traverse, check_preconditions, set_lifecycle, update_metadata]."
+            "description": "SAGE Core API operations this agent is permitted to call. A mechanical formatting agent might have [discover, update_metadata, ingest] but not set_lifecycle. A steward governing transitions might have [discover, traverse, verify_preconditions, set_lifecycle, update_metadata]."
           },
           "scope_restrictions": {
             "type": "object",

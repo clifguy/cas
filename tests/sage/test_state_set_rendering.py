@@ -60,10 +60,10 @@ async def test_precondition_payload_and_supersede_error_render_identically(minim
     The regression guard for the divergence: either call site growing its
     own join, ordering, or empty-set answer turns this red.
     """
-    function_id = "a1b2c3d4_doc_function"
+    document_id = "a1b2c3d4_doc_function"
 
     async def get_document(doc_id):
-        return SimpleNamespace(id=doc_id) if doc_id == function_id else None
+        return SimpleNamespace(id=doc_id) if doc_id == document_id else None
 
     async def get_edges_by_source(source_id, edge_type):
         return [SimpleNamespace(target_id="e5f6a7b8_doc_dependency")]
@@ -71,7 +71,7 @@ async def test_precondition_payload_and_supersede_error_render_identically(minim
     store = SimpleNamespace(get_document=get_document, get_edges_by_source=get_edges_by_source)
     service = GraphOpsService(store, minimal_config)
 
-    result = await service.check_preconditions(function_id)
+    result = await service.check_preconditions(document_id)
     satisfying = minimal_config.lifecycle.dependency_satisfying_states()
     error = SupersedeTargetNotActiveError("doc_1", "archived", sorted(satisfying, reverse=True))
 
