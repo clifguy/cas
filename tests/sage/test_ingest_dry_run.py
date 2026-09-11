@@ -150,7 +150,24 @@ def _config_dict(tmp_vault_dir: Path) -> dict:
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
         },
-        "metadata_extraction": {},
+        # A filename pattern, so a doc_type inferred from the name is
+        # distinguishable from the ``misc`` fallback. Consumed only where
+        # ``needs_review`` is set, which is where filename inference runs.
+        "metadata_extraction": {
+            "filename_extraction": {
+                "pattern": "{date}_{project}_{code}_{title}",
+                "separator": "_",
+                "project_identifier": "CAS",
+                "segment_fields": {
+                    "date": "doc_date",
+                    "project": "project",
+                    "code": "doc_code",
+                    "title": "title",
+                },
+                "known_code_patterns": ["^LR$"],
+                "code_to_doc_type": [{"code": "LR", "doc_type": "loose_record"}],
+            }
+        },
         "edge_inference": {},
     }
 
@@ -1175,3 +1192,132 @@ async def test_ingest_admits_an_inherited_doc_type_on_supersede(
         )
     )
     assert result.document.doc_type == "loose_record"
+
+
+# ---------------------------------------------------------------------------
+# (H) Regression guards for behaviours the review found unpinned
+# ---------------------------------------------------------------------------
+
+
+async def test_preview_parses_the_filename_of_a_store_resident_source(
+    tmp_vault_dir, dry_ingestion_service, monkeypatch
+):
+    """A source present in the store but absent from the local tree still
+    has its filename parsed, because the real path parses it.
+
+    The parser reads the stem and never opens the file, so the branch has
+    no reason to skip it -- and skipping it resolved the doc_type
+    differently in a preview than in the ingest it previewed. Reachable
+    only under a non-filesystem binding, which is why the store is stood
+    in for here: under the filesystem binding the store *is* the local
+    tree, so the branch cannot be entered at all.
+    """
+
+    class _StoreResident:
+        def source_exists(self, vault_id, storage_root, source):
+            return True
+
+    monkeypatch.setattr(
+        "sage.mcp_init.resolve_stack_vault_source_store",
+        lambda _config: _StoreResident(),
+    )
+
+    preview = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source="imports/2026-09-11_CAS_LR_only-in-the-store.md",
+            source_type=SourceType.MARKDOWN,
+            needs_review=True,
+            dry_run=True,
+        )
+    )
+
+    assert preview.resolved_doc_type == "loose_record", (
+        "The filename maps its code to loose_record. Falling through to "
+        "misc means the parse was skipped on this branch."
+    )
+    # The bytes were never delivered on this branch and no prior record
+    # holds them, so there is no digest to inherit and none is invented.
+    assert preview.source_content_hash is None
+
+
+async def test_an_undeclared_doc_type_refuses_before_the_source_is_retained(
+    tmp_vault_dir, dry_ingestion_service
+):
+    """The vocabulary gate runs above retention, so a refused ingest leaves
+    no retained file behind.
+
+    Placed below retention the gate still refused, and still refused with
+    the right error -- so a test asserting only the raise passes either
+    way. What separates the two is the vault tree: a refusal after
+    retention leaves a copied file with no row, which no audit walks.
+    """
+    outside = tmp_vault_dir / "outside_gate"
+    outside.mkdir(parents=True, exist_ok=True)
+    source = outside / "misspelled.md"
+    source.write_text("# Misspelled\n\nBody.")
+
+    storage_root = tmp_vault_dir / "sources"
+    storage_root.mkdir(parents=True, exist_ok=True)
+    before = _tree(storage_root)
+
+    with pytest.raises(InvalidDocTypeError):
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(source),
+                source_type=SourceType.MARKDOWN,
+                metadata={"doc_type": "stering_document"},
+            )
+        )
+
+    assert _tree(storage_root) == before, (
+        "A refused ingest retained its source before refusing, orphaning "
+        "the copy. The gate reads only request metadata and vault config, "
+        "so it belongs above the first irreversible act."
+    )
+
+
+async def test_bulk_dry_run_carries_an_empty_previews_list_when_all_files_refuse(
+    tmp_vault_dir,
+    dry_config,
+    dry_ingestion_service,
+    dry_lifecycle_service,
+    graph_store,
+    lock_manager,
+):
+    """``previews`` is keyed on the flag, not on the list being non-empty.
+
+    A dry run whose files were every one refused has an empty previews
+    list and a populated errors list. Keying the emission on emptiness
+    drops the key entirely there, making that run indistinguishable on
+    the wire from a real one apart from the echo -- and the contract says
+    the field is present on a dry run.
+    """
+    services = _batch_services(
+        dry_config, dry_ingestion_service, dry_lifecycle_service, graph_store, lock_manager
+    )
+
+    summary = await BatchIngestService().run(
+        files=[
+            FileDescriptor(
+                file_path=str(tmp_vault_dir / "sources" / "absent-one.md"),
+                source_type="markdown",
+            ),
+            FileDescriptor(
+                file_path=str(tmp_vault_dir / "sources" / "absent-two.md"),
+                source_type="markdown",
+            ),
+        ],
+        vault_services=services,
+        infer_edges=False,
+        dry_run=True,
+    )
+
+    assert summary.previews == []
+    assert summary.error_count == 2
+
+    wire = summary.to_dict()
+    assert "previews" in wire, (
+        "A dry run in which every file was refused must still carry the "
+        "previews key; the errors list is what accounts for the batch."
+    )
+    assert wire["previews"] == []

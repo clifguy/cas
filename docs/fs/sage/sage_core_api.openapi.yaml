@@ -585,7 +585,7 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
+                anyOf:
                   - $ref: "#/components/schemas/IngestPreview"
                   - $ref: "#/components/schemas/IngestResponse"
         "201":

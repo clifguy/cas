@@ -28,8 +28,16 @@ router = APIRouter(tags=["Ingestion"])
 @router.post(
     "/documents",
     response_model=IngestResponse,
+    # 201 is the default status, so ``response_model`` attaches to it and the
+    # 200 below declares its own union. Without the explicit status the route
+    # defaulted to 200, the 200 entry merged into that default and contributed
+    # only a description, and the served contract said every outcome was an
+    # ``IngestResponse`` with no 201 declared at all -- while the handler
+    # returned 201 on a create and 200 on both a force-reuse and a preview.
+    status_code=201,
     responses={
         200: {
+            "model": IngestPreview | IngestResponse,
             "description": (
                 "Returned in two cases, distinguished by the body. With "
                 "`dry_run` true, an `IngestPreview` reporting what a real run "

@@ -430,3 +430,17 @@ class TestDryRunReachesThePipeline:
         event = _summary_event_from(IngestSummary())
         assert event.dry_run is False
         assert event.previews is None
+
+    def test_summary_event_carries_an_empty_previews_list_on_a_dry_run(self) -> None:
+        """A dry run in which every file was refused maps to an empty list,
+        not to absent.
+
+        The pair above uses a populated list, so a mapping written as
+        ``summary.previews or None`` passes both halves of it while
+        dropping the field on exactly the run this asserts. The wire
+        contract says the field is present on a dry run, and the errors
+        list is what accounts for such a batch.
+        """
+        event = _summary_event_from(IngestSummary(dry_run=True, previews=[]))
+        assert event.dry_run is True
+        assert event.previews == []
