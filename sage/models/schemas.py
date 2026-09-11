@@ -2961,7 +2961,9 @@ class DiscoverRequest(BaseModel):
         description=(
             "Heading hierarchy path for deterministic extraction (e.g., "
             '"Section 3 > Definitions > Normalization"). Required for '
-            "deterministic mode."
+            "deterministic mode, and refused outside it. A catalog-only "
+            "target refuses it on the target axis, naming documents as "
+            "the target that takes one."
         ),
     )
     limit: int = Field(
@@ -3181,6 +3183,33 @@ class DiscoverRequest(BaseModel):
         message template; the translator keeps it out of the published
         envelope.
         """
+        # Runs ahead of the mode-axis branches because on a catalog-only
+        # target they answer the wrong question. Each names the modes that
+        # would accept the parameter, and the target refuses every one of
+        # them, so following the advice trades this rejection for the
+        # target's own -- whose advice is catalog, where the caller
+        # started. The pair is a loop that never names the exit. Reported
+        # on the target axis it does: drop the parameter, or enumerate
+        # documents. Both parameters that reach a mode-axis branch are
+        # covered; every other one the catalog-only targets refuse is
+        # already reported on the target axis further down.
+        if self.mode == RetrievalMode.CATALOG and self.target in _CATALOG_ONLY_TARGETS:
+            for name in ("query", "heading_path"):
+                if getattr(self, name) is not None:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        (
+                            "Parameter '{forbidden_param}' is not valid for "
+                            "target '{target}'. Allowed: documents only."
+                        ),
+                        {
+                            "mode": self.mode.value,
+                            "target": self.target.value,
+                            "forbidden_param": name,
+                            "allowed_targets": [RetrievalTarget.DOCUMENTS.value],
+                        },
+                    )
+
         if self.mode != RetrievalMode.DETERMINISTIC and self.heading_path is not None:
             raise PydanticCustomError(
                 "mode_parameter_mismatch",
@@ -3195,28 +3224,6 @@ class DiscoverRequest(BaseModel):
                     "allowed_modes": [RetrievalMode.DETERMINISTIC.value],
                 },
             )
-        # A catalog-only target with a query is refused on the target axis,
-        # not the mode axis. The branch below would name the two scoring
-        # modes as the way out, and neither is: switching to one of them
-        # trades this rejection for the target's own, which allows catalog
-        # alone. That pair of messages is a loop, and it never names the
-        # exit -- drop the query, or enumerate documents.
-        if (
-            self.query is not None
-            and self.mode == RetrievalMode.CATALOG
-            and self.target in (RetrievalTarget.EDGES, RetrievalTarget.FACETS)
-        ):
-            raise PydanticCustomError(
-                "mode_parameter_mismatch",
-                ("Parameter 'query' is not valid for target '{target}'. Allowed: documents only."),
-                {
-                    "mode": self.mode.value,
-                    "target": self.target.value,
-                    "forbidden_param": "query",
-                    "allowed_targets": [RetrievalTarget.DOCUMENTS.value],
-                },
-            )
-
         # Only the two scoring modes consume a query. Catalog enumerates by
         # filter and deterministic extracts by heading path, and neither
         # reads the field -- so accepting one there returned the whole

@@ -758,21 +758,12 @@ _FACETS = RetrievalTarget.FACETS.value
 _CATALOG = RetrievalMode.CATALOG.value
 
 _MISMATCH_CASES: list[_MismatchCase] = [
-    # 1. A parameter that only deterministic mode gives meaning to.
+    # 1. A parameter a catalog-only target serves no use for: reported on
+    # the target axis, because the modes the mode axis would name are all
+    # refused by that same target. Both parameters that would otherwise
+    # reach a mode-axis branch are covered.
     _case(
         1,
-        "heading_path outside deterministic",
-        _MODE,
-        [RetrievalMode.DETERMINISTIC.value],
-        "heading_path",
-        mode=RetrievalMode.CATALOG,
-        heading_path="Section 1",
-    ),
-    # 2. A query on a target that only catalog serves: reported on the
-    # target axis, because the modes the mode axis would name are both
-    # refused by that same target.
-    _case(
-        2,
         "query with a catalog-only target",
         _TARGET,
         [_DOCS],
@@ -780,6 +771,26 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         expected_target=_FACETS,
         target=RetrievalTarget.FACETS,
         query="anything",
+    ),
+    _case(
+        1,
+        "heading_path with a catalog-only target",
+        _TARGET,
+        [_DOCS],
+        "heading_path",
+        expected_target=_EDGES,
+        target=RetrievalTarget.EDGES,
+        heading_path="Section 1",
+    ),
+    # 2. A parameter that only deterministic mode gives meaning to.
+    _case(
+        2,
+        "heading_path outside deterministic",
+        _MODE,
+        [RetrievalMode.DETERMINISTIC.value],
+        "heading_path",
+        mode=RetrievalMode.CATALOG,
+        heading_path="Section 1",
     ),
     # 3. A parameter deterministic mode has no use for.
     _case(
@@ -6765,23 +6776,43 @@ def test_mode_resolution_accepts_both_target_input_forms(target):
 
 
 @pytest.mark.parametrize("target", ["facets", "edges"])
-def test_query_with_catalog_only_target_is_refused_on_the_target_axis(target):
-    """A query with a catalog-only target names the exit that exists.
+@pytest.mark.parametrize("param", ["query", "heading_path"])
+def test_mode_axis_parameters_on_a_catalog_only_target_name_the_exit(param, target):
+    """These rejections name the exit that exists, on both parameters.
 
-    Reported on the mode axis this rejection sends the caller to
-    semantic or keyword, and the target refuses both -- so following the
-    advice buys the target's own rejection, whose advice is catalog,
-    which is where they started. The assertions pin the axis rather than
-    the prose: allowed_targets rather than allowed_modes is what makes
-    the message an exit instead of the other half of a loop.
+    Reported on the mode axis, each sends the caller to modes the target
+    refuses -- so following the advice buys the target's own rejection,
+    whose advice is catalog, which is where they started. The assertions
+    pin the axis rather than the prose: allowed_targets rather than
+    allowed_modes is what makes the message an exit instead of the other
+    half of a loop.
+
+    Both parameters are covered because they are the whole set: every
+    other parameter these targets refuse already reports on the target
+    axis, so a fix that reached one of these two and not the other would
+    leave exactly one loop standing.
     """
     with pytest.raises(ValidationError) as info:
-        DiscoverRequest(target=target, query="x")
+        DiscoverRequest(target=target, **{param: "x"})
     err = info.value.errors()[0]
     assert err["type"] == "mode_parameter_mismatch"
-    assert err["ctx"]["forbidden_param"] == "query"
+    assert err["ctx"]["forbidden_param"] == param
     assert err["ctx"]["allowed_targets"] == [RetrievalTarget.DOCUMENTS.value]
     assert "allowed_modes" not in err["ctx"]
+
+
+def test_heading_path_outside_deterministic_still_reports_the_mode_axis():
+    """The documents target keeps the mode-axis heading_path rejection.
+
+    The new branch is scoped to catalog-only targets; reporting an
+    ordinary heading_path rejection on the target axis would be wrong,
+    since documents is already the target the caller would be sent to.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, heading_path="H")
+    err = info.value.errors()[0]
+    assert err["ctx"]["forbidden_param"] == "heading_path"
+    assert err["ctx"]["allowed_modes"] == [RetrievalMode.DETERMINISTIC.value]
 
 
 def test_query_with_documents_target_still_reports_the_mode_axis():

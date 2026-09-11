@@ -3890,7 +3890,9 @@ components:
           description: >-
             Heading hierarchy path for deterministic extraction
             (e.g., "Section 3 > Definitions > Normalization").
-            Required for deterministic mode.
+            Required for deterministic mode, and refused outside it. A
+            catalog-only target refuses it on the target axis, naming
+            documents as the target that takes one.
         limit:
           type: integer
           minimum: 1

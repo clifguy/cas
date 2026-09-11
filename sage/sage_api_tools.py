@@ -1608,7 +1608,9 @@ def register_sage_tools(
             query: Search query text (required for semantic and keyword
                 modes; refused by catalog and deterministic, which do not
                 consume it, and by the catalog-only targets, which refuse
-                it on the target axis rather than the mode axis).
+                it on the target axis rather than the mode axis --
+                ``heading_path`` is refused the same way and for the same
+                reason).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,
