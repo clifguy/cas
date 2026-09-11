@@ -2498,7 +2498,7 @@ def register_sage_tools(
             services = get_vault(vault_id)
             body = HashCheckRequest(hashes=hashes)
             matches = await services.vault_config_service.hash_check(body)
-            return {h: m.model_dump(exclude_none=True) for h, m in matches.items()}
+            return {h: serialize(m) for h, m in matches.items()}
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -2533,7 +2533,7 @@ def register_sage_tools(
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             edges = await v.staging_edges_service.list_staging_edges()
-            items = [e.model_dump(mode="json") for e in edges]
+            items = [serialize(e) for e in edges]
             return {
                 "items": items,
                 "count": len(items),
@@ -3512,6 +3512,12 @@ def register_sage_tools(
         # enclosing ``register_sage_tools`` scope (where this inner function
         # is itself named ``get_stack_config``).
         cfg = sage.mcp_init.get_stack_config()
+        # Dumped whole, not through ``serialize``. The rule that lets a
+        # response drop a null key is the published schema's, and this
+        # report has no published schema -- it is the process's own
+        # configuration and the tool has no HTTP counterpart. Omitting an
+        # unset field here would answer "what is this stack configured
+        # with?" by leaving the unconfigured parts out of the answer.
         return cfg.model_dump(mode="json")
 
     return {

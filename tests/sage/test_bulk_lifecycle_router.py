@@ -161,10 +161,13 @@ async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
 
 def _entry_lacks_document(entry: dict) -> bool:
     """Light-mode predicate: the `document` field carries no body
-    content on the wire. FastAPI's default serializer emits
-    `"document": null` for an unset Optional; some configurations
-    strip the key entirely via response_model_exclude_none=True.
-    Both representations satisfy the contract."""
+    content on the wire.
+
+    `document` is declared optional, so the contract permits both the
+    present-and-null shape FastAPI's default serializer emits over REST
+    and the omitted-key shape the MCP transport sends. These tests drive
+    HTTP and accept either, because which of the two a transport chooses
+    is not what they are about."""
     return entry.get("document") is None
 
 

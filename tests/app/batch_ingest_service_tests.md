@@ -581,9 +581,10 @@ contract, so an entry that is shaped wrongly is refused by the builder
 rather than reaching one leg as a bad payload and the other as a raised
 error. The field's annotation states the contract but does not enforce it --
 `IngestSummary` is a plain dataclass -- so the builder is where the
-enforcement lives. `to_dict` serializes with `exclude_none`, so the dict the
-non-streaming caller receives is unchanged: an optional field the error does
-not have is absent, not null.
+enforcement lives. `to_dict` renders each entry through the shared wire
+rendering, so the dict the non-streaming caller receives is unchanged: an
+optional field the error does not have is absent, not null, and it is the
+same shape the entry has when the model is rendered on its own.
 
 **Precondition:** A two-file batch that fails twice -- once with a SAGEError
 carrying a detail, once with a bare exception carrying neither code nor

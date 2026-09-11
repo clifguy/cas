@@ -8,7 +8,13 @@ worse, stale prose that no gate catches. Work through the full blast radius.
 ## Blast radius — touch every one
 
 1. **Pydantic model** — `sage/models/schemas.py`: the response-model field, and
-   its membership in any `required` set.
+   its membership in any `required` set. Required-and-nullable is a deliberate
+   combination rather than an accident — it says the key is always on the wire
+   and its value may be null — and the serializer reads that declaration per
+   field. Moving a field between required and optional therefore changes the
+   response body, which a declaration-only edit would otherwise ship silently.
+   The rule, and the gate that holds the wire to it, are in *Null fields on the
+   wire* in `docs/fs/CLAUDE.md`.
 2. **OpenAPI schema** — `docs/fs/sage/sage_core_api.openapi.yaml`: the
    `properties` entry, the `required` list, and **every description**. A schema
    property description must be **byte-for-byte identical** between the Pydantic

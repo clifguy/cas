@@ -38,7 +38,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ContentBlock, TextContent
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 # Side-effect import: monkey-patches ArgModelBase.model_config to add
 # extra="forbid", so every FastMCP per-tool argument model rejects
@@ -57,6 +57,7 @@ from sage.mcp_init import (
     SAGEServices,
     initialize_services,
 )
+from sage.models.wire import to_wire
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
 
@@ -121,9 +122,15 @@ def _serialize(obj: object) -> dict:
 
     Returns a dict so FastMCP serializes it once for the wire, avoiding
     double JSON encoding.
+
+    Which keys survive is the published contract's call, applied per field by
+    `sage.models.wire`: a required field keeps its key even when its value is
+    null, an optional one does not. A dict arriving here was assembled by its
+    caller and is passed through unexamined, so a caller that builds a
+    response body by hand owes it the same rule.
     """
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(mode="json", exclude_none=True)
+    if isinstance(obj, BaseModel):
+        return to_wire(obj)
     if isinstance(obj, dict):
         return obj
     return {"value": str(obj)}

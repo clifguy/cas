@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from sage.config import render_state_set
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import ErrorResponse
+from sage.models.wire import to_wire
 
 
 class SAGEError(Exception):
@@ -2225,11 +2226,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def sage_error_handler(request: Request, exc: SAGEError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=ErrorResponse(
-                code=exc.code,
-                message=exc.message,
-                detail=exc.detail,
-            ).model_dump(exclude_none=True),
+            content=to_wire(
+                ErrorResponse(
+                    code=exc.code,
+                    message=exc.message,
+                    detail=exc.detail,
+                )
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -2249,9 +2252,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         sage_err = validation_error_envelope(exc)
         return JSONResponse(
             status_code=sage_err.status_code,
-            content=ErrorResponse(
-                code=sage_err.code,
-                message=sage_err.message,
-                detail=sage_err.detail,
-            ).model_dump(exclude_none=True),
+            content=to_wire(
+                ErrorResponse(
+                    code=sage_err.code,
+                    message=sage_err.message,
+                    detail=sage_err.detail,
+                )
+            ),
         )

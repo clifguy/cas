@@ -34,6 +34,7 @@ from sage.models.schemas import (
     IngestRequest,
     UnlinkResponse,
 )
+from sage.models.wire import to_wire
 from sage.services.batch_inference import EdgePlan
 from sage.services.batch_ingest import (
     BatchIngestService,
@@ -240,7 +241,7 @@ def _entries(result: IngestSummary) -> list[dict]:
     equality on the models themselves would not, an unset ``code`` being
     ``None`` there rather than missing.
     """
-    return [e.model_dump(exclude_none=True) for e in result.errors]
+    return [to_wire(e) for e in result.errors]
 
 
 def _fd(
@@ -941,7 +942,7 @@ class TestPerFileIngestion:
         assert result.to_dict()["errors"] == expected
 
         event = _summary_event_from(result)
-        assert [e.model_dump(exclude_none=True) for e in event.errors] == expected
+        assert [to_wire(e) for e in event.errors] == expected
 
     @pytest.mark.asyncio
     async def test_bis_011_abstract_tracking(self):

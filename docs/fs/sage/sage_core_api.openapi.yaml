@@ -899,8 +899,7 @@ paths:
             creation can also report `write_path_invalid`. Mutually exclusive
             with `include_content`.
           schema:
-            type: string
-            nullable: true
+            type: [string, "null"]
       responses:
         "200":
           description: >-
@@ -3514,12 +3513,10 @@ components:
             Current lifecycle state. Uses the base LifecycleStatus enum
             plus any vault-defined extensions.
         version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Human-readable version indicator (v1, v2, draft, final, etc.).
         project:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Project or workstream identifier.
         tags:
           type: array
@@ -3527,12 +3524,10 @@ components:
             type: string
           description: Freeform tags, extractable from YAML frontmatter or assigned manually.
         authority_scope:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Content domain this document governs, if authoritative.
         doc_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Vault-configured document type (Tier 2 metadata). Values are
             defined in the vault's document_types configuration.
@@ -3544,8 +3539,7 @@ components:
             original can match it and duplicate detection is keyed to content
             identity rather than to how any store chose to retain it.
         stored_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             SHA-256 of the source bytes as retained by the vault-source store.
@@ -3578,37 +3572,32 @@ components:
           format: date-time
           description: Last modification timestamp.
         projected_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: Last time the source adapter ran against this source.
         indexed_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >-
             Last time projection was chunked and embedded into content store.
             Null until indexing completes (pipeline_status reaches
             indexing_complete). Not updated by abstraction (Stage 3).
         source_modified_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >-
             Modification timestamp of the source file at time of ingestion.
             Extracted by source adapters from filesystem metadata (st_mtime).
             Null for non-file sources or when the adapter does not provide it.
         document_date:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Authoritative content date in YYYY-MM-DD format. Derived from
             the filename date code when present, falling back to the date
             portion of source_modified_at. Null for non-file sources when
             neither is available.
         semantic_abstract:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             LLM-generated abstract with density-proportional length.
             Generated at ingestion Stage 3, regenerated on re-ingestion.
@@ -3616,8 +3605,7 @@ components:
         pipeline_status:
           $ref: "#/components/schemas/PipelineStatus"
         pipeline_error:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Why the pipeline did not succeed. When pipeline_status is
             "failed", the error message from the failing pipeline stage
@@ -3628,8 +3616,7 @@ components:
             successful terminal pipeline_status, so a recovered document
             carries no record of what it recovered from.
         tier3_metadata:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Source-type-specific metadata (Tier 3). Structure varies by
@@ -3663,16 +3650,13 @@ components:
         source_type:
           $ref: "#/components/schemas/SourceType"
         version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Caller-supplied version label for the document (e.g. "v1.2"); null when no version is tracked.
         project:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Project the document belongs to within the vault's domain; null when unscoped.
         doc_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Vault-domain document type from the doc_types vocabulary; null when not classified.
         tags:
           type: array
@@ -3680,8 +3664,7 @@ components:
             type: string
           description: Caller-supplied tags applied to the document.
         semantic_abstract:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             LLM-generated semantic abstract of the document content.
             Present when the ingestion pipeline completed abstraction;
@@ -3690,9 +3673,8 @@ components:
             discovery to access document orientation without a separate
             get_document call (CAS-ADR-011).
         tier3_metadata:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
-          nullable: true
           description: >-
             Typed per-doc_type metadata (CAS-ADR-028). Opaque dict whose
             key set is determined by the document's doc_type tier3 schema;
@@ -3704,17 +3686,14 @@ components:
             failure_class from a single catalog/semantic/keyword pass
             without follow-up get_document round-trips.
         source_path:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Location of the original artifact, when present.
         source_modified_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: Source file modification timestamp at last ingestion.
         document_date:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Authoritative content date in YYYY-MM-DD format (calendar
             date, not a UTC-anchored instant). Matches the on-disk
@@ -3751,13 +3730,11 @@ components:
           type: string
           description: Current lifecycle state of the document (active, archived, etc.).
         doc_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Vault-domain document type from the doc_types vocabulary; null when not classified.
         tier3_metadata:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
-          nullable: true
           description: >-
             Typed per-doc_type metadata (CAS-ADR-028). Opaque dict whose
             key set is determined by the document's doc_type tier3 schema.
@@ -3791,8 +3768,7 @@ components:
           type: string
           description: Origin document ID.
         target_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Target document ID. Null on `retracts` edges, which target
             an edge instance rather than a document (see
@@ -3800,8 +3776,9 @@ components:
         edge_type:
           $ref: "#/components/schemas/EdgeType"
         resolution_policy:
-          $ref: "#/components/schemas/ResolutionPolicy"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/ResolutionPolicy"
+            - type: "null"
           description: >-
             Effective resolution policy, copied from the vault's
             edge_type_registry at edge creation time. Frozen on the
@@ -3810,8 +3787,7 @@ components:
             is constructed without policy resolution (e.g., the
             traversal-node Edge views returned by traverse).
         source_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document ID of the version on the source chain where this
             edge becomes applicable. Required for policies
@@ -3819,8 +3795,7 @@ components:
             policy `none` (except `retracts`, which carries a one-sided
             anchor on the retracting chain).
         target_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document ID of the version on the target chain where this
             edge becomes applicable. Required for policy
@@ -3828,8 +3803,7 @@ components:
             `transitive_source` and copied from target_id; must be null
             for policy `none`.
         valid_until_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document ID marking the chain head at which this edge is
             tombstoned by a `merged_from` termination. Null on a live
@@ -3837,8 +3811,7 @@ components:
             edges. Resolution ignores tombstoned edges downstream of
             this version.
         retracted_edge_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Set only on `retracts` edges; identifies the edge instance
             being retracted. Null on all other edge types.
@@ -3847,12 +3820,10 @@ components:
           format: date-time
           description: Timestamp when the edge was created.
         notes:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional annotation on why the relationship exists.
         rationale:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Decision rationale for this relationship. Particularly
             valuable on supersedes edges for capturing why the
@@ -3866,8 +3837,7 @@ components:
             inference paths stamp this explicitly; hand-curated edges
             and legacy rows take the default `manual`.
         synced_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The source-chain version (document id) the content was
             copied or derived from at the moment this edge was
@@ -3880,8 +3850,7 @@ components:
             conflated. Unset = explicit null; never inferred from chain
             anchors.
         synced_from_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             The source document's `source_content_hash` captured at
@@ -4015,8 +3984,7 @@ components:
             payload; turn on when the caller needs to inspect or
             display abstracts. Applies to semantic and keyword modes.
         min_relevance:
-          type: number
-          nullable: true
+          type: [number, "null"]
           description: >-
             Minimum relevance score (0.0-1.0) required for a chunk to
             appear in results. Null (default) applies no threshold.
@@ -4051,8 +4019,9 @@ components:
             themselves when no mode is given. Other mode/parameter
             combinations are rejected via mode_parameter_mismatch.
         response_mode:
-          $ref: "#/components/schemas/ResponseMode"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/ResponseMode"
+            - type: "null"
           description: >-
             Canonical payload-depth selector across SAGE surfaces.
             Semantics by target and
@@ -4067,11 +4036,10 @@ components:
             (documents+deterministic) ignored; deterministic always
             returns chunk content.
         facet_fields:
-          type: array
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/FacetField"
           minItems: 1
-          nullable: true
           description: >-
             Facet fields to aggregate for the facets target. Any subset
             of: doc_type, lifecycle_status, source_type,
@@ -4079,9 +4047,8 @@ components:
             Rows return in that fixed field order regardless of the
             order given here. Not valid for other targets.
         facet_value_limit:
-          type: integer
+          type: [integer, "null"]
           minimum: 1
-          nullable: true
           description: >-
             Per-field cap on the number of facet values returned for
             the facets target, keeping the top values by descending
@@ -4255,8 +4222,7 @@ components:
           type: string
           description: Must be a valid value in the vault's document_types configuration.
         authority_scope:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: New authority scope (read-classification scope used by access-control filtering); omit to leave unchanged.
         document_date:
           type: string
@@ -4267,8 +4233,7 @@ components:
         tier3_metadata:
           $ref: "#/components/schemas/Tier3Patch"
         expected_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Optimistic-concurrency token (CAS-ADR-038 Primitive B). When
             supplied, the substrate verifies it against the document's
@@ -4413,14 +4378,13 @@ components:
             explicitly; agent ingests with prepared metadata leave it
             at the default.
         metadata:
-          type: object
+          type: [object, "null"]
           additionalProperties:
             oneOf:
               - type: string
               - type: array
                 items:
                   type: string
-          nullable: true
           description: >-
             Caller-supplied metadata fields to merge into the document
             record at ingestion time. Per CAS-ADR-021, callers are
@@ -4436,8 +4400,7 @@ components:
             comma-separated string (parity with update_metadata's
             list-typed tags field).
         predecessor_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             When provided, the ingested document is treated as a new
             version that supersedes the named predecessor. After
@@ -4451,8 +4414,7 @@ components:
             content hash) runs before projection; failures return
             404/409 before any pipeline work begins.
         expected_head_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Optimistic-concurrency token on the chain head identified
             by `predecessor_id` (CAS-ADR-038 Primitive C). When
@@ -4470,9 +4432,8 @@ components:
             supplying this token on a fresh-chain ingest returns 400
             `expected_head_version_requires_predecessor`.
         tier3_metadata:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
-          nullable: true
           description: >-
             Caller-authoritative tier-3 typed metadata applied at
             create time per CAS-ADR-021. Validated against the
@@ -4486,8 +4447,7 @@ components:
             `UpdateMetadataRequest.tier3_metadata` takes a
             `Tier3Patch` ops-object with `set`/`unset` semantics.
         document_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Pins the force-reingest target. Force-reingest keys the
             record to reuse by content hash alone; when the incoming
@@ -4549,31 +4509,25 @@ components:
         is created and vault state is unchanged.
       properties:
         title:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Title segment extracted from the filename; null when no title was captured.
         project:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Project code extracted from the filename via project_identifier; null when none captured.
         version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Version label extracted from the filename; null when none captured.
         document_date:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: ISO-8601 date string when extractable.
         doc_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Resolved doc_type after applying the vault's
             keyword_to_doc_type and code_to_doc_type maps over the
             parsed segments. Null when no mapping fires.
         codes:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -4600,16 +4554,14 @@ components:
           type: string
           description: Origin document ID.
         target_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Target document ID. Must be null on `retracts` edges;
             required for every other edge type.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
         source_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document ID on the source chain where this edge becomes
             applicable. Required for policies `transitive_source` and
@@ -4618,8 +4570,7 @@ components:
             lie in the supersedes lineage of source_id (or of the
             retracting chain head for `retracts`).
         target_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document ID on the target chain where this edge becomes
             applicable. Required for policy `transitive_both`; must be
@@ -4627,22 +4578,20 @@ components:
             `retracts` edges. Must lie in the supersedes lineage of
             target_id when supplied.
         retracted_edge_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Required for `retracts` edges; must identify an existing
             edge in this vault. Must be null for all other edge types.
         notes:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional annotation.
         rationale:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Decision rationale for creating this relationship.
         rationale_kind:
-          $ref: "#/components/schemas/RationaleKind"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/RationaleKind"
+            - type: "null"
           description: >-
             Optional explicit discriminator (CAS-ADR-019).
             When omitted or null, the service derives the value from
@@ -4651,8 +4600,7 @@ components:
             only when they have stronger provenance information than
             the prefix-derivation rule.
         synced_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The source-chain version (document id) the content was
             copied or derived from at the moment this edge was
@@ -4665,8 +4613,7 @@ components:
             conflated. Unset = explicit null; never inferred from chain
             anchors.
         synced_from_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             The source document's `source_content_hash` captured at
@@ -4749,8 +4696,7 @@ components:
             Edge type to follow. Required (no default). The chain walk
             follows only this edge type in both directions.
         limit:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           minimum: 1
           description: >-
             Maximum number of chain entries to return after offset is
@@ -4843,8 +4789,7 @@ components:
             the count of documents matching the filters (the facet
             denominator).
         hints:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Optional retrieval hints surfaced to the caller. Null when
@@ -4896,30 +4841,31 @@ components:
             would have exceeded the MCP inline ceiling; the response's
             `hints` names that degrade. DocumentSummary (full)
             otherwise.
-          oneOf:
+          # anyOf, not oneOf: the stripped shape is a subset of the full
+          # one and neither branch closes additionalProperties, so a full
+          # summary satisfies both. Under oneOf -- "exactly one" -- every
+          # ordinary hit failed the schema this spec declares for it.
+          anyOf:
             - $ref: "#/components/schemas/DocumentSummary"
             - $ref: "#/components/schemas/DocumentSummaryLight"
         chunk_content:
-          type: string
+          type: [string, "null"]
           description: >-
             Retrieved text content. For semantic mode, the matching
             chunk. For deterministic mode, the extracted content at
             the specified heading path.
         heading_path:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Heading hierarchy path of the retrieved chunk
             (e.g., "Section 3 > Definitions > Normalization").
         relevance_score:
-          type: number
-          nullable: true
+          type: [number, "null"]
           description: >-
             Relevance score (semantic mode only). Higher is more
             relevant. Scale depends on the retrieval implementation.
         matched_chunk_count:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           minimum: 0
           description: >-
             Number of passages of this document that matched the query.
@@ -4952,8 +4898,7 @@ components:
           type: string
           description: Source document id.
         target_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Target document id. Null for retracts-type edges
             (CAS-ADR-017).
@@ -4961,49 +4906,42 @@ components:
           $ref: "#/components/schemas/EdgeType"
           description: Edge type (e.g., "references", "retracts").
         source_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Source-chain anchor version (CAS-ADR-017). Omitted in light
             mode.
         target_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Target-chain anchor version (CAS-ADR-017). Omitted in light
             mode.
         rationale:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Human or machine rationale for this edge. Omitted in light
             mode.
         rationale_kind:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Typed provenance discriminator (manual,
             version_chain, references_mention, filename_code_match).
             Omitted in light mode.
         retracted_edge_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Native column. Populated only on retracts-type rows; carries
             the id of the edge being disclaimed by this retracts edge.
             Omitted in light mode.
         retracted_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: >-
             Computed. When this edge (a non-retracts row) has been
             disclaimed by a later retracts edge, carries the timestamp
             of the earliest disclaiming edge. Null when this edge is
             still live. Omitted in light mode.
         retracted_by_edge_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Computed. The edge_id of the earliest retracts edge that
             disclaims this row. Null when this edge is still live.
@@ -5113,8 +5051,7 @@ components:
             would-be projection of the post-transition state without
             the persisted `updated_at` advance.
         changes:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
@@ -5126,8 +5063,9 @@ components:
             `created_edge` and is NOT duplicated in `changes` (edge
             mutations are a separate concept from field-level deltas).
         created_edge:
-          $ref: "#/components/schemas/Edge"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/Edge"
+            - type: "null"
           description: >-
             Populated only when `action=supersede`. On a real
             run, this is the `supersedes` edge that was created
@@ -5187,8 +5125,9 @@ components:
             as a whole is NOT atomic (CAS-ADR-029). A bad item does not
             roll back earlier-or-later successful items.
         response_mode:
-          $ref: "#/components/schemas/ResponseMode"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/ResponseMode"
+            - type: "null"
           description: >-
             Per-item payload depth. "full" returns each
             success item's complete `document` body (including the
@@ -5223,8 +5162,7 @@ components:
       description: Outcome record for a single item inside a bulk lifecycle response.
       properties:
         document_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The target document id from the corresponding request item.
             Null only when the item supplied neither `document_id` nor
@@ -5237,13 +5175,15 @@ components:
             the item raised an error and the batch continued with
             the next item.
         document:
-          $ref: "#/components/schemas/Document"
+          anyOf:
+            - $ref: "#/components/schemas/Document"
+            - type: "null"
           description: >-
             The updated document record when `status=success`. Absent
             on error entries. Also absent on success entries when the
             request's `response_mode=light`.
         warnings:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -5251,15 +5191,14 @@ components:
             present on success entries when the underlying transition
             emits warnings.
         error:
-          type: object
+          type: [object, "null"]
           description: >-
             Error envelope when `status=error`. Shape matches the MCP
             `error_response` envelope: `{error: <code>, message: <text>,
             detail: <dict>}` where `detail` is present iff the
             underlying error carries one.
         changes:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
@@ -5270,8 +5209,9 @@ components:
             transitions. Preserved under `response_mode=light` (it's
             small and is the most useful summary for dry-run callers).
         created_edge:
-          $ref: "#/components/schemas/Edge"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/Edge"
+            - type: "null"
           description: >-
             The atomic supersedes edge produced by the per-item
             transition, populated only for `action=supersede` items.
@@ -5330,54 +5270,47 @@ components:
           type: string
           description: Origin document ID.
         target_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Target document ID. Must be null on `retracts` edges;
             required for every other edge type.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
         source_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Source-chain anchor (same semantics as
             `LinkRequest.source_valid_from_version`).
         target_valid_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Target-chain anchor (same semantics as
             `LinkRequest.target_valid_from_version`).
         retracted_edge_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Required for `retracts` edges; null for every other edge
             type.
         notes:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional annotation.
         rationale:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Decision rationale for creating this relationship.
         rationale_kind:
-          $ref: "#/components/schemas/RationaleKind"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/RationaleKind"
+            - type: "null"
           description: >-
             Optional explicit discriminator (CAS-ADR-019). Same
             semantics as `LinkRequest.rationale_kind`.
         synced_from_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Provenance field. Same semantics as
             `LinkRequest.synced_from_version`.
         synced_from_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             Provenance field. Same semantics as
@@ -5401,8 +5334,9 @@ components:
             the batch as a whole is NOT atomic (CAS-ADR-029). A bad
             item does not roll back earlier-or-later successful items.
         response_mode:
-          $ref: "#/components/schemas/ResponseMode"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/ResponseMode"
+            - type: "null"
           description: >-
             Per-item payload depth. "full" returns
             each success item's complete `edge` body (the persisted
@@ -5444,8 +5378,7 @@ components:
           type: string
           description: Echoed from the request item for caller correlation.
         target_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Echoed from the request item for caller correlation. Null
             on `retracts` items (where the request also carries null).
@@ -5459,7 +5392,9 @@ components:
             would have committed (dry-run); `error` if the item raised
             an error and the batch continued with the next item.
         edge:
-          $ref: "#/components/schemas/Edge"
+          anyOf:
+            - $ref: "#/components/schemas/Edge"
+            - type: "null"
           description: >-
             The edge record when `status=success`. Absent on error
             entries. Also absent on success entries when the request's
@@ -5470,16 +5405,14 @@ components:
             with the nil-UUID sentinel id (or the existing edge id on
             a natural-key hit).
         created:
-          type: boolean
-          nullable: true
+          type: [boolean, "null"]
           description: >-
             Idempotency flag. True iff a new edge was (or would
             be) created for this item; false on the natural-key
             idempotency path where an edge already exists for
             `(source, target, edge_type)`. Null on error entries.
         existing_rationale:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             When `created=false`, the rationale stored on the existing
             edge that satisfied the idempotency check. Null on
@@ -5488,7 +5421,7 @@ components:
             no-op outcome from a fresh insert without the full `edge`
             body.
         error:
-          type: object
+          type: [object, "null"]
           description: >-
             Error envelope when `status=error`. Shape matches the MCP
             `error_response` envelope: `{error: <code>, message: <text>,
@@ -5568,8 +5501,7 @@ components:
           type: string
           description: Must be a valid value in the vault's document_types configuration.
         authority_scope:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: New authority scope; omit to leave unchanged.
         document_date:
           type: string
@@ -5578,8 +5510,7 @@ components:
         tier3_metadata:
           $ref: "#/components/schemas/Tier3Patch"
         expected_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Optimistic-concurrency token (CAS-ADR-038 Primitive B). Same
             semantics as `UpdateMetadataRequest.expected_version`: when
@@ -5608,8 +5539,9 @@ components:
             as a whole is NOT atomic (CAS-ADR-029). A bad item does not
             roll back earlier-or-later successful items.
         response_mode:
-          $ref: "#/components/schemas/ResponseMode"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/ResponseMode"
+            - type: "null"
           description: >-
             Per-item payload depth. "full" returns each
             success item's complete `document` body (including the
@@ -5643,8 +5575,7 @@ components:
       description: Outcome record for a single item inside a bulk metadata response.
       properties:
         document_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The target document id from the corresponding request item.
             Null only when the item supplied neither `document_id` nor
@@ -5657,13 +5588,15 @@ components:
             item raised an error and the batch continued with the
             next item.
         document:
-          $ref: "#/components/schemas/Document"
+          anyOf:
+            - $ref: "#/components/schemas/Document"
+            - type: "null"
           description: >-
             The updated document record when `status=success`. Absent
             on error entries. Also absent on success entries when the
             request's `response_mode=light`.
         warnings:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -5671,15 +5604,14 @@ components:
             `BulkLifecycleItemResult`. Not currently emitted by
             `update_metadata`.
         error:
-          type: object
+          type: [object, "null"]
           description: >-
             Error envelope when `status=error`. Shape matches the MCP
             `error_response` envelope: `{error: <code>, message: <text>,
             detail: <dict>}` where `detail` is present iff the
             underlying error carries one.
         changes:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
@@ -5752,8 +5684,7 @@ components:
             case no state was written and `document` carries the
             would-be projection of the post-patch state.
         changes:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/FieldChange"
           description: >-
@@ -5791,8 +5722,7 @@ components:
             the natural-key idempotency path where an edge already
             exists for `(source, target, edge_type)`.
         existing_rationale:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             When `created=false`, the rationale stored on the existing
             edge that satisfied the idempotency check. Null otherwise.
@@ -5895,8 +5825,7 @@ components:
             lifecycle statuses. A collision raises
             `tier3_unique_constraint_violation`.
         permitted_source_types:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -5957,23 +5886,20 @@ components:
             with, after extension-based inference fills an omitted
             value.
         source_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Canonical digest of the bytes the caller delivered. Null
             only for a source already resident in the vault store that
             carries no prior document record, whose digest a real run
             recovers from projection -- which a preview does not run.
         duplicate_of:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Identifier of the document already holding these bytes, or
             null when none does. Null is also reported, unevaluated,
             when `source_content_hash` is null.
         predecessor_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The supersession target the caller named, echoed back, or
             null.
@@ -6020,16 +5946,14 @@ components:
           type: boolean
           description: Whether a content body is present.
         body_length:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           minimum: 0
           description: >-
             Body length when present; null for write-to-path delivery or
             no-body responses.
         projection_status:
-          type: string
-          enum: [current, stale]
-          nullable: true
+          type: [string, "null"]
+          enum: [current, stale, null]
           description: >-
             Freshness of the projection on a projection read: 'current' when
             the stored projection is up to date with the source, 'stale' when
@@ -6037,8 +5961,7 @@ components:
             administrative deficit, not a thin document). Null where the
             response is not a projection read.
         projection_recovery:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Name of the tool that recomputes a stale projection
             (recompute_abstract). Populated only when projection_status is
@@ -6059,24 +5982,21 @@ components:
         - type: object
           properties:
             content:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: >-
                 Base64-encoded bytes of the vault-local source file at
                 `storage_root/source_path`. Present only when the request
                 specified `include_content=true`. Decodes to the exact
                 bytes of the authoritative file.
             content_size:
-              type: integer
-              nullable: true
+              type: [integer, "null"]
               minimum: 0
               description: >-
                 Byte count of the vault-local source file. Populated
                 when the request specified `include_content=true` or
                 `write_to_path`.
             content_hash:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: >-
                 Hex digest of the vault-local source file bytes
                 (same algorithm as Document.source_content_hash).
@@ -6084,8 +6004,7 @@ components:
                 `write_to_path`, for caller-side verification that the
                 on-disk bytes match the vault record.
             written_to:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: >-
                 Absolute path where SAGE wrote the source file bytes.
                 Populated only when the request specified
@@ -6093,9 +6012,8 @@ components:
             read_meta:
               $ref: "#/components/schemas/ReadMeta"
             body_form:
-              type: string
-              nullable: true
-              enum: [text, binary]
+              type: [string, "null"]
+              enum: [text, binary, null]
               description: >-
                 Form of the document's source body (CAS-ADR-039): `text` for
                 a source whose bytes are scannable text, `binary` for a
@@ -6123,8 +6041,7 @@ components:
             $ref: "#/components/schemas/TraversalNode"
           description: Traversal nodes ordered by depth, then by edge insertion order.
         resolution_path:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/ResolutionPathEntry"
           description: >-
@@ -6160,27 +6077,23 @@ components:
           type: string
           description: The edge id whose resolution produced this event.
         anchor_field:
-          type: string
-          nullable: true
-          enum: [source_valid_from_version, target_valid_from_version]
+          type: [string, "null"]
+          enum: [source_valid_from_version, target_valid_from_version, null]
           description: >-
             Which anchor was checked. Populated for anchor_hit and
             anchor_miss.
         anchor_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The document ID stored in the anchor field at the time of
             the check. Populated for anchor_hit and anchor_miss.
         retracted_edge_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             On retracts_applied: the edge id of the `retracts` edge
             whose application produced this event.
         tombstone_version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             On tombstone_applied: the valid_until_version that
             tombstoned the edge.
@@ -6258,8 +6171,7 @@ components:
             False indicates a data quality issue where multiple documents
             share a predecessor or successor of the specified edge type.
         available_edge_types:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -6278,16 +6190,14 @@ components:
           type: string
           description: Human-readable title of this chain entry's document.
         version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Caller-supplied version label for this entry, when set; null otherwise.
         lifecycle_status:
           type: string
           description: Lifecycle state of this entry's document at the time the chain was walked.
         document_date:
-          type: string
+          type: [string, "null"]
           format: date
-          nullable: true
           description: Authoritative content date (YYYY-MM-DD) if available.
         position:
           type: integer
@@ -6390,8 +6300,7 @@ components:
           type: boolean
           description: Whether the expected document appeared in top-k.
         actual_rank:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: >-
             Rank at which the expected document appeared, if found
             outside the assertion's top-k threshold.
@@ -6452,8 +6361,7 @@ components:
           type: string
           description: Human-readable vault name.
         description:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Vault-config description text; null when no description was authored.
         document_count:
           type: integer
@@ -6492,6 +6400,7 @@ components:
         - pending_edge_count
         - failed_ingestion_count
         - interrupted_abstract_count
+        - deferred_abstract_count
       description: Aggregate health signals for a vault, surfaced inside vault-stats responses.
       properties:
         pending_metadata_count:
@@ -6506,8 +6415,7 @@ components:
             unlike the doc-scoped counters beside it: a staging edge is not
             doc-scoped and carries no lifecycle state of its own.
         deferred_abstract_count:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: >-
             Documents with pipeline_status=abstraction_skipped, excluding
             those in a terminal lifecycle state. Null when abstraction is
@@ -6566,6 +6474,7 @@ components:
         - content_store_version_count
         - content_store_small_fragment_count
         - health
+        - last_ingestion_at
       description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
       properties:
         total_documents:
@@ -6613,14 +6522,16 @@ components:
           type: integer
           description: Count of small (un-compacted) content-store fragments, summed over every surface the store holds; rises with un-optimized write churn and is merged away by optimize.
         last_ingestion_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: Timestamp of the most recent successful ingestion, if any.
         health:
           $ref: "#/components/schemas/HealthIndicators"
         last_optimize:
-          $ref: "#/components/schemas/LastOptimizeSummary"
+          anyOf:
+            - $ref: "#/components/schemas/LastOptimizeSummary"
+            - type: "null"
+          description: Summary of the most recent content-store optimize, or null if the vault has never been optimized.
 
     # -------------------------------------------------------------------------
     # Vault Configuration
@@ -6654,48 +6565,39 @@ components:
         docs/fs/sage/vault_config.schema.json.
       properties:
         vault:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the vault section of vault_config.yaml; structure per vault_config.schema.json. Omit to leave unchanged.
         document_types:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the document_types section; structure per document_types.schema.json. Omit to leave unchanged.
         lifecycle:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the lifecycle section; structure per lifecycle.schema.json. Omit to leave unchanged.
         metadata_extraction:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the metadata_extraction section; structure per metadata_extraction.schema.json. Omit to leave unchanged.
         adapter_defaults:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the adapter_defaults section; structure per vault_config.schema.json. Omit to leave unchanged.
         edge_inference:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the edge_inference section; structure per edge_inference.schema.json. Omit to leave unchanged.
         abstraction:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the abstraction section of vault_config.yaml. Omit to leave unchanged.
         access_control_defaults:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the access_control_defaults section of vault_config.yaml. Omit to leave unchanged.
         retrieval_health:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: Replacement for the retrieval_health section of vault_config.yaml. Omit to leave unchanged.
         dry_run:
@@ -6754,8 +6656,9 @@ components:
             surface is the existing `preview` field rather than a
             separate `changes` block.
         preview:
-          $ref: "#/components/schemas/VaultConfigPreview"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/VaultConfigPreview"
+            - type: "null"
           description: >-
             Structural diff populated on dry-run; null on a
             real-run. This is the would-be projection of the config
@@ -6805,8 +6708,7 @@ components:
           type: boolean
           description: True when a document with this hash already exists in the vault.
         document_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Document id when exists=true; null otherwise.
 
     # -------------------------------------------------------------------------
@@ -6883,20 +6785,17 @@ components:
       description: One per-field annotation surfaced inside a pending-metadata item; carries the inferred value and its origin.
       properties:
         value:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: The extracted value, or null if unavailable.
         source:
           type: string
           enum: [filename, content, default]
           description: How this field was derived.
         alt_value:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional alternative candidate value.
         alt_source:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Source label for alt_value.
 
     PendingMetadataItem:
@@ -6931,32 +6830,27 @@ components:
           type: string
           description: Human-readable title of the document.
         version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Caller-supplied version label for the document, when set; null otherwise.
         lifecycle_status:
           type: string
           description: Current lifecycle state of the document.
         doc_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Vault-domain document type from the doc_types vocabulary; null when not classified.
         source_path:
           type: string
           description: Vault-local path to the document's source file.
         projection_text:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Full canonical projection text reassembled from stored chunks. Populated when the read returns the projection inline. Null when the caller supplied write_to_path and the projection bytes were delivered to disk instead.
         written_to:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Absolute path where SAGE wrote the projection text. Populated only when the request specified write_to_path. Equals the caller-supplied value.
         content_size:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: >-
             Byte count of the projection text written to disk. Populated only when the request specified write_to_path.
         read_meta:
@@ -7340,14 +7234,12 @@ components:
             Per-document classification (success / skipped_pdf / llm_failure / still_skipped /
             timeout / interrupted / dispatch_failed).
         error_message:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Failure description when outcome is 'llm_failure', 'still_skipped', 'timeout',
             'interrupted', or 'dispatch_failed'; null otherwise.
         elapsed_seconds:
-          type: number
-          nullable: true
+          type: [number, "null"]
           description: >-
             Wall-clock seconds from the dispatch attempt until its rejection or the end of the
             subsequent wait; null for skipped_pdf entries (no work was done).
@@ -7388,44 +7280,37 @@ components:
           type: string
           description: Edge target document id (the canonical/source document).
         recorded_version_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The `synced_from_version` recorded on the edge (a document
             id), or null when not recorded.
         recorded_version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The `version_label` of the recorded synced-from document at
             the time the drift report was generated, when resolvable.
         recorded_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The `synced_from_content_hash` recorded on the edge, or
             null when not recorded.
         current_head_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document id of the current head of the target's supersedes
             chain. Null when `staleness_basis = chain_nonlinear`
             (multiple heads — see `competing_head_count`).
         current_head_version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Version label of the current chain head, when resolvable.
         current_head_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             `source_content_hash` of the current chain head. Null on
             `chain_nonlinear` and on `recorded_null` rows where we did
             not need to compute it.
         competing_head_count:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: >-
             Number of heads observed when `staleness_basis =
             chain_nonlinear`; null otherwise. Operators follow up via
@@ -7510,8 +7395,7 @@ components:
           type: string
           description: Lifecycle state of the document (active, archived, ...).
         version_label:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Version indicator of the document, when set.
         integrity_status:
           type: string
@@ -7536,8 +7420,7 @@ components:
             that is null. This is what the stored bytes were expected to hash
             to, which is not always the document's provenance hash.
         observed_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             SHA-256 computed from the on-disk file when check_hashes=True
             and the file was readable; null for `missing`, `symlinked` and
@@ -7608,8 +7491,7 @@ components:
             ingest, a relative path has no vault-relative reading either
             way.
         document_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Optional pin naming the document to restore. Not required: the
             target is normally resolved from the delivered bytes' digest.
@@ -7691,8 +7573,7 @@ components:
             the restore: the document's stored_content_hash, or its
             source_content_hash when that is null.
         observed_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             SHA-256 of the retained copy as found before the restore; null
             when no copy was present to hash.
@@ -7812,16 +7693,16 @@ components:
             on `status` retain the same vocabulary; clients needing the distinction read
             `outcome`.
         outcome:
-          $ref: "#/components/schemas/ReabstractOutcome"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/ReabstractOutcome"
+            - type: "null"
           description: >-
             Per-document terminal classification. Set on `completed`, `failed`, and `skipped`
             events; omitted on the leading `started` event. Discriminates within a status:
             `failed` carries `dispatch_failed`, `llm_failure`, `timeout` or `interrupted`, and
             `skipped` carries `skipped_pdf` or `still_skipped`.
         error:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Failure description. Set on every `failed` event and on a
             `skipped` event whose outcome is `still_skipped`, which carries
@@ -7829,8 +7710,7 @@ components:
             to report; omitted on `started`, on `completed`, and on the
             `skipped_pdf` form of `skipped`.
         elapsed_seconds:
-          type: number
-          nullable: true
+          type: [number, "null"]
           description: >-
             Wall-clock seconds from the dispatch attempt until its rejection or the end of the
             subsequent wait. Set on `completed`, on `failed`, and on the `still_skipped` form
@@ -7900,8 +7780,9 @@ components:
             `preview_edge` field rather than a separate `changes`
             block.
         preview_edge:
-          $ref: "#/components/schemas/Edge"
-          nullable: true
+          anyOf:
+            - $ref: "#/components/schemas/Edge"
+            - type: "null"
           description: >-
             On a dry-run, the existing edge that would be
             deleted. Null on a real-run.
@@ -8004,10 +7885,10 @@ components:
           enum: [started, completed, failed]
           description: Per-file processing status the event reports.
         document_id:
-          type: string
+          type: [string, "null"]
           description: Set when status="completed". Document ID assigned by SAGE.
         error:
-          type: string
+          type: [string, "null"]
           description: Set when status="failed". Caller-facing error message.
 
     EdgeWarning:
@@ -8095,14 +7976,14 @@ components:
             Human-readable error text. For a typed SAGE error this is the
             error's own message; otherwise the rendered exception.
         code:
-          type: string
+          type: [string, "null"]
           description: >-
             Machine-readable error code, present only when the failure was a
             typed SAGE error. The same code the single-document ingest
             surface returns for that error (e.g. `vault_source_path_refused`,
             `source_file_not_found`, `adapter_not_found`).
         detail:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Structured error payload, present only when the failure was a
@@ -8187,7 +8068,7 @@ components:
             and the error message, and a typed SAGE error additionally
             carries its code and detail.
         edge_warnings:
-          type: array
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/EdgeWarning"
           description: >-
@@ -8203,8 +8084,7 @@ components:
             every creation and edge count above is zero by construction,
             and `previews` carries what the batch would have done.
         previews:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/IngestPreview"
           description: >-
@@ -8425,8 +8305,7 @@ components:
           type: string
           description: Human-readable error description.
         detail:
-          type: object
-          nullable: true
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Additional context. Structure varies by error type

@@ -597,7 +597,7 @@ async def test_e1_response_mode_light_strips_edge_body_on_success(seeded_mcp_vau
     assert result["success_count"] == 2
     for entry in result["results"]:
         assert entry["status"] == "success"
-        # MCP _serialize uses exclude_none=True, so a None `edge` is
+        # `edge` is optional, so the wire omits it when null and it is
         # stripped from the wire payload entirely.
         assert "edge" not in entry, (
             f"light mode must strip the per-item `edge` field; got {entry!r}"

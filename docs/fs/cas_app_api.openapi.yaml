@@ -355,8 +355,7 @@ components:
             or double quotes are stripped to tolerate paste-with-quotes
             from terminals or finder.
         max_depth:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           minimum: 0
           description: >-
             Optional recursion ceiling. 0 = scan the directory root only,
@@ -406,8 +405,7 @@ components:
           format: date-time
           description: File mtime (st_mtime) as an ISO 8601 timestamp.
         source_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Source artifact format matching this extension, or null
             when no registered adapter handles the extension.
@@ -427,13 +425,11 @@ components:
           type: string
           description: Human-readable title extracted from the filename or content.
         date:
-          type: string
+          type: [string, "null"]
           format: date
-          nullable: true
           description: Document calendar date (YYYY-MM-DD) extracted from filename.
         project:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Project identifier extracted from filename when the vault's
             project_identifier rule matches a segment.
@@ -445,12 +441,10 @@ components:
             Code identifiers extracted from filename via known_code_patterns
             (e.g. "PV07", "CD-2"). Order preserved from the filename.
         version:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Canonical version label (e.g. "v1.2.0", "v3.0").
         doc_type:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Document type resolved by the vault's keyword_to_doc_type and
             code_to_doc_type rules. Null if no rule matches.
@@ -538,10 +532,10 @@ components:
           enum: [started, completed, failed]
           description: Per-file processing status the event reports.
         document_id:
-          type: string
+          type: [string, "null"]
           description: Set when status="completed". Document ID assigned by SAGE.
         error:
-          type: string
+          type: [string, "null"]
           description: Set when status="failed". Caller-facing error message.
 
     BatchIngestFileError:
@@ -577,14 +571,14 @@ components:
             Human-readable error text. For a typed SAGE error this is the
             error's own message; otherwise the rendered exception.
         code:
-          type: string
+          type: [string, "null"]
           description: >-
             Machine-readable error code, present only when the failure was a
             typed SAGE error. The same code the single-document ingest
             surface returns for that error (e.g. `vault_source_path_refused`,
             `source_file_not_found`, `adapter_not_found`).
         detail:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Structured error payload, present only when the failure was a
@@ -678,7 +672,7 @@ components:
             and the error message, and a typed SAGE error additionally
             carries its code and detail.
         edge_warnings:
-          type: array
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/EdgeWarning"
           description: >-
@@ -694,8 +688,7 @@ components:
             every creation and edge count above is zero by construction,
             and `previews` carries what the batch would have done.
         previews:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             $ref: "#/components/schemas/IngestPreview"
           description: >-
@@ -773,8 +766,7 @@ components:
             lifecycle statuses. A collision raises
             `tier3_unique_constraint_violation`.
         permitted_source_types:
-          type: array
-          nullable: true
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -835,23 +827,20 @@ components:
             with, after extension-based inference fills an omitted
             value.
         source_content_hash:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Canonical digest of the bytes the caller delivered. Null
             only for a source already resident in the vault store that
             carries no prior document record, whose digest a real run
             recovers from projection -- which a preview does not run.
         duplicate_of:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Identifier of the document already holding these bytes, or
             null when none does. Null is also reported, unevaluated,
             when `source_content_hash` is null.
         predecessor_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             The supersession target the caller named, echoed back, or
             null.
@@ -949,8 +938,7 @@ components:
           type: string
           description: Human-readable error description.
         detail:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: Additional context. Structure varies by error type (e.g., current_state and attempted_action for lifecycle transition errors).
         read_meta:
           type: object
@@ -990,14 +978,12 @@ components:
             Stable identity-provider subject for the signed-in user (the
             directory object id, or the OIDC subject when that is absent).
         name:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Human-readable display name from the identity-provider claims,
             when present.
         email:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: >-
             Sign-in email or user-principal name from the identity-provider
             claims, when present.

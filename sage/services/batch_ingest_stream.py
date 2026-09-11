@@ -15,6 +15,7 @@ layer stays free of HTTP-framework coupling.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import tempfile
@@ -26,6 +27,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from sage.models.schemas import DocumentsCreated, ProgressEvent, SummaryEvent
+from sage.models.wire import to_wire
 from sage.services.batch_ingest import (
     BatchIngestService,
     FileDescriptor,
@@ -76,17 +78,19 @@ def _parsed_metadata_input(
 def _sse_event(event: BaseModel) -> str:
     """Format an SSE ``data:`` line from a Pydantic event.
 
-    ``exclude_none=True`` preserves the wire convention of omitting
-    optional fields (``document_id``/``error`` on progress events when
-    not applicable, ``edge_warnings`` on summary events when empty).
+    Keys follow the published contract per field: an optional field is
+    omitted when null (``document_id``/``error`` on progress events when
+    not applicable, ``edge_warnings`` on summary events when empty), and a
+    required one keeps its key whatever its value. The rule reaches the
+    events nested in a summary as well as the summary itself.
     """
-    return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+    return f"data: {json.dumps(to_wire(event), ensure_ascii=False)}\n\n"
 
 
 def _summary_event_from(summary: IngestSummary) -> SummaryEvent:
     """Pure mapping from the pipeline's ``IngestSummary`` to the wire
-    ``SummaryEvent``. Empty ``edge_warnings`` flattens to ``None`` so
-    ``exclude_none`` drops the field on serialization."""
+    ``SummaryEvent``. Empty ``edge_warnings`` flattens to ``None`` so the
+    optional field is dropped on serialization."""
     return SummaryEvent(
         event_type="summary",
         documents_created=DocumentsCreated(

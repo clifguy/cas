@@ -8,6 +8,7 @@ The ``/maintenance/`` URL segment is canonical; the retired ``/admin/``
 paths are not served.
 """
 
+import json
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Body, Depends
@@ -28,6 +29,7 @@ from sage.models.schemas import (
     SourceFileRestoreRequest,
     VaultIdStr,
 )
+from sage.models.wire import to_wire
 from sage.services.maintenance import MaintenanceService, ReabstractEvent
 
 router = APIRouter(tags=["Maintenance"])
@@ -36,13 +38,14 @@ router = APIRouter(tags=["Maintenance"])
 def _sse_event(event: BaseModel) -> str:
     """Format an SSE ``data:`` line from a Pydantic event.
 
-    Mirrors the helper at app/backend/ingest_streaming_service.py:48-55.
-    ``exclude_none=True`` preserves the wire convention of omitting
-    optional fields (e.g., ``outcome`` on the leading ``started``
-    progress event, ``error`` on non-failed events, ``elapsed_seconds``
-    on the leading ``started`` event and on ``skipped`` events).
+    Mirrors the helper in ``sage.services.batch_ingest_stream`` and obeys
+    the same rule: keys follow the published contract per field, so an
+    optional field is omitted when null (``outcome`` on the leading
+    ``started`` progress event, ``error`` on non-failed events,
+    ``elapsed_seconds`` on ``started`` and on ``skipped`` events) while a
+    required one keeps its key whatever its value.
     """
-    return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+    return f"data: {json.dumps(to_wire(event), ensure_ascii=False)}\n\n"
 
 
 async def _format_reabstract_stream(

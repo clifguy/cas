@@ -335,3 +335,31 @@ async def test_dispatch_failure_survives_sse_boundary(maintenance_app):
     assert events[-1]["entries"][0]["document_id"] == doc.id
     assert events[-1]["entries"][0]["outcome"] == "dispatch_failed"
     assert events[-1]["entries"][0]["error_message"] == events[1]["error"]
+
+
+def test_maintenance_sse_line_carries_non_ascii_characters_literally():
+    """The maintenance SSE helper emits UTF-8, not escape sequences.
+
+    Its sibling in the batch-ingest service has the same assertion. The two
+    helpers are independent four-line copies whose only stated relationship
+    is a docstring saying one mirrors the other, so a guard on one of them
+    holds nothing about the other -- which is the whole reason this is a
+    second test rather than a note.
+    """
+    from sage.api.routers.maintenance import _sse_event
+    from sage.models.schemas import ReabstractProgressEvent
+
+    title = "Étude sur les 文書"
+    line = _sse_event(
+        ReabstractProgressEvent(
+            event_type="progress",
+            status="started",
+            processed=0,
+            total=1,
+            current_document_id="0123abcd_etude",
+            current_title=title,
+        )
+    )
+
+    assert title in line, f"the maintenance SSE line escaped its non-ASCII characters: {line!r}"
+    assert "\\u" not in line
