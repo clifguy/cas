@@ -404,3 +404,138 @@ During the overlap, maintenance snapshots produced by the newer `pg_dump` requir
 its matching `pg_restore` client. Use the migration runtime's client when inspecting
 or restoring those archives; do not assume the incumbent server's older client can
 read them.
+
+## Isolated restore verification
+
+A configured backup is not a demonstrated restore, and a restore that returns a
+healthy-looking database has not thereby proved it returned the moment it was
+asked for. The drill below answers both questions against a throwaway server and
+leaves the serving server untouched. It is driven by
+`deploy/postgres-restore-verify.py`, which has three actions — `provision`,
+`verify`, `cleanup` — and reads every coordinate it needs from the serving
+deployment's outputs and its bootstrap job. The driver never connects to a
+database; every database read happens inside the verification job.
+
+### Bracket the recovery point before restoring
+
+Choose the recovery point first and make it falsifiable. Write one document to the
+disposable validation vault, wait, fix the recovery point, wait again, and write a
+second. The restore must then contain the first and not the second. Without that
+bracket a drill cannot distinguish a genuine point-in-time restore from a copy of
+the current database, because both look correct.
+
+Record the live coordinates before starting, and in particular the server's
+**actual earliest restore point**. A 35-day retention setting is a ceiling, not
+history the server has accumulated: a server created during a recent cutover may
+hold only hours. The driver refuses a recovery point outside that real window
+before it creates anything billable.
+
+### Run the drill
+
+```sh
+python3 deploy/postgres-restore-verify.py provision \
+    --environment prod --resource-group rg-cas-prod \
+    --run-id <id> --restore-time <ISO 8601 with offset>
+
+python3 deploy/postgres-restore-verify.py verify \
+    --environment prod --resource-group rg-cas-prod --run-id <id> \
+    --target-fqdn <fqdn from provision> --restore-time <same point> \
+    --sentinel-schema <vault schema> \
+    --sentinel-before <document id> --sentinel-after <document id> \
+    [--image <pinned tag from the tenant registry>]
+
+python3 deploy/postgres-restore-verify.py cleanup \
+    --environment prod --resource-group rg-cas-prod --run-id <id>
+```
+
+`--image` exists because the drill legitimately runs the verification entrypoint
+before the change carrying it has been deployed. An override must be pinned and
+must come from the tenant's own registry; anything else would pull an arbitrary
+container into the subnet that holds the database of record.
+
+Read the report from the execution's logs. It is a single
+`CAS_RESTORE_VERIFY_REPORT` line, and the container has to be named explicitly —
+it is `restore-verify`, not the job name, so a `logs show` that omits
+`--container` does not resolve:
+
+```sh
+az containerapp job logs show --resource-group <rg> \
+    --name job-pg-restore-verify-<env> --container restore-verify \
+    --execution <execution name> --tail 300 --format text
+```
+
+The execution name is the `execution` field of `verify`'s printed payload, and on
+the timeout path it is named in the error. Do not recover it from an execution
+listing: a just-started execution is briefly absent from that list, so the newest
+entry there can be a previous run.
+
+`verify` exits non-zero when the job reaches a terminal failure, so a wrapping
+script can read the exit code rather than parsing the payload for a status.
+
+Expect the restore itself to dominate the elapsed time. A 32 GB Burstable server
+reached `Ready` in about seven minutes; hashing all 37 workload tables afterwards
+took under fifteen seconds at 1 vCPU, so the job's replica timeout is generous by
+a wide margin at this data scale.
+
+### What the verification asserts
+
+The job runs `sage.maintenance.postgres_restore_verify` under the bootstrap
+identity, in a session made read-only by connection option so nothing it runs can
+relax it, and refuses by address to connect to the serving server at all. It
+reports, and fails closed on: the server major; every workload table's row count
+and ordered content hash; both workload roles, their database CONNECT and CREATE
+grants and their EXECUTE on `pgstattuple`; the required extensions with their
+version and schema; and the two sentinels. A missing before-sentinel is reported as
+`recovery_point_undershoot` and a present after-sentinel as
+`recovery_point_overshoot`, each distinct from an ordinary failure.
+
+### Observed behaviour worth knowing in advance
+
+- **The restore carries the Entra administrator across.** The bootstrap identity
+  is already the Postgres administrator on the restored server; no manual grant
+  is needed before the job can authenticate.
+- **The restored server's lineage is not visible on the resource.**
+  `sourceServerResourceId` reads null afterwards, so provenance must come from the
+  drill's own records rather than from Azure's resource state.
+- **Resource tags are inherited from the source.** The drill's ownership mark is
+  therefore written incrementally; a plain tag write would replace the whole
+  collection.
+- **The private DNS record is created automatically** when the restore is given
+  the zone, and removed with the server.
+
+### Accepted limitations
+
+The restored server sits in the serving subnet and private DNS zone. That is not
+an oversight: an Azure restore of a private-access server yields another
+private-access server, and nothing can reach it unless it sits where the
+verification job already runs. Isolation is by resource and address, not by
+network. The serving server's own record and every application binding are
+untouched, and the drill server carries no deletion lock precisely so that
+teardown is a single operation.
+
+**A point-in-time restore does not demonstrate regional recovery.** Geo-restore
+was attempted against the live tenant and refused: Azure will not geo-restore a
+private-access server onto a public endpoint, and requires network parameters in
+the destination region. Exercising regional recovery therefore needs a delegated
+subnet and private DNS zone in the paired region, plus compute there able to reach
+them. The driver refuses a geo-restore that lacks those parameters rather than
+issuing a call the control plane rejects. Until that footprint exists, geo-redundancy
+is a configured capability and not a demonstrated one; do not report a successful
+point-in-time drill as regional disaster-recovery evidence.
+
+### Teardown
+
+Run one drill at a time per environment. The verification job is named for the
+environment rather than the run, so a `cleanup` for one drill deletes the job a
+concurrent drill is using, and a second `verify` redeploys that job under the
+other drill's parameters.
+
+`cleanup` deletes only a server carrying this drill's ownership tag, and proves
+removal by re-reading rather than by trusting the delete's exit code. A
+drill-named server without that tag is reported in cleanup's `inspect` list for an
+operator to look at, and is never adopted automatically — the same discipline the
+rehearsal cleanup applies.
+Confirm afterwards that both production servers, their majors, their backup
+configuration and both deletion locks are unchanged, and that the private DNS zone
+is back to its pre-drill record set. Delete the throwaway image tag and the
+sentinel documents once the evidence record is filed.
