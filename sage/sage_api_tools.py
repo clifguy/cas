@@ -172,6 +172,23 @@ _SEARCH_TRIPWIRE = Annotated[
     ),
 ]
 
+# Published on the parameter so a caller reading the tool schema alone
+# sees what an omitted mode resolves to. The signature has to admit None
+# for the resolution to be expressible at all, and a bare nullable enum
+# defaulting to null says nothing about which value fills it in.
+_SEARCH_MODE = Annotated[
+    RetrievalMode | None,
+    Field(
+        description=(
+            "Retrieval mode. Defaults to semantic, except that naming a "
+            "catalog-only target (edges, facets) and no mode resolves to "
+            "catalog, the one mode those targets accept. A mode given "
+            "explicitly is never changed: a non-catalog one is still "
+            "refused with mode_parameter_mismatch."
+        )
+    ),
+]
+
 
 def _collect_misplaced(keys: tuple[str, ...], supplied: dict[str, object]) -> list[str]:
     """Return the recognized keys that arrived as top-level arguments.
@@ -1425,7 +1442,7 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def search(
         vault_id: str,
-        mode: RetrievalMode | None = None,
+        mode: _SEARCH_MODE = None,
         query: str | None = None,
         scope: str = "all",
         filters: dict | None = None,
@@ -1590,7 +1607,8 @@ def register_sage_tools(
                 via ``mode_parameter_mismatch`` rather than corrected.
             query: Search query text (required for semantic and keyword
                 modes; refused by catalog and deterministic, which do not
-                consume it).
+                consume it, and by the catalog-only targets, which refuse
+                it on the target axis rather than the mode axis).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,

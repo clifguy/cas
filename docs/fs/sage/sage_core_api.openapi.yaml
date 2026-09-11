@@ -3861,6 +3861,8 @@ components:
             Search query text. Required for semantic and keyword modes, and
             refused by the other two: catalog enumerates by filter and
             deterministic extracts by heading path, so neither consumes it.
+            A catalog-only target refuses it too, on the target axis, naming
+            documents as the target that takes one.
         mode:
           $ref: "#/components/schemas/RetrievalMode"
           description: >-

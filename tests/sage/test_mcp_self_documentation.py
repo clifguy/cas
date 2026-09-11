@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from typing import Any, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 import pytest
 
@@ -148,13 +148,46 @@ def test_discover_mode_signature_is_enum():
     The optional form carries the same vocabulary and is the accepted
     shape: mode is resolvable from a catalog-only target, which means the
     tool has to be able to tell an unsupplied mode from a supplied one,
-    and a Python default cannot express that.
+    and a Python default cannot express that. An ``Annotated`` wrapper is
+    unwrapped first rather than rejected, since it carries the published
+    parameter description and leaves the vocabulary underneath intact.
     """
     ann = _annotation_of(search, "mode")
+    if get_origin(ann) is Annotated:
+        ann = get_args(ann)[0]
     assert ann in (RetrievalMode, RetrievalMode | None), (
         f"search.mode annotation is {ann!r}; expected RetrievalMode or "
         "RetrievalMode | None. Callers picking the mode value from the "
         "tool schema would otherwise see a free-form string."
+    )
+
+
+def test_discover_mode_parameter_description_states_the_resolution():
+    """The published schema carries the resolution rule on the parameter.
+
+    The docstring prose already states it, but a caller reading the tool
+    schema alone sees a nullable enum defaulting to null with nothing
+    saying what null resolves to. Both halves are asserted, for the same
+    reason the docstring gate asserts both: publishing the convenience
+    without the refusal documents a surface that does not exist.
+    """
+    ann = _annotation_of(search, "mode")
+    assert get_origin(ann) is Annotated, (
+        "search.mode must carry an Annotated Field description so the "
+        "resolution rule reaches the published tool schema."
+    )
+    description = next(
+        (meta.description for meta in get_args(ann)[1:] if getattr(meta, "description", None)),
+        None,
+    )
+    assert description is not None, "search.mode Annotated metadata carries no description"
+    assert "resolves to" in description, (
+        "the mode parameter description must say that a catalog-only "
+        f"target resolves the mode; got {description!r}"
+    )
+    assert "mode_parameter_mismatch" in description, (
+        "the mode parameter description must say that an explicitly "
+        f"supplied non-catalog mode is still refused; got {description!r}"
     )
 
 

@@ -2935,7 +2935,8 @@ class DiscoverRequest(BaseModel):
             "Search query text. Required for semantic and keyword modes, "
             "and refused by the other two: catalog enumerates by filter "
             "and deterministic extracts by heading path, so neither "
-            "consumes it."
+            "consumes it. A catalog-only target refuses it too, on the "
+            "target axis, naming documents as the target that takes one."
         ),
     )
     scope: RetrievalScope = Field(
@@ -3126,14 +3127,21 @@ class DiscoverRequest(BaseModel):
         Runs before field validation, which is what makes the distinction
         available at all: the semantic default has not yet been applied,
         so an unsupplied mode is still distinguishable from a supplied
-        one. The target arrives in whichever form the caller sent, a bare
-        string over JSON or an enum member from Python, so it is
-        normalized to its value before the lookup.
+        one. The cost of running that early is that the target has not
+        been validated either and may be any JSON value, so the lookup is
+        guarded on the one type it can answer for. An unhashable target
+        would otherwise raise out of model validation as a TypeError
+        rather than a ValidationError, which the HTTP surface reports as
+        a server error for what is a malformed request. Anything not a
+        string falls through to the field's own enum validation, which
+        rejects it in the ordinary way. A bare string over JSON and an
+        enum member from Python both pass the guard and compare equal,
+        because the target enum subclasses str.
         """
         if not isinstance(data, dict) or data.get("mode") is not None:
             return data
         target = data.get("target")
-        if getattr(target, "value", target) in _CATALOG_ONLY_TARGETS:
+        if isinstance(target, str) and target in _CATALOG_ONLY_TARGETS:
             return {**data, "mode": RetrievalMode.CATALOG}
         if "mode" in data:
             return {k: v for k, v in data.items() if k != "mode"}
@@ -3187,6 +3195,28 @@ class DiscoverRequest(BaseModel):
                     "allowed_modes": [RetrievalMode.DETERMINISTIC.value],
                 },
             )
+        # A catalog-only target with a query is refused on the target axis,
+        # not the mode axis. The branch below would name the two scoring
+        # modes as the way out, and neither is: switching to one of them
+        # trades this rejection for the target's own, which allows catalog
+        # alone. That pair of messages is a loop, and it never names the
+        # exit -- drop the query, or enumerate documents.
+        if (
+            self.query is not None
+            and self.mode == RetrievalMode.CATALOG
+            and self.target in (RetrievalTarget.EDGES, RetrievalTarget.FACETS)
+        ):
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                ("Parameter 'query' is not valid for target '{target}'. Allowed: documents only."),
+                {
+                    "mode": self.mode.value,
+                    "target": self.target.value,
+                    "forbidden_param": "query",
+                    "allowed_targets": [RetrievalTarget.DOCUMENTS.value],
+                },
+            )
+
         # Only the two scoring modes consume a query. Catalog enumerates by
         # filter and deterministic extracts by heading path, and neither
         # reads the field -- so accepting one there returned the whole
