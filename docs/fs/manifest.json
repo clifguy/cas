@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.40",
+      "version": "0.41",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.85",
+  "substrate_version": "1.86",
   "revision_history": [
+    {
+      "version": "1.86",
+      "date": "2026-09-10",
+      "summary": "Report the earliest leg expiry on a multi-leg upload recipe (sage_core_api.openapi.yaml 0.40 -> 0.41). UploadRecipe carries one expires_at for the whole recipe, but mint_upload_recipe overwrote it on each pass of the mint loop, so a multi-leg recipe reported the LAST leg's window for every leg and each earlier leg lapsed sooner than the recipe promised, by however long the loop ran. The divergence was bounded by the loop's own duration -- one mkdtemp and one token mint per leg -- so against the 900-second window it was immaterial and no test red; it is fixed because the promise was wrong in shape and the error grows with batch size. Of the two admissible shapes under CAS-ADR-045, which specifies neither, earliest-wins is taken over per-leg expiry: the recipe keeps its single flat field and the promise becomes conservative rather than optimistic, which is what the field description and bulk_ingest_document's docstring already told callers. Per-leg expiry would have been exact but widened the contract surface and made each leg's window a separate thing for a caller to track. One substrate-visible description change, no structural ones: UploadRecipe.expires_at now names which leg's window it is -- the earliest, so no leg lapses before it -- and says every leg's byte delivery must finish before it. sage/models/schemas.py mirrors the description verbatim. sage/services/transfer.py collects each leg's minted expiry and passes the minimum, with the reason recorded at the call. DownloadRecipe is single-leg and unaffected. Tests: a multi-leg case in tests/sage/test_transfer_service.py minting against a clock that advances on every read, asserting the three windows are distinct before asserting the reported instant is the earliest and that no leg lapses before it -- the distinctness assertion is what makes the rest discriminating, since a same-instant batch cannot tell the earliest from the last-minted; plus a single-leg control. The suite's profile-pinning helper is lifted to module level for reuse rather than copied."
+    },
     {
       "version": "1.85",
       "date": "2026-09-10",

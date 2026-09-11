@@ -476,10 +476,10 @@ def mint_upload_recipe(vault_id: str, sources: list[str]):
     base_url, ttl_seconds = _transfer_coordinates()
     store = get_transfer_store()
     items: list[UploadRecipeItem] = []
-    expires_at = None
+    leg_expiries: list[datetime] = []
     for source in sources:
         minted = store.mint_upload(vault_id, source, ttl_seconds)
-        expires_at = minted.expires_at
+        leg_expiries.append(minted.expires_at)
         items.append(
             UploadRecipeItem(
                 source=source,
@@ -489,7 +489,12 @@ def mint_upload_recipe(vault_id: str, sources: list[str]):
             )
         )
     return UploadRecipe(
-        expires_at=expires_at,
+        # Each leg's window opens at its own mint, so a batch carries a spread
+        # of them while the recipe names one instant. The earliest governs:
+        # naming any later one over-promises for every leg minted before it,
+        # and a caller delivering bytes at the named instant would find the
+        # first leg already lapsed.
+        expires_at=min(leg_expiries),
         max_bytes=max_transfer_bytes(),
         uploads=items,
     )
