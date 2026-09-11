@@ -355,7 +355,16 @@ def register_sage_tools(
         for. Because nothing is projected, an adapter-extracted
         ``tier3_metadata`` cannot be evaluated -- ``tier3_validated`` is
         false when the caller supplied none, and a real run may still
-        refuse.
+        refuse. Three further refusals sit below the branch point and
+        are neither checked nor reported, each turning on state the
+        preview does not reach: ``tier3_unique_constraint_violation``,
+        which the insert transaction raises and which cannot be settled
+        outside it -- a preview reporting no collision could still
+        collide before the real call arrives;
+        ``force_reingest_path_mismatch``, which turns on the colliding
+        record's own source path; and ``stale_chain_head`` on an
+        ``expected_head_version`` that no longer matches. A clean
+        preview is not a promise that the real run commits.
 
         Error modes:
         - ``misplaced_metadata`` (400): a recognized ``metadata`` key was

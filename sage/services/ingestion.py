@@ -852,6 +852,18 @@ class IngestionService:
         duplicate is a verdict a preview exists to report, so it comes
         back as ``would_create=false`` rather than as a raise.
 
+        A preview does not exhaust the refusals a real run can raise.
+        Three sit below the branch point and are neither checked nor
+        reported, because each turns on state the preview does not
+        reach: a ``Tier3UniqueConstraintViolation``, which the insert
+        transaction raises and which cannot be settled outside it -- a
+        preview reporting no collision could still collide before the
+        real call arrives; a ``ForceReingestPathMismatchError``, which
+        turns on the colliding record's own source path; and a
+        ``StaleChainHeadError`` on an ``expected_head_version`` that no
+        longer matches the head. A clean preview is not a promise that
+        the real run commits.
+
         Trio-field inheritance on supersede (CAS-ADR-021):
         When ``request.predecessor_id`` is set and the caller omits any
         of ``doc_type``, ``project``, or ``authority_scope`` from
@@ -985,6 +997,14 @@ class IngestionService:
                     predecessor.lifecycle_status,
                     self._transition_table.states_allowing("supersede"),
                 )
+
+        # The doc_type vocabulary gate reads only the caller's metadata and
+        # the vault configuration, so it belongs above the first
+        # irreversible act rather than below it. Left where it first
+        # landed -- after retention -- a misspelled doc_type copied the
+        # bytes into the import area and then refused, leaving a retained
+        # file with no row, which no audit walks.
+        self._validate_caller_doc_type(request)
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes
@@ -1158,7 +1178,6 @@ class IngestionService:
         # The vocabulary gate runs whether or not a tier3 payload came
         # with the call: a misspelled doc_type carrying no typed metadata
         # is exactly the case that used to commit.
-        self._validate_caller_doc_type(request)
         if final_tier3 is not None:
             resolved_dt = self._resolve_doc_type_for_tier3(
                 request=request, parsed=parsed, predecessor=predecessor
@@ -1556,6 +1575,14 @@ class IngestionService:
                     [vault_relative, request.source]
                 )
                 delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
+                # Named for the parse below even though no local file sits
+                # there. The parser reads the stem and never opens the
+                # path, and the real run parses on this branch too, so
+                # leaving it unset would resolve the doc_type differently
+                # in a preview than in the ingest it previews -- under a
+                # non-filesystem binding, which is exactly where a caller
+                # most wants to look before spending a byte leg.
+                source_path = storage_root / vault_relative
             else:
                 raise SourceFileNotFoundError(reported_source)
 
@@ -1565,7 +1592,6 @@ class IngestionService:
             else None
         )
 
-        self._validate_caller_doc_type(request)
         resolved_doc_type = self._resolve_doc_type_for_tier3(
             request=request, parsed=parsed, predecessor=predecessor
         )

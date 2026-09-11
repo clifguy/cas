@@ -556,6 +556,25 @@ def test_graph_ops_link_idempotent_docstring_cross_references_link_for_precondit
     )
 
 
+def _dry_run_section(doc: str) -> str:
+    """The dry-run paragraph alone, bounded at the next section heading.
+
+    Splitting on the heading and reading to the end of the docstring is
+    what the two gates below did first, and it does not work: the tail
+    swallows the ``Raises:`` block, which names ``DuplicateContentError``
+    for its own reasons, so an assertion meant to pin the dry-run
+    paragraph passed on a docstring whose dry-run paragraph no longer
+    named it at all. Verified by mutation. The bound is the blank line
+    before the next heading.
+    """
+    after = doc.split("Dry run", 1)[1]
+    for boundary in ("\n\nTrio-field inheritance", "\n\nRaises:", "\n\nArgs:"):
+        cut = after.find(boundary)
+        if cut != -1:
+            after = after[:cut]
+    return after
+
+
 def test_ingestion_ingest_docstring_documents_the_dry_run_duplicate_asymmetry():
     """``IngestionService.ingest`` must state that a dry run reports a
     duplicate rather than raising it.
@@ -579,7 +598,7 @@ def test_ingestion_ingest_docstring_documents_the_dry_run_duplicate_asymmetry():
         "IngestionService.ingest docstring must carry a dry-run section; "
         "a preview's contract is not derivable from the real-run one."
     )
-    dry_run_section = doc.split("Dry run", 1)[1]
+    dry_run_section = _dry_run_section(doc)
     assert "would_create" in dry_run_section and "DuplicateContentError" in dry_run_section, (
         "The dry-run section must state that a duplicate comes back as "
         "``would_create=false`` rather than as ``DuplicateContentError`` -- "
@@ -598,7 +617,7 @@ def test_ingestion_ingest_docstring_documents_the_unprojected_tier3_limit():
     when the caller supplied no payload of its own.
     """
     doc = _docstring(IngestionService.ingest)
-    dry_run_section = doc.split("Dry run", 1)[1]
+    dry_run_section = _dry_run_section(doc)
     assert "tier3_validated" in dry_run_section, (
         "The dry-run section must name ``tier3_validated`` and say what a "
         "false value means: the adapter's own extraction was never "

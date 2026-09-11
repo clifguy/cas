@@ -72,6 +72,7 @@ class IngestStreamingService:
                 descriptors,
                 self.vault_services,
                 infer_edges=body.infer_edges,
+                dry_run=body.dry_run,
             ),
             media_type="text/event-stream",
         )

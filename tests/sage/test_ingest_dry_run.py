@@ -997,22 +997,41 @@ async def test_bulk_dry_run_skips_edge_inference(
     dry_lifecycle_service,
     graph_store,
     lock_manager,
+    monkeypatch,
 ):
     """``infer_edges=True`` is overridden by ``dry_run``. An edge plan
     resolves against document ids a preview never mints, so building one
-    would cost reads to produce a plan that could only be discarded."""
+    would cost reads to produce a plan that could only be discarded.
+
+    The observable is the plan builder itself, not the edge counts. Those
+    stay zero whether or not Phase 1 runs, because only Phase 3 writes
+    edges -- an earlier version of this test asserted them and reddened
+    under mutation only because a built plan makes Phase 3 reach a
+    fixture attribute deliberately withheld, which is an accident rather
+    than a control.
+    """
     a = _write(tmp_vault_dir, "edge_a.md", "# A\n\nBody.")
     services = _batch_services(
         dry_config, dry_ingestion_service, dry_lifecycle_service, graph_store, lock_manager
     )
 
-    summary = await BatchIngestService().run(
+    service = BatchIngestService()
+    calls: list[object] = []
+
+    async def _record(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("Phase 1 must not run on a dry run")
+
+    monkeypatch.setattr(service, "_build_edge_plan", _record)
+
+    summary = await service.run(
         files=[FileDescriptor(file_path=str(a), source_type="markdown")],
         vault_services=services,
         infer_edges=True,
         dry_run=True,
     )
 
+    assert calls == []
     assert summary.edges_created == {}
     assert summary.edges_staged == {}
     assert summary.edges_dropped == 0

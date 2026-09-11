@@ -29,6 +29,15 @@ router = APIRouter(tags=["Ingestion"])
     "/documents",
     response_model=IngestResponse,
     responses={
+        200: {
+            "description": (
+                "Returned in two cases, distinguished by the body. With "
+                "`dry_run` true, an `IngestPreview` reporting what a real run "
+                "would do, having persisted nothing. Otherwise an "
+                "`IngestResponse` for a `force` re-ingest that reused an "
+                "existing record rather than creating one."
+            ),
+        },
         400: {
             "model": ErrorResponse,
             "description": (

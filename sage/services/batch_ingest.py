@@ -121,10 +121,12 @@ class IngestSummary:
             "errors": [e.model_dump(exclude_none=True) for e in self.errors],
             "dry_run": self.dry_run,
         }
-        if self.previews:
-            # Emitted only on a dry run, where every count above stays at
-            # zero because nothing was created: the previews are the whole
-            # of what that run has to report.
+        if self.dry_run:
+            # Keyed on the flag rather than on the list: a dry run whose
+            # files were every one refused has an empty previews list and
+            # a populated errors list, and the contract says the field is
+            # present on a dry run. Keying on emptiness would make that
+            # run indistinguishable on the wire from a real one.
             result["previews"] = [p.model_dump() for p in self.previews]
         if self.edge_warnings:
             # Plain ``model_dump``: every EdgeWarning field is required, so
@@ -136,7 +138,7 @@ class IngestSummary:
 
 # Callback type aliases
 OnFileStart = Callable[[int, int, str], Awaitable[None]]
-OnFileDone = Callable[[int, int, str, str], Awaitable[None]]
+OnFileDone = Callable[[int, int, str, str | None], Awaitable[None]]
 OnFileError = Callable[[int, int, str, str], Awaitable[None]]
 
 
@@ -331,10 +333,13 @@ class BatchIngestService:
                 if isinstance(ingest_result, IngestPreview):
                     summary.previews.append(ingest_result)
                     if on_file_done is not None:
-                        # No id to report -- nothing was created. The
-                        # progress callback's contract is a per-file
-                        # completion signal, and the file did complete.
-                        await on_file_done(i, total, filename, "")
+                        # None, not an empty string: the callback's id
+                        # reaches a typed alias that refuses one, so the
+                        # empty string would raise inside the consumer on
+                        # the first previewed file. The field is optional
+                        # for exactly this case -- the file completed and
+                        # created nothing.
+                        await on_file_done(i, total, filename, None)
                     continue
 
                 path_to_id[fd.file_path] = ingest_result.document.id
