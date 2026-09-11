@@ -2114,6 +2114,7 @@ def test_precondition_operation_names_document_id_throughout(sage_core_spec):
     still mounts the old template passes here; the live-versus-committed
     comparison elsewhere in this module is what excludes that rival.
     """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
     paths = sage_core_spec["paths"]
     matches = [
         (path, operation)
