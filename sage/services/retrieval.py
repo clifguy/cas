@@ -73,6 +73,7 @@ from sage.models.schemas import (
     FacetHit,
     RetrievalFilters,
 )
+from sage.models.wire import to_wire
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
 from sage.utils.rrf import rrf_fuse
@@ -161,11 +162,12 @@ def _resolve_mcp_inline_budget_bytes() -> int:
 def _serialized_response_bytes(response: DiscoverResponse) -> int:
     """Size of the response in the encoding the MCP runtime delivers.
 
-    The tool layer hands the runtime a plain dict --
-    ``model_dump(mode="json", exclude_none=True)`` -- and the runtime
-    encodes it with ``pydantic_core.to_json(..., indent=2)``. Both
-    halves are reproduced here, so this is the delivered byte count
-    rather than an approximation of it.
+    The tool layer hands the runtime a plain dict -- the wire rendering
+    in ``sage.models.wire`` -- and the runtime encodes it with
+    ``pydantic_core.to_json(..., indent=2)``. Both halves are reproduced
+    here through that same function, so this is the delivered byte count
+    rather than an approximation of it, and it cannot drift from the
+    delivered shape by restating the rule differently.
 
     Indentation is not a rounding error at this scale. It costs bytes
     per element rather than per byte of content, so the delta grows
@@ -184,7 +186,7 @@ def _serialized_response_bytes(response: DiscoverResponse) -> int:
     on any reading of the number, and a re-call at the recommendation
     fits and so carries no hint to account for.
     """
-    dumped = response.model_dump(mode="json", exclude_none=True)
+    dumped = to_wire(response)
     return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
 
 

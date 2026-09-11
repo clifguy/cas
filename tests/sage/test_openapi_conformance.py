@@ -1653,6 +1653,13 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
     Pydantic's sense but is always present in the output, so the YAML
     correctly marks it required. The two notions of "required" do not map
     cleanly; comparing them produces noise, not signal.
+
+    What that reasoning leaves uncovered is the wire itself. It holds for a
+    plain dump, and fails for a serializer that removes fields, which breaks
+    the "always appears" half directly. `test_wire_shape_conformance.py`
+    covers that by serializing a response and validating the result, which
+    tests what `required` actually means instead of comparing the two
+    declarations that disagree about the word.
     """
     from pydantic import BaseModel
 

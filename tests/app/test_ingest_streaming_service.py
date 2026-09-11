@@ -14,7 +14,6 @@ The streaming service owns the SSE delivery glue extracted from
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,6 +36,7 @@ from app.backend.models import (
 )
 from sage.models.enums import SourceType
 from sage.models.schemas import DocTypeRequirements, IngestPreview
+from sage.models.wire import to_wire
 from sage.services.batch_ingest import IngestSummary
 
 
@@ -109,7 +109,7 @@ class TestSummaryEventFrom:
         assert event.edges_removed == 1
         assert event.edges_dropped == 0
         assert event.error_count == 1
-        assert [e.model_dump(exclude_none=True) for e in event.errors] == [
+        assert [to_wire(e) for e in event.errors] == [
             {
                 "file_index": 0,
                 "filename": "bad.md",
@@ -117,8 +117,8 @@ class TestSummaryEventFrom:
                 "message": "boom",
             }
         ]
-        # Empty warnings list maps to None on the event (preserves the
-        # wire convention: exclude_none drops the field).
+        # Empty warnings list maps to None on the event, and the field is
+        # declared optional, so the wire omits the key.
         assert event.edge_warnings is None
 
     def test_summary_event_from_passes_through_nonempty_edge_warnings(self) -> None:
@@ -153,7 +153,7 @@ class TestSummaryEventFrom:
             edge_warnings=[EdgeWarning(**{**warning, "hint": "not part of the wire shape"})],
         )
         event = _summary_event_from(summary)
-        payload = json.loads(event.model_dump_json(exclude_none=True))
+        payload = to_wire(event)
         assert payload["edge_warnings"] == [warning]
         assert list(payload["edge_warnings"][0]) == list(warning)
 
@@ -199,7 +199,7 @@ class TestSummaryEventFrom:
             "message": "boom",
         }
         summary = IngestSummary(error_count=1, errors=[BatchIngestFileError(**entry)])
-        payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
+        payload = to_wire(_summary_event_from(summary))
         assert payload["errors"] == [entry]
 
     def test_summary_event_carries_code_and_detail_for_a_typed_entry(self) -> None:
@@ -219,7 +219,7 @@ class TestSummaryEventFrom:
             "detail": {"source_path": "/in/bad.md", "attempt": 2},
         }
         summary = IngestSummary(error_count=1, errors=[BatchIngestFileError(**entry)])
-        payload = json.loads(_summary_event_from(summary).model_dump_json(exclude_none=True))
+        payload = to_wire(_summary_event_from(summary))
         assert payload["errors"] == [entry]
 
     def test_summary_event_rejects_error_entry_missing_message(self) -> None:

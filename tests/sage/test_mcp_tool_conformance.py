@@ -579,14 +579,32 @@ def _python_types_and_optional(annotation: Any) -> tuple[frozenset[type], bool]:
     return frozenset(), False
 
 
-def _types_compatible(py_types: frozenset[type], openapi_type: str | None) -> bool:
-    """Return whether any Python type in the set may stand in for the OpenAPI type."""
+def _declared_types(openapi_type: str | list | None) -> frozenset[str]:
+    """The non-null types a ``type`` keyword declares.
+
+    OpenAPI 3.1 expresses nullability as a type array -- ``[string,
+    "null"]`` -- rather than with 3.0's ``nullable`` keyword, so this
+    keyword is a bare string on some properties and a list on others.
+    Nullability is not what this gate compares, so ``"null"`` is dropped
+    and the remaining members are what a Python annotation must stand in
+    for.
+    """
     if openapi_type is None:
+        return frozenset()
+    if isinstance(openapi_type, str):
+        return frozenset({openapi_type})
+    return frozenset(t for t in openapi_type if t != "null")
+
+
+def _types_compatible(py_types: frozenset[type], openapi_type: str | list | None) -> bool:
+    """Return whether any Python type in the set may stand in for the OpenAPI type."""
+    declared = _declared_types(openapi_type)
+    if not declared:
         return True
     if not py_types:
         return True
     for t in py_types:
-        if openapi_type in _TYPE_COMPAT.get(t, frozenset()):
+        if declared & _TYPE_COMPAT.get(t, frozenset()):
             return True
     return False
 

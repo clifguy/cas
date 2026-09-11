@@ -57,6 +57,7 @@ from sage.models.schemas import (
     RetrievalFilters,
     UpdateMetadataRequest,
 )
+from sage.models.wire import to_wire
 from sage.services.document_surface import compose_document_surface, embedding_text
 from sage.services.retrieval import (
     DEFAULT_FACET_VALUE_LIMIT,
@@ -3955,18 +3956,17 @@ async def _perturb_scan_order(graph_store, doc_id: str) -> None:
 def _delivered_bytes(resp) -> int:
     """The byte count the MCP runtime puts on the wire for this response.
 
-    Reproduces both halves of the delivery path -- the tool layer's
-    ``model_dump(mode="json", exclude_none=True)`` and the runtime's
-    ``to_json(..., indent=2)`` -- here in the test rather than calling the
-    service's own ``_serialized_response_bytes``. Calling that helper would
-    measure the recommendation against the same expression that produced it,
-    which is exactly the circularity this assertion exists to escape.
+    Reproduces both halves of the delivery path -- the tool layer's wire
+    rendering and the runtime's ``to_json(..., indent=2)`` -- here in the
+    test rather than calling the service's own
+    ``_serialized_response_bytes``. Calling that helper would measure the
+    recommendation against the same expression that produced it, which is
+    exactly the circularity this assertion exists to escape. Sharing
+    ``to_wire`` does not reintroduce it: which keys reach the wire is not
+    the quantity under test, and restating that rule by hand is how a
+    measurement silently stops describing the delivered bytes.
     """
-    return len(
-        pydantic_core.to_json(
-            resp.model_dump(mode="json", exclude_none=True), fallback=str, indent=2
-        )
-    )
+    return len(pydantic_core.to_json(to_wire(resp), fallback=str, indent=2))
 
 
 def _row_bytes(hit) -> int:
@@ -3975,7 +3975,7 @@ def _row_bytes(hit) -> int:
     Used only to rank rows by weight; the absolute number is meaningless on its
     own because the response envelope is not in it.
     """
-    return len(pydantic_core.to_json(hit.model_dump(mode="json", exclude_none=True)))
+    return len(pydantic_core.to_json(to_wire(hit)))
 
 
 async def _seed_uneven_tied_portfolio(graph_store) -> list[str]:
@@ -4200,11 +4200,7 @@ async def test_response_size_bytes_matches_serialization(
     reported = response.hints["response_size_bytes"]
 
     def delivered(resp) -> int:
-        return len(
-            pydantic_core.to_json(
-                resp.model_dump(mode="json", exclude_none=True), fallback=str, indent=2
-            )
-        )
+        return len(pydantic_core.to_json(to_wire(resp), fallback=str, indent=2))
 
     # The size is measured before the hint is attached, so the response
     # it describes is this one minus the hint's own four keys.
@@ -4227,7 +4223,7 @@ async def test_response_size_bytes_matches_serialization(
     # one too and says nothing about which was measured. And the hint
     # must cost something, or the "before it is attached" clause above
     # is untested scaffolding rather than the reason for the exclusion.
-    compact = len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    compact = len(json.dumps(to_wire(response)).encode("utf-8"))
     assert delivered(without_hint) > compact
     assert delivered(response) > reported
 
@@ -4362,9 +4358,7 @@ async def test_conformance_full_ticket_portfolio_fits_inline_at_default_limit(
     response = await retrieval_service.discover(request)
 
     assert response.hints is None or "recommended_limit" not in response.hints
-    payload_size = len(
-        json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8")
-    )
+    payload_size = len(json.dumps(to_wire(response)).encode("utf-8"))
     assert payload_size < DEFAULT_MCP_INLINE_BUDGET_BYTES, (
         f"Default-limit portfolio response {payload_size}B exceeds the "
         f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte inline budget."
@@ -6537,7 +6531,7 @@ def _payload_bytes(response: DiscoverResponse) -> int:
     ``pydantic_core.to_json(..., indent=2)`` on the dict the tool layer
     hands over is what actually reaches the wire.
     """
-    dumped = response.model_dump(mode="json", exclude_none=True)
+    dumped = to_wire(response)
     return len(pydantic_core.to_json(dumped, fallback=str, indent=2))
 
 

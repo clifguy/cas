@@ -1489,7 +1489,8 @@ async def test_traverse_debug_populates_resolution_path(vault_services):
     )
 
     off = _parse(await traverse("test_vault", doc_a["id"], edge_type="covers"))
-    # debug defaults to False -> resolution_path is absent (exclude_none)
+    # debug defaults to False -> resolution_path is null, and the field is
+    # declared optional, so the wire omits the key entirely
     assert off.get("resolution_path") is None
 
     on = _parse(await traverse("test_vault", doc_a["id"], edge_type="covers", debug=True))
@@ -2875,9 +2876,9 @@ async def test_sage_discover_edges_light_round_trips_through_serializer(vault_se
         )
     )
     hit = result["results"][0]
-    # serialize() uses exclude_none=True so light rows on the wire should
-    # carry exactly the identity columns. The dict is JSON, not a Pydantic
-    # model, so we check key presence directly.
+    # Every field a light row drops is declared optional, so serialize()
+    # omits it and the row carries exactly the identity columns. The dict
+    # is JSON, not a Pydantic model, so we check key presence directly.
     assert set(hit.keys()) == {"edge_id", "source_id", "target_id", "edge_type"}
 
 
@@ -2943,11 +2944,10 @@ async def test_sage_discover_facets_happy_path(vault_services):
     returns a serialized envelope with one facet row per field.
 
     The wire-shape assertion (each row carries exactly {"field",
-    "values", "total_distinct"}) also pins that serialize()'s
-    exclude_none=True drops only None -- a zero-count field must keep
-    its empty values object AND its zero total_distinct, so the shape
-    survives an int-or-None modeling regression that would drop the
-    zero case.
+    "values", "total_distinct"}) also pins that serialize() drops only
+    null -- a zero-count field must keep its empty values object AND its
+    zero total_distinct, so the shape survives an int-or-None modeling
+    regression that would drop the zero case.
     """
     doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))

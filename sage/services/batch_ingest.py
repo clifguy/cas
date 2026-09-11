@@ -36,6 +36,7 @@ from sage.models.schemas import (
     IngestPreview,
     IngestRequest,
 )
+from sage.models.wire import to_wire
 from sage.services.batch_inference import (
     EdgePlan,
     InferenceItem,
@@ -104,7 +105,13 @@ class IngestSummary:
     previews: list[IngestPreview] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """Produce the summary dict both callers need."""
+        """Produce the summary dict both callers need.
+
+        Assembled by hand, so the nested models are rendered here rather
+        than by the caller's serializer, and each goes through ``to_wire``
+        for the same reason: a model must not acquire a second wire shape
+        by being reached through a batch instead of on its own.
+        """
         result: dict = {
             "documents_created": {
                 "new": self.docs_new,
@@ -118,7 +125,7 @@ class IngestSummary:
             "abstracts_generated": self.abstracts_generated,
             "abstracts_deferred": self.abstracts_deferred,
             "error_count": self.error_count,
-            "errors": [e.model_dump(exclude_none=True) for e in self.errors],
+            "errors": [to_wire(e) for e in self.errors],
             "dry_run": self.dry_run,
         }
         if self.dry_run:
@@ -127,12 +134,9 @@ class IngestSummary:
             # a populated errors list, and the contract says the field is
             # present on a dry run. Keying on emptiness would make that
             # run indistinguishable on the wire from a real one.
-            result["previews"] = [p.model_dump() for p in self.previews]
+            result["previews"] = [to_wire(p) for p in self.previews]
         if self.edge_warnings:
-            # Plain ``model_dump``: every EdgeWarning field is required, so
-            # there is no optional field for ``exclude_none`` to omit, unlike
-            # the error entries above.
-            result["edge_warnings"] = [w.model_dump() for w in self.edge_warnings]
+            result["edge_warnings"] = [to_wire(w) for w in self.edge_warnings]
         return result
 
 
