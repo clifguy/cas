@@ -178,12 +178,15 @@ class VaultConfigService:
 
         # Deduplicate before the lookup. Normalization collapses variant
         # spellings of one digest to a single string -- a case the contract
-        # above advertises -- and each element becomes its own bind parameter
-        # in the store's `IN (...)` list, so without this a caller passing two
-        # spellings pays for two. Insertion order is preserved.
+        # above advertises -- so without this a caller passing two spellings
+        # would send one value to the store twice and read one row back twice
+        # under a single key. Insertion order is preserved.
         unique_hashes = list(dict.fromkeys(body.hashes))
 
-        matches = await self._store.find_documents_by_hashes(unique_hashes)
+        matches = await self._store.find_documents_by_hashes(
+            unique_hashes,
+            prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
+        )
 
         result: dict[str, HashCheckMatch] = {}
         for h in unique_hashes:

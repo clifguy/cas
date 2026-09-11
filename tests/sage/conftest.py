@@ -234,20 +234,37 @@ def minimal_config(minimal_vault_config_dict):
 
 @pytest.fixture
 def extended_vault_config_dict(minimal_vault_config_dict):
-    """Minimal config extended with a domain-specific lifecycle state and action.
+    """Minimal config extended with domain-specific lifecycle states and actions.
 
     Exercises the engine's handling of custom lifecycle extensions: adds
     a `filed` state (non-terminal) and a `file` action from `active` to
     `filed`, on top of the base states/transitions in
     `minimal_vault_config_dict`. Used by tests that verify domain-specific
     states/actions are surfaced by lifecycle and graph-ops services.
+
+    It also adds a `sealed` state that is terminal and that no supersession
+    lands in, which is what separates two lifecycle rules the base table
+    cannot tell apart. On the base lifecycle `archived` is at once the only
+    terminal state and the only supersede landing, so
+    `supersession_surviving_states()` and the complement of
+    `terminal_states()` compute to the same set -- and a caller reading the
+    wrong one of the two is invisible to any assertion made against it.
+    `sealed` is in the first and not in the second. It is a second state
+    rather than a flag on `filed` so that every existing consumer of `filed`
+    reads exactly what it read before.
     """
     import copy
 
     config = copy.deepcopy(minimal_vault_config_dict)
     config["lifecycle"]["states"].append({"value": "filed", "label": "Filed"})
+    config["lifecycle"]["states"].append(
+        {"value": "sealed", "label": "Sealed", "is_terminal": True}
+    )
     config["lifecycle"]["transitions"].append(
         {"from_state": "active", "action": "file", "to_state": "filed"}
+    )
+    config["lifecycle"]["transitions"].append(
+        {"from_state": "active", "action": "seal", "to_state": "sealed"}
     )
     return config
 
@@ -360,6 +377,38 @@ def graph_ops_service(graph_store, minimal_config):
 @pytest.fixture
 def extended_graph_ops_service(graph_store, extended_config):
     return GraphOpsService(graph_store, extended_config)
+
+
+@pytest.fixture
+def extended_ingestion_service(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    extended_config,
+    extended_lifecycle_service,
+):
+    """Ingestion over the extended lifecycle, for tests that must see a
+    surviving-state set the base table cannot produce.
+
+    Mirrors `extended_graph_ops_service` and `extended_lifecycle_service`.
+    The base lifecycle's surviving set is exactly `{active, completed}` and
+    is also the complement of its terminal states, so a test asserting that
+    the service asked under the vault's own rule cannot, against a base
+    vault, separate that from a hard-coded literal or from the wrong
+    lifecycle helper.
+    """
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=extended_config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=extended_lifecycle_service,
+    )
 
 
 @pytest.fixture

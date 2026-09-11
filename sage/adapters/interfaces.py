@@ -1015,8 +1015,36 @@ class GraphStore(ABC):
         """Delete an edge by id; return True if a row was removed."""
 
     @abstractmethod
-    async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
-        """Map source content hashes to the document ids that carry them."""
+    async def find_documents_by_hashes(
+        self, hashes: list[str], *, prefer_lifecycle_statuses: frozenset[str]
+    ) -> dict[str, str]:
+        """Map source content hashes to the id of one document carrying each.
+
+        Hashes no document carries are absent from the mapping. Several
+        documents may carry one hash -- identical bytes at another path, or a
+        predecessor a supersession retired -- and one of them represents the
+        hash, so the answer does not depend on storage order. Which one is
+        stated here: a document whose lifecycle status is in
+        ``prefer_lifecycle_statuses`` outranks one whose status is not, and
+        among equals the lowest document id by byte value wins. Byte value,
+        not a locale's ordering: a collation that sorts punctuation by its own
+        rules would make the answer depend on where the store runs, and would
+        put two bindings of this port at odds on the same vault.
+
+        The preference is a *rank*, not a filter. A hash carried only by
+        documents outside the preferred set still answers, with the lowest id
+        among them -- a caller asking whether a vault already holds these
+        bytes needs a yes even when the only holder was retired. An empty set
+        is a legitimate argument and means no preference at all, leaving the
+        id tie-break to decide alone.
+
+        The parameter has no default on purpose. Which states a supersession
+        does not retire a document into is the vault's to declare, not the
+        store's to assume, and a default would be the store choosing a
+        lifecycle policy on behalf of every caller that did not think about
+        it. A caller preferring the versions still standing passes
+        ``LifecycleConfig.supersession_surviving_states()``.
+        """
 
     @abstractmethod
     async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
@@ -1024,8 +1052,9 @@ class GraphStore(ABC):
 
         Paths no document carries are absent from the mapping. Several
         documents may share a source path (re-ingest, supersession); the
-        lowest-ordering document id represents the path, so the answer does
-        not depend on storage order. No lifecycle filtering is applied.
+        lowest document id by byte value represents the path, so the answer
+        does not depend on storage order or on the store's locale. No
+        lifecycle filtering is applied.
         """
 
     @abstractmethod
@@ -1038,9 +1067,10 @@ class GraphStore(ABC):
         a different question: that one collapses the several-documents-one-path
         case to a single representative, because provenance needs one answer.
         A caller asking who else holds a path needs all of them, so nothing is
-        collapsed here. Ids are ordered within a path so the answer does not
-        depend on storage order; paths no document carries are absent from the
-        mapping. No lifecycle filtering is applied.
+        collapsed here. Ids are ordered by byte value within a path so the
+        answer depends on neither storage order nor the store's locale; paths
+        no document carries are absent from the mapping. No lifecycle
+        filtering is applied.
         """
 
     @abstractmethod

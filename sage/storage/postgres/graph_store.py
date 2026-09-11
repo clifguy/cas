@@ -1240,16 +1240,42 @@ class PostgresGraphStore(GraphStore):
         rowcount = await self._execute("DELETE FROM edges WHERE id = %s", (edge_id,))
         return rowcount > 0
 
-    async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
+    async def find_documents_by_hashes(
+        self, hashes: list[str], *, prefer_lifecycle_statuses: frozenset[str]
+    ) -> dict[str, str]:
         with self._query_timer.measure("find_documents_by_hashes"):
             if not hashes:
                 return {}
-            placeholders = ",".join("%s" for _ in hashes)
-            rows = await self._fetch_rows(
-                f"SELECT source_content_hash, id FROM documents "  # noqa: S608 -- ids are %s
-                f"WHERE source_content_hash IN ({placeholders})",
-                hashes,
-            )
+            # DISTINCT ON collapses the several-documents-one-hash case to a
+            # single representative row, and the ORDER BY says which one, so
+            # the answer does not depend on scan order. The preference is a
+            # rank and not a predicate: a hash carried only by retired
+            # documents still answers, with the lowest id among them.
+            #
+            # COLLATE "C" orders ids by byte value. Without it the tie-break
+            # runs under the server's locale, which orders punctuation
+            # differently from a byte comparison -- so the answer would depend
+            # on where the database happens to run, and would disagree with
+            # the in-memory binding, which compares ids as Python strings.
+            if prefer_lifecycle_statuses:
+                sql = (
+                    "SELECT DISTINCT ON (source_content_hash) source_content_hash, id "
+                    "FROM documents WHERE source_content_hash = ANY(%s) "
+                    "ORDER BY source_content_hash, "
+                    'CASE WHEN lifecycle_status = ANY(%s) THEN 0 ELSE 1 END, id COLLATE "C"'
+                )
+                params: list[object] = [hashes, sorted(prefer_lifecycle_statuses)]
+            else:
+                # An empty preference is a real choice -- no preference -- and
+                # not a clause to pay for, on the same reasoning as an empty
+                # exclude_lifecycle_statuses above.
+                sql = (
+                    "SELECT DISTINCT ON (source_content_hash) source_content_hash, id "
+                    "FROM documents WHERE source_content_hash = ANY(%s) "
+                    'ORDER BY source_content_hash, id COLLATE "C"'
+                )
+                params = [hashes]
+            rows = await self._fetch_rows(sql, params)
             return {row["source_content_hash"]: row["id"] for row in rows}
 
     async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
@@ -1258,11 +1284,13 @@ class PostgresGraphStore(GraphStore):
                 return {}
             # DISTINCT ON collapses the several-documents-one-path case to a
             # single representative row, and the id tie-break makes which one
-            # deterministic rather than dependent on scan order.
+            # deterministic rather than dependent on scan order. COLLATE "C"
+            # orders by byte value, so the tie-break does not depend on the
+            # server's locale -- see find_documents_by_hashes above.
             rows = await self._fetch_rows(
                 "SELECT DISTINCT ON (source_path) source_path, source_content_hash "
                 "FROM documents WHERE source_path = ANY(%s) "
-                "ORDER BY source_path, id",
+                'ORDER BY source_path, id COLLATE "C"',
                 (source_paths,),
             )
             return {row["source_path"]: row["source_content_hash"] for row in rows}
@@ -1275,9 +1303,10 @@ class PostgresGraphStore(GraphStore):
                 return {}
             # No DISTINCT ON here, unlike the method above: every id carrying a
             # path is the answer, and the id ordering makes the list stable.
+            # COLLATE "C" for the same reason the two methods above carry it.
             rows = await self._fetch_rows(
                 "SELECT id, source_path FROM documents WHERE source_path = ANY(%s) "
-                "ORDER BY source_path, id",
+                'ORDER BY source_path, id COLLATE "C"',
                 (source_paths,),
             )
             found: dict[str, list[str]] = {}

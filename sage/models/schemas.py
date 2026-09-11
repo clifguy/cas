@@ -853,7 +853,7 @@ class IngestRequest(BaseModel):
         description=(
             "When true, bypasses duplicate content detection and re-runs the "
             "full pipeline on the existing document record (if one exists "
-            "with the same source_path and source_content_hash). Returns 200 "
+            "carrying the same source_content_hash). Returns 200 "
             "(re-processed) instead of 201 (new). The document ID is "
             "preserved. Use for pipeline failure recovery."
         ),
@@ -2127,7 +2127,10 @@ class IngestPreview(BaseModel):
     duplicate_of: DocumentIdStr | None = Field(
         description=(
             "Identifier of the document already holding these bytes, or "
-            "null when none does. Null is also reported, unevaluated, when "
+            "null when none does. Where several hold them, the one named is "
+            "a version a supersession has not retired, lowest document id "
+            "among equals, so the same call names the same document every "
+            "time. Null is also reported, unevaluated, when "
             "`source_content_hash` is null."
         )
     )
@@ -5233,7 +5236,11 @@ class HashCheckMatch(BaseModel):
     )
     document_id: DocumentIdStr | None = Field(
         default=None,
-        description="Document id when exists=true; null otherwise.",
+        description=(
+            "Document id when exists=true; null otherwise. Where several "
+            "documents carry the hash, the one named is a version a "
+            "supersession has not retired, lowest document id among equals."
+        ),
     )
 
 

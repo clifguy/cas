@@ -127,7 +127,9 @@ async def test_a1_failure_on_new_doc_no_predecessor_leaves_no_record(
     with pytest.raises(RuntimeError, match="injected"):
         await ingestion_service.ingest(request)
 
-    matches = await graph_store.find_documents_by_hashes([expected_hash])
+    matches = await graph_store.find_documents_by_hashes(
+        [expected_hash], prefer_lifecycle_statuses=frozenset()
+    )
     assert matches == {}, f"orphan record leaked on no-predecessor branch: {matches}"
 
 
@@ -164,7 +166,9 @@ async def test_a2_failure_on_new_doc_with_predecessor_leaves_no_record_pred_acti
     with pytest.raises(RuntimeError, match="injected"):
         await ingestion_service.ingest(request)
 
-    matches = await graph_store.find_documents_by_hashes([expected_succ_hash])
+    matches = await graph_store.find_documents_by_hashes(
+        [expected_succ_hash], prefer_lifecycle_statuses=frozenset()
+    )
     assert matches == {}, f"orphan successor leaked on supersede branch: {matches}"
 
     pred_after = await graph_store.get_document(pred_id)

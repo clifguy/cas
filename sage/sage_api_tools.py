@@ -404,9 +404,12 @@ def register_sage_tools(
           the retention or that read-back just now -- throttling, a transient
           backend signal, an upload session it expired. The same call may
           succeed later.
-        - ``duplicate_content`` (409): a document with the same
-          ``source_path`` and content hash exists. Override with
-          ``force=true``.
+        - ``duplicate_content`` (409): a document already carries this
+          content hash. The key is the hash alone, so identical bytes at a
+          path the vault has never seen refuse too. Where several documents
+          carry it, the refusal names a version a supersession has not
+          retired, lowest document id among equals, so re-running the same
+          call names the same document. Override with ``force=true``.
         - ``force_reingest_path_mismatch`` (409): ``force=true`` and the
           content-hash match resolves to a document stored at a different
           ``source_path`` than ``source``, without a ``document_id``
@@ -2456,8 +2459,11 @@ def register_sage_tools(
 
         For each input hash, returns whether an existing document in the
         vault carries that content hash and, if so, the matching document's
-        id. Used by the scan-and-batch-ingest flow to identify
-        already-ingested files without re-hashing on the SAGE side.
+        ``document_id``. Used by the scan-and-batch-ingest flow to identify
+        already-ingested files without re-hashing on the SAGE side. Where
+        several documents carry one hash, the one named is a version a
+        supersession has not retired, lowest document id among equals, so
+        the same request names the same document every time.
 
         Matches on provenance: a document's ``source_content_hash`` is the
         SHA-256 of the bytes that were delivered at ingest, so the digest a

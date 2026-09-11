@@ -176,7 +176,14 @@ class InvalidActionError(SAGEError):
 
 
 class DuplicateContentError(SAGEError):
-    """409: same source_path + hash already exists (BH-018)."""
+    """409: a document already carries this content hash (BH-018, BH-066).
+
+    Keyed on the hash alone, so identical bytes at a path the vault has
+    never seen refuse too. ``existing_document_id`` names one holder:
+    where several carry the hash, a version a supersession has not
+    retired outranks one it has, and the lowest document id decides
+    among equals.
+    """
 
     def __init__(self, existing_document_id: str, source_content_hash: str) -> None:
         super().__init__(
