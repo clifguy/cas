@@ -199,17 +199,20 @@ export default function Search() {
     if (docTypeFilter) next.set('doc_type', docTypeFilter);
     if (lifecycleFilter) next.set('lifecycle_status', lifecycleFilter);
     if (projectFilter) next.set('project', projectFilter);
-    // Tags and the terminal-lifecycle exclusion reach this view only
-    // through the URL -- no form control sets either -- so a query string
-    // rebuilt from the form buffers alone discards them with no way for
-    // the user to put them back. Carried
+    // Tags reach this view only through the URL -- no form control sets
+    // them -- so a query string rebuilt from the form buffers alone
+    // discards them with no way for the user to type them back. Carried
     // forward by name rather than by cloning the whole query string: the
     // other keys a drill-down URL holds either have a form control above
     // or should reset on a new search, and an unconditional clone would
     // pin a stale offset and sort onto every submit.
     const currentTags = searchParams.get('tags');
     if (currentTags) next.set('tags', currentTags);
-    if (urlExcludeTerminal) next.set('exclude_terminal_lifecycle', '1');
+    // `exclude_terminal_lifecycle` is deliberately not carried forward
+    // beside it. It is a worklist affordance rather than a filter the
+    // user chose, nothing names it on screen outside the drill-down
+    // heading, and no control can clear it -- so a submit is where it
+    // ends rather than where it becomes permanent.
     setSearchParams(next);
   }
 

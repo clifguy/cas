@@ -450,11 +450,24 @@ async def test_terminal_exclusion_is_a_no_op_when_no_state_is_terminal(
 ):
     """A vault declaring no terminal state excludes nothing.
 
-    The empty set is the shape that breaks a careless predicate: an
-    exclusion clause emitted unconditionally against an empty array
-    either errors or matches nothing, and both turn "exclude nobody"
-    into "return nobody". The flag must resolve to no constraint at
-    all rather than to a constraint over an empty set.
+    The rival this excludes is an implementation that reads the empty
+    set as "nothing is admitted" rather than "nothing is excluded" --
+    an inversion that turns a vault with no terminal state into a vault
+    where every document is retired. It returns nothing here.
+
+    One rival it does **not** exclude, stated because an earlier
+    wording claimed otherwise: emitting the clause unconditionally over
+    an empty array. `<> ALL('{}')` is true for every row, which the
+    adjacent comment in the graph store says outright, so that
+    implementation returns both documents and passes. It is wasted SQL
+    rather than a defect, and no assertion here can or should separate
+    it from the correct one.
+
+    The complement-enumeration rival also passes, for a reason specific
+    to this fixture: with no state terminal the complement is every
+    declared state, and both seeded documents are in one. The test that
+    separates negation from complement is the undeclared-state case
+    below, which is where the two actually part.
     """
     for state in minimal_vault_config_dict["lifecycle"]["states"]:
         state.pop("is_terminal", None)
@@ -555,3 +568,58 @@ async def test_terminal_exclusion_narrows_the_resolution_not_just_the_output(
         "the exclusion was applied after the chunk search rather than as a "
         "constraint on it; the filter never reached the query"
     )
+
+
+async def test_a_state_the_config_no_longer_declares_survives_the_exclusion(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
+):
+    """The one property that separates negation from complement enumeration.
+
+    The predicate drops the states the vault calls terminal. The rival
+    admits the states it calls non-terminal, and on every document either
+    vault config describes the two agree. They part on a document whose
+    stored state the config does not list at all -- a state retired from
+    the config after documents had come to rest in it, which the store
+    permits because ``lifecycle_status`` is a plain column. The negation
+    keeps that document, because its state is not among the excluded
+    ones. The complement drops it, because its state is not among the
+    admitted ones, and drops it silently: the caller asked to exclude
+    retired documents and lost an unretired one.
+
+    This is the property both code comments and the filter's own
+    description claim, and until this test nothing held them to it. Every
+    other test in this file seeds declared states, where the two
+    implementations agree, so a complement rival passes all of them.
+    """
+    declared = {state.value for state in filter_pushdown_retrieval_service._config.lifecycle.states}
+    orphan_state = "retired_from_config"
+    assert orphan_state not in declared, "the state must be one the config does not list"
+
+    orphan = _make_doc("d_orphan_state", doc_type="note")
+    orphan.lifecycle_status = orphan_state
+    await graph_store.insert_document(orphan)
+    await _index_marker(stub_content_store, stub_embedding_provider, orphan)
+
+    retired = _make_doc("d_orphan_control", lifecycle_status="archived", doc_type="note")
+    await graph_store.insert_document(retired)
+    await _index_marker(stub_content_store, stub_embedding_provider, retired)
+
+    for mode, query in ((RetrievalMode.CATALOG, None), (RetrievalMode.KEYWORD, "alpha-marker")):
+        response = await filter_pushdown_retrieval_service.discover(
+            DiscoverRequest(
+                mode=mode,
+                query=query,
+                filters=RetrievalFilters(exclude_terminal_lifecycle=True),
+                limit=100,
+            )
+        )
+        returned = {hit.document.id for hit in response.results}
+        assert orphan.id in returned, (
+            f"{mode.value}: a document in an undeclared state was dropped; the exclusion "
+            f"is admitting the declared non-terminal states rather than excluding the "
+            f"terminal ones"
+        )
+        # The paired control: the exclusion is working in this same
+        # response, so the survival above is the predicate's doing and
+        # not an exclusion that failed to run at all.
+        assert retired.id not in returned, f"{mode.value}: the terminal document was not excluded"

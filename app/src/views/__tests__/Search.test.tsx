@@ -1079,13 +1079,21 @@ describe('Search view: tag filters survive a form submit', () => {
     expect(request.filters?.tags).toEqual(['alpha', 'beta']);
   });
 
-  it('does not invent a tags parameter on a submit that never had one', async () => {
-    // The other direction, and the reason the fix carries tags forward
-    // by name rather than cloning the whole query string: an empty
-    // `tags` key would make every later submit build a filter the user
-    // never asked for. Asserted on the URL alone -- resubmitting the
-    // same parameters changes nothing, so no second request fires and
-    // there is no request to read.
+  it('carries tags forward by name rather than cloning the query string', async () => {
+    // Two rivals, and the seed is what reaches the second.
+    //
+    // An empty-key rival -- `next.set('tags', searchParams.get('tags') ?? '')`
+    // -- makes every later submit build a filter the user never asked
+    // for. Absent `tags` catches it.
+    //
+    // A clone-the-whole-string rival is the one the earlier wording
+    // named and the earlier seed could not reach: with no stale keys in
+    // the URL there was nothing for a clone to carry, so it passed. The
+    // offset and sort seeded here are exactly what a clone would pin
+    // onto a fresh search, so their absence is what excludes it.
+    //
+    // Asserted on the URL alone: resubmitting parameters that resolve
+    // the same changes nothing, so no second request fires.
     mockDiscover.mockResolvedValue(makeCatalogResponse(0, 0));
     const locationRef = { current: '' };
 
@@ -1093,7 +1101,7 @@ describe('Search view: tag filters survive a form submit', () => {
       <TestWrapperWithLocation
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?mode=browse&doc_type=design_spec']}
+        initialEntries={['/search?mode=browse&doc_type=design_spec&offset=20&sort_by=title&sort_order=asc']}
         locationRef={locationRef}
       />,
     );
@@ -1105,7 +1113,11 @@ describe('Search view: tag filters survive a form submit', () => {
     await vi.waitFor(() =>
       expect(new URLSearchParams(locationRef.current).get('doc_type')).toBe('design_spec'),
     );
-    expect(new URLSearchParams(locationRef.current).has('tags')).toBe(false);
+    const after = new URLSearchParams(locationRef.current);
+    expect(after.has('tags')).toBe(false);
+    expect(after.has('offset')).toBe(false);
+    expect(after.has('sort_by')).toBe(false);
+    expect(after.has('sort_order')).toBe(false);
   });
 });
 
@@ -1151,10 +1163,20 @@ describe('Search view: the exclusion holds outside drill-down mode', () => {
     expect(request.filters).toEqual({ exclude_terminal_lifecycle: true });
   });
 
-  it('carries the exclusion through a form submit', async () => {
-    // Same property that loses tags: no form control sets the exclusion,
-    // so a submit rebuilt from the form buffers alone discards it with no
-    // way for the user to put it back.
+  it('clears the exclusion on a form submit rather than pinning it to later searches', async () => {
+    // The exclusion is deliberately NOT carried forward the way tags
+    // are, and the asymmetry is the point. Tags are a filter someone
+    // chose and would want kept across a refinement. The exclusion is a
+    // worklist affordance meaning "show the open population", and
+    // nothing names it on screen once the drill-down heading is gone --
+    // so carrying it into an unrelated keyword search silently hides
+    // every retired document from someone looking for one, with no
+    // result and no explanation.
+    //
+    // Submitting the form is the user leaving the worklist, and it is
+    // the one moment they can be understood to have asked for something
+    // else. A constraint that survives it is unreachable: no control
+    // sets it, so no control can clear it.
     mockDiscover.mockResolvedValue(makeCatalogResponse(0, 0));
     const locationRef = { current: '' };
 
@@ -1176,8 +1198,12 @@ describe('Search view: the exclusion holds outside drill-down mode', () => {
     await user.click(screen.getByRole('button', { name: /^search$/i }));
 
     await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
-    expect(new URLSearchParams(locationRef.current).get('exclude_terminal_lifecycle')).toBe('1');
+    expect(new URLSearchParams(locationRef.current).has('exclude_terminal_lifecycle')).toBe(false);
     const [, request] = mockDiscover.mock.calls[0];
-    expect(request.filters?.exclude_terminal_lifecycle).toBe(true);
+    // Both halves: the URL dropped it and the request built from that
+    // URL does not carry it. Asserting the URL alone would pass against
+    // a view that drops the parameter and keeps applying the constraint
+    // from a stale render.
+    expect(request.filters?.exclude_terminal_lifecycle).toBeUndefined();
   });
 });
