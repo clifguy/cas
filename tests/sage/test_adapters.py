@@ -3210,10 +3210,15 @@ class TestPdfAdapter:
         the surviving fragment is asserted too. The marker is asserted present,
         which fails an implementation that respells the directory into a
         fabricated path -- that one satisfies both of the others. And the
-        caller's path is asserted whole, which is the assertion that fails a
-        blunt replacement: pytest's own temporary directory sits under the base,
-        so a redaction that does not hold the caller's spelling out eats its
-        leading component while still passing every other check here.
+        caller's path is asserted *inside the tool's text*, which is what fails
+        a blunt replacement: the message prefix is composed after the redaction
+        runs and carries the caller's path whatever the hold-out does, so an
+        assertion reading the prefix would exclude nothing. The base and the
+        raster are read off the adapter's own choice at call time rather than
+        computed here, because the adapter reroutes its temp directory for the
+        duration of the call on platforms whose temp dir sits under /tmp -- a
+        base guessed outside that window names a directory nothing redacts, and
+        the precondition would be comparing the test's guess against itself.
         """
         import sys
         import tempfile as _tempfile
@@ -3222,30 +3227,44 @@ class TestPdfAdapter:
         from sage.source_adapters.base import TEMP_LOCATION_MARKER
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
-        base = _tempfile.gettempdir()
-        raster = f"{base}/ocrmypdf.io.abc123/000001_ocr.png"
-
+        seen: dict[str, str] = {}
         fake_ocrmypdf = types.ModuleType("ocrmypdf")
 
         def _raster_failure(input_path, output_path, *args, **kwargs):
-            raise RuntimeError(f"leptonica cannot read {raster}")
+            # The raster is built from the temp dir *in effect at call time*,
+            # which is what the real tool sees: the adapter reroutes off /tmp
+            # for the duration of this call, so a base read outside it names a
+            # directory the adapter is not redacting on platforms where the
+            # reroute fires. Reading it here also names the caller's own input,
+            # so the hold-out is in the causal path of the assertions below.
+            seen["base"] = _tempfile.gettempdir()
+            raster = f"{seen['base']}/ocrmypdf.io.abc123/000001_ocr.png"
+            seen["raster"] = raster
+            raise RuntimeError(f"leptonica cannot read {raster} for input {input_path}")
 
         fake_ocrmypdf.ocr = _raster_failure
         monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
 
         path = _make_scanned_pdf(tmp_path / "scanned-raster-error.pdf")
-        # The precondition the test rests on: the raster really does name the
-        # base, so there is something for the redaction to remove.
-        assert base in raster, (base, raster)
 
         with pytest.raises(ValueError) as excinfo:
             await PdfAdapter().project(path)
         message = str(excinfo.value)
 
+        # The precondition the test rests on: the tool really ran, and its
+        # raster really does sit under the base the adapter chose. Both are read
+        # off the adapter's own choice rather than guessed, which is what makes
+        # the assertions below meaningful on every platform.
+        assert seen, "the scanned branch must have invoked the tool"
+        assert seen["base"] in seen["raster"], seen
+
         assert "leptonica cannot read" in message, message
-        assert raster not in message, message
+        assert seen["raster"] not in message, message
         assert TEMP_LOCATION_MARKER in message, message
-        assert str(path) in message, message
+        # Asserted inside the tool's own text, not via the message prefix: the
+        # prefix is composed after the redaction and survives it whatever the
+        # hold-out does, so only this occurrence excludes a blunt replacement.
+        assert f"for input {path}" in message, message
 
     @requires_pdf_with_image
     async def test_ad_135_a_source_under_the_temp_base_keeps_its_own_spelling(
@@ -3261,21 +3280,34 @@ class TestPdfAdapter:
 
         Anti-coincidental-pass: the source path is asserted whole rather than by
         basename, which is what fails a redaction that ate its prefix -- a
-        basename assertion passes against exactly the defect under test.
+        basename assertion passes against exactly the defect under test. The
+        overlap that makes that assertion load-bearing is itself checked, and
+        against the base the adapter reports at call time rather than the one
+        this test staged under: the adapter reroutes its temp directory on
+        platforms whose temp dir sits under /tmp, and if the staged file lands
+        somewhere the adapter is not redacting then nothing can be mangled and
+        every assertion here is satisfied by any implementation.
         """
         import sys
         import tempfile as _tempfile
         import types
 
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
-        base = _tempfile.gettempdir()
+        # The base the adapter will actually use, derived the way it derives it
+        # rather than guessed: on a platform whose temp dir sits under /tmp the
+        # adapter reroutes, and a file staged under the un-rerouted directory
+        # would not overlap the base at all -- leaving this test green over a
+        # hazard it never reached.
+        base = pdf_adapter_mod._safe_ocr_tempdir() or _tempfile.gettempdir()
         staged_dir = Path(_tempfile.mkdtemp(dir=base))
         try:
             path = _make_scanned_pdf(staged_dir / "staged.pdf")
             # The precondition: this fixture really is the under-the-base case.
             assert str(path).startswith(base), (path, base)
 
+            seen: dict[str, str] = {}
             fake_ocrmypdf = types.ModuleType("ocrmypdf")
 
             def _raster_failure(input_path, output_path, *args, **kwargs):
@@ -3284,6 +3316,7 @@ class TestPdfAdapter:
                 # cannot discriminate: the prefix names the source either way,
                 # so every assertion below would pass against a redaction that
                 # eats the base wherever it appears.
+                seen["base"] = _tempfile.gettempdir()
                 raise RuntimeError(f"leptonica cannot read input {input_path}")
 
             fake_ocrmypdf.ocr = _raster_failure
@@ -3298,6 +3331,14 @@ class TestPdfAdapter:
             # redaction does, so only the occurrence inside the tool's text
             # discriminates.
             assert f"leptonica cannot read input {path}" in message, message
+            # The precondition that makes the assertion above mean anything, and
+            # it is read off the adapter rather than derived here. Comparing the
+            # staged path against the base this test chose would compare a guess
+            # with itself: if the adapter redacts a different directory the two
+            # never overlap, the hold-out is never exercised, and the test passes
+            # over the hazard it was written for.
+            assert seen, "the scanned branch must have invoked the tool"
+            assert str(path).startswith(seen["base"]), (path, seen["base"])
         finally:
             _shutil_for_ocr.rmtree(staged_dir, ignore_errors=True)
 

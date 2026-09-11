@@ -34,7 +34,10 @@ provably cannot reach a caller-facing message.
 
 Documented blind spots. The detector resolves each module's ``tempfile``
 imports before classifying a call, so a plain import, a module alias, and a
-from-import (renamed or not) are all recognized. What it does not reach: a
+from-import (renamed or not) are all recognized. Arm 1's recorder follows the
+same resolution -- a from-import binds the original function into the importing
+module, which patching ``tempfile`` alone would not reach -- so the two arms see
+the same set of sites by construction rather than by convention. What it does not reach: a
 scratch file written with a hand-built path (``Path(...) / "scratch"`` under a
 directory obtained some other way), and a factory reached indirectly through a
 local helper or a re-export. Arm 1 still catches either for any branch a case
@@ -43,7 +46,7 @@ individual files written inside it; that is sufficient because a disclosed file
 path contains its directory, but a message naming only a scratch *basename*
 would pass. Nor does either arm see a path created by a **tool the adapter
 invokes** rather than by the adapter -- the OCR intermediates ocrmypdf builds
-under the base directory the pdf adapter routes it to are respelled by that
+under the base directory the pdf adapter routes it to are redacted by that
 adapter directly, and no case here observes them, because every case stubs the
 tool. Finally, the respelling matches a path by exact string, so a library
 reporting a resolved spelling of the same file (``/var`` against
@@ -57,6 +60,8 @@ each sibling was found by review after the sweep had declared the axis clean.
 from __future__ import annotations
 
 import ast
+import importlib
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -64,6 +69,7 @@ from typing import Any, Callable, Final, NamedTuple
 
 import pytest
 
+from sage.source_adapters.base import TEMP_LOCATION_MARKER
 from tests.helpers.adapter_scratch_fixtures import (
     decoy_potx_package,
     fail_zip_writes,
@@ -216,6 +222,12 @@ class ScratchRecorder:
     def __init__(self) -> None:
         self.paths: list[str] = []
         self.wrapped: frozenset[str] = frozenset()
+        #: The unpatched factories, by name. A module that from-imported one
+        #: holds exactly this object, bound before any patch could reach it.
+        self.originals: dict[str, Any] = {}
+        #: Adapter modules whose from-imported factory names were rebound, so
+        #: the fixture's reach is observable rather than assumed.
+        self.rebound_modules: set[str] = set()
 
     def leaked_in(self, message: str) -> list[str]:
         return [p for p in self.paths if p in message]
@@ -233,6 +245,7 @@ def scratch_recorder(monkeypatch: pytest.MonkeyPatch) -> ScratchRecorder:
 
     def wrap(name: str, extract: Callable[[Any], str]) -> None:
         original = getattr(tempfile, name)
+        recorder.originals[name] = original
 
         def recording(*args: Any, **kwargs: Any) -> Any:
             result = original(*args, **kwargs)
@@ -250,7 +263,48 @@ def scratch_recorder(monkeypatch: pytest.MonkeyPatch) -> ScratchRecorder:
     recorder.wrapped = frozenset(extractors)
     for factory, extract in extractors.items():
         wrap(factory, extract)
+
+    # A from-import binds the original function into the adapter module at
+    # import time, so patching the ``tempfile`` module afterwards does not reach
+    # it. Without rebinding, Arm 1 would be blind to exactly the spellings Arm 2
+    # resolves, and a case driving such a site would fail claiming its fixture
+    # never reached the scratch branch -- wrong about the cause, and pointing the
+    # next author at the allowlist. Rebinding here makes the two arms agree by
+    # construction, as ``test_recorder_wraps_every_naming_factory`` does for the
+    # factory set.
+    for module_path in sorted(ADAPTER_PACKAGE.rglob("*.py")):
+        names = _tempfile_names(ast.parse(module_path.read_text(encoding="utf-8")))
+        if not names.direct:
+            continue
+        module = importlib.import_module(
+            f"sage.source_adapters.{module_path.stem}"
+            if module_path.stem != "__init__"
+            else "sage.source_adapters"
+        )
+        if rebind_direct_imports(monkeypatch, module, names, recorder.wrapped):
+            recorder.rebound_modules.add(module_path.relative_to(REPO_ROOT).as_posix())
     return recorder
+
+
+def rebind_direct_imports(
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    names: _TempfileNames,
+    wrapped: frozenset[str],
+) -> list[str]:
+    """Point a module's from-imported factory names at the patched originals.
+
+    Returns the local names rebound, so a caller can assert the reach rather
+    than assume it. Separate from the fixture because no adapter uses a
+    from-import today: walked over the live package the loop rebinds nothing,
+    and a branch with no live site is scaffolding that reads as a control.
+    """
+    rebound: list[str] = []
+    for local, factory in sorted(names.direct.items()):
+        if factory in wrapped and hasattr(module, local):
+            monkeypatch.setattr(module, local, getattr(tempfile, factory))
+            rebound.append(local)
+    return rebound
 
 
 # ---------------------------------------------------------------------------
@@ -395,15 +449,19 @@ async def _drive_pptx_shadow_write_failure(tmp_path, monkeypatch):
     return await PptxAdapter().project(source), source
 
 
-# Each case: the scratch site it exercises, how the failure is reached, and a
-# fragment of the underlying diagnosis that must survive the respelling. The
-# fragment is what distinguishes substituting the path from discarding the
-# message, and the site keys are what Arm 2 checks its scan against.
+# Each case: the scratch site it exercises, how the failure is reached, a
+# fragment of the underlying diagnosis that must survive, and which protection
+# is expected to do the work. The fragment distinguishes substituting the path
+# from discarding the message; ``redacted`` distinguishes a site the respelling
+# protects from one the sibling redaction would cover anyway, without which a
+# respell could be deleted with its own case still green. The site keys are what
+# Arm 2 checks its scan against.
 DRIVING_CASES: Final[dict[str, dict[str, Any]]] = {
     "pdf_post_ocr_extraction": {
         "site": ("sage/source_adapters/pdf_adapter.py", "_ocr_to_tempfile"),
         "drive": _drive_pdf_post_ocr_extraction,
         "survives": "Failed to open PDF",
+        "redacted": False,
         "disposition": (
             "Respelled. Avoidance is unavailable: the OCR output exists to be "
             "re-extracted, so the extractor must be handed it."
@@ -413,6 +471,7 @@ DRIVING_CASES: Final[dict[str, dict[str, Any]]] = {
         "site": ("sage/source_adapters/pdf_adapter.py", "_ocr_to_tempfile"),
         "drive": _drive_pdf_ocr_tool_failure,
         "survives": "tesseract exited 1",
+        "redacted": False,
         "disposition": (
             "Respelled. The tool is handed the output path by construction and "
             "names it in its own text."
@@ -422,6 +481,7 @@ DRIVING_CASES: Final[dict[str, dict[str, Any]]] = {
         "site": ("sage/source_adapters/docx_adapter.py", "DocxAdapter._open_document"),
         "drive": _drive_docx_template_library_failure,
         "survives": "is not a Word file",
+        "redacted": False,
         "disposition": (
             "Respelled. Avoidance is unavailable: the shadow exists because the "
             "library rejects the original, so the library must be handed the shadow."
@@ -431,12 +491,14 @@ DRIVING_CASES: Final[dict[str, dict[str, Any]]] = {
         "site": ("sage/source_adapters/docx_adapter.py", "DocxAdapter._open_document"),
         "drive": _drive_docx_shadow_write_failure,
         "survives": "No space left on device",
+        "redacted": False,
         "disposition": "Respelled. The write's own failure names the file being written.",
     },
     "pptx_template_library_failure": {
         "site": ("sage/source_adapters/pptx_adapter.py", "_open_presentation"),
         "drive": _drive_pptx_template_library_failure,
         "survives": "is not a PowerPoint file",
+        "redacted": False,
         "disposition": (
             "Respelled. Gating the branch on the package's content type rather "
             "than its suffix narrows what can reach the library, but does not "
@@ -447,6 +509,7 @@ DRIVING_CASES: Final[dict[str, dict[str, Any]]] = {
         "site": ("sage/source_adapters/pptx_adapter.py", "_open_presentation"),
         "drive": _drive_pptx_shadow_write_failure,
         "survives": "No space left on device",
+        "redacted": False,
         "disposition": "Respelled. The write's own failure names the file being written.",
     },
 }
@@ -491,6 +554,17 @@ async def test_adapter_failure_names_no_path_it_created(
         f"{case['survives']!r} did not survive. Substitute the path rather than "
         f"replacing the message.\nMessage: {message}"
     )
+    if not case["redacted"]:
+        # The site respells rather than redacts, so the marker must be absent.
+        # Without this a site whose scratch path happens to sit under the temp
+        # base is protected by the sibling redaction alone, and the leak
+        # assertion above stays green with the respell deleted -- which is true
+        # today of the OCR output file.
+        assert TEMP_LOCATION_MARKER not in message, (
+            f"Case {case_name!r} is a respelling site, but its message carries "
+            f"the redaction marker, so the respell is not what protected it.\n"
+            f"Message: {message}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +574,76 @@ async def test_adapter_failure_names_no_path_it_created(
 
 def _covered_sites() -> set[tuple[str, str]]:
     return {case["site"] for case in DRIVING_CASES.values()}
+
+
+def test_recorder_reaches_a_from_imported_factory(
+    monkeypatch: pytest.MonkeyPatch, scratch_recorder
+) -> None:
+    """A from-imported factory is observed by the recorder once rebound.
+
+    A from-import binds the original function into the importing module at
+    import time, so patching the ``tempfile`` module afterwards does not reach
+    it. Arm 2 resolves that spelling, so without the rebinding Arm 1 would be
+    blind to exactly the sites Arm 2 demands an account of, and a case driving
+    one would fail claiming its fixture never reached the scratch branch.
+
+    Driven against a synthetic module because no adapter uses a from-import
+    today: over the live package the rebinding loop touches nothing, so this is
+    the only thing keeping it honest. The unpatched call is asserted first as a
+    positive control -- without it the test would pass against a recorder that
+    observed the call for some other reason.
+    """
+    import types
+
+    source = "from tempfile import mkdtemp\n"
+    module = types.ModuleType("synthetic_adapter")
+    # The binding a from-import makes: the *unpatched* function, captured at
+    # import time. Reading ``tempfile.mkdtemp`` here would capture the fixture's
+    # wrapper instead and the control below would pass for the wrong reason.
+    module.mkdtemp = scratch_recorder.originals["mkdtemp"]
+
+    before = len(scratch_recorder.paths)
+    created = module.mkdtemp()
+    shutil.rmtree(created, ignore_errors=True)
+    assert len(scratch_recorder.paths) == before, (
+        "positive control: the module-level binding must escape the fixture's "
+        "patch, or this test proves nothing about the rebinding"
+    )
+
+    names = _tempfile_names(ast.parse(source))
+    rebound = rebind_direct_imports(monkeypatch, module, names, scratch_recorder.wrapped)
+    assert rebound == ["mkdtemp"], rebound
+
+    created = module.mkdtemp()
+    shutil.rmtree(created, ignore_errors=True)
+    assert scratch_recorder.paths[-1] == created
+
+
+def _modules_with_direct_imports() -> set[str]:
+    """Adapter modules that from-import at least one recordable factory."""
+    found: set[str] = set()
+    for path in sorted(ADAPTER_PACKAGE.rglob("*.py")):
+        names = _tempfile_names(ast.parse(path.read_text(encoding="utf-8")))
+        if any(factory in RECORDED_FACTORIES for factory in names.direct.values()):
+            found.add(path.relative_to(REPO_ROOT).as_posix())
+    return found
+
+
+def test_recorder_rebinds_every_from_importing_module(scratch_recorder) -> None:
+    """The fixture's reach equals the from-import sites the scan resolves.
+
+    Arm 2 recognises a from-imported factory; Arm 1 only observes one if the
+    fixture rebinds it on the importing module. This pins the two together, so
+    the fixture cannot be narrower than the scan.
+
+    Vacuously green today -- no adapter uses a from-import, so both sides are
+    empty -- and stated rather than hidden, following the empty allowlist above:
+    it lands armed, and the first adapter to from-import a factory reds it
+    unless the fixture reaches that module. The mechanism itself is pinned
+    unconditionally by ``test_recorder_reaches_a_from_imported_factory``, which
+    drives a synthetic module and does not depend on a live site existing.
+    """
+    assert scratch_recorder.rebound_modules == _modules_with_direct_imports()
 
 
 def test_recorder_wraps_every_naming_factory(scratch_recorder) -> None:
