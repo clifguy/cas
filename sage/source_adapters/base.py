@@ -53,6 +53,54 @@ def respell_created_path(text: str, created: Path | str, given: Path | str) -> s
     return text.replace(str(created), str(given))
 
 
+TEMP_LOCATION_MARKER = "<temporary location>"
+
+
+def redact_temp_base(text: str, base: Path | str, given: Path | str) -> str:
+    """Return ``text`` with a scratch *directory* replaced by a fixed marker.
+
+    For files an adapter does not create but whose location it chooses: a tool
+    the adapter invokes builds its own intermediates under a directory the
+    adapter selected, and names one when it fails. Those files correspond to no
+    path the caller supplied, so there is nothing to respell them as -- and
+    substituting the caller's file for the directory would manufacture a path
+    that looks real and names a file that never existed. A marker discloses
+    nothing and fabricates nothing, while the tool's account of what went wrong
+    survives around it.
+
+    Every occurrence of ``given`` is held out of the redaction rather than the
+    redaction being skipped when the two overlap. The caller's own file may sit
+    under the scratch directory -- bytes staged into the temp area do exactly
+    that -- and a blunt replacement would then eat the leading part of the very
+    spelling this exists to protect. Skipping instead would leave the tool's
+    intermediates disclosed whenever that happened. Splitting on ``given``
+    reaches both: the caller's path survives byte-for-byte, everything around it
+    is redacted.
+
+    The base is matched in both its literal and its resolved spelling, since a
+    tool reports whichever form it was given and a temp directory commonly
+    reaches one through a symlink.
+    """
+    if not text:
+        return text
+    spellings = {str(base)}
+    try:
+        spellings.add(str(Path(base).resolve()))
+    except OSError:
+        pass
+
+    def redact(segment: str) -> str:
+        for spelling in sorted(spellings, key=len, reverse=True):
+            if spelling:
+                segment = segment.replace(spelling, TEMP_LOCATION_MARKER)
+        return segment
+
+    given_str = str(given)
+    if not given_str:
+        return redact(text)
+    return given_str.join(redact(part) for part in text.split(given_str))
+
+
 @dataclass
 class HeadingNode:
     """A heading in the document's structural hierarchy."""

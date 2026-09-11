@@ -276,10 +276,13 @@ def _open_presentation(source_path: Path) -> Presentation:
             return Presentation(str(shadow))
         except Exception as exc:
             # Names the caller's own file in the library's text as well as in the
-            # prefix. Gating the branch on the package's content type rather than
-            # its suffix already makes the library's own content-type complaint
-            # unreachable here; every other failure it raises still names whichever
-            # file it was given, which on this branch is always the shadow.
+            # prefix. The library names whichever file it was given, which on this
+            # branch is always the shadow. Gating on the package's content type
+            # rather than the filename suffix narrows which failures arrive here,
+            # but it does not close the one that names a path: a package whose main
+            # part carries a third flavor, with the template type on an unrelated
+            # part, enters this branch and still fails the library's content-type
+            # check against the shadow.
             detail = respell_created_path(str(exc), shadow, source_path)
             raise ValueError(
                 f"Failed to open presentation template {source_path}: {detail}"

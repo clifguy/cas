@@ -23,6 +23,11 @@ from pathlib import Path
 import pytest
 
 from sage.config import load_sage_core_config
+from tests.helpers.adapter_scratch_fixtures import (
+    decoy_potx_package,
+    fail_zip_writes,
+    retype_docx_main_part,
+)
 from tests.helpers.real_models import (
     loaded_provider,
     real_model_lock,
@@ -1563,8 +1568,6 @@ class TestDocxAdapterDotxSupport:
         the shadow's path. Dropping the substitution turns this red; dropping
         the prefix turns the source assertion red.
         """
-        import zipfile as _zipfile
-
         from sage.source_adapters.docx_adapter import _DOCX_CONTENT_TYPE, DocxAdapter
 
         adapter = DocxAdapter()
@@ -1580,17 +1583,9 @@ class TestDocxAdapterDotxSupport:
         # reaches python-docx's content-type check with the shadow's path.
         built = tmp_path / "built.docx"
         docx.Document().save(str(built))
-        macro_type = "application/vnd.ms-word.template.macroEnabledTemplate.main+xml"
-        bad_template = tmp_path / "macro_template.dotx"
-        with _zipfile.ZipFile(built) as z_in:
-            with _zipfile.ZipFile(bad_template, "w", _zipfile.ZIP_DEFLATED) as z_out:
-                for item in z_in.namelist():
-                    data = z_in.read(item)
-                    if item == "[Content_Types].xml":
-                        data = data.replace(
-                            _DOCX_CONTENT_TYPE.encode("utf-8"), macro_type.encode("utf-8")
-                        )
-                    z_out.writestr(item, data)
+        bad_template = retype_docx_main_part(
+            built, tmp_path / "macro_template.dotx", _DOCX_CONTENT_TYPE
+        )
 
         with pytest.raises(ValueError) as excinfo:
             await adapter.project(bad_template)
@@ -1621,14 +1616,7 @@ class TestDocxAdapterDotxSupport:
 
         path = _build_template_fixture(tmp_path, "fixture.dotx")
 
-        real_zipfile = docx_adapter_mod.zipfile.ZipFile
-
-        def _fail_writes(file, mode="r", *args, **kwargs):
-            if mode == "w":
-                raise OSError(28, "No space left on device", str(file))
-            return real_zipfile(file, mode, *args, **kwargs)
-
-        monkeypatch.setattr(docx_adapter_mod.zipfile, "ZipFile", _fail_writes)
+        fail_zip_writes(monkeypatch, docx_adapter_mod)
 
         with pytest.raises(ValueError) as excinfo:
             await DocxAdapter().project(path)
@@ -3157,13 +3145,18 @@ class TestPdfAdapter:
         was handed, read off the argument at raise time rather than written as
         a fixed string, so a message that never named the tempfile could not
         discriminate. The surviving-diagnosis assertion fails an implementation
-        that drops the tool's text instead of substituting the path.
+        that drops the tool's text instead of substituting the path. And the
+        marker is asserted absent, which is what separates this from the
+        sibling redaction: the output file sits under the temp base, so
+        redaction alone satisfies the leak assertion, and without this the
+        respell could be deleted with the test still green.
         """
         import sys
         import tempfile as _tempfile
         import types
 
         from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.base import TEMP_LOCATION_MARKER
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
         created: list[str] = []
@@ -3195,6 +3188,152 @@ class TestPdfAdapter:
         assert str(path) in message, message
         for scratch in created:
             assert scratch not in message, message
+        # The output file is a path the adapter created, so it is respelled as
+        # the caller's own rather than redacted. Without this the sibling
+        # redaction -- which also covers anything under the temp base -- would
+        # satisfy the leak assertion above on its own, and dropping the respell
+        # entirely would leave this test green.
+        assert TEMP_LOCATION_MARKER not in message, message
+
+    @requires_pdf_with_image
+    async def test_ad_134_ocr_intermediates_are_redacted_not_respelled(self, tmp_path, monkeypatch):
+        """An OCR intermediate the tool built is redacted out of the message.
+
+        The tool writes its rasters under the base directory the adapter routes
+        it to, and the raster failure that motivated that routing names one.
+        Those files the adapter located rather than created, so they correspond
+        to no path the caller sent; substituting the caller's file for the
+        directory would manufacture a path naming a file that never existed.
+
+        Anti-coincidental-pass: four assertions, none sufficient alone. Absence
+        of the raster is satisfied by discarding the tool's text wholesale, so
+        the surviving fragment is asserted too. The marker is asserted present,
+        which fails an implementation that respells the directory into a
+        fabricated path -- that one satisfies both of the others. And the
+        caller's path is asserted whole, which is the assertion that fails a
+        blunt replacement: pytest's own temporary directory sits under the base,
+        so a redaction that does not hold the caller's spelling out eats its
+        leading component while still passing every other check here.
+        """
+        import sys
+        import tempfile as _tempfile
+        import types
+
+        from sage.source_adapters.base import TEMP_LOCATION_MARKER
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        base = _tempfile.gettempdir()
+        raster = f"{base}/ocrmypdf.io.abc123/000001_ocr.png"
+
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+        def _raster_failure(input_path, output_path, *args, **kwargs):
+            raise RuntimeError(f"leptonica cannot read {raster}")
+
+        fake_ocrmypdf.ocr = _raster_failure
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-raster-error.pdf")
+        # The precondition the test rests on: the raster really does name the
+        # base, so there is something for the redaction to remove.
+        assert base in raster, (base, raster)
+
+        with pytest.raises(ValueError) as excinfo:
+            await PdfAdapter().project(path)
+        message = str(excinfo.value)
+
+        assert "leptonica cannot read" in message, message
+        assert raster not in message, message
+        assert TEMP_LOCATION_MARKER in message, message
+        assert str(path) in message, message
+
+    @requires_pdf_with_image
+    async def test_ad_135_a_source_under_the_temp_base_keeps_its_own_spelling(
+        self, tmp_path, monkeypatch
+    ):
+        """A caller file staged under the temp base survives the redaction whole.
+
+        The base and the caller's file are independent in the ordinary case but
+        not when the bytes were staged into the temp area, and a redaction that
+        replaced the base wherever it appeared would eat the leading part of the
+        spelling the message exists to carry. The projection seam respells a
+        staged path; this must not corrupt it first.
+
+        Anti-coincidental-pass: the source path is asserted whole rather than by
+        basename, which is what fails a redaction that ate its prefix -- a
+        basename assertion passes against exactly the defect under test.
+        """
+        import sys
+        import tempfile as _tempfile
+        import types
+
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        base = _tempfile.gettempdir()
+        staged_dir = Path(_tempfile.mkdtemp(dir=base))
+        try:
+            path = _make_scanned_pdf(staged_dir / "staged.pdf")
+            # The precondition: this fixture really is the under-the-base case.
+            assert str(path).startswith(base), (path, base)
+
+            fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+            def _raster_failure(input_path, output_path, *args, **kwargs):
+                # Names the input it was handed, which on this fixture is the
+                # staged file under the base. A message carrying no path at all
+                # cannot discriminate: the prefix names the source either way,
+                # so every assertion below would pass against a redaction that
+                # eats the base wherever it appears.
+                raise RuntimeError(f"leptonica cannot read input {input_path}")
+
+            fake_ocrmypdf.ocr = _raster_failure
+            monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+            with pytest.raises(ValueError) as excinfo:
+                await PdfAdapter().project(path)
+            message = str(excinfo.value)
+
+            # Asserted as the tool's own text with the path inside it, not as a
+            # bare containment: the message prefix names the source whatever the
+            # redaction does, so only the occurrence inside the tool's text
+            # discriminates.
+            assert f"leptonica cannot read input {path}" in message, message
+        finally:
+            _shutil_for_ocr.rmtree(staged_dir, ignore_errors=True)
+
+    async def test_ad_136_a_resolved_spelling_of_the_temp_base_is_also_redacted(self, tmp_path):
+        """The base is matched in its resolved spelling as well as its literal one.
+
+        A tool reports whichever spelling it was handed, and a temp directory
+        commonly reaches one through a symlink -- on macOS the process temp
+        directory resolves from ``/var`` to ``/private/var``, so the two forms
+        name the same location and only one of them is the string the adapter
+        holds. Matching a single spelling leaves the other disclosed.
+
+        Anti-coincidental-pass: the symlink is built here rather than relying on
+        the platform's own, so the two spellings differ on every platform; where
+        they happen to coincide the test would be satisfied by a
+        single-spelling implementation and would pin nothing. The literal arm is
+        asserted alongside the resolved one, so a fix that swapped one for the
+        other rather than covering both still reds.
+        """
+        from sage.source_adapters.base import TEMP_LOCATION_MARKER, redact_temp_base
+
+        real = tmp_path / "real_base"
+        real.mkdir()
+        link = tmp_path / "link_base"
+        link.symlink_to(real, target_is_directory=True)
+        assert str(link.resolve()) != str(link), (link, link.resolve())
+
+        source = tmp_path / "caller.pdf"
+        text = f"cannot read {link}/work/raster.png and cannot read {real}/work/other.png"
+
+        redacted = redact_temp_base(text, link, source)
+
+        assert str(link) not in redacted, redacted
+        assert str(real) not in redacted, redacted
+        assert redacted.count(TEMP_LOCATION_MARKER) == 2, redacted
+        assert "cannot read" in redacted, redacted
 
     # ── Section 8.6 — Failure modes ──────────────────────────────
 
@@ -3934,7 +4073,7 @@ class TestPptxAdapter:
         diagnostic = str(excinfo.value).replace(str(path), "")
         assert re.search(r"password|encrypt", diagnostic, re.IGNORECASE), diagnostic
 
-    # ── Section 11.11 — Scratch-path spelling ─────────────────────
+    # ── Section 11.9 — Scratch-path spelling ──────────────────────
 
     async def test_ad_131_unopenable_template_names_the_source_not_the_shadow(self, tmp_path):
         """A template the library rejects names the caller's file, not the shadow.
@@ -3954,8 +4093,6 @@ class TestPptxAdapter:
         main part carries a third template flavor, with the plain template type
         declared on an unrelated part so the branch is still entered.
         """
-        import zipfile as _zipfile
-
         from sage.source_adapters.pptx_adapter import (
             _POTX_MAIN_TYPE,
             _PPTX_MAIN_TYPE,
@@ -3963,22 +4100,9 @@ class TestPptxAdapter:
         )
 
         built = _make_pptx(tmp_path, [{"title": "Deck", "body": ["one"]}], filename="built.pptx")
-        macro_type = "application/vnd.ms-powerpoint.template.macroEnabled.main+xml"
-        decoy = tmp_path / "decoy_template.pptx"
-        with _zipfile.ZipFile(built) as z_in:
-            with _zipfile.ZipFile(decoy, "w", _zipfile.ZIP_DEFLATED) as z_out:
-                for item in z_in.namelist():
-                    data = z_in.read(item)
-                    if item == "[Content_Types].xml":
-                        text = data.decode("utf-8")
-                        text = text.replace(_PPTX_MAIN_TYPE, macro_type)
-                        text = text.replace(
-                            "</Types>",
-                            f'<Override PartName="/ppt/unused.xml" '
-                            f'ContentType="{_POTX_MAIN_TYPE}"/></Types>',
-                        )
-                        data = text.encode("utf-8")
-                    z_out.writestr(item, data)
+        decoy = decoy_potx_package(
+            built, tmp_path / "decoy_template.pptx", _PPTX_MAIN_TYPE, _POTX_MAIN_TYPE
+        )
 
         with pytest.raises(ValueError) as excinfo:
             await PptxAdapter().project(decoy)
@@ -4012,14 +4136,7 @@ class TestPptxAdapter:
 
         path = _make_potx(tmp_path, [{"title": "Deck", "body": ["one"]}])
 
-        real_zipfile = pptx_adapter_mod.zipfile.ZipFile
-
-        def _fail_writes(file, mode="r", *args, **kwargs):
-            if mode == "w":
-                raise OSError(28, "No space left on device", str(file))
-            return real_zipfile(file, mode, *args, **kwargs)
-
-        monkeypatch.setattr(pptx_adapter_mod.zipfile, "ZipFile", _fail_writes)
+        fail_zip_writes(monkeypatch, pptx_adapter_mod)
 
         with pytest.raises(ValueError) as excinfo:
             await PptxAdapter().project(path)
@@ -4030,7 +4147,7 @@ class TestPptxAdapter:
         assert "sage_potx_" not in message, message
         assert "shadow.pptx" not in message, message
 
-    # ── Section 11.9 — Wiring ─────────────────────────────────────
+    # ── Section 11.10 — Wiring ────────────────────────────────────
 
     async def test_ad_122_pptx_is_a_binary_container_source(self):
         """AD-122: pptx is classified as a binary-container source type."""
@@ -4048,7 +4165,7 @@ class TestPptxAdapter:
 
         assert isinstance(registry[SourceType.PPTX], PptxAdapter)
 
-    # ── Section 11.10 — Title inference for placeholder-free decks ──
+    # ── Section 11.11 — Title inference for placeholder-free decks ──
 
     async def test_ad_124_untitled_slide_infers_title_from_first_body_line(self, tmp_path):
         """AD-124: A slide with no title placeholder takes its heading from the topmost text."""

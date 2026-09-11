@@ -36,6 +36,7 @@ from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    redact_temp_base,
     respell_created_path,
 )
 
@@ -348,8 +349,14 @@ def _ocr_to_tempfile(source_path: Path) -> Path:
             Path(out.name).unlink(missing_ok=True)
             # The prefix names the caller's file by construction, but the tool's
             # own text routinely names the output file it was handed -- a scratch
-            # path this function created and has just unlinked.
+            # path this function created and has just unlinked. The tool also
+            # builds its own intermediates under the base directory the enclosing
+            # context manager selected, and the raster failures that motivated
+            # that routing name one. Those the adapter did not create, only
+            # located, so they are redacted rather than respelled -- they
+            # correspond to no file the caller sent.
             detail = respell_created_path(str(e), out.name, source_path)
+            detail = redact_temp_base(detail, tempfile.gettempdir(), source_path)
             raise ValueError(f"OCR failed for {source_path}: {detail}") from e
     return Path(out.name)
 

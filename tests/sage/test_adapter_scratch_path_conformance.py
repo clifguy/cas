@@ -32,14 +32,22 @@ Allowlist contract, following ``test_typed_alias_coverage.py``:
 is driven by a case, and an entry added later must state why the created path
 provably cannot reach a caller-facing message.
 
-Documented blind spots. The detector recognizes creation through the
-``tempfile`` module by attribute spelling. A scratch file written with a
-hand-built path (``Path(...) / "scratch"`` under a directory obtained some other
-way) is invisible to Arm 2, though Arm 1 still catches it for any branch a case
-drives. And the recorder captures the directory a ``mkdtemp`` call returns, not
-the individual files written inside it; that is sufficient because a disclosed
-file path contains its directory, but a message naming only a scratch
-*basename* would pass.
+Documented blind spots. The detector resolves each module's ``tempfile``
+imports before classifying a call, so a plain import, a module alias, and a
+from-import (renamed or not) are all recognized. What it does not reach: a
+scratch file written with a hand-built path (``Path(...) / "scratch"`` under a
+directory obtained some other way), and a factory reached indirectly through a
+local helper or a re-export. Arm 1 still catches either for any branch a case
+drives. The recorder captures the directory a ``mkdtemp`` call returns, not the
+individual files written inside it; that is sufficient because a disclosed file
+path contains its directory, but a message naming only a scratch *basename*
+would pass. Nor does either arm see a path created by a **tool the adapter
+invokes** rather than by the adapter -- the OCR intermediates ocrmypdf builds
+under the base directory the pdf adapter routes it to are respelled by that
+adapter directly, and no case here observes them, because every case stubs the
+tool. Finally, the respelling matches a path by exact string, so a library
+reporting a resolved spelling of the same file (``/var`` against
+``/private/var`` on macOS) would evade it; no library in scope does today.
 
 The gate exists because prose could not hold this invariant. Three sweeps of
 this axis each closed the sites they touched and left a sibling standing, and
@@ -52,9 +60,15 @@ import ast
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, NamedTuple
 
 import pytest
+
+from tests.helpers.adapter_scratch_fixtures import (
+    decoy_potx_package,
+    fail_zip_writes,
+    retype_docx_main_part,
+)
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 ADAPTER_PACKAGE: Final[Path] = REPO_ROOT / "sage" / "source_adapters"
@@ -119,17 +133,58 @@ def _qualnames(tree: ast.AST) -> dict[int, str]:
     return owners
 
 
-def _is_scratch_call(node: ast.AST) -> bool:
-    """True for ``tempfile.<factory>(...)``, matched by spelling, never substring."""
+class _TempfileNames(NamedTuple):
+    """The names a module binds that reach ``tempfile``, resolved from its imports.
+
+    ``modules`` holds the names bound to the module itself -- ``tempfile`` for a
+    plain import, plus any alias. ``direct`` maps a bare name bound by a
+    from-import onto the factory it refers to, so a renamed import is followed
+    to the factory rather than matched on the local spelling.
+    """
+
+    modules: frozenset[str]
+    direct: dict[str, str]
+
+
+def _tempfile_names(tree: ast.AST) -> _TempfileNames:
+    """Resolve every local name in ``tree`` that reaches a ``tempfile`` factory.
+
+    Import spelling is a property of the module, not of the call site, so it has
+    to be resolved before any call can be classified. Matching only the literal
+    ``tempfile.mkdtemp`` shape would leave ``from tempfile import mkdtemp`` and
+    ``import tempfile as tf`` invisible -- a scratch site the gate is supposed to
+    demand an account of, evaded by a spelling nothing else in the repo pins.
+    """
+    modules: set[str] = set()
+    direct: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "tempfile":
+                    modules.add(alias.asname or "tempfile")
+        elif isinstance(node, ast.ImportFrom) and node.module == "tempfile":
+            for alias in node.names:
+                if alias.name in SCRATCH_FACTORIES:
+                    direct[alias.asname or alias.name] = alias.name
+    return _TempfileNames(frozenset(modules), direct)
+
+
+def _scratch_factory(node: ast.AST, names: _TempfileNames) -> str | None:
+    """The factory ``node`` calls, or None. Matched by spelling, never substring."""
     if not isinstance(node, ast.Call):
-        return False
+        return None
     func = node.func
-    return (
-        isinstance(func, ast.Attribute)
-        and func.attr in SCRATCH_FACTORIES
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "tempfile"
-    )
+    if isinstance(func, ast.Attribute):
+        if (
+            func.attr in SCRATCH_FACTORIES
+            and isinstance(func.value, ast.Name)
+            and func.value.id in names.modules
+        ):
+            return func.attr
+        return None
+    if isinstance(func, ast.Name):
+        return names.direct.get(func.id)
+    return None
 
 
 def _find_scratch_sites() -> set[tuple[str, str]]:
@@ -139,8 +194,9 @@ def _find_scratch_sites() -> set[tuple[str, str]]:
         rel = path.relative_to(REPO_ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
         owners = _qualnames(tree)
+        names = _tempfile_names(tree)
         for node in ast.walk(tree):
-            if _is_scratch_call(node):
+            if _scratch_factory(node, names) is not None:
                 sites.add((rel, owners.get(id(node), "<module>")))
     return sites
 
@@ -201,9 +257,6 @@ def scratch_recorder(monkeypatch: pytest.MonkeyPatch) -> ScratchRecorder:
 # Fixture builders
 # ---------------------------------------------------------------------------
 
-_MACRO_DOCX_TYPE: Final[str] = "application/vnd.ms-word.template.macroEnabledTemplate.main+xml"
-_MACRO_PPTX_TYPE: Final[str] = "application/vnd.ms-powerpoint.template.macroEnabled.main+xml"
-
 
 def _blank_page_pdf(path: Path) -> Path:
     """A one-page PDF with no text layer, which the adapter treats as scanned."""
@@ -218,81 +271,25 @@ def _blank_page_pdf(path: Path) -> Path:
 
 
 def _retyped_docx(tmp_path: Path, name: str) -> Path:
-    """A real .docx package whose main part carries a third template flavor.
-
-    The adapter enters its shadow branch on the ``.dotx`` suffix, its rewrite
-    swaps only the plain template type, so python-docx reaches its content-type
-    check against the shadow -- the one library failure here that names the file
-    it was handed.
-    """
+    """A real .docx package whose main part carries a third template flavor."""
     import docx
 
     from sage.source_adapters.docx_adapter import _DOCX_CONTENT_TYPE
 
     built = tmp_path / "built-for-retype.docx"
     docx.Document().save(str(built))
-    out = tmp_path / name
-    with zipfile.ZipFile(built) as z_in:
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z_out:
-            for item in z_in.namelist():
-                data = z_in.read(item)
-                if item == "[Content_Types].xml":
-                    data = data.replace(
-                        _DOCX_CONTENT_TYPE.encode("utf-8"), _MACRO_DOCX_TYPE.encode("utf-8")
-                    )
-                z_out.writestr(item, data)
-    return out
+    return retype_docx_main_part(built, tmp_path / name, _DOCX_CONTENT_TYPE)
 
 
 def _retyped_pptx(tmp_path: Path, name: str) -> Path:
-    """A real .pptx package that reaches python-pptx's content-type check.
-
-    The adapter enters its shadow branch when the template content type appears
-    anywhere in ``[Content_Types].xml``, and its rewrite swaps that string. A
-    package whose *main* part is a third flavor, with the plain template type
-    declared on an unrelated part, therefore takes the branch and still fails
-    the library's check -- against the shadow's path.
-    """
+    """A real .pptx package that reaches python-pptx's content-type check."""
     from pptx import Presentation
 
     from sage.source_adapters.pptx_adapter import _POTX_MAIN_TYPE, _PPTX_MAIN_TYPE
 
     built = tmp_path / "built-for-retype.pptx"
     Presentation().save(str(built))
-    out = tmp_path / name
-    with zipfile.ZipFile(built) as z_in:
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z_out:
-            for item in z_in.namelist():
-                data = z_in.read(item)
-                if item == "[Content_Types].xml":
-                    text = data.decode("utf-8")
-                    text = text.replace(_PPTX_MAIN_TYPE, _MACRO_PPTX_TYPE)
-                    text = text.replace(
-                        "</Types>",
-                        f'<Override PartName="/ppt/unused.xml" '
-                        f'ContentType="{_POTX_MAIN_TYPE}"/></Types>',
-                    )
-                    data = text.encode("utf-8")
-                z_out.writestr(item, data)
-    return out
-
-
-def _fail_zip_writes(monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
-    """Make write-mode ``zipfile.ZipFile`` raise an OSError naming its target.
-
-    Stubs the operating-system condition, not the adapter: a full or read-only
-    filesystem produces exactly this, and ``OSError.__str__`` appends the path.
-    Read-mode opens are left alone, so the source package still opens and the
-    adapter reaches the shadow write it is being tested on.
-    """
-    original = module.zipfile.ZipFile
-
-    def failing(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-        if mode == "w":
-            raise OSError(28, "No space left on device", str(file))
-        return original(file, mode, *args, **kwargs)
-
-    monkeypatch.setattr(module.zipfile, "ZipFile", failing)
+    return decoy_potx_package(built, tmp_path / name, _PPTX_MAIN_TYPE, _POTX_MAIN_TYPE)
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +355,7 @@ async def _drive_docx_shadow_write_failure(tmp_path, monkeypatch):
 
     built = tmp_path / "template.dotx"
     _docx.Document().save(str(built))
-    _fail_zip_writes(monkeypatch, docx_adapter)
+    fail_zip_writes(monkeypatch, docx_adapter)
     return await DocxAdapter().project(built), built
 
 
@@ -394,7 +391,7 @@ async def _drive_pptx_shadow_write_failure(tmp_path, monkeypatch):
                     )
                 z_out.writestr(item, data)
 
-    _fail_zip_writes(monkeypatch, pptx_adapter)
+    fail_zip_writes(monkeypatch, pptx_adapter)
     return await PptxAdapter().project(source), source
 
 
@@ -620,6 +617,16 @@ _DETECTOR_CASES: Final[dict[str, tuple[str, bool]]] = {
         "import tempfile\ndef f():\n    return tempfile.SpooledTemporaryFile()\n",
         True,
     ),
+    # Import spellings. None is live in the adapter package today -- all three
+    # adapters write ``import tempfile`` -- so nothing but these cases keeps the
+    # resolver's branches alive, and without them Arm 2's guarantee would rest on
+    # a spelling convention no lint enforces.
+    "from_import": ("from tempfile import mkdtemp\ndef f():\n    return mkdtemp()\n", True),
+    "from_import_aliased": (
+        "from tempfile import mkdtemp as md\ndef f():\n    return md()\n",
+        True,
+    ),
+    "module_aliased": ("import tempfile as tf\ndef f():\n    return tf.mkdtemp()\n", True),
     # Near misses. The first two are live in the tree: the pdf adapter reads and
     # reassigns the module's configuration to route OCR intermediates, and
     # neither call creates anything.
@@ -631,9 +638,13 @@ _DETECTOR_CASES: Final[dict[str, tuple[str, bool]]] = {
         "import tempfile\ndef f():\n    tempfile.tempdir = '/x'\n",
         False,
     ),
-    "bare_name_is_not_the_module": ("def f(mkdtemp):\n    return mkdtemp()\n", False),
+    "bare_name_without_the_import": ("def f(mkdtemp):\n    return mkdtemp()\n", False),
     "same_attr_on_another_object": (
-        "def f(helper):\n    return helper.mkdtemp()\n",
+        "import tempfile\ndef f(helper):\n    return helper.mkdtemp()\n",
+        False,
+    ),
+    "shadowed_name_from_another_module": (
+        "from shutil import rmtree as mkdtemp\ndef f():\n    return mkdtemp()\n",
         False,
     ),
 }
@@ -652,5 +663,6 @@ def test_detector_matches_exactly_the_creation_spellings(source: str, expected: 
     make the gate unusable, which is the other way a gate dies.
     """
     tree = ast.parse(source)
-    found = any(_is_scratch_call(node) for node in ast.walk(tree))
+    names = _tempfile_names(tree)
+    found = any(_scratch_factory(node, names) is not None for node in ast.walk(tree))
     assert found is expected
