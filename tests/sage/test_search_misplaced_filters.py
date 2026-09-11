@@ -71,6 +71,7 @@ MISPLACED_VALUES: dict[str, object] = {
     "source_id": "some_document_id",
     "target_id": "another_document_id",
     "edge_type": "references",
+    "exclude_terminal_lifecycle": True,
 }
 
 
@@ -198,14 +199,18 @@ def test_filter_keys_are_published_in_the_tool_schema():
     assert schema.get("additionalProperties") is False
 
 
-#: What a bare, wholly unconstrained ``str | list | dict | None`` renders as.
+#: What a bare, wholly unconstrained ``str | list | dict | bool | None``
+#: renders as. The ``bool`` arm is not decoration: a boolean filter key is a
+#: well-formed value like any other, and an annotation that cannot hold one
+#: rejects it at the framework's argument model -- before the guard runs --
+#: with a format complaint in place of the misplaced-field message.
 #: Written here as the literal union rather than read back from the tripwire
 #: annotation, so the comparison is against an independent statement of the
 #: permissive shape rather than against whatever the annotation happens to
 #: publish. Rendered rather than hand-listed: a hand-listed key set can only
 #: reject a constraint at the arm's own level, and the element and value
 #: schemas nest one level below it.
-_PERMISSIVE_ARMS = TypeAdapter(str | list | dict | None).json_schema()["anyOf"]
+_PERMISSIVE_ARMS = TypeAdapter(str | list | dict | bool | None).json_schema()["anyOf"]
 
 
 def test_published_tripwires_are_marked_as_tripwires():
@@ -273,8 +278,8 @@ def test_published_tripwires_are_marked_as_tripwires():
     # The permissive annotation the guard depends on is unchanged: any
     # well-formed shape must still arrive and earn the misplaced-field
     # message rather than a framework type error. Both halves are needed.
-    # The arm set alone would pass against an annotation that keeps four
-    # arms of the right types and narrows one from within -- a ``pattern``
+    # The arm set alone would pass against an annotation that keeps every
+    # arm of the right type and narrows one from within -- a ``pattern``
     # on the string arm, an ``enum``, a ``minLength`` -- and equally against
     # one nested a level below it, since ``list[str]`` and ``dict[str, str]``
     # narrow through the ``items`` and ``additionalProperties`` schemas the

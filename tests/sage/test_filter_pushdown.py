@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 import pytest
 
 from sage.adapters.interfaces import Chunk
+from sage.config import VaultConfig
 from sage.models.enums import (
     PipelineStatus,
     RetrievalMode,
@@ -379,3 +380,246 @@ async def test_list_filtered_does_not_call_list_all_documents(
         )
     )
     assert response.results, "_list_filtered returned an empty hit set"
+
+
+# ---------------------------------------------------------------------------
+# T7, T8 — exclude_terminal_lifecycle across retrieval modes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_retired_pair(graph_store, content_store, embedding_provider):
+    """One open and one retired document, both carrying the marker term.
+
+    Deliberately not folded into ``_seed_mixed_vault``: that seed has no
+    terminal-state document, and adding one there would change the
+    expected id sets of every test above.
+    """
+    docs = {
+        "d_open": _make_doc("d_open_retired_pair", lifecycle_status="active", doc_type="note"),
+        "d_retired": _make_doc(
+            "d_retired_retired_pair", lifecycle_status="archived", doc_type="note"
+        ),
+    }
+    for doc in docs.values():
+        await graph_store.insert_document(doc)
+        await _index_marker(content_store, embedding_provider, doc)
+    return docs
+
+
+async def test_terminal_exclusion_holds_on_the_keyword_path(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
+):
+    """The exclusion is not a catalog-only affordance.
+
+    The predicate is a negation, which the chunk-row pre-filter cannot
+    render -- it emits equality and set membership only. So the flag has
+    to travel the non-pushdown route and resolve through the graph
+    store into a document-id allowlist. An implementation wired into
+    the catalog SQL alone satisfies every count-to-list test and fails
+    here, silently widening any keyword or semantic caller that asks
+    for the same constraint.
+    """
+    docs = await _seed_retired_pair(graph_store, stub_content_store, stub_embedding_provider)
+
+    response = await filter_pushdown_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="alpha-marker",
+            filters=RetrievalFilters(exclude_terminal_lifecycle=True),
+            limit=100,
+        )
+    )
+
+    returned_ids = {hit.document.id for hit in response.results}
+    assert docs["d_retired"].id not in returned_ids
+    assert docs["d_open"].id in returned_ids
+
+    # Paired arm: without the flag the retired document is reachable, so
+    # the exclusion above is the flag's doing and not the seed's.
+    unfiltered = await filter_pushdown_retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="alpha-marker", limit=100)
+    )
+    assert docs["d_retired"].id in {hit.document.id for hit in unfiltered.results}
+
+
+async def test_terminal_exclusion_is_a_no_op_when_no_state_is_terminal(
+    graph_store,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_vault_config_dict,
+):
+    """A vault declaring no terminal state excludes nothing.
+
+    The rival this excludes is an implementation that reads the empty
+    set as "nothing is admitted" rather than "nothing is excluded" --
+    an inversion that turns a vault with no terminal state into a vault
+    where every document is retired. It returns nothing here.
+
+    One rival it does **not** exclude, stated because an earlier
+    wording claimed otherwise: emitting the clause unconditionally over
+    an empty array. `<> ALL('{}')` is true for every row, which the
+    adjacent comment in the graph store says outright, so that
+    implementation returns both documents and passes. It is wasted SQL
+    rather than a defect, and no assertion here can or should separate
+    it from the correct one.
+
+    The complement-enumeration rival also passes, for a reason specific
+    to this fixture: with no state terminal the complement is every
+    declared state, and both seeded documents are in one. The test that
+    separates negation from complement is the undeclared-state case
+    below, which is where the two actually part.
+    """
+    for state in minimal_vault_config_dict["lifecycle"]["states"]:
+        state.pop("is_terminal", None)
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    assert config.lifecycle.terminal_states() == frozenset()
+
+    service = RetrievalService(
+        graph_store=graph_store,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        config=config,
+    )
+    docs = await _seed_retired_pair(graph_store, stub_content_store, stub_embedding_provider)
+
+    response = await service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(exclude_terminal_lifecycle=True),
+            limit=100,
+        )
+    )
+
+    returned_ids = {hit.document.id for hit in response.results}
+    assert returned_ids >= {docs["d_open"].id, docs["d_retired"].id}
+
+
+async def test_terminal_exclusion_is_named_in_the_empty_result_hints(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
+):
+    """A caller culled by the exclusion is told which constraint culled them.
+
+    Every other filter reaches ``active_filters``, and the hint block
+    exists so an empty response is distinguishable from a true zero. A
+    filter missing from it produces the worse of the two failures: a
+    caller sees "nothing matched" alongside a filter list that does not
+    explain the emptiness, and reads the vault as empty.
+
+    Reported as the flag rather than as the states it resolved to. The
+    caller named a rule; the states are the vault's and are not
+    something the caller asked for or can be held to.
+    """
+    await _seed_retired_pair(graph_store, stub_content_store, stub_embedding_provider)
+
+    response = await filter_pushdown_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="alpha-marker",
+            filters=RetrievalFilters(
+                exclude_terminal_lifecycle=True,
+                project="nonexistent-project",
+            ),
+            limit=10,
+        )
+    )
+
+    assert response.results == []
+    assert response.hints is not None
+    active = response.hints.get("active_filters") or {}
+    assert active.get("exclude_terminal_lifecycle") is True
+    assert "exclude_lifecycle_statuses" not in active
+
+
+async def test_terminal_exclusion_narrows_the_resolution_not_just_the_output(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
+):
+    """The exclusion has to reach the SQL, not only the Python gate.
+
+    The sibling keyword test above cannot see the difference. Both
+    ``_content_filters``' document-id resolution and ``_passes_scope``
+    stand between a retired document and the caller, so an
+    implementation that adds the post-filter and never touches the
+    query returns the same rows -- having fetched, ranked, and then
+    thrown away chunks that could not survive. That is the shape a
+    filter silently stops being a filter in.
+
+    A corpus whose every match is retired makes the two visible. When
+    the exclusion reaches SQL the resolution comes back empty and the
+    chunk search never runs, so ``total_before_filtering`` is 0. When it
+    reaches only the post-filter the chunks are fetched and then culled,
+    and the same field reports how many.
+    """
+    doc = _make_doc("d_only_retired", lifecycle_status="archived", doc_type="note")
+    await graph_store.insert_document(doc)
+    await _index_marker(stub_content_store, stub_embedding_provider, doc)
+
+    response = await filter_pushdown_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.KEYWORD,
+            query="alpha-marker",
+            filters=RetrievalFilters(exclude_terminal_lifecycle=True),
+            limit=10,
+        )
+    )
+
+    assert response.results == []
+    assert response.hints is not None
+    assert response.hints.get("total_before_filtering") == 0, (
+        "the exclusion was applied after the chunk search rather than as a "
+        "constraint on it; the filter never reached the query"
+    )
+
+
+async def test_a_state_the_config_no_longer_declares_survives_the_exclusion(
+    graph_store, stub_content_store, stub_embedding_provider, filter_pushdown_retrieval_service
+):
+    """The one property that separates negation from complement enumeration.
+
+    The predicate drops the states the vault calls terminal. The rival
+    admits the states it calls non-terminal, and on every document either
+    vault config describes the two agree. They part on a document whose
+    stored state the config does not list at all -- a state retired from
+    the config after documents had come to rest in it, which the store
+    permits because ``lifecycle_status`` is a plain column. The negation
+    keeps that document, because its state is not among the excluded
+    ones. The complement drops it, because its state is not among the
+    admitted ones, and drops it silently: the caller asked to exclude
+    retired documents and lost an unretired one.
+
+    This is the property both code comments and the filter's own
+    description claim, and until this test nothing held them to it. Every
+    other test in this file seeds declared states, where the two
+    implementations agree, so a complement rival passes all of them.
+    """
+    declared = {state.value for state in filter_pushdown_retrieval_service._config.lifecycle.states}
+    orphan_state = "retired_from_config"
+    assert orphan_state not in declared, "the state must be one the config does not list"
+
+    orphan = _make_doc("d_orphan_state", doc_type="note")
+    orphan.lifecycle_status = orphan_state
+    await graph_store.insert_document(orphan)
+    await _index_marker(stub_content_store, stub_embedding_provider, orphan)
+
+    retired = _make_doc("d_orphan_control", lifecycle_status="archived", doc_type="note")
+    await graph_store.insert_document(retired)
+    await _index_marker(stub_content_store, stub_embedding_provider, retired)
+
+    for mode, query in ((RetrievalMode.CATALOG, None), (RetrievalMode.KEYWORD, "alpha-marker")):
+        response = await filter_pushdown_retrieval_service.discover(
+            DiscoverRequest(
+                mode=mode,
+                query=query,
+                filters=RetrievalFilters(exclude_terminal_lifecycle=True),
+                limit=100,
+            )
+        )
+        returned = {hit.document.id for hit in response.results}
+        assert orphan.id in returned, (
+            f"{mode.value}: a document in an undeclared state was dropped; the exclusion "
+            f"is admitting the declared non-terminal states rather than excluding the "
+            f"terminal ones"
+        )
+        # The paired control: the exclusion is working in this same
+        # response, so the survival above is the predicate's doing and
+        # not an exclusion that failed to run at all.
+        assert retired.id not in returned, f"{mode.value}: the terminal document was not excluded"

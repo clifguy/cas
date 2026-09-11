@@ -964,3 +964,246 @@ describe('Search view: API error surfacing', () => {
     expect(screen.queryByText(/error/i)).toBeNull();
   });
 });
+
+describe('Search view: terminal-lifecycle exclusion on drill-down', () => {
+  // The dashboard's health cards count an operator worklist, which
+  // excludes documents in a terminal lifecycle state. The list a card
+  // opens has to ask for the same population, and the only place that
+  // request can be built is here.
+  it('forwards the exclusion from the URL into the catalog request', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(2, 2));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?pipeline_status=failed&exclude_terminal_lifecycle=1']}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+
+    const [, request] = mockDiscover.mock.calls[0];
+    // Exact match rather than a subset: a view that parses the param
+    // and then drops it from the request satisfies any assertion made
+    // on the URL alone, and this is the only thing that catches it.
+    expect(request.filters).toEqual({
+      pipeline_status: 'failed',
+      exclude_terminal_lifecycle: true,
+    });
+  });
+
+  it('treats the exclusion alone as a drill-down', async () => {
+    // The discriminator reads "filter params present, no mode param".
+    // A new filter that is not part of that test leaves a URL carrying
+    // only the exclusion falling through to the empty search form,
+    // which renders no request at all.
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(2, 2));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?exclude_terminal_lifecycle=1']}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.mode).toBe('catalog');
+    expect(request.filters).toEqual({ exclude_terminal_lifecycle: true });
+  });
+
+  it('omits the exclusion when the URL does not ask for it', async () => {
+    // Guards the other direction: a view that sets the flag
+    // unconditionally would widen nothing but would quietly narrow
+    // every drill-down that wants the whole population.
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(2, 2));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?pipeline_status=failed&exclude_terminal_lifecycle=0']}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.filters).toEqual({ pipeline_status: 'failed' });
+  });
+});
+
+describe('Search view: tag filters survive a form submit', () => {
+  // Tags reach this view only through the URL -- there is no form
+  // control for them. Submitting the form rebuilt the query string from
+  // the form buffers alone, so the tags went away with nothing on screen
+  // having asked for that and no way to type them back.
+  it('carries ?tags through when the form is submitted', async () => {
+    mockDiscover.mockResolvedValue(makeCatalogResponse(0, 0));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&tags=alpha,beta']}
+        locationRef={locationRef}
+      />,
+    );
+
+    // findByRole rather than getByRole: the submit control reads
+    // "Loading..." until the initial request settles, and interacting
+    // before then drives a form whose buffers have not synced.
+    await screen.findByRole('button', { name: /^browse$/i });
+    mockDiscover.mockClear();
+
+    // Switching out of browse and running a real query is the path that
+    // loses the tags, and it also changes the query string so a second
+    // request actually fires. Resubmitting an unchanged URL is a no-op,
+    // which would leave the assertions below reading the first request.
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole('combobox'), 'keyword');
+    await user.type(screen.getByPlaceholderText(/search documents/i), 'notes');
+    await user.click(screen.getByRole('button', { name: /^search$/i }));
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+    // Both halves: the URL still names the tags, and the request built
+    // from it still carries them. The URL alone would pass against a
+    // view that preserves the parameter and stops reading it.
+    expect(new URLSearchParams(locationRef.current).get('tags')).toBe('alpha,beta');
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.mode).toBe('keyword');
+    expect(request.filters?.tags).toEqual(['alpha', 'beta']);
+  });
+
+  it('carries tags forward by name rather than cloning the query string', async () => {
+    // Two rivals, and the seed is what reaches the second.
+    //
+    // An empty-key rival -- `next.set('tags', searchParams.get('tags') ?? '')`
+    // -- makes every later submit build a filter the user never asked
+    // for. Absent `tags` catches it.
+    //
+    // A clone-the-whole-string rival is the one the earlier wording
+    // named and the earlier seed could not reach: with no stale keys in
+    // the URL there was nothing for a clone to carry, so it passed. The
+    // offset and sort seeded here are exactly what a clone would pin
+    // onto a fresh search, so their absence is what excludes it.
+    //
+    // Asserted on the URL alone: resubmitting parameters that resolve
+    // the same changes nothing, so no second request fires.
+    mockDiscover.mockResolvedValue(makeCatalogResponse(0, 0));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&doc_type=design_spec&offset=20&sort_by=title&sort_order=asc']}
+        locationRef={locationRef}
+      />,
+    );
+
+    const submit = await screen.findByRole('button', { name: /^browse$/i });
+    const user = userEvent.setup();
+    await user.click(submit);
+
+    await vi.waitFor(() =>
+      expect(new URLSearchParams(locationRef.current).get('doc_type')).toBe('design_spec'),
+    );
+    const after = new URLSearchParams(locationRef.current);
+    expect(after.has('tags')).toBe(false);
+    expect(after.has('offset')).toBe(false);
+    expect(after.has('sort_by')).toBe(false);
+    expect(after.has('sort_order')).toBe(false);
+  });
+});
+
+describe('Search view: the exclusion holds outside drill-down mode', () => {
+  // The drill-down is not the only reader of the query string. Browse and
+  // the scored modes build their filters through a second builder, and a
+  // parameter honored by one and ignored by the other is the worse of the
+  // two failures: the caller sees a populated, plausible result set with
+  // nothing naming the constraint that was dropped.
+  it('carries the exclusion into a browse request', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(2, 2));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&exclude_terminal_lifecycle=1']}
+      />,
+    );
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.mode).toBe('catalog');
+    expect(request.filters).toEqual({ exclude_terminal_lifecycle: true });
+  });
+
+  it('carries the exclusion into a keyword request', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(2, 2));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=keyword&q=notes&exclude_terminal_lifecycle=1']}
+      />,
+    );
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.mode).toBe('keyword');
+    expect(request.filters).toEqual({ exclude_terminal_lifecycle: true });
+  });
+
+  it('clears the exclusion on a form submit rather than pinning it to later searches', async () => {
+    // The exclusion is deliberately NOT carried forward the way tags
+    // are, and the asymmetry is the point. Tags are a filter someone
+    // chose and would want kept across a refinement. The exclusion is a
+    // worklist affordance meaning "show the open population", and
+    // nothing names it on screen once the drill-down heading is gone --
+    // so carrying it into an unrelated keyword search silently hides
+    // every retired document from someone looking for one, with no
+    // result and no explanation.
+    //
+    // Submitting the form is the user leaving the worklist, and it is
+    // the one moment they can be understood to have asked for something
+    // else. A constraint that survives it is unreachable: no control
+    // sets it, so no control can clear it.
+    mockDiscover.mockResolvedValue(makeCatalogResponse(0, 0));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&exclude_terminal_lifecycle=1']}
+        locationRef={locationRef}
+      />,
+    );
+
+    await screen.findByRole('button', { name: /^browse$/i });
+    mockDiscover.mockClear();
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole('combobox'), 'keyword');
+    await user.type(screen.getByPlaceholderText(/search documents/i), 'notes');
+    await user.click(screen.getByRole('button', { name: /^search$/i }));
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+    expect(new URLSearchParams(locationRef.current).has('exclude_terminal_lifecycle')).toBe(false);
+    const [, request] = mockDiscover.mock.calls[0];
+    // Both halves: the URL dropped it and the request built from that
+    // URL does not carry it. Asserting the URL alone would pass against
+    // a view that drops the parameter and keeps applying the constraint
+    // from a stale render.
+    expect(request.filters?.exclude_terminal_lifecycle).toBeUndefined();
+  });
+});

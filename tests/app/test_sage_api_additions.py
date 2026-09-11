@@ -1102,3 +1102,229 @@ class TestPipelineStatusFilter:
         # is accepted without error. The important thing is no 400/500.
         assert body["mode"] == "semantic"
         assert isinstance(body["results"], list)
+
+
+# ---------------------------------------------------------------------------
+# 7. Health-card drill-down correspondence
+# ---------------------------------------------------------------------------
+
+
+_DRILLDOWN_PAIRS = [
+    ("failed_ingestion_count", "failed", PipelineStatus.FAILED),
+    ("deferred_abstract_count", "abstraction_skipped", PipelineStatus.ABSTRACTION_SKIPPED),
+    (
+        "interrupted_abstract_count",
+        "abstraction_interrupted",
+        PipelineStatus.ABSTRACTION_INTERRUPTED,
+    ),
+]
+
+
+async def _catalog_ids(client, vault_id: str, filters: dict) -> set[str]:
+    """Document ids a catalog drill-down returns for one filter set."""
+    resp = await client.post(
+        f"/sage_vaults/{vault_id}/discover",
+        json={"mode": "catalog", "filters": filters, "limit": 100, "response_mode": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    return {hit["document"]["id"] for hit in resp.json()["results"]}
+
+
+class TestHealthCardDrilldownCorrespondence:
+    """A health card's count and the list it opens must have one membership.
+
+    The counters exclude documents in a terminal lifecycle state; the
+    drill-down link did not, so a card reading 0 could open a list of 1.
+    The list was a superset rather than wrong data, which is why the
+    divergence survived: every assertion that looked at the list alone
+    passed. Only a test holding the count and the list against each
+    other can see it, so each test below reads both.
+    """
+
+    @pytest.mark.parametrize("counter,status_value,status", _DRILLDOWN_PAIRS)
+    async def test_drilldown_membership_equals_the_count_it_opens(
+        self, multi_vault_app, multi_client, counter, status_value, status
+    ):
+        """Each pipeline-status card opens exactly the documents it counted.
+
+        The paired arm is what makes this discriminating. Asserting only
+        that the filtered list holds one document would pass against a
+        retrieval surface that lost the terminal document for any
+        reason at all -- a narrowed scope, a broken join, a default
+        exclusion that happens to catch it. Running the same request
+        with the flag dropped and asserting *both* ids come back pins
+        the exclusion to the flag rather than to the fixture.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        open_doc = _make_document(
+            f"open-{status_value}",
+            pipeline_status=status,
+            pipeline_error="adapter crash" if status is PipelineStatus.FAILED else None,
+            metadata_confirmed=True,
+        )
+        retired_doc = _make_document(
+            f"retired-{status_value}",
+            pipeline_status=status,
+            pipeline_error="adapter crash" if status is PipelineStatus.FAILED else None,
+            lifecycle_status="archived",
+            metadata_confirmed=True,
+        )
+        for d in (open_doc, retired_doc):
+            await gs.insert_document(d)
+
+        stats = await multi_client.get("/sage_vaults/example_vault/stats")
+        assert stats.status_code == 200
+        assert stats.json()["health"][counter] == 1
+
+        excluded = await _catalog_ids(
+            multi_client,
+            "example_vault",
+            {"pipeline_status": status_value, "exclude_terminal_lifecycle": True},
+        )
+        assert excluded == {open_doc.id}
+
+        unfiltered = await _catalog_ids(
+            multi_client, "example_vault", {"pipeline_status": status_value}
+        )
+        assert unfiltered == {open_doc.id, retired_doc.id}
+
+    async def test_exclusion_is_not_an_active_only_filter(self, multi_vault_app, multi_client):
+        """`completed` is not terminal in the base lifecycle, and survives.
+
+        The drill-down side of the rival the counter's own discriminator
+        test excludes. A link narrowed to `lifecycle_status=active`
+        agrees with the correct implementation on every `archived`
+        document, so the sibling test above cannot tell the two apart. A
+        `completed` document can: it is counted, so it must be listed.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        ids = {}
+        for short_name, lifecycle in [
+            ("live-skipped", "active"),
+            ("done-skipped", "completed"),
+            ("gone-skipped", "archived"),
+        ]:
+            doc = _make_document(
+                short_name,
+                pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                lifecycle_status=lifecycle,
+                metadata_confirmed=True,
+            )
+            await gs.insert_document(doc)
+            ids[short_name] = doc.id
+
+        stats = await multi_client.get("/sage_vaults/example_vault/stats")
+        assert stats.json()["health"]["deferred_abstract_count"] == 2
+
+        listed = await _catalog_ids(
+            multi_client,
+            "example_vault",
+            {"pipeline_status": "abstraction_skipped", "exclude_terminal_lifecycle": True},
+        )
+        assert listed == {ids["live-skipped"], ids["done-skipped"]}
+
+    async def test_excluded_set_is_derived_from_vault_config(
+        self, custom_terminal_state_app, custom_terminal_state_client
+    ):
+        """The drill-down reads the vault's declared states, not a literal.
+
+        Anti-coincidental-pass in the same three parts the counter-side
+        test uses, because the drill-down can go wrong in all three of
+        the same ways. The terminal state is a per-run nonce, so an
+        implementation carrying `("archived",)` fails here and passes
+        every sibling. The held document -- declared, non-terminal, and
+        not a base state -- separates a service reading `is_terminal`
+        from one excluding every state that is not `active` or
+        `completed`, which the base lifecycle cannot distinguish.
+        """
+        services = custom_terminal_state_app.state.vault_registry["filing_vault"]
+        gs = services.graph_store
+        terminal_state = custom_terminal_state_app.state.terminal_state_under_test
+        open_state = custom_terminal_state_app.state.open_state_under_test
+
+        ids = {}
+        for short_name, lifecycle in [
+            ("live-doc", "active"),
+            ("held-doc", open_state),
+            ("frozen-doc", terminal_state),
+        ]:
+            doc = _make_document(
+                short_name,
+                pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                lifecycle_status=lifecycle,
+                metadata_confirmed=True,
+            )
+            await gs.insert_document(doc)
+            ids[short_name] = doc.id
+
+        stats = await custom_terminal_state_client.get("/sage_vaults/filing_vault/stats")
+        assert stats.json()["health"]["deferred_abstract_count"] == 2
+
+        listed = await _catalog_ids(
+            custom_terminal_state_client,
+            "filing_vault",
+            {"pipeline_status": "abstraction_skipped", "exclude_terminal_lifecycle": True},
+        )
+        assert listed == {ids["live-doc"], ids["held-doc"]}
+
+    async def test_exclusion_conjoins_with_an_explicit_lifecycle_filter(
+        self, multi_vault_app, multi_client
+    ):
+        """The two lifecycle constraints narrow together rather than replacing.
+
+        Naming a terminal state explicitly and excluding terminal states
+        is a contradiction, and the honest answer is an empty list.
+
+        Emptiness alone proves nothing -- a rejected request, a broken
+        filter dict, and the conjunction all produce it. The two arms
+        that follow are what separate them, each dropping one of the two
+        constraints and asserting the document the other one would have
+        kept. A service that discards `lifecycle_status` whenever the
+        flag is set returns the open document from the conjoined call;
+        one that discards the flag returns the retired one. Both arms
+        also confirm the request shape is accepted on its merits, so the
+        empty result above is a search that ran and matched nothing
+        rather than one that never ran.
+        """
+        services = multi_vault_app.state.vault_registry["example_vault"]
+        gs = services.graph_store
+
+        ids = {}
+        for short_name, lifecycle in [("both-live", "active"), ("both-gone", "archived")]:
+            doc = _make_document(
+                short_name,
+                pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+                lifecycle_status=lifecycle,
+                metadata_confirmed=True,
+            )
+            await gs.insert_document(doc)
+            ids[short_name] = doc.id
+
+        conjoined = await _catalog_ids(
+            multi_client,
+            "example_vault",
+            {
+                "pipeline_status": "abstraction_skipped",
+                "lifecycle_status": "archived",
+                "exclude_terminal_lifecycle": True,
+            },
+        )
+        assert conjoined == set()
+
+        without_state = await _catalog_ids(
+            multi_client,
+            "example_vault",
+            {"pipeline_status": "abstraction_skipped", "exclude_terminal_lifecycle": True},
+        )
+        assert without_state == {ids["both-live"]}
+
+        without_flag = await _catalog_ids(
+            multi_client,
+            "example_vault",
+            {"pipeline_status": "abstraction_skipped", "lifecycle_status": "archived"},
+        )
+        assert without_flag == {ids["both-gone"]}

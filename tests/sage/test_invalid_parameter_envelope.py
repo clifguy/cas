@@ -23,11 +23,13 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from sage.api.errors import (
+    _ENUM_TYPED_FILTER_FIELDS,
+    _FILTER_FIELD_TYPE_NAMES,
     InvalidParameterError,
     translate_validation_error,
     validation_error_envelope,
 )
-from sage.models.schemas import BulkLifecycleRequest, DiscoverRequest
+from sage.models.schemas import BulkLifecycleRequest, DiscoverRequest, RetrievalFilters
 
 
 def _discover_error(**kwargs) -> ValidationError:
@@ -243,3 +245,40 @@ def test_wrapper_defers_to_the_translator_when_a_rule_matches():
 
     assert err.code == "unknown_filter_key"
     assert err.detail["valid_keys"]
+
+
+def test_every_non_enum_filter_key_names_its_expected_type():
+    """No filter key reports its remedy as ``unknown``.
+
+    ``_FILTER_FIELD_TYPE_NAMES`` is hand-maintained rather than
+    introspected, for the reason stated where it is declared. The cost of
+    that is a table that goes stale silently: the lookup falls back to
+    ``"unknown"``, so a key added to ``RetrievalFilters`` without an entry
+    still produces a well-formed 400 -- one that tells the caller the value
+    was the wrong shape and then declines to say what the right shape is.
+    Nothing else in the suite reads the table's completeness, so the
+    omission survives a green run.
+
+    Enum-typed keys are excluded rather than allowlisted: a bad value on
+    those raises ``invalid_filter_value`` and never reaches this table, so
+    an entry for one would be dead weight that the next reader has to
+    re-derive as deliberate.
+
+    Membership only, and the limit is worth stating: an entry naming the
+    *wrong* type passes here. Deriving the right name from the annotation
+    is what the table declines to do, for the reason given where it is
+    declared, so a gate that checked the values would have to re-derive
+    exactly what was rejected. Individual entries are pinned by the
+    envelope tests above, which assert a remedy a caller can follow.
+    """
+    expected_keys = set(RetrievalFilters.model_fields) - set(_ENUM_TYPED_FILTER_FIELDS)
+    missing = sorted(expected_keys - set(_FILTER_FIELD_TYPE_NAMES))
+    assert not missing, (
+        f"filter keys with no expected_type entry, so an invalid-shape envelope "
+        f"reports their remedy as 'unknown': {missing}"
+    )
+    stale = sorted(set(_FILTER_FIELD_TYPE_NAMES) - expected_keys)
+    assert not stale, (
+        f"expected_type entries naming no non-enum filter field; the key was "
+        f"renamed, removed, or became enum-typed: {stale}"
+    )

@@ -237,7 +237,7 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # than a gap -- a permanent MCP-side divergence by design, not pending
     # remediation.
     ("sage_core", "restore_vault_source_file"): frozenset({"transfer_token"}),
-    # The eleven filter keys are tripwires, not functional arguments, on
+    # The twelve filter keys are tripwires, not functional arguments, on
     # the same mechanism as the ingest metadata keys above. Scope
     # constraints belong nested under ``filters``; these spellings are
     # published at the top level solely so a wrong-level call reaches the
@@ -254,6 +254,7 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
             "doc_type",
             "project",
             "lifecycle_status",
+            "exclude_terminal_lifecycle",
             "tags",
             "document_ids",
             "pipeline_status",

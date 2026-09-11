@@ -200,6 +200,10 @@ export interface DiscoverRequest {
   filters?: {
     doc_type?: string;
     lifecycle_status?: string;
+    // Narrows to the population the doc-scoped health indicators count:
+    // the server resolves which states are terminal from the vault's own
+    // lifecycle config, so nothing here enumerates them.
+    exclude_terminal_lifecycle?: boolean;
     pipeline_status?: string;
     tags?: string[];
     project?: string;

@@ -1958,6 +1958,13 @@ paths:
         document (even a single-field update). The default ingest path
         (`needs_review=false`) lands documents with
         `metadata_confirmed=true`; those never appear here.
+
+
+        This queue is deliberately not filtered by lifecycle state.
+        Reviewing a retired document's metadata is legitimate, and this
+        is the only surface that reaches it. `pending_metadata_count`
+        on `get_vault_stats` excludes documents in a terminal
+        lifecycle state, so this list can be longer than that count.
       tags: [Pending Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -4029,6 +4036,16 @@ components:
         lifecycle_status:
           type: string
           description: Filter by lifecycle state.
+        exclude_terminal_lifecycle:
+          type: boolean
+          description: >-
+            Exclude documents whose lifecycle state the vault declares
+            terminal. The excluded set is resolved from the vault's own
+            lifecycle configuration, so a caller narrows to the open
+            population without enumerating states the vault owns. Conjoins
+            with `lifecycle_status` rather than replacing it, and is a
+            no-op in a vault that declares no terminal state. Matches the
+            population the doc-scoped health indicators count.
         tags:
           type: array
           items:

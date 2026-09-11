@@ -2753,6 +2753,23 @@ class RetrievalFilters(BaseModel):
     )
     project: str | None = Field(default=None, description="Filter by project identifier.")
     lifecycle_status: str | None = Field(default=None, description="Filter by lifecycle state.")
+    # Nullable like every sibling, and for the same reason: the
+    # target-axis validator reads "did the caller supply this" off the
+    # field being None, so a boolean defaulting to False is supplied on
+    # every request and rejects the edges target outright. None and
+    # False both mean "do not narrow".
+    exclude_terminal_lifecycle: bool | None = Field(
+        default=None,
+        description=(
+            "Exclude documents whose lifecycle state the vault declares "
+            "terminal. The excluded set is resolved from the vault's own "
+            "lifecycle configuration, so a caller narrows to the open "
+            "population without enumerating states the vault owns. Conjoins "
+            "with `lifecycle_status` rather than replacing it, and is a "
+            "no-op in a vault that declares no terminal state. Matches the "
+            "population the doc-scoped health indicators count."
+        ),
+    )
     tags: list[str] | None = Field(
         default=None,
         description="Filter by tags (documents must have all specified tags).",
@@ -2842,6 +2859,7 @@ _DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "doc_type",
     "project",
     "lifecycle_status",
+    "exclude_terminal_lifecycle",
     "tags",
     "document_ids",
     "pipeline_status",
