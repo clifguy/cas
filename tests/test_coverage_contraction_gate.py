@@ -35,13 +35,14 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import pytest
 
 from scripts.check_test_surface import (
     KNOWN_TEST_REMOVALS,
     MIN_BASE_ACTIVE,
+    Surface,
     _run_compare,
     classify,
     is_declared,
@@ -174,6 +175,19 @@ _MOVE_AFTER_DESTINATION: Final[str] = textwrap.dedent(
     """
 )
 
+# A second module carrying the same class and method name as the first. Method
+# names repeat across parallel modules in any suite of size -- 77 leaf keys are
+# shared across modules in this one -- so this is the ordinary case, not a
+# contrived one, and it is what makes the relocation escape a population
+# comparison rather than a presence check.
+_NAMESAKE_TWIN: Final[str] = textwrap.dedent(
+    """
+    class TestThing:
+        def test_travels(self):
+            assert True
+    """
+)
+
 # The same two tests, one of them renamed in place. Indistinguishable from a
 # deletion plus an addition, and reported as a loss -- the control on the
 # relocation escape.
@@ -216,7 +230,7 @@ def _tree(root: Path, name: str, modules: dict[str, str]) -> Path:
     return path
 
 
-def _measure(tree: Path, env_extra: dict[str, str] | None = None) -> dict[str, Any]:
+def _measure(tree: Path, env_extra: dict[str, str] | None = None) -> Surface:
     """Run the check's emit mode over ``tree`` and return the measurement.
 
     Invoked by absolute path from inside the tree rather than as
@@ -248,9 +262,7 @@ def _filler(count: int) -> list[str]:
     return [f"tests/pad/test_pad.py::test_pad_{index:05d}" for index in range(count)]
 
 
-def _pad(
-    surface: dict[str, Any], count: int = MIN_BASE_ACTIVE + 100, *, active: bool = True
-) -> dict[str, Any]:
+def _pad(surface: Surface, count: int = MIN_BASE_ACTIVE + 100, *, active: bool = True) -> Surface:
     """Add ``count`` filler ids to a measurement's collected set, and its active
     set unless ``active`` is false.
 
@@ -271,7 +283,7 @@ def _pad(
     }
 
 
-def _compare_via_cli(tmp_path: Path, base: dict[str, Any], head: dict[str, Any]) -> int:
+def _compare_via_cli(tmp_path: Path, base: Surface, head: Surface) -> int:
     """Run the comparison entry point over two measurements, padded to clear the floor."""
     base_path = tmp_path / "base.json"
     head_path = tmp_path / "head.json"
@@ -400,6 +412,37 @@ def test_a_moved_test_is_not_reported_as_lost(tmp_path: Path) -> None:
     assert exit_code == 0
 
 
+def test_a_deletion_beside_a_namesake_is_reported_as_lost(tmp_path: Path) -> None:
+    """A module can not hide its deletion behind a namesake in another module.
+
+    Two modules carry the same ``Class::method``; one is deleted. The leaf key
+    still exists in the head active set, so an escape asking only whether the
+    name survives reports a move and exits clean -- which, measured against the
+    live tree, would let a whole module's worth of tests disappear unseen. The
+    population comparison sees the count drop from two to one.
+    """
+    before = _measure(
+        _tree(
+            tmp_path,
+            "before",
+            {"test_home.py": _MOVE_AFTER_DESTINATION, "test_twin.py": _NAMESAKE_TWIN},
+        )
+    )
+    after = _measure(_tree(tmp_path, "after", {"test_twin.py": _NAMESAKE_TWIN}))
+
+    assert leaf_key("test_home.py::TestThing::test_travels") in {
+        leaf_key(node_id) for node_id in after["active"]
+    }, "the surviving namesake must keep the leaf key present, or this control proves nothing"
+
+    verdict = classify(before, after, removals={})
+
+    assert verdict["lost"] == ["test_home.py::TestThing::test_travels"]
+    assert verdict["moved"] == []
+
+    exit_code = _compare_via_cli(tmp_path, before, after)
+    assert exit_code == 1
+
+
 def test_a_renamed_test_is_reported_as_lost(tmp_path: Path) -> None:
     """Renaming in place is a loss, not a move.
 
@@ -447,8 +490,20 @@ def test_a_declared_removal_clears_and_a_near_miss_does_not(tmp_path: Path) -> N
         assert verdict["declared"] == []
 
 
-def test_a_prefix_entry_covers_a_deleted_module(tmp_path: Path) -> None:
-    """One module-prefix entry declares every test in a file that went away."""
+def test_a_prefix_entry_covers_a_deleted_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One module-prefix entry declares every test in a file that went away.
+
+    The deleted module's method name also survives in ``test_home.py``, so the
+    relocation escape does not clear this id and the declaration has to. The
+    entry is installed in the real allowlist for the exit-code arm, because
+    that path reads the module-level table rather than a passed-in one -- and
+    with a passed-in one it would report exit 0 whether the declaration worked
+    or not.
+    """
+    entry = "test_gone.py"
+    reason = "the behaviour it covered was removed"
     before = _measure(
         _tree(
             tmp_path,
@@ -458,15 +513,16 @@ def test_a_prefix_entry_covers_a_deleted_module(tmp_path: Path) -> None:
     )
     after = _measure(_tree(tmp_path, "after", {"test_home.py": _MOVE_BEFORE_HOME}))
 
-    verdict = classify(
-        before, after, removals={"test_gone.py": "the behaviour it covered was removed"}
-    )
+    assert classify(before, after, removals={})["lost"] == [
+        "test_gone.py::TestThing::test_travels"
+    ], "without the declaration this must be a loss, or the arm below proves nothing"
 
+    verdict = classify(before, after, removals={entry: reason})
     assert verdict["lost"] == []
     assert verdict["declared"] == ["test_gone.py::TestThing::test_travels"]
 
-    exit_code = _compare_via_cli(tmp_path, before, after)
-    assert exit_code == 0
+    monkeypatch.setitem(KNOWN_TEST_REMOVALS, entry, reason)
+    assert _compare_via_cli(tmp_path, before, after) == 0
 
 
 def test_prefix_matching_requires_a_boundary() -> None:

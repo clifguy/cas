@@ -34,9 +34,12 @@ Three properties keep it usable rather than merely correct:
   exactly that -- it added two stub functions in the same edit that disabled
   fourteen methods.
 * **A relocated test is not a lost test.** Before reporting a loss, the leaf
-  key (everything after the last ``.py::``) is looked for elsewhere in the new
-  active set. Without this escape, every file rename reads as a mass
-  contraction, which is how a gate like this gets switched off in a week.
+  key (everything after the last ``.py::``) is counted across the new active
+  set. Without this escape, every file rename reads as a mass contraction,
+  which is how a gate like this gets switched off in a week. It has to be a
+  count rather than a presence check: method names repeat across parallel
+  modules, so a rule asking only whether the name survives somewhere lets a
+  deleted module hide behind its namesakes.
 * **An empty measurement fails.** A base side that collected nothing is a
   broken comparison, not a clean one, and is reported as such rather than
   passing.
@@ -61,8 +64,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 # Evaluating a ``skipif`` mark without running the test is what separates this
 # check from a collected-count comparison, and pytest exposes it only on a
@@ -89,6 +93,22 @@ MIN_BASE_ACTIVE: Final[int] = 500
 
 # Maximum number of entries to enumerate in a single report section.
 _MAX_REPORTED: Final[int] = 30
+
+
+class Surface(TypedDict):
+    """One revision's measurement, as it crosses the boundary between the two
+    steps that produce and consume it.
+
+    Written as JSON by ``--emit`` and read back by ``--compare``, in the
+    general case from a different checkout, so this is a file format rather
+    than an in-process structure and is named accordingly.
+    """
+
+    target: str
+    exit_code: int
+    collected: list[str]
+    active: list[str]
+
 
 # ---------------------------------------------------------------------------
 # Declared removals
@@ -141,7 +161,7 @@ class _SurfacePlugin:
                 self.active.append(item.nodeid)
 
 
-def measure(target: str) -> dict[str, list[str]]:
+def measure(target: str) -> Surface:
     """Collect ``target`` and return its collected and active node id sets.
 
     ``-n 0`` keeps collection on one process: the parallel default would both
@@ -200,8 +220,8 @@ def is_declared(node_id: str, removals: dict[str, str]) -> bool:
 
 
 def classify(
-    base: dict[str, list[str]],
-    head: dict[str, list[str]],
+    base: Surface,
+    head: Surface,
     removals: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Partition the base-to-head change in the active set.
@@ -210,20 +230,32 @@ def classify(
     that head still collects -- the test is still there and still parses, it
     just no longer runs -- because that distinction points at a different fix
     from a deletion.
+
+    The relocation escape compares leaf-key *populations*, not membership.
+    Method names repeat heavily across parallel modules in a suite of any size,
+    so asking only whether the leaf key still exists somewhere cannot separate
+    "this test moved" from "a namesake in another module survived and this one
+    is gone" -- and under that weaker rule, deleting a whole module whose names
+    recur elsewhere reports every one of its tests as relocated and exits
+    clean. Requiring the head's count for a leaf key to hold at the base's
+    keeps a true move (the count is unchanged) and reports a deletion beside a
+    namesake (the count drops).
     """
     entries = KNOWN_TEST_REMOVALS if removals is None else removals
     base_active = set(base["active"])
     head_active = set(head["active"])
     head_collected = set(head["collected"])
-    head_leaves = {leaf_key(node_id) for node_id in head_active}
+    base_leaves = Counter(leaf_key(node_id) for node_id in base_active)
+    head_leaves = Counter(leaf_key(node_id) for node_id in head_active)
 
     lost: list[str] = []
     moved: list[str] = []
     declared: list[str] = []
     for node_id in sorted(base_active - head_active):
+        leaf = leaf_key(node_id)
         if is_declared(node_id, entries):
             declared.append(node_id)
-        elif leaf_key(node_id) in head_leaves:
+        elif head_leaves[leaf] >= base_leaves[leaf]:
             moved.append(node_id)
         else:
             lost.append(node_id)
@@ -246,8 +278,8 @@ def _section(title: str, entries: list[str]) -> str:
 
 
 def format_report(
-    base: dict[str, list[str]],
-    head: dict[str, list[str]],
+    base: Surface,
+    head: Surface,
     verdict: dict[str, list[str]],
 ) -> str:
     """Render the comparison, failing sections first."""
@@ -291,7 +323,7 @@ def format_report(
 # ---------------------------------------------------------------------------
 
 
-def _load(path: str) -> dict[str, list[str]]:
+def _load(path: str) -> Surface:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
