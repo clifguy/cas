@@ -758,9 +758,33 @@ _FACETS = RetrievalTarget.FACETS.value
 _CATALOG = RetrievalMode.CATALOG.value
 
 _MISMATCH_CASES: list[_MismatchCase] = [
-    # 1. A parameter that only deterministic mode gives meaning to.
+    # 1. A parameter a catalog-only target serves no use for: reported on
+    # the target axis, because the modes the mode axis would name are all
+    # refused by that same target. Both parameters that would otherwise
+    # reach a mode-axis branch are covered.
     _case(
         1,
+        "query with a catalog-only target",
+        _TARGET,
+        [_DOCS],
+        "query",
+        expected_target=_FACETS,
+        target=RetrievalTarget.FACETS,
+        query="anything",
+    ),
+    _case(
+        1,
+        "heading_path with a catalog-only target",
+        _TARGET,
+        [_DOCS],
+        "heading_path",
+        expected_target=_EDGES,
+        target=RetrievalTarget.EDGES,
+        heading_path="Section 1",
+    ),
+    # 2. A parameter that only deterministic mode gives meaning to.
+    _case(
+        2,
         "heading_path outside deterministic",
         _MODE,
         [RetrievalMode.DETERMINISTIC.value],
@@ -768,9 +792,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         mode=RetrievalMode.CATALOG,
         heading_path="Section 1",
     ),
-    # 2. A parameter deterministic mode has no use for.
+    # 3. A parameter deterministic mode has no use for.
     _case(
-        2,
+        3,
         "query in deterministic",
         _MODE,
         [RetrievalMode.SEMANTIC.value, RetrievalMode.KEYWORD.value],
@@ -782,7 +806,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         query="anything",
     ),
     _case(
-        2,
+        3,
         "query in catalog",
         _MODE,
         [RetrievalMode.SEMANTIC.value, RetrievalMode.KEYWORD.value],
@@ -790,9 +814,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         mode=RetrievalMode.CATALOG,
         query="anything",
     ),
-    # 3. The edges target needs catalog mode.
+    # 4. The edges target needs catalog mode.
     _case(
-        3,
+        4,
         "target=edges outside catalog",
         _MODE,
         [_CATALOG],
@@ -803,10 +827,10 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         target=RetrievalTarget.EDGES,
         query="q",
     ),
-    # 4. Document-only filter keys against the edges target. Allowed on
+    # 5. Document-only filter keys against the edges target. Allowed on
     # documents and on facets, which aggregates document metadata.
     _case(
-        4,
+        5,
         "doc-only filter key on edges",
         _TARGET,
         [_DOCS, _FACETS],
@@ -817,7 +841,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         filters=RetrievalFilters(doc_type="ticket"),
     ),
     _case(
-        4,
+        5,
         "doc-only filter key on edges (tier3_metadata)",
         _TARGET,
         [_DOCS, _FACETS],
@@ -827,9 +851,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         target=RetrievalTarget.EDGES,
         filters=RetrievalFilters(tier3_metadata={"k": "v"}),
     ),
-    # 5. Edge-only filter keys against the default documents target.
+    # 6. Edge-only filter keys against the default documents target.
     _case(
-        5,
+        6,
         "edge-only filter key on documents",
         _TARGET,
         [_EDGES],
@@ -837,9 +861,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         mode=RetrievalMode.CATALOG,
         filters=RetrievalFilters(source_id=_id("d1")),
     ),
-    # 6. Facet-only parameters against a non-facets target.
+    # 7. Facet-only parameters against a non-facets target.
     _case(
-        6,
+        7,
         "facet_fields off the facets target",
         _TARGET,
         [_FACETS],
@@ -848,7 +872,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         facet_fields=[FacetField.TAGS],
     ),
     _case(
-        6,
+        7,
         "facet_value_limit off the facets target",
         _TARGET,
         [_FACETS],
@@ -856,9 +880,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         mode=RetrievalMode.CATALOG,
         facet_value_limit=5,
     ),
-    # 7. Document-only request parameters against the edges target.
+    # 8. Document-only request parameters against the edges target.
     _case(
-        7,
+        8,
         "min_relevance on edges",
         _TARGET,
         [_DOCS],
@@ -869,7 +893,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         min_relevance=0.5,
     ),
     _case(
-        7,
+        8,
         "include_abstracts on edges",
         _TARGET,
         [_DOCS],
@@ -879,9 +903,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         target=RetrievalTarget.EDGES,
         include_abstracts=True,
     ),
-    # 8. The facets target needs catalog mode.
+    # 9. The facets target needs catalog mode.
     _case(
-        8,
+        9,
         "target=facets outside catalog",
         _MODE,
         [_CATALOG],
@@ -892,9 +916,9 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         target=RetrievalTarget.FACETS,
         query="q",
     ),
-    # 9. Edge-only filter keys against the facets target.
+    # 10. Edge-only filter keys against the facets target.
     _case(
-        9,
+        10,
         "edge-only filter key on facets",
         _TARGET,
         [_EDGES],
@@ -904,12 +928,12 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         target=RetrievalTarget.FACETS,
         filters=RetrievalFilters(edge_type=EdgeType.REFERENCES),
     ),
-    # 10. Parameters the facets target has nothing to apply them to. The
+    # 11. Parameters the facets target has nothing to apply them to. The
     # seven document-only ones are rejected on edges as well, so only
     # documents remains; the three pagination and payload-shape knobs are
     # not, so edges remains open to them.
     _case(
-        10,
+        11,
         "sort_by on facets",
         _TARGET,
         [_DOCS],
@@ -920,7 +944,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         sort_by="title",
     ),
     _case(
-        10,
+        11,
         "document_id on facets",
         _TARGET,
         [_DOCS],
@@ -931,7 +955,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         document_id=_id("d1"),
     ),
     _case(
-        10,
+        11,
         "limit on facets",
         _TARGET,
         [_DOCS, _EDGES],
@@ -942,7 +966,7 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         limit=5,
     ),
     _case(
-        10,
+        11,
         "response_mode on facets",
         _TARGET,
         [_DOCS, _EDGES],
@@ -6657,6 +6681,156 @@ async def test_facets_budget_hint_absent_under_budget_at_default(graph_store, re
 # ---------------------------------------------------------------------------
 # DiscoverRequest validator: target="facets" combinations
 # ---------------------------------------------------------------------------
+
+
+def test_target_facets_without_mode_resolves_to_catalog():
+    """target=facets and no mode constructs, resolving mode to catalog.
+
+    Facets is defined under catalog and no other mode, so the mode
+    argument selects nothing on this path and the request carries enough
+    to determine it.
+    """
+    req = DiscoverRequest(target="facets")
+    assert req.mode is RetrievalMode.CATALOG
+
+
+def test_target_edges_without_mode_resolves_to_catalog():
+    """target=edges and no mode resolves the same way facets does.
+
+    Both targets are catalog-only under the same constraint; resolving
+    one and not the other would leave the surface inconsistent.
+    """
+    req = DiscoverRequest(target=RetrievalTarget.EDGES)
+    assert req.mode is RetrievalMode.CATALOG
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"query": "x"}, id="query-no-target"),
+        pytest.param({}, id="neither-query-nor-target"),
+        pytest.param({"target": "documents", "query": "x"}, id="documents-target-named"),
+        pytest.param({"filters": RetrievalFilters(doc_type="adr")}, id="filters-no-query"),
+    ],
+)
+def test_document_requests_without_mode_stay_semantic(kwargs):
+    """The document target keeps the semantic default, however it is reached.
+
+    Anti-coincidental guard, and the three shapes are each load-bearing
+    against a different wrong resolver:
+
+    - ``query-no-target`` reds a resolver that fires for every request.
+    - ``neither-query-nor-target`` reds one keyed on the absence of a
+      query rather than on the target. That rival satisfies every other
+      test in this change, because a catalog-only target never carries a
+      query and an ordinary search always does, so this is the only
+      input that separates them.
+    - ``documents-target-named`` reds one keyed on the target key being
+      present rather than on its value.
+    - ``filters-no-query`` reds one that also fires when filters arrive
+      without a query. That rival resolves every other input in this
+      change identically, because a catalog-only target never carries a
+      query and an ordinary search always does; a filtered request with
+      neither is the only shape that separates them.
+    """
+    assert DiscoverRequest(**kwargs).mode is RetrievalMode.SEMANTIC
+
+
+def test_explicit_none_mode_resolves_like_an_omitted_one():
+    """An explicit None resolves exactly as an absent mode does.
+
+    The MCP tool forwards every parameter it declares, so an unsupplied
+    mode reaches the model as None rather than as a missing key. Keying
+    resolution on key presence alone would leave that surface refusing
+    what HTTP accepts.
+    """
+    req = DiscoverRequest(mode=None, target="facets")
+    assert req.mode is RetrievalMode.CATALOG
+
+
+@pytest.mark.parametrize("target", [["facets"], {"facets": True}, 7])
+def test_non_string_target_is_rejected_by_enum_validation(target):
+    """A malformed target reaches the field's own validation intact.
+
+    The resolver runs before the target has been validated, so it sees
+    whatever the caller sent. Testing the membership without a type
+    guard raises TypeError on an unhashable value, and a TypeError is
+    not converted into a ValidationError -- it leaves model validation
+    entirely and reports as a server error for a malformed request. The
+    assertion is on the error type rather than merely on failure,
+    because the unguarded code fails too, just as the wrong kind.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(target=target)
+    assert info.value.errors()[0]["type"] == "enum"
+
+
+@pytest.mark.parametrize("target", ["facets", RetrievalTarget.FACETS])
+def test_mode_resolution_accepts_both_target_input_forms(target):
+    """Resolution runs before field validation, so it sees the raw target.
+
+    A JSON caller sends the bare string and a Python caller passes the
+    enum member; both must resolve.
+    """
+    assert DiscoverRequest(target=target).mode is RetrievalMode.CATALOG
+
+
+@pytest.mark.parametrize("target", ["facets", "edges"])
+@pytest.mark.parametrize("param", ["query", "heading_path"])
+def test_mode_axis_parameters_on_a_catalog_only_target_name_the_exit(param, target):
+    """These rejections name the exit that exists, on both parameters.
+
+    Reported on the mode axis, each sends the caller to modes the target
+    refuses -- so following the advice buys the target's own rejection,
+    whose advice is catalog, which is where they started. The assertions
+    pin the axis rather than the prose: allowed_targets rather than
+    allowed_modes is what makes the message an exit instead of the other
+    half of a loop.
+
+    Both parameters are covered because they are the whole set: every
+    other parameter these targets refuse already reports on the target
+    axis, so a fix that reached one of these two and not the other would
+    leave exactly one loop standing.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(target=target, **{param: "x"})
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == param
+    assert err["ctx"]["allowed_targets"] == [RetrievalTarget.DOCUMENTS.value]
+    assert "allowed_modes" not in err["ctx"]
+
+
+def test_heading_path_outside_deterministic_still_reports_the_mode_axis():
+    """The documents target keeps the mode-axis heading_path rejection.
+
+    The new branch is scoped to catalog-only targets; reporting an
+    ordinary heading_path rejection on the target axis would be wrong,
+    since documents is already the target the caller would be sent to.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, heading_path="H")
+    err = info.value.errors()[0]
+    assert err["ctx"]["forbidden_param"] == "heading_path"
+    assert err["ctx"]["allowed_modes"] == [RetrievalMode.DETERMINISTIC.value]
+
+
+def test_query_with_documents_target_still_reports_the_mode_axis():
+    """Catalog plus a query, on the default target, is unchanged.
+
+    The new branch is scoped to catalog-only targets; an ordinary
+    catalog request with a stray query is still a mode-axis rejection,
+    and reporting it on the target axis would be wrong -- documents is
+    already the target.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, query="x")
+    err = info.value.errors()[0]
+    assert err["ctx"]["forbidden_param"] == "query"
+    assert err["ctx"]["allowed_modes"] == [
+        RetrievalMode.SEMANTIC.value,
+        RetrievalMode.KEYWORD.value,
+    ]
 
 
 def test_target_facets_with_semantic_mode_is_mode_parameter_mismatch():

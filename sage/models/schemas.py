@@ -2898,6 +2898,13 @@ _FACET_FORBIDDEN_PARAMS: tuple[tuple[str, object, list[str]], ...] = (
     ("offset", 0, _DOCUMENTS_AND_EDGES),
 )
 
+# Targets defined under exactly one mode. Catalog is the only mode either of
+# them accepts, so on these paths the mode argument selects nothing and a
+# caller who named the target has already determined it.
+_CATALOG_ONLY_TARGETS: frozenset[str] = frozenset(
+    {RetrievalTarget.EDGES.value, RetrievalTarget.FACETS.value}
+)
+
 
 class DiscoverRequest(BaseModel):
     """Retrieval request. Required fields vary by mode.
@@ -2913,7 +2920,14 @@ class DiscoverRequest(BaseModel):
 
     mode: RetrievalMode = Field(
         default=RetrievalMode.SEMANTIC,
-        description="Retrieval mode selecting the underlying query strategy.",
+        description=(
+            "Retrieval mode selecting the underlying query strategy. "
+            "Defaults to semantic, except that a request naming a "
+            "catalog-only target (edges, facets) and no mode resolves to "
+            "catalog, the one mode those targets accept. A mode supplied "
+            "explicitly is never changed: a non-catalog one is still "
+            "rejected via mode_parameter_mismatch rather than corrected."
+        ),
     )
     query: str | None = Field(
         default=None,
@@ -2921,7 +2935,8 @@ class DiscoverRequest(BaseModel):
             "Search query text. Required for semantic and keyword modes, "
             "and refused by the other two: catalog enumerates by filter "
             "and deterministic extracts by heading path, so neither "
-            "consumes it."
+            "consumes it. A catalog-only target refuses it too, on the "
+            "target axis, naming documents as the target that takes one."
         ),
     )
     scope: RetrievalScope = Field(
@@ -2946,7 +2961,9 @@ class DiscoverRequest(BaseModel):
         description=(
             "Heading hierarchy path for deterministic extraction (e.g., "
             '"Section 3 > Definitions > Normalization"). Required for '
-            "deterministic mode."
+            "deterministic mode, and refused outside it. A catalog-only "
+            "target refuses it on the target axis, naming documents as "
+            "the target that takes one."
         ),
     )
     limit: int = Field(
@@ -3030,7 +3047,8 @@ class DiscoverRequest(BaseModel):
             'edge_type). "facets" is valid only with mode=catalog and '
             "document-only filter keys, and rejects non-default "
             "pagination and payload-shape parameters (limit, offset, "
-            "sort_by, sort_order, response_mode). Other mode/parameter "
+            "sort_by, sort_order, response_mode). Both supply that mode "
+            "themselves when no mode is given. Other mode/parameter "
             "combinations are rejected via mode_parameter_mismatch."
         ),
     )
@@ -3080,6 +3098,57 @@ class DiscoverRequest(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_mode_from_target(cls, data: object) -> object:
+        """Fill in the mode a catalog-only target already determined.
+
+        ``edges`` and ``facets`` are defined under catalog mode and no
+        other, so a request naming one of them has nothing left to choose
+        on the mode axis. Requiring the caller to restate a value the
+        target has already fixed makes the natural first call fail on a
+        redundancy, so the value is resolved here instead. Only the
+        redundancy is removed; no judgment is exercised, because the
+        accepted set on that axis has one member.
+
+        A mode the caller supplied is never touched, whatever it says. A
+        non-catalog one falls through to
+        ``_reject_mode_parameter_mismatch`` and is refused there, so a
+        wrong call is still reported rather than quietly repaired.
+
+        Absent and ``None`` are treated alike. The two request surfaces
+        express "not supplied" differently -- HTTP omits the key from the
+        body, while the MCP tool forwards every parameter it declares and
+        so passes an explicit ``None`` -- and keying on key presence alone
+        would resolve on one surface and refuse on the other. Where no
+        resolution applies, a ``None`` is therefore dropped rather than
+        passed along: the field default answers an absent key, and a
+        ``None`` left in place would instead fail enum validation and
+        report a malformed mode the caller never wrote.
+
+        Runs before field validation, which is what makes the distinction
+        available at all: the semantic default has not yet been applied,
+        so an unsupplied mode is still distinguishable from a supplied
+        one. The cost of running that early is that the target has not
+        been validated either and may be any JSON value, so the lookup is
+        guarded on the one type it can answer for. An unhashable target
+        would otherwise raise out of model validation as a TypeError
+        rather than a ValidationError, which the HTTP surface reports as
+        a server error for what is a malformed request. Anything not a
+        string falls through to the field's own enum validation, which
+        rejects it in the ordinary way. A bare string over JSON and an
+        enum member from Python both pass the guard and compare equal,
+        because the target enum subclasses str.
+        """
+        if not isinstance(data, dict) or data.get("mode") is not None:
+            return data
+        target = data.get("target")
+        if isinstance(target, str) and target in _CATALOG_ONLY_TARGETS:
+            return {**data, "mode": RetrievalMode.CATALOG}
+        if "mode" in data:
+            return {k: v for k, v in data.items() if k != "mode"}
+        return data
+
     @model_validator(mode="after")
     def _reject_mode_parameter_mismatch(self) -> "DiscoverRequest":
         """Reject parameter/mode combinations that have no defined semantics.
@@ -3114,6 +3183,33 @@ class DiscoverRequest(BaseModel):
         message template; the translator keeps it out of the published
         envelope.
         """
+        # Runs ahead of the mode-axis branches because on a catalog-only
+        # target they answer the wrong question. Each names the modes that
+        # would accept the parameter, and the target refuses every one of
+        # them, so following the advice trades this rejection for the
+        # target's own -- whose advice is catalog, where the caller
+        # started. The pair is a loop that never names the exit. Reported
+        # on the target axis it does: drop the parameter, or enumerate
+        # documents. Both parameters that reach a mode-axis branch are
+        # covered; every other one the catalog-only targets refuse is
+        # already reported on the target axis further down.
+        if self.mode == RetrievalMode.CATALOG and self.target in _CATALOG_ONLY_TARGETS:
+            for name in ("query", "heading_path"):
+                if getattr(self, name) is not None:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        (
+                            "Parameter '{forbidden_param}' is not valid for "
+                            "target '{target}'. Allowed: documents only."
+                        ),
+                        {
+                            "mode": self.mode.value,
+                            "target": self.target.value,
+                            "forbidden_param": name,
+                            "allowed_targets": [RetrievalTarget.DOCUMENTS.value],
+                        },
+                    )
+
         if self.mode != RetrievalMode.DETERMINISTIC and self.heading_path is not None:
             raise PydanticCustomError(
                 "mode_parameter_mismatch",

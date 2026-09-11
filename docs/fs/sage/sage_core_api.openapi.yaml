@@ -206,7 +206,9 @@ paths:
         - **catalog**: Filter-only document enumeration via SQL. No vector
           search, no chunk content. A query is refused rather than ignored,
           since nothing would consume it. Supports pagination via limit +
-          offset.
+          offset. It is also the only mode the `edges` and `facets` targets
+          accept, so a request naming one of those and no mode resolves to
+          catalog; naming another mode explicitly is still refused.
 
         - **deterministic**: Exact content extraction by document ID and heading
           path. Bypasses vector search entirely. Used for governed content
@@ -3296,8 +3298,10 @@ components:
         density; a response whose serialized bytes nonetheless exceed
         the MCP inline ceiling carries a facets budget hint naming a
         smaller facet_value_limit. "edges" and "facets" are valid
-        only with mode="catalog"; other modes are rejected at request
-        validation.
+        only with mode="catalog", and a request naming one of them
+        without a mode resolves to catalog rather than failing on a
+        value the target had already fixed; naming another mode
+        explicitly is still rejected at request validation.
 
     FacetField:
       type: string
@@ -3850,7 +3854,6 @@ components:
           store directly with filter predicates. Supports pagination via limit + offset.
 
         - deterministic: document_id and heading_path are required.
-      required: [mode]
       properties:
         query:
           type: string
@@ -3858,8 +3861,17 @@ components:
             Search query text. Required for semantic and keyword modes, and
             refused by the other two: catalog enumerates by filter and
             deterministic extracts by heading path, so neither consumes it.
+            A catalog-only target refuses it too, on the target axis, naming
+            documents as the target that takes one.
         mode:
           $ref: "#/components/schemas/RetrievalMode"
+          description: >-
+            Retrieval mode selecting the underlying query strategy.
+            Defaults to semantic, except that a request naming a
+            catalog-only target (edges, facets) and no mode resolves to
+            catalog, the one mode those targets accept. A mode supplied
+            explicitly is never changed: a non-catalog one is still
+            rejected via mode_parameter_mismatch rather than corrected.
         scope:
           $ref: "#/components/schemas/RetrievalScope"
           default: all
@@ -3878,7 +3890,9 @@ components:
           description: >-
             Heading hierarchy path for deterministic extraction
             (e.g., "Section 3 > Definitions > Normalization").
-            Required for deterministic mode.
+            Required for deterministic mode, and refused outside it. A
+            catalog-only target refuses it on the target axis, naming
+            documents as the target that takes one.
         limit:
           type: integer
           minimum: 1
@@ -3952,7 +3966,8 @@ components:
             edge_type). "facets" is valid only with mode=catalog and
             document-only filter keys, and rejects non-default
             pagination and payload-shape parameters (limit, offset,
-            sort_by, sort_order, response_mode). Other mode/parameter
+            sort_by, sort_order, response_mode). Both supply that mode
+            themselves when no mode is given. Other mode/parameter
             combinations are rejected via mode_parameter_mismatch.
         response_mode:
           $ref: "#/components/schemas/ResponseMode"

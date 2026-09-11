@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from typing import Any, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 import pytest
 
@@ -28,6 +28,7 @@ from sage.mcp_server import (
     get_vault_config,
     ingest_document,
     list_directory,
+    mcp,
     recompute_abstract,
     recompute_pipeline,
     search,
@@ -139,18 +140,87 @@ def test_link_rationale_kind_per_item_field_is_enum():
 
 
 def test_discover_mode_signature_is_enum():
-    """T1.4 — search.mode must be typed as the RetrievalMode StrEnum.
+    """T1.4 — search.mode must be typed against the RetrievalMode StrEnum.
 
-    DiscoverRequest.mode uses RetrievalMode but the tool function signature
-    declares ``mode: str = "semantic"``. The default must remain a valid
-    enum value (RetrievalMode.SEMANTIC) so existing callers keep working.
+    The concern is that a caller picking the mode value out of the tool
+    schema sees the closed vocabulary rather than a free-form string, so
+    a plain ``str`` annotation fails here.
+
+    The optional form carries the same vocabulary and is the accepted
+    shape: mode is resolvable from a catalog-only target, which means the
+    tool has to be able to tell an unsupplied mode from a supplied one,
+    and a Python default cannot express that. An ``Annotated`` wrapper is
+    unwrapped first rather than rejected, since it carries the published
+    parameter description and leaves the vocabulary underneath intact.
     """
     ann = _annotation_of(search, "mode")
-    assert ann is RetrievalMode, (
-        f"search.mode annotation is {ann!r}; expected RetrievalMode. "
-        "Callers picking the mode value from the tool schema currently "
-        "see a free-form string."
+    if get_origin(ann) is Annotated:
+        ann = get_args(ann)[0]
+    assert ann in (RetrievalMode, RetrievalMode | None), (
+        f"search.mode annotation is {ann!r}; expected RetrievalMode or "
+        "RetrievalMode | None. Callers picking the mode value from the "
+        "tool schema would otherwise see a free-form string."
     )
+
+
+def test_discover_mode_parameter_description_states_the_resolution():
+    """The published schema carries the resolution rule on the parameter.
+
+    The docstring prose already states it, but a caller reading the tool
+    schema alone sees a nullable enum defaulting to null with nothing
+    saying what null resolves to.
+
+    Asserted against the rendered property rather than the annotation
+    that feeds it, which is the same subject the tripwire test reads.
+    The annotation is an input to publication, not evidence of it: a
+    schema builder that ignored ``Annotated`` metadata would leave the
+    property bare while every assertion over the signature still passed,
+    and that builder lives in the MCP dependency rather than in this
+    repo, so it can change under a version move without a line of this
+    codebase changing.
+
+    Both halves of the rule are asserted, for the same reason the
+    docstring gate asserts both: publishing the convenience without the
+    refusal documents a surface that does not exist.
+    """
+    tool = mcp._tool_manager.get_tool("search")  # noqa: SLF001
+    description = tool.parameters.get("properties", {}).get("mode", {}).get("description", "")
+    assert description, (
+        "the published search.mode property carries no description; a "
+        "caller reading the schema cannot tell what an omitted mode does."
+    )
+    assert "resolves to" in description, (
+        "the published mode description must say that a catalog-only "
+        f"target resolves the mode; got {description!r}"
+    )
+    assert "mode_parameter_mismatch" in description, (
+        "the published mode description must say that an explicitly "
+        f"supplied non-catalog mode is still refused; got {description!r}"
+    )
+
+
+def test_discover_docstring_states_mode_resolution_for_catalog_only_targets():
+    """Both halves of the mode-resolution rule must be documented.
+
+    The convenience half alone would leave a caller who names a mode
+    explicitly surprised by a refusal the docstring never mentioned, and
+    the refusal half alone would leave the working short call
+    undiscoverable. Each catalog-only target block is checked
+    separately, since documenting one and not the other is the drift
+    this guards.
+    """
+    doc = _docstring(search)
+    for section in ("Edge enumeration:", "Facet enumeration:"):
+        start = doc.index(section)
+        block = doc[start : start + 400]
+        assert "omitting ``mode``" in block, (
+            f"the {section!r} block must say that a call omitting mode "
+            "resolves to catalog on its own."
+        )
+        assert "still refused" in block, (
+            f"the {section!r} block must say that naming a non-catalog "
+            "mode explicitly is still refused."
+        )
 
 
 def test_set_lifecycle_action_docstring_points_at_vault_config():
