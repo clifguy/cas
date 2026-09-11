@@ -2544,3 +2544,61 @@ rename decks whose opening slide leads with a fragment.
 
 **Expected:** Slide 1's heading infers, while `result.title` is the filename
 stem.
+
+### TEST-SAGE-AD-129: A post-OCR extraction failure names the source PDF
+
+**Artifact:** `_ocr_and_extract`
+**Category:** failure spelling, disclosure
+**Decision:** The scanned branch OCRs to a tempfile and re-extracts from it
+through the helper the native-text path also uses, so that helper names the
+tempfile in the message prefix. The projection seam cannot repair it: the seam
+substitutes the path it handed the adapter, and this one was created afterwards.
+
+**Expected:** The `ValueError` names the caller's PDF, carries pypdf's own
+diagnosis, and contains no path the adapter allocated.
+
+### TEST-SAGE-AD-130: An OCR tool failure names the source, not its output
+
+**Artifact:** `_ocr_to_tempfile`
+**Category:** failure spelling, disclosure
+**Decision:** The prefix names the caller's file by construction, so the
+disclosure rides in the tool's interpolated text, which routinely names the
+output file it was handed. AD-096 pins the same branch for tempfile cleanup
+against a message that names nothing.
+
+**Expected:** The `ValueError` names the caller's PDF, the tool's reason
+survives, and the OCR tempfile is absent.
+
+### TEST-SAGE-AD-131: An unopenable .pptx template names the source, not the shadow
+
+**Artifact:** `_open_presentation`
+**Category:** failure spelling, disclosure
+**Decision:** The template branch hands python-pptx a content-type-rewritten
+copy, and the library names whichever file it was given. Gating the branch on
+the package's real content type rather than the filename suffix narrows what
+can reach the library but does not keep the shadow out of its hands.
+
+**Expected:** The `ValueError` names the caller's file in the library's text as
+well as the prefix; `sage_potx_` and `shadow.pptx` are absent.
+
+### TEST-SAGE-AD-132: A .pptx shadow-write failure is wrapped and names the source
+
+**Artifact:** `_open_presentation`
+**Category:** failure spelling, wrapping
+**Decision:** The shadow write sits between opening the caller's package and
+handing the library its copy. Left unwrapped, an `OSError` there reaches the
+caller naming only the scratch file.
+
+**Expected:** A `ValueError` naming the caller's file, carrying the write's own
+reason, with no scratch path.
+
+### TEST-SAGE-AD-133: A .dotx shadow-write failure names the source
+
+**Artifact:** `DocxAdapter._open_document`
+**Category:** failure spelling, disclosure
+**Decision:** AD-074 pins the spelling when the library rejects the shadow; the
+write that produces the shadow can fail too, and its `OSError` names the file
+being written.
+
+**Expected:** The `ValueError` names the caller's file, the write's reason
+survives, and `sage_dotx_` is absent.

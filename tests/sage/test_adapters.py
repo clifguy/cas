@@ -1602,6 +1602,43 @@ class TestDocxAdapterDotxSupport:
         assert "sage_dotx_" not in message, message
         assert "shadow.docx" not in message, message
 
+    async def test_ad_133_dotx_shadow_write_failure_names_the_source(self, tmp_path, monkeypatch):
+        """A failure writing the .dotx shadow copy names the caller's file.
+
+        AD-074 pins the spelling when the *library* rejects the shadow. The
+        write that produces the shadow can fail too, and its OSError names the
+        file being written -- a scratch path the caller never sent.
+
+        Anti-coincidental-pass: the stub fails write-mode opens only, so the
+        caller's package still opens and the adapter genuinely reaches the
+        shadow write; failing every open would raise against the caller's own
+        path and pin nothing. The surviving-diagnosis assertion fails an
+        implementation that discards the reason instead of substituting the
+        path.
+        """
+        from sage.source_adapters import docx_adapter as docx_adapter_mod
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        path = _build_template_fixture(tmp_path, "fixture.dotx")
+
+        real_zipfile = docx_adapter_mod.zipfile.ZipFile
+
+        def _fail_writes(file, mode="r", *args, **kwargs):
+            if mode == "w":
+                raise OSError(28, "No space left on device", str(file))
+            return real_zipfile(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(docx_adapter_mod.zipfile, "ZipFile", _fail_writes)
+
+        with pytest.raises(ValueError) as excinfo:
+            await DocxAdapter().project(path)
+        message = str(excinfo.value)
+
+        assert "No space left on device" in message, message
+        assert str(path) in message, message
+        assert "sage_dotx_" not in message, message
+        assert "shadow.docx" not in message, message
+
     async def test_ad_070_dotx_has_inventory_docx_does_not(self, tmp_path):
         """AD-070: template_style_inventory is .dotx-only; absent on .docx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
@@ -3045,6 +3082,120 @@ class TestPdfAdapter:
         finally:
             out.unlink(missing_ok=True)
 
+    @requires_pdf_with_image
+    async def test_ad_129_post_ocr_extraction_failure_names_the_source_pdf(
+        self, tmp_path, monkeypatch
+    ):
+        """A re-extraction that fails on the OCR output names the caller's file.
+
+        The scanned branch OCRs to a tempfile and re-extracts from it through
+        the same helper the native-text path uses, so that helper names the
+        tempfile -- in the message prefix, not merely inside a nested library
+        text. The projection seam cannot repair it: the seam substitutes the
+        path it handed the adapter, and this one was created afterwards.
+
+        Anti-coincidental-pass: the stub writes an unreadable PDF and lets the
+        real extractor fail, rather than stubbing the extractor to raise. Only
+        the real path reaches the four raises that interpolate the file, so a
+        stubbed raise would leave them unverified. Asserting pypdf's own
+        wording survives pins that the location was substituted rather than the
+        message replaced; the tempfile assertion is the discriminator, since
+        the caller's path also appears in the disclosing form.
+        """
+        import sys
+        import tempfile as _tempfile
+        import types
+        from pathlib import Path
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        created: list[str] = []
+        real_named_tempfile = _tempfile.NamedTemporaryFile
+
+        def _spy_named_tempfile(*args, **kwargs):
+            handle = real_named_tempfile(*args, **kwargs)
+            created.append(handle.name)
+            return handle
+
+        monkeypatch.setattr(pdf_adapter_mod.tempfile, "NamedTemporaryFile", _spy_named_tempfile)
+
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+        def _ocr_to_garbage(input_path, output_path, *args, **kwargs):
+            Path(output_path).write_bytes(b"%PDF-1.4 truncated and unreadable")
+
+        fake_ocrmypdf.ocr = _ocr_to_garbage
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-bad-ocr-output.pdf")
+
+        with pytest.raises(ValueError) as excinfo:
+            await PdfAdapter().project(path)
+        message = str(excinfo.value)
+
+        # The precondition the test rests on: OCR really ran and allocated the
+        # tempfile whose spelling is at issue.
+        assert created, "the scanned branch must allocate an OCR tempfile"
+        assert "Failed to open PDF" in message, message
+        assert str(path) in message, message
+        for scratch in created:
+            assert scratch not in message, message
+
+    @requires_pdf_with_image
+    async def test_ad_130_ocr_tool_failure_names_the_source_not_its_output(
+        self, tmp_path, monkeypatch
+    ):
+        """An OCR tool error naming its own output file is respelled.
+
+        The prefix names the caller's file by construction, so the disclosure
+        rides in the tool's interpolated text. AD-096 pins the same branch for
+        tempfile cleanup with a message that names nothing; this pins the
+        spelling for one that does.
+
+        Anti-coincidental-pass: the stub's message embeds the output path it
+        was handed, read off the argument at raise time rather than written as
+        a fixed string, so a message that never named the tempfile could not
+        discriminate. The surviving-diagnosis assertion fails an implementation
+        that drops the tool's text instead of substituting the path.
+        """
+        import sys
+        import tempfile as _tempfile
+        import types
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        created: list[str] = []
+        real_named_tempfile = _tempfile.NamedTemporaryFile
+
+        def _spy_named_tempfile(*args, **kwargs):
+            handle = real_named_tempfile(*args, **kwargs)
+            created.append(handle.name)
+            return handle
+
+        monkeypatch.setattr(pdf_adapter_mod.tempfile, "NamedTemporaryFile", _spy_named_tempfile)
+
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+        def _failing_ocr(input_path, output_path, *args, **kwargs):
+            raise RuntimeError(f"tesseract exited 1 while writing {output_path}")
+
+        fake_ocrmypdf.ocr = _failing_ocr
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-tool-error.pdf")
+
+        with pytest.raises(ValueError) as excinfo:
+            await PdfAdapter().project(path)
+        message = str(excinfo.value)
+
+        assert created, "the scanned branch must allocate an OCR tempfile"
+        assert "tesseract exited 1" in message, message
+        assert str(path) in message, message
+        for scratch in created:
+            assert scratch not in message, message
+
     # ── Section 8.6 — Failure modes ──────────────────────────────
 
     async def test_ad_090_encrypted_pdf_raises(self, tmp_path):
@@ -3782,6 +3933,102 @@ class TestPptxAdapter:
 
         diagnostic = str(excinfo.value).replace(str(path), "")
         assert re.search(r"password|encrypt", diagnostic, re.IGNORECASE), diagnostic
+
+    # ── Section 11.11 — Scratch-path spelling ─────────────────────
+
+    async def test_ad_131_unopenable_template_names_the_source_not_the_shadow(self, tmp_path):
+        """A template the library rejects names the caller's file, not the shadow.
+
+        The template branch writes a content-type-rewritten copy under a temp
+        directory and hands *that* to python-pptx, which names whichever file it
+        was given. Gating the branch on the package's real content type rather
+        than the filename suffix narrows what can reach the library, but does
+        not keep the shadow out of its hands.
+
+        Anti-coincidental-pass: the fixture is built to reach the single
+        python-pptx failure that names its argument -- the content-type check,
+        which fires only after the package opens cleanly. A malformed package
+        cannot reach it: the library dies earlier naming nothing, so a shadow
+        assertion over that input is satisfied by any implementation, including
+        one that interpolates the shadow verbatim. Hence a real package whose
+        main part carries a third template flavor, with the plain template type
+        declared on an unrelated part so the branch is still entered.
+        """
+        import zipfile as _zipfile
+
+        from sage.source_adapters.pptx_adapter import (
+            _POTX_MAIN_TYPE,
+            _PPTX_MAIN_TYPE,
+            PptxAdapter,
+        )
+
+        built = _make_pptx(tmp_path, [{"title": "Deck", "body": ["one"]}], filename="built.pptx")
+        macro_type = "application/vnd.ms-powerpoint.template.macroEnabled.main+xml"
+        decoy = tmp_path / "decoy_template.pptx"
+        with _zipfile.ZipFile(built) as z_in:
+            with _zipfile.ZipFile(decoy, "w", _zipfile.ZIP_DEFLATED) as z_out:
+                for item in z_in.namelist():
+                    data = z_in.read(item)
+                    if item == "[Content_Types].xml":
+                        text = data.decode("utf-8")
+                        text = text.replace(_PPTX_MAIN_TYPE, macro_type)
+                        text = text.replace(
+                            "</Types>",
+                            f'<Override PartName="/ppt/unused.xml" '
+                            f'ContentType="{_POTX_MAIN_TYPE}"/></Types>',
+                        )
+                        data = text.encode("utf-8")
+                    z_out.writestr(item, data)
+
+        with pytest.raises(ValueError) as excinfo:
+            await PptxAdapter().project(decoy)
+        message = str(excinfo.value)
+
+        # The precondition: this input really did reach the content-type check,
+        # the only python-pptx failure here that names a path.
+        assert "is not a PowerPoint file" in message, message
+        assert str(decoy) in message, message
+        assert "sage_potx_" not in message, message
+        assert "shadow.pptx" not in message, message
+
+    async def test_ad_132_shadow_write_failure_is_wrapped_and_names_the_source(
+        self, tmp_path, monkeypatch
+    ):
+        """A failure writing the shadow copy surfaces naming the caller's file.
+
+        The write sits between opening the caller's package and handing the
+        library its copy, so an OSError there names the scratch file and is the
+        one failure on this branch that reaches a caller unwrapped.
+
+        Anti-coincidental-pass: the stub fails write-mode opens only, so the
+        caller's package still opens and the adapter genuinely reaches the
+        shadow write; failing every open would raise earlier, against the
+        caller's own path, and pin nothing. Asserting the raise is a ValueError
+        fails an implementation that leaves the OSError to propagate, and the
+        surviving-diagnosis assertion fails one that discards the reason.
+        """
+        from sage.source_adapters import pptx_adapter as pptx_adapter_mod
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_potx(tmp_path, [{"title": "Deck", "body": ["one"]}])
+
+        real_zipfile = pptx_adapter_mod.zipfile.ZipFile
+
+        def _fail_writes(file, mode="r", *args, **kwargs):
+            if mode == "w":
+                raise OSError(28, "No space left on device", str(file))
+            return real_zipfile(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(pptx_adapter_mod.zipfile, "ZipFile", _fail_writes)
+
+        with pytest.raises(ValueError) as excinfo:
+            await PptxAdapter().project(path)
+        message = str(excinfo.value)
+
+        assert "No space left on device" in message, message
+        assert str(path) in message, message
+        assert "sage_potx_" not in message, message
+        assert "shadow.pptx" not in message, message
 
     # ── Section 11.9 — Wiring ─────────────────────────────────────
 

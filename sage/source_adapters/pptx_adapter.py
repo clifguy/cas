@@ -45,7 +45,12 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
-from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
+from sage.source_adapters.base import (
+    HeadingNode,
+    ProjectionResult,
+    SourceAdapter,
+    respell_created_path,
+)
 
 # OPC main-part content types for the presentation and template flavors.
 _PPTX_MAIN_TYPE = (
@@ -249,19 +254,36 @@ def _open_presentation(source_path: Path) -> Presentation:
     tmp_dir = Path(tempfile.mkdtemp(prefix="sage_potx_"))
     try:
         shadow = tmp_dir / "shadow.pptx"
-        with zipfile.ZipFile(source_path) as z_in:
-            with zipfile.ZipFile(shadow, "w", zipfile.ZIP_DEFLATED) as z_out:
-                for item in z_in.namelist():
-                    data = z_in.read(item)
-                    if item == "[Content_Types].xml":
-                        data = data.replace(
-                            _POTX_MAIN_TYPE.encode("utf-8"), _PPTX_MAIN_TYPE.encode("utf-8")
-                        )
-                    z_out.writestr(item, data)
+        try:
+            with zipfile.ZipFile(source_path) as z_in:
+                with zipfile.ZipFile(shadow, "w", zipfile.ZIP_DEFLATED) as z_out:
+                    for item in z_in.namelist():
+                        data = z_in.read(item)
+                        if item == "[Content_Types].xml":
+                            data = data.replace(
+                                _POTX_MAIN_TYPE.encode("utf-8"), _PPTX_MAIN_TYPE.encode("utf-8")
+                            )
+                        z_out.writestr(item, data)
+        except (zipfile.BadZipFile, KeyError, OSError) as exc:
+            # Covers the shadow write as well as the source read, so the failure
+            # can name either file. Unwrapped, a write-side OSError would escape
+            # naming only the scratch copy.
+            detail = respell_created_path(str(exc), shadow, source_path)
+            raise ValueError(
+                f"Failed to read presentation package {source_path}: {detail}"
+            ) from exc
         try:
             return Presentation(str(shadow))
         except Exception as exc:
-            raise ValueError(f"Failed to open presentation template {source_path}: {exc}") from exc
+            # Names the caller's own file in the library's text as well as in the
+            # prefix. Gating the branch on the package's content type rather than
+            # its suffix already makes the library's own content-type complaint
+            # unreachable here; every other failure it raises still names whichever
+            # file it was given, which on this branch is always the shadow.
+            detail = respell_created_path(str(exc), shadow, source_path)
+            raise ValueError(
+                f"Failed to open presentation template {source_path}: {detail}"
+            ) from exc
     finally:
         # python-pptx has read the package into memory by the time
         # Presentation() returns, so the temp dir is safe to remove.

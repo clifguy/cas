@@ -32,7 +32,12 @@ import pdfplumber
 import pypdf
 
 from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
-from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
+from sage.source_adapters.base import (
+    HeadingNode,
+    ProjectionResult,
+    SourceAdapter,
+    respell_created_path,
+)
 
 _DEFAULT_MAX_PAGES = 1000
 _OUTLINE_MAX_DEPTH = 10
@@ -341,7 +346,11 @@ def _ocr_to_tempfile(source_path: Path) -> Path:
             )
         except Exception as e:
             Path(out.name).unlink(missing_ok=True)
-            raise ValueError(f"OCR failed for {source_path}: {e}") from e
+            # The prefix names the caller's file by construction, but the tool's
+            # own text routinely names the output file it was handed -- a scratch
+            # path this function created and has just unlinked.
+            detail = respell_created_path(str(e), out.name, source_path)
+            raise ValueError(f"OCR failed for {source_path}: {detail}") from e
     return Path(out.name)
 
 
@@ -377,7 +386,29 @@ def _ocr_and_extract(
     """
     ocr_path = _ocr_to_tempfile(source_path)
     try:
-        return _extract_from_path(ocr_path, max_pages)
+        try:
+            return _extract_from_path(ocr_path, max_pages)
+        except Exception as exc:
+            # ``_extract_from_path`` is shared with the native-text path and names
+            # whichever file it was handed, which on this branch is always the OCR
+            # tempfile -- in the message prefix, not merely in a nested library
+            # text. This function is the only one that knows both paths, so the
+            # respelling belongs here rather than in the extractor or at the seam.
+            respelled = respell_created_path(str(exc), ocr_path, source_path)
+            if respelled == str(exc):
+                raise
+            try:
+                translated: Exception | None = type(exc)(respelled)
+            except Exception:
+                translated = None
+            if translated is None:
+                # A type that cannot be rebuilt from a single message re-raises
+                # unchanged, which is no worse than not respelling it. Caught into
+                # a sentinel rather than re-raised from inside its own handler, so
+                # this bare raise runs with the original failure active and keeps
+                # its ``__cause__`` -- the library error the operator log reads.
+                raise
+            raise translated from exc
     finally:
         ocr_path.unlink(missing_ok=True)
 

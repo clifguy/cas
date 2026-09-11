@@ -31,6 +31,28 @@ def extract_adr_id_from_filename(stem: str) -> dict | None:
     return {"adr_id": match.group(1)} if match is not None else None
 
 
+def respell_created_path(text: str, created: Path | str, given: Path | str) -> str:
+    """Return ``text`` with a path the adapter created respelled as the one it was given.
+
+    A caller-facing message must name only the file the caller supplied. An
+    adapter that writes a scratch file -- an OCR output, a content-type-rewritten
+    shadow copy -- and hands it to its library gets back a diagnosis naming that
+    scratch file: a location the caller never sent, which no longer exists by the
+    time they read it, and whose absolute form discloses the process's temp layout
+    under a hosted profile.
+
+    The substitution belongs here, on the adapter side of the projection seam.
+    The seam substitutes the path it passed in, so it structurally cannot reach a
+    path created inside the adapter; the adapter is the only place that knows the
+    scratch path at all.
+
+    A substitution rather than a replacement: the library's own explanation of
+    what went wrong is the part worth keeping, and only the location may change.
+    A message that does not name the created path is returned unchanged.
+    """
+    return text.replace(str(created), str(given))
+
+
 @dataclass
 class HeadingNode:
     """A heading in the document's structural hierarchy."""

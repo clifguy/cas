@@ -34,6 +34,7 @@ from sage.source_adapters.base import (
     ProjectionResult,
     SourceAdapter,
     extract_adr_id_from_filename,
+    respell_created_path,
 )
 
 # OPC content types for the main document part.
@@ -484,21 +485,21 @@ class DocxAdapter(SourceAdapter):
                                 )
                             z_out.writestr(item, data)
             except (zipfile.BadZipFile, KeyError, OSError) as exc:
-                raise ValueError(f"Failed to read document package {source_path}: {exc}") from exc
+                # Covers the shadow write as well as the source read, so the
+                # failure can name either file.
+                detail = respell_created_path(str(exc), shadow, source_path)
+                raise ValueError(
+                    f"Failed to read document package {source_path}: {detail}"
+                ) from exc
             try:
                 return Document(str(shadow))
             except Exception as exc:
-                # Names the caller's own file, never the shadow -- in the
-                # library's text as well as in the prefix. The shadow is a
-                # scratch copy this method just wrote, so a reader handed its
-                # path learns a temp location and nothing about the file they
-                # supplied; and the library names whichever file it was given,
-                # which on this branch is always the shadow. Substituted rather
-                # than dropped, so the library's own diagnosis survives. This
-                # method is the only place that knows the shadow's path, which
-                # is why the substitution belongs here and not at the
-                # projection seam that respells the rest.
-                detail = str(exc).replace(str(shadow), str(source_path))
+                # The library names whichever file it was given, which on this
+                # branch is always the shadow. The branch is entered on the
+                # filename suffix rather than the package's content type, so a
+                # file named .dotx carrying a third flavor reaches the library's
+                # own content-type complaint with the shadow's path in it.
+                detail = respell_created_path(str(exc), shadow, source_path)
                 raise ValueError(
                     f"Failed to open document template {source_path}: {detail}"
                 ) from exc
