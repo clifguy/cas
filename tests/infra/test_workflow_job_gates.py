@@ -69,6 +69,7 @@ _EXPECTED_WORKFLOWS: Final[tuple[str, ...]] = (
     "sharepoint-validate.yml",
     "maintenance.yml",
     "ruleset-drift.yml",
+    "postgres-migration.yml",
 )
 
 

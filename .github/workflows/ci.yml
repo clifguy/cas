@@ -208,6 +208,128 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  test-surface:
+    # Guards against a change that shrinks the regression surface without
+    # producing a failing signal. The `test` job above cannot: it stays green
+    # precisely because the lost tests no longer run, and the coverage floor
+    # does not observe them either, since the lines they exercised are usually
+    # still touched by something else.
+    #
+    # The check collects both revisions and compares the set of tests that
+    # would actually run, so it sees both observed shapes — a method that
+    # dedents out of its class body and stops being collected, and a class
+    # newly gated behind an opt-in that stays collectable and stops running
+    # here. `scripts/check_test_surface.py` carries the full rationale.
+    #
+    # Advisory while its false-positive rate is being measured: a contraction
+    # turns this job red and shows on the pull request, but the job is not in
+    # the required-check ruleset, so it does not block a merge. Promoting it is
+    # a deliberate later step that also edits the live ruleset.
+    #
+    # Parallel with `test`, so it adds no critical-path time.
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+      # These four must match the `test` job exactly. Whether a test runs is a
+      # property of the tree AND the environment, so a comparison made under
+      # different opt-ins measures a suite nobody runs — which is the second
+      # shape above, recurring one level up. `test_ci_test_surface_job.py`
+      # holds the two job definitions to that agreement.
+      #
+      # No Postgres service container, deliberately: the modules that gate on
+      # SAGE_TEST_PG_DSN read it for truthiness and never connect, collection
+      # opens no connection of its own, and `-n 0` inside the check bypasses
+      # the worker-sizing hook that would. The literal below therefore buys the
+      # same skip decisions as the `test` job at no cost. Anything that starts
+      # connecting during collection invalidates that, and needs the service.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      SAGE_TEST_STUB_PROVIDERS: "1"
+      SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the revision this change departs from is present to
+          # check out, and so setuptools-scm sees tags.
+          fetch-depth: 0
+
+      - name: Resolve the revision to compare against
+        id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          # One arm per event this workflow answers. An event with no base to
+          # compare against (the first push to a branch) resolves to empty and
+          # the comparison steps below are skipped, rather than the job
+          # inventing a base and reporting a comparison it did not make.
+          case "$EVENT_NAME" in
+            pull_request) sha="$PR_BASE_SHA" ;;
+            merge_group)  sha="$MERGE_GROUP_BASE_SHA" ;;
+            push)
+              if [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+                sha=""
+              else
+                sha="$PUSH_BEFORE_SHA"
+              fi
+              ;;
+            *) sha="" ;;
+          esac
+          # A base the checkout does not carry (a force-pushed or pruned
+          # revision) is reported and skipped, not silently treated as absent.
+          if [ -n "$sha" ] && ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            echo "base revision ${sha} is not present in this checkout; skipping the comparison"
+            sha=""
+          fi
+          if [ -z "$sha" ]; then
+            echo "no base revision for a ${EVENT_NAME} event; nothing to compare against"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          prune-cache: true
+          python-version: ${{ needs.versions.outputs.python }}
+
+      - name: Install dependencies (from lockfile)
+        run: uv sync --locked --extra test
+
+      - name: Measure this revision
+        run: |
+          .venv/bin/python scripts/check_test_surface.py --emit --out "${RUNNER_TEMP}/head.json"
+
+      - name: Measure the base revision
+        if: steps.base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git worktree add --detach "${RUNNER_TEMP}/base" "$BASE_SHA"
+          # Measure the base tree with THIS revision's copy of the check, so
+          # both sides are measured by identical logic — a base measured by its
+          # own older copy is not a comparison. The tree and the installed
+          # dependencies stay the base's own, which is what makes the
+          # measurement of that revision honest. This also covers the landing
+          # where the base predates the check entirely.
+          mkdir -p "${RUNNER_TEMP}/base/scripts"
+          cp scripts/check_test_surface.py "${RUNNER_TEMP}/base/scripts/"
+          cd "${RUNNER_TEMP}/base"
+          uv sync --locked --extra test
+          .venv/bin/python scripts/check_test_surface.py --emit --out "${RUNNER_TEMP}/base.json"
+
+      - name: Compare
+        if: steps.base.outputs.sha != ''
+        run: |
+          .venv/bin/python scripts/check_test_surface.py \
+            --compare "${RUNNER_TEMP}/base.json" "${RUNNER_TEMP}/head.json"
+
   container:
     # Container packaging path: build both images and run the smoke tests
     # (SMK/BSMK) on every event this workflow answers, so a Dockerfile regression
