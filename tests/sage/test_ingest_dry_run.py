@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from sage.api.errors import (
+    DuplicateContentError,
     IdenticalContentSupersedeError,
     InvalidActionError,
     InvalidDocTypeError,
@@ -391,6 +392,88 @@ async def test_dry_run_reports_a_duplicate_for_the_same_bytes_at_a_different_pat
 
     assert preview.duplicate_of == held.document.id
     assert preview.would_create is False
+
+
+async def test_dry_run_duplicate_verdict_names_the_same_document_as_the_refusal(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """Preview and real run name the same document, and it is the survivor.
+
+    Two claims, and neither alone is enough. That ``duplicate_of`` is
+    non-null holds under every rule, including the arbitrary one this
+    replaces; that preview and refusal agree holds trivially if both are
+    arbitrary in the same direction on the same call. Pinning the id to the
+    surviving document is what makes the pair mean something.
+
+    The retired sibling is seeded at the store level -- the service refuses a
+    byte-identical supersession outright -- and its id is pinned to
+    ``00000000_`` so it sorts below any service-generated id. Given a higher
+    one, the survivor would win on the tie-break alone.
+    """
+    source = _write(tmp_vault_dir, "verdict_survivor.md", "# Verdict\n\nShared bytes.")
+    request = IngestRequest(
+        source=str(source), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+    )
+    surviving = (await dry_ingestion_service.ingest(request)).document
+
+    retired = surviving.model_copy(
+        update={
+            "id": "00000000_retired_verdict_sibling",
+            "source_path": "verdict_retired_sibling.md",
+            "lifecycle_status": "archived",
+        }
+    )
+    await graph_store.insert_document(retired)
+
+    preview = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            dry_run=True,
+        )
+    )
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await dry_ingestion_service.ingest(request)
+
+    assert preview.duplicate_of == surviving.id
+    assert preview.duplicate_of == exc_info.value.detail["existing_document_id"]
+
+
+async def test_dry_run_states_the_vaults_surviving_states_to_the_hash_lookup(
+    tmp_vault_dir, graph_store, dry_config, dry_ingestion_service, monkeypatch
+):
+    """The preview asks under the vault's rule, not a preference of its own.
+
+    An argument assertion, because the preview's verdict is identical under
+    every rule on a vault holding one document per hash -- the shape of every
+    other fixture in this section. What it guards is the preview drifting
+    from the refusal: two call sites, one contract, and only the argument
+    shows they still agree before a colliding vault makes them disagree
+    visibly.
+    """
+    expected = dry_config.lifecycle.supersession_surviving_states()
+    seen: list[frozenset[str]] = []
+    real = graph_store.find_documents_by_hashes
+
+    async def recording(hashes, *, prefer_lifecycle_statuses):
+        seen.append(prefer_lifecycle_statuses)
+        return await real(hashes, prefer_lifecycle_statuses=prefer_lifecycle_statuses)
+
+    source = _write(tmp_vault_dir, "preview_preference.md", "# Preview\n\nPreference.")
+    monkeypatch.setattr(graph_store, "find_documents_by_hashes", recording)
+
+    await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            dry_run=True,
+        )
+    )
+
+    assert seen, "the preview consulted no hash lookup at all"
+    assert all(pref == expected for pref in seen), seen
 
 
 async def test_dry_run_reports_the_delivered_content_hash(tmp_vault_dir, dry_ingestion_service):

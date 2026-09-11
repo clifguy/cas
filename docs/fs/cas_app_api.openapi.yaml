@@ -837,8 +837,11 @@ components:
           type: [string, "null"]
           description: >-
             Identifier of the document already holding these bytes, or
-            null when none does. Null is also reported, unevaluated,
-            when `source_content_hash` is null.
+            null when none does. Where several hold them, the one named
+            is a version a supersession has not retired, lowest document
+            id among equals, so the same call names the same document
+            every time. Null is also reported, unevaluated, when
+            `source_content_hash` is null.
         predecessor_id:
           type: [string, "null"]
           description: >-

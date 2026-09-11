@@ -9,7 +9,9 @@ structural tests (T1-T5) guard the port surface; the substitutability tests
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+from datetime import datetime, timezone
 
 import pytest
 
@@ -22,6 +24,7 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
+from sage.models.schemas import Document, PipelineStatus, SourceType
 from sage.storage.postgres.graph_store import PostgresGraphStore
 
 # Public methods on the concrete store that are intentionally NOT part of the
@@ -269,3 +272,87 @@ async def test_injected_store_not_closed_on_failure(minimal_vault_config_dict, m
         await _init_with_stubs(config, graph_store=stub)
 
     assert stub.close_calls == 0
+
+
+# --------------------------------------------------------------------------- #
+# Substitutability of the answer, not just the surface (T8)
+# --------------------------------------------------------------------------- #
+
+# The vocabulary the services pass is the vault's own; here it is a literal, so
+# the two bindings are compared against a stated rule rather than against
+# whatever a lifecycle table currently declares.
+_SEAM_SURVIVING_STATES = frozenset({"active", "completed"})
+
+
+def _seam_doc(doc_id: str, content_hash: str, lifecycle_status: str = "active") -> Document:
+    """A minimal document pinned to an explicit id, hash, and lifecycle state."""
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title=f"Doc {doc_id}",
+        source_type=SourceType.MARKDOWN,
+        source_path=f"test/seam/{doc_id}.md",
+        lifecycle_status=lifecycle_status,
+        source_content_hash=f"sha256:{hashlib.sha256(content_hash.encode()).hexdigest()}",
+        adapter_version="0.1.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+    )
+
+
+async def test_hash_lookup_agrees_between_stub_and_concrete(graph_store):
+    """T8: both bindings resolve a shared hash to the same document.
+
+    The bulk hash lookup is the one port method where the two bindings could
+    each be internally consistent and still disagree: the durable store
+    answered in scan order and the stub in insertion order, so neither stated
+    a rule and a service swapping one for the other changed its answer.
+
+    Two assertions, and the second is what makes the first mean anything.
+    Agreement alone passes when both sides are broken the same way, and
+    passes trivially on ``{} == {}``; pinning the expected ids as well says
+    the shared answer is also the right one. Documents are inserted in an
+    order that is neither id order nor answer order, so "first inserted wins"
+    cannot masquerade as either rule.
+    """
+    retired_low = _seam_doc("00000001_seam_retired", "seam_h1", lifecycle_status="archived")
+    surviving_high = _seam_doc("00000002_seam_surviving", "seam_h1")
+    active_low = _seam_doc("00000003_seam_active_low", "seam_h2")
+    active_high = _seam_doc("00000004_seam_active_high", "seam_h2")
+    corpus = [active_high, retired_low, active_low, surviving_high]
+
+    stub = StubGraphStore()
+    for doc in corpus:
+        await stub.insert_document(doc)
+        await graph_store.insert_document(doc)
+
+    hashes = [retired_low.source_content_hash, active_low.source_content_hash]
+    from_stub = await stub.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=_SEAM_SURVIVING_STATES
+    )
+    from_concrete = await graph_store.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=_SEAM_SURVIVING_STATES
+    )
+
+    assert from_stub == from_concrete
+    assert from_concrete == {
+        retired_low.source_content_hash: surviving_high.id,
+        active_low.source_content_hash: active_low.id,
+    }
+
+
+def test_stub_hash_lookup_signature_matches_port():
+    """T8b: the stub's hash lookup carries the port's signature exactly.
+
+    T5 compares only the *concrete* binding to the port, and the stub's own
+    structural guards are name-based, so a stub that kept the preference
+    positional, or gave it a default, would satisfy every existing check
+    while quietly letting a caller omit the rule.
+    """
+    port_sig = inspect.signature(GraphStore.find_documents_by_hashes, eval_str=True)
+    stub_sig = inspect.signature(StubGraphStore.find_documents_by_hashes, eval_str=True)
+    assert stub_sig == port_sig, f"stub {stub_sig} != port {port_sig}"

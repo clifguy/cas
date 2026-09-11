@@ -1224,8 +1224,16 @@ class IngestionService:
         if predecessor is not None and (predecessor.source_content_hash == provenance_hash):
             raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
 
-        # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
-        hash_matches = await self._store.find_documents_by_hashes([provenance_hash])
+        # Duplicate detection (BH-018, BH-019, BH-066, BH-067). Several
+        # documents may carry the hash, so the lookup states which one
+        # represents it: a version a supersession has not retired outranks one
+        # it has. Being sent to a retired predecessor as the reason an ingest
+        # was refused reads as a defect in the engine rather than as a
+        # duplicate.
+        hash_matches = await self._store.find_documents_by_hashes(
+            [provenance_hash],
+            prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
+        )
 
         now = datetime.now(timezone.utc)
 
@@ -1246,9 +1254,11 @@ class IngestionService:
         existing_doc: Document | None = None
         if hash_matches and request.force:
             match_ids = set(hash_matches.values())
-            # Honor an explicit pin when it names one of the colliding
-            # records; otherwise fall back to the (normally singular) hash
-            # match. A vault without this bug's residue has at most one match.
+            # Honor an explicit pin when it names the record the lookup
+            # resolved to; otherwise take that record. The lookup collapses
+            # several holders of one hash to a single representative, so this
+            # set holds exactly one id and a pin naming a different holder is
+            # not reachable here.
             if request.document_id is not None and request.document_id in match_ids:
                 existing_id = request.document_id
             else:
@@ -1604,7 +1614,12 @@ class IngestionService:
         if provenance_hash is not None:
             if predecessor is not None and predecessor.source_content_hash == provenance_hash:
                 raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
-            hash_matches = await self._store.find_documents_by_hashes([provenance_hash])
+            # The same rule the refusal asks under, so a preview and the run
+            # it previews name the same document.
+            hash_matches = await self._store.find_documents_by_hashes(
+                [provenance_hash],
+                prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
+            )
             if hash_matches:
                 duplicate_of = next(iter(hash_matches.values()))
 
@@ -2367,9 +2382,18 @@ class IngestionService:
         and disambiguates to a second path rather than overwriting.
         """
         vault_id = self._config.vault.id
-        existing_id = (await self._store.find_documents_by_hashes([delivered_hash])).get(
-            delivered_hash
-        )
+        # Reuse follows the same rule the duplicate refusal asks under, so
+        # both name the same record. It resolves to one holder rather than
+        # scanning them all: a retired sibling whose retained copy survives
+        # while the surviving record's is missing is not reused, and this
+        # falls through to a fresh retain -- the fall-through-when-not-certain
+        # discipline the rest of this method already follows.
+        existing_id = (
+            await self._store.find_documents_by_hashes(
+                [delivered_hash],
+                prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
+            )
+        ).get(delivered_hash)
         if existing_id is not None:
             existing = await self._store.get_document(existing_id)
             if (

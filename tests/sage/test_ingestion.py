@@ -111,6 +111,74 @@ async def test_bh_018_duplicate_content_409(tmp_vault_dir, graph_store, ingestio
     assert err.detail["existing_document_id"] == doc.id
 
 
+async def test_duplicate_content_names_the_surviving_document_when_several_hold_the_bytes(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """The refusal names a document a supersession has not retired.
+
+    Sent to a retired predecessor instead, a caller reads the refusal as a
+    defect in the engine rather than as a duplicate. The retired sibling is
+    seeded at the store level because the service refuses a byte-identical
+    supersession outright, and its id is pinned to ``00000000_`` so it sorts
+    below any id the service generates -- without that, the surviving
+    document could win on the id tie-break alone and this would pin nothing.
+    """
+    _create_test_file(tmp_vault_dir, "reports/survivor.md")
+    request = IngestRequest(
+        source="reports/survivor.md",
+        source_type=SourceType.MARKDOWN,
+    )
+    surviving = (await ingestion_service.ingest(request)).document
+
+    retired = surviving.model_copy(
+        update={
+            "id": "00000000_retired_sibling",
+            "source_path": "reports/retired_sibling.md",
+            "lifecycle_status": "archived",
+        }
+    )
+    await graph_store.insert_document(retired)
+
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await ingestion_service.ingest(request)
+
+    assert exc_info.value.detail["existing_document_id"] == surviving.id
+
+
+async def test_ingest_states_the_vaults_surviving_states_to_every_hash_lookup(
+    tmp_vault_dir, graph_store, ingestion_service, minimal_config, monkeypatch
+):
+    """Every hash lookup the ingest path makes carries the vault's own rule.
+
+    An argument assertion rather than a behavioral one, and deliberately so:
+    the duplicate refusal and the source-reuse probe both consult the lookup,
+    and a call site passing an empty preference -- or a hard-coded ``active``
+    -- would still answer correctly on a vault holding one document per hash,
+    which is every other fixture in this file. Recording the argument is what
+    separates "asked under the vault's rule" from "asked at all".
+    """
+    expected = minimal_config.lifecycle.supersession_surviving_states()
+    seen: list[frozenset[str]] = []
+    real = graph_store.find_documents_by_hashes
+
+    async def recording(hashes, *, prefer_lifecycle_statuses):
+        seen.append(prefer_lifecycle_statuses)
+        return await real(hashes, prefer_lifecycle_statuses=prefer_lifecycle_statuses)
+
+    monkeypatch.setattr(graph_store, "find_documents_by_hashes", recording)
+
+    _create_test_file(tmp_vault_dir, "reports/preference.md")
+    await ingestion_service.ingest(
+        IngestRequest(
+            source="reports/preference.md",
+            source_type=SourceType.MARKDOWN,
+        )
+    )
+
+    assert seen, "the ingest path consulted no hash lookup at all"
+    assert all(pref == expected for pref in seen), seen
+
+
 # ---------------------------------------------------------------------------
 # BH-019: Force re-ingestion bypasses duplicate detection
 # ---------------------------------------------------------------------------

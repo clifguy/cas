@@ -81,9 +81,14 @@ router = APIRouter(tags=["Ingestion"])
         409: {
             "model": ErrorResponse,
             "description": (
-                "`duplicate_content`: a document with the same `source_path` "
-                "and content hash already exists. Use `force: true` to "
-                "bypass detection and re-run the pipeline.\n\n"
+                "`duplicate_content`: a document already carries this content "
+                "hash. The key is the hash alone, so identical bytes at a "
+                "path the vault has never seen refuse too. Where several "
+                "documents carry it, the refusal names a version a "
+                "supersession has not retired, lowest document id among "
+                "equals, so re-running the same call names the same document. "
+                "Use `force: true` to bypass detection and re-run the "
+                "pipeline.\n\n"
                 "`force_reingest_path_mismatch`: `force: true` and the "
                 "content-hash match resolves to a document stored at a "
                 "different `source_path` than `source`, without a "

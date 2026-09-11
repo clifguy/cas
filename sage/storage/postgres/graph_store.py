@@ -1240,16 +1240,36 @@ class PostgresGraphStore(GraphStore):
         rowcount = await self._execute("DELETE FROM edges WHERE id = %s", (edge_id,))
         return rowcount > 0
 
-    async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
+    async def find_documents_by_hashes(
+        self, hashes: list[str], *, prefer_lifecycle_statuses: frozenset[str]
+    ) -> dict[str, str]:
         with self._query_timer.measure("find_documents_by_hashes"):
             if not hashes:
                 return {}
-            placeholders = ",".join("%s" for _ in hashes)
-            rows = await self._fetch_rows(
-                f"SELECT source_content_hash, id FROM documents "  # noqa: S608 -- ids are %s
-                f"WHERE source_content_hash IN ({placeholders})",
-                hashes,
-            )
+            # DISTINCT ON collapses the several-documents-one-hash case to a
+            # single representative row, and the ORDER BY says which one, so
+            # the answer does not depend on scan order. The preference is a
+            # rank and not a predicate: a hash carried only by retired
+            # documents still answers, with the lowest id among them.
+            if prefer_lifecycle_statuses:
+                sql = (
+                    "SELECT DISTINCT ON (source_content_hash) source_content_hash, id "
+                    "FROM documents WHERE source_content_hash = ANY(%s) "
+                    "ORDER BY source_content_hash, "
+                    "CASE WHEN lifecycle_status = ANY(%s) THEN 0 ELSE 1 END, id"
+                )
+                params: list[object] = [hashes, sorted(prefer_lifecycle_statuses)]
+            else:
+                # An empty preference is a real choice -- no preference -- and
+                # not a clause to pay for, on the same reasoning as an empty
+                # exclude_lifecycle_statuses above.
+                sql = (
+                    "SELECT DISTINCT ON (source_content_hash) source_content_hash, id "
+                    "FROM documents WHERE source_content_hash = ANY(%s) "
+                    "ORDER BY source_content_hash, id"
+                )
+                params = [hashes]
+            rows = await self._fetch_rows(sql, params)
             return {row["source_content_hash"]: row["id"] for row in rows}
 
     async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:

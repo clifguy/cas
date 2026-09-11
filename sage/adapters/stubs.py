@@ -774,13 +774,24 @@ class StubGraphStore(GraphStore):
     async def delete_edge(self, edge_id: str) -> bool:
         return self._edges.pop(edge_id, None) is not None
 
-    async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
+    async def find_documents_by_hashes(
+        self, hashes: list[str], *, prefer_lifecycle_statuses: frozenset[str]
+    ) -> dict[str, str]:
         wanted = set(hashes)
-        return {
-            d.source_content_hash: d.id
-            for d in self._docs.values()
-            if d.source_content_hash in wanted
-        }
+        found: dict[str, str] = {}
+        # A preferred lifecycle status outranks the id tie-break, and the
+        # first survivor of that ordering wins -- so the stub answers
+        # identically to the durable store rather than following its own
+        # insertion order. One sort covers both arms the SQL spells
+        # separately: an empty preference gives every document the same
+        # leading key, leaving the id to decide alone.
+        for d in sorted(
+            self._docs.values(),
+            key=lambda doc: (doc.lifecycle_status not in prefer_lifecycle_statuses, doc.id),
+        ):
+            if d.source_content_hash in wanted and d.source_content_hash not in found:
+                found[d.source_content_hash] = d.id
+        return found
 
     async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
         wanted = set(source_paths)
