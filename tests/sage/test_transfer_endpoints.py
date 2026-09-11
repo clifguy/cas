@@ -484,6 +484,40 @@ async def test_expired_upload_token_is_refused_at_the_endpoint(client, tmp_path,
         assert after.json()["code"] == "transfer_token_invalid"
 
 
+async def test_minted_window_is_the_configured_lifetime(client, tmp_path, monkeypatch):
+    """A minted recipe's window is the lifetime the stack config declares.
+
+    This is the link that makes the figure the tool descriptions state a true
+    statement to a caller. Its siblings pin the two ends and not the middle:
+    the disclosure gate proves the docstrings agree with the config, and the
+    expiry tests prove a token is dead past whatever window it was given.
+    Neither reaches the one place the configured value becomes a minted
+    window, so a mint honouring some other lifetime satisfies both while the
+    caller is told 900 seconds and gets something else.
+
+    Anti-coincidental-pass: the assertion is an equality against the injected
+    clock plus the configured lifetime, not a bound. A bound admits exactly
+    the defect -- halving the window still expires "after the mint" -- and
+    halving it was the probe that found this gap, with 164 tests across four
+    suites staying green.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(
+        _transfer, "_transfer_store", TransferStore(now=clock, staging_root=tmp_path / "staging")
+    )
+
+    src = tmp_path / "caller_inbox" / "window.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"# window\n")
+
+    with _profile("cloud"):
+        recipe = _parse(await ingest_document(_VAULT_ID, str(src), "markdown"))
+
+    assert recipe.get("status") == "upload_required", recipe
+    minted_at = clock.now
+    assert datetime.fromisoformat(recipe["expires_at"]) == minted_at + timedelta(seconds=_TTL)
+
+
 async def test_download_token_failures(client, tmp_path):
     """Wrong token, mismatched URL id, and replay after redemption -> 410."""
     ingested = await _ingest_locally(tmp_path, "dl_fail.md", "# DF\n\nBody.")

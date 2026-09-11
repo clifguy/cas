@@ -169,7 +169,7 @@ class TestUploadLifecycle:
             store.begin_upload(minted.token)
         assert not staging_dir.exists()
 
-    def test_expired_upload_is_not_resumable_after_its_bytes_are_reclaimed(self, store, clock):
+    def test_expired_upload_is_not_resumable_on_the_byte_leg(self, store, clock):
         """An expired token cannot be resumed: the sweep took its bytes.
 
         Delivered bytes are as unrecoverable as undelivered ones once the
@@ -179,9 +179,14 @@ class TestUploadLifecycle:
         Anti-coincidental-pass: the bytes are staged before the clock moves,
         so a store that merely lost the lookup while keeping the staging
         directory fails on the directory assertion rather than satisfying a
-        bare ``pytest.raises``. Both redemption verbs are exercised because
-        the completion leg reaches a different store method than the byte
-        leg, and a sweep applied on only one of them would pass the other.
+        bare ``pytest.raises``.
+
+        The completion leg is a separate test rather than a second arm here,
+        and the separation is load-bearing: the sweep reclaims the whole
+        entry table, so whichever verb runs first pops the other's entry too,
+        and the second arm would then raise on absence whatever its own
+        method does. Two tests means two stores, so each verb has to sweep
+        for itself.
         """
         minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
         _stage_bytes(store, minted, b"delivered")
@@ -192,6 +197,23 @@ class TestUploadLifecycle:
 
         with pytest.raises(TransferTokenInvalidError):
             store.begin_upload(minted.token)
+        assert minted.transfer_id not in store._entries
+        assert not staging_dir.exists()
+
+    def test_expired_upload_is_not_resumable_on_the_completion_leg(self, store, clock):
+        """The completion verb reclaims an expired entry on its own.
+
+        Paired with the byte-leg test above; see its docstring for why the
+        two cannot share a store. Removing ``consume_upload``'s sweep reds
+        this test and leaves its partner green.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered")
+        staging_dir = store._entries[minted.transfer_id].staging_dir
+        assert staging_dir.exists()
+
+        clock.advance(301)
+
         with pytest.raises(TransferTokenInvalidError):
             store.consume_upload(minted.token, _VAULT)
         assert minted.transfer_id not in store._entries

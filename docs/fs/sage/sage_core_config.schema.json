@@ -192,7 +192,7 @@
           "type": "integer",
           "minimum": 1,
           "default": 900,
-          "description": "Lifetime of a minted transfer token, covering the whole exchange (mint, byte delivery, completion). Bounded rather than short: a token is single-use, direction- and vault-scoped and size-capped, so the window governs retention rather than guessability, and the default is wide enough that a caller stalled between recipe and byte delivery does not lose the transfer. A lapsed token is not resumable -- the sweep reclaims its staged bytes along with the entry -- so the remedy is to re-issue the originating call for a fresh recipe."
+          "description": "Lifetime of a minted transfer token, covering the whole exchange (mint, byte delivery, completion). Short-lived, and the default is set by what bounds it: a token is single-use, direction- and vault-scoped and size-capped, so the window governs staging retention rather than guessability, and it is wide enough that a caller stalled between recipe and byte delivery does not lose the transfer. A lapsed token is not resumable -- the sweep reclaims its staged bytes along with the entry -- so the remedy is to re-issue the originating call for a fresh recipe."
         }
       }
     }
