@@ -136,6 +136,89 @@ class TestUploadLifecycle:
         # The refusal's sweep reclaimed the expired entry's staging dir.
         assert not staging_dir.exists()
 
+    def test_token_redeemable_one_second_inside_its_window(self, store, clock):
+        """A token one second short of its expiry instant still redeems.
+
+        Anti-coincidental-pass: paired with the exact-instant arm below.
+        Neither arm alone can tell which side of the sweep's comparison
+        moved -- a store that expired everything, or nothing, would satisfy
+        one of them. Widening the sweep to reclaim ahead of ``expires_at``
+        reds this arm and leaves its partner green.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+
+        clock.advance(299)
+
+        entry = store.begin_upload(minted.token)
+        assert entry.transfer_id == minted.transfer_id
+
+    def test_token_refused_exactly_at_its_expiry_instant(self, store, clock):
+        """``expires_at`` is the first instant a token no longer redeems.
+
+        Anti-coincidental-pass: the partner arm above proves the token was
+        live a second earlier, so this arm isolates the boundary rather than
+        the mechanism. Relaxing the sweep's ``<=`` to ``<`` reds this arm
+        alone.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        staging_dir = store._entries[minted.transfer_id].staging_dir
+
+        clock.advance(300)
+
+        with pytest.raises(TransferTokenInvalidError):
+            store.begin_upload(minted.token)
+        assert not staging_dir.exists()
+
+    def test_expired_upload_is_not_resumable_on_the_byte_leg(self, store, clock):
+        """An expired token cannot be resumed: the sweep took its bytes.
+
+        Delivered bytes are as unrecoverable as undelivered ones once the
+        window closes, which is why the remedy is re-issuing the originating
+        call rather than redeeming the lapsed token again.
+
+        Anti-coincidental-pass: the bytes are staged before the clock moves,
+        so a store that merely lost the lookup while keeping the staging
+        directory fails on the directory assertion rather than satisfying a
+        bare ``pytest.raises``.
+
+        The completion leg is a separate test rather than a second arm here,
+        and the separation is load-bearing: the sweep reclaims the whole
+        entry table, so whichever verb runs first pops the other's entry too,
+        and the second arm would then raise on absence whatever its own
+        method does. Two tests means two stores, so each verb has to sweep
+        for itself.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered")
+        staging_dir = store._entries[minted.transfer_id].staging_dir
+        assert staging_dir.exists()
+
+        clock.advance(301)
+
+        with pytest.raises(TransferTokenInvalidError):
+            store.begin_upload(minted.token)
+        assert minted.transfer_id not in store._entries
+        assert not staging_dir.exists()
+
+    def test_expired_upload_is_not_resumable_on_the_completion_leg(self, store, clock):
+        """The completion verb reclaims an expired entry on its own.
+
+        Paired with the byte-leg test above; see its docstring for why the
+        two cannot share a store. Removing ``consume_upload``'s sweep reds
+        this test and leaves its partner green.
+        """
+        minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
+        _stage_bytes(store, minted, b"delivered")
+        staging_dir = store._entries[minted.transfer_id].staging_dir
+        assert staging_dir.exists()
+
+        clock.advance(301)
+
+        with pytest.raises(TransferTokenInvalidError):
+            store.consume_upload(minted.token, _VAULT)
+        assert minted.transfer_id not in store._entries
+        assert not staging_dir.exists()
+
     def test_second_put_after_staging_refused(self, store):
         minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300)
         _stage_bytes(store, minted, b"first")

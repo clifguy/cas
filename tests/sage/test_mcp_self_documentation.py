@@ -21,6 +21,7 @@ from typing import Any, get_args, get_origin
 
 import pytest
 
+from sage.config import StackTransferConfig
 from sage.mcp_server import (
     create_edges,
     get_filename_metadata,
@@ -954,4 +955,100 @@ def test_no_registered_mcp_tool_directs_callers_to_poll_for_status():
         "MCP tool docstring(s) direct the caller to poll a document for status; "
         "direct them to wait for a terminal pipeline_status instead:\n"
         + "\n".join(f"  {name}: {hits}" for name, hits in sorted(offenders.items()))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Transfer-recipe lifetime disclosure
+# ---------------------------------------------------------------------------
+
+#: How the transfer token's lifetime is spelled on the tool surface.
+#: Derived from the configured default, so retuning the lifetime either
+#: carries the docstrings with it or reddens the gates below -- rather than
+#: leaving them pinning a figure no surface states any more.
+_TTL_FIGURE = f"{StackTransferConfig.model_fields['token_ttl_seconds'].default} seconds"
+
+#: The tools that can answer a call with a transfer recipe, and so owe the
+#: caller the window they have to work inside. A hand-maintained oracle:
+#: which service a tool reaches for is not readable off the tool itself,
+#: since the download half mints through the document and projection
+#: services rather than in the tool body.
+_RECIPE_MINTING_TOOLS = frozenset(
+    {
+        "bulk_ingest_document",
+        "get_document",
+        "ingest_document",
+        "read_projection",
+        "restore_vault_source_file",
+    }
+)
+
+#: Tools that name a recipe without minting one, and so owe nothing.
+#: ``list_directory`` is refused outright where the caller's filesystem is
+#: unreachable, and points at the recipe *the ingest tools* return.
+_RECIPE_MENTIONERS_THAT_DO_NOT_MINT = frozenset({"list_directory"})
+
+
+@pytest.mark.parametrize("tool_name", sorted(_RECIPE_MINTING_TOOLS))
+def test_recipe_minting_tools_state_the_token_lifetime(tool_name: str):
+    """A tool that can hand back a recipe states how long its tokens live.
+
+    A caller who learns the window only from the ``expires_at`` on a recipe
+    already in hand cannot plan around it -- by then the clock is running.
+    """
+    tools = _registered_mcp_tools()
+    assert tool_name in tools, f"{tool_name} is not a registered MCP tool"
+    doc = _docstring(tools[tool_name])
+
+    assert _TTL_FIGURE in doc, (
+        f"{tool_name}: the tool description does not state the transfer token "
+        f"lifetime ({_TTL_FIGURE!r}). A caller planning a byte delivery needs "
+        "the window before the call, not only the expiry instant after it."
+    )
+
+
+def test_recipe_minting_roster_is_exhaustive_over_the_live_surface():
+    """No tool discusses a recipe without being classified.
+
+    Anti-coincidental-pass: the parametrized gate above proves only that the
+    tools *named* in the roster disclose the lifetime, so a sixth minter
+    added later would sit outside it silently. Deriving the candidate set
+    from the live surface and requiring every candidate to be either a
+    roster member or a named non-minter closes that. It also reds if a
+    roster member is renamed or retired, which would otherwise shrink
+    coverage without failing anything.
+
+    Coverage limit, stated rather than implied: the candidate set is derived
+    from what a docstring *says*, so it reaches a minter only if that
+    docstring uses one of the phrases below. The status literals carry most
+    of the weight, because a minter has to name the status it returns for
+    its response contract to be legible at all, whereas the prose spelling
+    is a choice. A minter that names neither is invisible here -- the gate
+    under-reports, and cannot report on its own coverage.
+    """
+    markers = (
+        "upload recipe",
+        "download recipe",
+        "upload_required",
+        "download_required",
+    )
+    candidates = {
+        name
+        for name, tool in _registered_mcp_tools().items()
+        if (doc := inspect.getdoc(tool)) is not None and any(marker in doc for marker in markers)
+    }
+
+    unclassified = candidates - _RECIPE_MINTING_TOOLS - _RECIPE_MENTIONERS_THAT_DO_NOT_MINT
+    assert not unclassified, (
+        f"tool(s) {sorted(unclassified)} discuss a transfer recipe but appear "
+        "in neither _RECIPE_MINTING_TOOLS nor "
+        "_RECIPE_MENTIONERS_THAT_DO_NOT_MINT. Classify them: a minter owes "
+        "the caller its token lifetime."
+    )
+
+    missing = (_RECIPE_MINTING_TOOLS | _RECIPE_MENTIONERS_THAT_DO_NOT_MINT) - candidates
+    assert not missing, (
+        f"classified tool(s) {sorted(missing)} no longer discuss a transfer "
+        "recipe. Drop them from the roster, or restore the disclosure they "
+        "lost."
     )

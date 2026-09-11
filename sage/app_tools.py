@@ -283,7 +283,13 @@ def register_app_tools(
                 ``transfer_token`` (str, the one-time token from a
                 previously returned upload recipe, redeemed after the
                 recipe's byte leg delivered that file to the upload
-                endpoint). Each entry also carries
+                endpoint). A recipe's tokens lapse 900 seconds after issue
+                by default, and the whole exchange -- every leg's byte
+                delivery plus the completion call -- must finish inside that
+                window; the recipe's own ``expires_at`` is authoritative
+                where a deployment has tuned the lifetime. A lapsed recipe
+                cannot be resumed, and its staged bytes are gone: re-issue
+                this call for a fresh one. Each entry also carries
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
                 ``markdown``, ``docx``, ``xlsx``, ``pptx``, ``pdf`` — the source
                 types with a registered adapter),

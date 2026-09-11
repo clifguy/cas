@@ -409,6 +409,16 @@ class TransferStore:
         return entry
 
     def _sweep_locked(self) -> None:
+        # Reclamation is destruction, and that is what makes an expired
+        # handshake unresumable: the staging directory goes with the entry,
+        # so bytes already delivered are no more recoverable than bytes never
+        # sent. That is the intended shape -- a lapsed token is re-minted by
+        # re-issuing the originating call, and resumable sessions are
+        # deliberately unspecified (CAS-ADR-045). Retaining bytes for a grace
+        # redemption would need a state the store does not have and an error
+        # surface that tells expired from unknown, which
+        # TransferTokenInvalidError deliberately refuses to be.
+        # ``expires_at`` is the first instant a token no longer redeems.
         now = self._now()
         expired = [tid for tid, e in self._entries.items() if e.expires_at <= now]
         for tid in expired:

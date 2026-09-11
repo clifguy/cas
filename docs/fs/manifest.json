@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-08",
+  "manifest_date": "2026-09-10",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -27,7 +27,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.11",
+      "version": "0.12",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider, its model, and the local provider's optional context-window override and clause (f) opener constraint), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers), and the caller-local transfer channel block (the public endpoint base minted recipes embed and the one-time token lifetime; omitted by deployments that never mint recipes). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.84",
+  "substrate_version": "1.85",
   "revision_history": [
+    {
+      "version": "1.85",
+      "date": "2026-09-10",
+      "summary": "Settle the caller-local transfer token's lifetime and the rule that a lapsed handshake is re-issued rather than resumed (CAS-ADR-045). sage_core_config.schema.json bumped v0.11 -> v0.12: transfer.token_ttl_seconds' default moves 300 -> 900, so a deployment that omits the transfer block now mints fifteen-minute windows; the cloud template emits only public_base_url, so the deployed tenant inherits the new default with no parameter change. The property's description keeps calling the token short-lived, as every sibling surface does, and adds why the default is where it is -- the token is single-use, direction- and vault-scoped and size-capped, so the window governs staging retention rather than guessability, and it is wide enough to survive a caller stalled between recipe and byte delivery -- and states that a lapsed token is not resumable, because reclamation destroys the staged bytes with the entry. No shape change: the block's property set, types and strictness are unchanged. Server-side, the same rationale is recorded at the sweep that enforces it and on TransferTokenInvalidError, whose single non-discriminating code is the reason a grace redemption is not offered. The five recipe-minting MCP tools now state the window in their argument descriptions, gated against the configured default so the two cannot drift."
+    },
     {
       "version": "1.84",
       "date": "2026-09-10",

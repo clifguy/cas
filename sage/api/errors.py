@@ -1547,6 +1547,21 @@ class TransferTokenInvalidError(SAGEError):
     is not an oracle distinguishing a token that never existed from one that
     just expired. The remedy is always the same: re-issue the originating
     call to mint a fresh token.
+
+    That remedy is the only one on offer for an expired token, deliberately
+    and per CAS-ADR-045, which re-mints a lapsed token by re-issuing the
+    originating call and leaves resumable sessions unspecified until a
+    payload class demands them.
+    A lapsed handshake is not resumable: reclamation destroys the staging
+    directory along with the entry, so bytes already delivered survive no
+    better than bytes never sent, and there is nothing for a second
+    redemption to redeem. Offering one would mean retaining expired entries
+    behind a grace state and answering "expired, try again" where this code
+    answers only "not redeemable" -- reintroducing exactly the oracle the
+    single code exists to avoid. Retries *within* the window are a different
+    matter and are already supported: a byte leg that fails reopens its
+    entry, and a completion that fails after redemption hands the token back
+    with its staged bytes intact.
     """
 
     def __init__(self) -> None:
