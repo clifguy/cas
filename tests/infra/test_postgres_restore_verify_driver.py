@@ -346,6 +346,10 @@ def test_every_action_validates_the_run_id(
     # comparison, where a malformed value fails at the control plane rather than
     # at the parser.
     monkeypatch.setattr(module, "azure", az)
+    # `main` builds the wait with the production sleep and a 3900s budget, so a
+    # regression in the terminal set would make this test sleep toward a 65-minute
+    # deadline rather than fail. The suite has no timeout plugin to bound it.
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     with pytest.raises(ValueError, match="lowercase alphanumerics"):
         module.main(
             [
@@ -489,6 +493,10 @@ def test_a_terminal_failure_exits_non_zero(
     # rather than demonstrated.
     az.status = status
     monkeypatch.setattr(module, "azure", az)
+    # `main` builds the wait with the production sleep and a 3900s budget, so a
+    # regression in the terminal set would make this test sleep toward a 65-minute
+    # deadline rather than fail. The suite has no timeout plugin to bound it.
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     code = module.main(
         [
             "verify",
@@ -517,6 +525,10 @@ def test_a_succeeded_job_exits_zero(
     module: ModuleType, az: Azure, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(module, "azure", az)
+    # `main` builds the wait with the production sleep and a 3900s budget, so a
+    # regression in the terminal set would make this test sleep toward a 65-minute
+    # deadline rather than fail. The suite has no timeout plugin to bound it.
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     code = module.main(
         [
             "verify",
@@ -576,6 +588,40 @@ def test_a_job_that_never_finishes_raises_rather_than_looping(
         verify(module, az, poll_seconds=0.0, budget_seconds=0.0)
 
 
+def test_the_timeout_names_the_execution_it_tells_the_operator_to_stop(
+    module: ModuleType, az: Azure
+) -> None:
+    # The one terminal path that prints no payload. Without the name the operator
+    # could only recover it from an execution listing, which is the read this loop
+    # exists to avoid trusting.
+    az.status = "Running"
+    with pytest.raises(TimeoutError, match="exec-1"):
+        verify(module, az, poll_seconds=0.0, budget_seconds=0.0)
+
+
+def test_the_loop_waits_between_polls(module: ModuleType, az: Azure) -> None:
+    # Nothing else observes that the loop sleeps at all: the never-finishes test
+    # sets the budget to zero, so an implementation that polled in a tight spin
+    # passes every other assertion here.
+    az.status = "Running"
+    waits: list[float] = []
+
+    class Stop(Exception):
+        pass
+
+    def record(seconds: float) -> None:
+        waits.append(seconds)
+        raise Stop
+
+    # The budget is small on purpose. An implementation that never sleeps would
+    # otherwise spin here for the whole budget in real wall-clock time — hanging
+    # the suite instead of failing it, which is the very defect this test exists
+    # to catch. Half a second bounds that to a fast, ordinary failure.
+    with pytest.raises(Stop):
+        verify(module, az, poll_seconds=7.5, budget_seconds=0.5, sleep=record)
+    assert waits == [7.5]
+
+
 # --- 19 and 20. cleanup removes only its own, and proves it ------------------
 
 
@@ -601,8 +647,14 @@ def test_cleanup_never_deletes_a_server_it_did_not_tag(module: ModuleType, az: A
 
 def test_cleanup_ignores_a_drill_server_from_another_run(module: ModuleType, az: Azure) -> None:
     az.servers.append(server(f"{SERVING_NAME}-rvother", tags={module.DRILL_TAG: "other"}))
-    module.cleanup(az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID)
+    result = module.cleanup(az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID)
     assert any(entry["name"].endswith("-rvother") for entry in az.servers)
+    # Surviving is not enough: a predecessor drill's leftover is tagged, just not
+    # with this run's id, and the runbook mandates one drill at a time — so it can
+    # only be an uncleaned predecessor and must reach the operator. An
+    # implementation reporting only *untagged* servers leaves it out and still
+    # passes every other assertion in this file.
+    assert result["inspect"] == [f"{SERVING_NAME}-rvother"]
 
 
 def test_an_untagged_drill_shaped_server_is_surfaced_for_inspection(

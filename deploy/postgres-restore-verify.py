@@ -366,9 +366,14 @@ def wait_job(
         if status in ("Succeeded", "Failed", "Stopped"):
             return {"execution": execution, "status": status}
         if time.monotonic() >= deadline:
+            # Name the execution. This is the one path that does not print the
+            # payload, so without it the operator is told to stop an execution
+            # they could only identify from the list read this loop exists to
+            # avoid trusting.
             raise TimeoutError(
                 f"verification job {name!r} did not reach a terminal status inside "
-                f"{budget_seconds:.0f}s; stop the Azure execution before retrying"
+                f"{budget_seconds:.0f}s; stop Azure execution {execution!r} before "
+                "retrying"
             )
         sleep(poll_seconds)
 

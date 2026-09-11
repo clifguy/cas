@@ -464,6 +464,11 @@ az containerapp job logs show --resource-group <rg> \
     --execution <execution name> --tail 300 --format text
 ```
 
+The execution name is the `execution` field of `verify`'s printed payload, and on
+the timeout path it is named in the error. Do not recover it from an execution
+listing: a just-started execution is briefly absent from that list, so the newest
+entry there can be a previous run.
+
 `verify` exits non-zero when the job reaches a terminal failure, so a wrapping
 script can read the exit code rather than parsing the payload for a status.
 
