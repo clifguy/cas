@@ -40,6 +40,6 @@ def sage_error_to_envelope(exc: SAGEError) -> dict:
     caller.
     """
     payload: dict = {"error": exc.code, "message": exc.message}
-    if exc.detail:
+    if exc.detail is not None:
         payload["detail"] = exc.detail
     return payload
