@@ -127,7 +127,12 @@ class Surface(TypedDict):
 # sanctioned anchor.
 # ---------------------------------------------------------------------------
 
-KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {}
+KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    "tests/sage/test_graph_store_seam.py::test_stub_hash_lookup_signature_matches_port": (
+        "single-method stub signature check absorbed by the stub arm of the graph-store "
+        "signature gate, which covers every port method"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
