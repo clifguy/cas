@@ -617,8 +617,9 @@ python3 deploy/postgres-restore-verify.py cleanup \
 
 `--resource-group` always names the serving group, from which the driver reads its
 coordinates; every write lands in the drill's own group. The driver refuses, before
-creating anything: a destination in the serving region; a serving server without
-geo-redundant backup; a drill group that already exists; and a subnet or private
+creating anything: a destination in the serving region, or in any region other than
+its Azure pair, since geo-redundant backup restores only into the pair; a serving
+server without geo-redundant backup; a drill group that already exists; and a subnet or private
 DNS zone outside the drill's own group, which is how it enforces not borrowing
 another workload's network. The geo-restore names the source server by resource
 id, because the target group holds no server of that name.
@@ -657,11 +658,13 @@ so read the recovery point as an instance rather than a bound.
 
 `cleanup --geo-location` deletes the drill group only if the group carries this
 run's ownership tag and every resource inside it does too. The single exception is
-the verification job, recognised by its exact name, because its module leaves it
-untagged. Anything else untagged aborts the teardown and is named, rather than
-being deleted with the group. Removal is proven by re-reading the group's
-existence. A run whose group is already gone is a no-op, so a teardown interrupted
-part way can simply be rerun.
+the verification job, recognised by its exact name and type, because its module
+leaves it untagged. Anything else untagged aborts the teardown and is named, rather
+than being deleted with the group. The delete is issued without waiting, because it
+can run longer than a single CLI call is allowed, and removal is proven by polling
+the group's existence under an hour's budget. An overrun is reported as such, not
+as a removal; Azure keeps deleting, and a run whose group is already gone is a
+no-op, so a teardown interrupted part way can simply be rerun.
 
 Deleting the Container Apps environment also removes the managed infrastructure
 group Azure creates for it; confirm that too. The Log Analytics workspace enters

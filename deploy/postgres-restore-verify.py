@@ -6,7 +6,7 @@ verification job against it from inside the VNet, and tears the drill down again
 It never connects to a database: every database read happens in the job, under the
 job's identity, in a read-only session.
 
-Three refusals are the point of the script rather than incidental validation. A
+Its refusals are the point of the script rather than incidental validation. A
 restore target may not be, or collide with, any server that already exists, so a
 drill cannot land on the database of record. A recovery point outside the server's
 actual backup window is rejected before any billable resource is created, because
@@ -160,6 +160,16 @@ def assert_in_drill_group(resource_id: str, drill_group: str) -> str:
     return resource_id
 
 
+def paired_regions(az: Azure, region: str) -> list[str]:
+    """The regions Azure pairs with ``region``, whichever spelling of its name is given."""
+    for entry in az("account", "list-locations") or []:
+        if same_region(entry.get("name", ""), region):
+            return [
+                pair["name"] for pair in (entry.get("metadata") or {}).get("pairedRegion") or []
+            ]
+    return []
+
+
 def footprint(az: Azure, *, environment: str, group: str, run_id: str, geo_location: str) -> dict:
     """Build the destination-region network and compute a geo restore needs."""
     deployment, _job, _env = coordinates(az, environment, group)
@@ -171,6 +181,12 @@ def footprint(az: Azure, *, environment: str, group: str, run_id: str, geo_locat
         raise ValueError(
             f"refusing a geo drill into {geo_location!r}: that is the serving region, "
             "so the drill would demonstrate nothing about losing it"
+        )
+    pairs = paired_regions(az, serving["location"])
+    if not any(same_region(pair, geo_location) for pair in pairs):
+        raise ValueError(
+            f"refusing a geo drill into {geo_location!r}: geo-redundant backup restores "
+            f"only into the serving region's paired region ({', '.join(pairs) or 'none'})"
         )
     if serving["backup"].get("geoRedundantBackup") != "Enabled":
         raise ValueError(
@@ -355,13 +371,14 @@ def verify_job_name(environment: str) -> str:
 
 
 def assert_usable_image(candidate: str, deployed: str) -> str:
-    """An image the drill may run in the serving network, pinned and in-registry.
+    """An image the drill may run, pinned and in-registry.
 
     A drill legitimately runs code the tenant has not deployed: the verification
     entrypoint is new until the change that adds it lands. So an override is
     allowed, but only within the tenant's own registry and only with an explicit
-    tag. Anything else would let a drill pull an arbitrary image into the subnet
-    that holds the database of record.
+    tag. Anything else would let a drill pull an arbitrary image into a network
+    that can reach a copy of the database of record — the serving subnet itself
+    for a point-in-time drill, the drill's own network for a geo drill.
     """
     repository, _, tag = candidate.rpartition(":")
     if not repository or "/" not in repository or "/" in tag:
@@ -418,6 +435,12 @@ def verify(
             "--name",
             footprint_deployment_name(run_id),
         )
+        state = ((built or {}).get("properties") or {}).get("provisioningState")
+        if state != "Succeeded":
+            raise ValueError(
+                f"the footprint for run {run_id!r} is {state or 'in an unknown state'}, "
+                "not Succeeded; run cleanup --geo-location, then footprint again"
+            )
         location = output(built, "location")
         environment_id = output(built, "environmentId")
         if not same_region(location, geo_location):
@@ -516,11 +539,26 @@ def wait_job(
 
 
 def cleanup(
-    az: Azure, *, environment: str, group: str, run_id: str, geo_location: str | None = None
+    az: Azure,
+    *,
+    environment: str,
+    group: str,
+    run_id: str,
+    geo_location: str | None = None,
+    poll_seconds: float = 30.0,
+    budget_seconds: float = 3600.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Delete only this drill's own resources, and prove they are gone."""
     if geo_location:
-        return cleanup_geo(az, environment=environment, run_id=run_id)
+        return cleanup_geo(
+            az,
+            environment=environment,
+            run_id=run_id,
+            poll_seconds=poll_seconds,
+            budget_seconds=budget_seconds,
+            sleep=sleep,
+        )
     removed: list[str] = []
     name = verify_job_name(environment)
     jobs = az("containerapp", "job", "list", "--resource-group", group) or []
@@ -566,13 +604,26 @@ def cleanup(
     return {"removed": removed, "run_id": run_id, "inspect": adoptable(az, group, run_id)}
 
 
-def cleanup_geo(az: Azure, *, environment: str, run_id: str) -> dict:
+def cleanup_geo(
+    az: Azure,
+    *,
+    environment: str,
+    run_id: str,
+    poll_seconds: float,
+    budget_seconds: float,
+    sleep: Callable[[float], None],
+) -> dict:
     """Delete a geo drill's resource group, but only a group wholly the drill's own.
 
     Deleting a group deletes everything in it, so the group's tag alone is not
     enough: every resource inside must carry this run's mark as well. The one
     exception is the verification job, which its module leaves untagged and which
-    is recognised by its exact name rather than by its type.
+    is recognised by its exact name and type together.
+
+    The delete is issued without waiting and its completion polled under the
+    drill's own budget. Removing a Container Apps environment takes long enough
+    that a synchronous delete would run against the per-command timeout, and an
+    overrun there surfaces as a bare timeout rather than as this driver's report.
     """
     drill_group = drill_group_name(environment, run_id)
     if not az("group", "exists", "--name", drill_group):
@@ -594,10 +645,17 @@ def cleanup_geo(az: Azure, *, environment: str, run_id: str) -> dict:
             f"refusing to delete {drill_group!r}: it holds resources this drill does "
             "not own: " + ", ".join(foreign)
         )
-    az("group", "delete", "--name", drill_group, "--yes")
-    # An accepted delete is not a removal. Re-read.
-    if az("group", "exists", "--name", drill_group):
-        raise RuntimeError(f"drill resources survived their delete: {drill_group}")
+    az("group", "delete", "--name", drill_group, "--yes", "--no-wait")
+    # An accepted delete is not a removal. Re-read until the group is gone.
+    deadline = time.monotonic() + budget_seconds
+    while az("group", "exists", "--name", drill_group):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"drill group {drill_group!r} still exists {budget_seconds:.0f}s after its "
+                "delete was accepted; Azure may still be removing it, and rerunning "
+                "cleanup --geo-location is safe"
+            )
+        sleep(poll_seconds)
     return {"removed": [drill_group], "run_id": run_id, "resource_group": drill_group}
 
 

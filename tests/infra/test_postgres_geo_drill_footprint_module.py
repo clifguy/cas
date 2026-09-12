@@ -81,6 +81,25 @@ def _outputs(text: str) -> set[str]:
     return set(re.findall(r"^output\s+(\w+)\s", text, re.M))
 
 
+def _parameters(text: str) -> set[str]:
+    return set(re.findall(r"^param\s+(\w+)\s", text, re.M))
+
+
+# Every value the module accepts. A resource id is the one input that could point
+# a drill at a network the drill did not build, and an id arrives only through a
+# parameter, so the closed set is what keeps one from being added unnoticed.
+_ALLOWED_PARAMETERS: Final[frozenset[str]] = frozenset(
+    {
+        "location",
+        "environmentName",
+        "runId",
+        "vnetAddressPrefix",
+        "acaInfraSubnetPrefix",
+        "postgresSubnetPrefix",
+    }
+)
+
+
 @pytest.fixture(scope="module")
 def live() -> str:
     return _strip_line_comments(MODULE.read_text(encoding="utf-8"))
@@ -124,7 +143,15 @@ def test_the_environment_is_internal_and_sits_in_the_modules_own_subnet(live: st
 
 
 def test_the_module_references_no_pre_existing_resource(live: str) -> None:
+    # Three checks carry this property together, and none carries it alone: no
+    # `existing` declaration or literal resource id (here), no parameter beyond the
+    # closed set, so no id can be passed in (below), and every consumer of a
+    # network naming the module's own `vnet` (the zone-link and environment tests).
     assert not _references_existing(live)
+
+
+def test_the_module_accepts_no_parameter_beyond_the_closed_set(live: str) -> None:
+    assert _parameters(live) == _ALLOWED_PARAMETERS
 
 
 def test_every_resource_carries_the_drivers_ownership_tag(live: str, driver: ModuleType) -> None:
@@ -186,3 +213,11 @@ def test_resource_type_detector_controls() -> None:
     commented = "// resource lock 'Microsoft.Authorization/locks@2020-05-01' = {\n"
     assert _declares_resource_type(declared, _LOCK_TYPE)
     assert not _declares_resource_type(_strip_line_comments(commented), _LOCK_TYPE)
+
+
+def test_parameter_detector_catches_a_borrowed_network_passed_in(live: str) -> None:
+    # The rival the existence detector cannot see: a caller-supplied subnet id,
+    # which carries neither an `existing` declaration nor a literal id.
+    borrowed = "param borrowedInfraSubnetId string\n" + live
+    assert not _references_existing(borrowed)
+    assert _parameters(borrowed) != _ALLOWED_PARAMETERS

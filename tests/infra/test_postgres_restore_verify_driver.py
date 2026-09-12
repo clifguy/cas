@@ -95,6 +95,10 @@ class Azure:
         self.delete_is_a_lie = False
         self.job_delete_is_a_lie = False
         self.group_delete_is_a_lie = False
+        # How many existence reads a deleted group survives before it is gone: a
+        # delete issued without waiting returns while Azure is still removing it.
+        self.group_polls_before_gone = 0
+        self._pending_group_removal: dict[str, int] = {}
         self.started = 0
         # Resource groups by name, deployments by (group, name), and resources a
         # group holds beyond the servers and jobs tracked above.
@@ -110,7 +114,32 @@ class Azure:
         self.calls.append(args)
         prefix = args[:3]
         if args[:2] == ("group", "exists"):
-            return args[args.index("--name") + 1] in self.groups
+            name = args[args.index("--name") + 1]
+            if name in self._pending_group_removal:
+                if self._pending_group_removal[name] > 0:
+                    self._pending_group_removal[name] -= 1
+                else:
+                    del self._pending_group_removal[name]
+                    self._remove_group(name)
+            return name in self.groups
+        if args[:2] == ("account", "list-locations"):
+            return [
+                {
+                    "name": "eastus2",
+                    "displayName": "East US 2",
+                    "metadata": {"pairedRegion": [{"name": "centralus"}]},
+                },
+                {
+                    "name": "centralus",
+                    "displayName": "Central US",
+                    "metadata": {"pairedRegion": [{"name": "eastus2"}]},
+                },
+                {
+                    "name": "westus3",
+                    "displayName": "West US 3",
+                    "metadata": {"pairedRegion": [{"name": "eastus"}]},
+                },
+            ]
         if args[:2] == ("group", "create"):
             name = args[args.index("--name") + 1]
             key, _, tag = args[args.index("--tags") + 1].partition("=")
@@ -128,10 +157,10 @@ class Azure:
         if args[:2] == ("group", "delete"):
             name = args[args.index("--name") + 1]
             if not self.group_delete_is_a_lie:
-                self.groups.pop(name, None)
-                self.servers = [s for s in self.servers if group_of(s["id"]) != name]
-                self.jobs = [j for j in self.jobs if j.get("group", GROUP) != name]
-                self.resources = [r for r in self.resources if group_of(r["id"]) != name]
+                if self.group_polls_before_gone:
+                    self._pending_group_removal[name] = self.group_polls_before_gone
+                else:
+                    self._remove_group(name)
             return None
         if args[:2] == ("resource", "list"):
             group = self._group(args)
@@ -254,6 +283,12 @@ class Azure:
             return None
         raise AssertionError(f"unexpected az call: {args}")
 
+    def _remove_group(self, name: str) -> None:
+        self.groups.pop(name, None)
+        self.servers = [s for s in self.servers if group_of(s["id"]) != name]
+        self.jobs = [j for j in self.jobs if j.get("group", GROUP) != name]
+        self.resources = [r for r in self.resources if group_of(r["id"]) != name]
+
     def _deploy_footprint(self, group: str, args: tuple[str, ...]) -> dict[str, Any]:
         parameters = dict(value.split("=", 1) for value in args if "=" in value)
         base = f"/subscriptions/s/resourceGroups/{group}/providers/"
@@ -280,7 +315,10 @@ class Azure:
             "location": parameters["location"],
         }
         deployment = {
-            "properties": {"outputs": {key: {"value": value} for key, value in outputs.items()}}
+            "properties": {
+                "provisioningState": "Succeeded",
+                "outputs": {key: {"value": value} for key, value in outputs.items()},
+            }
         }
         self.deployments[(group, args[args.index("--name") + 1])] = deployment
         return deployment
@@ -920,10 +958,32 @@ def test_geo_verification_in_a_region_other_than_the_footprints_is_refused(
     assert len([args for args in az.calls if args[:3] == ("deployment", "group", "create")]) == 1
 
 
-def geo_cleanup(module: ModuleType, az: Azure) -> dict:
-    return module.cleanup(
-        az, environment=ENVIRONMENT, group=GROUP, run_id=RUN_ID, geo_location=GEO_LOCATION
-    )
+def geo_cleanup(module: ModuleType, az: Azure, **overrides: Any) -> dict:
+    settings = {
+        "environment": ENVIRONMENT,
+        "group": GROUP,
+        "run_id": RUN_ID,
+        "geo_location": GEO_LOCATION,
+        "sleep": lambda _seconds: None,
+    }
+    settings.update(overrides)
+    return module.cleanup(az, **settings)
+
+
+def test_geo_cleanup_deletes_without_waiting_and_polls_for_removal(
+    module: ModuleType, az: Azure
+) -> None:
+    # A group delete can outlast the driver's per-command timeout, so it is issued
+    # without waiting and the removal is proven by polling under the drill's own
+    # budget. Two existence reads return true before the group is gone.
+    geo_drill(module, az)
+    az.group_polls_before_gone = 2
+    waits: list[float] = []
+    result = geo_cleanup(module, az, poll_seconds=7.5, sleep=waits.append)
+    assert "--no-wait" in az.call("group", "delete")
+    assert waits == [7.5, 7.5]
+    assert result["removed"] == [DRILL_GROUP]
+    assert DRILL_GROUP not in az.groups
 
 
 def test_geo_cleanup_deletes_the_drill_group_and_proves_it(module: ModuleType, az: Azure) -> None:
@@ -995,10 +1055,47 @@ def test_geo_cleanup_tolerates_only_the_named_verification_job_untagged(
 def test_geo_cleanup_fails_when_the_group_survives_its_delete(
     module: ModuleType, az: Azure
 ) -> None:
+    # An accepted delete is not a removal: a group that never goes away exhausts
+    # the budget and is named, rather than reported removed.
     geo_drill(module, az)
     az.group_delete_is_a_lie = True
-    with pytest.raises(RuntimeError, match="survived"):
-        geo_cleanup(module, az)
+    with pytest.raises(TimeoutError, match=DRILL_GROUP):
+        geo_cleanup(module, az, poll_seconds=0.0, budget_seconds=0.0)
+
+
+@pytest.mark.parametrize("region", ["westus3", "West US 3"])
+def test_a_footprint_outside_the_serving_regions_pair_is_refused(
+    module: ModuleType, az: Azure, region: str
+) -> None:
+    # Geo-redundant backup restores only into the paired region. Any other
+    # destination builds a footprint the control plane then refuses to restore into.
+    with pytest.raises(ValueError, match="paired"):
+        footprint(module, az, geo_location=region)
+    assert not [args for args in az.calls if args[:2] == ("group", "create")]
+
+
+def test_the_pair_is_recognised_by_its_display_name(module: ModuleType, az: Azure) -> None:
+    footprint(module, az, geo_location="Central US")
+    assert az.argument(az.call("group", "create"), "--location") == "Central US"
+
+
+@pytest.mark.parametrize(
+    "state, keep_outputs",
+    [("Failed", False), ("Failed", True), ("Running", True), ("Canceled", True)],
+)
+def test_geo_verification_against_an_unfinished_footprint_is_refused(
+    module: ModuleType, az: Azure, state: str, keep_outputs: bool
+) -> None:
+    # The state decides, not the outputs: the cases that keep a full set of outputs
+    # are the ones a check on missing outputs would wave through.
+    footprint(module, az)
+    deployment = az.deployments[(DRILL_GROUP, f"geo-drill-footprint-{RUN_ID}")]
+    outputs = deployment["properties"]["outputs"] if keep_outputs else None
+    deployment["properties"] = {"provisioningState": state, "outputs": outputs}
+    with pytest.raises(ValueError, match="footprint"):
+        verify(module, az, geo_location=GEO_LOCATION)
+    assert len([args for args in az.calls if args[:3] == ("deployment", "group", "create")]) == 1
+    assert not [args for args in az.calls if args[:3] == ("containerapp", "job", "start")]
 
 
 def test_geo_cleanup_of_an_absent_group_removes_nothing(module: ModuleType, az: Azure) -> None:
