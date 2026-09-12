@@ -584,10 +584,11 @@ def register_sage_tools(
                 vault id and address are hints for a caller recovering
                 provenance, and the content hash is what confirms a
                 resolution reached the intended document, since both vaults
-                retain the same source at the same digest. That last part is
-                checked rather than assumed: the hash must match the digest
-                this vault will record for the source, which is the digest
-                of the bytes the call delivers, or of the record they are
+                retain the same source at the same digest. The hash names
+                the bytes that travelled, and on this half it is checked
+                rather than assumed: it must match the digest this vault
+                will record for the source, which is the digest of the
+                bytes the call delivers, or of the record they are
                 inherited from where a resident source is re-projected.
                 Otherwise the call refuses with
                 ``relocated_from_provenance_mismatch``. The origin half
@@ -917,11 +918,14 @@ def register_sage_tools(
         the counterpart -- in the same statement, so the state and the
         pointer cannot disagree. Without it the item refuses with
         ``missing_relocated_to`` and nothing is written. The pointer's
-        ``source_content_hash`` must be the digest the document itself
-        carries: a relocation moves a document without modifying it, so
-        both vaults hold the same source at the same digest, and a
-        pointer naming a different one refuses with
-        ``relocated_to_provenance_mismatch`` before anything is written.
+        ``source_content_hash`` names the bytes that travelled, and this
+        half accounts for either digest it records -- the document's
+        source provenance digest or its as-stored digest, which differ
+        where the vault's store rewrites its copy at rest. A pointer
+        matching neither refuses with
+        ``relocated_to_provenance_mismatch`` before anything is written,
+        its detail naming both admissible values as
+        ``document_content_hash`` and ``also_accounted_content_hash``.
         Neither side reads the other to check it. The destination
         half is an ordinary ``ingest_document`` carrying
         ``relocated_from``, and it is performed first, so an interrupted

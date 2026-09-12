@@ -415,6 +415,13 @@ async def test_relocate_holds_the_pointer_to_this_document_s_own_digest(
 
     The refusal names both digests, so a caller can see which of the two
     it got wrong without a second call.
+
+    Both fixtures leave ``stored_content_hash`` unset, so their two
+    recorded digests coincide and this test cannot distinguish which of
+    them the origin admits. That distinction is
+    ``test_relocate_accounts_for_either_digest_the_origin_records``'s, and
+    it is a real distinction rather than a redundancy: the origin admits
+    either.
     """
     mismatched = _make_doc("00000023_digest_mismatch")
     matching = _make_doc("00000024_digest_match")
@@ -455,49 +462,82 @@ async def test_relocate_holds_the_pointer_to_this_document_s_own_digest(
     assert (await graph_store.get_document(matching.id)).lifecycle_status == "relocated"
 
 
-async def test_relocate_reads_provenance_rather_than_the_as_stored_digest(
+async def test_relocate_accounts_for_either_digest_the_origin_records(
     graph_store, lifecycle_service
 ):
-    """The comparison is against the provenance digest, not the retained copy's.
+    """The origin admits its provenance digest or its as-stored digest, and no third.
+
+    CAS-ADR-050 Decision 10 makes the pointer name the bytes that
+    travelled, and the origin cannot know which of its two byte-sets the
+    caller took: a caller still holding the file it originally ingested
+    relocates that, while a caller that does not fetches what the vault
+    serves, which is the retained copy. Both are faithful relocations, so
+    both digests are admitted.
 
     The two coincide for every document whose store kept the delivered
-    bytes verbatim, which is every ordinary fixture and the whole
-    filesystem binding -- so nothing else in this file distinguishes an
-    implementation that reads ``source_content_hash`` from one that reads
-    ``stored_content_hash`` or the maintenance helper that falls back
-    between them. Here they are made to differ, which is the split
-    CAS-ADR-043 permits a rewriting binding to produce.
+    bytes verbatim, which is every other fixture in this file and the
+    whole filesystem binding, so this is the only place the difference is
+    observable. Here they are made to differ, which is the split
+    CAS-ADR-043 permits a rewriting binding to produce -- an Office
+    package stamped by a document store at rest.
 
-    Both arms, because either alone is satisfied by one of the two
-    implementations.
+    Three arms, and the third is what keeps this from being a relaxation.
+    Admitting two known values is not admitting any value: a digest
+    matching neither is still refused, and the refusal names the
+    provenance digest so a caller sees a value it can act on.
     """
     as_stored = _sha("the-rewritten-copy")
-    doc = _make_doc("00000025_rewritten_at_rest", stored_content_hash=as_stored)
-    other = _make_doc("00000026_rewritten_at_rest_too", stored_content_hash=as_stored)
-    await graph_store.insert_document(doc)
-    await graph_store.insert_document(other)
-    assert doc.source_content_hash != doc.stored_content_hash, (
+    by_provenance = _make_doc("00000025_relocated_by_original", stored_content_hash=as_stored)
+    by_retained = _make_doc("00000026_relocated_by_retained", stored_content_hash=as_stored)
+    refused = _make_doc("00000038_neither_digest", stored_content_hash=as_stored)
+    for doc in (by_provenance, by_retained, refused):
+        await graph_store.insert_document(doc)
+    assert by_provenance.source_content_hash != by_provenance.stored_content_hash, (
         "without a real divergence between the two digests this test asserts nothing"
     )
 
-    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
-        await lifecycle_service._set_lifecycle(
-            doc.id,
-            SetLifecycleRequest(
-                action="relocate",
-                relocated_to=_destination_pointer(source_content_hash=as_stored),
-            ),
-        )
-    assert excinfo.value.detail["document_content_hash"] == doc.source_content_hash
-
+    # The caller still held the file it originally delivered.
     await lifecycle_service._set_lifecycle(
-        other.id,
+        by_provenance.id,
         SetLifecycleRequest(
             action="relocate",
-            relocated_to=_destination_pointer(source_content_hash=other.source_content_hash),
+            relocated_to=_destination_pointer(
+                source_content_hash=by_provenance.source_content_hash
+            ),
         ),
     )
-    assert (await graph_store.get_document(other.id)).lifecycle_status == "relocated"
+    assert (await graph_store.get_document(by_provenance.id)).lifecycle_status == "relocated"
+
+    # The caller fetched what the vault serves, which is the stamped copy.
+    # This arm is the one the previous rule refused, and refusing it made a
+    # relocation out of a rewriting store impossible.
+    await lifecycle_service._set_lifecycle(
+        by_retained.id,
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=as_stored),
+        ),
+    )
+    stored = await graph_store.get_document(by_retained.id)
+    assert stored.lifecycle_status == "relocated"
+    assert stored.relocated_to.source_content_hash == as_stored
+
+    # A digest describing neither recorded form is still refused.
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await lifecycle_service._set_lifecycle(
+            refused.id,
+            SetLifecycleRequest(
+                action="relocate",
+                relocated_to=_destination_pointer(
+                    source_content_hash=_sha("bytes-this-vault-never-held")
+                ),
+            ),
+        )
+    assert excinfo.value.code == "relocated_to_provenance_mismatch"
+    assert excinfo.value.detail["document_content_hash"] == refused.source_content_hash
+    untouched = await graph_store.get_document(refused.id)
+    assert untouched.lifecycle_status == "active"
+    assert untouched.relocated_to is None
 
 
 async def test_the_digest_refusal_reaches_the_bulk_item_envelope(graph_store, lifecycle_service):

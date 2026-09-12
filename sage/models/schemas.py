@@ -314,21 +314,26 @@ class RelocationPointer(BaseModel):
     digest, so a caller arriving from either direction can check that it
     landed where the pointer meant.
 
-    Holding the same source at the same digest is required rather than
-    expected, and each half is made to prove it locally at the moment it
-    writes: a relocation moves a document without modifying it, so a
-    pointer whose digest describes neither side is refused. Neither check
-    follows the pointer or reaches the counterpart, which is what keeps
-    them available across deployments. What each half proves differs, and
-    the difference is worth knowing. The destination ordinarily compares
-    against bytes it hashed on that call, so it establishes byte identity;
-    on the one branch where a source already resident in the store is
-    re-projected against an existing record, it compares against that
-    record's digest and establishes record identity instead. The origin
-    always compares against its own record -- its retained copy is not
-    re-read, and confirming that a retained copy still hashes to its
-    record is the source-file integrity audit's job rather than this
-    pointer's.
+    The digest names the bytes that *travelled* -- the copy the origin
+    served and the destination received -- rather than either vault's
+    original delivery, and each half is made to prove it locally at the
+    moment it writes. Neither check follows the pointer or reaches the
+    counterpart, which is what keeps them available across deployments.
+
+    What each half accounts for differs. The destination knows exactly
+    what it received, so it admits one value. The origin admits either
+    digest it records -- its source provenance digest or its as-stored
+    digest -- because it cannot know which of its two byte-sets the caller
+    took: a caller still holding the file it originally ingested relocates
+    that, while a caller that does not fetches what the vault serves,
+    which is the retained copy. Where a binding rewrites its copy at rest
+    the second is the ordinary case, and admitting only the first would
+    refuse every relocation out of such a vault.
+
+    What the pair establishes is byte lineage, not content equality. A
+    relocation hands the destination exactly the bytes the origin served,
+    so what a reader sees is preserved by the composition and by the
+    storage binding's contract rather than asserted here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -359,13 +364,16 @@ class RelocationPointer(BaseModel):
     )
     source_content_hash: Sha256Str = Field(
         description=(
-            "The SHA-256 of the source bytes both vaults retain. The one "
-            "member that confirms rather than hints: a caller arriving "
-            "from either direction matches it to know it reached the "
-            "document the pointer meant. Checked at write time on both "
-            "halves, each against the document in front of it, so a "
-            "pointer describing neither side is refused rather than "
-            "stored."
+            "The SHA-256 of the bytes that travelled between the two "
+            "vaults. The one member that confirms rather than hints: a "
+            "caller arriving from either direction matches it to know it "
+            "reached the document the pointer meant. Checked at write "
+            "time on both halves against digests each already records, so "
+            "a pointer neither side accounts for is refused rather than "
+            "stored. The destination accounts for the bytes it was "
+            "delivered; the origin accounts for either its provenance "
+            "digest or its as-stored digest, which differ where its store "
+            "rewrites its copy at rest."
         ),
     )
     relocated_at: datetime = Field(

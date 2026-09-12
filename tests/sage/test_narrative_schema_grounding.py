@@ -789,6 +789,11 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "CTEs": "prose: SQL common table expressions used by graph traversal",
     },
     ("sage_core", "update_lifecycles"): {
+        # Keys of the untyped ``relocated_to_provenance_mismatch`` detail,
+        # named in the relocate narrative so a refused caller can see both
+        # digests the origin admits.
+        "also_accounted_content_hash": ERROR_DETAIL_KEY,
+        "document_content_hash": ERROR_DETAIL_KEY,
         "cas": "example vault id in a worked example",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "

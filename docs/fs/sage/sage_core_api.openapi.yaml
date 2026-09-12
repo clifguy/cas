@@ -312,11 +312,14 @@ paths:
         counterpart -- in the same statement, so the state and the
         pointer cannot disagree. Without it the item refuses with
         `missing_relocated_to` and nothing is written. The pointer's
-        `source_content_hash` must be the digest the document itself
-        carries: a relocation moves a document without modifying it, so
-        both vaults hold the same source at the same digest, and a
-        pointer naming a different one refuses with
-        `relocated_to_provenance_mismatch` before anything is written.
+        `source_content_hash` names the bytes that travelled, and this
+        half accounts for either digest it records -- the document's
+        source provenance digest or its as-stored digest, which differ
+        where the vault's store rewrites its copy at rest. A pointer
+        matching neither refuses with
+        `relocated_to_provenance_mismatch` before anything is written,
+        its detail naming both admissible values as
+        `document_content_hash` and `also_accounted_content_hash`.
         Neither side reads the other to check it. The destination
         half is an ordinary ingest carrying `relocated_from`, and it is
         performed first, so an interrupted move leaves its evidence on
@@ -3594,12 +3597,14 @@ components:
         consults it. The vault identifier and server address are
         resolution hints a reasoning caller weighs rather than
         coordinates the engine resolves, and the source content hash is
-        what confirms a resolution landed where it meant to, because
-        both vaults retain the same source at the same digest. That last
-        part is required rather than expected: each half checks the
-        pointer's digest against the document in front of it as it
-        writes, without reaching the counterpart, so a pointer
-        describing neither side is refused.
+        what confirms a resolution landed where it meant to. It names
+        the bytes that travelled between the two vaults, and each half
+        checks it against digests it already records, without reaching
+        the counterpart, so a pointer neither side accounts for is
+        refused. The destination accounts for the bytes delivered to it;
+        the origin accounts for either its provenance digest or its
+        as-stored digest, which differ where its store rewrites its copy
+        at rest.
       required:
         - vault_id
         - document_id
@@ -3630,13 +3635,16 @@ components:
         source_content_hash:
           type: string
           description: >-
-            The SHA-256 of the source bytes both vaults retain. The one
-            member that confirms rather than hints: a caller arriving
-            from either direction matches it to know it reached the
-            document the pointer meant. Checked at write time on both
-            halves, each against the document in front of it, so a
-            pointer describing neither side is refused rather than
-            stored.
+            The SHA-256 of the bytes that travelled between the two
+            vaults. The one member that confirms rather than hints: a
+            caller arriving from either direction matches it to know it
+            reached the document the pointer meant. Checked at write
+            time on both halves against digests each already records, so
+            a pointer neither side accounts for is refused rather than
+            stored. The destination accounts for the bytes it was
+            delivered; the origin accounts for either its provenance
+            digest or its as-stored digest, which differ where its store
+            rewrites its copy at rest.
         relocated_at:
           type: string
           format: date-time

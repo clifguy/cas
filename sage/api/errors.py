@@ -301,54 +301,67 @@ class ReservedTransitionError(SAGEError):
 class RelocationProvenanceMismatchError(SAGEError):
     """400: a relocation pointer names a digest the document does not carry.
 
-    A relocation moves a document between vaults; it does not modify one.
-    Modifying and relocating are two operations and only the second is a
-    relocation, so both halves hold the same source at the same digest
-    and each half proves that against the document in front of it
-    (CAS-ADR-050). The pointer's ``source_content_hash`` is the member
-    that confirms a resolution landed on the intended document, and a
-    pointer carrying a digest that describes neither side confirms
-    nothing -- it is one more asserted coordinate, which is what the
-    decision prefers a checkable digest to.
+    A relocation moves a document between vaults; it does not modify one,
+    so the pointer's ``source_content_hash`` names the bytes that
+    travelled between the two, and a pointer naming a digest neither side
+    can account for is not describing a relocation (CAS-ADR-050). It would
+    be one more asserted coordinate, which is what the decision prefers a
+    checkable digest to.
 
     Neither half follows its pointer or reaches the other side to raise
-    this. Each compares a caller-supplied value against local bytes or a
-    local record, so the refusal is available under every deployment and
-    to a vault whose store rewrites its copy at rest.
+    this. Each compares a caller-supplied value against digests already
+    recorded locally, so the refusal is available under every deployment
+    and to a vault whose store rewrites its copy at rest.
 
-    ``field`` names which pointer was refused, and the code is derived
-    from it, so a caller branches on the half it got wrong rather than on
-    a shared code it has to disambiguate. The two halves fail for
-    different reasons and are recovered from differently: on the
+    What each half accounts for differs, which is why the code names the
+    pointer rather than being shared. The **destination** knows exactly
+    what it received, so it admits one value: the digest of the bytes the
+    call delivered. The **origin** admits either digest it records for the
+    document -- its source provenance digest or its as-stored digest --
+    because it cannot know which of its two byte-sets the caller took. A
+    caller still holding the file it originally ingested relocates that; a
+    caller that does not fetches what the vault serves, which is the
+    retained copy. Under a binding that rewrites at rest (CAS-ADR-043)
+    the second is the ordinary case, and admitting only the first would
+    refuse every relocation out of such a vault.
+
+    The two halves are also recovered from differently: on the
     destination the caller has built nothing yet and can simply retry,
     while on the origin the destination half has already been written
     (CAS-ADR-050 writes it first), so a live document in another vault is
     now waiting on a decision.
 
-    The comparison is against the document's provenance digest -- the
-    bytes the caller delivered -- and never against the as-stored digest,
-    which a binding that rewrites at rest is permitted to make different
-    (CAS-ADR-043). A document whose retained copy has drifted from its
-    recorded provenance cannot produce its original bytes and so cannot
-    relocate until that is repaired; that is an integrity fault the
-    source-file audit reports, not a relocation concern.
+    ``also_accounted`` carries the origin's second admissible digest when
+    it has one, so a caller refused here can see both values rather than
+    inferring the other. Absent on the destination half, which has only
+    one.
     """
 
-    def __init__(self, field: str, pointer_hash: str, document_hash: str) -> None:
+    def __init__(
+        self,
+        field: str,
+        pointer_hash: str,
+        document_hash: str,
+        also_accounted: str | None = None,
+    ) -> None:
+        accounted = f"{document_hash} or {also_accounted}" if also_accounted else document_hash
+        detail = {
+            "field": field,
+            "pointer_content_hash": pointer_hash,
+            "document_content_hash": document_hash,
+        }
+        if also_accounted is not None:
+            detail["also_accounted_content_hash"] = also_accounted
         super().__init__(
             f"{field}_provenance_mismatch",
             (
-                f"{field} names source content hash {pointer_hash}, but this document's "
-                f"source is {document_hash}. A relocation moves a document without "
-                f"modifying it, so both vaults hold the same source at the same digest. "
-                f"Correct the pointer, or relocate the document whose source it names."
+                f"{field} names source content hash {pointer_hash}, which this document "
+                f"does not account for: its source is {accounted}. A relocation names the "
+                f"bytes that travelled between the two vaults. Correct the pointer, or "
+                f"relocate the document whose source it names."
             ),
             400,
-            {
-                "field": field,
-                "pointer_content_hash": pointer_hash,
-                "document_content_hash": document_hash,
-            },
+            detail,
         )
 
 
