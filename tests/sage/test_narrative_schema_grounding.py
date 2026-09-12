@@ -694,6 +694,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "fields": ERROR_DETAIL_KEY,
         "instance": ERROR_DETAIL_KEY,
         "new_source_path": ERROR_DETAIL_KEY,
+        "pinned_source_content_hash": ERROR_DETAIL_KEY,
         "pointer_content_hash": ERROR_DETAIL_KEY,
         "recognized": ERROR_DETAIL_KEY,
         "required_state": ERROR_DETAIL_KEY,

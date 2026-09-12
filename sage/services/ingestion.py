@@ -49,6 +49,7 @@ from sage.api.errors import (
     DuplicateContentError,
     ExpectedHeadVersionRequiresPredecessorError,
     ForceReingestPathMismatchError,
+    ForceReingestPinMismatchError,
     IdenticalContentSupersedeError,
     InvalidDocTypeError,
     InvalidLifecycleTransitionError,
@@ -941,6 +942,10 @@ class IngestionService:
                 ``source_path`` than the incoming file, without a ``document_id``
                 confirming the intended target. Guards against silently
                 overwriting an unrelated byte-identical document.
+            ForceReingestPinMismatchError: ``force=True`` and ``document_id``
+                names a document that does not carry the delivered content
+                hash, or no document at all. A pin may select any holder of
+                the hash, never a record holding other bytes.
             AdapterNotFoundError: No adapter for requested source type.
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: the vault's lifecycle
@@ -1146,6 +1151,17 @@ class IngestionService:
                     raise SourceFileNotFoundError(reported_source)
 
             self._validate_relocation_provenance(request, delivered_hash, reported_source)
+            # Above retention for the reason the relocation guard is: the pin
+            # is judged against the digest of the caller's own bytes, and bytes
+            # no document holds would otherwise be copied in and then refused,
+            # leaving a retained file with no row. With nothing delivered there
+            # is no digest yet and nothing to retain, so the check waits for
+            # the projection's.
+            pinned_id = (
+                await self._resolve_force_pin(request, canonicalize_sha256(delivered_hash))
+                if delivered_hash is not None
+                else None
+            )
 
             if resident:
                 # Nothing to retain: the bytes are already on the store and
@@ -1289,17 +1305,15 @@ class IngestionService:
         # `existing_doc is not None` is the canonical narrowing predicate
         # for the force-reingest branch from this point forward.
         existing_doc: Document | None = None
+        # A pin selects which holder of the delivered hash to reuse -- any of
+        # them, not only the representative the lookup collapsed them to. A
+        # pin naming a document without these bytes was refused above
+        # retention when bytes were delivered, and is refused here otherwise,
+        # before any branch can fall back to a record the caller did not name.
+        if delivered_hash is None:
+            pinned_id = await self._resolve_force_pin(request, provenance_hash)
         if hash_matches and request.force:
-            match_ids = set(hash_matches.values())
-            # Honor an explicit pin when it names the record the lookup
-            # resolved to; otherwise take that record. The lookup collapses
-            # several holders of one hash to a single representative, so this
-            # set holds exactly one id and a pin naming a different holder is
-            # not reachable here.
-            if request.document_id is not None and request.document_id in match_ids:
-                existing_id = request.document_id
-            else:
-                existing_id = next(iter(match_ids))
+            existing_id = pinned_id or next(iter(hash_matches.values()))
             existing_doc = await self._store.get_document(existing_id)
             # Cross-document collision guard: force-reingest keys its target by
             # content hash alone, so a hash match stored at a *different* path
@@ -1677,6 +1691,10 @@ class IngestionService:
             )
             if hash_matches:
                 duplicate_of = next(iter(hash_matches.values()))
+            # Refused here exactly as the real run refuses it. A valid pin
+            # changes which record a re-ingest reuses, not which document
+            # represents the bytes, so ``duplicate_of`` is left as resolved.
+            await self._resolve_force_pin(request, provenance_hash)
 
         return IngestPreview(
             dry_run=True,
@@ -2590,6 +2608,35 @@ class IngestionService:
             f"'{RELOCATED_STATE}', and an ingest carries no relocation "
             "pointer, so landing one there would rest it in the state "
             "naming nowhere",
+        )
+
+    async def _resolve_force_pin(self, request: IngestRequest, provenance_hash: str) -> str | None:
+        """Return the force-reingest pin when it names a holder of the hash.
+
+        None when no pin applies: without ``force`` the pin is not consulted,
+        and without a pin the hash lookup's representative stands. The pin is
+        checked against the pinned document's own hash rather than against
+        that lookup, which collapses several holders of one hash to a single
+        representative and so cannot confirm any other holder. A pin naming a
+        document that does not carry the hash -- or no document at all -- is
+        refused, whether or not anything else holds the bytes: honoring the
+        call any other way would write to a record the caller did not name.
+        The representative is looked up only to name it in the refusal.
+        """
+        if not request.force or request.document_id is None:
+            return None
+        pinned = await self._store.get_document(request.document_id)
+        if pinned is not None and pinned.source_content_hash == provenance_hash:
+            return pinned.id
+        hash_matches = await self._store.find_documents_by_hashes(
+            [provenance_hash],
+            prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
+        )
+        raise ForceReingestPinMismatchError(
+            pinned_id=request.document_id,
+            pinned_content_hash=pinned.source_content_hash if pinned is not None else None,
+            content_hash=provenance_hash,
+            resolved_id=hash_matches.get(provenance_hash),
         )
 
     def _validate_relocation_provenance(

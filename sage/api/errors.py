@@ -234,6 +234,43 @@ class ForceReingestPathMismatchError(SAGEError):
         )
 
 
+class ForceReingestPinMismatchError(SAGEError):
+    """409: a force-reingest pinned a ``document_id`` that does not carry the
+    delivered content hash.
+
+    The pin names which of the documents holding the delivered bytes to
+    reuse, so it can only name one of them. A pin naming a document with
+    other bytes, or no document at all, cannot be honored, and falling back
+    to whichever holder the hash lookup prefers would overwrite a record the
+    caller did not name. The detail carries both halves of the disagreement:
+    the pinned document's own hash (null when no document has that id) and
+    the document the delivered hash resolves to (null when none holds it).
+    """
+
+    def __init__(
+        self,
+        pinned_id: str,
+        pinned_content_hash: str | None,
+        content_hash: str,
+        resolved_id: str | None,
+    ) -> None:
+        super().__init__(
+            "force_reingest_pin_mismatch",
+            (
+                "Force re-ingest was pinned to a document_id that does not "
+                "carry the delivered content hash; the pin must name a "
+                "document holding these bytes."
+            ),
+            409,
+            {
+                "document_id": pinned_id,
+                "pinned_source_content_hash": pinned_content_hash,
+                "source_content_hash": content_hash,
+                "existing_document_id": resolved_id,
+            },
+        )
+
+
 class MissingFieldError(SAGEError):
     """400: required field missing from request."""
 

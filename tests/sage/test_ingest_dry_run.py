@@ -26,6 +26,7 @@ import pytest
 
 from sage.api.errors import (
     DuplicateContentError,
+    ForceReingestPinMismatchError,
     IdenticalContentSupersedeError,
     InvalidActionError,
     InvalidDocTypeError,
@@ -741,6 +742,119 @@ async def test_dry_run_with_force_would_create_over_a_duplicate(
 
     assert preview.duplicate_of is not None
     assert preview.would_create is True
+
+
+async def test_dry_run_refuses_a_force_pin_naming_a_document_without_the_hash(
+    tmp_vault_dir, graph_store, stub_content_store, dry_ingestion_service
+):
+    """A pin the real run refuses is refused by its preview, with the same detail.
+
+    The real run is taken after the preview and its detail compared, so a
+    preview raising the error under a different shape does not pass.
+    """
+    shared = _write(tmp_vault_dir, "pin_shared.md", "# Pin\n\nShared bytes.")
+    other = _write(tmp_vault_dir, "pin_other.md", "# Pin\n\nOther bytes.")
+    for source in (shared, other):
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(source), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+            )
+        )
+    other_doc = next(
+        doc for doc in await graph_store.list_all_documents() if doc.source_path == "pin_other.md"
+    )
+
+    def pinned(*, dry_run: bool) -> IngestRequest:
+        return IngestRequest(
+            source=str(shared),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            force=True,
+            document_id=other_doc.id,
+            dry_run=dry_run,
+        )
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    with pytest.raises(ForceReingestPinMismatchError) as previewed:
+        await dry_ingestion_service.ingest(pinned(dry_run=True))
+    assert_state_unchanged(before, await state_snapshot(graph_store, stub_content_store))
+
+    with pytest.raises(ForceReingestPinMismatchError) as real:
+        await dry_ingestion_service.ingest(pinned(dry_run=False))
+    assert previewed.value.detail == real.value.detail
+
+
+async def test_dry_run_refuses_a_force_pin_when_no_document_holds_the_bytes(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The preview refuses a pin on bytes nobody holds, as the real run does.
+
+    The refusal above has a holder for the delivered bytes, so a preview that
+    checked the pin only when the lookup found one would pass it -- and would
+    report a clean ``would_create`` here for a call the real run refuses.
+    """
+    held = _write(tmp_vault_dir, "pin_nohold_held.md", "# Pin\n\nHeld bytes.")
+    holder = (
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(held), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+            )
+        )
+    ).document
+    novel = _write(tmp_vault_dir, "pin_nohold_novel.md", "# Pin\n\nBytes no record holds.")
+
+    with pytest.raises(ForceReingestPinMismatchError) as exc_info:
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(novel),
+                source_type=SourceType.MARKDOWN,
+                metadata={"doc_type": "misc"},
+                force=True,
+                document_id=holder.id,
+                dry_run=True,
+            )
+        )
+
+    assert exc_info.value.detail["existing_document_id"] is None
+    assert exc_info.value.detail["pinned_source_content_hash"] == holder.source_content_hash
+
+
+async def test_dry_run_accepts_a_force_pin_on_a_non_representative_holder(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """A pin on a holder the lookup did not prefer previews as a re-ingest.
+
+    The partner of the refusal above: a preview refusing every pin fails
+    here. ``duplicate_of`` still names the representative, which is what
+    that field states; the pin changes which record is reused, not which
+    document represents the bytes.
+    """
+    source = _write(tmp_vault_dir, "pin_holder.md", "# Pin\n\nHeld twice.")
+    held = (
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(source), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+            )
+        )
+    ).document
+    sibling = held.model_copy(
+        update={"id": "ffffffff_pinned_preview_sibling", "source_path": "pin_sibling.md"}
+    )
+    await graph_store.insert_document(sibling)
+
+    preview = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            force=True,
+            document_id=sibling.id,
+            dry_run=True,
+        )
+    )
+
+    assert preview.would_create is True
+    assert preview.duplicate_of == held.id
 
 
 # ---------------------------------------------------------------------------

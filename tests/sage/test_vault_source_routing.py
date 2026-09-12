@@ -23,6 +23,7 @@ from sage.api.errors import (
     ContentFileMissingError,
     DuplicateContentError,
     ForceReingestPathMismatchError,
+    ForceReingestPinMismatchError,
     SourceFileNotFoundError,
     VaultSourcePathRefusedError,
     VaultSourceStoreRefusedError,
@@ -999,6 +1000,40 @@ async def test_vsbb_044_legacy_dotted_record_is_found_not_duplicated(
         "a missed provenance lookup inserts a second document on the same stored "
         "file, which is the outcome the raw-string fallback exists to prevent"
     )
+
+
+async def test_force_pin_on_an_unrecorded_resident_source_is_judged_by_the_projected_digest(
+    ingestion_service, graph_store, tmp_vault_dir, monkeypatch
+):
+    """A resident source no record describes is refused on a mismatched pin too.
+
+    Nothing is delivered on this branch and no prior record supplies a
+    provenance digest, so the pin cannot be judged above retention the way a
+    delivered file's is -- it waits for the projection's digest instead. That
+    later check is reached only here: every other source carries a digest
+    before retention and is refused there, so a build that dropped it would
+    fail no other test while this call went on to mint a second document
+    under a pin naming the first.
+    """
+    holder = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "imports/pin_holder.md", "# Holder\n\nBody."
+    )
+    _patch_store(monkeypatch, _BackendOnlyStore(_UNUSED_ROOT))
+
+    with pytest.raises(ForceReingestPinMismatchError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="imports/unrecorded_resident.md",
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=holder.id,
+            )
+        )
+
+    sentinel_digest = "sha256:" + hashlib.sha256(_BackendOnlyStore.SENTINEL_BYTES).hexdigest()
+    assert exc_info.value.detail["source_content_hash"] == sentinel_digest
+    assert exc_info.value.detail["pinned_source_content_hash"] == holder.source_content_hash
+    assert len(await graph_store.list_all_documents()) == 1
 
 
 async def test_vsbb_048_normalized_record_is_found_under_a_dotted_caller_string(

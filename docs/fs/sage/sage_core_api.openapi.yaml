@@ -752,6 +752,17 @@ paths:
             `new_source_path`, and `source_content_hash`.
 
 
+            `force_reingest_pin_mismatch`: `force: true` and
+            `document_id` names a document that does not carry the
+            delivered content hash, or no document at all. A pin may
+            select any document holding these bytes, never a record
+            holding other bytes, and is refused whether or not another
+            document holds them. Detail carries `document_id`,
+            `pinned_source_content_hash` (null when no document has that
+            id), `source_content_hash`, and `existing_document_id` (null
+            when no document holds the hash).
+
+
             `supersede_target_not_active`: `predecessor_id` was set but
             the vault's lifecycle transition table does not permit
             `supersede` from the predecessor's current state. Detail
@@ -4992,8 +5003,12 @@ components:
             `force_reingest_path_mismatch` unless this field names the
             record the caller intends to overwrite (for example,
             re-ingesting a document whose file legitimately moved).
-            Consulted only when `force=true` and a content-hash
-            collision exists; ignored otherwise.
+            Where several documents carry the delivered content hash,
+            this field selects any one of them, not only the one a
+            duplicate refusal would name. A value naming a document that
+            does not carry the delivered content hash, or no document at
+            all, is rejected with 409 `force_reingest_pin_mismatch`.
+            Consulted only when `force=true`; ignored otherwise.
         dry_run:
           type: boolean
           default: false

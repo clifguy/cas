@@ -448,6 +448,14 @@ def register_sage_tools(
           ``existing_source_path``, ``new_source_path``, and
           ``source_content_hash``. Pass ``document_id`` to confirm the intended
           record (for example, a document whose file legitimately moved).
+        - ``force_reingest_pin_mismatch`` (409): ``force=true`` and
+          ``document_id`` names a document that does not carry the delivered
+          content hash, or no document at all. A pin may select any document
+          holding these bytes, never a record holding other bytes, and is
+          refused whether or not another document holds them. Detail carries
+          ``document_id``, ``pinned_source_content_hash`` (null when no
+          document has that id), ``source_content_hash``, and
+          ``existing_document_id`` (null when no document holds the hash).
         - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
           but the vault's lifecycle transition table does not permit
           ``supersede`` from the predecessor's current state. Detail
@@ -603,11 +611,14 @@ def register_sage_tools(
                 is ``update_lifecycles`` with ``action="relocate"``. Omit
                 for an ordinary ingest.
             document_id: Pins the force-reingest target. Consulted only when
-                ``force=true`` and a content-hash collision exists; ignored
-                otherwise. Names the record to re-ingest into so a
+                ``force=true``; ignored otherwise. Names the record to
+                re-ingest into -- any document carrying the delivered content
+                hash, not only the one a duplicate refusal would name -- so a
                 different-path hash match is treated as a deliberate reuse
                 (for example, a moved file) rather than the unrelated-document
                 collision that ``force_reingest_path_mismatch`` guards against.
+                A document without that hash, or no document at all, is
+                refused with ``force_reingest_pin_mismatch``.
             transfer_token: One-time token from a previously returned upload
                 recipe, redeemed after the recipe's byte leg has delivered
                 the file to the upload endpoint. The staged bytes run through
