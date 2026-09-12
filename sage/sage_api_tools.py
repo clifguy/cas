@@ -1943,7 +1943,9 @@ def register_sage_tools(
             ``excerpt_chars`` and ``excerpted_count``. To read a cut
             passage whole, call ``search`` with ``mode="deterministic"``,
             ``document_id`` set to the hit's document id, and the hit's
-            ``heading_path``. An
+            ``heading_path``. A hit whose ``heading_path`` is null comes
+            from a document with no headings, whose one passage is its
+            whole body; read that with ``read_projection``. An
             explicit ``response_mode`` suppresses the excerpt, as it
             suppresses the catalog degrade.
 

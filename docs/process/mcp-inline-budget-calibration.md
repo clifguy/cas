@@ -217,6 +217,12 @@ they should be re-run and re-reasoned, not assumed:
   `response_mode=full` because a ninety-row portfolio fits the light shape
   there, and `test_degraded_catalog_response_fits_the_delivered_ceiling`
   asserts both arms in delivered bytes.
+- The excerpt floor (`_EXCERPT_FLOOR_CHARS`) is not the budget, but it is stated
+  alongside it: in the `DiscoverResponse.hints` description, its OpenAPI mirror,
+  and the `search` docstring. `tests/sage/test_retrieval.py` pins the first and
+  last against the constant, and the OpenAPI parity gate carries the mirror.
+  `tests/sage/behavioral_tests.md` (BH-139) and §6 above restate it by hand, and
+  nothing pins those.
 
 ## 8. The measurement on record
 

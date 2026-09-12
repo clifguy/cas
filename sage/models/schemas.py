@@ -3771,7 +3771,9 @@ class DiscoverHit(BaseModel):
             "the response's `hints.reason` is `scored_response_excerpted`: "
             "the chunk's first `hints.excerpt_chars` characters. A "
             "deterministic request for the hit's document and "
-            "`heading_path` returns it whole."
+            "`heading_path` returns it whole; where the hit's "
+            "`heading_path` is null, the passage is the document's whole "
+            "body, which `read_projection` returns."
         ),
     )
     heading_path: str | None = Field(

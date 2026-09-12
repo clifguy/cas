@@ -9701,6 +9701,27 @@ async def test_excerpt_preserves_requested_abstracts(
     assert [hit.document.semantic_abstract for hit in response.results] == abstracts
 
 
+def test_stated_excerpt_floor_matches_the_constant():
+    """The contract prose states the floor the policy enforces.
+
+    The floor is written as a number in the ``hints`` description and the
+    ``search`` docstring, where a caller reads it; the policy enforces the
+    constant. Pinning the prose to the constant keeps a change to one from
+    leaving the other stating a floor that no longer holds. The OpenAPI copy
+    of the description is held to the Pydantic one by the verbatim parity
+    gate, so it needs no assertion of its own here.
+    """
+    import inspect as _inspect
+
+    from sage.mcp_server import search
+    from sage.services.retrieval import _EXCERPT_FLOOR_CHARS
+
+    stated = f"never fewer than {_EXCERPT_FLOOR_CHARS}"
+    hints_description = DiscoverResponse.model_fields["hints"].description
+    assert stated in " ".join(hints_description.split())
+    assert stated in " ".join((_inspect.getdoc(search) or "").split())
+
+
 async def test_deterministic_mode_carries_no_budget_element(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
 ):

@@ -213,11 +213,16 @@ def _largest_fitting_prefix(
     above budget by that fixed part times the fraction the response was
     over.
 
-    Size is monotone in ``n`` (raising it never removes a row or a
-    value), so the search is a binary one, and the responses these hints
-    annotate are small enough that a logarithmic number of
-    serializations is not worth modelling around. Returns None when
-    nothing in range fits; what that means is the caller's to decide.
+    Size is monotone in ``n``, so the search is a binary one, and the
+    responses these hints annotate are small enough that a logarithmic
+    number of serializations is not worth modelling around. For the row
+    and value truncations that is because raising ``n`` never removes a
+    row or a value. For the passage excerpt it holds less directly: the
+    excerpt hint's count of cut passages falls as the cap rises, but each
+    passage that stops being cut gains at least one byte, which is at
+    least what the count's digits can lose, so size never decreases.
+    Returns None when nothing in range fits; what that means is the
+    caller's to decide.
     """
     low, high = 1, ceiling
     best: int | None = None
@@ -267,6 +272,12 @@ def _apply_catalog_budget_hint(
     the same answer the previous proportional model gave in that case.
 
     Advisory only — the response is not truncated.
+
+    The recommendation is exact only where a re-page returns a prefix of
+    the same rows, which ``_response_at_row_count`` states as a premise and
+    the caller must supply. Catalog and edge enumeration supply it through a
+    total order. Semantic and keyword modes do not, since their candidate
+    fetch scales with the limit, so there the recommendation is an estimate.
 
     ``size`` and ``budget`` accept measurements the caller already holds of
     this same response, and default to taking them here. The budget policy's
@@ -461,12 +472,16 @@ def _apply_scored_budget_policy(response: DiscoverResponse, request: DiscoverReq
         def candidate_at(resp: DiscoverResponse, cap: int) -> DiscoverResponse:
             return _scored_excerpt_candidate(resp, cap, full_size=size, budget=budget)
 
-        cap = _largest_fitting_prefix(response, budget, longest - 1, candidate_at)
-        if cap is not None and cap >= _EXCERPT_FLOOR_CHARS:
-            candidate = candidate_at(response, cap)
-            response.results = candidate.results
-            response.hints = candidate.hints
-            return
+        # No passage longer than the floor means no cap the floor admits can
+        # cut anything, so the search could only return a result discarded
+        # below.
+        if longest > _EXCERPT_FLOOR_CHARS:
+            cap = _largest_fitting_prefix(response, budget, longest - 1, candidate_at)
+            if cap is not None and cap >= _EXCERPT_FLOOR_CHARS:
+                candidate = candidate_at(response, cap)
+                response.results = candidate.results
+                response.hints = candidate.hints
+                return
     _apply_catalog_budget_hint(response, size=size, budget=budget)
 
 
