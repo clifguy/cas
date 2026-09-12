@@ -9357,7 +9357,7 @@ async def test_explicit_response_mode_light_carries_no_degrade_claim(
 
 
 @pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
-async def test_semantic_and_keyword_responses_are_not_degraded(
+async def test_scored_responses_reach_a_budget_outcome_but_never_the_catalog_degrade(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
@@ -9365,15 +9365,14 @@ async def test_semantic_and_keyword_responses_are_not_degraded(
     monkeypatch,
     mode,
 ):
-    """Scored modes reach neither budget outcome.
+    """Scored modes reach a budget outcome, and it is never catalog's degrade.
 
-    The budget is pinned at one byte, so any policy that runs here fires.
-    The assertion is that no budget element reached the response at all --
-    not merely that the degrade did not. Testing only for the absence of the
-    degrade reason is satisfied by a policy that runs in every mode and falls
-    through to the recommended_limit hint, which is a change to what a
-    semantic caller receives and exactly what "non-catalog modes are
-    unaffected" forbids.
+    The budget is pinned at one byte, so any policy that runs here fires. The
+    presence of a budget element is required rather than merely allowed: a
+    scored response over the budget that carries none is the silent spill
+    this outcome exists to end. The catalog degrade is excluded by both its
+    reason and its row shape -- a scored caller searched for passages, and
+    the light document shape is a remedy for enumeration, not for search.
     """
     for i in range(6):
         doc_id = _id(f"scored_mode_doc_{i:02d}")
@@ -9391,10 +9390,362 @@ async def test_semantic_and_keyword_responses_are_not_degraded(
     )
 
     assert response.results
-    assert response.hints is None or "budget_bytes" not in response.hints, (
-        f"a budget element reached a {mode.value} response: {response.hints}"
+    assert response.hints is not None and "budget_bytes" in response.hints, (
+        f"no budget element reached an over-budget {mode.value} response: {response.hints}"
     )
+    assert response.hints["reason"] != "catalog_response_degraded_to_light"
     assert all(isinstance(hit.document, DocumentSummary) for hit in response.results)
+
+
+# Scored-mode budget policy. Every fixture below is placed by measurement: the
+# response is first taken at an effectively unbounded budget, and each budget
+# is derived from what that response and its hand-built cuts serialize to.
+
+_SCORED_QUERY = "report filing"
+_SHORT_PASSAGE = "Report filing process documentation."
+_LONG_PASSAGE = "Report filing process documentation, section body. " * 400
+_EXCERPT_FLOOR = 200
+
+
+async def _seed_scored(
+    graph_store,
+    stub_content_store,
+    embedding_provider,
+    *,
+    count: int,
+    long_index: int | None,
+    abstracts: bool = False,
+) -> None:
+    """Seed ``count`` documents, one of them carrying a long passage.
+
+    ``long_index`` names the document whose passage is long; ``None`` seeds
+    only short passages, every one of them under the excerpt floor.
+    """
+    assert len(_SHORT_PASSAGE) < _EXCERPT_FLOOR < len(_LONG_PASSAGE)
+    for i in range(count):
+        doc_id = _id(f"scored_budget_doc_{i:02d}")
+        abstract = f"Abstract for scored budget document {i}." if abstracts else None
+        await graph_store.insert_document(
+            _make_doc(doc_id, doc_type="ticket", semantic_abstract=abstract)
+        )
+        passage = _LONG_PASSAGE if i == long_index else _SHORT_PASSAGE
+        await _index_doc_chunks(
+            stub_content_store, embedding_provider, doc_id, [("Section 1", passage)]
+        )
+
+
+async def _scored_at_budget(retrieval_service, monkeypatch, mode, budget, **kwargs):
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(budget))
+    return await retrieval_service.discover(
+        DiscoverRequest(mode=mode, query=_SCORED_QUERY, **kwargs)
+    )
+
+
+def _cut_every_passage_at(response: DiscoverResponse, cap: int) -> DiscoverResponse:
+    """The response with every passage cut to ``cap`` characters, no hint.
+
+    Built by hand from the baseline rather than through the policy under
+    test, so a budget placed by it does not inherit the policy's arithmetic.
+    """
+    rows = [
+        hit.model_copy(
+            update={"chunk_content": hit.chunk_content[:cap] if hit.chunk_content else None}
+        )
+        for hit in response.results
+    ]
+    return response.model_copy(update={"results": rows})
+
+
+def _one_character_longer(response: DiscoverResponse) -> DiscoverResponse:
+    """The delivered response with the cut passage one character longer.
+
+    Keeps the hint the policy attached, so the measurement is of exactly what
+    a cap one larger would have delivered. Used to show the cap is the largest
+    that fits rather than merely one that does.
+    """
+    cap = response.hints["excerpt_chars"]
+    rows = [
+        hit.model_copy(update={"chunk_content": _LONG_PASSAGE[: cap + 1]})
+        if hit.chunk_content == _LONG_PASSAGE[:cap]
+        else hit
+        for hit in response.results
+    ]
+    return response.model_copy(update={"results": rows})
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_scored_response_over_budget_is_excerpted(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
+):
+    """Over budget, and cutting the long passage fits: the caller gets an excerpt.
+
+    Anti-coincidental-pass: the long passage must equal the baseline's prefix
+    at ``excerpt_chars`` with that cap below its length, so a policy that
+    announces the excerpt and leaves the passage whole reddens; and the short
+    passages must be byte-identical with ``excerpted_count`` at one, so a
+    policy that cuts every passage reddens too.
+    """
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=6, long_index=2
+    )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
+    full_size = _serialized_response_bytes(baseline)
+    assert baseline.hints is None
+
+    response = await _scored_at_budget(retrieval_service, monkeypatch, mode, full_size - 1)
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "scored_response_excerpted"
+    assert response.hints["full_response_size_bytes"] == full_size
+    assert response.hints["budget_bytes"] == full_size - 1
+    assert "recommended_limit" not in response.hints
+    cap = response.hints["excerpt_chars"]
+    assert isinstance(cap, int) and _EXCERPT_FLOOR < cap < len(_LONG_PASSAGE)
+    assert response.hints["excerpted_count"] == 1
+
+    assert [h.document.id for h in response.results] == [h.document.id for h in baseline.results]
+    assert [h.relevance_score for h in response.results] == [
+        h.relevance_score for h in baseline.results
+    ]
+    for got, was in zip(response.results, baseline.results):
+        if was.chunk_content == _LONG_PASSAGE:
+            assert got.chunk_content == was.chunk_content[:cap]
+        else:
+            assert got.chunk_content == was.chunk_content
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_excerpted_scored_response_fits_the_budget(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
+):
+    """The excerpted response, hint included, measures at or under the budget.
+
+    The budget sits halfway between the response cut at the floor and the
+    full response, and both brackets are asserted first: a fixture that was
+    never over budget, or whose floor cut does not fit, would satisfy the fit
+    assertion without the excerpt having decided anything.
+
+    Anti-coincidental-pass: a policy cutting to any fixed length that happens
+    to fit passes the fit assertion, so the response with the passage one
+    character longer is asserted over the budget. That is what makes the cap
+    the largest that fits, which the contract states, rather than one that
+    does.
+    """
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=6, long_index=2
+    )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
+    full_size = _serialized_response_bytes(baseline)
+    floor_size = _serialized_response_bytes(_cut_every_passage_at(baseline, _EXCERPT_FLOOR))
+    budget = (floor_size + full_size) // 2
+    assert floor_size + 1000 < budget < full_size
+
+    response = await _scored_at_budget(retrieval_service, monkeypatch, mode, budget)
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "scored_response_excerpted"
+    assert _serialized_response_bytes(response) <= budget
+    assert _serialized_response_bytes(_one_character_longer(response)) > budget
+    assert all(hit.chunk_content for hit in response.results)
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_scored_falls_back_to_limit_hint_when_no_passage_can_be_cut(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
+):
+    """Every passage is under the floor: the response comes back whole with the limit hint."""
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=40, long_index=None
+    )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9, limit=40)
+    full_size = _serialized_response_bytes(baseline)
+
+    response = await _scored_at_budget(
+        retrieval_service, monkeypatch, mode, full_size - 1, limit=40
+    )
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+    assert response.hints["response_size_bytes"] == full_size
+    recommended = response.hints["recommended_limit"]
+    assert isinstance(recommended, int) and 1 <= recommended < len(response.results)
+    assert [h.chunk_content for h in response.results] == [
+        h.chunk_content for h in baseline.results
+    ]
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_scored_falls_back_when_even_the_floor_excerpt_busts(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
+):
+    """A cut at the floor would still not fit: nothing is cut for nothing.
+
+    Anti-coincidental-pass: the long passage must come back at full length,
+    so a policy that excerpts anyway and then reports the fallback reddens.
+    """
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=6, long_index=2
+    )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
+    floor_size = _serialized_response_bytes(_cut_every_passage_at(baseline, _EXCERPT_FLOOR))
+
+    response = await _scored_at_budget(retrieval_service, monkeypatch, mode, floor_size - 1)
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+    assert "excerpt_chars" not in response.hints
+    assert _LONG_PASSAGE in [hit.chunk_content for hit in response.results]
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_scored_excerpt_boundary_is_exact(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
+):
+    """A response exactly at budget is delivered untouched; one byte over is excerpted."""
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=6, long_index=2
+    )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
+    full_size = _serialized_response_bytes(baseline)
+
+    at_budget = await _scored_at_budget(retrieval_service, monkeypatch, mode, full_size)
+    assert at_budget.hints is None
+    assert _LONG_PASSAGE in [hit.chunk_content for hit in at_budget.results]
+
+    over = await _scored_at_budget(retrieval_service, monkeypatch, mode, full_size - 1)
+    assert over.hints is not None
+    assert over.hints["reason"] == "scored_response_excerpted"
+    assert _serialized_response_bytes(over) <= full_size - 1
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+@pytest.mark.parametrize("response_mode", [ResponseMode.FULL, ResponseMode.LIGHT])
+async def test_explicit_response_mode_suppresses_the_excerpt(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+    monkeypatch,
+    mode,
+    response_mode,
+):
+    """An explicit ``response_mode`` is the caller's answer about payload depth.
+
+    ``full`` is the discriminating arm: a policy that ignored the parameter
+    would cut the long passage here. ``light`` carries no passage to cut, so
+    its arm states the contract rather than guarding against a rival, and is
+    placed one byte under its own light-shape size so that it is over budget
+    at all.
+
+    Anti-coincidental-pass: the ``full`` budget is one at which the same
+    request with ``response_mode`` unset is excerpted, and that control is
+    asserted first. A budget below the floor cut would reach the fallback
+    whatever the parameter said, and the ``full`` arm would pin nothing.
+    """
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=6, long_index=2
+    )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
+    full_size = _serialized_response_bytes(baseline)
+    floor_size = _serialized_response_bytes(_cut_every_passage_at(baseline, _EXCERPT_FLOOR))
+    budget = (floor_size + full_size) // 2
+    control = await _scored_at_budget(retrieval_service, monkeypatch, mode, budget)
+    assert control.hints is not None
+    assert control.hints["reason"] == "scored_response_excerpted"
+    if response_mode == ResponseMode.LIGHT:
+        light = await _scored_at_budget(
+            retrieval_service, monkeypatch, mode, 10**9, response_mode=response_mode
+        )
+        budget = _serialized_response_bytes(light) - 1
+
+    response = await _scored_at_budget(
+        retrieval_service, monkeypatch, mode, budget, response_mode=response_mode
+    )
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "response_exceeds_inline_budget"
+    assert "excerpt_chars" not in response.hints
+    passages = [hit.chunk_content for hit in response.results]
+    if response_mode == ResponseMode.FULL:
+        assert _LONG_PASSAGE in passages
+    else:
+        assert all(passage is None for passage in passages)
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_excerpt_preserves_requested_abstracts(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
+):
+    """Abstracts a caller asked for survive the excerpt; only passages are cut."""
+    await _seed_scored(
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
+        count=6,
+        long_index=2,
+        abstracts=True,
+    )
+    baseline = await _scored_at_budget(
+        retrieval_service, monkeypatch, mode, 10**9, include_abstracts=True
+    )
+    abstracts = [hit.document.semantic_abstract for hit in baseline.results]
+    assert all(abstracts)
+    full_size = _serialized_response_bytes(baseline)
+
+    response = await _scored_at_budget(
+        retrieval_service, monkeypatch, mode, full_size - 1, include_abstracts=True
+    )
+
+    assert response.hints is not None
+    assert response.hints["reason"] == "scored_response_excerpted"
+    assert [hit.document.semantic_abstract for hit in response.results] == abstracts
+
+
+def test_stated_excerpt_floor_matches_the_constant():
+    """The contract prose states the floor the policy enforces.
+
+    The floor is written as a number in the ``hints`` description and the
+    ``search`` docstring, where a caller reads it; the policy enforces the
+    constant. Pinning the prose to the constant keeps a change to one from
+    leaving the other stating a floor that no longer holds. The OpenAPI copy
+    of the description is held to the Pydantic one by the verbatim parity
+    gate, so it needs no assertion of its own here.
+    """
+    import inspect as _inspect
+
+    from sage.mcp_server import search
+    from sage.services.retrieval import _EXCERPT_FLOOR_CHARS
+
+    stated = f"never fewer than {_EXCERPT_FLOOR_CHARS}"
+    hints_description = DiscoverResponse.model_fields["hints"].description
+    assert stated in " ".join(hints_description.split())
+    assert stated in " ".join((_inspect.getdoc(search) or "").split())
+
+
+async def test_deterministic_mode_carries_no_budget_element(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch
+):
+    """Deterministic mode is an explicit single-section fetch and is left alone.
+
+    The budget is pinned at one byte, so a policy keyed on "every mode but
+    catalog" rather than on the two scored modes would fire here.
+    """
+    doc_id = _id("scored_budget_det_doc")
+    await graph_store.insert_document(_make_doc(doc_id))
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, doc_id, [("Section 1", _LONG_PASSAGE)]
+    )
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1")
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.DETERMINISTIC, document_id=doc_id, heading_path="Section 1"
+        )
+    )
+
+    assert response.results
+    assert response.hints is None or "budget_bytes" not in response.hints
+    assert response.results[0].chunk_content == _LONG_PASSAGE
 
 
 async def test_facets_target_keeps_its_own_budget_hint(

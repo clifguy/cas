@@ -1401,6 +1401,99 @@ class TestSageDiscoverCatalog:
                 f"{set(row['document']) - light_keys}"
             )
 
+    async def test_excerpted_scored_response_fits_the_delivered_ceiling(self, single_vault):
+        """A keyword response over the ceiling is excerpted and delivered inline.
+
+        Measured on the TextContent the runtime produced, at the production
+        budget, because the claim -- a caller gets passages instead of a file
+        path -- is about the encoding the client counts, and the store here is
+        the real content store rather than the stub the service-level tests
+        search.
+
+        Anti-coincidental-pass: the ``response_mode="full"`` arm, which
+        suppresses the excerpt, is asserted strictly over the ceiling in the
+        same delivered units, so the excerpted arm cannot be satisfied by a
+        payload that was never over budget. The passage assertion is the
+        second half: a policy that announced the excerpt and left the
+        passages whole satisfies the reason check and fails there.
+        """
+        from mcp.types import TextContent
+
+        from sage.adapters.interfaces import Chunk
+        from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+        services, _ = single_vault
+        passage = "Quarterly filing procedure, section body text. " * 250
+        row_count = 10
+        assert row_count * len(passage) > DEFAULT_MCP_INLINE_BUDGET_BYTES
+        embedder = StubEmbeddingProvider()
+        now = datetime.now(timezone.utc)
+        for i in range(row_count):
+            doc_id = _id(f"scored_excerpt_mcp_{i:02d}")
+            await services.graph_store.insert_document(
+                Document(
+                    id=doc_id,
+                    title=f"Filing procedure {i:02d}",
+                    source_type=SourceType.MARKDOWN,
+                    source_path=f"imports/scored_excerpt_mcp_{i:02d}.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha(doc_id),
+                    adapter_version="0.1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    doc_type="ticket",
+                )
+            )
+            chunk = Chunk(
+                document_id=doc_id,
+                heading_path="Procedure",
+                content=passage,
+                chunk_index=0,
+                doc_type="ticket",
+                lifecycle_status="active",
+            )
+            [chunk.embedding] = await embedder.embed([passage])
+            await services.content_store.index_chunks(doc_id, [chunk])
+
+        async def delivered(**kwargs) -> tuple[int, dict]:
+            out = await _mcp.mcp.call_tool(
+                "search",
+                {
+                    "vault_id": "test_vault",
+                    "mode": "keyword",
+                    "query": "filing procedure",
+                    "limit": row_count,
+                    **kwargs,
+                },
+            )
+            text = next(c.text for c in out if isinstance(c, TextContent))
+            return len(text.encode("utf-8")), json.loads(text)
+
+        full_bytes, full = await delivered(response_mode="full")
+        assert len(full["results"]) == row_count
+        assert full_bytes > DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+            f"{row_count} passages delivered {full_bytes}B whole, which does not "
+            f"overrun the {DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte budget; the "
+            "fixture no longer crosses the line it exists to cross"
+        )
+        assert full["hints"]["reason"] == "response_exceeds_inline_budget"
+
+        excerpted_bytes, excerpted = await delivered()
+        assert excerpted_bytes <= DEFAULT_MCP_INLINE_BUDGET_BYTES, (
+            f"excerpted response delivered {excerpted_bytes}B against the "
+            f"{DEFAULT_MCP_INLINE_BUDGET_BYTES}-byte budget"
+        )
+        hints = excerpted["hints"]
+        assert hints["reason"] == "scored_response_excerpted"
+        assert hints["excerpted_count"] == row_count
+        assert len(excerpted["results"]) == row_count
+        for hit in excerpted["results"]:
+            assert hit["chunk_content"] == passage[: hints["excerpt_chars"]]
+
     async def test_facets_budget_hint_surfaces_through_mcp_wrapper(self, single_vault):
         """The facets budget hint survives serialization across the MCP boundary.
 

@@ -167,8 +167,26 @@ cost lands on REST callers paging wide: `source_path`, `document_date`, `tags`,
 Application's catalog table does exactly that, and it is the reason it has to.
 The outcome is in the OpenAPI, so a caller can discover it without reading this.
 
-The measurement below is unaffected: it bounds delivery, and the degrade is a
-decision taken against that bound rather than a change to it.
+**Semantic and keyword responses switch too, with their own remedy.** Dropping
+document fields answers an enumeration; it does not answer a search, whose
+caller wanted the passages. So an over-budget scored response with
+`response_mode` unset keeps every hit and every field and cuts each passage
+longer than one shared cap to its first `excerpt_chars` characters, the cap
+being the largest that fits and never below 200. It carries
+`reason="scored_response_excerpted"`. Where no such cap fits, it comes back
+whole with `recommended_limit`, which on these modes is an estimate rather than
+a guarantee: candidate fetch scales with the limit, so a smaller page need not
+be a prefix of the larger one. The same every-transport choice applies, and
+the CAS Application opts out of it the same way: its search cards show a
+passage's head and tail, and an excerpt keeps only the head, so its scored
+requests send `response_mode="full"`.
+
+A recalibration therefore moves the excerpt line as well: raising the budget
+lengthens excerpts or stops them; lowering it shortens them and pushes some
+responses past the floor into the limit hint.
+
+The measurement below is unaffected: it bounds delivery, and the degrade and
+the excerpt are decisions taken against that bound rather than changes to it.
 
 ## 7. What a recalibration breaks
 
@@ -199,6 +217,12 @@ they should be re-run and re-reasoned, not assumed:
   `response_mode=full` because a ninety-row portfolio fits the light shape
   there, and `test_degraded_catalog_response_fits_the_delivered_ceiling`
   asserts both arms in delivered bytes.
+- The excerpt floor (`_EXCERPT_FLOOR_CHARS`) is not the budget, but it is stated
+  alongside it: in the `DiscoverResponse.hints` description, its OpenAPI mirror,
+  and the `search` docstring. `tests/sage/test_retrieval.py` pins the first and
+  last against the constant, and the OpenAPI parity gate carries the mirror.
+  `tests/sage/behavioral_tests.md` (BH-139) and §6 above restate it by hand, and
+  nothing pins those.
 
 ## 8. The measurement on record
 

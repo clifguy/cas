@@ -132,6 +132,15 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "single-method stub signature check absorbed by the stub arm of the graph-store "
         "signature gate, which covers every port method"
     ),
+    **{
+        f"tests/sage/test_retrieval.py::"
+        f"test_semantic_and_keyword_responses_are_not_degraded[{mode}]": (
+            "pinned scored modes carrying no budget element; replaced by "
+            "test_scored_responses_reach_a_budget_outcome_but_never_the_catalog_degrade, "
+            "which requires one now that scored responses are excerpted over budget"
+        )
+        for mode in ("semantic", "keyword")
+    },
 }
 
 
