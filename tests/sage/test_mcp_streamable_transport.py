@@ -89,10 +89,18 @@ def test_mcp_mounts_absent_from_openapi() -> None:
 
     FastAPI skips non-APIRoute entries when generating the schema; this pins
     that behavior so the MCP endpoints never leak into the REST contract the
-    OpenAPI conformance gate validates.
+    OpenAPI conformance gate validates. Both entries at a mount path are
+    covered: the transport route and the GET-only route that declines the
+    standalone event stream.
     """
     app = create_app()
     paths = set(app.openapi().get("paths", {}))
+    mounted = [r for r in app.router.routes if getattr(r, "path", None) in dict(MCP_HTTP_MOUNTS)]
+    # Positive control: absence from OpenAPI means nothing if nothing is
+    # mounted. Each mount contributes a transport route and a decline route.
+    assert len(mounted) == 2 * len(MCP_HTTP_MOUNTS), (
+        f"expected two routes per mount, found {[getattr(r, 'path', None) for r in mounted]}"
+    )
     for mount, _surface in MCP_HTTP_MOUNTS:
         offenders = {p for p in paths if p == mount or p.startswith(mount + "/")}
         assert not offenders, f"MCP mount leaked into OpenAPI: {sorted(offenders)}"
@@ -102,7 +110,15 @@ def test_mcp_mounts_absent_from_openapi() -> None:
 def test_transport_statuses_reach_access_filter(
     path: str, surface: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Feed raw app response messages through Uvicorn's real logging producer."""
+    """Feed raw app response messages through Uvicorn's real logging producer.
+
+    Anti-coincidental-pass: the three routine requests are asserted to emit no
+    access record, which on its own would also hold if no record ever reached
+    the logger -- an unwired access logger, a handler that dropped everything,
+    a filter that suppressed unconditionally. The fourth request is the control
+    that separates those: an unexpected route under the mount must still print,
+    so the empty list above means "suppressed" rather than "never arrived".
+    """
     import asyncio
     import logging
     from http import HTTPStatus
@@ -157,10 +173,22 @@ def test_transport_statuses_reach_access_filter(
         )
         assert response.status_code == 202
         response = client.get(path, headers={"Accept": "application/json"}, follow_redirects=False)
-        assert response.status_code == 406
+        assert response.status_code == 405
+        # Control: an unexpected route, which must stay visible.
+        response = client.get(f"{path}/nope", follow_redirects=False)
+        assert response.status_code == 404
 
-    assert statuses == [HTTPStatus.OK, HTTPStatus.ACCEPTED, HTTPStatus.NOT_ACCEPTABLE]
+    assert statuses == [
+        HTTPStatus.OK,
+        HTTPStatus.ACCEPTED,
+        HTTPStatus.METHOD_NOT_ALLOWED,
+        HTTPStatus.NOT_FOUND,
+    ]
     assert statuses[0] is HTTPStatus.OK
     assert statuses[1] is HTTPStatus.ACCEPTED
+    # Every one of the first three is routine startup traffic, so none reaches
+    # the console: the POSTs are dropped outright and the declined GET is
+    # counted into the once-a-minute summary instead of printed per attempt.
+    # The unexpected route survives, proving the records do arrive.
     records = [r for r in caplog.records if r.name == "uvicorn.access"]
-    assert [(r.args[1], r.args[2], r.args[4]) for r in records] == [("GET", path, 406)]
+    assert [(r.args[1], r.args[2], r.args[4]) for r in records] == [("GET", f"{path}/nope", 404)]
