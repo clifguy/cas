@@ -85,9 +85,19 @@ def _discovery_paths() -> frozenset[str]:
 class _DropMcpAccessLogs(_logging.Filter):
     """Keep transport failures; summarize expected unauthenticated discovery.
 
-    Only successful POSTs to canonical MCP paths are routine traffic. An
-    authentication posture not supplied by the application defaults to visible
-    discovery logs. Query strings never become diagnostic counter keys.
+    Two request shapes are routine on a canonical MCP path: a successful POST,
+    which carries every JSON-RPC call and is dropped outright, and a standalone
+    GET, which the mount declines with ``405`` and which is counted into a
+    once-a-minute summary. A client may repeat the latter on every connection
+    attempt, so per-attempt lines drown the console without adding a fact the
+    first one did not carry.
+
+    Everything else stays visible, and the predicates are narrow to keep it
+    that way: a POST that fails negotiation, an authentication failure, an
+    unexpected route, a server error, and a mount GET answering anything other
+    than ``405`` all pass through. An authentication posture not supplied by
+    the application defaults to visible discovery logs. Query strings never
+    become diagnostic counter keys.
     """
 
     def __init__(
@@ -101,6 +111,7 @@ class _DropMcpAccessLogs(_logging.Filter):
         self._clock = clock
         self._paths = _discovery_paths()
         self._counts: dict[str, int] = {}
+        self._mount_get_counts: dict[str, int] = {}
         self._last_summary: float | None = None
         self._lock = Lock()
 
@@ -108,6 +119,7 @@ class _DropMcpAccessLogs(_logging.Filter):
         """Emit remaining counts once, including at orderly server shutdown."""
         with self._lock:
             counts, self._counts = self._counts, {}
+            mount_gets, self._mount_get_counts = self._mount_get_counts, {}
         if counts:
             _logging.getLogger("sage.discovery").info(
                 "Expected discovery 404s (authentication disabled): count=%d paths=%s; "
@@ -115,6 +127,31 @@ class _DropMcpAccessLogs(_logging.Filter):
                 sum(counts.values()),
                 counts,
             )
+        if mount_gets:
+            _logging.getLogger("sage.transport").info(
+                "Declined standalone event-stream GETs (405): count=%d paths=%s; "
+                "individual requests available at DEBUG",
+                sum(mount_gets.values()),
+                mount_gets,
+            )
+
+    def _summarize(
+        self, counts: dict[str, int], path: str, logger_name: str, debug_message: str
+    ) -> None:
+        """Count one expected request, emitting a summary at most once a minute.
+
+        One cadence is shared across the categories so a busy minute produces a
+        single burst of summary lines rather than one stream per category.
+        """
+        now = self._clock()
+        with self._lock:
+            counts[path] = counts.get(path, 0) + 1
+            due = self._last_summary is None or now - self._last_summary >= 60
+            if due:
+                self._last_summary = now
+        _logging.getLogger(logger_name).debug(debug_message, path)
+        if due:
+            self.flush_summary()
 
     def filter(self, record: _logging.LogRecord) -> bool:
         args = record.args
@@ -132,17 +169,21 @@ class _DropMcpAccessLogs(_logging.Filter):
         path = path.partition("?")[0]
         if method == "POST" and 200 <= status < 300 and path in _MCP_MOUNT_PATHS:
             return False
+        # The mount's own answer to a standalone GET. Bounded rather than
+        # dropped: a client that keeps asking is still worth seeing, one line a
+        # minute instead of one per attempt. Pinned to 405 so a mount GET that
+        # somehow answers otherwise stays fully visible as the anomaly it is.
+        if method == "GET" and status == 405 and path in _MCP_MOUNT_PATHS:
+            self._summarize(
+                self._mount_get_counts,
+                path,
+                "sage.transport",
+                "Declined standalone event-stream GET %s: 405",
+            )
+            return False
         if self._auth_enabled or method != "GET" or status != 404 or path not in self._paths:
             return True
-        now = self._clock()
-        with self._lock:
-            self._counts[path] = self._counts.get(path, 0) + 1
-            due = self._last_summary is None or now - self._last_summary >= 60
-            if due:
-                self._last_summary = now
-        _logging.getLogger("sage.discovery").debug("Expected discovery GET %s: 404", path)
-        if due:
-            self.flush_summary()
+        self._summarize(self._counts, path, "sage.discovery", "Expected discovery GET %s: 404")
         return False
 
 

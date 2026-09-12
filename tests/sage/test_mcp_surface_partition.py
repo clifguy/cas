@@ -384,6 +384,13 @@ def test_all_mcp_mounts_are_exact_path_routes(minimal_config):
     ``POST /mcp`` — the byte-exact resource URI the edge advertises — falls
     through to the parent router's redirect. The transport must hang off an
     exact-path ``Route`` (raw ASGI, not an ``APIRoute``) instead.
+
+    A mount may carry further exact-path routes — the GET-only route that
+    declines the standalone event stream is one — but every such route must be
+    scoped to methods the transport does not need, and must be registered
+    ahead of it. A second route matching all methods, or a method-scoped one
+    sitting behind the transport, would not reach POST and would fail silently
+    rather than at startup.
     """
     app = create_app(config=minimal_config)
     for mount in ("/mcp", "/mcp_maint"):
@@ -392,9 +399,23 @@ def test_all_mcp_mounts_are_exact_path_routes(minimal_config):
             for route in app.routes
             if isinstance(route, Route) and not isinstance(route, APIRoute) and route.path == mount
         ]
-        assert len(matches) == 1, (
-            f"expected exactly one raw exact-path Route at {mount}, found {len(matches)}"
+        transports = [route for route in matches if not route.methods]
+        assert len(transports) == 1, (
+            f"expected exactly one method-agnostic transport Route at {mount}, "
+            f"found {len(transports)}: {[route.name for route in matches]}"
         )
+        # Position is checked directly rather than by scanning to the
+        # transport and stopping: a loop that breaks on it never examines what
+        # follows, which is the half of the invariant that matters.
+        assert matches[-1] is transports[0], (
+            f"the transport is not last at {mount}, so the route(s) after it can never "
+            f"match: {[route.name for route in matches]}"
+        )
+        for route in matches[:-1]:
+            assert "POST" not in (route.methods or set()), (
+                f"route {route.name!r} precedes the transport at {mount} and claims POST, "
+                "which would shadow every JSON-RPC call"
+            )
         mounted = [
             route for route in app.routes if isinstance(route, Mount) and route.path == mount
         ]

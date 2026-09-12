@@ -405,7 +405,8 @@ export interface IngestSummaryEvent {
 //
 // Hand-mirrored from the SAGE Core API components in
 // docs/fs/sage/sage_core_api.openapi.yaml: BatchIngestFileMetadata,
-// BatchIngestUploadMetadata, DocumentsCreated, ProgressEvent, SummaryEvent.
+// BatchIngestUploadMetadata, DocumentsCreated, ProgressEvent, SummaryEvent,
+// IngestPreview, DocTypeRequirements.
 // Sent/consumed directly against POST /sage_vaults/{vault_id}/documents:batch,
 // the hosted-profile bulk-ingest surface where the browser uploads file content
 // (the server shares no filesystem with the client). Kept distinct from the
@@ -422,6 +423,11 @@ export interface BatchIngestUploadMetadata {
   files: BatchIngestFileMetadata[];
   infer_edges?: boolean;
   needs_review?: boolean;
+  // Evaluate every uploaded file and persist nothing: the summary carries a
+  // preview per file that would be ingested and an error per file that would
+  // be refused. The bytes are still uploaded, and are discarded when the
+  // stream ends, so a real run afterwards uploads them again.
+  dry_run?: boolean;
 }
 
 export interface BatchDocumentsCreated {
@@ -440,6 +446,31 @@ export interface BatchProgressEvent {
   error?: string;
 }
 
+export interface DocTypeRequirements {
+  doc_type: string;
+  is_declared: boolean;
+  has_metadata_schema: boolean;
+  declared_tier3_fields: string[];
+  required_tier3_fields: string[];
+  unique_tier3_fields: string[];
+  permitted_source_types?: string[] | null;
+}
+
+// What one file would have done, returned in place of a document under a dry
+// run. `dry_run` is the discriminator and is always true.
+export interface IngestPreview {
+  dry_run: true;
+  would_create: boolean;
+  resolved_doc_type: string;
+  resolved_source_type: string;
+  source_content_hash?: string | null;
+  duplicate_of?: string | null;
+  predecessor_id?: string | null;
+  would_supersede: boolean;
+  tier3_validated: boolean;
+  requirements: DocTypeRequirements;
+}
+
 export interface BatchSummaryEvent {
   event_type: 'summary';
   documents_created: BatchDocumentsCreated;
@@ -453,6 +484,14 @@ export interface BatchSummaryEvent {
   error_count: number;
   errors: BatchIngestFileError[];
   edge_warnings?: EdgeWarning[] | null;
+  // Echo of the request flag. When true every creation and edge count above is
+  // zero by construction; error_count is not, since a file the batch would have
+  // refused is counted there on a dry run exactly as on a real one.
+  dry_run?: boolean;
+  // One entry per file the batch evaluated successfully, in batch order. A file
+  // that would have been refused appears in `errors` instead, so the two lists
+  // together account for the batch. Present only on a dry run.
+  previews?: IngestPreview[] | null;
 }
 
 export type BatchIngestEvent = BatchProgressEvent | BatchSummaryEvent;

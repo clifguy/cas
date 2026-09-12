@@ -224,3 +224,108 @@ def test_main_uses_resolved_auth_posture_and_flushes_on_exit(monkeypatch, caplog
         entry.main()
     summaries = [r for r in caplog.records if "Expected discovery 404s" in r.getMessage()]
     assert len(summaries) == (0 if auth_enabled else 2)
+
+
+# ---------------------------------------------------------------------------
+# Standalone GETs on a mount: declined with 405, summarized rather than printed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/mcp_maint"])
+@pytest.mark.parametrize("status", [405, HTTPStatus.METHOD_NOT_ALLOWED])
+def test_mount_get_decline_is_summarized(caplog, path, status):
+    """Repeated declined GETs collapse to one bounded line a minute.
+
+    The query strings vary on every record so a counter keyed on the raw
+    request line would report 100 distinct paths and leak each value into the
+    summary. Both are asserted: the count collapses, and no fragment of a
+    query string survives into the emitted message.
+    """
+    now = [0.0]
+    caplog.set_level(logging.DEBUG, logger="sage.transport")
+    f = _DropMcpAccessLogs(clock=lambda: now[0])
+
+    for n in range(100):
+        assert not f.filter(_access_record(f"{path}?session={n}", "GET", status))
+
+    assert f._mount_get_counts == {path: 99}
+    summaries = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(summaries) == 1
+    assert "count=1" in summaries[0].getMessage()
+    assert all("session=" not in r.getMessage() for r in summaries)
+    assert any(r.levelno == logging.DEBUG and path in r.getMessage() for r in caplog.records)
+
+    now[0] = 60.0
+    f.filter(_access_record(path, "GET", status))
+    summaries = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(summaries) == 2
+    assert "count=100" in summaries[1].getMessage()
+
+
+@pytest.mark.parametrize(
+    "path,method,status",
+    [
+        # A declined GET anywhere but a canonical mount is an unexpected route.
+        ("/mcp_admin", "GET", 405),
+        ("/docs", "GET", 405),
+        ("/mcp/anything", "GET", 405),
+        ("/mcpfoo", "GET", 405),
+        # A mount GET answering anything but 405 is an anomaly, not routine --
+        # 200 and 406 are the two the decline route exists to have replaced.
+        ("/mcp", "GET", 200),
+        ("/mcp", "GET", 406),
+        ("/mcp", "GET", 401),
+        ("/mcp", "GET", 403),
+        ("/mcp", "GET", 500),
+        # POST negotiation failure stays actionable.
+        ("/mcp", "POST", 400),
+        ("/mcp", "POST", 406),
+        ("/mcp", "POST", 401),
+        # Only GET is declined by the new route; another method answering 405
+        # came from the transport and keeps its line.
+        ("/mcp", "DELETE", 405),
+        ("/mcp", "HEAD", 405),
+        ("/mcp", "PUT", 405),
+    ],
+)
+@pytest.mark.parametrize("status_type", [int, HTTPStatus])
+def test_mount_get_summary_negative_controls(path, method, status, status_type):
+    assert _DropMcpAccessLogs().filter(_access_record(path, method, status_type(status)))
+
+
+@pytest.mark.parametrize("status", [405, HTTPStatus.METHOD_NOT_ALLOWED])
+def test_flush_summary_covers_mount_gets(caplog, status):
+    """Counts pending at orderly shutdown are emitted, and only once."""
+    caplog.set_level(logging.INFO, logger="sage.transport")
+    f = _DropMcpAccessLogs(clock=lambda: 0.0)
+    f.filter(_access_record("/mcp", "GET", status))
+    f.filter(_access_record("/mcp_maint", "GET", status))
+
+    caplog.clear()
+    f.flush_summary()
+    emitted = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(emitted) == 1
+    assert "/mcp_maint" in emitted[0].getMessage()
+
+    f.flush_summary()
+    assert len([r for r in caplog.records if r.levelno == logging.INFO]) == 1
+
+
+def test_discovery_and_mount_get_summaries_are_distinct(caplog):
+    """Two categories, two lines -- neither borrows the other's count."""
+    caplog.set_level(logging.INFO)
+    f = _DropMcpAccessLogs(auth_enabled=False, clock=lambda: 0.0)
+    # The first counted request of any category flushes at once, no summary
+    # having been emitted yet. Spend that flush, then leave one of each
+    # category pending for the flush actually under test.
+    f.filter(_access_record("/mcp", "GET", 405))
+    f.filter(_access_record("/.well-known/oauth-protected-resource", "GET", 404))
+    f.filter(_access_record("/mcp", "GET", 405))
+    assert f._counts and f._mount_get_counts
+
+    caplog.clear()
+    f.flush_summary()
+    messages = {r.name: r.getMessage() for r in caplog.records if r.levelno == logging.INFO}
+    assert "sage.discovery" in messages and "sage.transport" in messages
+    assert "/mcp" not in messages["sage.discovery"]
+    assert "oauth-protected-resource" not in messages["sage.transport"]
