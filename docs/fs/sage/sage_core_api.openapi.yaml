@@ -311,7 +311,13 @@ paths:
         server_address, source_content_hash, relocated_at}` naming the
         counterpart -- in the same statement, so the state and the
         pointer cannot disagree. Without it the item refuses with
-        `missing_relocated_to` and nothing is written. The destination
+        `missing_relocated_to` and nothing is written. The pointer's
+        `source_content_hash` must be the digest the document itself
+        carries: a relocation moves a document without modifying it, so
+        both vaults hold the same source at the same digest, and a
+        pointer naming a different one refuses with
+        `relocated_to_provenance_mismatch` before anything is written.
+        Neither side reads the other to check it. The destination
         half is an ordinary ingest carrying `relocated_from`, and it is
         performed first, so an interrupted move leaves its evidence on
         the document a reader is most likely to hold. Nothing in the
@@ -340,7 +346,9 @@ paths:
         `invalid_lifecycle_transition` (carrying the `valid_actions` for
         the state the document is in), `missing_successor_id`, `missing_relocated_to`,
         `unexpected_successor_id`, `unexpected_relocated_to` (a
-        qualifier supplied with an action that does not take it), and
+        qualifier supplied with an action that does not take it),
+        `relocated_to_provenance_mismatch` (the pointer names a source
+        content hash the document does not carry), and
         `reserved_transition` (the vault declares a transition into or
         out of `relocated` that the engine reserves; possible only on a
         configuration that loaded leniently). Each appears as a per-item
@@ -649,6 +657,25 @@ paths:
             `path`, `message`, `instance`, and `requirements` -- the
             doc_type's declared and required field names, unique keys
             and permitted source types.
+
+
+            `relocated_from_provenance_mismatch`: `relocated_from` names
+            a source content hash the delivered bytes do not carry. A
+            relocation moves a document without modifying it, so both
+            vaults hold the same source at the same digest and each half
+            checks that against the document in front of it
+            (CAS-ADR-050). Detail carries `field`,
+            `pointer_content_hash` and `document_content_hash`. Checked
+            before the source is retained, so a refused relocation
+            leaves no copy behind.
+
+
+            `relocation_source_undelivered`: `relocated_from` was
+            supplied for a source already resident in the vault's store,
+            which is re-projected rather than delivered. Nothing is
+            hashed on that path and no prior record's provenance can be
+            inherited, so the claim cannot be checked against anything;
+            deliver the document's source bytes instead.
           content:
             application/json:
               schema:
@@ -709,6 +736,17 @@ paths:
             `identical_content_supersede`: the new file's content hash
             matches the predecessor's; supersede chains require
             distinct content per step.
+
+
+            `reserved_transition`: the vault's lifecycle lands a fresh
+            ingest in the terminal `relocated` state, which the engine
+            reserves to the one action carrying a relocation pointer. An
+            ingest carries none, so landing one there would rest a
+            document in the state naming nowhere, and no transition
+            leaves the state to repair it. Detail carries `from_state`,
+            `attempted_action`, `to_state` and `reason`. Possible only
+            on a configuration that loaded leniently; repair the `(new)`
+            row via `PATCH /sage_vaults/{vault_id}/config`.
 
 
             `stale_chain_head`: `expected_head_version` was supplied
@@ -3557,7 +3595,11 @@ components:
         resolution hints a reasoning caller weighs rather than
         coordinates the engine resolves, and the source content hash is
         what confirms a resolution landed where it meant to, because
-        both vaults retain the same source at the same digest.
+        both vaults retain the same source at the same digest. That last
+        part is required rather than expected: each half checks the
+        pointer's digest against the document in front of it as it
+        writes, without reaching the counterpart, so a pointer
+        describing neither side is refused.
       required:
         - vault_id
         - document_id
@@ -3591,7 +3633,10 @@ components:
             The SHA-256 of the source bytes both vaults retain. The one
             member that confirms rather than hints: a caller arriving
             from either direction matches it to know it reached the
-            document the pointer meant.
+            document the pointer meant. Checked at write time on both
+            halves, each against the document in front of it, so a
+            pointer describing neither side is refused rather than
+            stored.
         relocated_at:
           type: string
           format: date-time

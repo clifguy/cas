@@ -298,6 +298,97 @@ class ReservedTransitionError(SAGEError):
         )
 
 
+class RelocationProvenanceMismatchError(SAGEError):
+    """400: a relocation pointer names a digest the document does not carry.
+
+    A relocation moves a document between vaults; it does not modify one.
+    Modifying and relocating are two operations and only the second is a
+    relocation, so both halves hold the same source at the same digest
+    and each half proves that against the document in front of it
+    (CAS-ADR-050). The pointer's ``source_content_hash`` is the member
+    that confirms a resolution landed on the intended document, and a
+    pointer carrying a digest that describes neither side confirms
+    nothing -- it is one more asserted coordinate, which is what the
+    decision prefers a checkable digest to.
+
+    Neither half follows its pointer or reaches the other side to raise
+    this. Each compares a caller-supplied value against local bytes or a
+    local record, so the refusal is available under every deployment and
+    to a vault whose store rewrites its copy at rest.
+
+    ``field`` names which pointer was refused, and the code is derived
+    from it, so a caller branches on the half it got wrong rather than on
+    a shared code it has to disambiguate. The two halves fail for
+    different reasons and are recovered from differently: on the
+    destination the caller has built nothing yet and can simply retry,
+    while on the origin the destination half has already been written
+    (CAS-ADR-050 writes it first), so a live document in another vault is
+    now waiting on a decision.
+
+    The comparison is against the document's provenance digest -- the
+    bytes the caller delivered -- and never against the as-stored digest,
+    which a binding that rewrites at rest is permitted to make different
+    (CAS-ADR-043). A document whose retained copy has drifted from its
+    recorded provenance cannot produce its original bytes and so cannot
+    relocate until that is repaired; that is an integrity fault the
+    source-file audit reports, not a relocation concern.
+    """
+
+    def __init__(self, field: str, pointer_hash: str, document_hash: str) -> None:
+        super().__init__(
+            f"{field}_provenance_mismatch",
+            (
+                f"{field} names source content hash {pointer_hash}, but this document's "
+                f"source is {document_hash}. A relocation moves a document without "
+                f"modifying it, so both vaults hold the same source at the same digest. "
+                f"Correct the pointer, or relocate the document whose source it names."
+            ),
+            400,
+            {
+                "field": field,
+                "pointer_content_hash": pointer_hash,
+                "document_content_hash": document_hash,
+            },
+        )
+
+
+class RelocationSourceUndeliveredError(SAGEError):
+    """400: a relocation was asked for without delivering the source bytes.
+
+    The destination half of a relocation proves the source it claims by
+    hashing the bytes it was handed. A source already resident in the
+    vault's store is re-projected rather than re-delivered, so on that
+    path nothing is hashed this call and the only digest available
+    describes the retained copy -- which a binding that rewrites at rest
+    is permitted to make different from what produced it (CAS-ADR-043).
+    Comparing the pointer against that digest would refuse or admit a
+    relocation on evidence about the wrong bytes.
+
+    Refused rather than admitted, because a relocation is composed by a
+    client that holds the source and delivers it to each side; a
+    destination write that delivers nothing is a different operation
+    wearing a relocation's pointer. Deliver the document's source bytes,
+    or ingest without the pointer and record the relocation separately.
+
+    The refused source is named by the caller's own spelling. Every other
+    spelling this error could reach for is one the service resolved and
+    the caller would not recognize.
+    """
+
+    def __init__(self, source: str) -> None:
+        super().__init__(
+            "relocation_source_undelivered",
+            (
+                f"relocated_from was supplied for '{source}', whose bytes are already "
+                f"resident in this vault and are re-projected rather than delivered. A "
+                f"relocation proves its source by the bytes it is handed, so deliver the "
+                f"document's source, or ingest without relocated_from."
+            ),
+            400,
+            {"source": source},
+        )
+
+
 class InvalidDocTypeError(SAGEError):
     """400: doc_type not in vault's document_types config."""
 

@@ -313,6 +313,19 @@ class RelocationPointer(BaseModel):
     confirms, because both vaults retain the same source at the same
     digest, so a caller arriving from either direction can check that it
     landed where the pointer meant.
+
+    Holding the same source at the same digest is required rather than
+    expected, and each half is made to prove it locally at the moment it
+    writes: a relocation moves a document without modifying it, so a
+    pointer whose digest describes neither side is refused. Neither check
+    follows the pointer or reaches the counterpart, which is what keeps
+    them available across deployments. What each half proves differs, and
+    the difference is worth knowing. The destination compares against
+    bytes it hashed on that call, so it establishes byte identity. The
+    origin compares against its own record, so it establishes record
+    identity -- its retained copy is not re-read, and confirming that a
+    retained copy still hashes to its record is the source-file integrity
+    audit's job rather than this pointer's.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -346,7 +359,10 @@ class RelocationPointer(BaseModel):
             "The SHA-256 of the source bytes both vaults retain. The one "
             "member that confirms rather than hints: a caller arriving "
             "from either direction matches it to know it reached the "
-            "document the pointer meant."
+            "document the pointer meant. Checked at write time on both "
+            "halves, each against the document in front of it, so a "
+            "pointer describing neither side is refused rather than "
+            "stored."
         ),
     )
     relocated_at: datetime = Field(

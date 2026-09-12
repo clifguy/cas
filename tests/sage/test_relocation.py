@@ -34,8 +34,10 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.api.errors import (
+    DuplicateContentError,
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    RelocationProvenanceMismatchError,
     ReservedTransitionError,
     SupersedeTargetNotActiveError,
     UnexpectedFieldError,
@@ -67,28 +69,57 @@ from sage.storage.locks import DocumentLockManager
 # transposes two members, produces objects that are still well-formed and
 # would satisfy any assertion phrased as "a pointer is present". Only
 # distinct values make the wrong one visible.
+#
+# The digest member is the one exception, and it is an exception by
+# decision rather than by convenience. CAS-ADR-050 Decision 10 requires
+# both halves of a relocation to hold the same source at the same digest
+# and requires each half to prove that against the document in front of
+# it, so a pointer carrying a digest belonging to nothing is refused
+# rather than stored. Every call that expects to succeed therefore derives
+# ``source_content_hash`` from its own document or file, while the other
+# four members stay distinct exactly as before. The literal defaults below
+# are kept for the calls that expect a refusal, and they are safe as
+# defaults only because they describe no document anywhere.
 
 
 def _sha(token: str) -> str:
     return "sha256:" + (f"{abs(hash(token)):064x}")[:64]
 
 
-def _origin_pointer(document_id: str = "00000011_origin_head") -> RelocationPointer:
+def _file_digest(vault_dir: Path, relative_path: str) -> str:
+    """The digest a delivered file will be recorded under.
+
+    Hashes through the same helper the ingest path uses, so a test
+    deriving an expected digest cannot disagree with the value the service
+    computes over the same bytes.
+    """
+    from sage.vault_source_binding import hash_file
+
+    return hash_file(vault_dir / "sources" / relative_path)
+
+
+def _origin_pointer(
+    document_id: str = "00000011_origin_head",
+    source_content_hash: str = "sha256:" + "ab" * 32,
+) -> RelocationPointer:
     return RelocationPointer(
         vault_id="origin_vault",
         document_id=document_id,
         server_address="https://origin.example",
-        source_content_hash="sha256:" + "ab" * 32,
+        source_content_hash=source_content_hash,
         relocated_at=datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc),
     )
 
 
-def _destination_pointer(document_id: str = "00000022_destination_root") -> RelocationPointer:
+def _destination_pointer(
+    document_id: str = "00000022_destination_root",
+    source_content_hash: str = "sha256:" + "cd" * 32,
+) -> RelocationPointer:
     return RelocationPointer(
         vault_id="destination_vault",
         document_id=document_id,
         server_address="https://destination.example",
-        source_content_hash="sha256:" + "cd" * 32,
+        source_content_hash=source_content_hash,
         relocated_at=datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc),
     )
 
@@ -295,7 +326,7 @@ async def test_relocate_moves_the_head_and_records_the_pointer_together(
         return await original_update(document_id, updates)
 
     graph_store.update_document = recording_update
-    destination = _destination_pointer()
+    destination = _destination_pointer(source_content_hash=doc.source_content_hash)
     try:
         await lifecycle_service._set_lifecycle(
             doc.id, SetLifecycleRequest(action="relocate", relocated_to=destination)
@@ -350,7 +381,7 @@ async def test_relocate_refusal_reaches_the_bulk_item_envelope(graph_store, life
     await graph_store.insert_document(refused)
     await graph_store.insert_document(accepted)
 
-    destination = _destination_pointer()
+    destination = _destination_pointer(source_content_hash=accepted.source_content_hash)
     response = await lifecycle_service.bulk_set_lifecycle(
         BulkLifecycleRequest(
             items=[
@@ -372,6 +403,180 @@ async def test_relocate_refusal_reaches_the_bulk_item_envelope(graph_store, life
     _assert_pointer_equals((await graph_store.get_document(accepted.id)).relocated_to, destination)
 
 
+async def test_relocate_holds_the_pointer_to_this_document_s_own_digest(
+    graph_store, lifecycle_service
+):
+    """A pointer whose digest is not this document's is refused; its own is taken.
+
+    Both arms in one test, because they are one rule and an
+    implementation is as likely to get half of it. The accept arm is what
+    rules out the mutation this check invites most: a guard that refuses
+    every relocation satisfies the refuse arm and nothing else.
+
+    The refusal names both digests, so a caller can see which of the two
+    it got wrong without a second call.
+    """
+    mismatched = _make_doc("00000023_digest_mismatch")
+    matching = _make_doc("00000024_digest_match")
+    await graph_store.insert_document(mismatched)
+    await graph_store.insert_document(matching)
+
+    foreign = _sha("belongs-to-no-document")
+    assert foreign != mismatched.source_content_hash
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await lifecycle_service._set_lifecycle(
+            mismatched.id,
+            SetLifecycleRequest(
+                action="relocate",
+                relocated_to=_destination_pointer(source_content_hash=foreign),
+            ),
+        )
+
+    assert excinfo.value.code == "relocated_to_provenance_mismatch"
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["field"] == "relocated_to"
+    assert excinfo.value.detail["pointer_content_hash"] == foreign
+    assert excinfo.value.detail["document_content_hash"] == mismatched.source_content_hash
+
+    # Refused before any write, on the template the pointerless refusal set.
+    untouched = await graph_store.get_document(mismatched.id)
+    assert untouched.lifecycle_status == "active"
+    assert untouched.relocated_to is None
+
+    # The accept arm.
+    await lifecycle_service._set_lifecycle(
+        matching.id,
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=matching.source_content_hash),
+        ),
+    )
+    assert (await graph_store.get_document(matching.id)).lifecycle_status == "relocated"
+
+
+async def test_relocate_reads_provenance_rather_than_the_as_stored_digest(
+    graph_store, lifecycle_service
+):
+    """The comparison is against the provenance digest, not the retained copy's.
+
+    The two coincide for every document whose store kept the delivered
+    bytes verbatim, which is every ordinary fixture and the whole
+    filesystem binding -- so nothing else in this file distinguishes an
+    implementation that reads ``source_content_hash`` from one that reads
+    ``stored_content_hash`` or the maintenance helper that falls back
+    between them. Here they are made to differ, which is the split
+    CAS-ADR-043 permits a rewriting binding to produce.
+
+    Both arms, because either alone is satisfied by one of the two
+    implementations.
+    """
+    as_stored = _sha("the-rewritten-copy")
+    doc = _make_doc("00000025_rewritten_at_rest", stored_content_hash=as_stored)
+    other = _make_doc("00000026_rewritten_at_rest_too", stored_content_hash=as_stored)
+    await graph_store.insert_document(doc)
+    await graph_store.insert_document(other)
+    assert doc.source_content_hash != doc.stored_content_hash, (
+        "without a real divergence between the two digests this test asserts nothing"
+    )
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await lifecycle_service._set_lifecycle(
+            doc.id,
+            SetLifecycleRequest(
+                action="relocate",
+                relocated_to=_destination_pointer(source_content_hash=as_stored),
+            ),
+        )
+    assert excinfo.value.detail["document_content_hash"] == doc.source_content_hash
+
+    await lifecycle_service._set_lifecycle(
+        other.id,
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=other.source_content_hash),
+        ),
+    )
+    assert (await graph_store.get_document(other.id)).lifecycle_status == "relocated"
+
+
+async def test_the_digest_refusal_reaches_the_bulk_item_envelope(graph_store, lifecycle_service):
+    """The digest refusal travels the batch surface, as its sibling does.
+
+    The pointerless refusal is already pinned here; this is the same
+    assertion for the check added beside it, because a refusal raised
+    from a deeper point in the same function is not guaranteed to be
+    translated by the envelope that translates the shallower one.
+    """
+    refused = _make_doc("00000027_bulk_digest_refused")
+    accepted = _make_doc("00000028_bulk_digest_accepted")
+    await graph_store.insert_document(refused)
+    await graph_store.insert_document(accepted)
+
+    response = await lifecycle_service.bulk_set_lifecycle(
+        BulkLifecycleRequest(
+            items=[
+                BulkLifecycleItem(
+                    document_id=refused.id,
+                    action="relocate",
+                    relocated_to=_destination_pointer(
+                        source_content_hash=_sha("foreign-to-the-batch")
+                    ),
+                ),
+                BulkLifecycleItem(
+                    document_id=accepted.id,
+                    action="relocate",
+                    relocated_to=_destination_pointer(
+                        source_content_hash=accepted.source_content_hash
+                    ),
+                ),
+            ]
+        )
+    )
+
+    assert response.error_count == 1
+    assert response.success_count == 1
+    failed, succeeded = response.results
+    assert failed.error["error"] == "relocated_to_provenance_mismatch"
+    assert (await graph_store.get_document(refused.id)).lifecycle_status == "active"
+    assert succeeded.status == "success"
+
+
+async def test_a_dry_run_relocate_reaches_the_same_digest_verdict(graph_store, lifecycle_service):
+    """A dry run refuses what the run it previews would refuse.
+
+    A preview that reported a relocation as available and then failed on
+    the real call would be worse than no preview: the caller has already
+    written the destination half by the time it asks.
+    """
+    doc = _make_doc("00000029_dry_run_digest")
+    await graph_store.insert_document(doc)
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await lifecycle_service._set_lifecycle(
+            doc.id,
+            SetLifecycleRequest(
+                action="relocate",
+                relocated_to=_destination_pointer(source_content_hash=_sha("not-this-one")),
+                dry_run=True,
+            ),
+        )
+    assert excinfo.value.code == "relocated_to_provenance_mismatch"
+
+    preview = await lifecycle_service._set_lifecycle(
+        doc.id,
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=doc.source_content_hash),
+            dry_run=True,
+        ),
+    )
+    assert preview.document.lifecycle_status == "relocated"
+    assert (await graph_store.get_document(doc.id)).lifecycle_status == "active", (
+        "a dry run must leave the document alone"
+    )
+
+
 async def test_a_qualifier_is_refused_by_the_action_that_does_not_take_it(
     graph_store, lifecycle_service
 ):
@@ -387,6 +592,14 @@ async def test_a_qualifier_is_refused_by_the_action_that_does_not_take_it(
     The state assertions are what make this more than a code check: a
     guard placed after the write would raise the same error while having
     already moved the document.
+
+    The relocate arm also pins an ordering. Its pointer carries the
+    fixture default digest, which belongs to no document, so both this
+    refusal and the digest refusal are available; asserting the
+    qualifier code holds the digest check below the qualifier checks.
+    A caller supplying a field the action does not take has not yet
+    described a coherent call, and telling it about its digest first
+    would answer a question it has not asked.
     """
     for_relocate = _make_doc("00000016_relocate_with_successor")
     for_archive = _make_doc("00000017_archive_with_pointer")
@@ -442,7 +655,10 @@ async def test_each_action_still_accepts_its_own_qualifier(graph_store, lifecycl
 
     await lifecycle_service._set_lifecycle(
         relocating.id,
-        SetLifecycleRequest(action="relocate", relocated_to=_destination_pointer()),
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=relocating.source_content_hash),
+        ),
     )
     assert (await graph_store.get_document(relocating.id)).lifecycle_status == "relocated"
 
@@ -462,7 +678,10 @@ async def test_no_transition_leaves_the_relocated_state(graph_store, lifecycle_s
     await graph_store.insert_document(archived)
     await lifecycle_service._set_lifecycle(
         relocated.id,
-        SetLifecycleRequest(action="relocate", relocated_to=_destination_pointer()),
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=relocated.source_content_hash),
+        ),
     )
 
     with pytest.raises(InvalidLifecycleTransitionError) as excinfo:
@@ -578,6 +797,83 @@ async def test_the_service_holds_the_reservation_a_lenient_config_broke(
     assert stored_c.relocated_to is None
 
 
+async def test_ingest_is_refused_by_a_configuration_that_lands_it_in_relocated(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+    tmp_vault_dir,
+):
+    """A vault landing fresh ingests in the terminal state is refused at ingest.
+
+    The ingest half of the reservation the lifecycle service already
+    holds. The landing state is read from the configured ``(new)`` row,
+    so a table naming ``relocated`` there would insert a document already
+    resting in the state -- carrying ``relocated_from`` and no
+    ``relocated_to``, with no action able to leave the state and repair
+    it. That is the one shape the state exists to rule out, reached
+    without any relocation having happened.
+
+    Refused at the service rather than left to the configuration
+    validator, for the reason the sibling test states: an on-disk
+    configuration loads leniently, because rejecting the file would drop
+    its vault out of reach of the surfaces that could fix it. So a vault
+    can be serving this table now.
+
+    The control arm is the same service over the ordinary table, which
+    ingests. Without it a guard written as "refuse when the vault
+    declares a relocated state at all" -- which every vault in this file
+    does -- would pass the refusal above and break every ingest.
+    """
+    import copy
+
+    def _service(landing_state: str, *, lenient: bool) -> IngestionService:
+        raw = copy.deepcopy(minimal_vault_config_dict)
+        for row in raw["lifecycle"]["transitions"]:
+            if row["from_state"] == "(new)":
+                row["to_state"] = landing_state
+        if lenient:
+            # Strict validation refuses it -- asserted, so this fixture
+            # cannot quietly become a table the validator would have
+            # allowed anyway, which would make the refusal below a test of
+            # nothing.
+            with pytest.raises(ValidationError):
+                VaultConfig.model_validate(raw)
+            config = VaultConfig.model_validate(raw, context={"lifecycle_validation": "warn"})
+        else:
+            config = VaultConfig.model_validate(raw)
+        return IngestionService(
+            graph_store=graph_store,
+            lock_manager=lock_manager,
+            content_store=stub_content_store,
+            embedding_provider=stub_embedding_provider,
+            abstraction_provider=stub_abstraction_provider,
+            config=config,
+            source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        )
+
+    _write_md(tmp_vault_dir, "landing-refused.md", "# Landing\n\nBody.\n")
+
+    with pytest.raises(ReservedTransitionError) as excinfo:
+        await _service("relocated", lenient=True).ingest(
+            IngestRequest(source="landing-refused.md", source_type=SourceType.MARKDOWN)
+        )
+    assert excinfo.value.code == "reserved_transition"
+    assert excinfo.value.detail["to_state"] == "relocated"
+    assert excinfo.value.detail["attempted_action"] == "ingest"
+    assert await graph_store.list_all_documents() == [], (
+        "a refused landing state must not insert a document"
+    )
+
+    # The control: the ordinary table over the same service shape.
+    result = await _service("active", lenient=False).ingest(
+        IngestRequest(source="landing-refused.md", source_type=SourceType.MARKDOWN)
+    )
+    assert (await graph_store.get_document(result.document.id)).lifecycle_status == "active"
+
+
 def test_a_configuration_may_not_give_the_relocated_state_a_way_out(minimal_vault_config_dict):
     """The engine constrains ``relocated`` by name where it constrains no other state.
 
@@ -648,7 +944,10 @@ async def test_relocated_target_stays_unsatisfied(graph_store, lifecycle_service
 
     await lifecycle_service._set_lifecycle(
         target.id,
-        SetLifecycleRequest(action="relocate", relocated_to=_destination_pointer()),
+        SetLifecycleRequest(
+            action="relocate",
+            relocated_to=_destination_pointer(source_content_hash=target.source_content_hash),
+        ),
     )
 
     after = await graph_ops.check_preconditions(dependent.id)
@@ -672,7 +971,7 @@ async def test_ingest_persists_the_inbound_pointer(tmp_vault_dir, ingestion_serv
     document has also left again.
     """
     _write_md(tmp_vault_dir, "relocated-in.md", "# Moved\n\nBody.\n")
-    origin = _origin_pointer()
+    origin = _origin_pointer(source_content_hash=_file_digest(tmp_vault_dir, "relocated-in.md"))
 
     result = await ingestion_service.ingest(
         IngestRequest(
@@ -715,12 +1014,16 @@ async def test_force_reingest_refreshes_the_inbound_pointer(
     fails on whichever member is compared first rather than on none.
     """
     _write_md(tmp_vault_dir, "refreshed.md", "# Refreshed\n\nBody.\n")
-    first = _origin_pointer("00000012_first_origin")
+    delivered = _file_digest(tmp_vault_dir, "refreshed.md")
+    first = _origin_pointer("00000012_first_origin", source_content_hash=delivered)
+    # Differs from ``first`` in every member except the digest, which both
+    # must carry: the same bytes are being relocated either way, and a
+    # pointer naming a different digest is now refused rather than stored.
     second = RelocationPointer(
         vault_id="second_origin_vault",
         document_id="00000013_second_origin",
         server_address="https://second-origin.example",
-        source_content_hash="sha256:" + "ef" * 32,
+        source_content_hash=delivered,
         relocated_at=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
     )
 
@@ -757,6 +1060,225 @@ async def test_force_reingest_refreshes_the_inbound_pointer(
     )
 
 
+async def test_ingest_holds_the_pointer_to_the_delivered_bytes_digest(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A pointer whose digest is not the delivered bytes' is refused.
+
+    The destination half of the same rule the origin half holds, and the
+    accept arm is carried by ``test_ingest_persists_the_inbound_pointer``
+    above, which now derives its digest from the file it writes. Kept
+    separate rather than folded in because that test is about the pointer
+    being persisted and this one is about the call being refused, and a
+    reader looking for either should not have to read both.
+    """
+    _write_md(tmp_vault_dir, "digest-mismatch.md", "# Mismatched\n\nBody.\n")
+    delivered = _file_digest(tmp_vault_dir, "digest-mismatch.md")
+    foreign = _sha("delivered-nothing-like-this")
+    assert foreign != delivered
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="digest-mismatch.md",
+                source_type=SourceType.MARKDOWN,
+                relocated_from=_origin_pointer(source_content_hash=foreign),
+            )
+        )
+
+    assert excinfo.value.code == "relocated_from_provenance_mismatch"
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["field"] == "relocated_from"
+    assert excinfo.value.detail["pointer_content_hash"] == foreign
+    assert excinfo.value.detail["document_content_hash"] == delivered
+
+    # Nothing landed: the refusal is not a half-completed ingest.
+    assert (
+        await graph_store.find_documents_by_hashes([delivered], prefer_lifecycle_statuses=()) == {}
+    )
+
+
+async def test_a_refused_relocation_ingest_retains_nothing(
+    tmp_vault_dir, tmp_path, ingestion_service, graph_store
+):
+    """A refused destination write leaves no retained file behind.
+
+    The assertion that places the check rather than merely adding it. An
+    external import copies the caller's file into the vault before the
+    record is built, so a digest check placed beside the two sibling
+    digest refusals -- which sit below retention and are harmless there,
+    because both mean the bytes are already present and retention reuses
+    the existing copy -- would refuse a *novel* file after copying it in,
+    leaving a retained file with no document row. No audit walks for that,
+    and this file's own ingest path records the same mistake having been
+    made once before, for the doc_type gate.
+
+    An absolute source is what exercises it: a vault-relative source is
+    retained in place, so nothing is copied and nothing can be orphaned.
+    """
+    external = tmp_path / "arriving-from-elsewhere.md"
+    external.write_text("# Arriving\n\nBody.\n")
+
+    def tree() -> set[str]:
+        root = tmp_vault_dir / "sources"
+        return {str(f.relative_to(root)) for f in root.rglob("*") if f.is_file()}
+
+    before = tree()
+
+    with pytest.raises(RelocationProvenanceMismatchError):
+        await ingestion_service.ingest(
+            IngestRequest(
+                source=str(external),
+                source_type=SourceType.MARKDOWN,
+                relocated_from=_origin_pointer(source_content_hash=_sha("not-these-bytes")),
+            )
+        )
+
+    assert tree() == before, (
+        "a refused relocation must not leave the caller's bytes retained in the vault"
+    )
+
+
+async def test_force_reingest_refuses_a_mismatched_pointer(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """The force branch is held to the same rule as the first write.
+
+    The force path assembles its own update dict rather than rebuilding
+    the record, which is why the pointer's refresh needed its own test
+    above; for the same reason a check wired only into the new-document
+    branch would leave this one open.
+    """
+    _write_md(tmp_vault_dir, "force-digest.md", "# Force\n\nBody.\n")
+    delivered = _file_digest(tmp_vault_dir, "force-digest.md")
+    good = _origin_pointer(source_content_hash=delivered)
+
+    first = await ingestion_service.ingest(
+        IngestRequest(
+            source="force-digest.md", source_type=SourceType.MARKDOWN, relocated_from=good
+        )
+    )
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="force-digest.md",
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                relocated_from=_origin_pointer(source_content_hash=_sha("wrong-on-the-force-arm")),
+            )
+        )
+    assert excinfo.value.code == "relocated_from_provenance_mismatch"
+
+    # The refused force call left the recorded pointer as it was.
+    _assert_pointer_equals((await graph_store.get_document(first.document.id)).relocated_from, good)
+
+
+async def test_a_dry_run_relocation_ingest_reaches_the_same_digest_verdict(
+    tmp_vault_dir, ingestion_service
+):
+    """The preview refuses what the run it previews would refuse.
+
+    The preview resolves and hashes the source without retaining it, and
+    computes no projection, so it has no as-stored digest to fall back
+    on. A check inherited from the guard the preview already uses for the
+    identical-content refusal would therefore go quiet exactly where the
+    real run refuses -- green-lighting the one call the run rejects.
+    """
+    _write_md(tmp_vault_dir, "dry-digest.md", "# Dry\n\nBody.\n")
+    delivered = _file_digest(tmp_vault_dir, "dry-digest.md")
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="dry-digest.md",
+                source_type=SourceType.MARKDOWN,
+                dry_run=True,
+                relocated_from=_origin_pointer(source_content_hash=_sha("previewed-wrong")),
+            )
+        )
+    assert excinfo.value.code == "relocated_from_provenance_mismatch"
+
+    preview = await ingestion_service.ingest(
+        IngestRequest(
+            source="dry-digest.md",
+            source_type=SourceType.MARKDOWN,
+            dry_run=True,
+            relocated_from=_origin_pointer(source_content_hash=delivered),
+        )
+    )
+    assert preview.dry_run is True
+    assert preview.would_create is True
+
+
+async def test_a_pointer_mismatch_outranks_duplicate_content(tmp_vault_dir, ingestion_service):
+    """A call that is both a duplicate and a digest mismatch reports the pointer.
+
+    Pinned rather than left to be rediscovered by whoever reads
+    ``duplicate_content`` and expects it. The pointer is the caller's
+    assertion about what the call *is*; the duplicate verdict is about
+    what the vault already holds. Answering the second first would tell a
+    caller its relocation was refused as an ordinary re-ingest.
+    """
+    body = "# Shared\n\nIdentical bytes.\n"
+    _write_md(tmp_vault_dir, "already-here.md", body)
+    _write_md(tmp_vault_dir, "arriving-again.md", body)
+    delivered = _file_digest(tmp_vault_dir, "already-here.md")
+    assert delivered == _file_digest(tmp_vault_dir, "arriving-again.md")
+
+    await ingestion_service.ingest(
+        IngestRequest(source="already-here.md", source_type=SourceType.MARKDOWN)
+    )
+
+    # Control: without the pointer this is the duplicate refusal, so the
+    # test below is not merely asserting the only error available.
+    with pytest.raises(DuplicateContentError):
+        await ingestion_service.ingest(
+            IngestRequest(source="arriving-again.md", source_type=SourceType.MARKDOWN)
+        )
+
+    with pytest.raises(RelocationProvenanceMismatchError) as excinfo:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="arriving-again.md",
+                source_type=SourceType.MARKDOWN,
+                relocated_from=_origin_pointer(source_content_hash=_sha("neither-of-these")),
+            )
+        )
+    assert excinfo.value.code == "relocated_from_provenance_mismatch"
+
+
+async def test_the_digest_comparison_accepts_the_bare_hex_spelling(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A correct digest in a non-canonical spelling is still correct.
+
+    What this pins is modest and worth stating plainly: the typed alias
+    canonicalizes the pointer's value on model construction, so the
+    service compares two canonical strings and the spelling never reaches
+    it. The test guards the alias staying in front of this field rather
+    than the comparison itself -- an exact-match comparison behind a
+    field that stopped normalizing would start reading a spelling
+    difference as a relocation mismatch, and nothing else here would say
+    so.
+    """
+    _write_md(tmp_vault_dir, "spelling.md", "# Spelling\n\nBody.\n")
+    delivered = _file_digest(tmp_vault_dir, "spelling.md")
+    bare = delivered.removeprefix("sha256:").upper()
+    assert bare != delivered
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source="spelling.md",
+            source_type=SourceType.MARKDOWN,
+            relocated_from=_origin_pointer(source_content_hash=bare),
+        )
+    )
+
+    stored = await graph_store.get_document(result.document.id)
+    assert stored.relocated_from.source_content_hash == delivered
+
+
 # ---------------------------------------------------------------------------
 # Non-propagation through supersession
 # ---------------------------------------------------------------------------
@@ -777,7 +1299,7 @@ async def test_supersession_does_not_carry_the_inbound_pointer_forward(
     """
     _write_md(tmp_vault_dir, "v1.md", "# V1\n\nOriginal.\n")
     _write_md(tmp_vault_dir, "v2.md", "# V2\n\nRevised.\n")
-    origin = _origin_pointer()
+    origin = _origin_pointer(source_content_hash=_file_digest(tmp_vault_dir, "v1.md"))
 
     v1 = await ingestion_service.ingest(
         IngestRequest(source="v1.md", source_type=SourceType.MARKDOWN, relocated_from=origin)
@@ -817,7 +1339,8 @@ async def test_a_relocated_head_cannot_be_superseded(
     """
     _write_md(tmp_vault_dir, "out-v1.md", "# Out V1\n\nOriginal.\n")
     _write_md(tmp_vault_dir, "out-v2.md", "# Out V2\n\nRevised.\n")
-    destination = _destination_pointer()
+    # The head that relocates is v2, so the pointer carries v2's digest.
+    destination = _destination_pointer(source_content_hash=_file_digest(tmp_vault_dir, "out-v2.md"))
 
     v1 = await ingestion_service.ingest(
         IngestRequest(source="out-v1.md", source_type=SourceType.MARKDOWN)

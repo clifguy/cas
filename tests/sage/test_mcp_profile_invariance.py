@@ -715,6 +715,139 @@ async def test_mpi_016_reuse_falls_through_when_the_stored_copy_is_gone(mpi_vaul
         assert (Path(config.vault.storage_root) / second["source_path"]).exists()
 
 
+def _origin_pointer_dict(source_content_hash: str, document_id: str) -> dict:
+    """A relocation pointer as the MCP surface takes it: a plain dict."""
+    return {
+        "vault_id": "origin_vault",
+        "document_id": document_id,
+        "server_address": "https://origin.example",
+        "source_content_hash": source_content_hash,
+        "relocated_at": "2026-05-18T09:00:00+00:00",
+    }
+
+
+@requires_docx
+async def test_mpi_018_relocation_reads_delivered_provenance_not_the_stored_copy(
+    mpi_vault, tmp_path
+):
+    """MPI-018: a destination relocation write compares its pointer against the
+    delivered bytes' digest, never against the copy the store retained.
+
+    The two digests coincide wherever the store keeps the delivered bytes
+    verbatim, which is the whole filesystem binding and every markdown fixture,
+    so this is the only place an implementation reading the as-stored digest
+    becomes visible. An Office package on the document-store leg is the case
+    where they actually diverge.
+
+    Anti-coincidental-pass: the divergence is asserted before it is relied on --
+    the store must have stamped the upload and the two recorded digests must
+    differ -- because without a real rewrite both arms below reduce to the same
+    comparison and the test proves nothing. The accept arm is what rules out an
+    implementation refusing every relocation, and the refuse arm carries the
+    stored digest specifically, so an implementation comparing against it admits
+    exactly the pointer that should be turned away.
+    """
+    _services, _config, handle = mpi_vault
+    src = _write_office_file(tmp_path, "relocating_in.docx", "Alpha")
+    delivered = _sha256(src.read_bytes())
+
+    accepted = _parse(
+        await ingest_document(
+            _VAULT_ID,
+            str(src),
+            "docx",
+            relocated_from=_origin_pointer_dict(delivered, "00000031_origin_head"),
+        )
+    )
+    assert "error" not in accepted, accepted
+    doc = await _services.graph_store.get_document(accepted["id"])
+    assert doc.relocated_from.source_content_hash == delivered
+    assert doc.source_content_hash == delivered
+
+    if handle.fake_client is None:
+        # On the filesystem binding the two digests are the same value, so
+        # there is no second arm to run: the refusal below would be asking
+        # the same question as the accept above.
+        assert doc.stored_content_hash == delivered
+        return
+
+    assert handle.fake_client.stamped_uploads >= 1, (
+        "the document store must have rewritten the upload; without a real "
+        "divergence this test asserts nothing"
+    )
+    as_stored = doc.stored_content_hash
+    assert as_stored != delivered, (
+        "the as-stored digest must describe the rewritten copy, not the delivered bytes"
+    )
+
+    other = _write_office_file(tmp_path, "relocating_in_two.docx", "Beta")
+    refused = _parse(
+        await ingest_document(
+            _VAULT_ID,
+            str(other),
+            "docx",
+            relocated_from=_origin_pointer_dict(as_stored, "00000032_origin_head"),
+        )
+    )
+    assert refused.get("error") == "relocated_from_provenance_mismatch", refused
+
+
+@requires_docx
+async def test_mpi_019_a_relocation_that_delivers_no_bytes_is_refused(mpi_vault, tmp_path):
+    """MPI-019: a destination relocation write whose source is already resident
+    on the store, and which this vault never ingested, is refused rather than
+    compared against the retained copy's digest.
+
+    The one branch where nothing is hashed and no prior record's provenance can
+    be inherited. The digest available there describes the stored copy, which a
+    rewriting binding is permitted to make different from what produced it, so a
+    comparison would decide the relocation on evidence about the wrong bytes. A
+    relocation is composed by a client that holds the source and hands it to
+    each side, so a destination write that delivers nothing is a different
+    operation wearing a relocation's pointer.
+
+    Anti-coincidental-pass: the bytes are placed out of band, so no record
+    exists to inherit from -- which is what makes the branch reachable at all.
+    The filesystem leg runs the opposite assertion rather than skipping: there
+    the same setup leaves the bytes on the local tree, so they *are* delivered
+    and the ordinary digest comparison applies. A test that skipped that leg
+    would not notice an implementation refusing every relative source.
+    """
+    _services, config, handle = mpi_vault
+    src = _write_office_file(tmp_path, "placed_out_of_band.docx", "Alpha")
+    payload = src.read_bytes()
+    rel = "imports/placed_out_of_band.docx"
+    # The out-of-band writer creates no directories, and on the filesystem leg
+    # the vault's import area does not exist until SAGE has retained something.
+    (Path(config.vault.storage_root) / "imports").mkdir(parents=True, exist_ok=True)
+    handle.write_retained_bytes(config.vault.storage_root, rel, payload)
+
+    assert await _services.graph_store.list_all_documents() == [], (
+        "the bytes must be resident with no record, or this is not the branch under test"
+    )
+
+    result = _parse(
+        await ingest_document(
+            _VAULT_ID,
+            rel,
+            "docx",
+            relocated_from=_origin_pointer_dict(_sha256(payload), "00000033_origin_head"),
+        )
+    )
+
+    if handle.fake_client is None:
+        # Filesystem binding: the out-of-band write landed on the local tree,
+        # so the bytes are delivered and hashed like any other relative source.
+        assert "error" not in result, result
+        doc = await _services.graph_store.get_document(result["id"])
+        assert doc.relocated_from.source_content_hash == _sha256(payload)
+    else:
+        assert result.get("error") == "relocation_source_undelivered", result
+        assert await _services.graph_store.list_all_documents() == [], (
+            "a refused relocation must not insert a document"
+        )
+
+
 def test_mpi_007_path_parameter_docstrings_state_server_local_contract():
     """MPI-007: every path-bearing tool documents that its path parameter
     resolves on the machine running the SAGE server process."""

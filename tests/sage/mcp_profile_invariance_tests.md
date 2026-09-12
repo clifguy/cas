@@ -412,3 +412,58 @@ what the record now expects. The upload-counter assertion on the document-store
 leg keeps "restored" from being satisfied by a binding that stored nothing, and
 the `source_path` assertion distinguishes a write-in-place from the
 collision-disambiguated second copy `retain_source` would have produced.
+
+## MPI-018: a relocation reads delivered provenance, not the stored copy
+
+**Artifact:** `sage/services/ingestion.py`
+(`_validate_relocation_provenance`)
+**Category:** mcp_tool, profile_invariance, import, relocation
+
+**Precondition:** none beyond a registered vault.
+
+**Input:** `ingest_document` of an Office package with `relocated_from`
+carrying the delivered bytes' digest; then, on the document-store leg only, a
+second Office package with `relocated_from` carrying the first document's
+`stored_content_hash`.
+
+**Expected:** the first accepted, with the pointer and the document's own
+provenance both equal to the delivered digest. The second refused with
+`relocated_from_provenance_mismatch`.
+
+**Anti-coincidental-pass:** the two digests coincide wherever the store keeps
+the delivered bytes verbatim, which is the whole filesystem binding and every
+markdown fixture, so an implementation comparing against the as-stored digest
+is invisible everywhere else. The divergence is therefore asserted before it is
+relied on — the store must have stamped the upload and the two recorded digests
+must differ — because without a real rewrite both arms reduce to the same
+comparison. The accept arm excludes an implementation that refuses every
+relocation; the refuse arm carries the stored digest specifically, so an
+implementation reading that digest admits exactly the pointer that must be
+turned away. The filesystem leg runs the accept arm and returns, rather than
+asking a question it cannot distinguish.
+
+## MPI-019: a relocation that delivers no bytes is refused
+
+**Artifact:** `sage/services/ingestion.py`
+(`_validate_relocation_provenance`)
+**Category:** mcp_tool, profile_invariance, import, relocation
+
+**Precondition:** an Office package's bytes written to the store out of band,
+so they are resident with no document record to inherit provenance from.
+
+**Input:** `ingest_document` by the vault-relative path, with `relocated_from`
+carrying the bytes' true digest.
+
+**Expected:** on the document-store leg, refused with
+`relocation_source_undelivered`, and no document inserted. On the filesystem
+leg, accepted: the out-of-band write landed on the local tree, so the bytes are
+delivered and hashed like any other relative source.
+
+**Anti-coincidental-pass:** this is the one branch where nothing is hashed and
+no prior record's provenance can be inherited, so the only digest available
+describes the retained copy — which a rewriting binding is permitted to make
+different from what produced it, making a comparison there a verdict about the
+wrong bytes. Placing the bytes out of band is what makes the branch reachable:
+an ordinary ingest would leave a record whose provenance the call would inherit.
+The filesystem leg asserts the opposite outcome rather than skipping, because a
+skip would not notice an implementation that refused every relative source.
