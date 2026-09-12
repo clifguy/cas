@@ -350,6 +350,10 @@ describe('Search view: existing search modes preserved', () => {
     expect(request.mode).toBe('semantic');
     expect(request.query).toBe('architecture');
     expect(request.use_hybrid).toBe(true);
+    // Result cards show a passage's head and tail. Left unset, a page large
+    // enough to overrun the inline budget comes back with long passages cut
+    // to an excerpt, and the tail each card shows is silently gone.
+    expect(request.response_mode).toBe('full');
   });
 });
 

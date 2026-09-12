@@ -140,6 +140,13 @@ DEFAULT_MCP_INLINE_BUDGET_BYTES = 45000
 # that reaches the full vocabulary.
 DEFAULT_FACET_VALUE_LIMIT = 50
 
+# Shortest excerpt a scored response is cut to in order to fit the inline
+# budget. A policy margin rather than a measurement: enough for a heading line
+# and a sentence or two of the matched passage. Below it an excerpt stops
+# answering the search, and re-paging to fewer whole passages serves the
+# caller better, so the response falls back to the ``recommended_limit`` hint.
+_EXCERPT_FLOOR_CHARS: Final[int] = 200
+
 
 def _resolve_mcp_inline_budget_bytes() -> int:
     """Resolve the MCP inline budget per call (not at import).
@@ -369,6 +376,94 @@ def _apply_catalog_budget_policy(response: DiscoverResponse, request: DiscoverRe
     if request.response_mode is None:
         candidate = _degraded_catalog_candidate(response, full_size=size, budget=budget)
         if _serialized_response_bytes(candidate) <= budget:
+            response.results = candidate.results
+            response.hints = candidate.hints
+            return
+    _apply_catalog_budget_hint(response, size=size, budget=budget)
+
+
+def _scored_excerpt_candidate(
+    response: DiscoverResponse, cap: int, *, full_size: int, budget: int
+) -> DiscoverResponse:
+    """The scored response with every passage longer than ``cap`` cut to it.
+
+    Built in full, hint included, for the reason ``_degraded_catalog_candidate``
+    gives: the measurement decides whether this response is under the budget,
+    so the hint's own bytes have to be in it. A passage is cut to its first
+    ``cap`` characters and nothing else on the hit moves -- not the score, not
+    the heading path, not the document summary. Passages at or under the cap
+    are left whole, so a response whose weight sits in one long passage keeps
+    every other passage intact.
+    """
+    excerpted = 0
+    rows: list[DiscoverHit | FacetHit] = []
+    for hit in response.results:
+        content = hit.chunk_content if isinstance(hit, DiscoverHit) else None
+        if content is not None and len(content) > cap:
+            rows.append(hit.model_copy(update={"chunk_content": content[:cap]}))
+            excerpted += 1
+        else:
+            rows.append(hit)
+    excerpt_hint: dict[str, object] = {
+        "reason": "scored_response_excerpted",
+        "full_response_size_bytes": full_size,
+        "budget_bytes": budget,
+        "excerpt_chars": cap,
+        "excerpted_count": excerpted,
+    }
+    merged = excerpt_hint if response.hints is None else {**response.hints, **excerpt_hint}
+    return response.model_copy(update={"results": rows, "hints": merged})
+
+
+def _apply_scored_budget_policy(response: DiscoverResponse, request: DiscoverRequest) -> None:
+    """Fit an over-budget semantic or keyword response inline, or hint at how to.
+
+    Three outcomes, and a response reaches exactly one of them:
+
+    - Under budget: delivered as it was built, with no hint.
+    - Over budget, and cutting the longest passages fits: every passage longer
+      than one shared cap is cut to its first ``cap`` characters, where the
+      cap is the largest whose delivered response fits and is never below
+      ``_EXCERPT_FLOOR_CHARS``. The hint names the cap and how many passages
+      it cut. A passage is what a scored caller searched for, so the remedy
+      shortens passages rather than removing any, and leaves every other
+      field -- abstracts a caller asked for included -- where it was.
+    - Over budget and no such cap fits: delivered unchanged with the
+      ``recommended_limit`` hint. Cutting passages from a response that will
+      not be delivered inline anyway would spend them for nothing.
+
+    The recommendation is advisory in a way the catalog one is not. A catalog
+    re-page returns a prefix of the same rows, which the store's total order
+    guarantees; a scored re-page fetches candidates in proportion to the
+    limit, so a smaller page can rank a different set. The largest fitting
+    prefix of this response is the best estimate available, not a promise.
+
+    An explicit ``response_mode`` suppresses the excerpt, as it suppresses the
+    catalog degrade: ``full`` asks for whole passages at any size, and
+    ``light`` has none to cut.
+    """
+    if not response.results:
+        return
+    size = _serialized_response_bytes(response)
+    budget = _resolve_mcp_inline_budget_bytes()
+    if size <= budget:
+        return
+    if request.response_mode is None:
+        longest = max(
+            (
+                len(hit.chunk_content)
+                for hit in response.results
+                if isinstance(hit, DiscoverHit) and hit.chunk_content is not None
+            ),
+            default=0,
+        )
+
+        def candidate_at(resp: DiscoverResponse, cap: int) -> DiscoverResponse:
+            return _scored_excerpt_candidate(resp, cap, full_size=size, budget=budget)
+
+        cap = _largest_fitting_prefix(response, budget, longest - 1, candidate_at)
+        if cap is not None and cap >= _EXCERPT_FLOOR_CHARS:
+            candidate = candidate_at(response, cap)
             response.results = candidate.results
             response.hints = candidate.hints
             return
@@ -1027,14 +1122,18 @@ class RetrievalService:
             # recognize is worth reporting in every mode.
             self._apply_warnings(response, request)
 
-            # Fit a catalog response that would bust the Claude Code MCP
-            # inline ceiling, or hint at how the caller can. Applied here
+            # Fit a response that would bust the Claude Code MCP inline
+            # ceiling, or hint at how the caller can. Applied here
             # (post-projection) so the byte measurement reflects what the
             # wire actually carries -- which is why it runs last, after
-            # every other hint is attached, and why the degrade cannot be
-            # decided back in the mode handler.
+            # every other hint is attached, and why neither the degrade nor
+            # the excerpt can be decided back in the mode handler.
+            # Deterministic mode is an explicit single-section fetch and is
+            # left alone.
             if request.mode == RetrievalMode.CATALOG:
                 _apply_catalog_budget_policy(response, request)
+            elif request.mode in (RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD):
+                _apply_scored_budget_policy(response, request)
 
             return response
 

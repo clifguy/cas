@@ -3357,3 +3357,52 @@ margin to absorb its own bytes because it annotates a response already over
 the line, and that is unsound here, where the measurement is what decides
 whether the response is under it. The comparison is inclusive, so a candidate
 exactly at budget is delivered.
+
+
+### TEST-SAGE-BH-139: an oversize scored response is excerpted rather than spilled
+
+**Artifact:** `sage/services/retrieval.py` (`_apply_scored_budget_policy`)
+**Category:** retrieval, semantic, keyword, inline budget
+
+**Decision:** Semantic and keyword responses switch on the inline budget too,
+with a remedy of their own. The catalog remedy of dropping document fields does
+not transfer: a scored caller searched for passages, so the remedy shortens
+passages rather than removing any.
+
+Three outcomes, and a response reaches exactly one:
+
+1. Under budget: delivered as built, no hint.
+2. Over budget, excerpt fits: every `chunk_content` longer than one shared cap
+   is cut to its first `cap` characters, where the cap is the largest whose
+   delivered response fits and is never below 200. Shorter passages, scores,
+   order, heading paths and document summaries (abstracts included, when
+   requested) are unchanged. `hints` carries
+   `reason="scored_response_excerpted"`, `full_response_size_bytes`,
+   `budget_bytes`, `excerpt_chars` and `excerpted_count`. No
+   `recommended_limit`.
+3. Over budget, no cap of at least 200 fits (or no passage is longer than 200):
+   delivered unchanged with `reason="response_exceeds_inline_budget"` and
+   `recommended_limit`.
+
+An explicit `response_mode` suppresses the excerpt, as it suppresses the
+catalog degrade. Deterministic mode is untouched.
+
+**Precondition:** Indexed passages matching a query, one of them far longer
+than the rest, with the response over the budget in force.
+
+**Input:** `discover(mode: semantic | keyword, query: …)` with `response_mode`
+unset.
+
+**Expected:**
+- `hints["reason"] == "scored_response_excerpted"`.
+- The long passage equals its original's first `excerpt_chars` characters; every
+  other passage is byte-identical.
+- The response as delivered, hint included, measures at or under the budget.
+- Exactly at budget, no hint is attached.
+
+**Rationale:** A single passage can be larger than the whole budget — a log
+under one heading — so a limit re-page alone cannot bring such a response
+inline, while per-hit metadata alone can exceed the budget at a large limit,
+so an excerpt alone cannot either. The fallback covers the second case. A
+scored re-page is not a prefix of the same rows, since candidate fetch scales
+with the limit, so the fallback's `recommended_limit` is advisory.

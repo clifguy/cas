@@ -726,6 +726,12 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "recommended_facet_value_limit": (
             "key of the facets budget hint, sibling to recommended_limit"
         ),
+        "scored_response_excerpted": (
+            "value of the reason key in the scored excerpt hint, which the "
+            "contract types as an untyped hints mapping"
+        ),
+        "excerpt_chars": "key of the scored excerpt hint, naming the passage cap applied",
+        "excerpted_count": "key of the scored excerpt hint, counting the passages cut",
         "allowed_modes": ERROR_DETAIL_KEY,
         "allowed_targets": ERROR_DETAIL_KEY,
         "constraint": ERROR_DETAIL_KEY,

@@ -178,6 +178,7 @@ export default function Search() {
         filters: Object.keys(filters).length > 0 ? filters : undefined,
         use_hybrid: urlMode === 'hybrid',
         limit: 20,
+        response_mode: 'full',
       };
     }
     run(req);

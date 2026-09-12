@@ -167,8 +167,26 @@ cost lands on REST callers paging wide: `source_path`, `document_date`, `tags`,
 Application's catalog table does exactly that, and it is the reason it has to.
 The outcome is in the OpenAPI, so a caller can discover it without reading this.
 
-The measurement below is unaffected: it bounds delivery, and the degrade is a
-decision taken against that bound rather than a change to it.
+**Semantic and keyword responses switch too, with their own remedy.** Dropping
+document fields answers an enumeration; it does not answer a search, whose
+caller wanted the passages. So an over-budget scored response with
+`response_mode` unset keeps every hit and every field and cuts each passage
+longer than one shared cap to its first `excerpt_chars` characters, the cap
+being the largest that fits and never below 200. It carries
+`reason="scored_response_excerpted"`. Where no such cap fits, it comes back
+whole with `recommended_limit`, which on these modes is an estimate rather than
+a guarantee: candidate fetch scales with the limit, so a smaller page need not
+be a prefix of the larger one. The same every-transport choice applies, and
+the CAS Application opts out of it the same way: its search cards show a
+passage's head and tail, and an excerpt keeps only the head, so its scored
+requests send `response_mode="full"`.
+
+A recalibration therefore moves the excerpt line as well: raising the budget
+lengthens excerpts or stops them; lowering it shortens them and pushes some
+responses past the floor into the limit hint.
+
+The measurement below is unaffected: it bounds delivery, and the degrade and
+the excerpt are decisions taken against that bound rather than changes to it.
 
 ## 7. What a recalibration breaks
 

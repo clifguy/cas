@@ -3767,7 +3767,11 @@ class DiscoverHit(BaseModel):
         description=(
             "Retrieved text content. For semantic mode, the matching chunk. "
             "For deterministic mode, the extracted content at the specified "
-            "heading path."
+            "heading path. In semantic and keyword modes, an excerpt when "
+            "the response's `hints.reason` is `scored_response_excerpted`: "
+            "the chunk's first `hints.excerpt_chars` characters. A "
+            "deterministic request for the hit's document and "
+            "`heading_path` returns it whole."
         ),
     )
     heading_path: str | None = Field(
@@ -3987,12 +3991,24 @@ class DiscoverResponse(BaseModel):
             "Optional retrieval hints surfaced to the caller. Null when "
             "no hints apply. Empty-result hints (semantic and keyword "
             "modes): `total_before_filtering`, plus `active_filters` and "
-            "`scope` when applicable. Catalog budget hint (fires when "
-            "the serialized response exceeds the MCP inline "
-            "ceiling and the light shape would not fit either): "
+            "`scope` when applicable. Budget hint (fires when the "
+            "serialized response exceeds the MCP inline ceiling and "
+            "neither the catalog light shape nor a scored excerpt would "
+            "fit): "
             '`reason="response_exceeds_inline_budget"`, '
             "`response_size_bytes`, `budget_bytes`, `recommended_limit` "
-            "(re-page at this limit to fit inline). Catalog degrade hint "
+            "(re-page at this limit to fit inline; advisory in semantic "
+            "and keyword modes, where a smaller page can rank a "
+            "different set). Scored excerpt hint (fires instead of the "
+            "above in semantic and keyword modes when the response "
+            "exceeds the ceiling but cutting its longest passages fits, "
+            "on a request that left `response_mode` unset): "
+            '`reason="scored_response_excerpted"`, '
+            "`full_response_size_bytes`, `budget_bytes`, `excerpt_chars` "
+            "(every `chunk_content` longer than this many characters is "
+            "cut to its first `excerpt_chars`, never fewer than 200) and "
+            "`excerpted_count` (how many were cut). No `recommended_limit` "
+            "accompanies it: the excerpted response fits. Catalog degrade hint "
             "(fires instead of the above when the full shape exceeds the "
             "ceiling but the light shape fits, on a documents-target "
             "catalog request that left `response_mode` unset): "

@@ -1891,8 +1891,9 @@ def register_sage_tools(
                 When unset, edges apply the >5-results default-threshold
                 rule; documents preserve full-equivalent behavior unless
                 the response would overrun the inline budget, in which
-                case catalog degrades it to light and says so (see the
-                *Catalog budget hint* section below).
+                case catalog degrades it to light, semantic and keyword
+                cut their longest passages to an excerpt, and each says
+                so (see the *Inline budget hint* section below).
             sort_by: Sort key for catalog mode results. One of:
                 "title", "doc_type", "document_date",
                 "lifecycle_status". Ignored by semantic, keyword, and
@@ -1919,7 +1920,7 @@ def register_sage_tools(
                 regardless of the cap, so truncation is always
                 detectable. Rejected for other targets.
 
-        Catalog budget hint:
+        Inline budget hint:
             A documents-target catalog response whose serialized full
             shape would exceed the Claude Code MCP inline ceiling is
             returned in the light shape instead, provided that fits,
@@ -1933,7 +1934,21 @@ def register_sage_tools(
             explicitly suppresses the degrade, since the parameter is
             the caller's own answer to the same question.
 
-            Where even the light shape would not fit, the response is
+            A semantic or keyword response over the ceiling keeps every
+            hit and every field, and instead cuts each ``chunk_content``
+            longer than one shared cap to its first ``excerpt_chars``
+            characters, where the cap is the largest that fits and never
+            fewer than 200. ``hints`` carries
+            ``reason="scored_response_excerpted"`` with
+            ``excerpt_chars`` and ``excerpted_count``. To read a cut
+            passage whole, call ``search`` with ``mode="deterministic"``,
+            ``document_id`` set to the hit's document id, and the hit's
+            ``heading_path``. An
+            explicit ``response_mode`` suppresses the excerpt, as it
+            suppresses the catalog degrade.
+
+            Where neither the light shape nor an excerpt would fit, the
+            response is
             returned unchanged with ``recommended_limit``, and facets
             responses carry ``recommended_facet_value_limit`` instead,
             since the facets target rejects ``limit``. When present,
