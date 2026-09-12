@@ -71,11 +71,11 @@ from sage.storage.locks import DocumentLockManager
 # distinct values make the wrong one visible.
 #
 # The digest member is the one exception, and it is an exception by
-# decision rather than by convenience. CAS-ADR-050 Decision 10 requires
-# both halves of a relocation to hold the same source at the same digest
-# and requires each half to prove that against the document in front of
-# it, so a pointer carrying a digest belonging to nothing is refused
-# rather than stored. Every call that expects to succeed therefore derives
+# decision rather than by convenience. CAS-ADR-050 Decision 10 makes the
+# pointer name the bytes that travelled and requires each half to prove
+# that against digests it already records, so a pointer carrying a digest
+# belonging to nothing is refused rather than stored. Every call that
+# expects to succeed therefore derives
 # ``source_content_hash`` from its own document or file, while the other
 # four members stay distinct exactly as before. The literal defaults below
 # are kept for the calls that expect a refusal, and they are safe as
@@ -483,8 +483,10 @@ async def test_relocate_accounts_for_either_digest_the_origin_records(
 
     Three arms, and the third is what keeps this from being a relaxation.
     Admitting two known values is not admitting any value: a digest
-    matching neither is still refused, and the refusal names the
-    provenance digest so a caller sees a value it can act on.
+    matching neither is still refused, and the refusal names both
+    admissible values so a caller sees what it can act on. The third arm
+    asserts the second of them, which is also what makes its fixture's
+    ``stored_content_hash`` load-bearing rather than decorative.
     """
     as_stored = _sha("the-rewritten-copy")
     by_provenance = _make_doc("00000025_relocated_by_original", stored_content_hash=as_stored)
@@ -535,6 +537,12 @@ async def test_relocate_accounts_for_either_digest_the_origin_records(
         )
     assert excinfo.value.code == "relocated_to_provenance_mismatch"
     assert excinfo.value.detail["document_content_hash"] == refused.source_content_hash
+    # Both admissible digests are named, so a refused caller need not infer
+    # the second. Asserting it is also what makes this fixture's
+    # ``stored_content_hash`` load-bearing: without this line, deleting the
+    # override leaves the arm passing while the refusal silently stops
+    # reporting the value the caller would act on.
+    assert excinfo.value.detail["also_accounted_content_hash"] == as_stored
     untouched = await graph_store.get_document(refused.id)
     assert untouched.lifecycle_status == "active"
     assert untouched.relocated_to is None
@@ -1629,7 +1637,10 @@ async def test_full_round_trip_across_two_vaults(
     assert dest_head.relocated_from.document_id == v3.document.id
     assert dest_head.relocated_to is None
 
-    # The confirming check: both vaults hold the same source at the same digest.
+    # The confirming check. Both vaults hold the same source at the same
+    # digest here because both are filesystem-bound and retain what they
+    # were handed; under a binding that rewrites its copy at rest the two
+    # would differ, and the digest that relates them is the travelled one.
     assert dest_head.source_content_hash == origin_head.source_content_hash
 
     # The two vaults really are separate stores. Without this, a test run

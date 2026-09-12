@@ -318,8 +318,9 @@ paths:
         where the vault's store rewrites its copy at rest. A pointer
         matching neither refuses with
         `relocated_to_provenance_mismatch` before anything is written,
-        its detail naming both admissible values as
-        `document_content_hash` and `also_accounted_content_hash`.
+        its detail naming the document's provenance digest as
+        `document_content_hash` and, where the two differ, its as-stored
+        digest as `also_accounted_content_hash`.
         Neither side reads the other to check it. The destination
         half is an ordinary ingest carrying `relocated_from`, and it is
         performed first, so an interrupted move leaves its evidence on
@@ -663,11 +664,13 @@ paths:
 
 
             `relocated_from_provenance_mismatch`: `relocated_from` names
-            a source content hash the delivered bytes do not carry. A
-            relocation moves a document without modifying it, so both
-            vaults hold the same source at the same digest and each half
-            checks that against the document in front of it
-            (CAS-ADR-050). Detail carries `field`,
+            a source content hash this vault will not record for the
+            source. The pointer names the bytes that travelled between
+            the two vaults, and each half checks it against digests it
+            already records (CAS-ADR-050); this half accounts for the
+            digest of the bytes the call delivered, or of the record
+            they are inherited from where a resident source is
+            re-projected. Detail carries `field`,
             `pointer_content_hash` and `document_content_hash`. Checked
             before the source is retained, so a refused relocation
             leaves no copy behind.

@@ -583,10 +583,9 @@ def register_sage_tools(
                 performed first. Stored verbatim and never followed: the
                 vault id and address are hints for a caller recovering
                 provenance, and the content hash is what confirms a
-                resolution reached the intended document, since both vaults
-                retain the same source at the same digest. The hash names
-                the bytes that travelled, and on this half it is checked
-                rather than assumed: it must match the digest this vault
+                resolution reached the intended document. The hash names
+                the bytes that travelled between the two vaults, and on
+                this half it is checked rather than assumed: it must match the digest this vault
                 will record for the source, which is the digest of the
                 bytes the call delivers, or of the record they are
                 inherited from where a resident source is re-projected.
@@ -924,8 +923,9 @@ def register_sage_tools(
         where the vault's store rewrites its copy at rest. A pointer
         matching neither refuses with
         ``relocated_to_provenance_mismatch`` before anything is written,
-        its detail naming both admissible values as
-        ``document_content_hash`` and ``also_accounted_content_hash``.
+        its detail naming the document's provenance digest as
+        ``document_content_hash`` and, where the two differ, its as-stored
+        digest as ``also_accounted_content_hash``.
         Neither side reads the other to check it. The destination
         half is an ordinary ``ingest_document`` carrying
         ``relocated_from``, and it is performed first, so an interrupted

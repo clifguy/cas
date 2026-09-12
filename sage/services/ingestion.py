@@ -2601,12 +2601,12 @@ class IngestionService:
         """Hold a destination write to the source its pointer claims.
 
         A relocation moves a document between vaults without modifying
-        it, so both halves hold the same source at the same digest and
-        each half proves that against the document in front of it
-        (CAS-ADR-050). This is the destination half: the pointer's digest
-        against the digest of the bytes this call was handed. Nothing is
-        followed and the origin is never read, so the check is available
-        whichever deployment each side sits in.
+        it, so the pointer names the bytes that travelled and each half
+        proves that against digests it already records (CAS-ADR-050).
+        This is the destination half, and it accounts for one value: the
+        digest this vault will record for the source. Nothing is followed
+        and the origin is never read, so the check is available whichever
+        deployment each side sits in.
 
         Called from both the real path and the preview, which is the
         point of taking ``delivered_hash`` rather than reading it back

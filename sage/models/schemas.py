@@ -310,8 +310,8 @@ class RelocationPointer(BaseModel):
     narrow a search without settling it: a vault identifier is unique
     within an installation rather than across installations, and an
     address is a deployment fact. `source_content_hash` is the member that
-    confirms, because both vaults retain the same source at the same
-    digest, so a caller arriving from either direction can check that it
+    confirms, because it names bytes that demonstrably passed through both
+    sides, so a caller arriving from either direction can check that it
     landed where the pointer meant.
 
     The digest names the bytes that *travelled* -- the copy the origin
